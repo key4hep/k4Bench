@@ -1,0 +1,37 @@
+// Devcontainer for local development
+// See https://github.com/key4hep/key4hep-images/ for available images
+// Requires the host have
+// a) CernVM-FS installed (see https://cvmfs.readthedocs.io/en/stable/cpt-quickstart.html for instructions)
+// b) The necessary repositories mounted on the host machine; sudo mount -t cvmfs sw.hsf.org /cvmfs/sw.hsf.org
+{
+  "name": "Key4HEP Dev",
+  "image": "ghcr.io/key4hep/key4hep-images/alma9-cvmfs:latest",
+
+  // Make sure CVMFS is mounted on the host (and bind-mounted):
+  "mounts": [
+    "source=/cvmfs,target=/cvmfs,type=bind"
+  ],
+
+  // "postCreateCommand" runs once after the container is created.
+  // Here, we append the source line to ~/.bashrc so new terminals pick it up.
+  "postCreateCommand": [
+    "bash",
+    "-c",
+    "echo 'source setup.sh' >> ~/.bashrc"
+  ],
+  // Install and activate vs code extensions for environment
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-toolsai.jupyter",
+        "ms-vscode.cpptools",
+        "llvm-vs-code-extensions.vscode-clangd",
+        "ms-vscode.cmake-tools",
+        "ibm.output-colorizer",
+        "charliermarsh.ruff",
+        "eamodio.gitlens"
+      ]
+    }
+  }
+}
