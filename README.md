@@ -2,10 +2,19 @@
 
 Performance benchmarking for DD4hep-based simulations and reconstruction in Key4hep.
 
-## Installation
+## Installation inside key4hep environment
 
 ```bash
-pip install dd4bench
+source /cvmfs/sw.hsf.org/key4hep/setup.sh -r 2026-04-08
+
+# Create a local virtualenv that inherits Key4hep packages
+python -m venv ~/.venvs/dd4bench --system-site-packages
+
+# Activate it
+source ~/.venvs/dd4bench/bin/activate
+
+# Install dd4bench
+pip install dd4bench --no-deps
 ```
 
 ## Basic Usage
