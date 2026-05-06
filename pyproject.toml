@@ -1,0 +1,38 @@
+[project]
+name = "dd4bench"
+dynamic = ["version"]
+description = "Performance benchmarking for DD4hep-based simulations and reconstruction in Key4hep"
+authors = [{name = "Joshua Falco Beirer", email = "jbeirer@cern.ch"}]
+readme = "README.md"
+requires-python = ">=3.10"
+# Intended to run inside the Key4hep environment; dependency versions
+# are determined by the Key4hep stack, so no version constraints are set.
+dependencies = [
+    "pandas",
+    "matplotlib",
+]
+
+[project.urls]
+Repository = "https://github.com/jbeirer/DD4bench"
+
+[project.scripts]
+dd4bench = "dd4bench.cli:main"
+
+[build-system]
+requires = ["setuptools>=64", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["dd4bench*"]
+
+[tool.setuptools_scm]
+# version is derived automatically from git tags
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: requires full Key4hep environment with ddsim",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
