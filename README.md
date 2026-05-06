@@ -1,5 +1,8 @@
 # DD4bench
 
+[![Release](https://img.shields.io/github/v/release/jbeirer/DD4bench)](https://github.com/jbeirer/DD4bench/releases)
+[![Build status](https://img.shields.io/github/actions/workflow/status/jbeirer/DD4bench/main.yml?branch=main)](https://github.com/jbeirer/DD4bench/actions/workflows/ci.yml?query=branch%3Amain)
+
 Performance benchmarking for DD4hep-based simulations and reconstruction in Key4hep.
 
 ## Installation inside key4hep environment
