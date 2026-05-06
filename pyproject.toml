@@ -4,7 +4,7 @@ dynamic = ["version"]
 description = "Performance benchmarking for DD4hep-based simulations and reconstruction in Key4hep"
 authors = [{name = "Joshua Falco Beirer", email = "jbeirer@cern.ch"}]
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.13"
 # Intended to run inside the Key4hep environment; dependency versions
 # are determined by the Key4hep stack, so no version constraints are set.
 dependencies = [
@@ -35,4 +35,4 @@ markers = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py313"
