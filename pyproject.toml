@@ -32,6 +32,10 @@ include = ["dd4bench*"]
 markers = [
     "integration: requires full Key4hep environment with ddsim",
 ]
+# key4hep's CVMFS pytest bundles GaudiTesting, which emits DartMeasurement
+# XML blobs to stdout for every test. Irrelevant here — block all three.
+testpaths = ["tests"]
+addopts = "-v --tb=short -p no:collect_for_ctest -p no:ctest_measurements_reporter -p no:gaudi_fixtures"
 
 [tool.ruff]
 line-length = 100
