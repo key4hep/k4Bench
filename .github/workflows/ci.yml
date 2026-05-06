@@ -1,0 +1,47 @@
+name: Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+env:
+  CONTAINER_IMAGE: ghcr.io/key4hep/key4hep-images/alma9
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout code
+      - uses: actions/checkout@v4
+
+      # Set up CVMFS
+      - uses: cvmfs-contrib/github-action-cvmfs@v4
+
+      # Cache Matplotlib font cache directory
+      # to speed up the tests
+      - name: Cache Matplotlib font cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/matplotlib
+          key: ${{ runner.os }}-matplotlib-cache
+
+      # Build and test in the container
+      - name: Build and test
+        run: |
+          docker run --rm \
+            --device /dev/fuse \
+            --cap-add SYS_ADMIN \
+            --volume /cvmfs:/cvmfs:shared \
+            --volume ${{ github.workspace }}:/workspace \
+            --workdir /workspace \
+            -e MPLCONFIGDIR=/workspace/.cache/matplotlib \
+            ${{ env.CONTAINER_IMAGE }} bash -c "
+
+            echo '::group::Set-up key4hep'
+            source setup.sh
+            echo "Hello World"
+          "
