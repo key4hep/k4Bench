@@ -46,7 +46,7 @@ jobs:
             echo '::endgroup::'
 
             echo '::group::Install dd4bench'
-            pip install -e '.[dev]'
+            pip install .
             echo '::endgroup::'
 
             echo '::group::Run unit tests'
