@@ -46,7 +46,7 @@ jobs:
             echo '::endgroup::'
 
             echo '::group::Install dd4bench'
-            pip install .
+            pip install --no-build-isolation . 
             echo '::endgroup::'
 
             echo '::group::Run unit tests'
