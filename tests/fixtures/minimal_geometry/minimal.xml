@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lccdd>
+  <info name="MinimalDetector" title="Minimal test geometry"/>
+
+  <include ref="materials.xml"/>
+  <include ref="subdetectors/tracker.xml"/>
+  <include ref="subdetectors/calorimeter.xml"/>
+
+</lccdd>

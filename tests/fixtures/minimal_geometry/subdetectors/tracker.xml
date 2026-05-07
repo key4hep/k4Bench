@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lccdd>
+  <detectors>
+    <detector name="InnerTracker" type="TrackerBarrel" vis="TrackerVis">
+      <dimensions rmin="0.1*m" rmax="0.5*m" z="2.0*m"/>
+    </detector>
+    <detector name="OuterTracker" type="TrackerBarrel" vis="TrackerVis">
+      <dimensions rmin="0.5*m" rmax="1.0*m" z="2.5*m"/>
+    </detector>
+  </detectors>
+</lccdd>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lccdd>
+  <materials>
+    <material name="Air">
+      <D type="density" value="0.0012" unit="g/cm3"/>
+    </material>
+    <material name="Silicon">
+      <D type="density" value="2.329" unit="g/cm3"/>
+    </material>
+  </materials>
+</lccdd>

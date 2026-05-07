@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lccdd>
+  <detectors>
+    <detector name="EcalBarrel" type="CalorimeterBarrel" vis="EcalVis">
+      <dimensions rmin="1.5*m" rmax="2.0*m" z="3.0*m"/>
+    </detector>
+    <detector name="HcalBarrel" type="CalorimeterBarrel" vis="HcalVis">
+      <dimensions rmin="2.0*m" rmax="3.5*m" z="3.5*m"/>
+    </detector>
+  </detectors>
+</lccdd>
