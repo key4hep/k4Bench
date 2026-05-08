@@ -19,7 +19,9 @@ steering files, …) is passed through verbatim via ``extra_args``.
 
 from __future__ import annotations
 
+import os
 import shlex
+import signal
 import subprocess
 from pathlib import Path
 
@@ -40,6 +42,7 @@ def run_ddsim(
     log_dir: Path,
     setup_script: Path | None = None,
     extra_args: list[str] | None = None,
+    verbose: bool = False
 ) -> RunResult:
     """Run ddsim for one geometry configuration and return collected metrics.
 
@@ -94,13 +97,38 @@ def run_ddsim(
         extra_args=extra_args or [],
     )
 
-    completed = subprocess.run(
-        cmd,
-        shell=True,
-        executable="/bin/bash",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            shell=True,
+            executable="/bin/bash",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=os.environ.copy(),
+            start_new_session=True
+        )
+        lines = []
+        for line in proc.stdout:
+            if verbose:
+                print(line, end="", flush=True)
+            lines.append(line)
+        stdout = "".join(lines)
+        
+    except KeyboardInterrupt:
+        # Kill the entire process group (bash shell + ddsim child)
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            proc.wait(timeout=5)
+        except (subprocess.TimeoutExpired, ProcessLookupError):
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        raise
+
+    completed = subprocess.CompletedProcess(
+        args=cmd, returncode=proc.returncode, stdout=stdout
     )
 
     log_path.write_text(completed.stdout)
