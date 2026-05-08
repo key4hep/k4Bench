@@ -191,7 +191,14 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="If set, also save results as a pickle file inside --output-dir.",
     )
-
+    
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        default=False,
+        help="Stream ddsim output to stdout during each run.",
+    )
+    
     return parser
 
 
@@ -216,6 +223,7 @@ def _build_config(args: argparse.Namespace) -> BenchmarkConfig:
             log_dir=args.output_dir,
             mode=SweepMode.COMPARE,
             extra_args=extra_args,
+            verbose=args.verbose
         )
 
     # --- removal sweep modes ---
@@ -237,4 +245,5 @@ def _build_config(args: argparse.Namespace) -> BenchmarkConfig:
         mode=mode,
         detector_names=detector_names,
         extra_args=extra_args,
+        verbose=args.verbose
     )

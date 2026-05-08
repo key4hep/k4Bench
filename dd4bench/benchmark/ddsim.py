@@ -85,6 +85,8 @@ class BenchmarkConfig:
     extra_args:
         Additional ddsim arguments passed verbatim to every run
         (e.g. ``["--runType=batch", "--enableGun", "--gun.particle", "e-"]``).
+    verbose:
+        If True, print ddsim stdout in real time instead of buffering until run-end.
     """
 
     xml_path: Path
@@ -96,6 +98,7 @@ class BenchmarkConfig:
     xml_path_b: Path | None = None
     setup_script: Path | None = None
     extra_args: list[str] = field(default_factory=list)
+    verbose: bool = False
 
     def __post_init__(self) -> None:
         if self.mode == SweepMode.COMPARE and self.xml_path_b is None:
@@ -244,6 +247,7 @@ def _timed_run(*, xml_path: Path, label: str, config: BenchmarkConfig) -> RunRes
         log_dir=config.log_dir,
         setup_script=config.setup_script,
         extra_args=config.extra_args,
+        verbose=config.verbose,
     )
     _print_run_result(result)
     return result
