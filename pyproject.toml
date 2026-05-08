@@ -15,27 +15,30 @@ dependencies = [
 [project.urls]
 Repository = "https://github.com/jbeirer/DD4bench"
 
-[project.scripts]
-dd4bench = "dd4bench.cli:main"
-
 [build-system]
 requires = ["setuptools>=64", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
+[project.scripts]
+dd4bench = "dd4bench.cli:main"
+
 [tool.setuptools.packages.find]
+where = ["."]
 include = ["dd4bench*"]
 
 [tool.setuptools_scm]
 # version is derived automatically from git tags
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# key4hep's CVMFS pytest bundles GaudiTesting, which emits DartMeasurement
+# XML blobs to stdout for every test. Irrelevant here — block all three.
+addopts = "-v --tb=short -p no:collect_for_ctest -p no:ctest_measurements_reporter -p no:gaudi_fixtures"
+
 markers = [
     "integration: requires full Key4hep environment with ddsim",
 ]
-# key4hep's CVMFS pytest bundles GaudiTesting, which emits DartMeasurement
-# XML blobs to stdout for every test. Irrelevant here — block all three.
-testpaths = ["tests"]
-addopts = "-v --tb=short -p no:collect_for_ctest -p no:ctest_measurements_reporter -p no:gaudi_fixtures"
 
 [tool.ruff]
 line-length = 100
