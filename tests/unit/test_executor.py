@@ -2,14 +2,16 @@
 
 _build_command is a pure function (no subprocess, no filesystem), so we
 test it directly.  run_ddsim itself requires a live ddsim binary and
-belongs in the integration suite.
+belongs in the integration suite, except for the subprocess-mocked
+regression tests in TestVerboseReturncode.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
-from dd4bench.runner.executor import _build_command
+from dd4bench.runner.executor import _build_command, run_ddsim
 
 XML = Path("/geo/ALLEGRO_o1_v03.xml")
 OUTPUT = Path("/tmp/out.edm4hep.root")
@@ -106,3 +108,41 @@ class TestBuildCommandExtraArgs:
             cmd.index("--outputFile"),
         )
         assert cmd.index("--enableGun") > managed_end
+
+
+class TestVerboseReturncode:
+    """Regression: returncode must not be None after either streaming path."""
+
+    def _make_proc(self):
+        """Simulate a Popen where returncode is None until wait() is called."""
+        mock_proc = MagicMock()
+        mock_proc.returncode = None  # real Popen starts here
+        mock_proc.stdout = iter([])  # no output lines
+
+        def set_returncode():
+            mock_proc.returncode = 0
+
+        mock_proc.wait.side_effect = set_returncode
+        return mock_proc
+
+    def _run(self, tmp_path: Path, verbose: bool):
+        mock_proc = self._make_proc()
+        with patch("dd4bench.runner.executor.subprocess.Popen", return_value=mock_proc):
+            return run_ddsim(
+                xml_path=XML,
+                label="test",
+                n_events=2,
+                output_file=tmp_path / "out.root",
+                log_dir=tmp_path / "logs",
+                verbose=verbose,
+            )
+
+    def test_verbose_returncode_is_not_none(self, tmp_path):
+        """Verbose path must call proc.wait() so returncode is populated."""
+        result = self._run(tmp_path, verbose=True)
+        assert result.returncode is not None
+
+    def test_nonverbose_returncode_is_not_none(self, tmp_path):
+        """Non-verbose path (communicate) must also populate returncode."""
+        result = self._run(tmp_path, verbose=False)
+        assert result.returncode is not None

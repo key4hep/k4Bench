@@ -113,6 +113,7 @@ def run_ddsim(
             if verbose:
                 print(line, end="", flush=True)
             lines.append(line)
+        proc.wait()
         stdout = "".join(lines)
         
     except KeyboardInterrupt:
