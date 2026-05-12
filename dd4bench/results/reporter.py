@@ -25,7 +25,9 @@ def print_summary(results: list[RunResult]) -> None:
     results:
         Results in the order they should appear in the table.
     """
-    header = _COL.format("Label", "Wall(s)", "RSS(MB)", "CPU usr(s)", "Out(MB)", "ev/s", "RC")
+    header = _COL.format(
+        "Label", "Wall(s)", "RSS(MB)", "CPU usr(s)", "Out(MB)", "ev/s", "RC"
+    )
     sep = "-" * len(header)
 
     print(f"\n{'=' * len(header)}")
@@ -40,7 +42,8 @@ def print_summary(results: list[RunResult]) -> None:
         cpu = f"{r.user_cpu_s:.1f}" if r.user_cpu_s is not None else "N/A"
         out = f"{r.output_size_mb:.2f}" if r.output_size_mb is not None else "N/A"
         eps = f"{r.events_per_sec:.3f}" if r.events_per_sec is not None else "N/A"
-        print(_COL.format(r.label, wall, rss, cpu, out, eps, r.returncode))
+        rc = r.returncode if r.returncode is not None else "N/A"
+        print(_COL.format(r.label, wall, rss, cpu, out, eps, rc))
 
     print(sep)
 
@@ -59,6 +62,7 @@ def save_csv(results: list[RunResult], path: Path) -> None:
         raise ValueError("Cannot write CSV: results list is empty.")
 
     path.parent.mkdir(parents=True, exist_ok=True)
+
     rows = [dataclasses.asdict(r) for r in results]
 
     with open(path, "w", newline="") as f:

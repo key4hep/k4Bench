@@ -24,7 +24,7 @@ class TestBuildCommandManagedArgs:
     def _cmd(self, **kwargs) -> str:
         defaults = dict(
             xml_path=XML, n_events=5, output_file=OUTPUT,
-            setup_script=None, extra_args=[],
+            setup_script=None, extra_args=[], plugin_available=False,
         )
         return _build_command(**{**defaults, **kwargs})
 
@@ -50,14 +50,14 @@ class TestBuildCommandSetupScript:
     def test_no_setup_script_omits_source_line(self):
         cmd = _build_command(
             xml_path=XML, n_events=2, output_file=OUTPUT,
-            setup_script=None, extra_args=[],
+            setup_script=None, extra_args=[], plugin_available=False,
         )
         assert "source" not in cmd
 
     def test_setup_script_sourced_before_ddsim(self):
         cmd = _build_command(
             xml_path=XML, n_events=2, output_file=OUTPUT,
-            setup_script=SETUP, extra_args=[],
+            setup_script=SETUP, extra_args=[], plugin_available=False,
         )
         assert f"source {SETUP}" in cmd
         # source line must precede the ddsim invocation
@@ -70,7 +70,7 @@ class TestBuildCommandExtraArgs:
     def _cmd(self, extra_args: list[str]) -> str:
         return _build_command(
             xml_path=XML, n_events=2, output_file=OUTPUT,
-            setup_script=None, extra_args=extra_args,
+            setup_script=None, extra_args=extra_args, plugin_available=False,
         )
 
     def test_single_flag_present(self):
@@ -96,7 +96,7 @@ class TestBuildCommandExtraArgs:
         cmd_empty = self._cmd([])
         cmd_none = _build_command(
             xml_path=XML, n_events=2, output_file=OUTPUT,
-            setup_script=None, extra_args=[],
+            setup_script=None, extra_args=[], plugin_available=False,
         )
         assert cmd_empty == cmd_none
 
@@ -108,6 +108,33 @@ class TestBuildCommandExtraArgs:
             cmd.index("--outputFile"),
         )
         assert cmd.index("--enableGun") > managed_end
+
+
+class TestBuildCommandPluginAvailability:
+    """plugin_available controls whether the timing action is injected."""
+
+    def _cmd(self, *, plugin_available: bool, extra_args: list[str] | None = None) -> str:
+        return _build_command(
+            xml_path=XML, n_events=2, output_file=OUTPUT,
+            setup_script=None, extra_args=extra_args or [],
+            plugin_available=plugin_available,
+        )
+
+    def test_timing_action_injected_when_plugin_available(self):
+        cmd = self._cmd(plugin_available=True)
+        assert "DD4benchTimingAction" in cmd
+        assert "--action.event" in cmd
+
+    def test_timing_action_absent_when_plugin_unavailable(self):
+        cmd = self._cmd(plugin_available=False)
+        assert "DD4benchTimingAction" not in cmd
+
+    def test_timing_action_not_duplicated_when_already_in_extra_args(self):
+        cmd = self._cmd(
+            plugin_available=True,
+            extra_args=["--action.event", "DD4benchTimingAction"],
+        )
+        assert cmd.count("DD4benchTimingAction") == 1
 
 
 class TestVerboseReturncode:
