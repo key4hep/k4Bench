@@ -3,15 +3,31 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+_PACKAGE_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _find_plugin_root() -> Path:
+    """Locate the DD4bench plugin source directory."""
+
+    candidates = [
+        Path.cwd() / "plugin",
+        _PACKAGE_ROOT.parent / "plugin",
+    ]
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    raise FileNotFoundError("Could not locate DD4bench plugin directory.")
+
 
 def find_plugin_lib_dir() -> Path:
     """Return directory containing the DD4bench timing plugin."""
 
-    plugin_root = Path.cwd() / "plugin"
+    plugin_root = _find_plugin_root()
 
     library_patterns = [
-        "libDD4benchTimingAction.so",
-        "libDD4benchTimingAction.dylib",
+        "libDD4benchTimingAction.so*",
     ]
 
     for libdir in ("lib", "lib64"):
@@ -36,13 +52,13 @@ def find_plugin_lib_dir() -> Path:
 def ensure_plugin_built() -> None:
     """Build the DD4bench timing plugin if needed."""
 
-    plugin_root = Path.cwd() / "plugin"
-
     try:
         find_plugin_lib_dir()
         return
     except FileNotFoundError:
         pass
+
+    plugin_root = _find_plugin_root()
 
     build_script = plugin_root / "build.sh"
 

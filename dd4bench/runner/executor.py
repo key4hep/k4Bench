@@ -32,6 +32,7 @@ import shlex
 import signal
 import subprocess
 from pathlib import Path
+from collections import deque
 
 from dd4bench.plugin.runtime import setup_plugin_environment
 from dd4bench.results.model import RunResult
@@ -129,6 +130,8 @@ def run_ddsim(
             start_new_session=True,
         )
 
+        time_output_lines = deque(maxlen=200)
+
         with log_path.open("w") as log_file:
 
             if proc.stdout is None:
@@ -136,12 +139,17 @@ def run_ddsim(
 
             for line in proc.stdout:
 
+                # Stream to terminal if requested
                 if verbose:
                     print(line, end="", flush=True)
 
+                # Stream immediately to logfile
                 log_file.write(line)
 
-            proc.wait()
+                # Keep only a rolling tail in memory
+                time_output_lines.append(line)
+
+            proc.wait()  # ensure returncode is populated
 
     except KeyboardInterrupt:
         print("\nStopping ddsim...", flush=True)
@@ -160,7 +168,7 @@ def run_ddsim(
 
         raise
 
-    metrics = parse_time_output(log_path.read_text())
+    metrics = parse_time_output("".join(time_output_lines))
 
     output_size_mb: float | None = None
 
