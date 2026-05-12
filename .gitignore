@@ -22,3 +22,4 @@ py-venv/
 *.so
 logs/
 run.sh
+plugin/install
