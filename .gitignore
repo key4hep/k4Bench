@@ -19,3 +19,6 @@ playground/
 tests/output
 py-venv/
 .env
+*.so
+logs/
+run.sh

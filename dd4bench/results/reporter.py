@@ -40,7 +40,8 @@ def print_summary(results: list[RunResult]) -> None:
         cpu = f"{r.user_cpu_s:.1f}" if r.user_cpu_s is not None else "N/A"
         out = f"{r.output_size_mb:.2f}" if r.output_size_mb is not None else "N/A"
         eps = f"{r.events_per_sec:.3f}" if r.events_per_sec is not None else "N/A"
-        print(_COL.format(r.label, wall, rss, cpu, out, eps, r.returncode))
+        rc = r.returncode if r.returncode is not None else 'N/A'
+        print(_COL.format(r.label, wall, rss, cpu, out, eps, rc))
 
     print(sep)
 

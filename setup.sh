@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# Export repo root so dd4bench can locate the C++ plugin
+export DD4BENCH_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export LD_LIBRARY_PATH="${DD4BENCH_REPO}/plugin/install/lib:${DD4BENCH_REPO}/plugin/build:${LD_LIBRARY_PATH}"
+
 # Use environment variable if set, otherwise use default version
 KEY4HEP_VERSION=${KEY4HEP_VERSION:-"2026-04-08"}
 
@@ -37,6 +41,9 @@ fi
 
 # Check if all required Python dependencies are installed
 pip install --quiet --no-dependencies -r requirements.txt
+
+# Build the DD4bench timing plugin (idempotent)
+bash "${DD4BENCH_REPO}/plugin/build.sh"
 
 # Check if pre-commit is already installed
 if ! pre-commit --version &>/dev/null; then
