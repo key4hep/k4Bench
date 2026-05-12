@@ -20,13 +20,13 @@ Per-event timing
 ----------------
 When available, the DD4bench C++ timing plugin is loaded
 automatically as a DDG4 event action. The plugin writes
-per-event timing and memory metrics to JSON which are
-attached to the RunResult.
+per-event timing metrics to JSON files inside the log directory.
+These profiling artifacts are intentionally kept separate from
+:class:`RunResult`, which only stores run-level benchmark metrics.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import shlex
 import signal
@@ -56,49 +56,48 @@ def run_ddsim(
     """Run ddsim for one geometry configuration and return collected metrics.
 
     The executor injects ``--compactFile``, ``--numberOfEvents``, and
-    ``--outputFile`` automatically.  All other ddsim options should be
+    ``--outputFile`` automatically. All other ddsim options should be
     supplied via *extra_args*.
-
-    Per-event timing is collected transparently via the DD4bench C++ plugin
-    when available.  The user does not need to configure anything.
 
     Parameters
     ----------
     xml_path:
         Compact XML file passed to ``--compactFile``.
+
     label:
-        Human-readable name for this run.  Used as the log filename stem
+        Human-readable name for this run. Used as the log filename stem
         and stored in :attr:`RunResult.label`.
+
     n_events:
         Number of events; passed to ``--numberOfEvents`` and used to
         compute :attr:`RunResult.events_per_sec`.
+
     output_file:
-        EDM4hep ROOT output path passed to ``--outputFile``.  Its size
-        is recorded in :attr:`RunResult.output_size_mb` after the run.
+        EDM4hep ROOT output path passed to ``--outputFile``.
+        Its size is recorded after the run.
+
     log_dir:
-        Directory where ``<label>.log`` is written (created if absent).
+        Directory where ``<label>.log`` is written.
+
     setup_script:
-        Optional shell script sourced before ddsim (e.g. a k4geo /
-        DD4hep environment setup).  Skipped when *None*.
+        Optional shell script sourced before ddsim.
+
     extra_args:
-        Any additional ddsim arguments, e.g.::
+        Additional ddsim arguments passed through verbatim.
 
-            ["--enableGun", "--gun.particle", "e-", "--gun.distribution", "uniform"]
-
-        Arguments are shell-quoted before insertion so values with
-        spaces are handled correctly.
     verbose:
-        Stream ddsim output to stdout in real time.
+        Stream ddsim output live to stdout.
 
     Returns
     -------
     RunResult
-        Fully populated with timing, memory, and output metrics.
+        Process-level timing, memory, and throughput metrics.
     """
     log_dir.mkdir(parents=True, exist_ok=True)
+
     log_path = log_dir / f"{label}.log"
 
-    # Per-event timing: prepare a temp JSON path and steering file
+    # Optional plugin output artifact
     event_json_path = log_dir / f"{label}_events.json"
     event_json_path.unlink(missing_ok=True)
 
@@ -114,7 +113,7 @@ def run_ddsim(
         n_events=n_events,
         output_file=output_file,
         setup_script=setup_script,
-        extra_args=extra_args or [],
+        extra_args=extra_args,
         plugin_available=plugin_available,
     )
 
@@ -137,42 +136,44 @@ def run_ddsim(
 
             for line in proc.stdout:
 
-                # Stream to terminal if requested
                 if verbose:
                     print(line, end="", flush=True)
 
-                # Stream immediately to logfile
                 log_file.write(line)
 
-            proc.wait()  # ensure returncode is populated
+            proc.wait()
 
     except KeyboardInterrupt:
         print("\nStopping ddsim...", flush=True)
 
-        # Kill the entire process group (bash shell + ddsim child)
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
             proc.wait(timeout=5)
+
         except (subprocess.TimeoutExpired, ProcessLookupError):
+
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+
             except ProcessLookupError:
                 pass
+
         raise
 
     metrics = parse_time_output(log_path.read_text())
 
     output_size_mb: float | None = None
+
     if output_file.exists():
         output_size_mb = output_file.stat().st_size / 1024**2
 
     events_per_sec: float | None = None
-    if metrics["wall_time_s"] is not None and metrics["wall_time_s"] > 0:
-        events_per_sec = round(n_events / metrics["wall_time_s"], 4)
 
-    event_numbers, event_times, event_rss_peaks, event_rss_deltas = _read_event_data(
-        event_json_path
-    )
+    if metrics["wall_time_s"] is not None and metrics["wall_time_s"] > 0:
+        events_per_sec = round(
+            n_events / metrics["wall_time_s"],
+            4,
+        )
 
     if metrics["wall_time_raw"] is None or metrics["peak_rss_mb"] is None:
         _warn_unparsed(label, log_path)
@@ -185,10 +186,6 @@ def run_ddsim(
         wall_time_s=metrics["wall_time_s"],
         user_cpu_s=metrics["user_cpu_s"],
         sys_cpu_s=metrics["sys_cpu_s"],
-        event_numbers=event_numbers,
-        event_times_s=event_times,
-        event_rss_peak_mb=event_rss_peaks,
-        event_rss_delta_mb=event_rss_deltas,
         peak_rss_mb=metrics["peak_rss_mb"],
         major_page_faults=metrics["major_page_faults"],
         voluntary_ctx_switches=metrics["voluntary_ctx_switches"],
@@ -202,26 +199,6 @@ def run_ddsim(
 # Private helpers
 # ---------------------------------------------------------------------------
 
-def _read_event_data(
-    json_path: Path,
-) -> tuple[list[int], list[float], list[float], list[float]]:
-    """Read per-event metrics from the plugin JSON output.
-
-    Returns
-    -------
-    tuple[list[int], list[float], list[float], list[float]]
-        (event_numbers, event_times_s, event_rss_peak_mb, event_rss_delta_mb)
-    """
-    try:
-        data = json.loads(json_path.read_text())
-        numbers = [int(n) for n in data.get("event_numbers", [])]
-        times = [float(t) for t in data.get("event_times_s", [])]
-        peaks = [float(r) for r in data.get("event_rss_peak_mb", [])]
-        deltas = [float(r) for r in data.get("event_rss_delta_mb", [])]
-        return numbers, times, peaks, deltas
-    except Exception:
-        return [], [], [], []
-
 
 def _build_command(
     *,
@@ -232,7 +209,7 @@ def _build_command(
     extra_args: list[str] | None,
     plugin_available: bool,
 ) -> str:
-    """Return the bash command that (optionally) sources the env and runs ddsim."""
+    """Return the shell command used to execute ddsim."""
 
     extra_args = extra_args or []
 
@@ -240,14 +217,12 @@ def _build_command(
         f"source {shlex.quote(str(setup_script))}\n" if setup_script is not None else ""
     )
 
-    # Arguments the executor always controls
     managed = [
         f"--compactFile={shlex.quote(str(xml_path))}",
         f"--numberOfEvents={n_events}",
         f"--outputFile={shlex.quote(str(output_file))}",
     ]
 
-    # Check if user already included the timing plugin in extra_args to avoid double-injection
     has_timing_action = any("DD4benchTimingAction" in arg for arg in extra_args)
 
     if plugin_available and not has_timing_action:
@@ -258,16 +233,18 @@ def _build_command(
             ]
         )
 
-    # Shell-quote caller-supplied tokens
     caller = [shlex.quote(a) for a in extra_args]
 
     all_args = " \\\n    ".join(managed + caller)
 
-    return f"{source_line}/usr/bin/time -v ddsim \\\n    {all_args}"
+    return f"{source_line}" f"/usr/bin/time -v ddsim \\\n" f"    {all_args}"
 
 
 def _warn_unparsed(label: str, log_path: Path) -> None:
+    """Warn that /usr/bin/time output parsing failed."""
+
     print(
-        f"  WARNING [{label}]: /usr/bin/time output could not be fully parsed.\n"
+        f"  WARNING [{label}]: "
+        f"/usr/bin/time output could not be fully parsed.\n"
         f"           Check {log_path} for the raw output."
     )
