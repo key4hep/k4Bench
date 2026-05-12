@@ -33,6 +33,7 @@ import signal
 import subprocess
 from pathlib import Path
 
+from dd4bench.plugin.runtime import setup_plugin_environment
 from dd4bench.results.model import RunResult
 from dd4bench.runner.parser import parse_time_output
 
@@ -100,10 +101,10 @@ def run_ddsim(
     # Per-event timing: prepare a temp JSON path and steering file
     event_json_path = log_dir / f"{label}_events.json"
     event_json_path.unlink(missing_ok=True)
-    
+
     env = os.environ.copy()
 
-    plugin_available = _setup_plugin_environment(
+    plugin_available = setup_plugin_environment(
         env=env,
         event_json_path=event_json_path,
     )
@@ -116,8 +117,7 @@ def run_ddsim(
         extra_args=extra_args or [],
         plugin_available=plugin_available,
     )
-    
-    stdout = ""
+
     try:
         proc = subprocess.Popen(
             cmd,
@@ -129,8 +129,6 @@ def run_ddsim(
             env=env,
             start_new_session=True,
         )
-
-        stdout_lines = []
 
         with log_path.open("w") as log_file:
 
@@ -145,18 +143,12 @@ def run_ddsim(
 
                 # Stream immediately to logfile
                 log_file.write(line)
-                log_file.flush()
-
-                # Keep in memory for later parsing
-                stdout_lines.append(line)
 
             proc.wait()  # ensure returncode is populated
 
-        stdout = "".join(stdout_lines)
-
     except KeyboardInterrupt:
         print("\nStopping ddsim...", flush=True)
-        
+
         # Kill the entire process group (bash shell + ddsim child)
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
@@ -168,7 +160,7 @@ def run_ddsim(
                 pass
         raise
 
-    metrics = parse_time_output(stdout)
+    metrics = parse_time_output(log_path.read_text())
 
     output_size_mb: float | None = None
     if output_file.exists():
@@ -210,47 +202,6 @@ def run_ddsim(
 # Private helpers
 # ---------------------------------------------------------------------------
 
-
-def _setup_plugin_environment(
-    *,
-    env: dict[str, str],
-    event_json_path: Path,
-) -> bool:
-    """Prepare environment variables for the DD4bench timing plugin.
-
-    Returns
-    -------
-    bool
-        True if the plugin is available and enabled.
-        False if ddsim should run without per-event timing.
-    """
-    try:
-        from dd4bench.environment.setup import (
-            ensure_plugin_built,
-            plugin_lib_dir,
-        )
-
-        ensure_plugin_built()
-
-        lib_dir = str(plugin_lib_dir())
-
-        existing = env.get("LD_LIBRARY_PATH", "")
-
-        env["LD_LIBRARY_PATH"] = f"{lib_dir}:{existing}" if existing else lib_dir
-
-        env["DD4BENCH_EVENT_JSON"] = str(event_json_path.resolve())
-
-        return True
-
-    except Exception as exc:
-        print(
-            f"NOTE: DD4bench timing plugin unavailable "
-            f"({exc}); continuing without per-event timing."
-        )
-
-        return False
-
-
 def _read_event_data(
     json_path: Path,
 ) -> tuple[list[int], list[float], list[float], list[float]]:
@@ -278,18 +229,22 @@ def _build_command(
     n_events: int,
     output_file: Path,
     setup_script: Path | None,
-    extra_args: list[str],
+    extra_args: list[str] | None,
     plugin_available: bool,
-    # timing_steering: Path | None,
 ) -> str:
     """Return the bash command that (optionally) sources the env and runs ddsim."""
-    source_line = f"source {setup_script}\n" if setup_script is not None else ""
+
+    extra_args = extra_args or []
+
+    source_line = (
+        f"source {shlex.quote(str(setup_script))}\n" if setup_script is not None else ""
+    )
 
     # Arguments the executor always controls
     managed = [
-        f"--compactFile={xml_path}",
+        f"--compactFile={shlex.quote(str(xml_path))}",
         f"--numberOfEvents={n_events}",
-        f"--outputFile={output_file}",
+        f"--outputFile={shlex.quote(str(output_file))}",
     ]
 
     # Check if user already included the timing plugin in extra_args to avoid double-injection
