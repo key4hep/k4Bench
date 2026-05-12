@@ -63,12 +63,6 @@ def save_csv(results: list[RunResult], path: Path) -> None:
 
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    # We exclude per-event data from CSV; saved separately in JSON by the plugin.
-    rows = [
-        {k: v for k, v in dataclasses.asdict(r).items() if not k.startswith("event_")}
-        for r in results
-    ]
-
     rows = [dataclasses.asdict(r) for r in results]
 
     with open(path, "w", newline="") as f:

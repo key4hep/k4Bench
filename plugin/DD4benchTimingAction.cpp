@@ -30,7 +30,6 @@
 #include <sstream>
 #include <string>
 #include <vector>
-#include <algorithm>
 #include <iomanip>
 
 namespace dd4hep
@@ -87,8 +86,8 @@ namespace dd4hep
 
       std::vector<int> m_eventNumbers;
       std::vector<double> m_eventTimes;
-      std::vector<long> m_rssDeltas;
-      std::vector<long> m_rssPeaks;
+      std::vector<long> m_rssBeginValues;
+      std::vector<long> m_rssEndValues;
 
     public:
       DD4benchTimingAction(
@@ -96,18 +95,16 @@ namespace dd4hep
           const std::string &name)
           : Geant4EventAction(ctx, name)
       {
-
         const char *env = std::getenv("DD4BENCH_EVENT_JSON");
 
         m_outputFile = env ? env : "dd4bench_events.json";
 
-        // Reduce vector reallocations during benchmarking
         constexpr std::size_t reserveSize = 10000;
 
         m_eventNumbers.reserve(reserveSize);
         m_eventTimes.reserve(reserveSize);
-        m_rssDeltas.reserve(reserveSize);
-        m_rssPeaks.reserve(reserveSize);
+        m_rssBeginValues.reserve(reserveSize);
+        m_rssEndValues.reserve(reserveSize);
 
         printout(
             INFO,
@@ -124,9 +121,7 @@ namespace dd4hep
       void begin(const G4Event *event) override
       {
         m_rssBegin = read_rss_kb();
-
         m_eventStart = Clock::now();
-
         m_eventNumbers.push_back(event->GetEventID());
       }
 
@@ -137,20 +132,37 @@ namespace dd4hep
         m_eventTimes.push_back(
             std::chrono::duration<double>(elapsed).count());
 
-        long rssEnd = read_rss_kb();
-
-        m_rssPeaks.push_back(
-            (m_rssBegin >= 0 && rssEnd >= 0)
-                ? std::max(m_rssBegin, rssEnd)
-                : 0);
-
-        m_rssDeltas.push_back(
-            (m_rssBegin >= 0 && rssEnd >= 0)
-                ? (rssEnd - m_rssBegin)
-                : 0);
+        m_rssBeginValues.push_back(m_rssBegin);
+        m_rssEndValues.push_back(read_rss_kb());
       }
 
     private:
+      template <typename T>
+      void writeArray(
+          std::ofstream &out,
+          const std::string &key,
+          const std::vector<T> &values,
+          int precision,
+          double scale = 1.0,
+          bool last = false)
+      {
+        out << "  \"" << key << "\": [";
+
+        for (std::size_t i = 0; i < values.size(); ++i)
+        {
+          if (i > 0)
+          {
+            out << ", ";
+          }
+
+          out << std::fixed
+              << std::setprecision(precision)
+              << (static_cast<double>(values[i]) * scale);
+        }
+
+        out << (last ? "]\n" : "],\n");
+      }
+
       void writeResults()
       {
         if (m_eventTimes.empty())
@@ -174,83 +186,10 @@ namespace dd4hep
 
         out << "{\n";
 
-        // ---------------------------------------------------------------------
-        // Event numbers
-        // ---------------------------------------------------------------------
-
-        out << "  \"event_numbers\": [";
-
-        for (std::size_t i = 0; i < m_eventNumbers.size(); ++i)
-        {
-          if (i > 0)
-          {
-            out << ", ";
-          }
-
-          out << m_eventNumbers[i];
-        }
-
-        out << "],\n";
-
-        // ---------------------------------------------------------------------
-        // Event wall times
-        // ---------------------------------------------------------------------
-
-        out << "  \"event_times_s\": [";
-
-        for (std::size_t i = 0; i < m_eventTimes.size(); ++i)
-        {
-          if (i > 0)
-          {
-            out << ", ";
-          }
-
-          out << std::fixed
-              << std::setprecision(6)
-              << m_eventTimes[i];
-        }
-
-        out << "],\n";
-
-        // ---------------------------------------------------------------------
-        // RSS peaks
-        // ---------------------------------------------------------------------
-
-        out << "  \"event_rss_peak_mb\": [";
-
-        for (std::size_t i = 0; i < m_rssPeaks.size(); ++i)
-        {
-          if (i > 0)
-          {
-            out << ", ";
-          }
-
-          out << std::fixed
-              << std::setprecision(3)
-              << (static_cast<double>(m_rssPeaks[i]) / 1024.0);
-        }
-
-        out << "],\n";
-
-        // ---------------------------------------------------------------------
-        // RSS deltas
-        // ---------------------------------------------------------------------
-
-        out << "  \"event_rss_delta_mb\": [";
-
-        for (std::size_t i = 0; i < m_rssDeltas.size(); ++i)
-        {
-          if (i > 0)
-          {
-            out << ", ";
-          }
-
-          out << std::fixed
-              << std::setprecision(3)
-              << (static_cast<double>(m_rssDeltas[i]) / 1024.0);
-        }
-
-        out << "]\n";
+        writeArray(out, "event_numbers", m_eventNumbers, 0);
+        writeArray(out, "event_times_s", m_eventTimes, 6);
+        writeArray(out, "event_rss_begin_mb", m_rssBeginValues, 3, 1.0 / 1024.0);
+        writeArray(out, "event_rss_end_mb", m_rssEndValues, 3, 1.0 / 1024.0, /*last=*/true);
 
         out << "}\n";
 
