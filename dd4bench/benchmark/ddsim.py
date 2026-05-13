@@ -212,15 +212,9 @@ def _run_include_only_sweep(config: BenchmarkConfig) -> list[RunResult]:
     label = "only_" + "_".join(sorted(keep))
     print(f"Keeping {len(keep)} detector(s): {sorted(keep)}\n")
 
-    results: list[RunResult] = []
-    try:
-        with patched_geometry_keep_only(config.xml_path, keep) as tmp_xml:
-            _print_run_header(1, 1, label, tmp_xml)
-            results.append(_timed_run(xml_path=tmp_xml, label=label, config=config))
-    except Exception:
-        print(f"  ERROR in {label}:\n{traceback.format_exc()}")
-
-    return results
+    with patched_geometry_keep_only(config.xml_path, keep) as tmp_xml:
+        _print_run_header(1, 1, label, tmp_xml)
+        return [_timed_run(xml_path=tmp_xml, label=label, config=config)]
 
 
 def _run_exclude_only_sweep(config: BenchmarkConfig) -> list[RunResult]:
@@ -242,15 +236,9 @@ def _run_exclude_only_sweep(config: BenchmarkConfig) -> list[RunResult]:
     label = "without_" + "_".join(sorted(exclude))
     print(f"Excluding {len(exclude)} detector(s): {sorted(exclude)}\n")
 
-    results: list[RunResult] = []
-    try:
-        with patched_geometry_keep_only(config.xml_path, keep) as tmp_xml:
-            _print_run_header(1, 1, label, tmp_xml)
-            results.append(_timed_run(xml_path=tmp_xml, label=label, config=config))
-    except Exception:
-        print(f"  ERROR in {label}:\n{traceback.format_exc()}")
-
-    return results
+    with patched_geometry_keep_only(config.xml_path, keep) as tmp_xml:
+        _print_run_header(1, 1, label, tmp_xml)
+        return [_timed_run(xml_path=tmp_xml, label=label, config=config)]
 
 
 def _run_compare(config: BenchmarkConfig) -> list[RunResult]:

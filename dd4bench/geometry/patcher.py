@@ -173,53 +173,103 @@ def _build_keep_only_xml(xml_path: Path, keep_names: set[str]) -> tuple[list[Pat
     """
     xml_path = xml_path.resolve()
     geo_dir = xml_path.parent
-    sub_tmp_map: dict[Path, Path] = {}
     all_tmp: list[Path] = []
-    all_removed: set[str] = set()
-
-    for f in resolve_includes(xml_path):
-        try:
-            doc = minidom.parse(str(f))
-        except (ExpatError, OSError):
-            continue
-
-        nodes_to_remove = [
-            node
-            for node in doc.getElementsByTagName("detector")
-            if node.getAttribute("name") and node.getAttribute("name") not in keep_names
-        ]
-        if not nodes_to_remove:
-            continue
-
-        removed_here = {node.getAttribute("name") for node in nodes_to_remove}
-        all_removed |= removed_here
-        for node in nodes_to_remove:
-            node.parentNode.removeChild(node)
-
-        _remove_orphaned_plugins(doc, removed_here)
-        _absolutize_refs(doc, f.parent)
-        tmp = _write_tmp_xml(doc, None, "keep_only_sub_")
-        sub_tmp_map[f] = tmp
-        all_tmp.append(tmp)
 
     try:
-        top_doc = minidom.parse(str(xml_path))
-    except (ExpatError, OSError) as exc:
-        raise OSError(f"Could not parse top-level XML {xml_path}: {exc}") from exc
+        # Pass 1: remove unwanted detectors from every reachable file.
+        # resolve_includes yields xml_path first, so the top-level is processed too.
+        modified: dict[Path, minidom.Document] = {}
+        all_removed: set[str] = set()
 
-    for node in top_doc.getElementsByTagName("include"):
-        ref = node.getAttribute("ref")
-        if not ref or "$" in ref:
-            continue
-        resolved = (geo_dir / os.path.expandvars(ref)).resolve()
-        if resolved in sub_tmp_map:
-            node.setAttribute("ref", str(sub_tmp_map[resolved]))
+        for f in resolve_includes(xml_path):
+            try:
+                doc = minidom.parse(str(f))
+            except (ExpatError, OSError):
+                continue
 
-    _remove_orphaned_plugins(top_doc, all_removed)
-    _absolutize_refs(top_doc, geo_dir)
-    top_tmp = _write_tmp_xml(top_doc, None, "keep_only_top_")
-    all_tmp.append(top_tmp)
-    return all_tmp, top_tmp
+            nodes_to_remove = [
+                node
+                for node in doc.getElementsByTagName("detector")
+                if node.getAttribute("name") and node.getAttribute("name") not in keep_names
+            ]
+            if not nodes_to_remove:
+                continue
+
+            removed_here = {node.getAttribute("name") for node in nodes_to_remove}
+            all_removed |= removed_here
+            for node in nodes_to_remove:
+                node.parentNode.removeChild(node)
+            _remove_orphaned_plugins(doc, removed_here)
+            modified[f] = doc
+
+        # Pass 2: write tmp files for modified sub-files (not the top-level).
+        sub_tmp_map: dict[Path, Path] = {}
+        for f, doc in modified.items():
+            if f == xml_path:
+                continue
+            _absolutize_refs(doc, f.parent)
+            tmp = _write_tmp_xml(doc, None, "keep_only_sub_")
+            sub_tmp_map[f] = tmp
+            all_tmp.append(tmp)
+
+        # Pass 3 (fixpoint): create redirect tmps for unmodified sub-files whose
+        # <include> refs point to a patched file in sub_tmp_map.  This handles
+        # nested include chains (e.g. top → A → B where only B was patched: A
+        # must reference B_tmp so ddsim sees the patched sub-tree).
+        changed = True
+        while changed:
+            changed = False
+            for f in resolve_includes(xml_path):
+                if f in sub_tmp_map or f == xml_path:
+                    continue
+                try:
+                    doc = minidom.parse(str(f))
+                except (ExpatError, OSError):
+                    continue
+                base = f.parent
+                redirected = False
+                for node in doc.getElementsByTagName("include"):
+                    ref = node.getAttribute("ref")
+                    if not ref or "$" in ref:
+                        continue
+                    resolved = (base / os.path.expandvars(ref)).resolve()
+                    if resolved in sub_tmp_map:
+                        node.setAttribute("ref", str(sub_tmp_map[resolved]))
+                        redirected = True
+                if redirected:
+                    _absolutize_refs(doc, base)
+                    tmp = _write_tmp_xml(doc, None, "keep_only_sub_")
+                    sub_tmp_map[f] = tmp
+                    all_tmp.append(tmp)
+                    changed = True
+
+        # Build the top-level tmp.  If the top-level file itself had detectors
+        # removed, use the already-patched doc; otherwise parse fresh from disk.
+        top_doc = modified.get(xml_path)
+        if top_doc is None:
+            try:
+                top_doc = minidom.parse(str(xml_path))
+            except (ExpatError, OSError) as exc:
+                raise OSError(f"Could not parse top-level XML {xml_path}: {exc}") from exc
+
+        for node in top_doc.getElementsByTagName("include"):
+            ref = node.getAttribute("ref")
+            if not ref or "$" in ref:
+                continue
+            resolved = (geo_dir / os.path.expandvars(ref)).resolve()
+            if resolved in sub_tmp_map:
+                node.setAttribute("ref", str(sub_tmp_map[resolved]))
+
+        _remove_orphaned_plugins(top_doc, all_removed)
+        _absolutize_refs(top_doc, geo_dir)
+        top_tmp = _write_tmp_xml(top_doc, None, "keep_only_top_")
+        all_tmp.append(top_tmp)
+        return all_tmp, top_tmp
+
+    except:
+        for tmp in all_tmp:
+            tmp.unlink(missing_ok=True)
+        raise
 
 
 def _find_and_remove_detector(
