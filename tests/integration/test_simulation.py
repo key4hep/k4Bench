@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import csv
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -29,8 +30,11 @@ ALLEGRO_XML = (
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(
-        not K4GEO or not (ALLEGRO_XML is not None and ALLEGRO_XML.exists()),
-        reason="$K4GEO not set or ALLEGRO XML not found",
+        not K4GEO
+        or not (ALLEGRO_XML is not None and ALLEGRO_XML.exists())
+        or shutil.which("ddsim") is None
+        or shutil.which("dd4bench") is None,
+        reason="$K4GEO not set, ALLEGRO XML not found, or ddsim/dd4bench not in PATH",
     ),
 ]
 

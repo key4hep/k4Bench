@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import signal
 import subprocess
 from pathlib import Path
@@ -245,7 +246,13 @@ def _build_command(
 
     all_args = " \\\n    ".join(managed + caller)
 
-    return f"{source_line}" f"/usr/bin/time -v ddsim \\\n" f"    {all_args}"
+    gnu_time = shutil.which("time")
+    if gnu_time is None:
+        raise RuntimeError(
+            "GNU time not found in PATH. Install it (e.g. 'dnf install time' or 'apt install time')."
+        )
+
+    return f"{source_line}" f"{gnu_time} -v ddsim \\\n" f"    {all_args}"
 
 
 def _warn_unparsed(label: str, log_path: Path) -> None:

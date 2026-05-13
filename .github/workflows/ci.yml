@@ -46,8 +46,12 @@ jobs:
             source setup.sh
             echo '::endgroup::'
 
+            echo '::group::Install system dependencies'
+            dnf install -y time
+            echo '::endgroup::'
+
             echo '::group::Install dd4bench'
-            pip install --no-build-isolation . 
+            pip install --no-build-isolation .
             echo '::endgroup::'
 
             echo '::group::Run unit tests'
