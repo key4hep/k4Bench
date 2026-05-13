@@ -174,18 +174,16 @@ class TestExcludeMode:
     def test_no_baseline(self, results):
         assert not any(r.label == "baseline_all" for r in results)
 
-    def test_excluded_detectors_not_run(self, results):
-        labels = {r.label for r in results}
-        assert "without_InnerTracker" not in labels
-        assert "without_OuterTracker" not in labels
+    def test_single_run(self, results):
+        assert len(results) == 1
 
-    def test_non_excluded_detectors_run(self, results):
-        labels = {r.label for r in results}
-        assert "without_EcalBarrel" in labels
-        assert "without_HcalBarrel" in labels
+    def test_label_contains_excluded_detectors(self, results):
+        label = results[0].label
+        assert "InnerTracker" in label
+        assert "OuterTracker" in label
 
-    def test_total_count(self, results):
-        assert len(results) == 2  # 2 non-excluded, no baseline
+    def test_no_include_only_labels(self, results):
+        assert not any(r.label.startswith("only_") for r in results)
 
 
 # ---------------------------------------------------------------------------
