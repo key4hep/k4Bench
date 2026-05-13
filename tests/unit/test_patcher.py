@@ -6,6 +6,7 @@ All tests use the minimal_geometry fixture — no ddsim, no DD4hep runtime.
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 from xml.dom import minidom
 
@@ -68,11 +69,11 @@ class TestBuildPatchedXml:
             top.unlink(missing_ok=True)
             sub.unlink(missing_ok=True)
 
-    def test_tmp_files_in_geometry_directory(self):
+    def test_tmp_files_in_system_tmp_directory(self):
         top, sub = build_patched_xml(MINIMAL_XML, "InnerTracker")
         try:
-            assert top.parent == MINIMAL_XML.parent
-            assert sub.parent == MINIMAL_XML.parent
+            assert top.parent == Path(tempfile.gettempdir())
+            assert sub.parent == Path(tempfile.gettempdir())
         finally:
             top.unlink(missing_ok=True)
             sub.unlink(missing_ok=True)
@@ -150,7 +151,7 @@ class TestIncludeRedirect:
                 n.getAttribute("ref")
                 for n in doc.getElementsByTagName("include")
             ]
-            assert sub.name in refs
+            assert str(sub) in refs
         finally:
             top.unlink(missing_ok=True)
             sub.unlink(missing_ok=True)
@@ -183,18 +184,20 @@ class TestPatchedGeometryContextManager:
             assert tmp.exists()
 
     def test_tmp_files_cleaned_up_on_exit(self):
-        before = set(_get_tmp_files(FIXTURES))
+        tmp_dir = Path(tempfile.gettempdir())
+        before = set(_get_tmp_files(tmp_dir))
         with patched_geometry(MINIMAL_XML, "EcalBarrel"):
             pass
-        after = set(_get_tmp_files(FIXTURES))
+        after = set(_get_tmp_files(tmp_dir))
         assert after == before
 
     def test_tmp_files_cleaned_up_on_exception(self):
-        before = set(_get_tmp_files(FIXTURES))
+        tmp_dir = Path(tempfile.gettempdir())
+        before = set(_get_tmp_files(tmp_dir))
         with pytest.raises(RuntimeError):
             with patched_geometry(MINIMAL_XML, "EcalBarrel"):
                 raise RuntimeError("simulated failure")
-        after = set(_get_tmp_files(FIXTURES))
+        after = set(_get_tmp_files(tmp_dir))
         assert after == before
 
     def test_patched_geometry_has_correct_detectors(self):

@@ -1,9 +1,10 @@
 """Patch a DD4hep compact geometry to remove a single subdetector.
 
-The patcher writes temporary XML files into the *same directory* as the
-original geometry so that all relative includes (elements.xml,
-materials.xml, etc.) continue to resolve correctly when ddsim loads the
-patched geometry.
+The patcher writes temporary XML files to the system temp directory so
+that the original geometry (which may live on a read-only filesystem
+such as CVMFS) is never modified.  All relative ``<include ref="...">``
+paths in the patched XMLs are rewritten to absolute paths so that
+ddsim can resolve them regardless of where the temp files land.
 
 Temporary files are prefixed with ``_dd4bench_tmp_`` so they are easy
 to identify and clean up.  The recommended usage is via the
@@ -30,6 +31,34 @@ _TMP_PREFIX = "_dd4bench_tmp_"
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def patched_geometry_keep_only(xml_path: Path, keep_names: set[str]):
+    """Context manager yielding a geometry with only *keep_names* detectors active.
+
+    All ``<detector>`` elements whose ``name`` attribute is not in *keep_names*
+    are removed from every file in the include tree.  Temp files are written
+    to the system temp directory and deleted on exit.
+
+    Parameters
+    ----------
+    xml_path:
+        Path to the original top-level compact XML.
+    keep_names:
+        Detector names to keep.  All others are removed.
+
+    Yields
+    ------
+    Path
+        Path to the patched top-level XML file.
+    """
+    tmp_files, top_tmp = _build_keep_only_xml(xml_path, keep_names)
+    try:
+        yield top_tmp
+    finally:
+        for tmp in tmp_files:
+            tmp.unlink(missing_ok=True)
 
 
 @contextlib.contextmanager
@@ -106,7 +135,9 @@ def build_patched_xml(
 
     owner, patched_doc = _find_and_remove_detector(xml_path, detector_name)
 
-    sub_tmp_path = _write_tmp_xml(patched_doc, geo_dir, f"no_{detector_name}_sub_")
+    _remove_orphaned_plugins(patched_doc, {detector_name})
+    _absolutize_refs(patched_doc, owner.parent)
+    sub_tmp_path = _write_tmp_xml(patched_doc, None, f"no_{detector_name}_sub_")
     top_tmp_path = _write_patched_top(xml_path, owner, sub_tmp_path, geo_dir, detector_name)
 
     return top_tmp_path, sub_tmp_path
@@ -124,6 +155,71 @@ class DetectorNotFoundError(ValueError):
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+
+def _build_keep_only_xml(xml_path: Path, keep_names: set[str]) -> tuple[list[Path], Path]:
+    """Write patched XML files keeping only detectors in *keep_names*.
+
+    Scans every file reachable from *xml_path*, removes all ``<detector>``
+    elements not in *keep_names*, writes patched versions of affected files
+    to the system temp directory, and returns a patched top-level XML that
+    references them.
+
+    Returns
+    -------
+    tuple[list[Path], Path]
+        ``(all_tmp_paths, top_tmp_path)``.  Caller is responsible for
+        cleanup; prefer :func:`patched_geometry_keep_only`.
+    """
+    xml_path = xml_path.resolve()
+    geo_dir = xml_path.parent
+    sub_tmp_map: dict[Path, Path] = {}
+    all_tmp: list[Path] = []
+    all_removed: set[str] = set()
+
+    for f in resolve_includes(xml_path):
+        try:
+            doc = minidom.parse(str(f))
+        except (ExpatError, OSError):
+            continue
+
+        nodes_to_remove = [
+            node
+            for node in doc.getElementsByTagName("detector")
+            if node.getAttribute("name") and node.getAttribute("name") not in keep_names
+        ]
+        if not nodes_to_remove:
+            continue
+
+        removed_here = {node.getAttribute("name") for node in nodes_to_remove}
+        all_removed |= removed_here
+        for node in nodes_to_remove:
+            node.parentNode.removeChild(node)
+
+        _remove_orphaned_plugins(doc, removed_here)
+        _absolutize_refs(doc, f.parent)
+        tmp = _write_tmp_xml(doc, None, "keep_only_sub_")
+        sub_tmp_map[f] = tmp
+        all_tmp.append(tmp)
+
+    try:
+        top_doc = minidom.parse(str(xml_path))
+    except (ExpatError, OSError) as exc:
+        raise OSError(f"Could not parse top-level XML {xml_path}: {exc}") from exc
+
+    for node in top_doc.getElementsByTagName("include"):
+        ref = node.getAttribute("ref")
+        if not ref or "$" in ref:
+            continue
+        resolved = (geo_dir / os.path.expandvars(ref)).resolve()
+        if resolved in sub_tmp_map:
+            node.setAttribute("ref", str(sub_tmp_map[resolved]))
+
+    _remove_orphaned_plugins(top_doc, all_removed)
+    _absolutize_refs(top_doc, geo_dir)
+    top_tmp = _write_tmp_xml(top_doc, None, "keep_only_top_")
+    all_tmp.append(top_tmp)
+    return all_tmp, top_tmp
 
 
 def _find_and_remove_detector(
@@ -151,8 +247,41 @@ def _find_and_remove_detector(
     )
 
 
-def _write_tmp_xml(doc: minidom.Document, directory: Path, suffix: str) -> Path:
-    """Serialise *doc* to a named temp file in *directory*."""
+def _remove_orphaned_plugins(doc: minidom.Document, removed_names: set[str]) -> None:
+    """Remove <plugin> elements whose first <argument value="..."> names a removed detector."""
+    for plugin in list(doc.getElementsByTagName("plugin")):
+        args = plugin.getElementsByTagName("argument")
+        if args and args[0].getAttribute("value") in removed_names:
+            plugin.parentNode.removeChild(plugin)
+
+
+def _absolutize_refs(doc: minidom.Document, base_dir: Path) -> None:
+    """Rewrite every relative ref="..." that points to an existing file.
+
+    Walks all XML elements so that <gdmlFile ref="...">, <include ref="...">
+    and any other DD4hep node types are covered.  Refs that contain '$' (env
+    vars) or already point at absolute paths are left untouched.  Refs that
+    do not resolve to an existing file are also left untouched so that
+    non-path ref attributes (e.g. detector component names) are not mangled.
+    """
+    def _walk(node: minidom.Node) -> None:
+        if node.nodeType == node.ELEMENT_NODE:
+            ref = node.getAttribute("ref")
+            if ref and "$" not in ref and not os.path.isabs(ref):
+                abs_path = (base_dir / ref).resolve()
+                if abs_path.exists():
+                    node.setAttribute("ref", str(abs_path))
+        for child in node.childNodes:
+            _walk(child)
+
+    _walk(doc.documentElement)
+
+
+def _write_tmp_xml(doc: minidom.Document, directory: Path | None, suffix: str) -> Path:
+    """Serialise *doc* to a named temp file.
+
+    *directory* defaults to the system temp dir when ``None``.
+    """
     tmp = tempfile.NamedTemporaryFile(
         suffix=".xml",
         delete=False,
@@ -189,7 +318,8 @@ def _write_patched_top(
             continue
         resolved = (geo_dir / os.path.expandvars(ref)).resolve()
         if resolved == owner:
-            # Use just the filename — sub_tmp is in the same directory.
-            node.setAttribute("ref", sub_tmp.name)
+            node.setAttribute("ref", str(sub_tmp))
 
-    return _write_tmp_xml(top_doc, geo_dir, f"no_{detector_name}_top_")
+    _remove_orphaned_plugins(top_doc, {detector_name})
+    _absolutize_refs(top_doc, geo_dir)
+    return _write_tmp_xml(top_doc, None, f"no_{detector_name}_top_")

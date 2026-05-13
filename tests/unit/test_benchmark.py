@@ -128,21 +128,19 @@ class TestIncludeMode:
         with patch("dd4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
             return run_sweep(config)
 
-    def test_baseline_present(self, results):
-        assert any(r.label == "baseline_all" for r in results)
+    def test_no_baseline(self, results):
+        assert not any(r.label == "baseline_all" for r in results)
 
-    def test_only_included_detectors_run(self, results):
-        labels = {r.label for r in results}
-        assert "without_EcalBarrel" in labels
-        assert "without_HcalBarrel" in labels
+    def test_single_run(self, results):
+        assert len(results) == 1
 
-    def test_excluded_detectors_not_run(self, results):
-        labels = {r.label for r in results}
-        assert "without_InnerTracker" not in labels
-        assert "without_OuterTracker" not in labels
+    def test_label_contains_both_detectors(self, results):
+        label = results[0].label
+        assert "EcalBarrel" in label
+        assert "HcalBarrel" in label
 
-    def test_total_count(self, results):
-        assert len(results) == 3  # baseline + 2 included
+    def test_no_removal_labels(self, results):
+        assert not any(r.label.startswith("without_") for r in results)
 
     def test_unknown_detector_in_include_list_is_skipped(self, tmp_path):
         config = _make_config(
@@ -152,9 +150,9 @@ class TestIncludeMode:
         )
         with patch("dd4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
             results = run_sweep(config)
-        labels = {r.label for r in results}
-        assert "without_NonExistent" not in labels
-        assert "without_EcalBarrel" in labels
+        assert len(results) == 1
+        assert "EcalBarrel" in results[0].label
+        assert "NonExistent" not in results[0].label
 
 
 # ---------------------------------------------------------------------------
@@ -173,8 +171,8 @@ class TestExcludeMode:
         with patch("dd4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
             return run_sweep(config)
 
-    def test_baseline_present(self, results):
-        assert any(r.label == "baseline_all" for r in results)
+    def test_no_baseline(self, results):
+        assert not any(r.label == "baseline_all" for r in results)
 
     def test_excluded_detectors_not_run(self, results):
         labels = {r.label for r in results}
@@ -187,7 +185,7 @@ class TestExcludeMode:
         assert "without_HcalBarrel" in labels
 
     def test_total_count(self, results):
-        assert len(results) == 3  # baseline + 2 non-excluded
+        assert len(results) == 2  # 2 non-excluded, no baseline
 
 
 # ---------------------------------------------------------------------------

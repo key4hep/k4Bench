@@ -16,11 +16,11 @@ FULL
     Baseline (full geometry) + one run per subdetector with that
     detector removed.
 INCLUDE_ONLY
-    Simulate with only the named detectors active; one run per named
-    detector, each with all others removed.
+    Single run with only the named detectors active (all others
+    removed).  No baseline.
 EXCLUDE_ONLY
-    Simulate with all detectors except the named ones; one run per
-    non-excluded detector with that detector removed.
+    One run per non-excluded detector with that detector removed.
+    No baseline.
 COMPARE
     Baseline of geometry A vs baseline of geometry B — no patching.
 """
@@ -32,7 +32,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from dd4bench.geometry.patcher import DetectorNotFoundError, patched_geometry
+from dd4bench.geometry.patcher import (
+    DetectorNotFoundError,
+    patched_geometry,
+    patched_geometry_keep_only,
+)
 from dd4bench.geometry.scanner import get_detector_names
 from dd4bench.results.model import RunResult
 from dd4bench.runner.executor import run_ddsim
@@ -48,7 +52,7 @@ class SweepMode(Enum):
 
     BASELINE     = "baseline"     # single baseline run, no detector patching
     FULL         = "full"         # simulate with each detector individually removed
-    INCLUDE_ONLY = "include_only" # simulate only with the named detectors
+    INCLUDE_ONLY = "include_only" # single run with only the named detectors active
     EXCLUDE_ONLY = "exclude_only" # simulate with all detectors except the named ones
     COMPARE      = "compare"      # baseline of geometry A vs baseline of geometry B
 
@@ -138,6 +142,8 @@ def run_sweep(config: BenchmarkConfig) -> list[RunResult]:
         return _run_baseline(config)
     elif config.mode == SweepMode.COMPARE:
         return _run_compare(config)
+    elif config.mode == SweepMode.INCLUDE_ONLY:
+        return _run_include_only_sweep(config)
     else:
         return _run_removal_sweep(config)
 
@@ -155,20 +161,27 @@ def _run_baseline(config: BenchmarkConfig) -> list[RunResult]:
 
 
 def _run_removal_sweep(config: BenchmarkConfig) -> list[RunResult]:
-    """Baseline + removal runs (FULL / INCLUDE_ONLY / EXCLUDE_ONLY)."""
+    """Removal runs (FULL / EXCLUDE_ONLY).
+
+    A baseline run (full geometry, no patching) is included only for FULL
+    mode.  EXCLUDE_ONLY runs removals for all non-excluded detectors.
+    """
 
     detectors_to_remove = _resolve_detectors(config)
-    total = 1 + len(detectors_to_remove)
     results: list[RunResult] = []
 
-    # --- baseline ---
-    _print_run_header(1, total, "baseline_all", config.xml_path)
-    results.append(
-        _timed_run(xml_path=config.xml_path, label="baseline_all", config=config)
-    )
+    if config.mode == SweepMode.FULL:
+        total = 1 + len(detectors_to_remove)
+        _print_run_header(1, total, "baseline_all", config.xml_path)
+        results.append(
+            _timed_run(xml_path=config.xml_path, label="baseline_all", config=config)
+        )
+        removal_start = 2
+    else:
+        total = len(detectors_to_remove)
+        removal_start = 1
 
-    # --- per-detector removal runs ---
-    for i, name in enumerate(detectors_to_remove, start=2):
+    for i, name in enumerate(detectors_to_remove, start=removal_start):
         label = f"without_{name}"
         try:
             with patched_geometry(config.xml_path, name) as tmp_xml:
@@ -180,6 +193,35 @@ def _run_removal_sweep(config: BenchmarkConfig) -> list[RunResult]:
             print(f"  SKIP {label}: {exc}\n")
         except Exception:
             print(f"  ERROR in {label}:\n{traceback.format_exc()}")
+
+    return results
+
+
+def _run_include_only_sweep(config: BenchmarkConfig) -> list[RunResult]:
+    """Single run keeping only the named detectors active.
+
+    All detectors not in ``config.detector_names`` are removed from the
+    geometry.  The result is labelled ``only_<name1>_<name2>_...``.
+    """
+    print("Scanning geometry for subdetectors …")
+    all_names = set(get_detector_names(config.xml_path))
+
+    keep = set(config.detector_names)
+    unknown = keep - all_names
+    if unknown:
+        print(f"WARNING: detectors not found in geometry, will be skipped: {sorted(unknown)}")
+    keep -= unknown
+
+    label = "only_" + "_".join(sorted(keep))
+    print(f"Keeping {len(keep)} detector(s): {sorted(keep)}\n")
+
+    results: list[RunResult] = []
+    try:
+        with patched_geometry_keep_only(config.xml_path, keep) as tmp_xml:
+            _print_run_header(1, 1, label, tmp_xml)
+            results.append(_timed_run(xml_path=tmp_xml, label=label, config=config))
+    except Exception:
+        print(f"  ERROR in {label}:\n{traceback.format_exc()}")
 
     return results
 
@@ -221,16 +263,8 @@ def _resolve_detectors(config: BenchmarkConfig) -> list[str]:
 
     if config.mode == SweepMode.FULL:
         selected = all_names
-
-    elif config.mode == SweepMode.INCLUDE_ONLY:
-        unknown = set(config.detector_names) - set(all_names)
-        if unknown:
-            print(f"WARNING: detectors not found in geometry, will be skipped: {sorted(unknown)}")
-        selected = [d for d in all_names if d in set(config.detector_names)]
-
     elif config.mode == SweepMode.EXCLUDE_ONLY:
         selected = [d for d in all_names if d not in set(config.detector_names)]
-
     else:
         raise ValueError(f"Unexpected mode for removal sweep: {config.mode}")
 
