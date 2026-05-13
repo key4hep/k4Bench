@@ -164,6 +164,7 @@ def _run_baseline(config: BenchmarkConfig) -> list[RunResult]:
 
 def _run_removal_sweep(config: BenchmarkConfig) -> list[RunResult]:
     """Baseline + per-detector removal runs for FULL mode."""
+    assert config.mode == SweepMode.FULL
 
     detectors_to_remove = _resolve_detectors(config)
     results: list[RunResult] = []
@@ -206,15 +207,14 @@ def _run_include_only_sweep(config: BenchmarkConfig) -> list[RunResult]:
     keep -= unknown
 
     if not keep:
-        print("ERROR: no valid detectors to keep — aborting include-only run.\n")
-        return []
+        raise ValueError(
+            f"No valid detectors to keep — all of {sorted(config.detector_names)} "
+            "are unknown in this geometry."
+        )
 
     label = "only_" + "_".join(sorted(keep))
     print(f"Keeping {len(keep)} detector(s): {sorted(keep)}\n")
-
-    with patched_geometry_keep_only(config.xml_path, keep) as tmp_xml:
-        _print_run_header(1, 1, label, tmp_xml)
-        return [_timed_run(xml_path=tmp_xml, label=label, config=config)]
+    return _run_keep_only(config, keep, label)
 
 
 def _run_exclude_only_sweep(config: BenchmarkConfig) -> list[RunResult]:
@@ -229,13 +229,19 @@ def _run_exclude_only_sweep(config: BenchmarkConfig) -> list[RunResult]:
     exclude -= unknown
 
     if not exclude:
-        print("ERROR: no valid detectors to exclude — aborting exclude-only run.\n")
-        return []
+        raise ValueError(
+            f"No valid detectors to exclude — all of {sorted(config.detector_names)} "
+            "are unknown in this geometry."
+        )
 
     keep = all_names - exclude
     label = "without_" + "_".join(sorted(exclude))
     print(f"Excluding {len(exclude)} detector(s): {sorted(exclude)}\n")
+    return _run_keep_only(config, keep, label)
 
+
+def _run_keep_only(config: BenchmarkConfig, keep: set[str], label: str) -> list[RunResult]:
+    """Execute a single patched run with *keep* as the active detector set."""
     with patched_geometry_keep_only(config.xml_path, keep) as tmp_xml:
         _print_run_header(1, 1, label, tmp_xml)
         return [_timed_run(xml_path=tmp_xml, label=label, config=config)]

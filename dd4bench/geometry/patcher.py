@@ -176,12 +176,15 @@ def _build_keep_only_xml(xml_path: Path, keep_names: set[str]) -> tuple[list[Pat
     all_tmp: list[Path] = []
 
     try:
+        # Resolve once; reused by all three passes to avoid re-traversing the tree.
+        all_files = resolve_includes(xml_path)
+
         # Pass 1: remove unwanted detectors from every reachable file.
         # resolve_includes yields xml_path first, so the top-level is processed too.
         modified: dict[Path, minidom.Document] = {}
         all_removed: set[str] = set()
 
-        for f in resolve_includes(xml_path):
+        for f in all_files:
             try:
                 doc = minidom.parse(str(f))
             except (ExpatError, OSError):
@@ -219,7 +222,7 @@ def _build_keep_only_xml(xml_path: Path, keep_names: set[str]) -> tuple[list[Pat
         changed = True
         while changed:
             changed = False
-            for f in resolve_includes(xml_path):
+            for f in all_files:
                 if f in sub_tmp_map or f == xml_path:
                     continue
                 try:

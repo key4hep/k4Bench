@@ -154,6 +154,16 @@ class TestIncludeMode:
         assert "EcalBarrel" in results[0].label
         assert "NonExistent" not in results[0].label
 
+    def test_all_unknown_detectors_raises(self, tmp_path):
+        config = _make_config(
+            tmp_path,
+            mode=SweepMode.INCLUDE_ONLY,
+            detector_names=["NonExistent"],
+        )
+        with patch("dd4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
+            with pytest.raises(ValueError, match="No valid detectors to keep"):
+                run_sweep(config)
+
 
 # ---------------------------------------------------------------------------
 # EXCLUDE mode
@@ -184,6 +194,16 @@ class TestExcludeMode:
 
     def test_no_include_only_labels(self, results):
         assert not any(r.label.startswith("only_") for r in results)
+
+    def test_all_unknown_detectors_raises(self, tmp_path):
+        config = _make_config(
+            tmp_path,
+            mode=SweepMode.EXCLUDE_ONLY,
+            detector_names=["NonExistent"],
+        )
+        with patch("dd4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
+            with pytest.raises(ValueError, match="No valid detectors to exclude"):
+                run_sweep(config)
 
 
 # ---------------------------------------------------------------------------
