@@ -46,6 +46,7 @@ from dd4bench.runner.executor import run_ddsim
 class SweepMode(Enum):
     """Selects which benchmark strategy :func:`run_sweep` executes."""
 
+    BASELINE     = "baseline"     # single baseline run, no detector patching
     FULL         = "full"         # simulate with each detector individually removed
     INCLUDE_ONLY = "include_only" # simulate only with the named detectors
     EXCLUDE_ONLY = "exclude_only" # simulate with all detectors except the named ones
@@ -133,7 +134,9 @@ def run_sweep(config: BenchmarkConfig) -> list[RunResult]:
     """
     config.log_dir.mkdir(parents=True, exist_ok=True)
 
-    if config.mode == SweepMode.COMPARE:
+    if config.mode == SweepMode.BASELINE:
+        return _run_baseline(config)
+    elif config.mode == SweepMode.COMPARE:
         return _run_compare(config)
     else:
         return _run_removal_sweep(config)
@@ -142,6 +145,13 @@ def run_sweep(config: BenchmarkConfig) -> list[RunResult]:
 # ---------------------------------------------------------------------------
 # Sweep strategies
 # ---------------------------------------------------------------------------
+
+
+def _run_baseline(config: BenchmarkConfig) -> list[RunResult]:
+    """Single baseline run with no detector patching."""
+    _print_run_header(1, 1, "baseline_all", config.xml_path)
+    result = _timed_run(xml_path=config.xml_path, label="baseline_all", config=config)
+    return [result]
 
 
 def _run_removal_sweep(config: BenchmarkConfig) -> list[RunResult]:

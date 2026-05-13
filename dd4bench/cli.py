@@ -4,9 +4,14 @@ Entry point registered as ``dd4bench`` in pyproject.toml.
 
 Usage examples
 --------------
-Full sweep::
+Single baseline run::
 
     dd4bench --xml ALLEGRO.xml \\
+             --ddsim-args="--enableGun --gun.particle e- --gun.distribution uniform"
+
+Full sweep (baseline + one run per detector removed)::
+
+    dd4bench --xml ALLEGRO.xml --sweep \\
              --ddsim-args="--enableGun --gun.particle e- --gun.distribution uniform"
 
 Simulate with only specific detectors::
@@ -125,21 +130,30 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Compare two geometry versions head-to-head (no sweep).",
     )
 
-    # --- sweep filters (mutually exclusive) ---
+    # --- sweep mode (mutually exclusive) ---
     sweep = parser.add_mutually_exclusive_group()
+    sweep.add_argument(
+        "--sweep",
+        action="store_true",
+        default=False,
+        help=(
+            "Run a full sweep: baseline + one run per detector with that "
+            "detector removed. Without this flag only the baseline is run."
+        ),
+    )
     sweep.add_argument(
         "--include-only",
         nargs="+",
         metavar="DETECTOR",
         dest="include_only",
-        help="Simulate with only these detectors active.",
+        help="Sweep removing each named detector in turn (all others stay active).",
     )
     sweep.add_argument(
         "--exclude-only",
         nargs="+",
         metavar="DETECTOR",
         dest="exclude_only",
-        help="Simulate with all detectors except these.",
+        help="Sweep over all detectors except the named ones.",
     )
 
     # --- simulation ---
@@ -226,15 +240,18 @@ def _build_config(args: argparse.Namespace) -> BenchmarkConfig:
             verbose=args.verbose
         )
 
-    # --- removal sweep modes ---
+    # --- sweep modes ---
     if args.include_only:
         mode = SweepMode.INCLUDE_ONLY
         detector_names = args.include_only
     elif args.exclude_only:
         mode = SweepMode.EXCLUDE_ONLY
         detector_names = args.exclude_only
-    else:
+    elif args.sweep:
         mode = SweepMode.FULL
+        detector_names = []
+    else:
+        mode = SweepMode.BASELINE
         detector_names = []
 
     return BenchmarkConfig(
