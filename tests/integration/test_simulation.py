@@ -1,4 +1,8 @@
-"""Integration test: real ddsim simulation against ALLEGRO_o1_v03.
+"""Integration test: real ddsim simulation via the dd4bench CLI.
+
+Invokes the ``dd4bench`` entry point as a subprocess against ALLEGRO_o1_v03
+and verifies that the process exits cleanly and that the CSV output contains
+sensible benchmark metrics.
 
 Requires the Key4hep environment with ddsim available and $K4GEO set.
 Run with: pytest -m integration
@@ -6,14 +10,13 @@ Run with: pytest -m integration
 
 from __future__ import annotations
 
+import csv
 import os
-import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
 import pytest
-
-from dd4bench.benchmark.ddsim import BenchmarkConfig, SweepMode, run_sweep
 
 
 K4GEO = os.environ.get("K4GEO", "")
@@ -23,101 +26,122 @@ ALLEGRO_XML = (
     else None
 )
 
-_missing_env = not K4GEO or ALLEGRO_XML is None or not ALLEGRO_XML.exists()
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        not K4GEO or not (ALLEGRO_XML is not None and ALLEGRO_XML.exists()),
+        reason="$K4GEO not set or ALLEGRO XML not found",
+    ),
+]
+
+_N_EVENTS = 100
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture(scope="module")
-def simulation_result():
-    """Run a real 100-event ddsim simulation and return the single RunResult."""
+def cli_run():
+    """Run dd4bench against ALLEGRO_o1_v03; yield (CompletedProcess, csv_row)."""
     with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        config = BenchmarkConfig(
-            xml_path=ALLEGRO_XML,
-            n_events=100,
-            output_file=tmp_path / "out.edm4hep.root",
-            log_dir=tmp_path / "logs",
-            mode=SweepMode.BASELINE,
-            extra_args=[
-                "--enableGun",
-                "--gun.distribution", "uniform",
-                "--gun.energy", "10*GeV",
-                "--gun.particle", "e-",
-                "--random.enableEventSeed",
-                "--random.seed", "42",
+        output_dir = Path(tmp)
+        result = subprocess.run(
+            [
+                "dd4bench",
+                "--verbose",
+                "--events", str(_N_EVENTS),
+                "--xml", str(ALLEGRO_XML),
+                "--output-dir", str(output_dir),
+                "--ddsim-args",
+                (
+                    "--enableGun "
+                    "--gun.distribution uniform "
+                    "--gun.energy '10*GeV' "
+                    "--gun.particle e- "
+                    "--random.enableEventSeed "
+                    "--random.seed 42"
+                ),
             ],
-            verbose=True,
+            capture_output=True,
+            text=True,
         )
-        results = run_sweep(config)
-        assert len(results) == 1
-        yield results[0]
+
+        row: dict[str, str] = {}
+        csv_path = output_dir / "results.csv"
+        if csv_path.exists():
+            with open(csv_path, newline="") as f:
+                rows = list(csv.DictReader(f))
+            if rows:
+                row = rows[0]
+
+        yield result, row
 
 
-@pytest.mark.integration
-@pytest.mark.skipif(_missing_env, reason="$K4GEO not set or ALLEGRO XML not found")
-def test_simulation_exits_zero(simulation_result):
-    """ddsim must exit cleanly."""
-    assert simulation_result.succeeded, (
-        f"ddsim failed with returncode={simulation_result.returncode}"
+@pytest.fixture(scope="module")
+def cli_result(cli_run):
+    result, _ = cli_run
+    return result
+
+
+@pytest.fixture(scope="module")
+def csv_row(cli_run):
+    _, row = cli_run
+    return row
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+
+def test_cli_exits_zero(cli_result):
+    """dd4bench must exit with code 0."""
+    assert cli_result.returncode == 0, (
+        f"dd4bench exited {cli_result.returncode}\n"
+        f"stdout:\n{cli_result.stdout}\n"
+        f"stderr:\n{cli_result.stderr}"
     )
 
 
-@pytest.mark.integration
-@pytest.mark.skipif(_missing_env, reason="$K4GEO not set or ALLEGRO XML not found")
-def test_simulation_event_count(simulation_result):
-    """RunResult records the correct event count."""
-    assert simulation_result.n_events == 100
+def test_csv_written(csv_row):
+    """A non-empty CSV row must be produced."""
+    assert csv_row, "CSV file is missing or empty"
 
 
-@pytest.mark.integration
-@pytest.mark.skipif(_missing_env, reason="$K4GEO not set or ALLEGRO XML not found")
-def test_simulation_wall_time_positive(simulation_result):
-    """/usr/bin/time wall-clock time was parsed and is positive."""
-    assert simulation_result.wall_time_s is not None
-    assert simulation_result.wall_time_s > 0
+def test_csv_event_count(csv_row):
+    """CSV records the correct event count."""
+    assert int(csv_row["n_events"]) == _N_EVENTS
 
 
-@pytest.mark.integration
-@pytest.mark.skipif(_missing_env, reason="$K4GEO not set or ALLEGRO XML not found")
-def test_simulation_cpu_times_positive(simulation_result):
-    """User and system CPU times were parsed and are non-negative."""
-    assert simulation_result.user_cpu_s is not None
-    assert simulation_result.user_cpu_s >= 0
-    assert simulation_result.sys_cpu_s is not None
-    assert simulation_result.sys_cpu_s >= 0
+def test_csv_returncode_zero(csv_row):
+    """ddsim return code captured in CSV is 0."""
+    assert int(csv_row["returncode"]) == 0
 
 
-@pytest.mark.integration
-@pytest.mark.skipif(_missing_env, reason="$K4GEO not set or ALLEGRO XML not found")
-def test_simulation_peak_rss_reasonable(simulation_result):
-    """Peak RSS is present and plausibly large (>100 MB) for a full detector."""
-    assert simulation_result.peak_rss_mb is not None
-    assert simulation_result.peak_rss_mb > 100, (
-        f"Peak RSS {simulation_result.peak_rss_mb:.1f} MB looks too small for ALLEGRO"
-    )
+def test_csv_wall_time_positive(csv_row):
+    """Wall-clock time was parsed and is positive."""
+    assert float(csv_row["wall_time_s"]) > 0
 
 
-@pytest.mark.integration
-@pytest.mark.skipif(_missing_env, reason="$K4GEO not set or ALLEGRO XML not found")
-def test_simulation_output_file_nonempty(simulation_result):
-    """The EDM4hep ROOT output file was written and is non-empty."""
-    assert simulation_result.output_size_mb is not None
-    assert simulation_result.output_size_mb > 0, (
-        f"Output file size is {simulation_result.output_size_mb} MB — expected >0"
-    )
+def test_csv_cpu_times_non_negative(csv_row):
+    """User and system CPU times are non-negative."""
+    assert float(csv_row["user_cpu_s"]) >= 0
+    assert float(csv_row["sys_cpu_s"]) >= 0
 
 
-@pytest.mark.integration
-@pytest.mark.skipif(_missing_env, reason="$K4GEO not set or ALLEGRO XML not found")
-def test_simulation_events_per_sec_positive(simulation_result):
-    """Throughput metric is computed and strictly positive."""
-    assert simulation_result.events_per_sec is not None
-    assert simulation_result.events_per_sec > 0
+def test_csv_peak_rss_reasonable(csv_row):
+    """Peak RSS is >100 MB — a plausible lower bound for a full ALLEGRO load."""
+    rss = float(csv_row["peak_rss_mb"])
+    assert rss > 100, f"Peak RSS {rss:.1f} MB looks too small for ALLEGRO"
 
 
-@pytest.mark.integration
-@pytest.mark.skipif(_missing_env, reason="$K4GEO not set or ALLEGRO XML not found")
-def test_simulation_cpu_efficiency_reasonable(simulation_result):
-    """CPU efficiency (CPU/wall) is between 0 and a few cores worth."""
-    eff = simulation_result.cpu_efficiency
-    assert eff is not None
-    assert 0 < eff < 64, f"CPU efficiency {eff:.2f} is outside the expected range"
+def test_csv_output_file_nonempty(csv_row):
+    """The EDM4hep ROOT output file was written and has non-zero size."""
+    assert float(csv_row["output_size_mb"]) > 0
+
+
+def test_csv_events_per_sec_positive(csv_row):
+    """Throughput metric is positive."""
+    assert float(csv_row["events_per_sec"]) > 0

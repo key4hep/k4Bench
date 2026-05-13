@@ -59,8 +59,12 @@ class TestGeometryArgs:
 
 
 class TestSweepMode:
-    def test_default_mode_is_full(self):
+    def test_default_mode_is_baseline(self):
         config = _config(["--xml", str(XML_A)])
+        assert config.mode == SweepMode.BASELINE
+
+    def test_sweep_flag_sets_full_mode(self):
+        config = _config(["--xml", str(XML_A), "--sweep"])
         assert config.mode == SweepMode.FULL
 
     def test_include_only_sets_mode(self):
