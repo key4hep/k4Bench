@@ -15,40 +15,44 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      # Checkout code
       - uses: actions/checkout@v6
 
-      # Set up CVMFS
       - uses: cvmfs-contrib/github-action-cvmfs@v5
 
-      # Cache Matplotlib font cache directory
-      # to speed up the tests
       - name: Cache Matplotlib font cache
         uses: actions/cache@v5
         with:
           path: .cache/matplotlib
           key: ${{ runner.os }}-matplotlib-cache
 
-      # Build and test in the container
+      - name: Cache DNF packages
+        uses: actions/cache@v5
+        with:
+          path: /tmp/dnf-cache
+          key: dnf-alma9-time-v1
+
       - name: Build and test
         run: |
+          mkdir -p /tmp/dnf-cache
           docker run --rm \
             --device /dev/fuse \
             --cap-add SYS_ADMIN \
             --volume /cvmfs:/cvmfs:shared \
             --volume ${{ github.workspace }}:/workspace \
+            --volume /tmp/dnf-cache:/var/cache/dnf \
             --workdir /workspace \
             -e MPLCONFIGDIR=/workspace/.cache/matplotlib \
             ${{ env.CONTAINER_IMAGE }} bash -c "
             set -e
+            
+            echo '::group::Install system dependencies'
+            dnf install -y --setopt=metadata_expire=-1 time
+            echo '::endgroup::'
 
             echo '::group::Set-up key4hep'
             source setup.sh
             echo '::endgroup::'
 
-            echo '::group::Install system dependencies'
-            dnf install -y time
-            echo '::endgroup::'
 
             echo '::group::Install dd4bench'
             pip install --no-build-isolation .
