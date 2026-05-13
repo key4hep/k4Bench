@@ -40,6 +40,7 @@ jobs:
             --workdir /workspace \
             -e MPLCONFIGDIR=/workspace/.cache/matplotlib \
             ${{ env.CONTAINER_IMAGE }} bash -c "
+            set -e
 
             echo '::group::Set-up key4hep'
             source setup.sh
@@ -51,5 +52,9 @@ jobs:
 
             echo '::group::Run unit tests'
             python -m pytest tests/unit/
+            echo '::endgroup::'
+
+            echo '::group::Run integration tests'
+            python -m pytest tests/integration/
             echo '::endgroup::'
           "
