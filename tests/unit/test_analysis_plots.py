@@ -190,18 +190,23 @@ class TestPlotEventTiming:
         plt.close(fig)
 
     def test_outlier_clipped_silently(self, tmp_path):
-        """A single large outlier (<5 % of events) clips without a warning."""
+        """A single moderate outlier (<5 % of events) clips without a warning.
+
+        Uses 30 s — large enough to be MAD-clipped but below the 5× extreme
+        threshold (~9.9 s core upper → threshold ~49.5 s).  exclude_events=[]
+        is passed explicitly so the default event-0 exclusion warning does not
+        interfere with this test.
+        """
         path = tmp_path / "baseline_all_events.json"
         _write_event_json(path, n=100)
-        # Inject one extreme outlier
         import json
         raw = json.loads(path.read_text())
-        raw["event_times_s"][-1] = 9999.0
+        raw["event_times_s"][-1] = 30.0
         path.write_text(json.dumps(raw))
         import warnings as _w
         with _w.catch_warnings():
             _w.simplefilter("error")
-            fig = plot_event_timing(tmp_path)  # should not raise
+            fig = plot_event_timing(tmp_path, exclude_events=[])  # should not raise
         plt.close(fig)
 
     def test_outlier_warns_when_fraction_high(self, tmp_path):
