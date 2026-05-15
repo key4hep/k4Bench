@@ -55,14 +55,20 @@ jobs:
 
 
             echo '::group::Install dd4bench'
-            pip install --no-build-isolation .
+            pip install --no-build-isolation ".[test]"
             echo '::endgroup::'
 
             echo '::group::Run unit tests'
-            python -m pytest tests/unit/
+            python -m pytest tests/unit/ --cov=dd4bench --cov-report=
             echo '::endgroup::'
 
             echo '::group::Run integration tests'
-            python -m pytest tests/integration/
+            python -m pytest tests/integration/ --cov=dd4bench --cov-append --cov-report=xml:/workspace/coverage.xml
             echo '::endgroup::'
           "
+          
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: jbeirer/DD4bench
