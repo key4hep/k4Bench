@@ -2,6 +2,7 @@
 
 [![Release](https://img.shields.io/github/v/release/jbeirer/DD4bench?include_prereleases)](https://github.com/jbeirer/DD4bench/releases)
 [![Build status](https://img.shields.io/github/actions/workflow/status/jbeirer/DD4bench/ci.yml?branch=main)](https://github.com/jbeirer/DD4bench/actions/workflows/ci.yml?query=branch%3Amain)
+[![codecov](https://codecov.io/gh/jbeirer/DD4bench/graph/badge.svg?token=oYOxyHkHuP)](https://codecov.io/gh/jbeirer/DD4bench)
 
 Performance benchmarking for DD4hep-based simulations and reconstruction in Key4hep.
 
