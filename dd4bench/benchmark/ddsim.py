@@ -114,6 +114,9 @@ class BenchmarkConfig:
             raise ValueError(
                 f"{self.mode.value} mode requires detector_names to be non-empty."
             )
+        if len(self.detector_names) != len(set(self.detector_names)):
+            dupes = sorted({n for n in self.detector_names if self.detector_names.count(n) > 1})
+            warnings.warn(f"Duplicate detector names will be ignored: {dupes}", stacklevel=2)
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +166,10 @@ def _make_detector_label(prefix: str, names: set[str]) -> str:
     """Build a run label from a prefix and a set of detector names.
 
     Truncates to a stable hash suffix when the name count would make the label
-    unreadably long (> _MAX_LABEL_DETECTORS).
+    unreadably long (> _MAX_LABEL_DETECTORS).  The hash is order-independent
+    (input is sorted) and stable across runs, but not human-recoverable — to
+    identify which detectors produced a given label, re-run with a small enough
+    set or inspect the log for the "Keeping / Excluding N detector(s)" line.
     """
     sorted_names = sorted(names)
     if len(sorted_names) <= _MAX_LABEL_DETECTORS:
@@ -242,14 +248,14 @@ def _run_include_only_sweep(config: BenchmarkConfig) -> list[RunResult]:
 
 def _run_exclude_only_sweep(config: BenchmarkConfig) -> list[RunResult]:
     """Single run with the named detectors removed, all others active."""
+    print("Scanning geometry for subdetectors …")
+    all_names = set(get_detector_names(config.xml_path))
+
     exclude = set(config.detector_names)
 
     if not exclude:
         warnings.warn("No detectors to exclude — running with full geometry.", stacklevel=2)
         return _run_baseline(config)
-
-    print("Scanning geometry for subdetectors …")
-    all_names = set(get_detector_names(config.xml_path))
 
     unknown = exclude - all_names
     if unknown:

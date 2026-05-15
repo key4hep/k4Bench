@@ -309,7 +309,12 @@ def _find_and_remove_detector(
 
 
 def _remove_orphaned_plugins(doc: minidom.Document, removed_names: set[str]) -> None:
-    """Remove <plugin> elements where any <argument value="..."> names a removed detector."""
+    """Remove <plugin> elements where any <argument value="..."> names a removed detector.
+
+    This relies on the DD4hep convention that detector identity is encoded in
+    argument ``value`` attributes.  Plugins that reference detectors differently
+    (e.g. via other attributes or child elements) will not be caught here.
+    """
     for plugin in list(doc.getElementsByTagName("plugin")):
         args = plugin.getElementsByTagName("argument")
         if any(arg.getAttribute("value") in removed_names for arg in args):
