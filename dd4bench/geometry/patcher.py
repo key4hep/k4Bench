@@ -325,6 +325,8 @@ def _absolutize_refs(doc: minidom.Document, base_dir: Path) -> None:
     do not resolve to an existing file are also left untouched so that
     non-path ref attributes (e.g. detector component names) are not mangled.
     """
+    _warned: set[str] = set()
+
     def _walk(node: minidom.Node) -> None:
         if node.nodeType == node.ELEMENT_NODE:
             ref = node.getAttribute("ref")
@@ -332,7 +334,8 @@ def _absolutize_refs(doc: minidom.Document, base_dir: Path) -> None:
                 abs_path = (base_dir / ref).resolve()
                 if abs_path.exists():
                     node.setAttribute("ref", str(abs_path))
-                else:
+                elif ref not in _warned:
+                    _warned.add(ref)
                     warnings.warn(
                         f"Could not absolutize ref '{ref}' — path does not exist: {abs_path}",
                         stacklevel=2,

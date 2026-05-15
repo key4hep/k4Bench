@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import hashlib
 import traceback
+import warnings
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -225,7 +226,7 @@ def _run_include_only_sweep(config: BenchmarkConfig) -> list[RunResult]:
     keep = set(config.detector_names)
     unknown = keep - all_names
     if unknown:
-        print(f"WARNING: detectors not found in geometry, will be skipped: {sorted(unknown)}")
+        warnings.warn(f"Detectors not found in geometry, will be skipped: {sorted(unknown)}", stacklevel=2)
     keep -= unknown
 
     if not keep:
@@ -241,18 +242,18 @@ def _run_include_only_sweep(config: BenchmarkConfig) -> list[RunResult]:
 
 def _run_exclude_only_sweep(config: BenchmarkConfig) -> list[RunResult]:
     """Single run with the named detectors removed, all others active."""
-    print("Scanning geometry for subdetectors …")
-    all_names = set(get_detector_names(config.xml_path))
-
     exclude = set(config.detector_names)
 
     if not exclude:
-        print("WARNING: no detectors to exclude — running with full geometry.")
-        return _run_keep_only(config, all_names, "baseline_all")
+        warnings.warn("No detectors to exclude — running with full geometry.", stacklevel=2)
+        return _run_baseline(config)
+
+    print("Scanning geometry for subdetectors …")
+    all_names = set(get_detector_names(config.xml_path))
 
     unknown = exclude - all_names
     if unknown:
-        print(f"WARNING: detectors not found in geometry, will be skipped: {sorted(unknown)}")
+        warnings.warn(f"Detectors not found in geometry, will be skipped: {sorted(unknown)}", stacklevel=2)
     exclude -= unknown
 
     if not exclude:
@@ -307,7 +308,7 @@ def _resolve_detectors(config: BenchmarkConfig) -> list[str]:
     all_names = get_detector_names(config.xml_path)
 
     if not all_names:
-        print("WARNING: no subdetectors found — only baseline will run.\n")
+        warnings.warn("No subdetectors found — only baseline will run.", stacklevel=2)
         return []
 
     if config.mode == SweepMode.FULL:
