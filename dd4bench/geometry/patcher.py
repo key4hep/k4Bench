@@ -277,7 +277,7 @@ def _build_keep_only_xml(xml_path: Path, keep_names: set[str]) -> tuple[list[Pat
         all_tmp.append(top_tmp)
         return all_tmp, top_tmp
 
-    except:
+    except Exception:
         for tmp in all_tmp:
             tmp.unlink(missing_ok=True)
         raise
@@ -321,19 +321,26 @@ def _remove_orphaned_plugins(doc: minidom.Document, removed_names: set[str]) -> 
             plugin.parentNode.removeChild(plugin)
 
 
-def _absolutize_refs(doc: minidom.Document, base_dir: Path) -> None:
-    """Rewrite every relative ref="..." that points to an existing file.
+# DD4hep element types whose ref= attribute is always a filesystem path.
+# Other elements (e.g. <detector ref="…">) use ref= for logical names, not files.
+_FILESYSTEM_REF_ELEMENTS = frozenset({"include", "gdmlFile", "file"})
 
-    Walks all XML elements so that <gdmlFile ref="...">, <include ref="...">
-    and any other DD4hep node types are covered.  Refs that contain '$' (env
-    vars) or already point at absolute paths are left untouched.  Refs that
-    do not resolve to an existing file are also left untouched so that
-    non-path ref attributes (e.g. detector component names) are not mangled.
+
+def _absolutize_refs(doc: minidom.Document, base_dir: Path) -> None:
+    """Rewrite relative ref="..." on filesystem-ref elements to absolute paths.
+
+    Only <include>, <gdmlFile>, and <file> elements are touched — these are the
+    DD4hep element types whose ref= attribute is guaranteed to be a file path.
+    Elements that use ref= for logical names (e.g. detector component names) are
+    left untouched, avoiding false-positive warnings.
+
+    Refs that contain '$' (env vars) or are already absolute are skipped.
+    Warns once per distinct ref that cannot be resolved to an existing file.
     """
     _warned: set[str] = set()
 
     def _walk(node: minidom.Node) -> None:
-        if node.nodeType == node.ELEMENT_NODE:
+        if node.nodeType == node.ELEMENT_NODE and node.tagName in _FILESYSTEM_REF_ELEMENTS:
             ref = node.getAttribute("ref")
             if ref and "$" not in ref and not os.path.isabs(ref):
                 abs_path = (base_dir / ref).resolve()
