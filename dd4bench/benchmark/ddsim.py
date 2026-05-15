@@ -19,15 +19,18 @@ INCLUDE_ONLY
     Single run with only the named detectors active (all others
     removed).  No baseline.
 EXCLUDE_ONLY
-    One run per non-excluded detector with that detector removed.
-    No baseline.
+    Single run with the named detectors removed (all others active).
+    No additional baseline.  Empty detector_names falls back to a full-geometry run.
 COMPARE
     Baseline of geometry A vs baseline of geometry B — no patching.
 """
 
 from __future__ import annotations
 
+import hashlib
 import traceback
+import warnings
+from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -53,7 +56,7 @@ class SweepMode(Enum):
     BASELINE     = "baseline"     # single baseline run, no detector patching
     FULL         = "full"         # simulate with each detector individually removed
     INCLUDE_ONLY = "include_only" # single run with only the named detectors active
-    EXCLUDE_ONLY = "exclude_only" # simulate with all detectors except the named ones
+    EXCLUDE_ONLY = "exclude_only" # single run with only the named detectors removed
     COMPARE      = "compare"      # baseline of geometry A vs baseline of geometry B
 
 
@@ -108,10 +111,14 @@ class BenchmarkConfig:
     def __post_init__(self) -> None:
         if self.mode == SweepMode.COMPARE and self.xml_path_b is None:
             raise ValueError("COMPARE mode requires xml_path_b to be set.")
-        if self.mode in (SweepMode.INCLUDE_ONLY, SweepMode.EXCLUDE_ONLY) and not self.detector_names:
+        if self.mode == SweepMode.INCLUDE_ONLY and not self.detector_names:
             raise ValueError(
                 f"{self.mode.value} mode requires detector_names to be non-empty."
             )
+        counts = Counter(self.detector_names)
+        if dupes := sorted(n for n, c in counts.items() if c > 1):
+            warnings.warn(f"Duplicate detector names will be ignored: {dupes}", stacklevel=2)
+            self.detector_names = list(dict.fromkeys(self.detector_names))
 
 
 # ---------------------------------------------------------------------------
@@ -144,8 +151,33 @@ def run_sweep(config: BenchmarkConfig) -> list[RunResult]:
         return _run_compare(config)
     elif config.mode == SweepMode.INCLUDE_ONLY:
         return _run_include_only_sweep(config)
+    elif config.mode == SweepMode.EXCLUDE_ONLY:
+        return _run_exclude_only_sweep(config)
     else:
         return _run_removal_sweep(config)
+
+
+# ---------------------------------------------------------------------------
+# Label helpers
+# ---------------------------------------------------------------------------
+
+_MAX_LABEL_DETECTORS = 5
+
+
+def _make_detector_label(prefix: str, names: set[str]) -> str:
+    """Build a run label from a prefix and a set of detector names.
+
+    Truncates to a stable hash suffix when the name count would make the label
+    unreadably long (> _MAX_LABEL_DETECTORS).  The hash is order-independent
+    (input is sorted) and stable across runs, but not human-recoverable — to
+    identify which detectors produced a given label, re-run with a small enough
+    set or inspect the log for the "Keeping / Excluding N detector(s)" line.
+    """
+    sorted_names = sorted(names)
+    if len(sorted_names) <= _MAX_LABEL_DETECTORS:
+        return prefix + "_".join(sorted_names)
+    digest = hashlib.sha1("_".join(sorted_names).encode()).hexdigest()[:8]
+    return f"{prefix}{len(sorted_names)}_detectors_{digest}"
 
 
 # ---------------------------------------------------------------------------
@@ -161,27 +193,20 @@ def _run_baseline(config: BenchmarkConfig) -> list[RunResult]:
 
 
 def _run_removal_sweep(config: BenchmarkConfig) -> list[RunResult]:
-    """Removal runs (FULL / EXCLUDE_ONLY).
-
-    A baseline run (full geometry, no patching) is included only for FULL
-    mode.  EXCLUDE_ONLY runs removals for all non-excluded detectors.
-    """
+    """Baseline + per-detector removal runs for FULL mode."""
+    if config.mode != SweepMode.FULL:
+        raise ValueError(f"_run_removal_sweep called with unexpected mode: {config.mode}")
 
     detectors_to_remove = _resolve_detectors(config)
     results: list[RunResult] = []
 
-    if config.mode == SweepMode.FULL:
-        total = 1 + len(detectors_to_remove)
-        _print_run_header(1, total, "baseline_all", config.xml_path)
-        results.append(
-            _timed_run(xml_path=config.xml_path, label="baseline_all", config=config)
-        )
-        removal_start = 2
-    else:
-        total = len(detectors_to_remove)
-        removal_start = 1
+    total = 1 + len(detectors_to_remove)
+    _print_run_header(1, total, "baseline_all", config.xml_path)
+    results.append(
+        _timed_run(xml_path=config.xml_path, label="baseline_all", config=config)
+    )
 
-    for i, name in enumerate(detectors_to_remove, start=removal_start):
+    for i, name in enumerate(detectors_to_remove, start=2):
         label = f"without_{name}"
         try:
             with patched_geometry(config.xml_path, name) as tmp_xml:
@@ -209,27 +234,60 @@ def _run_include_only_sweep(config: BenchmarkConfig) -> list[RunResult]:
     keep = set(config.detector_names)
     unknown = keep - all_names
     if unknown:
-        print(f"WARNING: detectors not found in geometry, will be skipped: {sorted(unknown)}")
+        warnings.warn(f"Detectors not found in geometry, will be skipped: {sorted(unknown)}", stacklevel=2)
     keep -= unknown
 
-    label = "only_" + "_".join(sorted(keep))
+    if not keep:
+        raise ValueError(
+            f"No valid detectors to keep — all of {sorted(config.detector_names)} "
+            "are unknown in this geometry."
+        )
+
+    label = _make_detector_label("only_", keep)
     print(f"Keeping {len(keep)} detector(s): {sorted(keep)}\n")
+    return _run_keep_only(config, keep, label)
 
-    results: list[RunResult] = []
-    try:
-        with patched_geometry_keep_only(config.xml_path, keep) as tmp_xml:
-            _print_run_header(1, 1, label, tmp_xml)
-            results.append(_timed_run(xml_path=tmp_xml, label=label, config=config))
-    except Exception:
-        print(f"  ERROR in {label}:\n{traceback.format_exc()}")
 
-    return results
+def _run_exclude_only_sweep(config: BenchmarkConfig) -> list[RunResult]:
+    """Single run with the named detectors removed, all others active."""
+    print("Scanning geometry for subdetectors …")
+    all_names = set(get_detector_names(config.xml_path))
+
+    exclude = set(config.detector_names)
+
+    if not exclude:
+        warnings.warn("No detectors to exclude — running with full geometry.", stacklevel=2)
+        return _run_baseline(config)
+
+    unknown = exclude - all_names
+    if unknown:
+        warnings.warn(f"Detectors not found in geometry, will be skipped: {sorted(unknown)}", stacklevel=2)
+    exclude -= unknown
+
+    if not exclude:
+        raise ValueError(
+            f"No valid detectors to exclude — all of {sorted(config.detector_names)} "
+            "are unknown in this geometry."
+        )
+
+    keep = all_names - exclude
+    label = _make_detector_label("without_", exclude)
+    print(f"Excluding {len(exclude)} detector(s): {sorted(exclude)}\n")
+    return _run_keep_only(config, keep, label)
+
+
+def _run_keep_only(config: BenchmarkConfig, keep: set[str], label: str) -> list[RunResult]:
+    """Execute a single patched run with *keep* as the active detector set."""
+    with patched_geometry_keep_only(config.xml_path, keep) as tmp_xml:
+        _print_run_header(1, 1, label, tmp_xml)
+        return [_timed_run(xml_path=tmp_xml, label=label, config=config)]
 
 
 def _run_compare(config: BenchmarkConfig) -> list[RunResult]:
     """Baseline of geometry A vs baseline of geometry B."""
 
-    assert config.xml_path_b is not None  # guaranteed by __post_init__
+    if config.xml_path_b is None:
+        raise ValueError("COMPARE mode requires xml_path_b — guaranteed by __post_init__.")
 
     results: list[RunResult] = []
 
@@ -258,13 +316,11 @@ def _resolve_detectors(config: BenchmarkConfig) -> list[str]:
     all_names = get_detector_names(config.xml_path)
 
     if not all_names:
-        print("WARNING: no subdetectors found — only baseline will run.\n")
+        warnings.warn("No subdetectors found — only baseline will run.", stacklevel=2)
         return []
 
     if config.mode == SweepMode.FULL:
         selected = all_names
-    elif config.mode == SweepMode.EXCLUDE_ONLY:
-        selected = [d for d in all_names if d not in set(config.detector_names)]
     else:
         raise ValueError(f"Unexpected mode for removal sweep: {config.mode}")
 

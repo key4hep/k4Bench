@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import os
 import tempfile
+import warnings
 from pathlib import Path
 from xml.dom import minidom
 from xml.parsers.expat import ExpatError
@@ -131,14 +132,13 @@ def build_patched_xml(
         If *detector_name* is not found in any reachable XML file.
     """
     xml_path = xml_path.resolve()
-    geo_dir = xml_path.parent
 
     owner, patched_doc = _find_and_remove_detector(xml_path, detector_name)
 
     _remove_orphaned_plugins(patched_doc, {detector_name})
     _absolutize_refs(patched_doc, owner.parent)
     sub_tmp_path = _write_tmp_xml(patched_doc, None, f"no_{detector_name}_sub_")
-    top_tmp_path = _write_patched_top(xml_path, owner, sub_tmp_path, geo_dir, detector_name)
+    top_tmp_path = _write_patched_top(xml_path, owner, sub_tmp_path, detector_name)
 
     return top_tmp_path, sub_tmp_path
 
@@ -173,53 +173,114 @@ def _build_keep_only_xml(xml_path: Path, keep_names: set[str]) -> tuple[list[Pat
     """
     xml_path = xml_path.resolve()
     geo_dir = xml_path.parent
-    sub_tmp_map: dict[Path, Path] = {}
     all_tmp: list[Path] = []
-    all_removed: set[str] = set()
-
-    for f in resolve_includes(xml_path):
-        try:
-            doc = minidom.parse(str(f))
-        except (ExpatError, OSError):
-            continue
-
-        nodes_to_remove = [
-            node
-            for node in doc.getElementsByTagName("detector")
-            if node.getAttribute("name") and node.getAttribute("name") not in keep_names
-        ]
-        if not nodes_to_remove:
-            continue
-
-        removed_here = {node.getAttribute("name") for node in nodes_to_remove}
-        all_removed |= removed_here
-        for node in nodes_to_remove:
-            node.parentNode.removeChild(node)
-
-        _remove_orphaned_plugins(doc, removed_here)
-        _absolutize_refs(doc, f.parent)
-        tmp = _write_tmp_xml(doc, None, "keep_only_sub_")
-        sub_tmp_map[f] = tmp
-        all_tmp.append(tmp)
 
     try:
-        top_doc = minidom.parse(str(xml_path))
-    except (ExpatError, OSError) as exc:
-        raise OSError(f"Could not parse top-level XML {xml_path}: {exc}") from exc
+        # Resolve once; reused by all three passes to avoid re-traversing the tree.
+        all_files = resolve_includes(xml_path)
 
-    for node in top_doc.getElementsByTagName("include"):
-        ref = node.getAttribute("ref")
-        if not ref or "$" in ref:
-            continue
-        resolved = (geo_dir / os.path.expandvars(ref)).resolve()
-        if resolved in sub_tmp_map:
-            node.setAttribute("ref", str(sub_tmp_map[resolved]))
+        # Pass 1: remove unwanted detectors from every reachable file.
+        # resolve_includes yields xml_path first, so the top-level is processed too.
+        modified: dict[Path, minidom.Document] = {}
+        all_removed: set[str] = set()
 
-    _remove_orphaned_plugins(top_doc, all_removed)
-    _absolutize_refs(top_doc, geo_dir)
-    top_tmp = _write_tmp_xml(top_doc, None, "keep_only_top_")
-    all_tmp.append(top_tmp)
-    return all_tmp, top_tmp
+        for f in all_files:
+            try:
+                doc = minidom.parse(str(f))
+            except (ExpatError, OSError):
+                continue
+
+            nodes_to_remove = [
+                node
+                for node in doc.getElementsByTagName("detector")
+                if node.getAttribute("name") and node.getAttribute("name") not in keep_names
+            ]
+            if not nodes_to_remove:
+                continue
+
+            removed_here = {node.getAttribute("name") for node in nodes_to_remove}
+            all_removed |= removed_here
+            for node in nodes_to_remove:
+                node.parentNode.removeChild(node)
+            _remove_orphaned_plugins(doc, removed_here)
+            modified[f] = doc
+
+        # Pass 2: write tmp files for modified sub-files (not the top-level).
+        sub_tmp_map: dict[Path, Path] = {}
+        for f, doc in modified.items():
+            if f == xml_path:
+                continue
+            _absolutize_refs(doc, f.parent)
+            tmp = _write_tmp_xml(doc, None, "keep_only_sub_")
+            sub_tmp_map[f] = tmp
+            all_tmp.append(tmp)
+
+        # Pass 3 (fixpoint): create redirect tmps for unmodified sub-files whose
+        # <include> refs point to a patched file in sub_tmp_map.  This handles
+        # nested include chains (e.g. top → A → B where only B was patched: A
+        # must reference B_tmp so ddsim sees the patched sub-tree).
+        max_iters = len(all_files) + 1
+        iteration = 0
+        changed = True
+        while changed:
+            if iteration >= max_iters:
+                raise RuntimeError(
+                    f"Include-graph fixpoint loop did not converge after {max_iters} "
+                    "iterations — possible cycle in include graph."
+                )
+            changed = False
+            iteration += 1
+            for f in all_files:
+                if f in sub_tmp_map or f == xml_path:
+                    continue
+                try:
+                    doc = minidom.parse(str(f))
+                except (ExpatError, OSError):
+                    continue
+                base = f.parent
+                redirected = False
+                for node in doc.getElementsByTagName("include"):
+                    ref = node.getAttribute("ref")
+                    if not ref or "$" in ref:
+                        continue
+                    resolved = (base / os.path.expandvars(ref)).resolve()
+                    if resolved in sub_tmp_map:
+                        node.setAttribute("ref", str(sub_tmp_map[resolved]))
+                        redirected = True
+                if redirected:
+                    _absolutize_refs(doc, base)
+                    tmp = _write_tmp_xml(doc, None, "keep_only_sub_")
+                    sub_tmp_map[f] = tmp
+                    all_tmp.append(tmp)
+                    changed = True
+
+        # Build the top-level tmp.  If the top-level file itself had detectors
+        # removed, use the already-patched doc; otherwise parse fresh from disk.
+        top_doc = modified.get(xml_path)
+        if top_doc is None:
+            try:
+                top_doc = minidom.parse(str(xml_path))
+            except (ExpatError, OSError) as exc:
+                raise OSError(f"Could not parse top-level XML {xml_path}: {exc}") from exc
+
+        for node in top_doc.getElementsByTagName("include"):
+            ref = node.getAttribute("ref")
+            if not ref or "$" in ref:
+                continue
+            resolved = (geo_dir / os.path.expandvars(ref)).resolve()
+            if resolved in sub_tmp_map:
+                node.setAttribute("ref", str(sub_tmp_map[resolved]))
+
+        _remove_orphaned_plugins(top_doc, all_removed)
+        _absolutize_refs(top_doc, geo_dir)
+        top_tmp = _write_tmp_xml(top_doc, None, "keep_only_top_")
+        all_tmp.append(top_tmp)
+        return all_tmp, top_tmp
+
+    except Exception:
+        for tmp in all_tmp:
+            tmp.unlink(missing_ok=True)
+        raise
 
 
 def _find_and_remove_detector(
@@ -248,29 +309,49 @@ def _find_and_remove_detector(
 
 
 def _remove_orphaned_plugins(doc: minidom.Document, removed_names: set[str]) -> None:
-    """Remove <plugin> elements whose first <argument value="..."> names a removed detector."""
+    """Remove <plugin> elements where any <argument value="..."> names a removed detector.
+
+    This relies on the DD4hep convention that detector identity is encoded in
+    argument ``value`` attributes.  Plugins that reference detectors differently
+    (e.g. via other attributes or child elements) will not be caught here.
+    """
     for plugin in list(doc.getElementsByTagName("plugin")):
         args = plugin.getElementsByTagName("argument")
-        if args and args[0].getAttribute("value") in removed_names:
+        if any(arg.getAttribute("value") in removed_names for arg in args):
             plugin.parentNode.removeChild(plugin)
 
 
-def _absolutize_refs(doc: minidom.Document, base_dir: Path) -> None:
-    """Rewrite every relative ref="..." that points to an existing file.
+# DD4hep element types whose ref= attribute is always a filesystem path.
+# Other elements (e.g. <detector ref="…">) use ref= for logical names, not files.
+_FILESYSTEM_REF_ELEMENTS = frozenset({"include", "gdmlfile", "file"})
 
-    Walks all XML elements so that <gdmlFile ref="...">, <include ref="...">
-    and any other DD4hep node types are covered.  Refs that contain '$' (env
-    vars) or already point at absolute paths are left untouched.  Refs that
-    do not resolve to an existing file are also left untouched so that
-    non-path ref attributes (e.g. detector component names) are not mangled.
+
+def _absolutize_refs(doc: minidom.Document, base_dir: Path) -> None:
+    """Rewrite relative ref="..." on filesystem-ref elements to absolute paths.
+
+    Only <include>, <gdmlFile>, and <file> elements are touched — these are the
+    DD4hep element types whose ref= attribute is guaranteed to be a file path.
+    Elements that use ref= for logical names (e.g. detector component names) are
+    left untouched, avoiding false-positive warnings.
+
+    Refs that contain '$' (env vars) or are already absolute are skipped.
+    Warns once per distinct ref that cannot be resolved to an existing file.
     """
+    _warned: set[str] = set()
+
     def _walk(node: minidom.Node) -> None:
-        if node.nodeType == node.ELEMENT_NODE:
+        if node.nodeType == node.ELEMENT_NODE and node.tagName.lower() in _FILESYSTEM_REF_ELEMENTS:
             ref = node.getAttribute("ref")
             if ref and "$" not in ref and not os.path.isabs(ref):
                 abs_path = (base_dir / ref).resolve()
                 if abs_path.exists():
                     node.setAttribute("ref", str(abs_path))
+                elif ref not in _warned:
+                    _warned.add(ref)
+                    warnings.warn(
+                        f"Could not absolutize ref '{ref}' — path does not exist: {abs_path}",
+                        stacklevel=2,
+                    )
         for child in node.childNodes:
             _walk(child)
 
@@ -298,7 +379,6 @@ def _write_patched_top(
     original_top: Path,
     owner: Path,
     sub_tmp: Path,
-    geo_dir: Path,
     detector_name: str,
 ) -> Path:
     """Rewrite the top-level XML so the include pointing at *owner*
@@ -307,6 +387,7 @@ def _write_patched_top(
     Only the single include ref that resolves to *owner* is changed;
     everything else is left verbatim.
     """
+    geo_dir = original_top.parent
     try:
         top_doc = minidom.parse(str(original_top))
     except (ExpatError, OSError) as exc:

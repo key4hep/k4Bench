@@ -70,9 +70,9 @@ class TestBenchmarkConfigValidation:
         with pytest.raises(ValueError, match="detector_names"):
             _make_config(tmp_path, mode=SweepMode.INCLUDE_ONLY, detector_names=[])
 
-    def test_exclude_mode_requires_detector_names(self, tmp_path):
-        with pytest.raises(ValueError, match="detector_names"):
-            _make_config(tmp_path, mode=SweepMode.EXCLUDE_ONLY, detector_names=[])
+    def test_exclude_mode_allows_empty_detector_names(self, tmp_path):
+        config = _make_config(tmp_path, mode=SweepMode.EXCLUDE_ONLY, detector_names=[])
+        assert config.mode == SweepMode.EXCLUDE_ONLY
 
     def test_full_mode_needs_no_extra_fields(self, tmp_path):
         config = _make_config(tmp_path, mode=SweepMode.FULL)
@@ -154,6 +154,16 @@ class TestIncludeMode:
         assert "EcalBarrel" in results[0].label
         assert "NonExistent" not in results[0].label
 
+    def test_all_unknown_detectors_raises(self, tmp_path):
+        config = _make_config(
+            tmp_path,
+            mode=SweepMode.INCLUDE_ONLY,
+            detector_names=["NonExistent"],
+        )
+        with patch("dd4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
+            with pytest.raises(ValueError, match="No valid detectors to keep"):
+                run_sweep(config)
+
 
 # ---------------------------------------------------------------------------
 # EXCLUDE mode
@@ -174,18 +184,36 @@ class TestExcludeMode:
     def test_no_baseline(self, results):
         assert not any(r.label == "baseline_all" for r in results)
 
-    def test_excluded_detectors_not_run(self, results):
-        labels = {r.label for r in results}
-        assert "without_InnerTracker" not in labels
-        assert "without_OuterTracker" not in labels
+    def test_single_run(self, results):
+        assert len(results) == 1
 
-    def test_non_excluded_detectors_run(self, results):
-        labels = {r.label for r in results}
-        assert "without_EcalBarrel" in labels
-        assert "without_HcalBarrel" in labels
+    def test_label_starts_with_without(self, results):
+        assert results[0].label.startswith("without_")
 
-    def test_total_count(self, results):
-        assert len(results) == 2  # 2 non-excluded, no baseline
+    def test_label_contains_excluded_detectors(self, results):
+        label = results[0].label
+        assert "InnerTracker" in label
+        assert "OuterTracker" in label
+
+    def test_no_include_only_labels(self, results):
+        assert not any(r.label.startswith("only_") for r in results)
+
+    def test_empty_exclude_runs_full_geometry(self, tmp_path):
+        config = _make_config(tmp_path, mode=SweepMode.EXCLUDE_ONLY, detector_names=[])
+        with patch("dd4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
+            results = run_sweep(config)
+        assert len(results) == 1
+        assert results[0].label == "baseline_all"
+
+    def test_all_unknown_detectors_raises(self, tmp_path):
+        config = _make_config(
+            tmp_path,
+            mode=SweepMode.EXCLUDE_ONLY,
+            detector_names=["NonExistent"],
+        )
+        with patch("dd4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
+            with pytest.raises(ValueError, match="No valid detectors to exclude"):
+                run_sweep(config)
 
 
 # ---------------------------------------------------------------------------
