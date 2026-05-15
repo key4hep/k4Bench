@@ -323,7 +323,7 @@ def _remove_orphaned_plugins(doc: minidom.Document, removed_names: set[str]) -> 
 
 # DD4hep element types whose ref= attribute is always a filesystem path.
 # Other elements (e.g. <detector ref="…">) use ref= for logical names, not files.
-_FILESYSTEM_REF_ELEMENTS = frozenset({"include", "gdmlFile", "file"})
+_FILESYSTEM_REF_ELEMENTS = frozenset({"include", "gdmlfile", "file"})
 
 
 def _absolutize_refs(doc: minidom.Document, base_dir: Path) -> None:
@@ -340,7 +340,7 @@ def _absolutize_refs(doc: minidom.Document, base_dir: Path) -> None:
     _warned: set[str] = set()
 
     def _walk(node: minidom.Node) -> None:
-        if node.nodeType == node.ELEMENT_NODE and node.tagName in _FILESYSTEM_REF_ELEMENTS:
+        if node.nodeType == node.ELEMENT_NODE and node.tagName.lower() in _FILESYSTEM_REF_ELEMENTS:
             ref = node.getAttribute("ref")
             if ref and "$" not in ref and not os.path.isabs(ref):
                 abs_path = (base_dir / ref).resolve()
