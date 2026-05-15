@@ -27,6 +27,7 @@ COMPARE
 
 from __future__ import annotations
 
+import hashlib
 import traceback
 from dataclasses import dataclass, field
 from enum import Enum
@@ -108,7 +109,7 @@ class BenchmarkConfig:
     def __post_init__(self) -> None:
         if self.mode == SweepMode.COMPARE and self.xml_path_b is None:
             raise ValueError("COMPARE mode requires xml_path_b to be set.")
-        if self.mode in (SweepMode.INCLUDE_ONLY, SweepMode.EXCLUDE_ONLY) and not self.detector_names:
+        if self.mode == SweepMode.INCLUDE_ONLY and not self.detector_names:
             raise ValueError(
                 f"{self.mode.value} mode requires detector_names to be non-empty."
             )
@@ -151,6 +152,26 @@ def run_sweep(config: BenchmarkConfig) -> list[RunResult]:
 
 
 # ---------------------------------------------------------------------------
+# Label helpers
+# ---------------------------------------------------------------------------
+
+_MAX_LABEL_DETECTORS = 5
+
+
+def _make_detector_label(prefix: str, names: set[str]) -> str:
+    """Build a run label from a prefix and a set of detector names.
+
+    Truncates to a stable hash suffix when the name count would make the label
+    unreadably long (> _MAX_LABEL_DETECTORS).
+    """
+    sorted_names = sorted(names)
+    if len(sorted_names) <= _MAX_LABEL_DETECTORS:
+        return prefix + "_".join(sorted_names)
+    digest = hashlib.sha1("_".join(sorted_names).encode()).hexdigest()[:8]
+    return f"{prefix}{len(sorted_names)}_detectors_{digest}"
+
+
+# ---------------------------------------------------------------------------
 # Sweep strategies
 # ---------------------------------------------------------------------------
 
@@ -164,7 +185,8 @@ def _run_baseline(config: BenchmarkConfig) -> list[RunResult]:
 
 def _run_removal_sweep(config: BenchmarkConfig) -> list[RunResult]:
     """Baseline + per-detector removal runs for FULL mode."""
-    assert config.mode == SweepMode.FULL
+    if config.mode != SweepMode.FULL:
+        raise ValueError(f"_run_removal_sweep called with unexpected mode: {config.mode}")
 
     detectors_to_remove = _resolve_detectors(config)
     results: list[RunResult] = []
@@ -212,7 +234,7 @@ def _run_include_only_sweep(config: BenchmarkConfig) -> list[RunResult]:
             "are unknown in this geometry."
         )
 
-    label = "only_" + "_".join(sorted(keep))
+    label = _make_detector_label("only_", keep)
     print(f"Keeping {len(keep)} detector(s): {sorted(keep)}\n")
     return _run_keep_only(config, keep, label)
 
@@ -223,6 +245,11 @@ def _run_exclude_only_sweep(config: BenchmarkConfig) -> list[RunResult]:
     all_names = set(get_detector_names(config.xml_path))
 
     exclude = set(config.detector_names)
+
+    if not exclude:
+        print("WARNING: no detectors to exclude — running with full geometry.")
+        return _run_keep_only(config, all_names, "baseline_all")
+
     unknown = exclude - all_names
     if unknown:
         print(f"WARNING: detectors not found in geometry, will be skipped: {sorted(unknown)}")
@@ -235,7 +262,7 @@ def _run_exclude_only_sweep(config: BenchmarkConfig) -> list[RunResult]:
         )
 
     keep = all_names - exclude
-    label = "without_" + "_".join(sorted(exclude))
+    label = _make_detector_label("without_", exclude)
     print(f"Excluding {len(exclude)} detector(s): {sorted(exclude)}\n")
     return _run_keep_only(config, keep, label)
 
@@ -250,7 +277,8 @@ def _run_keep_only(config: BenchmarkConfig, keep: set[str], label: str) -> list[
 def _run_compare(config: BenchmarkConfig) -> list[RunResult]:
     """Baseline of geometry A vs baseline of geometry B."""
 
-    assert config.xml_path_b is not None  # guaranteed by __post_init__
+    if config.xml_path_b is None:
+        raise ValueError("COMPARE mode requires xml_path_b — guaranteed by __post_init__.")
 
     results: list[RunResult] = []
 

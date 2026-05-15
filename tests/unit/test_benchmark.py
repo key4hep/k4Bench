@@ -70,9 +70,9 @@ class TestBenchmarkConfigValidation:
         with pytest.raises(ValueError, match="detector_names"):
             _make_config(tmp_path, mode=SweepMode.INCLUDE_ONLY, detector_names=[])
 
-    def test_exclude_mode_requires_detector_names(self, tmp_path):
-        with pytest.raises(ValueError, match="detector_names"):
-            _make_config(tmp_path, mode=SweepMode.EXCLUDE_ONLY, detector_names=[])
+    def test_exclude_mode_allows_empty_detector_names(self, tmp_path):
+        config = _make_config(tmp_path, mode=SweepMode.EXCLUDE_ONLY, detector_names=[])
+        assert config.mode == SweepMode.EXCLUDE_ONLY
 
     def test_full_mode_needs_no_extra_fields(self, tmp_path):
         config = _make_config(tmp_path, mode=SweepMode.FULL)
@@ -187,6 +187,9 @@ class TestExcludeMode:
     def test_single_run(self, results):
         assert len(results) == 1
 
+    def test_label_starts_with_without(self, results):
+        assert results[0].label.startswith("without_")
+
     def test_label_contains_excluded_detectors(self, results):
         label = results[0].label
         assert "InnerTracker" in label
@@ -194,6 +197,13 @@ class TestExcludeMode:
 
     def test_no_include_only_labels(self, results):
         assert not any(r.label.startswith("only_") for r in results)
+
+    def test_empty_exclude_runs_full_geometry(self, tmp_path):
+        config = _make_config(tmp_path, mode=SweepMode.EXCLUDE_ONLY, detector_names=[])
+        with patch("dd4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
+            results = run_sweep(config)
+        assert len(results) == 1
+        assert results[0].label == "baseline_all"
 
     def test_all_unknown_detectors_raises(self, tmp_path):
         config = _make_config(

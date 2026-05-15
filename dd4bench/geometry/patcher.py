@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import os
 import tempfile
+import warnings
 from pathlib import Path
 from xml.dom import minidom
 from xml.parsers.expat import ExpatError
@@ -131,14 +132,13 @@ def build_patched_xml(
         If *detector_name* is not found in any reachable XML file.
     """
     xml_path = xml_path.resolve()
-    geo_dir = xml_path.parent
 
     owner, patched_doc = _find_and_remove_detector(xml_path, detector_name)
 
     _remove_orphaned_plugins(patched_doc, {detector_name})
     _absolutize_refs(patched_doc, owner.parent)
     sub_tmp_path = _write_tmp_xml(patched_doc, None, f"no_{detector_name}_sub_")
-    top_tmp_path = _write_patched_top(xml_path, owner, sub_tmp_path, geo_dir, detector_name)
+    top_tmp_path = _write_patched_top(xml_path, owner, sub_tmp_path, detector_name)
 
     return top_tmp_path, sub_tmp_path
 
@@ -219,9 +219,17 @@ def _build_keep_only_xml(xml_path: Path, keep_names: set[str]) -> tuple[list[Pat
         # <include> refs point to a patched file in sub_tmp_map.  This handles
         # nested include chains (e.g. top → A → B where only B was patched: A
         # must reference B_tmp so ddsim sees the patched sub-tree).
+        max_iters = len(all_files) + 1
+        iteration = 0
         changed = True
         while changed:
+            if iteration >= max_iters:
+                raise RuntimeError(
+                    f"Include-graph fixpoint loop did not converge after {max_iters} "
+                    "iterations — possible cycle in include graph."
+                )
             changed = False
+            iteration += 1
             for f in all_files:
                 if f in sub_tmp_map or f == xml_path:
                     continue
@@ -301,10 +309,10 @@ def _find_and_remove_detector(
 
 
 def _remove_orphaned_plugins(doc: minidom.Document, removed_names: set[str]) -> None:
-    """Remove <plugin> elements whose first <argument value="..."> names a removed detector."""
+    """Remove <plugin> elements where any <argument value="..."> names a removed detector."""
     for plugin in list(doc.getElementsByTagName("plugin")):
         args = plugin.getElementsByTagName("argument")
-        if args and args[0].getAttribute("value") in removed_names:
+        if any(arg.getAttribute("value") in removed_names for arg in args):
             plugin.parentNode.removeChild(plugin)
 
 
@@ -324,6 +332,11 @@ def _absolutize_refs(doc: minidom.Document, base_dir: Path) -> None:
                 abs_path = (base_dir / ref).resolve()
                 if abs_path.exists():
                     node.setAttribute("ref", str(abs_path))
+                else:
+                    warnings.warn(
+                        f"Could not absolutize ref '{ref}' — path does not exist: {abs_path}",
+                        stacklevel=2,
+                    )
         for child in node.childNodes:
             _walk(child)
 
@@ -351,7 +364,6 @@ def _write_patched_top(
     original_top: Path,
     owner: Path,
     sub_tmp: Path,
-    geo_dir: Path,
     detector_name: str,
 ) -> Path:
     """Rewrite the top-level XML so the include pointing at *owner*
@@ -360,6 +372,7 @@ def _write_patched_top(
     Only the single include ref that resolves to *owner* is changed;
     everything else is left verbatim.
     """
+    geo_dir = original_top.parent
     try:
         top_doc = minidom.parse(str(original_top))
     except (ExpatError, OSError) as exc:
