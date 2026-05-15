@@ -20,7 +20,7 @@ INCLUDE_ONLY
     removed).  No baseline.
 EXCLUDE_ONLY
     Single run with the named detectors removed (all others active).
-    No baseline.
+    No additional baseline.  Empty detector_names falls back to a full-geometry run.
 COMPARE
     Baseline of geometry A vs baseline of geometry B — no patching.
 """
@@ -30,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import traceback
 import warnings
+from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -114,8 +115,8 @@ class BenchmarkConfig:
             raise ValueError(
                 f"{self.mode.value} mode requires detector_names to be non-empty."
             )
-        if len(self.detector_names) != len(set(self.detector_names)):
-            dupes = sorted({n for n in self.detector_names if self.detector_names.count(n) > 1})
+        counts = Counter(self.detector_names)
+        if dupes := sorted(n for n, c in counts.items() if c > 1):
             warnings.warn(f"Duplicate detector names will be ignored: {dupes}", stacklevel=2)
 
 
