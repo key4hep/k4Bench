@@ -324,19 +324,22 @@ def _compute_core_range(
     if mad > 0:
         # 0.6745 = Phi^{-1}(3/4): normalises MAD to be consistent with sigma
         modified_z = 0.6745 * np.abs(data - median) / mad
-        core = data[modified_z <= threshold]
+        mask = modified_z <= threshold
+        core = data[mask]
+        n_clipped = int((~mask).sum())
     else:
         core = data  # all values identical — no outliers to remove
+        n_clipped = 0
 
     if len(core) == 0:
         core = data
+        n_clipped = 0
 
     x_min, x_max = float(core.min()), float(core.max())
     margin = 0.05 * (x_max - x_min) if x_max > x_min else 0.01 * abs(x_max)
     x_min = max(0.0, x_min - margin)
     x_max = x_max + margin
 
-    n_clipped = int(np.sum((data < x_min) | (data > x_max)))
     return (x_min, x_max), n_clipped
 
 
@@ -428,10 +431,13 @@ def plot_event_timing(
         data = arrays[0]
         core_range, n_clipped = _compute_core_range(data, threshold=outlier_threshold)
         n_data = len(data)
-        mean    = float(data.mean())
-        std     = float(data.std(ddof=1))
-        sem     = std / np.sqrt(n_data)
-        se_std  = std / np.sqrt(2 * (n_data - 1))
+        mean   = float(data.mean())
+        if n_data > 1:
+            std    = float(data.std(ddof=1))
+            sem    = std / np.sqrt(n_data)
+            se_std = std / np.sqrt(2 * (n_data - 1))
+        else:
+            std = sem = se_std = float("nan")
 
         ax_dist.hist(
             data, bins=bins, range=core_range,
@@ -604,7 +610,9 @@ def plot_event_timing_overlay(
         for lbl, df in event_data.items()
     }
 
-    arrays   = {lbl: filtered_data[lbl]["event_time_s"].to_numpy() for lbl in label_list}
+    arrays = {lbl: filtered_data[lbl]["event_time_s"].to_numpy() for lbl in label_list}
+    if any(len(arr) == 0 for arr in arrays.values()):
+        raise ValueError("No events left after applying exclude_events.")
     all_data = np.concatenate(list(arrays.values()))
     core_range, _ = _compute_core_range(all_data, threshold=outlier_threshold)
 
@@ -614,9 +622,10 @@ def plot_event_timing_overlay(
             f"baseline_label '{ref_label}' not found in the loaded runs.\n"
             f"Available labels: {label_list}"
         )
-    ref_data = arrays[ref_label]
-    ref_mean = float(ref_data.mean())
-    ref_sem  = float(ref_data.std(ddof=1) / np.sqrt(len(ref_data)))
+    ref_data  = arrays[ref_label]
+    ref_mean  = float(ref_data.mean())
+    ref_n     = len(ref_data)
+    ref_sem   = float(ref_data.std(ddof=1) / np.sqrt(ref_n)) if ref_n > 1 else float("nan")
 
     # Compute shared bin edges so every panel uses identical binning.
     clipped_all = all_data[(all_data >= core_range[0]) & (all_data <= core_range[1])]
@@ -677,8 +686,11 @@ def plot_event_timing_overlay(
         color  = _PALETTE[i % len(_PALETTE)]
         n_data = len(data)
         mean   = float(data.mean())
-        std    = float(data.std(ddof=1))
-        sem    = std / np.sqrt(n_data)
+        if n_data > 1:
+            std = float(data.std(ddof=1))
+            sem = std / np.sqrt(n_data)
+        else:
+            std = sem = float("nan")
 
         total_clipped += int(np.sum((data < core_range[0]) | (data > core_range[1])))
 
@@ -755,7 +767,7 @@ def plot_event_timing_overlay(
         plt.setp(ax_seq.get_xticklabels(), visible=False)
         ax_seq.set_xlabel("")
 
-        other_label = next(l for l in label_list if l != ref_label)
+        other_label = next(lbl for lbl in label_list if lbl != ref_label)
         other_idx   = label_list.index(other_label)
         other_color = _PALETTE[other_idx % len(_PALETTE)]
 
@@ -901,10 +913,20 @@ def plot_compare(
         axes = [axes]
 
     for ax, metric in zip(axes, metrics):
-        val_a = float(row_a[metric].iloc[0]) if metric in row_a.columns else None
-        val_b = float(row_b[metric].iloc[0]) if metric in row_b.columns else None
+        if metric not in results.columns:
+            ax.set_visible(False)
+            continue
 
-        values = [val_a or 0.0, val_b or 0.0]
+        val_a_raw = row_a[metric].iloc[0]
+        val_b_raw = row_b[metric].iloc[0]
+
+        if not pd.notna(val_a_raw) or not pd.notna(val_b_raw):
+            ax.set_visible(False)
+            continue
+
+        val_a = float(val_a_raw)
+        val_b = float(val_b_raw)
+        values = [val_a, val_b]
         bars = ax.bar(
             [label_a, label_b],
             values,
@@ -914,14 +936,13 @@ def plot_compare(
             width=0.5,
         )
 
-        for bar, val in zip(bars, [val_a, val_b]):
-            if val is not None:
-                ax.text(
-                    bar.get_x() + bar.get_width() / 2,
-                    bar.get_height() * 1.02,
-                    f"{val:.2f}",
-                    ha="center", va="bottom", fontsize=9,
-                )
+        for bar, val in zip(bars, values):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() * 1.02,
+                f"{val:.2f}",
+                ha="center", va="bottom", fontsize=9,
+            )
 
         unit = _METRIC_UNITS.get(metric, "")
         ax.set_ylabel(f"{metric.replace('_', ' ')} {unit}".strip())

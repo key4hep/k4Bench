@@ -231,7 +231,7 @@ class TestPlotEventTiming:
         plt.close(fig)
 
     def test_empty_dir_raises(self, tmp_path):
-        with pytest.raises(ValueError, match="No \*_events.json"):
+        with pytest.raises(ValueError, match=r"No \*_events.json"):
             plot_event_timing(tmp_path)
 
 

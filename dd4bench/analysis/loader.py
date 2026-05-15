@@ -86,6 +86,10 @@ def load_event_timing(
             continue
         with path.open() as f:
             raw = json.load(f)
+        _required = ["event_numbers", "event_times_s", "event_rss_begin_mb", "event_rss_end_mb"]
+        _missing = [k for k in _required if k not in raw]
+        if _missing:
+            raise ValueError(f"{path} missing keys: {_missing}")
         df = pd.DataFrame(
             {
                 "event_number": raw["event_numbers"],
