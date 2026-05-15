@@ -118,6 +118,7 @@ class BenchmarkConfig:
         counts = Counter(self.detector_names)
         if dupes := sorted(n for n, c in counts.items() if c > 1):
             warnings.warn(f"Duplicate detector names will be ignored: {dupes}", stacklevel=2)
+            self.detector_names = list(dict.fromkeys(self.detector_names))
 
 
 # ---------------------------------------------------------------------------
