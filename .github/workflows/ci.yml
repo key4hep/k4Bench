@@ -59,16 +59,23 @@ jobs:
             echo '::endgroup::'
 
             echo '::group::Run unit tests'
-            python -m pytest tests/unit/ --cov=dd4bench --cov-report=
+            python -m pytest tests/unit/ --cov=dd4bench --cov-report= --junitxml=junit-unit.xml -o junit_family=legacy
             echo '::endgroup::'
 
             echo '::group::Run integration tests'
-            python -m pytest tests/integration/ --cov=dd4bench --cov-append --cov-report=xml:/workspace/coverage.xml
+            python -m pytest tests/integration/ --cov=dd4bench --cov-append --cov-report=xml:/workspace/coverage.xml --junitxml=junit-integration.xml -o junit_family=legacy
             echo '::endgroup::'
           "
-          
+
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: jbeirer/DD4bench
+
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/test-results-action@v1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: junit-unit.xml,junit-integration.xml
