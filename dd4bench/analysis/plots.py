@@ -353,6 +353,7 @@ def plot_event_timing(
     alpha: float = 0.8,
     figsize: tuple[float, float] | None = None,
     outlier_threshold: float = 3.5,
+    exclude_events: list[int] | None = None,
 ) -> plt.Figure:
     """Plot per-event timing distributions loaded from a log directory.
 
@@ -360,7 +361,8 @@ def plot_event_timing(
     of per-event wall-time distributions.
 
     Right panel: event wall time vs event number — useful for detecting
-    warm-up effects or outlier events.
+    warm-up effects or outlier events.  Excluded events are shown as open
+    red markers so their timing is still visible for reference.
 
     For the single-run histogram the x-range is automatically focused on
     the core of the distribution using a MAD-based modified Z-score.  A
@@ -388,12 +390,19 @@ def plot_event_timing(
         Modified Z-score threshold for the automatic range clipping
         (default: 3.5).  Increase to keep more of the tails; decrease
         to clip more aggressively.
+    exclude_events : list[int] or None
+        Event numbers to exclude from statistics and histograms.
+        Defaults to ``[0]`` (the first event typically includes geometry
+        initialisation overhead).  Pass ``[]`` to disable exclusion.
 
     Returns
     -------
     matplotlib.figure.Figure
     """
     _use_style()
+
+    if exclude_events is None:
+        exclude_events = [0]
 
     event_data = load_event_timing(log_dir, labels=labels)
     if not event_data:
@@ -407,7 +416,13 @@ def plot_event_timing(
 
     fig, (ax_dist, ax_seq) = plt.subplots(1, 2, figsize=figsize)
 
-    arrays = [event_data[lbl]["event_time_s"].to_numpy() for lbl in label_list]
+    # Filter excluded events for stats/histograms; keep full data for sequential plot.
+    filtered_data = {
+        lbl: df[~df["event_number"].isin(exclude_events)]
+        for lbl, df in event_data.items()
+    }
+
+    arrays = [filtered_data[lbl]["event_time_s"].to_numpy() for lbl in label_list]
 
     if n == 1:
         data = arrays[0]
@@ -478,14 +493,11 @@ def plot_event_timing(
     _apply_tick_style(ax_dist)
 
     for i, lbl in enumerate(label_list):
-        df = event_data[lbl]
+        df = filtered_data[lbl]
+        color = _PALETTE[i % len(_PALETTE)]
         ax_seq.plot(
-            df["event_number"],
-            df["event_time_s"],
-            color=_PALETTE[i % len(_PALETTE)],
-            alpha=0.7,
-            linewidth=1.0,
-            label=lbl,
+            df["event_number"], df["event_time_s"],
+            color=color, alpha=0.7, linewidth=1.0, label=lbl,
         )
 
     ax_seq.set_xlabel("Event number")
@@ -495,6 +507,14 @@ def plot_event_timing(
     _apply_tick_style(ax_seq)
     if n > 1:
         ax_seq.legend(loc="upper right", fontsize="small")
+
+    if exclude_events:
+        evts_str = ", ".join(str(e) for e in sorted(exclude_events))
+        warnings.warn(
+            f"plot_event_timing: event(s) {evts_str} excluded from statistics and histograms "
+            "(geometry initialisation overhead). Pass exclude_events=[] to disable.",
+            UserWarning, stacklevel=2,
+        )
 
     fig.suptitle("Per-Event Timing", fontweight="bold")
     fig.tight_layout()
@@ -516,6 +536,7 @@ def plot_event_timing_overlay(
     alpha: float = 0.5,
     figsize: tuple[float, float] | None = None,
     outlier_threshold: float = 3.5,
+    exclude_events: list[int] | None = None,
 ) -> plt.Figure:
     """Overlay per-event timing histograms for multiple runs.
 
@@ -543,12 +564,19 @@ def plot_event_timing_overlay(
         The figure grows taller automatically to fit the stats table.
     outlier_threshold : float
         Modified Z-score threshold for the shared x-range (default: 3.5).
+    exclude_events : list[int] or None
+        Event numbers to exclude from statistics and histograms.
+        Defaults to ``[0]`` (the first event typically includes geometry
+        initialisation overhead).  Pass ``[]`` to disable exclusion.
 
     Returns
     -------
     matplotlib.figure.Figure
     """
     _use_style()
+
+    if exclude_events is None:
+        exclude_events = [0]
 
     # Load all available runs first so we can show them in error messages.
     all_event_data = _ensure_event_data(source)
@@ -570,7 +598,13 @@ def plot_event_timing_overlay(
     label_list = list(event_data.keys())
     n_runs     = len(label_list)
 
-    arrays   = {lbl: event_data[lbl]["event_time_s"].to_numpy() for lbl in label_list}
+    # Filter excluded events for stats/histograms; keep full data for sequential plot.
+    filtered_data = {
+        lbl: df[~df["event_number"].isin(exclude_events)]
+        for lbl, df in event_data.items()
+    }
+
+    arrays   = {lbl: filtered_data[lbl]["event_time_s"].to_numpy() for lbl in label_list}
     all_data = np.concatenate(list(arrays.values()))
     core_range, _ = _compute_core_range(all_data, threshold=outlier_threshold)
 
@@ -676,8 +710,8 @@ def plot_event_timing_overlay(
         ax_dist.axvline(mean, color=color, linestyle="--", linewidth=1.2, alpha=0.7)
 
         ax_seq.plot(
-            event_data[lbl]["event_number"],
-            event_data[lbl]["event_time_s"],
+            filtered_data[lbl]["event_number"],
+            filtered_data[lbl]["event_time_s"],
             color=color, alpha=0.7, linewidth=1.0,
         )
 
@@ -706,6 +740,14 @@ def plot_event_timing_overlay(
     ax_seq.set_title("Event Time vs Event Number")
     ax_seq.grid(False)
     _apply_tick_style(ax_seq)
+
+    if exclude_events:
+        evts_str = ", ".join(str(e) for e in sorted(exclude_events))
+        warnings.warn(
+            f"plot_event_timing_overlay: event(s) {evts_str} excluded from statistics and histograms "
+            "(geometry initialisation overhead). Pass exclude_events=[] to disable.",
+            UserWarning, stacklevel=2,
+        )
 
     if two_run:
         # Hide x-axis labels on main panels — only ratio panels carry them.
