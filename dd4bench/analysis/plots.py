@@ -116,6 +116,11 @@ def _ensure_event_data(
             prefix = Path(path).name
             for lbl, df in load_event_timing(path).items():
                 key = lbl if lbl.startswith(f"{prefix}/") else f"{prefix}/{lbl}"
+                if key in out:
+                    raise ValueError(
+                        f"Duplicate label '{key}': two source paths share the directory name "
+                        f"'{prefix}'. Rename the directories to disambiguate."
+                    )
                 out[key] = df
         if labels is not None:
             out = {k: v for k, v in out.items()
@@ -131,6 +136,11 @@ def _detector_title(source: object) -> str | None:
     if isinstance(source, list) and source:
         return " vs ".join(Path(s).name for s in source)
     return None
+
+
+def _default_baseline(labels: list[str]) -> str:
+    """Return the first label as the default baseline reference."""
+    return labels[0]
 
 
 def _matches_baseline(label: str, baseline_label: str | None) -> bool:
@@ -203,9 +213,12 @@ def plot_run_overview(
     metric_cols = [col for col, _ in metrics if col in results.columns]
     df = results.dropna(subset=metric_cols, how="all").copy()
 
+    # Capture label order before display-sort so default baseline is deterministic.
+    load_order_labels = df["label"].tolist()
+
     baseline_vals: dict[str, float] = {}
     if relative:
-        _bl = baseline_label if baseline_label is not None else df["label"].iloc[0]
+        _bl = baseline_label if baseline_label is not None else _default_baseline(load_order_labels)
         bl_mask = df["label"].apply(lambda l: _matches_baseline(l, _bl))
         if not bl_mask.any():
             hint = " Pass baseline_label=... to specify the reference run." if baseline_label is None else ""
@@ -495,7 +508,7 @@ def plot_event_timing(
     # -----------------------------------------------------------------------
     # Reference run for Δμ (multi-run only)
     # -----------------------------------------------------------------------
-    ref_label = baseline_label if (baseline_label is not None) else label_list[0]
+    ref_label = baseline_label if baseline_label is not None else _default_baseline(label_list)
     if n > 1 and ref_label not in arrays:
         raise ValueError(
             f"baseline_label '{ref_label}' not found in loaded runs.\n"
@@ -844,7 +857,7 @@ def plot_event_memory(
     # -----------------------------------------------------------------------
     # Reference run for Δμ (multi-run only)
     # -----------------------------------------------------------------------
-    ref_label = baseline_label if (baseline_label is not None) else label_list[0]
+    ref_label = baseline_label if baseline_label is not None else _default_baseline(label_list)
     if n > 1 and ref_label not in arrays:
         raise ValueError(
             f"baseline_label '{ref_label}' not found in loaded runs.\n"
