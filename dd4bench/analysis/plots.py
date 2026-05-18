@@ -92,7 +92,10 @@ def _ensure_df(results: pd.DataFrame | str | Path | list) -> pd.DataFrame:
         frames = []
         for path in results:
             df = load_results(path).copy()
-            df["label"] = Path(path).name + "/" + df["label"].astype(str)
+            prefix = Path(path).name
+            df["label"] = df["label"].astype(str).apply(
+                lambda lbl, p=prefix: lbl if lbl.startswith(f"{p}/") else f"{p}/{lbl}"
+            )
             frames.append(df)
         return pd.concat(frames, ignore_index=True)
     return load_results(results)
@@ -112,7 +115,8 @@ def _ensure_event_data(
         for path in source:
             prefix = Path(path).name
             for lbl, df in load_event_timing(path).items():
-                out[f"{prefix}/{lbl}"] = df
+                key = lbl if lbl.startswith(f"{prefix}/") else f"{prefix}/{lbl}"
+                out[key] = df
         if labels is not None:
             out = {k: v for k, v in out.items()
                    if k in labels or any(k.endswith(f"/{w}") for w in labels)}
@@ -178,7 +182,7 @@ def plot_run_overview(
         is shown in the x-axis label.  Defaults to ``True``.
     baseline_label : str or None
         Which run to treat as 100 % when ``relative=True``.
-        Defaults to ``"baseline_all"``.  Ignored when ``relative=False``.
+        Defaults to the first run in the data.  Ignored when ``relative=False``.
 
     Returns
     -------
@@ -201,16 +205,20 @@ def plot_run_overview(
 
     baseline_vals: dict[str, float] = {}
     if relative:
-        _bl = baseline_label or "baseline_all"
+        _bl = baseline_label if baseline_label is not None else df["label"].iloc[0]
         bl_mask = df["label"].apply(lambda l: _matches_baseline(l, _bl))
         if not bl_mask.any():
-            raise ValueError(f"baseline_label '{_bl}' not found for relative=True.")
+            hint = " Pass baseline_label=... to specify the reference run." if baseline_label is None else ""
+            raise ValueError(f"baseline_label '{_bl}' not found for relative=True.{hint}")
         for col, _ in metrics:
             if col in df.columns:
                 bv = float(df.loc[bl_mask, col].iloc[0])
                 baseline_vals[col] = bv
-                if bv != 0:
-                    df[col] = df[col] / bv * 100
+                if bv == 0:
+                    raise ValueError(
+                        f"Baseline value for metric '{col}' is 0 — cannot normalise to percentage."
+                    )
+                df[col] = df[col] / bv * 100
 
     if "wall_time_s" in df.columns:
         df = df.sort_values("wall_time_s", ascending=True)
@@ -435,6 +443,8 @@ def plot_event_timing(
     per_run_ranges = [_compute_core_range(arr, threshold=outlier_threshold)[0] for arr in arrays.values()]
     core_range = (min(r[0] for r in per_run_ranges), max(r[1] for r in per_run_ranges))
     clipped_all = all_data[(all_data >= core_range[0]) & (all_data <= core_range[1])]
+    if len(clipped_all) == 0:
+        clipped_all = all_data
     _, common_edges = np.histogram(clipped_all, bins=bins)
 
     show_dist = show in ("both", "distribution")
@@ -782,6 +792,8 @@ def plot_event_memory(
     per_run_ranges = [_compute_core_range(arr, threshold=outlier_threshold)[0] for arr in arrays.values()]
     core_range = (min(r[0] for r in per_run_ranges), max(r[1] for r in per_run_ranges))
     clipped_all = all_data[(all_data >= core_range[0]) & (all_data <= core_range[1])]
+    if len(clipped_all) == 0:
+        clipped_all = all_data
     _, common_edges = np.histogram(clipped_all, bins=bins)
 
     show_dist = show in ("both", "distribution")
