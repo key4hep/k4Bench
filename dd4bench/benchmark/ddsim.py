@@ -240,7 +240,7 @@ def _run_include_only_sweep(config: BenchmarkConfig) -> list[RunResult]:
     if not keep:
         raise ValueError(
             f"No valid detectors to keep — all of {sorted(config.detector_names)} "
-            "are unknown in this geometry."
+            f"are unknown in this geometry.\nAvailable detectors: {sorted(all_names)}"
         )
 
     label = _make_detector_label("only_", keep)
@@ -267,7 +267,7 @@ def _run_exclude_only_sweep(config: BenchmarkConfig) -> list[RunResult]:
     if not exclude:
         raise ValueError(
             f"No valid detectors to exclude — all of {sorted(config.detector_names)} "
-            "are unknown in this geometry."
+            f"are unknown in this geometry.\nAvailable detectors: {sorted(all_names)}"
         )
 
     keep = all_names - exclude
