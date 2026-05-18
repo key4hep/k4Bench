@@ -48,26 +48,26 @@ def print_summary(results: list[RunResult]) -> None:
     print(sep)
 
 
-def save_csv(results: list[RunResult], path: Path) -> None:
-    """Write *results* to a CSV file at *path*.
+def save_csv(results: list[RunResult], log_dir: Path) -> None:
+    """Write one ``{label}_results.csv`` per result into *log_dir*.
 
     Parameters
     ----------
     results:
         Results to serialise; must be non-empty.
-    path:
-        Destination path.  Parent directories are created if absent.
+    log_dir:
+        Directory to write into.  Created if absent.
     """
     if not results:
         raise ValueError("Cannot write CSV: results list is empty.")
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
 
-    rows = [dataclasses.asdict(r) for r in results]
-
-    with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
-        writer.writeheader()
-        writer.writerows(rows)
-
-    print(f"Results saved to {path}")
+    for result in results:
+        row = dataclasses.asdict(result)
+        path = log_dir / f"{result.label}_results.csv"
+        with open(path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=row.keys())
+            writer.writeheader()
+            writer.writerow(row)
+        print(f"Results saved to {path}")

@@ -18,9 +18,6 @@ from dd4bench.cli import _build_config, _build_parser
 
 PARSER = _build_parser()
 XML_A = Path("geometry_a.xml")
-XML_B = Path("geometry_b.xml")
-
-
 def _parse(args: list[str]):
     return PARSER.parse_args(args)
 
@@ -30,27 +27,18 @@ def _config(args: list[str]):
 
 
 # ---------------------------------------------------------------------------
-# Geometry argument (--xml / --compare are mutually exclusive)
+# Geometry argument
 # ---------------------------------------------------------------------------
 
 
 class TestGeometryArgs:
-    def test_xml_required_without_compare(self):
+    def test_xml_required(self):
         with pytest.raises(SystemExit):
             _parse([])
-
-    def test_xml_and_compare_mutually_exclusive(self):
-        with pytest.raises(SystemExit):
-            _parse(["--xml", str(XML_A), "--compare", str(XML_A), str(XML_B)])
 
     def test_xml_sets_xml_path(self):
         config = _config(["--xml", str(XML_A)])
         assert config.xml_path == XML_A
-
-    def test_compare_sets_both_paths(self):
-        config = _config(["--compare", str(XML_A), str(XML_B)])
-        assert config.xml_path == XML_A
-        assert config.xml_path_b == XML_B
 
 
 # ---------------------------------------------------------------------------
@@ -74,10 +62,6 @@ class TestSweepMode:
     def test_exclude_only_sets_mode(self):
         config = _config(["--xml", str(XML_A), "--exclude-only", "EcalBarrel"])
         assert config.mode == SweepMode.EXCLUDE_ONLY
-
-    def test_compare_sets_compare_mode(self):
-        config = _config(["--compare", str(XML_A), str(XML_B)])
-        assert config.mode == SweepMode.COMPARE
 
     def test_include_only_and_exclude_only_mutually_exclusive(self):
         with pytest.raises(SystemExit):
@@ -142,8 +126,9 @@ class TestDdsimArgs:
 
 class TestOutputOptions:
     def test_default_output_dir(self):
-        config = _config(["--xml", str(XML_A)])
-        assert config.log_dir == Path("logs")
+        # default is derived in main(), not _build_config(); arg stays None here
+        args = _parse(["--xml", str(XML_A)])
+        assert args.output_dir is None
 
     def test_custom_output_dir(self):
         config = _config(["--xml", str(XML_A), "--output-dir", "/tmp/bench"])
@@ -170,19 +155,11 @@ class TestOutputOptions:
 
 
 # ---------------------------------------------------------------------------
-# CSV / pickle args (parsed but not executed here)
+# Pickle args (parsed but not executed here)
 # ---------------------------------------------------------------------------
 
 
-class TestCsvPickleArgs:
-    def test_default_csv(self):
-        args = _parse(["--xml", str(XML_A)])
-        assert args.csv == "results.csv"
-
-    def test_custom_csv(self):
-        args = _parse(["--xml", str(XML_A), "--csv", "my_results.csv"])
-        assert args.csv == "my_results.csv"
-
+class TestPickleArgs:
     def test_pickle_default_is_none(self):
         args = _parse(["--xml", str(XML_A)])
         assert args.pickle is None

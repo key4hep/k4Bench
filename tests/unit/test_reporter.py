@@ -28,37 +28,32 @@ def _make_result(label: str, returncode: int = 0) -> RunResult:
 
 class TestSaveCsv:
     def test_file_is_created(self, tmp_path):
-        path = tmp_path / "results.csv"
-        save_csv([_make_result("baseline_all")], path)
-        assert path.exists()
+        save_csv([_make_result("baseline_all")], tmp_path)
+        assert (tmp_path / "baseline_all_results.csv").exists()
 
-    def test_parent_dirs_created(self, tmp_path):
-        path = tmp_path / "nested" / "dir" / "results.csv"
-        save_csv([_make_result("baseline_all")], path)
-        assert path.exists()
+    def test_one_file_per_result(self, tmp_path):
+        save_csv([_make_result("baseline_all"), _make_result("without_Ecal")], tmp_path)
+        assert (tmp_path / "baseline_all_results.csv").exists()
+        assert (tmp_path / "without_Ecal_results.csv").exists()
 
-    def test_csv_has_header_row(self, tmp_path):
-        path = tmp_path / "results.csv"
-        save_csv([_make_result("baseline_all")], path)
-        rows = list(csv.DictReader(path.open()))
+    def test_log_dir_created(self, tmp_path):
+        log_dir = tmp_path / "nested" / "dir"
+        save_csv([_make_result("baseline_all")], log_dir)
+        assert (log_dir / "baseline_all_results.csv").exists()
+
+    def test_csv_has_header_and_one_row(self, tmp_path):
+        save_csv([_make_result("baseline_all")], tmp_path)
+        rows = list(csv.DictReader((tmp_path / "baseline_all_results.csv").open()))
         assert len(rows) == 1
 
-    def test_csv_contains_all_results(self, tmp_path):
-        path = tmp_path / "results.csv"
-        results = [_make_result("baseline_all"), _make_result("without_Ecal")]
-        save_csv(results, path)
-        rows = list(csv.DictReader(path.open()))
-        assert len(rows) == 2
-
     def test_csv_label_field_correct(self, tmp_path):
-        path = tmp_path / "results.csv"
-        save_csv([_make_result("baseline_all")], path)
-        rows = list(csv.DictReader(path.open()))
+        save_csv([_make_result("baseline_all")], tmp_path)
+        rows = list(csv.DictReader((tmp_path / "baseline_all_results.csv").open()))
         assert rows[0]["label"] == "baseline_all"
 
     def test_empty_results_raises(self, tmp_path):
         with pytest.raises(ValueError, match="empty"):
-            save_csv([], tmp_path / "results.csv")
+            save_csv([], tmp_path)
 
 
 class TestPrintSummary:

@@ -8,14 +8,18 @@ from pathlib import Path
 import pandas as pd
 
 
-def load_results(csv_path: str | Path) -> pd.DataFrame:
-    """Load benchmark results from a CSV file into a DataFrame.
+def load_results(log_dir: str | Path, labels: list[str] | None = None) -> pd.DataFrame:
+    """Load benchmark results from a log directory into a DataFrame.
+
+    Each ``{label}_results.csv`` file written by ``dd4bench`` is loaded and
+    concatenated into a single DataFrame.
 
     Parameters
     ----------
-    csv_path : str or Path
-        Path to the CSV written by ``dd4bench`` (or
-        :func:`~dd4bench.results.reporter.save_csv`).
+    log_dir : str or Path
+        Directory containing ``*_results.csv`` files.
+    labels : list[str] or None
+        Load only these run labels.  Loads all ``*_results.csv`` files when ``None``.
 
     Returns
     -------
@@ -23,7 +27,22 @@ def load_results(csv_path: str | Path) -> pd.DataFrame:
         One row per run. Float columns are cast to ``float64``;
         integer columns that may contain NaN use nullable ``Int64``.
     """
-    df = pd.read_csv(csv_path)
+    log_dir = Path(log_dir)
+    _suffix = "_results.csv"
+
+    if labels is not None:
+        candidates = [(log_dir / f"{lbl}{_suffix}", lbl) for lbl in labels]
+        missing = [lbl for path, lbl in candidates if not path.exists()]
+        if missing:
+            raise ValueError(f"Missing result files for labels: {missing}")
+        paths = [path for path, _ in candidates if path.exists()]
+    else:
+        paths = sorted(log_dir.glob(f"*{_suffix}"))
+
+    if not paths:
+        raise ValueError(f"No *_results.csv files found in '{log_dir}'.")
+
+    df = pd.concat([pd.read_csv(p) for p in paths], ignore_index=True)
 
     float_cols = [
         "wall_time_s", "user_cpu_s", "sys_cpu_s",

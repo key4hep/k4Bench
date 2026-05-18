@@ -45,7 +45,6 @@ def _make_config(tmp_path: Path, **kwargs) -> BenchmarkConfig:
         log_dir=tmp_path / "logs",
         mode=SweepMode.FULL,
         detector_names=[],
-        xml_path_b=None,
         setup_script=None,
         extra_args=[],
     )
@@ -62,10 +61,6 @@ def _mock_run(**kw):
 
 
 class TestBenchmarkConfigValidation:
-    def test_compare_mode_requires_xml_path_b(self, tmp_path):
-        with pytest.raises(ValueError, match="xml_path_b"):
-            _make_config(tmp_path, mode=SweepMode.COMPARE, xml_path_b=None)
-
     def test_include_mode_requires_detector_names(self, tmp_path):
         with pytest.raises(ValueError, match="detector_names"):
             _make_config(tmp_path, mode=SweepMode.INCLUDE_ONLY, detector_names=[])
@@ -77,13 +72,6 @@ class TestBenchmarkConfigValidation:
     def test_full_mode_needs_no_extra_fields(self, tmp_path):
         config = _make_config(tmp_path, mode=SweepMode.FULL)
         assert config.mode == SweepMode.FULL
-
-    def test_compare_mode_valid_with_xml_path_b(self, tmp_path):
-        config = _make_config(
-            tmp_path, mode=SweepMode.COMPARE, xml_path_b=MINIMAL_XML
-        )
-        assert config.xml_path_b == MINIMAL_XML
-
 
 # ---------------------------------------------------------------------------
 # FULL mode
@@ -214,35 +202,6 @@ class TestExcludeMode:
         with patch("dd4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
             with pytest.raises(ValueError, match="No valid detectors to exclude"):
                 run_sweep(config)
-
-
-# ---------------------------------------------------------------------------
-# COMPARE mode
-# ---------------------------------------------------------------------------
-
-
-class TestCompareMode:
-    @pytest.fixture
-    def results(self, tmp_path):
-        config = _make_config(
-            tmp_path,
-            mode=SweepMode.COMPARE,
-            xml_path_b=MINIMAL_XML,
-        )
-        with patch("dd4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
-            return run_sweep(config)
-
-    def test_exactly_two_results(self, results):
-        assert len(results) == 2
-
-    def test_geometry_a_label(self, results):
-        assert results[0].label == "geometry_a"
-
-    def test_geometry_b_label(self, results):
-        assert results[1].label == "geometry_b"
-
-    def test_no_removal_runs(self, results):
-        assert not any("without_" in r.label for r in results)
 
 
 # ---------------------------------------------------------------------------

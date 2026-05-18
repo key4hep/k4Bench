@@ -26,16 +26,10 @@ Simulate with all detectors except specific ones::
              --exclude-only ECalBarrel HCalBarrel \\
              --ddsim-args="--enableGun --gun.particle e- --gun.distribution uniform"
 
-Compare two geometry versions::
-
-    dd4bench --compare ALLEGRO_v03.xml ALLEGRO_v04.xml \\
-             --ddsim-args="--enableGun --gun.particle e- --gun.distribution uniform"
-
 Control output::
 
     dd4bench --xml ALLEGRO.xml \\
              --output-dir logs/ \\
-             --csv results.csv \\
              --pickle results.pkl \\
              --ddsim-args="--enableGun --gun.particle e- --gun.distribution uniform"
 """
@@ -55,9 +49,8 @@ from dd4bench.results.reporter import print_summary, save_csv
 # Defaults
 # ---------------------------------------------------------------------------
 
-DEFAULT_OUTPUT_DIR  = Path("logs")
-DEFAULT_CSV         = Path("results.csv")
-DEFAULT_OUTPUT_FILE = Path("/tmp/dd4bench_out.edm4hep.root")
+DEFAULT_LOG_ROOT     = Path("logs")
+DEFAULT_OUTPUT_FILE  = Path("/tmp/dd4bench_out.edm4hep.root")
 DEFAULT_EVENTS      = 2
 
 
@@ -74,6 +67,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    if args.output_dir is None:
+        args.output_dir = DEFAULT_LOG_ROOT / args.xml.stem
+
     try:
         config = _build_config(args)
     except (ValueError, SystemExit) as exc:
@@ -84,8 +80,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print_summary(results)
 
-    csv_path = args.output_dir / (args.csv or DEFAULT_CSV)
-    save_csv(results, csv_path)
+    save_csv(results, args.output_dir)
 
     if args.pickle:
         pickle_path = args.output_dir / args.pickle
@@ -114,20 +109,13 @@ def _build_parser() -> argparse.ArgumentParser:
         epilog=__doc__,
     )
 
-    # --- geometry (mutually exclusive: --xml or --compare) ---
-    geo = parser.add_mutually_exclusive_group(required=True)
-    geo.add_argument(
+    # --- geometry ---
+    parser.add_argument(
         "--xml",
         metavar="PATH",
         type=Path,
+        required=True,
         help="Top-level compact XML for the geometry under test.",
-    )
-    geo.add_argument(
-        "--compare",
-        nargs=2,
-        metavar=("XML_A", "XML_B"),
-        type=Path,
-        help="Compare two geometry versions head-to-head (no sweep).",
     )
 
     # --- sweep mode (mutually exclusive) ---
@@ -188,16 +176,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=DEFAULT_OUTPUT_DIR,
+        default=None,
         metavar="DIR",
         dest="output_dir",
-        help=f"Directory for logs and results (default: {DEFAULT_OUTPUT_DIR}).",
-    )
-    parser.add_argument(
-        "--csv",
-        metavar="FILENAME",
-        default=str(DEFAULT_CSV),
-        help=f"CSV filename written inside --output-dir (default: {DEFAULT_CSV}).",
+        help=(
+            "Directory for logs and results. "
+            "Defaults to logs/<xml_stem>/."
+        ),
     )
     parser.add_argument(
         "--pickle",
@@ -225,20 +210,6 @@ def _build_config(args: argparse.Namespace) -> BenchmarkConfig:
     """Translate parsed CLI arguments into a :class:`BenchmarkConfig`."""
 
     extra_args = shlex.split(args.ddsim_args) if args.ddsim_args else []
-
-    # --- COMPARE mode ---
-    if args.compare:
-        xml_a, xml_b = args.compare
-        return BenchmarkConfig(
-            xml_path=xml_a,
-            xml_path_b=xml_b,
-            n_events=args.events,
-            output_file=args.output_file,
-            log_dir=args.output_dir,
-            mode=SweepMode.COMPARE,
-            extra_args=extra_args,
-            verbose=args.verbose
-        )
 
     # --- sweep modes ---
     if args.include_only:
