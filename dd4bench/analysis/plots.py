@@ -253,6 +253,9 @@ def plot_run_overview(
     n = len(labels)
 
     n_metrics = len(metrics)
+    if n_metrics == 0:
+        raise ValueError("metrics must contain at least one metric")
+
     ncols = 2
     nrows = (n_metrics + 1) // ncols
 
@@ -261,7 +264,7 @@ def plot_run_overview(
         figsize=(14, max(4.0, 0.45 * n + 2.5) * nrows / 2),
         sharey=True,
     )
-    axes_flat = axes.flatten() if n_metrics > 1 else [axes]
+    axes_flat = np.atleast_1d(axes).ravel()
 
     for ax, (col, ylabel) in zip(axes_flat, metrics):
         if col not in df.columns:
@@ -381,8 +384,7 @@ def plot_event_timing(
     of per-event wall-time distributions.
 
     Right panel: event wall time vs event number — useful for detecting
-    warm-up effects or outlier events.  Excluded events are shown as open
-    red markers so their timing is still visible for reference.
+    warm-up effects or outlier events.
 
     For the single-run histogram the x-range is automatically focused on
     the core of the distribution using a MAD-based modified Z-score.  A
@@ -441,6 +443,12 @@ def plot_event_timing(
         lbl: df[~df["event_number"].isin(exclude_events)]
         for lbl, df in event_data.items()
     }
+    empty_labels = [lbl for lbl, df in filtered_data.items() if df.empty]
+    if empty_labels:
+        raise ValueError(
+            "No events left after applying exclude_events for: "
+            + ", ".join(empty_labels)
+        )
 
     arrays = [filtered_data[lbl]["event_time_s"].to_numpy() for lbl in label_list]
 
@@ -501,8 +509,8 @@ def plot_event_timing(
 
         ax_dist.set_xticks(range(n))
         ax_dist.set_xticklabels(label_list, rotation=30, ha="right")
-        ax_dist.set_xlabel("Event time (s)")
-        ax_dist.set_ylabel("Count")
+        ax_dist.set_xlabel("Run")
+        ax_dist.set_ylabel("Event time (s)")
         ax_dist.set_title("Event Time Distribution")
         ax_dist.grid(False)
 
@@ -637,9 +645,7 @@ def plot_event_timing_overlay(
 
     # Compute shared bin edges so every panel uses identical binning.
     clipped_all = all_data[(all_data >= core_range[0]) & (all_data <= core_range[1])]
-    _, common_edges = np.histogram(
-        clipped_all, bins=bins if not isinstance(bins, str) else "auto"
-    )
+    _, common_edges = np.histogram(clipped_all, bins=bins)
 
     # ---------------------------------------------------------------------------
     # Layout
