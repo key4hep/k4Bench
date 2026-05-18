@@ -73,9 +73,9 @@ def cli_run():
         )
 
         row: dict[str, str] = {}
-        csv_path = output_dir / "results.csv"
-        if csv_path.exists():
-            with open(csv_path, newline="") as f:
+        csv_files = sorted(output_dir.glob("*_results.csv"))
+        if csv_files:
+            with open(csv_files[0], newline="") as f:
                 rows = list(csv.DictReader(f))
             if rows:
                 row = rows[0]

@@ -18,11 +18,9 @@ import pytest
 from dd4bench.analysis.loader import load_results
 from dd4bench.analysis.plots import (
     _compute_core_range,
-    plot_compare,
     plot_event_timing,
-    plot_event_timing_overlay,
+    plot_event_memory,
     plot_run_overview,
-    plot_sweep,
 )
 
 
@@ -31,11 +29,13 @@ from dd4bench.analysis.plots import (
 # ---------------------------------------------------------------------------
 
 
-def _write_csv(path: Path, rows: list[dict]) -> None:
-    with path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
-        writer.writeheader()
-        writer.writerows(rows)
+def _write_results_csv(log_dir: Path, rows: list[dict]) -> None:
+    for row in rows:
+        path = log_dir / f"{row['label']}_results.csv"
+        with path.open("w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=row.keys())
+            writer.writeheader()
+            writer.writerow(row)
 
 
 def _run_row(label: str, wall: float, rss: float, returncode: int = 0) -> dict:
@@ -63,9 +63,8 @@ def _sweep_df(tmp_path: Path) -> pd.DataFrame:
         _run_row("without_HcalBarrel", wall=9.0, rss=1900.0),
         _run_row("without_InnerTracker", wall=9.5, rss=1950.0),
     ]
-    path = tmp_path / "results.csv"
-    _write_csv(path, rows)
-    return load_results(path)
+    _write_results_csv(tmp_path, rows)
+    return load_results(tmp_path)
 
 
 def _compare_df(tmp_path: Path) -> pd.DataFrame:
@@ -73,9 +72,8 @@ def _compare_df(tmp_path: Path) -> pd.DataFrame:
         _run_row("geometry_a", wall=10.0, rss=2000.0),
         _run_row("geometry_b", wall=8.5,  rss=1800.0),
     ]
-    path = tmp_path / "results.csv"
-    _write_csv(path, rows)
-    return load_results(path)
+    _write_results_csv(tmp_path, rows)
+    return load_results(tmp_path)
 
 
 def _write_event_json(path: Path, n: int = 5) -> None:
@@ -121,37 +119,6 @@ class TestComputeCoreRange:
 
 
 # ---------------------------------------------------------------------------
-# plot_sweep
-# ---------------------------------------------------------------------------
-
-
-class TestPlotSweep:
-    def test_returns_figure(self, tmp_path):
-        df = _sweep_df(tmp_path)
-        fig = plot_sweep(df)
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
-
-    def test_top_n(self, tmp_path):
-        df = _sweep_df(tmp_path)
-        fig = plot_sweep(df, top_n=2)
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
-
-    def test_missing_baseline_raises(self, tmp_path):
-        df = _sweep_df(tmp_path)
-        with pytest.raises(ValueError, match="not found"):
-            plot_sweep(df, baseline_label="nonexistent")
-
-    def test_warns_on_missing_metrics(self, tmp_path):
-        df = _sweep_df(tmp_path)
-        df.loc[df["label"] == "without_EcalBarrel", "wall_time_s"] = float("nan")
-        with pytest.warns(UserWarning, match="missing"):
-            fig = plot_sweep(df)
-        plt.close(fig)
-
-
-# ---------------------------------------------------------------------------
 # plot_event_timing
 # ---------------------------------------------------------------------------
 
@@ -170,10 +137,59 @@ class TestPlotEventTiming:
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
+    def test_three_runs_returns_figure(self, tmp_path):
+        _write_event_json(tmp_path / "baseline_all_events.json")
+        _write_event_json(tmp_path / "without_Ecal_events.json")
+        _write_event_json(tmp_path / "without_Hcal_events.json")
+        fig = plot_event_timing(tmp_path)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
     def test_label_filter(self, tmp_path):
         _write_event_json(tmp_path / "baseline_all_events.json")
         _write_event_json(tmp_path / "without_Ecal_events.json")
         fig = plot_event_timing(tmp_path, labels=["baseline_all"])
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_show_distribution(self, tmp_path):
+        _write_event_json(tmp_path / "baseline_all_events.json")
+        _write_event_json(tmp_path / "without_Ecal_events.json")
+        fig = plot_event_timing(tmp_path, show="distribution")
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_show_sequence(self, tmp_path):
+        _write_event_json(tmp_path / "baseline_all_events.json")
+        _write_event_json(tmp_path / "without_Ecal_events.json")
+        fig = plot_event_timing(tmp_path, show="sequence")
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_show_invalid_raises(self, tmp_path):
+        _write_event_json(tmp_path / "baseline_all_events.json")
+        with pytest.raises(ValueError, match="show must be"):
+            plot_event_timing(tmp_path, show="invalid")
+
+    def test_custom_baseline(self, tmp_path):
+        _write_event_json(tmp_path / "baseline_all_events.json")
+        _write_event_json(tmp_path / "without_Ecal_events.json")
+        fig = plot_event_timing(tmp_path, baseline_label="without_Ecal")
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_invalid_baseline_raises(self, tmp_path):
+        _write_event_json(tmp_path / "baseline_all_events.json")
+        _write_event_json(tmp_path / "without_Ecal_events.json")
+        with pytest.raises(ValueError, match="baseline_label"):
+            plot_event_timing(tmp_path, baseline_label="nonexistent")
+
+    def test_accepts_preloaded_dict(self, tmp_path):
+        _write_event_json(tmp_path / "baseline_all_events.json")
+        _write_event_json(tmp_path / "without_Ecal_events.json")
+        from dd4bench.analysis.loader import load_event_timing
+        data = load_event_timing(tmp_path)
+        fig = plot_event_timing(data)
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
@@ -236,102 +252,6 @@ class TestPlotEventTiming:
 
 
 # ---------------------------------------------------------------------------
-# plot_compare
-# ---------------------------------------------------------------------------
-
-
-class TestPlotCompare:
-    def test_returns_figure(self, tmp_path):
-        df = _compare_df(tmp_path)
-        fig = plot_compare(df)
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
-
-    def test_custom_labels(self, tmp_path):
-        rows = [
-            _run_row("v03", wall=10.0, rss=2000.0),
-            _run_row("v04", wall=8.5,  rss=1800.0),
-        ]
-        path = tmp_path / "results.csv"
-        _write_csv(path, rows)
-        df = load_results(path)
-        fig = plot_compare(df, label_a="v03", label_b="v04")
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
-
-    def test_custom_metrics(self, tmp_path):
-        df = _compare_df(tmp_path)
-        fig = plot_compare(df, metrics=["wall_time_s"])
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
-
-    def test_missing_label_raises(self, tmp_path):
-        df = _compare_df(tmp_path)
-        with pytest.raises(ValueError, match="not found"):
-            plot_compare(df, label_a="nonexistent")
-
-
-# ---------------------------------------------------------------------------
-# plot_event_timing_overlay
-# ---------------------------------------------------------------------------
-
-
-class TestPlotEventTimingOverlay:
-    def test_returns_figure(self, tmp_path):
-        _write_event_json(tmp_path / "without_Ecal_events.json")
-        _write_event_json(tmp_path / "without_Hcal_events.json")
-        fig = plot_event_timing_overlay(tmp_path)
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
-
-    def test_accepts_preloaded_dict(self, tmp_path):
-        _write_event_json(tmp_path / "without_Ecal_events.json")
-        _write_event_json(tmp_path / "without_Hcal_events.json")
-        from dd4bench.analysis.loader import load_event_timing
-        data = load_event_timing(tmp_path)
-        fig = plot_event_timing_overlay(data)
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
-
-    def test_label_filter(self, tmp_path):
-        _write_event_json(tmp_path / "without_Ecal_events.json")
-        _write_event_json(tmp_path / "without_Hcal_events.json")
-        _write_event_json(tmp_path / "without_Inner_events.json")
-        fig = plot_event_timing_overlay(tmp_path, labels=["without_Ecal", "without_Hcal"])
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
-
-    def test_custom_baseline(self, tmp_path):
-        _write_event_json(tmp_path / "without_Ecal_events.json")
-        _write_event_json(tmp_path / "without_Hcal_events.json")
-        fig = plot_event_timing_overlay(tmp_path, baseline_label="without_Hcal")
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
-
-    def test_invalid_baseline_raises(self, tmp_path):
-        _write_event_json(tmp_path / "without_Ecal_events.json")
-        _write_event_json(tmp_path / "without_Hcal_events.json")
-        with pytest.raises(ValueError, match="baseline_label"):
-            plot_event_timing_overlay(tmp_path, baseline_label="nonexistent")
-
-    def test_single_run_raises(self, tmp_path):
-        _write_event_json(tmp_path / "without_Ecal_events.json")
-        with pytest.raises(ValueError, match="at least 2 runs"):
-            plot_event_timing_overlay(tmp_path)
-
-    def test_empty_raises(self, tmp_path):
-        with pytest.raises(ValueError, match="No event timing data"):
-            plot_event_timing_overlay(tmp_path)
-
-    def test_custom_alpha_and_bins(self, tmp_path):
-        _write_event_json(tmp_path / "without_Ecal_events.json", n=50)
-        _write_event_json(tmp_path / "without_Hcal_events.json", n=50)
-        fig = plot_event_timing_overlay(tmp_path, alpha=0.3, bins=20)
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
-
-
-# ---------------------------------------------------------------------------
 # plot_run_overview
 # ---------------------------------------------------------------------------
 
@@ -343,12 +263,6 @@ class TestPlotRunOverview:
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
-    def test_no_baseline_highlight(self, tmp_path):
-        df = _sweep_df(tmp_path)
-        fig = plot_run_overview(df, baseline_label=None)
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
-
     def test_custom_metrics(self, tmp_path):
         df = _sweep_df(tmp_path)
         fig = plot_run_overview(df, metrics=[("wall_time_s", "Wall (s)"), ("peak_rss_mb", "RSS (MB)")])
@@ -357,6 +271,17 @@ class TestPlotRunOverview:
 
     def test_compare_results(self, tmp_path):
         df = _compare_df(tmp_path)
-        fig = plot_run_overview(df, baseline_label=None)
+        fig = plot_run_overview(df)
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
+
+    def test_relative_mode(self, tmp_path):
+        df = _sweep_df(tmp_path)
+        fig = plot_run_overview(df, relative=True)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_relative_missing_baseline_raises(self, tmp_path):
+        df = _sweep_df(tmp_path)
+        with pytest.raises(ValueError, match="not found"):
+            plot_run_overview(df, relative=True, baseline_label="nonexistent")

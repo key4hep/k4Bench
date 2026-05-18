@@ -21,8 +21,6 @@ INCLUDE_ONLY
 EXCLUDE_ONLY
     Single run with the named detectors removed (all others active).
     No additional baseline.  Empty detector_names falls back to a full-geometry run.
-COMPARE
-    Baseline of geometry A vs baseline of geometry B — no patching.
 """
 
 from __future__ import annotations
@@ -57,7 +55,6 @@ class SweepMode(Enum):
     FULL         = "full"         # simulate with each detector individually removed
     INCLUDE_ONLY = "include_only" # single run with only the named detectors active
     EXCLUDE_ONLY = "exclude_only" # single run with only the named detectors removed
-    COMPARE      = "compare"      # baseline of geometry A vs baseline of geometry B
 
 
 # ---------------------------------------------------------------------------
@@ -85,9 +82,7 @@ class BenchmarkConfig:
     detector_names:
         For ``INCLUDE_ONLY`` — simulate with only these detectors active.
         For ``EXCLUDE_ONLY`` — simulate with all detectors except these.
-        Ignored for ``FULL`` and ``COMPARE`` modes.
-    xml_path_b:
-        Second geometry XML, required for ``COMPARE`` mode only.
+        Ignored for ``FULL`` mode.
     setup_script:
         Optional shell script sourced before each ddsim invocation.
     extra_args:
@@ -103,14 +98,11 @@ class BenchmarkConfig:
     log_dir: Path
     mode: SweepMode = SweepMode.FULL
     detector_names: list[str] = field(default_factory=list)
-    xml_path_b: Path | None = None
     setup_script: Path | None = None
     extra_args: list[str] = field(default_factory=list)
     verbose: bool = False
 
     def __post_init__(self) -> None:
-        if self.mode == SweepMode.COMPARE and self.xml_path_b is None:
-            raise ValueError("COMPARE mode requires xml_path_b to be set.")
         if self.mode == SweepMode.INCLUDE_ONLY and not self.detector_names:
             raise ValueError(
                 f"{self.mode.value} mode requires detector_names to be non-empty."
@@ -147,8 +139,6 @@ def run_sweep(config: BenchmarkConfig) -> list[RunResult]:
 
     if config.mode == SweepMode.BASELINE:
         return _run_baseline(config)
-    elif config.mode == SweepMode.COMPARE:
-        return _run_compare(config)
     elif config.mode == SweepMode.INCLUDE_ONLY:
         return _run_include_only_sweep(config)
     elif config.mode == SweepMode.EXCLUDE_ONLY:
@@ -281,27 +271,6 @@ def _run_keep_only(config: BenchmarkConfig, keep: set[str], label: str) -> list[
     with patched_geometry_keep_only(config.xml_path, keep) as tmp_xml:
         _print_run_header(1, 1, label, tmp_xml)
         return [_timed_run(xml_path=tmp_xml, label=label, config=config)]
-
-
-def _run_compare(config: BenchmarkConfig) -> list[RunResult]:
-    """Baseline of geometry A vs baseline of geometry B."""
-
-    if config.xml_path_b is None:
-        raise ValueError("COMPARE mode requires xml_path_b — guaranteed by __post_init__.")
-
-    results: list[RunResult] = []
-
-    _print_run_header(1, 2, "geometry_a", config.xml_path)
-    results.append(
-        _timed_run(xml_path=config.xml_path, label="geometry_a", config=config)
-    )
-
-    _print_run_header(2, 2, "geometry_b", config.xml_path_b)
-    results.append(
-        _timed_run(xml_path=config.xml_path_b, label="geometry_b", config=config)
-    )
-
-    return results
 
 
 # ---------------------------------------------------------------------------

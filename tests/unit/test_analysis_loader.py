@@ -17,11 +17,14 @@ from dd4bench.analysis.loader import load_event_timing, load_results
 # ---------------------------------------------------------------------------
 
 
-def _write_csv(path: Path, rows: list[dict]) -> None:
-    with path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
-        writer.writeheader()
-        writer.writerows(rows)
+def _write_results_csv(log_dir: Path, rows: list[dict]) -> None:
+    """Write one {label}_results.csv per row into log_dir."""
+    for row in rows:
+        path = log_dir / f"{row['label']}_results.csv"
+        with path.open("w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=row.keys())
+            writer.writeheader()
+            writer.writerow(row)
 
 
 def _minimal_row(label: str, returncode: int = 0) -> dict:
@@ -59,44 +62,52 @@ def _write_event_json(path: Path, n_events: int = 5) -> None:
 
 class TestLoadResults:
     def test_returns_dataframe(self, tmp_path):
-        path = tmp_path / "results.csv"
-        _write_csv(path, [_minimal_row("baseline_all")])
-        df = load_results(path)
+        _write_results_csv(tmp_path, [_minimal_row("baseline_all")])
+        df = load_results(tmp_path)
         assert isinstance(df, pd.DataFrame)
 
     def test_row_count(self, tmp_path):
-        path = tmp_path / "results.csv"
-        rows = [_minimal_row("baseline_all"), _minimal_row("without_Ecal")]
-        _write_csv(path, rows)
-        df = load_results(path)
+        _write_results_csv(tmp_path, [_minimal_row("baseline_all"), _minimal_row("without_Ecal")])
+        df = load_results(tmp_path)
         assert len(df) == 2
 
     def test_float_columns_are_float(self, tmp_path):
-        path = tmp_path / "results.csv"
-        _write_csv(path, [_minimal_row("baseline_all")])
-        df = load_results(path)
+        _write_results_csv(tmp_path, [_minimal_row("baseline_all")])
+        df = load_results(tmp_path)
         assert df["wall_time_s"].dtype == float
         assert df["peak_rss_mb"].dtype == float
 
     def test_int_columns_are_int64(self, tmp_path):
-        path = tmp_path / "results.csv"
-        _write_csv(path, [_minimal_row("baseline_all")])
-        df = load_results(path)
+        _write_results_csv(tmp_path, [_minimal_row("baseline_all")])
+        df = load_results(tmp_path)
         assert str(df["n_events"].dtype) == "Int64"
         assert str(df["returncode"].dtype) == "Int64"
 
     def test_missing_metrics_become_nan(self, tmp_path):
-        path = tmp_path / "results.csv"
         row = _minimal_row("failed_run", returncode=1)
         row["wall_time_s"] = ""
-        _write_csv(path, [row])
-        df = load_results(path)
+        _write_results_csv(tmp_path, [row])
+        df = load_results(tmp_path)
         assert pd.isna(df["wall_time_s"].iloc[0])
 
+    def test_label_filter(self, tmp_path):
+        _write_results_csv(tmp_path, [_minimal_row("baseline_all"), _minimal_row("without_Ecal")])
+        df = load_results(tmp_path, labels=["baseline_all"])
+        assert len(df) == 1
+        assert df["label"].iloc[0] == "baseline_all"
+
+    def test_missing_label_raises(self, tmp_path):
+        _write_results_csv(tmp_path, [_minimal_row("baseline_all")])
+        with pytest.raises(ValueError, match="Missing result files"):
+            load_results(tmp_path, labels=["nonexistent"])
+
+    def test_empty_dir_raises(self, tmp_path):
+        with pytest.raises(ValueError, match=r"No \*_results.csv"):
+            load_results(tmp_path)
+
     def test_accepts_string_path(self, tmp_path):
-        path = tmp_path / "results.csv"
-        _write_csv(path, [_minimal_row("baseline_all")])
-        df = load_results(str(path))
+        _write_results_csv(tmp_path, [_minimal_row("baseline_all")])
+        df = load_results(str(tmp_path))
         assert len(df) == 1
 
 

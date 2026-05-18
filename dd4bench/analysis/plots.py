@@ -84,116 +84,70 @@ def _apply_tick_style(ax: plt.Axes) -> None:
     ax.tick_params(which="minor", length=2.5)
 
 
-def _ensure_df(results: pd.DataFrame | str | Path) -> pd.DataFrame:
-    """Accept either a DataFrame or a CSV path and return a DataFrame."""
+def _ensure_df(results: pd.DataFrame | str | Path | list) -> pd.DataFrame:
+    """Accept a DataFrame, a single log-dir path, or a list of paths."""
     if isinstance(results, pd.DataFrame):
         return results
+    if isinstance(results, list):
+        frames = []
+        for path in results:
+            df = load_results(path).copy()
+            prefix = Path(path).name
+            df["label"] = df["label"].astype(str).apply(
+                lambda lbl, p=prefix: lbl if lbl.startswith(f"{p}/") else f"{p}/{lbl}"
+            )
+            frames.append(df)
+        return pd.concat(frames, ignore_index=True)
     return load_results(results)
 
 
 def _ensure_event_data(
-    source: dict[str, pd.DataFrame] | str | Path,
+    source: dict[str, pd.DataFrame] | str | Path | list,
     labels: list[str] | None = None,
 ) -> dict[str, pd.DataFrame]:
-    """Accept either a pre-loaded dict or a log-dir path and return event data."""
+    """Accept a pre-loaded dict, a single log-dir path, or a list of paths."""
     if isinstance(source, dict):
         if labels is not None:
             return {k: v for k, v in source.items() if k in labels}
         return source
+    if isinstance(source, list):
+        out: dict[str, pd.DataFrame] = {}
+        for path in source:
+            prefix = Path(path).name
+            for lbl, df in load_event_timing(path).items():
+                key = lbl if lbl.startswith(f"{prefix}/") else f"{prefix}/{lbl}"
+                if key in out:
+                    raise ValueError(
+                        f"Duplicate label '{key}': two source paths share the directory name "
+                        f"'{prefix}'. Rename the directories to disambiguate."
+                    )
+                out[key] = df
+        if labels is not None:
+            out = {k: v for k, v in out.items()
+                   if k in labels or any(k.endswith(f"/{w}") for w in labels)}
+        return out
     return load_event_timing(source, labels=labels)
 
 
-# ---------------------------------------------------------------------------
-# plot_sweep
-# ---------------------------------------------------------------------------
+def _detector_title(source: object) -> str | None:
+    """Return a display name from path(s); None for pre-loaded data."""
+    if isinstance(source, (str, Path)):
+        return Path(source).name
+    if isinstance(source, list) and source:
+        return " vs ".join(Path(s).name for s in source)
+    return None
 
 
-def plot_sweep(
-    results: pd.DataFrame | str | Path,
-    *,
-    baseline_label: str = "baseline_all",
-    top_n: int | None = None,
-) -> plt.Figure:
-    """Plot a FULL-sweep result: wall-time and RSS delta vs baseline.
+def _default_baseline(labels: list[str]) -> str:
+    """Return the first label as the default baseline reference."""
+    return labels[0]
 
-    Each bar shows the computational cost of a subdetector — i.e. how much
-    wall time and peak RSS are saved when that detector is removed.  Bars
-    are sorted so the most expensive detector appears at the top.
-    Positive values mean the run is faster / uses less memory than the
-    baseline; negative values mean it is slower / larger.
 
-    Parameters
-    ----------
-    results : pd.DataFrame or str or Path
-        Results DataFrame or path to a CSV file written by ``dd4bench``.
-    baseline_label : str
-        Label of the baseline run (default: ``"baseline_all"``).
-    top_n : int or None
-        If set, show only the *top_n* most expensive detectors (by wall time).
-
-    Returns
-    -------
-    matplotlib.figure.Figure
-    """
-    _use_style()
-    results = _ensure_df(results)
-
-    baseline = results[results["label"] == baseline_label]
-    if baseline.empty:
-        raise ValueError(f"Baseline label '{baseline_label}' not found in results.")
-
-    base_wall = float(baseline["wall_time_s"].iloc[0])
-    base_rss  = float(baseline["peak_rss_mb"].iloc[0])
-
-    runs = results[results["label"] != baseline_label].copy()
-
-    missing = runs["wall_time_s"].isna() | runs["peak_rss_mb"].isna()
-    if missing.any():
-        warnings.warn(
-            f"Dropping {missing.sum()} run(s) with missing wall_time_s or peak_rss_mb.",
-            stacklevel=2,
-        )
-        runs = runs[~missing]
-
-    runs["wall_time_saved_s"] = base_wall - runs["wall_time_s"]
-    runs["rss_saved_mb"]      = base_rss  - runs["peak_rss_mb"]
-
-    # Sort ascending so barh places most expensive at the top
-    runs = runs.sort_values("wall_time_saved_s", ascending=True)
-
-    if top_n is not None:
-        runs = runs.tail(top_n)
-
-    names = runs["label"].str.replace(r"^without_", "", regex=True).tolist()
-    n = len(names)
-
-    fig, (ax_wall, ax_rss) = plt.subplots(
-        1, 2,
-        figsize=(14, max(4.0, 0.45 * n + 2.5)),
-        sharey=True,
-    )
-
-    colors_w = [_BLUE if v >= 0 else _RED for v in runs["wall_time_saved_s"]]
-    ax_wall.barh(names, runs["wall_time_saved_s"], color=colors_w, edgecolor="white", linewidth=0.5)
-    ax_wall.axvline(0, color="black", linewidth=0.8, linestyle="--", alpha=0.5)
-    ax_wall.set_xlabel("Wall time saved vs baseline (s)")
-    ax_wall.set_title(f"Wall Time Impact\n(baseline = {base_wall:.1f} s)")
-    ax_wall.xaxis.set_major_formatter(mticker.FormatStrFormatter("%.1f"))
-
-    colors_r = [_BLUE if v >= 0 else _RED for v in runs["rss_saved_mb"]]
-    ax_rss.barh(names, runs["rss_saved_mb"], color=colors_r, edgecolor="white", linewidth=0.5)
-    ax_rss.axvline(0, color="black", linewidth=0.8, linestyle="--", alpha=0.5)
-    ax_rss.set_xlabel("Peak RSS saved vs baseline (MB)")
-    ax_rss.set_title(f"Memory Impact\n(baseline = {base_rss:.0f} MB)")
-    ax_rss.xaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f"))
-
-    fig.suptitle(
-        "Detector Sweep — Computational Cost per Subdetector",
-        fontweight="bold",
-    )
-    fig.tight_layout()
-    plt.close(fig)
-    return fig
+def _matches_baseline(label: str, baseline_label: str | None) -> bool:
+    """True if label is the baseline, supporting both plain and prefixed labels."""
+    if baseline_label is None:
+        return False
+    return label == baseline_label or label.endswith(f"/{baseline_label}")
 
 
 # ---------------------------------------------------------------------------
@@ -209,48 +163,89 @@ _OVERVIEW_METRICS = [
 
 
 def plot_run_overview(
-    results: pd.DataFrame | str | Path,
+    results: pd.DataFrame | str | Path | list[str | Path],
     *,
+    labels: list[str] | None = None,
     metrics: list[tuple[str, str]] | None = None,
-    baseline_label: str | None = "baseline_all",
+    relative: bool = True,
+    baseline_label: str | None = None,
 ) -> plt.Figure:
-    """Plot absolute run metrics for all runs in a 2 × 2 panel grid.
+    """Plot run metrics for all runs in a 2 × 2 panel grid.
 
-    Useful as a first look at a sweep or comparison result — shows wall
-    time, memory, CPU, and throughput side by side.  The baseline run
-    (if present) is highlighted in a distinct colour.
+    Each metric is drawn as a horizontal bar chart with value annotations.
 
     Parameters
     ----------
-    results : pd.DataFrame or str or Path
-        Results DataFrame or path to a CSV file written by ``dd4bench``.
+    results : pd.DataFrame, str/Path, or list of str/Path
+        Results DataFrame, a single log-dir path, or a list of log-dir paths
+        for multi-detector comparisons.  When a list is given, run labels are
+        prefixed with the directory name (e.g. ``ALLEGRO_o1_v03/baseline_all``).
+    labels : list[str] or None
+        Show only these run labels.  Supports plain (``"baseline_all"``) and
+        prefixed (``"ALLEGRO_o1_v03/baseline_all"``) labels.
     metrics : list of (column, axis-label) pairs or None
-        Which metrics to plot and how to label them.  Defaults to
-        wall_time_s, peak_rss_mb, user_cpu_s, events_per_sec.
+        Which metrics to plot.  Defaults to wall_time_s, peak_rss_mb,
+        user_cpu_s, events_per_sec.
+    relative : bool
+        If ``True``, normalise every metric to the baseline run (= 100 %).
+        A reference line is drawn at 100 % and the absolute baseline value
+        is shown in the x-axis label.  Defaults to ``True``.
     baseline_label : str or None
-        Label of the baseline run; highlighted in a different colour.
-        Pass ``None`` to disable highlighting.
+        Which run to treat as 100 % when ``relative=True``.
+        Defaults to the first run in the data.  Ignored when ``relative=False``.
 
     Returns
     -------
     matplotlib.figure.Figure
     """
     _use_style()
+    det_title = _detector_title(results)
     results = _ensure_df(results)
 
     if metrics is None:
         metrics = _OVERVIEW_METRICS
 
-    # Drop rows where all selected metrics are NaN
+    if labels is not None:
+        results = results[results["label"].apply(
+            lambda lbl: lbl in labels or any(lbl.endswith(f"/{w}") for w in labels)
+        )]
+
     metric_cols = [col for col, _ in metrics if col in results.columns]
     df = results.dropna(subset=metric_cols, how="all").copy()
 
-    # Sort by wall_time_s descending (slowest at top for barh) if available
+    # Capture label order before display-sort so default baseline is deterministic.
+    load_order_labels = df["label"].tolist()
+
+    baseline_vals: dict[str, float] = {}
+    if relative:
+        _bl = baseline_label if baseline_label is not None else _default_baseline(load_order_labels)
+        bl_mask = df["label"].apply(lambda l: _matches_baseline(l, _bl))
+        if not bl_mask.any():
+            hint = " Pass baseline_label=... to specify the reference run." if baseline_label is None else ""
+            raise ValueError(f"baseline_label '{_bl}' not found for relative=True.{hint}")
+        for col, _ in metrics:
+            if col in df.columns:
+                bv = float(df.loc[bl_mask, col].iloc[0])
+                baseline_vals[col] = bv
+                if bv == 0:
+                    raise ValueError(
+                        f"Baseline value for metric '{col}' is 0 — cannot normalise to percentage."
+                    )
+                df[col] = df[col] / bv * 100
+
     if "wall_time_s" in df.columns:
         df = df.sort_values("wall_time_s", ascending=True)
 
-    labels = df["label"].tolist()
-    n = len(labels)
+    run_labels = df["label"].tolist()
+    n_runs = len(run_labels)
+
+    prefixes = [lbl.split("/")[0] if "/" in lbl else None for lbl in run_labels]
+    unique_prefixes = list(dict.fromkeys(p for p in prefixes if p is not None))
+    if unique_prefixes:
+        prefix_color = {p: _PALETTE[i % len(_PALETTE)] for i, p in enumerate(unique_prefixes)}
+        bar_colors = [prefix_color[p] for p in prefixes]
+    else:
+        bar_colors = [_BLUE] * n_runs
 
     n_metrics = len(metrics)
     if n_metrics == 0:
@@ -261,7 +256,7 @@ def plot_run_overview(
 
     fig, axes = plt.subplots(
         nrows, ncols,
-        figsize=(14, max(4.0, 0.45 * n + 2.5) * nrows / 2),
+        figsize=(14, max(4.0, 0.45 * n_runs + 2.5) * nrows / 2),
         sharey=True,
     )
     axes_flat = np.atleast_1d(axes).ravel()
@@ -272,35 +267,39 @@ def plot_run_overview(
             continue
 
         values = df[col].tolist()
-        colors = [
-            "#ff7f0e" if lbl == baseline_label else _BLUE
-            for lbl in labels
-        ]
+        valid_v = [v for v in values if pd.notna(v)]
+        x_max = max(valid_v) if valid_v else 1.0
 
-        ax.barh(labels, values, color=colors, edgecolor="white", linewidth=0.5)
-        ax.set_xlabel(ylabel)
-        ax.set_title(ylabel.split(" (")[0])
-        ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
+        ax.barh(run_labels, values, color=bar_colors,
+                edgecolor="white", linewidth=0.6, height=0.55)
 
-    # Hide any unused axes
+        for i, val in enumerate(values):
+            if pd.notna(val):
+                bar_y = i
+                label_str = f"{val:.1f}%" if relative else f"{val:.4g}"
+                ax.text(val + 0.01 * x_max, bar_y,
+                        label_str, va="center", ha="left", fontsize=8, color="#444444")
+
+        if relative:
+            ax.axvline(100, color="black", linewidth=0.8, linestyle="--", alpha=0.4)
+            ax.xaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f%%"))
+            bv = baseline_vals.get(col)
+            unit = _METRIC_UNITS.get(col, "")
+            bv_str = f"{bv:.4g} {unit}".strip() if bv is not None else ""
+            xlabel = ylabel.split(" (")[0] + f" % of baseline = {bv_str}"
+        else:
+            ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
+            xlabel = ylabel
+        ax.set_xlabel(xlabel)
+        ax.set_xlim(left=0, right=x_max * 1.18)
+        ax.grid(False)
+        _apply_tick_style(ax)
+
     for ax in axes_flat[n_metrics:]:
         ax.set_visible(False)
 
-    if baseline_label is not None:
-        from matplotlib.patches import Patch
-        legend_elements = [
-            Patch(facecolor="#ff7f0e", label=f"Baseline ({baseline_label})"),
-            Patch(facecolor=_BLUE,     label="Sweep runs"),
-        ]
-        fig.legend(
-            handles=legend_elements,
-            loc="lower center",
-            ncol=2,
-            bbox_to_anchor=(0.5, -0.02),
-            frameon=False,
-        )
-
-    fig.suptitle("Run Metrics Overview", fontweight="bold")
+    title = f"Run Metrics Overview ({det_title})" if det_title else "Run Metrics Overview"
+    fig.suptitle(title, fontweight="bold")
     fig.tight_layout()
     plt.close(fig)
     return fig
@@ -369,76 +368,77 @@ def _compute_core_range(
 
 
 def plot_event_timing(
-    log_dir: str | Path,
+    source: dict[str, pd.DataFrame] | str | Path | list[str | Path],
     *,
     labels: list[str] | None = None,
+    baseline_label: str | None = None,
+    show: str = "both",
     bins: int | str = "auto",
-    alpha: float = 0.8,
+    alpha: float = 0.7,
     figsize: tuple[float, float] | None = None,
     outlier_threshold: float = 3.5,
     exclude_events: list[int] | None = None,
 ) -> plt.Figure:
-    """Plot per-event timing distributions loaded from a log directory.
+    """Plot per-event timing distributions for one or more runs.
 
-    Left panel: violin plots (multiple runs) or histogram (single run)
-    of per-event wall-time distributions.
-
-    Right panel: event wall time vs event number — useful for detecting
-    warm-up effects or outlier events.
-
-    For the single-run histogram the x-range is automatically focused on
-    the core of the distribution using a MAD-based modified Z-score.  A
-    note is added to the plot whenever events are clipped, and a Python
-    warning is raised if more than 5 % are excluded or an outlier is
-    extremely far from the core.
+    Single run: histogram with μ ± SEM and σ ± SE(σ) shown directly on the plot.
+    Multiple runs: overlaid histograms with a stats comparison table and, for
+    exactly two runs with ``show="both"``, bin-by-bin ratio panels.
 
     Parameters
     ----------
-    log_dir : str or Path
-        Directory containing ``*_events.json`` files written by the
-        DD4benchTimingAction plugin.
+    source : dict[str, pd.DataFrame], str/Path, or list of str/Path
+        Pre-loaded dict from :func:`~dd4bench.analysis.loader.load_event_timing`,
+        a single log-dir path, or a list of log-dir paths for multi-detector
+        comparisons.  When a list is given, run labels are prefixed with the
+        directory name (e.g. ``ALLEGRO_o1_v03/baseline_all``).
     labels : list[str] or None
-        If set, only load data for these run labels.
+        Restrict to these run labels.  Loads all runs when ``None``.
+    baseline_label : str or None
+        Reference run for Δμ in the stats table (multi-run only).
+        Defaults to the first run.
+    show : {"both", "distribution", "sequence"}
+        ``"both"`` (default): histogram + event-time-vs-event-number side by side.
+        ``"distribution"``: histogram panel only.
+        ``"sequence"``: event-time-vs-event-number panel only.
     bins : int or str
-        Bin specification for the single-run histogram.  Any value
-        accepted by :func:`matplotlib.pyplot.hist` is valid; ``"auto"``
-        (the default) lets NumPy choose the number of bins via the
-        Sturges / Freedman-Diaconis estimator.
+        Bin specification for histograms.  ``"auto"`` uses NumPy's estimator.
     alpha : float
-        Opacity of the histogram bars (default: 0.8).
+        Histogram opacity (default: 0.7).
     figsize : (width, height) or None
-        Figure size in inches.  Defaults to ``(12, 4.5)``.
+        Size of the main plot area in inches.  Defaults to ``(12, 4.5)`` for
+        ``show="both"`` and ``(6, 4.5)`` for single-panel modes.
     outlier_threshold : float
-        Modified Z-score threshold for the automatic range clipping
-        (default: 3.5).  Increase to keep more of the tails; decrease
-        to clip more aggressively.
+        MAD-based modified Z-score threshold for x-range clipping (default: 3.5).
     exclude_events : list[int] or None
         Event numbers to exclude from statistics and histograms.
-        Defaults to ``[0]`` (the first event typically includes geometry
-        initialisation overhead).  Pass ``[]`` to disable exclusion.
+        Defaults to ``[0]``.  Pass ``[]`` to disable.
 
     Returns
     -------
     matplotlib.figure.Figure
     """
+    if show not in ("both", "distribution", "sequence"):
+        raise ValueError(f"show must be 'both', 'distribution', or 'sequence', got {show!r}")
+
     _use_style()
+    det_title = _detector_title(source)
 
     if exclude_events is None:
         exclude_events = [0]
 
-    event_data = load_event_timing(log_dir, labels=labels)
+    all_event_data = _ensure_event_data(source)
+    available = sorted(all_event_data.keys())
+    event_data = _ensure_event_data(source, labels=labels)
     if not event_data:
-        raise ValueError(f"No *_events.json files found in '{log_dir}'.")
+        raise ValueError(
+            f"No *_events.json files found for labels={labels}.\n"
+            f"Available: {available}"
+        )
 
     label_list = list(event_data.keys())
     n = len(label_list)
 
-    if figsize is None:
-        figsize = (12, 4.5)
-
-    fig, (ax_dist, ax_seq) = plt.subplots(1, 2, figsize=figsize)
-
-    # Filter excluded events for stats/histograms; keep full data for sequential plot.
     filtered_data = {
         lbl: df[~df["event_number"].isin(exclude_events)]
         for lbl, df in event_data.items()
@@ -450,357 +450,207 @@ def plot_event_timing(
             + ", ".join(empty_labels)
         )
 
-    arrays = [filtered_data[lbl]["event_time_s"].to_numpy() for lbl in label_list]
-
-    if n == 1:
-        data = arrays[0]
-        core_range, n_clipped = _compute_core_range(data, threshold=outlier_threshold)
-        mean, std, sem, se_std = _compute_stats(data)
-
-        ax_dist.hist(
-            data, bins=bins, range=core_range,
-            color=_BLUE, edgecolor="none", alpha=alpha,
-        )
-        ax_dist.axvline(mean, color="black", linestyle="--", linewidth=1.2, alpha=0.5)
-        ax_dist.set_xlim(core_range)
-        ax_dist.set_ylabel("Count")
-        ax_dist.set_title(f"Event Time Distribution ({label_list[0]})")
-        ax_dist.grid(False)
-
-        # μ ± SEM and σ ± SE(σ) box: top-left, inside plot area
-        ax_dist.text(
-            0.03, 0.97,
-            f"$\\mu = {mean:.4g} \\pm {sem:.2g}$ s\n$\\sigma = {std:.4g} \\pm {se_std:.2g}$ s",
-            transform=ax_dist.transAxes,
-            ha="left", va="top",
-            fontsize=9,
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="none", alpha=0.7),
-        )
-
-        # Clipping note below the x-axis label — never overlaps data or mean line.
-        # Extra blank line adds visual separation from the axis label.
-        xlabel = "Event time (s)"
-        if n_clipped > 0:
-            frac = n_clipped / len(data)
-            note = f"{n_clipped} event(s) ({frac:.1%}) outside plotted range"
-            xlabel += f"\n\n{note}"
-            extreme = data.max() > _OUTLIER_EXTREME_RATIO * core_range[1]
-            if frac > _OUTLIER_FRACTION_WARN or extreme:
-                warnings.warn(
-                    f"plot_event_timing: {note}. "
-                    f"Max value: {data.max():.4g} s, core upper bound: {core_range[1]:.4g} s. "
-                    "Check for simulation anomalies or adjust outlier_threshold.",
-                    stacklevel=2,
-                )
-        ax_dist.set_xlabel(xlabel)
-
-    else:
-        parts = ax_dist.violinplot(
-            arrays,
-            positions=range(n),
-            showmedians=True,
-            showextrema=True,
-        )
-        for i, body in enumerate(parts["bodies"]):
-            body.set_facecolor(_PALETTE[i % len(_PALETTE)])
-            body.set_alpha(alpha)
-        parts["cmedians"].set_color("black")
-        parts["cmedians"].set_linewidth(1.5)
-
-        ax_dist.set_xticks(range(n))
-        ax_dist.set_xticklabels(label_list, rotation=30, ha="right")
-        ax_dist.set_xlabel("Run")
-        ax_dist.set_ylabel("Event time (s)")
-        ax_dist.set_title("Event Time Distribution")
-        ax_dist.grid(False)
-
-    _apply_tick_style(ax_dist)
-
-    for i, lbl in enumerate(label_list):
-        df = filtered_data[lbl]
-        color = _PALETTE[i % len(_PALETTE)]
-        ax_seq.plot(
-            df["event_number"], df["event_time_s"],
-            color=color, alpha=0.7, linewidth=1.0, label=lbl,
-        )
-
-    ax_seq.set_xlabel("Event number")
-    ax_seq.set_ylabel("Event time (s)")
-    ax_seq.set_title("Event Time vs Event Number")
-    ax_seq.grid(False)
-    _apply_tick_style(ax_seq)
-    if n > 1:
-        ax_seq.legend(loc="upper right", fontsize="small")
-
-    if exclude_events and exclude_events != _DEFAULT_EXCLUDE_EVENTS:
-        evts_str = ", ".join(str(e) for e in sorted(exclude_events))
-        warnings.warn(
-            f"plot_event_timing: event(s) {evts_str} excluded from statistics and histograms. "
-            "Pass exclude_events=[] to disable.",
-            UserWarning, stacklevel=2,
-        )
-
-    fig.suptitle("Per-Event Timing", fontweight="bold")
-    fig.tight_layout()
-    plt.close(fig)
-    return fig
-
-
-# ---------------------------------------------------------------------------
-# plot_event_timing_overlay
-# ---------------------------------------------------------------------------
-
-
-def plot_event_timing_overlay(
-    source: dict[str, pd.DataFrame] | str | Path,
-    *,
-    labels: list[str] | None = None,
-    baseline_label: str | None = None,
-    bins: int | str = "auto",
-    alpha: float = 0.5,
-    figsize: tuple[float, float] | None = None,
-    outlier_threshold: float = 3.5,
-    exclude_events: list[int] | None = None,
-) -> plt.Figure:
-    """Overlay per-event timing histograms for multiple runs.
-
-    All distributions share an x-axis range derived from the combined data
-    via MAD-based outlier clipping.  Each run gets its own colour; a dashed
-    vertical line marks its mean.  A stats table below the panels shows
-    μ ± SEM, σ, and Δμ ± δ(Δμ) relative to the baseline run.
-
-    Parameters
-    ----------
-    source : dict[str, pd.DataFrame] or str or Path
-        Either a pre-loaded dict from :func:`~dd4bench.analysis.loader.load_event_timing`
-        or a path to a log directory containing ``*_events.json`` files.
-    labels : list[str] or None
-        If set, restrict to these run labels.
-    baseline_label : str or None
-        Label to use as the reference for Δμ.  Defaults to the first run.
-    bins : int or str
-        Bin specification passed to :func:`matplotlib.pyplot.hist`.
-        ``"auto"`` (default) lets NumPy choose via Sturges / FD.
-    alpha : float
-        Opacity of each histogram (default: 0.5).
-    figsize : (width, height) or None
-        Size of the *plot area* in inches (default: ``(12, 4.5)``).
-        The figure grows taller automatically to fit the stats table.
-    outlier_threshold : float
-        Modified Z-score threshold for the shared x-range (default: 3.5).
-    exclude_events : list[int] or None
-        Event numbers to exclude from statistics and histograms.
-        Defaults to ``[0]`` (the first event typically includes geometry
-        initialisation overhead).  Pass ``[]`` to disable exclusion.
-
-    Returns
-    -------
-    matplotlib.figure.Figure
-    """
-    _use_style()
-
-    if exclude_events is None:
-        exclude_events = [0]
-
-    # Load all available runs first so we can show them in error messages.
-    all_event_data = _ensure_event_data(source)
-    available = sorted(all_event_data.keys())
-
-    event_data = _ensure_event_data(source, labels=labels)
-    if not event_data:
-        raise ValueError(
-            f"No event timing data found for labels={labels}.\n"
-            f"Available labels in '{source}': {available}"
-        )
-    if len(event_data) < 2:
-        raise ValueError(
-            "plot_event_timing_overlay requires at least 2 runs. "
-            "Use plot_event_timing for a single run.\n"
-            f"Available labels: {available}"
-        )
-
-    label_list = list(event_data.keys())
-    n_runs     = len(label_list)
-
-    # Filter excluded events for stats/histograms; keep full data for sequential plot.
-    filtered_data = {
-        lbl: df[~df["event_number"].isin(exclude_events)]
-        for lbl, df in event_data.items()
-    }
-
     arrays = {lbl: filtered_data[lbl]["event_time_s"].to_numpy() for lbl in label_list}
-    if any(len(arr) == 0 for arr in arrays.values()):
-        raise ValueError("No events left after applying exclude_events.")
     all_data = np.concatenate(list(arrays.values()))
-    core_range, _ = _compute_core_range(all_data, threshold=outlier_threshold)
-
-    ref_label = baseline_label if baseline_label is not None else label_list[0]
-    if ref_label not in arrays:
-        raise ValueError(
-            f"baseline_label '{ref_label}' not found in the loaded runs.\n"
-            f"Available labels: {label_list}"
-        )
-    ref_data = arrays[ref_label]
-    ref_mean, _, ref_sem, _ = _compute_stats(ref_data)
-
-    # Compute shared bin edges so every panel uses identical binning.
+    # Per-run ranges unioned so no distribution gets clipped by a differently-scaled run.
+    per_run_ranges = [_compute_core_range(arr, threshold=outlier_threshold)[0] for arr in arrays.values()]
+    core_range = (min(r[0] for r in per_run_ranges), max(r[1] for r in per_run_ranges))
     clipped_all = all_data[(all_data >= core_range[0]) & (all_data <= core_range[1])]
+    if len(clipped_all) == 0:
+        clipped_all = all_data
     _, common_edges = np.histogram(clipped_all, bins=bins)
 
-    # ---------------------------------------------------------------------------
-    # Layout
-    # Two-run case: nested GridSpec keeps the plot→ratio gap tight (hspace=0.05)
-    # while tight_layout adds generous space between the ratio xlabel and table.
-    # N-run case: flat 2-row GridSpec + extra figure height for the xlabel note.
-    # ---------------------------------------------------------------------------
-    if figsize is None:
-        figsize = (12, 4.5)
-    per_row_h = 0.38
-    table_h   = (n_runs + 1.5) * per_row_h
-    two_run   = (n_runs == 2)
-    ratio_h   = 1.6 if two_run else 0.0
-    note_gap  = 1.0   # extra inches for tight_layout to breathe below xlabel
-    total_h   = figsize[1] + ratio_h + table_h + note_gap
+    show_dist = show in ("both", "distribution")
+    show_seq  = show in ("both", "sequence")
+    ncols = 2 if show == "both" else 1
 
-    fig = plt.figure(figsize=(figsize[0], total_h))
-    if two_run:
-        # Outer: [plot+ratio block] | [table]
-        gs_outer = GridSpec(
-            2, 1, figure=fig,
-            height_ratios=[figsize[1] + ratio_h, table_h],
-        )
-        # Inner: [main panels] | [ratio panels] — tight gap between them
-        gs_top = GridSpecFromSubplotSpec(
+    if figsize is None:
+        figsize = (12, 4.5) if (show == "both" or n > 1) else (6, 4.5)
+
+    # -----------------------------------------------------------------------
+    # Layout
+    # -----------------------------------------------------------------------
+    per_row_h   = 0.38
+    table_h     = (n + 1.5) * per_row_h
+    two_run_ratio = (n == 2) and (show == "both")
+
+    if n == 1 or show != "both":
+        fig, ax_arr = plt.subplots(1, ncols, figsize=figsize)
+        ax_arr  = np.atleast_1d(ax_arr)
+        ax_dist = ax_arr[0] if show_dist else None
+        ax_seq  = ax_arr[1] if show == "both" else (ax_arr[0] if show_seq else None)
+        ax_rdist = ax_rseq = ax_table = None
+    elif two_run_ratio:
+        ratio_h = 1.6
+        total_h = figsize[1] + ratio_h + table_h + 1.0
+        fig = plt.figure(figsize=(figsize[0], total_h))
+        gs_outer = GridSpec(2, 1, figure=fig, height_ratios=[figsize[1] + ratio_h, table_h])
+        gs_top   = GridSpecFromSubplotSpec(
             2, 2, subplot_spec=gs_outer[0],
-            height_ratios=[figsize[1], ratio_h],
-            hspace=0.05,
+            height_ratios=[figsize[1], ratio_h], hspace=0.05,
         )
         ax_dist  = fig.add_subplot(gs_top[0, 0])
         ax_seq   = fig.add_subplot(gs_top[0, 1])
         ax_rdist = fig.add_subplot(gs_top[1, 0], sharex=ax_dist)
         ax_rseq  = fig.add_subplot(gs_top[1, 1])
         ax_table = fig.add_subplot(gs_outer[1])
+        ax_table.axis("off")
     else:
-        gs = GridSpec(
-            2, 2, figure=fig,
-            height_ratios=[figsize[1], table_h],
-        )
+        total_h = figsize[1] + table_h + 1.0
+        fig = plt.figure(figsize=(figsize[0], total_h))
+        gs = GridSpec(2, 2, figure=fig, height_ratios=[figsize[1], table_h])
         ax_dist  = fig.add_subplot(gs[0, 0])
         ax_seq   = fig.add_subplot(gs[0, 1])
         ax_table = fig.add_subplot(gs[1, :])
         ax_rdist = ax_rseq = None
-    ax_table.axis("off")
+        ax_table.axis("off")
 
+    # -----------------------------------------------------------------------
+    # Reference run for Δμ (multi-run only)
+    # -----------------------------------------------------------------------
+    ref_label = baseline_label if baseline_label is not None else _default_baseline(label_list)
+    if n > 1 and ref_label not in arrays:
+        raise ValueError(
+            f"baseline_label '{ref_label}' not found in loaded runs.\n"
+            f"Available: {label_list}"
+        )
+    ref_mean, _, ref_sem, _ = _compute_stats(arrays[ref_label]) if n > 1 else (None, None, None, None)
+
+    # -----------------------------------------------------------------------
+    # Draw histograms and sequence lines
+    # -----------------------------------------------------------------------
+    hist_alpha  = alpha if n == 1 else min(alpha, 0.6)
     total_clipped = 0
-    table_rows    = []
-    hist_counts   = {}
+    table_rows  = []
+    hist_counts = {}
 
     for i, lbl in enumerate(label_list):
         data  = arrays[lbl]
-        color = _PALETTE[i % len(_PALETTE)]
-        mean, std, sem, _ = _compute_stats(data)
+        color = _BLUE if n == 1 else _PALETTE[i % len(_PALETTE)]
+        mean, std, sem, se_std = _compute_stats(data)
 
-        total_clipped += int(np.sum((data < core_range[0]) | (data > core_range[1])))
-
-        # Δμ with standard error propagation: δ(Δμ) = 100/μ_ref · √(SEM_i² + (μ_i/μ_ref)² SEM_ref²)
-        if lbl == ref_label:
-            delta_cell = "ref."
-        else:
-            delta_pct = (mean - ref_mean) / ref_mean * 100
-            delta_err = (100.0 / ref_mean) * np.sqrt(
-                sem**2 + (mean / ref_mean)**2 * ref_sem**2
+        if ax_dist is not None:
+            ax_dist.hist(
+                data, bins=common_edges,
+                color=color, edgecolor="none", alpha=hist_alpha,
+                label=lbl if n > 1 else None,
             )
-            sign       = "+" if delta_pct >= 0 else ""
-            delta_cell = f"{sign}{delta_pct:.1f} ± {delta_err:.1f}%"
+            ax_dist.axvline(mean, color=color, linestyle="--", linewidth=1.2, alpha=0.8)
 
-        table_rows.append([
-            lbl,
-            f"{mean:.4g} ± {sem:.2g}",
-            f"{std:.4g}",
-            delta_cell,
-        ])
+        if ax_seq is not None:
+            ax_seq.plot(
+                filtered_data[lbl]["event_number"], filtered_data[lbl]["event_time_s"],
+                color=color, alpha=0.7, linewidth=1.0,
+                label=lbl if n > 1 else None,
+            )
 
-        counts, _ = np.histogram(data, bins=common_edges)
-        hist_counts[lbl] = counts.astype(float)
+        n_clipped = int(np.sum((data < core_range[0]) | (data > core_range[1])))
+        total_clipped += n_clipped
+        if n_clipped > 0:
+            frac = n_clipped / len(data)
+            extreme = data.max() > _OUTLIER_EXTREME_RATIO * core_range[1]
+            if frac > _OUTLIER_FRACTION_WARN or extreme:
+                warnings.warn(
+                    f"plot_event_timing: {lbl}: {n_clipped} event(s) ({frac:.1%}) outside plotted range. "
+                    f"Max value: {data.max():.4g} s, core upper bound: {core_range[1]:.4g} s. "
+                    "Check for simulation anomalies or adjust outlier_threshold.",
+                    stacklevel=2,
+                )
 
-        ax_dist.hist(
-            data, bins=common_edges, range=core_range,
-            color=color, edgecolor="none", alpha=alpha,
-        )
-        ax_dist.axvline(mean, color=color, linestyle="--", linewidth=1.2, alpha=0.7)
+        if n > 1:
+            counts, _ = np.histogram(data, bins=common_edges)
+            hist_counts[lbl] = counts.astype(float)
+            if lbl == ref_label:
+                delta_cell = "ref."
+            else:
+                delta_pct = (mean - ref_mean) / ref_mean * 100
+                delta_err = (100.0 / ref_mean) * np.sqrt(
+                    sem**2 + (mean / ref_mean)**2 * ref_sem**2
+                )
+                sign = "+" if delta_pct >= 0 else ""
+                delta_cell = f"{sign}{delta_pct:.1f} ± {delta_err:.1f}%"
+            table_rows.append([lbl, f"{mean:.4g} ± {sem:.2g}", f"{std:.4g}", delta_cell])
 
-        ax_seq.plot(
-            filtered_data[lbl]["event_number"],
-            filtered_data[lbl]["event_time_s"],
-            color=color, alpha=0.7, linewidth=1.0,
-        )
-
-    # Clipping note and warning
     clipping_note = ""
     if total_clipped > 0:
         frac = total_clipped / len(all_data)
         clipping_note = f"{total_clipped} event(s) ({frac:.1%}) outside plotted range"
-        extreme = all_data.max() > _OUTLIER_EXTREME_RATIO * core_range[1]
-        if frac > _OUTLIER_FRACTION_WARN or extreme:
-            warnings.warn(
-                f"plot_event_timing_overlay: {clipping_note}. "
-                f"Max value: {all_data.max():.4g} s, core upper bound: {core_range[1]:.4g} s. "
-                "Check for simulation anomalies or adjust outlier_threshold.",
-                stacklevel=2,
-            )
 
-    ax_dist.set_xlim(core_range)
-    ax_dist.set_ylabel("Count")
-    ax_dist.set_title("Event Time Distribution")
-    ax_dist.grid(False)
-    _apply_tick_style(ax_dist)
-
-    ax_seq.set_xlabel("Event number")
-    ax_seq.set_ylabel("Event time (s)")
-    ax_seq.set_title("Event Time vs Event Number")
-    ax_seq.grid(False)
-    _apply_tick_style(ax_seq)
-
-    if exclude_events and exclude_events != _DEFAULT_EXCLUDE_EVENTS:
-        evts_str = ", ".join(str(e) for e in sorted(exclude_events))
-        warnings.warn(
-            f"plot_event_timing_overlay: event(s) {evts_str} excluded from statistics and histograms. "
-            "Pass exclude_events=[] to disable.",
-            UserWarning, stacklevel=2,
+    # -----------------------------------------------------------------------
+    # Style distribution panel
+    # -----------------------------------------------------------------------
+    if ax_dist is not None:
+        ax_dist.set_xlim(core_range)
+        ax_dist.set_ylabel("Count")
+        ax_dist.set_title(
+            f"Event Time Distribution ({label_list[0]})" if n == 1
+            else "Event Time Distribution"
         )
+        ax_dist.grid(False)
+        _apply_tick_style(ax_dist)
 
-    if two_run:
-        # Hide x-axis labels on main panels — only ratio panels carry them.
-        plt.setp(ax_dist.get_xticklabels(), visible=False)
-        plt.setp(ax_seq.get_xticklabels(), visible=False)
-        ax_seq.set_xlabel("")
+        if n == 1:
+            mean, std, sem, se_std = _compute_stats(arrays[label_list[0]])
+            ax_dist.text(
+                0.03, 0.97,
+                f"$\\mu = {mean:.4g} \\pm {sem:.2g}$ s\n$\\sigma = {std:.4g} \\pm {se_std:.2g}$ s",
+                transform=ax_dist.transAxes,
+                ha="left", va="top", fontsize=9,
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="none", alpha=0.7),
+            )
+            xlabel = "Event time (s)"
+            if clipping_note:
+                xlabel += f"\n\n{clipping_note}"
+            ax_dist.set_xlabel(xlabel)
+        else:
+            ax_dist.legend(loc="upper right", fontsize="small")
+            if not two_run_ratio:
+                xlabel = "Event time (s)"
+                if clipping_note:
+                    xlabel += f"\n\n{clipping_note}"
+                ax_dist.set_xlabel(xlabel)
+            else:
+                plt.setp(ax_dist.get_xticklabels(), visible=False)
 
+    # -----------------------------------------------------------------------
+    # Style sequence panel
+    # -----------------------------------------------------------------------
+    if ax_seq is not None:
+        ax_seq.set_xlabel("Event number")
+        ax_seq.set_ylabel("Event time (s)")
+        ax_seq.set_title("Event Time vs Event Number")
+        ax_seq.grid(False)
+        _apply_tick_style(ax_seq)
+        if n > 1:
+            ax_seq.legend(loc="upper right", fontsize="small")
+        if two_run_ratio:
+            plt.setp(ax_seq.get_xticklabels(), visible=False)
+            ax_seq.set_xlabel("")
+
+    # -----------------------------------------------------------------------
+    # Ratio panels (n == 2, show == "both")
+    # -----------------------------------------------------------------------
+    if two_run_ratio:
         other_label = next(lbl for lbl in label_list if lbl != ref_label)
-        other_idx   = label_list.index(other_label)
-        other_color = _PALETTE[other_idx % len(_PALETTE)]
+        other_color = _PALETTE[label_list.index(other_label) % len(_PALETTE)]
 
-        # ---- Left ratio panel: histogram count ratio with Poisson errors -----
         ref_counts_arr   = hist_counts[ref_label]
         other_counts_arr = hist_counts[other_label]
         with np.errstate(invalid="ignore", divide="ignore"):
             ratio = np.where(
                 (ref_counts_arr > 0) & (other_counts_arr > 0),
-                other_counts_arr / ref_counts_arr,
-                np.nan,
+                other_counts_arr / ref_counts_arr, np.nan,
             )
             ratio_err = np.where(
                 (ref_counts_arr > 0) & (other_counts_arr > 0),
-                ratio * np.sqrt(1.0 / other_counts_arr + 1.0 / ref_counts_arr),
-                np.nan,
+                ratio * np.sqrt(1.0 / other_counts_arr + 1.0 / ref_counts_arr), np.nan,
             )
         bin_centers = 0.5 * (common_edges[:-1] + common_edges[1:])
         valid = ~np.isnan(ratio)
         ax_rdist.errorbar(
-            bin_centers[valid], ratio[valid],
-            yerr=ratio_err[valid],
+            bin_centers[valid], ratio[valid], yerr=ratio_err[valid],
             fmt="o", color="#444444",
-            markersize=4, capsize=3, linewidth=0, elinewidth=0.8, capthick=0.8,
-            alpha=0.75,
+            markersize=4, capsize=3, linewidth=0, elinewidth=0.8, capthick=0.8, alpha=0.75,
         )
         ax_rdist.axhline(1.0, color="black", linestyle="--", linewidth=1.0, alpha=0.5)
         ax_rdist.set_xlim(core_range)
@@ -812,7 +662,6 @@ def plot_event_timing_overlay(
             xlabel_bottom += f"\n\n{clipping_note}"
         ax_rdist.set_xlabel(xlabel_bottom)
 
-        # ---- Right ratio panel: per-event time ratio vs event number ---------
         df_ref   = event_data[ref_label].set_index("event_number")
         df_other = event_data[other_label].set_index("event_number")
         common_evts = df_ref.index.intersection(df_other.index)
@@ -821,143 +670,383 @@ def plot_event_timing_overlay(
             t_other = df_other.loc[common_evts, "event_time_s"].to_numpy()
             with np.errstate(invalid="ignore", divide="ignore"):
                 evt_ratio = np.where(t_ref > 0, t_other / t_ref, np.nan)
-            ax_rseq.scatter(
-                common_evts, evt_ratio,
-                color="#444444", s=12, alpha=0.5, linewidths=0,
-            )
+            ax_rseq.scatter(common_evts, evt_ratio, color="#444444", s=12, alpha=0.5, linewidths=0)
         ax_rseq.axhline(1.0, color="black", linestyle="--", linewidth=1.0, alpha=0.5)
         ax_rseq.set_xlabel("Event number")
         ax_rseq.set_ylabel("Ratio (other / ref.)", fontsize=8)
         ax_rseq.grid(False)
         _apply_tick_style(ax_rseq)
-    else:
-        xlabel = "Event time (s)"
-        if clipping_note:
-            xlabel += f"\n\n{clipping_note}"
-        ax_dist.set_xlabel(xlabel)
 
     # -----------------------------------------------------------------------
-    # Stats table — columns are naturally aligned, values easy to compare
+    # Stats table (multi-run)
     # -----------------------------------------------------------------------
-    n_cols      = 4
-    col_headers = ["Run", "μ ± SEM (s)", "σ (s)", f"Δμ ± δ(Δμ)  [ref: {ref_label}]"]
-
-    tbl = ax_table.table(
-        cellText=table_rows,
-        colLabels=col_headers,
-        bbox=[0, 0, 1, 1],
-        cellLoc="center",
-    )
-    tbl.auto_set_font_size(False)
-    tbl.set_fontsize(9)
-    tbl.auto_set_column_width(col=list(range(n_cols)))
-
-    # Bold grey header row
-    for j in range(n_cols):
-        cell = tbl[(0, j)]
-        cell.set_facecolor("#d4d4d4")
-        cell.set_text_props(fontweight="bold")
-
-    # Light colour tint per data row — matches each run's histogram colour
-    for i in range(n_runs):
-        r, g, b = mcolors.to_rgb(_PALETTE[i % len(_PALETTE)])
-        tint = (r, g, b, 0.12)
+    if ax_table is not None:
+        n_cols      = 4
+        col_headers = ["Run", "μ ± SEM (s)", "σ (s)", f"Δμ ± δ(Δμ)  [ref: {ref_label}]"]
+        tbl = ax_table.table(
+            cellText=table_rows, colLabels=col_headers,
+            bbox=[0, 0, 1, 1], cellLoc="center",
+        )
+        tbl.auto_set_font_size(False)
+        tbl.set_fontsize(9)
+        tbl.auto_set_column_width(col=list(range(n_cols)))
         for j in range(n_cols):
-            tbl[(i + 1, j)].set_facecolor(tint)
+            cell = tbl[(0, j)]
+            cell.set_facecolor("#d4d4d4")
+            cell.set_text_props(fontweight="bold")
+        for i in range(n):
+            r, g, b = mcolors.to_rgb(_PALETTE[i % len(_PALETTE)])
+            tint = (r, g, b, 0.12)
+            for j in range(n_cols):
+                tbl[(i + 1, j)].set_facecolor(tint)
 
-    fig.suptitle("Per-Event Timing Comparison", fontweight="bold")
+    base_title = "Per-Event Timing" if n == 1 else "Per-Event Timing Comparison"
+    suptitle = f"{base_title} ({det_title})" if det_title else base_title
+    fig.suptitle(suptitle, fontweight="bold")
     fig.tight_layout()
     plt.close(fig)
     return fig
 
 
 # ---------------------------------------------------------------------------
-# plot_compare
+# plot_event_memory
 # ---------------------------------------------------------------------------
 
 
-def plot_compare(
-    results: pd.DataFrame | str | Path,
+def plot_event_memory(
+    source: dict[str, pd.DataFrame] | str | Path | list[str | Path],
     *,
-    label_a: str = "geometry_a",
-    label_b: str = "geometry_b",
-    metrics: list[str] | None = None,
+    labels: list[str] | None = None,
+    baseline_label: str | None = None,
+    show: str = "both",
+    bins: int | str = "auto",
+    alpha: float = 0.7,
+    figsize: tuple[float, float] | None = None,
+    outlier_threshold: float = 3.5,
+    exclude_events: list[int] | None = None,
 ) -> plt.Figure:
-    """Plot a head-to-head geometry comparison (COMPARE mode).
+    """Plot per-event memory (RSS) distributions for one or more runs.
+
+    Distribution panel shows a histogram of peak RSS per event (retained memory
+    after each event).  Sequence panel shows the same values vs event number
+    (memory profile over the run).
+
+    Single run: histogram with μ ± SEM and σ ± SE(σ) shown directly on the plot.
+    Multiple runs: overlaid histograms with a stats comparison table and, for
+    exactly two runs with ``show="both"``, bin-by-bin ratio panels.
 
     Parameters
     ----------
-    results : pd.DataFrame or str or Path
-        Results DataFrame or path to a CSV file written by ``dd4bench``.
-    label_a : str
-        Label for the first geometry (default: ``"geometry_a"``).
-    label_b : str
-        Label for the second geometry (default: ``"geometry_b"``).
-    metrics : list[str] or None
-        Column names to compare.  Defaults to
-        ``["wall_time_s", "peak_rss_mb", "events_per_sec"]``.
+    source : dict[str, pd.DataFrame], str/Path, or list of str/Path
+        Pre-loaded dict from :func:`~dd4bench.analysis.loader.load_event_timing`,
+        a single log-dir path, or a list of log-dir paths for multi-detector
+        comparisons.  When a list is given, run labels are prefixed with the
+        directory name (e.g. ``ALLEGRO_o1_v03/baseline_all``).
+    labels : list[str] or None
+        Restrict to these run labels.  Loads all runs when ``None``.
+    baseline_label : str or None
+        Reference run for Δμ in the stats table (multi-run only).
+        Defaults to the first run.
+    show : {"both", "distribution", "sequence"}
+        ``"both"`` (default): RSS Δ histogram + peak RSS vs event number.
+        ``"distribution"``: histogram panel only.
+        ``"sequence"``: peak RSS vs event number panel only.
+    bins : int or str
+        Bin specification for histograms.  ``"auto"`` uses NumPy's estimator.
+    alpha : float
+        Histogram opacity (default: 0.7).
+    figsize : (width, height) or None
+        Size of the main plot area in inches.  Defaults to ``(12, 4.5)`` for
+        ``show="both"`` and ``(6, 4.5)`` for single-panel modes.
+    outlier_threshold : float
+        MAD-based modified Z-score threshold for x-range clipping (default: 3.5).
+    exclude_events : list[int] or None
+        Event numbers to exclude from statistics and histograms.
+        Defaults to ``[0]``.  Pass ``[]`` to disable.
 
     Returns
     -------
     matplotlib.figure.Figure
     """
+    if show not in ("both", "distribution", "sequence"):
+        raise ValueError(f"show must be 'both', 'distribution', or 'sequence', got {show!r}")
+
     _use_style()
-    results = _ensure_df(results)
+    det_title = _detector_title(source)
 
-    if metrics is None:
-        metrics = ["wall_time_s", "peak_rss_mb", "events_per_sec"]
+    if exclude_events is None:
+        exclude_events = [0]
 
-    row_a = results[results["label"] == label_a]
-    row_b = results[results["label"] == label_b]
-
-    if row_a.empty:
-        raise ValueError(f"Label '{label_a}' not found in results.")
-    if row_b.empty:
-        raise ValueError(f"Label '{label_b}' not found in results.")
-
-    n = len(metrics)
-    fig, axes = plt.subplots(1, n, figsize=(5 * n, 4.5))
-    if n == 1:
-        axes = [axes]
-
-    for ax, metric in zip(axes, metrics):
-        if metric not in results.columns:
-            ax.set_visible(False)
-            continue
-
-        val_a_raw = row_a[metric].iloc[0]
-        val_b_raw = row_b[metric].iloc[0]
-
-        if not pd.notna(val_a_raw) or not pd.notna(val_b_raw):
-            ax.set_visible(False)
-            continue
-
-        val_a = float(val_a_raw)
-        val_b = float(val_b_raw)
-        values = [val_a, val_b]
-        bars = ax.bar(
-            [label_a, label_b],
-            values,
-            color=[_PALETTE[0], _PALETTE[1]],
-            edgecolor="white",
-            linewidth=0.5,
-            width=0.5,
+    all_event_data = _ensure_event_data(source)
+    available = sorted(all_event_data.keys())
+    event_data = _ensure_event_data(source, labels=labels)
+    if not event_data:
+        raise ValueError(
+            f"No *_events.json files found for labels={labels}.\n"
+            f"Available: {available}"
         )
 
-        for bar, val in zip(bars, values):
-            ax.text(
-                bar.get_x() + bar.get_width() / 2,
-                bar.get_height() * 1.02,
-                f"{val:.2f}",
-                ha="center", va="bottom", fontsize=9,
+    label_list = list(event_data.keys())
+    n = len(label_list)
+
+    filtered_data = {
+        lbl: df[~df["event_number"].isin(exclude_events)]
+        for lbl, df in event_data.items()
+    }
+    empty_labels = [lbl for lbl, df in filtered_data.items() if df.empty]
+    if empty_labels:
+        raise ValueError(
+            "No events left after applying exclude_events for: "
+            + ", ".join(empty_labels)
+        )
+
+    arrays = {lbl: filtered_data[lbl]["rss_end_mb"].to_numpy() for lbl in label_list}
+    all_data = np.concatenate(list(arrays.values()))
+    per_run_ranges = [_compute_core_range(arr, threshold=outlier_threshold)[0] for arr in arrays.values()]
+    core_range = (min(r[0] for r in per_run_ranges), max(r[1] for r in per_run_ranges))
+    clipped_all = all_data[(all_data >= core_range[0]) & (all_data <= core_range[1])]
+    if len(clipped_all) == 0:
+        clipped_all = all_data
+    _, common_edges = np.histogram(clipped_all, bins=bins)
+
+    show_dist = show in ("both", "distribution")
+    show_seq  = show in ("both", "sequence")
+    ncols = 2 if show == "both" else 1
+
+    if figsize is None:
+        figsize = (12, 4.5) if (show == "both" or n > 1) else (6, 4.5)
+
+    # -----------------------------------------------------------------------
+    # Layout
+    # -----------------------------------------------------------------------
+    per_row_h     = 0.38
+    table_h       = (n + 1.5) * per_row_h
+    two_run_ratio = (n == 2) and (show == "both")
+
+    if n == 1 or show != "both":
+        fig, ax_arr = plt.subplots(1, ncols, figsize=figsize)
+        ax_arr  = np.atleast_1d(ax_arr)
+        ax_dist = ax_arr[0] if show_dist else None
+        ax_seq  = ax_arr[1] if show == "both" else (ax_arr[0] if show_seq else None)
+        ax_rdist = ax_rseq = ax_table = None
+    elif two_run_ratio:
+        ratio_h = 1.6
+        total_h = figsize[1] + ratio_h + table_h + 1.0
+        fig = plt.figure(figsize=(figsize[0], total_h))
+        gs_outer = GridSpec(2, 1, figure=fig, height_ratios=[figsize[1] + ratio_h, table_h])
+        gs_top   = GridSpecFromSubplotSpec(
+            2, 2, subplot_spec=gs_outer[0],
+            height_ratios=[figsize[1], ratio_h], hspace=0.05,
+        )
+        ax_dist  = fig.add_subplot(gs_top[0, 0])
+        ax_seq   = fig.add_subplot(gs_top[0, 1])
+        ax_rdist = fig.add_subplot(gs_top[1, 0], sharex=ax_dist)
+        ax_rseq  = fig.add_subplot(gs_top[1, 1])
+        ax_table = fig.add_subplot(gs_outer[1])
+        ax_table.axis("off")
+    else:
+        total_h = figsize[1] + table_h + 1.0
+        fig = plt.figure(figsize=(figsize[0], total_h))
+        gs = GridSpec(2, 2, figure=fig, height_ratios=[figsize[1], table_h])
+        ax_dist  = fig.add_subplot(gs[0, 0])
+        ax_seq   = fig.add_subplot(gs[0, 1])
+        ax_table = fig.add_subplot(gs[1, :])
+        ax_rdist = ax_rseq = None
+        ax_table.axis("off")
+
+    # -----------------------------------------------------------------------
+    # Reference run for Δμ (multi-run only)
+    # -----------------------------------------------------------------------
+    ref_label = baseline_label if baseline_label is not None else _default_baseline(label_list)
+    if n > 1 and ref_label not in arrays:
+        raise ValueError(
+            f"baseline_label '{ref_label}' not found in loaded runs.\n"
+            f"Available: {label_list}"
+        )
+    ref_mean, _, ref_sem, _ = _compute_stats(arrays[ref_label]) if n > 1 else (None, None, None, None)
+
+    # -----------------------------------------------------------------------
+    # Draw histograms and sequence lines
+    # -----------------------------------------------------------------------
+    hist_alpha  = alpha if n == 1 else min(alpha, 0.6)
+    total_clipped = 0
+    table_rows  = []
+    hist_counts = {}
+
+    for i, lbl in enumerate(label_list):
+        data  = arrays[lbl]
+        color = _BLUE if n == 1 else _PALETTE[i % len(_PALETTE)]
+        mean, std, sem, se_std = _compute_stats(data)
+
+        if ax_dist is not None:
+            ax_dist.hist(
+                data, bins=common_edges,
+                color=color, edgecolor="none", alpha=hist_alpha,
+                label=lbl if n > 1 else None,
+            )
+            ax_dist.axvline(mean, color=color, linestyle="--", linewidth=1.2, alpha=0.8)
+
+        if ax_seq is not None:
+            ax_seq.plot(
+                filtered_data[lbl]["event_number"], filtered_data[lbl]["rss_end_mb"],
+                color=color, alpha=0.7, linewidth=1.0,
+                label=lbl if n > 1 else None,
             )
 
-        unit = _METRIC_UNITS.get(metric, "")
-        ax.set_ylabel(f"{metric.replace('_', ' ')} {unit}".strip())
-        ax.set_title(metric.replace("_", " ").title())
-        ax.set_ylim(0, max(values) * 1.2 if max(values) > 0 else 1)
+        n_clipped = int(np.sum((data < core_range[0]) | (data > core_range[1])))
+        total_clipped += n_clipped
+        if n_clipped > 0:
+            frac = n_clipped / len(data)
+            extreme = data.max() > _OUTLIER_EXTREME_RATIO * core_range[1]
+            if frac > _OUTLIER_FRACTION_WARN or extreme:
+                warnings.warn(
+                    f"plot_event_memory: {lbl}: {n_clipped} event(s) ({frac:.1%}) outside plotted range. "
+                    f"Max RSS: {data.max():.4g} MB, core upper bound: {core_range[1]:.4g} MB. "
+                    "Check for simulation anomalies or adjust outlier_threshold.",
+                    stacklevel=2,
+                )
 
-    fig.suptitle(f"Geometry Comparison: {label_a} vs {label_b}", fontweight="bold")
+        if n > 1:
+            counts, _ = np.histogram(data, bins=common_edges)
+            hist_counts[lbl] = counts.astype(float)
+            if lbl == ref_label:
+                delta_cell = "ref."
+            else:
+                delta_pct = (mean - ref_mean) / ref_mean * 100
+                delta_err = (100.0 / ref_mean) * np.sqrt(
+                    sem**2 + (mean / ref_mean)**2 * ref_sem**2
+                )
+                sign = "+" if delta_pct >= 0 else ""
+                delta_cell = f"{sign}{delta_pct:.1f} ± {delta_err:.1f}%"
+            table_rows.append([lbl, f"{mean:.4g} ± {sem:.2g}", f"{std:.4g}", delta_cell])
+
+    clipping_note = ""
+    if total_clipped > 0:
+        frac = total_clipped / len(all_data)
+        clipping_note = f"{total_clipped} event(s) ({frac:.1%}) outside plotted range"
+
+    # -----------------------------------------------------------------------
+    # Style distribution panel
+    # -----------------------------------------------------------------------
+    if ax_dist is not None:
+        ax_dist.set_xlim(core_range)
+        ax_dist.set_ylabel("Count")
+        ax_dist.grid(False)
+        _apply_tick_style(ax_dist)
+
+        if n == 1:
+            mean, std, sem, se_std = _compute_stats(arrays[label_list[0]])
+            ax_dist.text(
+                0.03, 0.97,
+                f"$\\mu_{{\\rm RSS}} = {mean:.4g} \\pm {sem:.2g}$ MB\n$\\sigma = {std:.4g} \\pm {se_std:.2g}$ MB",
+                transform=ax_dist.transAxes,
+                ha="left", va="top", fontsize=9,
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="none", alpha=0.7),
+            )
+            xlabel = "Peak RSS per event (MB)"
+            if clipping_note:
+                xlabel += f"\n\n{clipping_note}"
+            ax_dist.set_xlabel(xlabel)
+        else:
+            ax_dist.legend(loc="upper right", fontsize="small")
+            if not two_run_ratio:
+                xlabel = "Peak RSS per event (MB)"
+                if clipping_note:
+                    xlabel += f"\n\n{clipping_note}"
+                ax_dist.set_xlabel(xlabel)
+            else:
+                plt.setp(ax_dist.get_xticklabels(), visible=False)
+
+    # -----------------------------------------------------------------------
+    # Style sequence panel
+    # -----------------------------------------------------------------------
+    if ax_seq is not None:
+        ax_seq.set_xlabel("Event number")
+        ax_seq.set_ylabel("Peak RSS (MB)")
+        ax_seq.grid(False)
+        _apply_tick_style(ax_seq)
+        if n > 1:
+            ax_seq.legend(loc="upper right", fontsize="small")
+        if two_run_ratio:
+            plt.setp(ax_seq.get_xticklabels(), visible=False)
+            ax_seq.set_xlabel("")
+
+    # -----------------------------------------------------------------------
+    # Ratio panels (n == 2, show == "both")
+    # -----------------------------------------------------------------------
+    if two_run_ratio:
+        other_label = next(lbl for lbl in label_list if lbl != ref_label)
+
+        ref_counts_arr   = hist_counts[ref_label]
+        other_counts_arr = hist_counts[other_label]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            ratio = np.where(
+                (ref_counts_arr > 0) & (other_counts_arr > 0),
+                other_counts_arr / ref_counts_arr, np.nan,
+            )
+            ratio_err = np.where(
+                (ref_counts_arr > 0) & (other_counts_arr > 0),
+                ratio * np.sqrt(1.0 / other_counts_arr + 1.0 / ref_counts_arr), np.nan,
+            )
+        bin_centers = 0.5 * (common_edges[:-1] + common_edges[1:])
+        valid = ~np.isnan(ratio)
+        ax_rdist.errorbar(
+            bin_centers[valid], ratio[valid], yerr=ratio_err[valid],
+            fmt="o", color="#444444",
+            markersize=4, capsize=3, linewidth=0, elinewidth=0.8, capthick=0.8, alpha=0.75,
+        )
+        ax_rdist.axhline(1.0, color="black", linestyle="--", linewidth=1.0, alpha=0.5)
+        ax_rdist.set_xlim(core_range)
+        ax_rdist.set_ylabel("Ratio (other / ref.)", fontsize=8)
+        ax_rdist.grid(False)
+        _apply_tick_style(ax_rdist)
+        xlabel_bottom = "Peak RSS per event (MB)"
+        if clipping_note:
+            xlabel_bottom += f"\n\n{clipping_note}"
+        ax_rdist.set_xlabel(xlabel_bottom)
+
+        df_ref   = event_data[ref_label].set_index("event_number")
+        df_other = event_data[other_label].set_index("event_number")
+        common_evts = df_ref.index.intersection(df_other.index)
+        if len(common_evts) > 0:
+            rss_ref   = df_ref.loc[common_evts, "rss_end_mb"].to_numpy()
+            rss_other = df_other.loc[common_evts, "rss_end_mb"].to_numpy()
+            with np.errstate(invalid="ignore", divide="ignore"):
+                evt_ratio = np.where(rss_ref > 0, rss_other / rss_ref, np.nan)
+            ax_rseq.scatter(common_evts, evt_ratio, color="#444444", s=12, alpha=0.5, linewidths=0)
+        ax_rseq.axhline(1.0, color="black", linestyle="--", linewidth=1.0, alpha=0.5)
+        ax_rseq.set_xlabel("Event number")
+        ax_rseq.set_ylabel("Ratio (other / ref.)", fontsize=8)
+        ax_rseq.grid(False)
+        _apply_tick_style(ax_rseq)
+
+    # -----------------------------------------------------------------------
+    # Stats table (multi-run)
+    # -----------------------------------------------------------------------
+    if ax_table is not None:
+        n_cols      = 4
+        col_headers = ["Run", "μ ± SEM (MB)", "σ (MB)", f"Δμ ± δ(Δμ)  [ref: {ref_label}]"]
+        tbl = ax_table.table(
+            cellText=table_rows, colLabels=col_headers,
+            bbox=[0, 0, 1, 1], cellLoc="center",
+        )
+        tbl.auto_set_font_size(False)
+        tbl.set_fontsize(9)
+        tbl.auto_set_column_width(col=list(range(n_cols)))
+        for j in range(n_cols):
+            cell = tbl[(0, j)]
+            cell.set_facecolor("#d4d4d4")
+            cell.set_text_props(fontweight="bold")
+        for i in range(n):
+            r, g, b = mcolors.to_rgb(_PALETTE[i % len(_PALETTE)])
+            tint = (r, g, b, 0.12)
+            for j in range(n_cols):
+                tbl[(i + 1, j)].set_facecolor(tint)
+
+    base_title = "Per-Event Memory" if n == 1 else "Per-Event Memory Comparison"
+    suptitle = f"{base_title} ({det_title})" if det_title else base_title
+    fig.suptitle(suptitle, fontweight="bold")
     fig.tight_layout()
     plt.close(fig)
     return fig
+
