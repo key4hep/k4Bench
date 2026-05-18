@@ -52,6 +52,21 @@ _METRIC_UNITS: dict[str, str] = {
     "output_size_mb": "(MB)",
 }
 
+_DEFAULT_EXCLUDE_EVENTS = [0]
+
+
+def _compute_stats(data: np.ndarray) -> tuple[float, float, float, float]:
+    """Return (mean, std, sem, se_std) with se_std = std / sqrt(2*(n-1))."""
+    n = len(data)
+    mean = float(data.mean())
+    if n > 1:
+        std    = float(data.std(ddof=1))
+        sem    = std / np.sqrt(n)
+        se_std = std / np.sqrt(2 * (n - 1))
+    else:
+        std = sem = se_std = float("nan")
+    return mean, std, sem, se_std
+
 
 def _use_style() -> None:
     try:
@@ -104,6 +119,8 @@ def plot_sweep(
     Each bar shows the computational cost of a subdetector — i.e. how much
     wall time and peak RSS are saved when that detector is removed.  Bars
     are sorted so the most expensive detector appears at the top.
+    Positive values mean the run is faster / uses less memory than the
+    baseline; negative values mean it is slower / larger.
 
     Parameters
     ----------
@@ -138,11 +155,11 @@ def plot_sweep(
         )
         runs = runs[~missing]
 
-    runs["wall_delta_s"] = base_wall - runs["wall_time_s"]
-    runs["rss_delta_mb"] = base_rss  - runs["peak_rss_mb"]
+    runs["wall_time_saved_s"] = base_wall - runs["wall_time_s"]
+    runs["rss_saved_mb"]      = base_rss  - runs["peak_rss_mb"]
 
     # Sort ascending so barh places most expensive at the top
-    runs = runs.sort_values("wall_delta_s", ascending=True)
+    runs = runs.sort_values("wall_time_saved_s", ascending=True)
 
     if top_n is not None:
         runs = runs.tail(top_n)
@@ -156,15 +173,15 @@ def plot_sweep(
         sharey=True,
     )
 
-    colors_w = [_BLUE if v >= 0 else _RED for v in runs["wall_delta_s"]]
-    ax_wall.barh(names, runs["wall_delta_s"], color=colors_w, edgecolor="white", linewidth=0.5)
+    colors_w = [_BLUE if v >= 0 else _RED for v in runs["wall_time_saved_s"]]
+    ax_wall.barh(names, runs["wall_time_saved_s"], color=colors_w, edgecolor="white", linewidth=0.5)
     ax_wall.axvline(0, color="black", linewidth=0.8, linestyle="--", alpha=0.5)
     ax_wall.set_xlabel("Wall time saved vs baseline (s)")
     ax_wall.set_title(f"Wall Time Impact\n(baseline = {base_wall:.1f} s)")
     ax_wall.xaxis.set_major_formatter(mticker.FormatStrFormatter("%.1f"))
 
-    colors_r = [_BLUE if v >= 0 else _RED for v in runs["rss_delta_mb"]]
-    ax_rss.barh(names, runs["rss_delta_mb"], color=colors_r, edgecolor="white", linewidth=0.5)
+    colors_r = [_BLUE if v >= 0 else _RED for v in runs["rss_saved_mb"]]
+    ax_rss.barh(names, runs["rss_saved_mb"], color=colors_r, edgecolor="white", linewidth=0.5)
     ax_rss.axvline(0, color="black", linewidth=0.8, linestyle="--", alpha=0.5)
     ax_rss.set_xlabel("Peak RSS saved vs baseline (MB)")
     ax_rss.set_title(f"Memory Impact\n(baseline = {base_rss:.0f} MB)")
@@ -184,10 +201,10 @@ def plot_sweep(
 # ---------------------------------------------------------------------------
 
 _OVERVIEW_METRICS = [
-    ("wall_time_s",    "Wall Time (s)"),
-    ("peak_rss_mb",    "Peak RSS (MB)"),
-    ("user_cpu_s",     "User CPU (s)"),
-    ("events_per_sec", "Throughput (ev/s)"),
+    ("wall_time_s",    f"Wall Time {_METRIC_UNITS['wall_time_s']}"),
+    ("peak_rss_mb",    f"Peak RSS {_METRIC_UNITS['peak_rss_mb']}"),
+    ("user_cpu_s",     f"User CPU {_METRIC_UNITS['user_cpu_s']}"),
+    ("events_per_sec", f"Throughput {_METRIC_UNITS['events_per_sec']}"),
 ]
 
 
@@ -430,14 +447,7 @@ def plot_event_timing(
     if n == 1:
         data = arrays[0]
         core_range, n_clipped = _compute_core_range(data, threshold=outlier_threshold)
-        n_data = len(data)
-        mean   = float(data.mean())
-        if n_data > 1:
-            std    = float(data.std(ddof=1))
-            sem    = std / np.sqrt(n_data)
-            se_std = std / np.sqrt(2 * (n_data - 1))
-        else:
-            std = sem = se_std = float("nan")
+        mean, std, sem, se_std = _compute_stats(data)
 
         ax_dist.hist(
             data, bins=bins, range=core_range,
@@ -514,11 +524,11 @@ def plot_event_timing(
     if n > 1:
         ax_seq.legend(loc="upper right", fontsize="small")
 
-    if exclude_events:
+    if exclude_events and exclude_events != _DEFAULT_EXCLUDE_EVENTS:
         evts_str = ", ".join(str(e) for e in sorted(exclude_events))
         warnings.warn(
-            f"plot_event_timing: event(s) {evts_str} excluded from statistics and histograms "
-            "(geometry initialisation overhead). Pass exclude_events=[] to disable.",
+            f"plot_event_timing: event(s) {evts_str} excluded from statistics and histograms. "
+            "Pass exclude_events=[] to disable.",
             UserWarning, stacklevel=2,
         )
 
@@ -622,10 +632,8 @@ def plot_event_timing_overlay(
             f"baseline_label '{ref_label}' not found in the loaded runs.\n"
             f"Available labels: {label_list}"
         )
-    ref_data  = arrays[ref_label]
-    ref_mean  = float(ref_data.mean())
-    ref_n     = len(ref_data)
-    ref_sem   = float(ref_data.std(ddof=1) / np.sqrt(ref_n)) if ref_n > 1 else float("nan")
+    ref_data = arrays[ref_label]
+    ref_mean, _, ref_sem, _ = _compute_stats(ref_data)
 
     # Compute shared bin edges so every panel uses identical binning.
     clipped_all = all_data[(all_data >= core_range[0]) & (all_data <= core_range[1])]
@@ -682,15 +690,9 @@ def plot_event_timing_overlay(
     hist_counts   = {}
 
     for i, lbl in enumerate(label_list):
-        data   = arrays[lbl]
-        color  = _PALETTE[i % len(_PALETTE)]
-        n_data = len(data)
-        mean   = float(data.mean())
-        if n_data > 1:
-            std = float(data.std(ddof=1))
-            sem = std / np.sqrt(n_data)
-        else:
-            std = sem = float("nan")
+        data  = arrays[lbl]
+        color = _PALETTE[i % len(_PALETTE)]
+        mean, std, sem, _ = _compute_stats(data)
 
         total_clipped += int(np.sum((data < core_range[0]) | (data > core_range[1])))
 
@@ -753,11 +755,11 @@ def plot_event_timing_overlay(
     ax_seq.grid(False)
     _apply_tick_style(ax_seq)
 
-    if exclude_events:
+    if exclude_events and exclude_events != _DEFAULT_EXCLUDE_EVENTS:
         evts_str = ", ".join(str(e) for e in sorted(exclude_events))
         warnings.warn(
-            f"plot_event_timing_overlay: event(s) {evts_str} excluded from statistics and histograms "
-            "(geometry initialisation overhead). Pass exclude_events=[] to disable.",
+            f"plot_event_timing_overlay: event(s) {evts_str} excluded from statistics and histograms. "
+            "Pass exclude_events=[] to disable.",
             UserWarning, stacklevel=2,
         )
 

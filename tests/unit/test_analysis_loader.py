@@ -141,9 +141,21 @@ class TestLoadEventTiming:
         result = load_event_timing(tmp_path, labels=["baseline_all"])
         assert list(result.keys()) == ["baseline_all"]
 
-    def test_missing_file_skipped(self, tmp_path):
-        result = load_event_timing(tmp_path, labels=["nonexistent"])
-        assert result == {}
+    def test_missing_file_raises_when_labels_explicit(self, tmp_path):
+        with pytest.raises(ValueError, match="Missing event files"):
+            load_event_timing(tmp_path, labels=["nonexistent"])
+
+    def test_mismatched_array_lengths_raises(self, tmp_path):
+        path = tmp_path / "bad_events.json"
+        data = {
+            "event_numbers": [0, 1, 2],
+            "event_times_s": [0.1, 0.2],
+            "event_rss_begin_mb": [500.0, 500.0, 500.0],
+            "event_rss_end_mb": [510.0, 510.0, 510.0],
+        }
+        path.write_text(json.dumps(data))
+        with pytest.raises(ValueError, match="mismatched"):
+            load_event_timing(tmp_path)
 
     def test_empty_dir_returns_empty_dict(self, tmp_path):
         result = load_event_timing(tmp_path)

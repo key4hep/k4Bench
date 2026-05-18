@@ -80,6 +80,11 @@ def load_event_timing(
             for p in sorted(log_dir.glob(f"*{_suffix}"))
         ]
 
+    if labels is not None:
+        missing_files = [lbl for path, lbl in candidates if not path.exists()]
+        if missing_files:
+            raise ValueError(f"Missing event files for labels: {missing_files}")
+
     out: dict[str, pd.DataFrame] = {}
     for path, label in candidates:
         if not path.exists():
@@ -90,6 +95,9 @@ def load_event_timing(
         _missing = [k for k in _required if k not in raw]
         if _missing:
             raise ValueError(f"{path} missing keys: {_missing}")
+        lengths = {k: len(raw[k]) for k in _required}
+        if len(set(lengths.values())) > 1:
+            raise ValueError(f"{path} has mismatched array lengths: {lengths}")
         df = pd.DataFrame(
             {
                 "event_number": raw["event_numbers"],
