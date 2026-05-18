@@ -17,13 +17,13 @@ Full sweep (baseline + one run per detector removed)::
 Simulate with only specific detectors::
 
     dd4bench --xml ALLEGRO.xml \\
-             --include-only EcalBarrel HcalBarrel \\
+             --include-only ECalBarrel HCalBarrel \\
              --ddsim-args="--enableGun --gun.particle e- --gun.distribution uniform"
 
 Simulate with all detectors except specific ones::
 
     dd4bench --xml ALLEGRO.xml \\
-             --exclude-only InnerTracker OuterTracker \\
+             --exclude-only ECalBarrel HCalBarrel \\
              --ddsim-args="--enableGun --gun.particle e- --gun.distribution uniform"
 
 Compare two geometry versions::
