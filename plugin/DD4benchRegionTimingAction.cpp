@@ -507,11 +507,9 @@ namespace dd4hep
           }
         }
 
-        // No ancestor matched. The previous implementation cached
-        // "unattributed" here, but doing so prevents a future visit to
-        // the same LV (under a different placement that DOES reach a
-        // registered detector) from being resolved correctly. So we
-        // return without caching.
+        // No ancestor matched. Don't cache "unattributed": the same LV
+        // may be visited again under a different placement that resolves
+        // to a registered detector.
         return kUnattributed;
       }
 
