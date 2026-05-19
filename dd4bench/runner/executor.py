@@ -243,9 +243,9 @@ def _build_command(
 
     if plugin_available and not has_region_actions:
         managed.extend([
-            "--action.stepping", "DD4benchRegionTimingAction",
-            "--action.tracking", "DD4benchRegionTrackingAction",
-            "--action.event",    "DD4benchRegionEventAction",
+            "--action.step",  "DD4benchRegionTimingAction",
+            "--action.track", "DD4benchRegionTrackingAction",
+            "--action.event", "DD4benchRegionEventAction",
         ])
 
     caller = [shlex.quote(a) for a in extra_args]

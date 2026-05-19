@@ -138,9 +138,9 @@ class TestBuildCommandPluginAvailability:
 
     def test_region_actions_injected_when_plugin_available(self):
         cmd = self._cmd(plugin_available=True)
-        assert "--action.stepping" in cmd
+        assert "--action.step" in cmd
         assert "DD4benchRegionTimingAction" in cmd
-        assert "--action.tracking" in cmd
+        assert "--action.track" in cmd
         assert "DD4benchRegionTrackingAction" in cmd
         assert "DD4benchRegionEventAction" in cmd
 
@@ -151,7 +151,7 @@ class TestBuildCommandPluginAvailability:
     def test_region_actions_not_duplicated_when_already_in_extra_args(self):
         cmd = self._cmd(
             plugin_available=True,
-            extra_args=["--action.stepping", "DD4benchRegionTimingAction"],
+            extra_args=["--action.step", "DD4benchRegionTimingAction"],
         )
         assert cmd.count("DD4benchRegionTimingAction") == 1
 
