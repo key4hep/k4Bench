@@ -212,6 +212,14 @@ def run_ddsim(
 # ---------------------------------------------------------------------------
 
 
+def _has_action(args: list[str], action_name: str) -> bool:
+    """Return True if action_name is the value of an --action.* flag in args."""
+    for flag, value in zip(args, args[1:]):
+        if flag.startswith("--action.") and value == action_name:
+            return True
+    return False
+
+
 def _build_command(
     *,
     xml_path: Path,
@@ -235,10 +243,10 @@ def _build_command(
         f"--outputFile={shlex.quote(str(output_file))}",
     ]
 
-    has_timing_action = any("DD4benchTimingAction" in arg for arg in extra_args)
-    has_region_step = any("DD4benchRegionTimingAction" in arg for arg in extra_args)
-    has_region_track = any("DD4benchRegionTrackingAction" in arg for arg in extra_args)
-    has_region_event = any("DD4benchRegionEventAction" in arg for arg in extra_args)
+    has_timing_action = _has_action(extra_args, "DD4benchTimingAction")
+    has_region_step   = _has_action(extra_args, "DD4benchRegionTimingAction")
+    has_region_track  = _has_action(extra_args, "DD4benchRegionTrackingAction")
+    has_region_event  = _has_action(extra_args, "DD4benchRegionEventAction")
 
     if plugin_available and not has_timing_action:
         managed.extend(["--action.event", "DD4benchTimingAction"])

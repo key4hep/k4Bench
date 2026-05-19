@@ -232,6 +232,11 @@ namespace dd4hep
       // any LV -> resolved detector name (after walk)
       std::unordered_map<const G4LogicalVolume *, std::string> lvToDetector;
 
+      // Pairs of (LV, losing detector name) for which we've already
+      // issued an ownership-collision warning. Prevents one collision
+      // from spamming once per daughter placement.
+      std::set<std::pair<const G4LogicalVolume *, std::string>> warnedCollisions;
+
       bool built{false};
 
       // Walk the DD4hep DetElement tree starting from the world's children
@@ -292,7 +297,8 @@ namespace dd4hep
             // (non-assembly) descendant's G4LV under this detector's name.
             const std::size_t before = topLogVols.size();
             const std::size_t daughterCount = countAssemblyDaughters(vol);
-            indexAssemblyDescendants(vol, name);
+            const std::size_t lostToOther =
+                indexAssemblyDescendants(vol, name);
             const std::size_t added = topLogVols.size() - before;
 
             if (added == 0)
@@ -311,6 +317,25 @@ namespace dd4hep
                     "(no daughter volumes). Skipping; no time can be "
                     "attributed to it.",
                     name.c_str());
+              }
+              else if (lostToOther > 0)
+              {
+                // All resolvable daughters were already claimed by other
+                // top-level detectors. This means two DetElements share
+                // the same physical volumes -- legitimate in DD4hep when
+                // a hardware element has multiple roles (e.g., a tube
+                // that is both compensating solenoid coil and screening
+                // solenoid mechanical structure). The per-LV warnings
+                // above already explained where the time went.
+                printout(
+                    INFO,
+                    "DD4benchRegionTimingAction",
+                    "Top-level detector '%s' shares all %zu of its "
+                    "resolvable daughters with another detector "
+                    "(see collision warnings above). Time will be "
+                    "attributed to the first-claiming detector.",
+                    name.c_str(),
+                    lostToOther);
               }
               else
               {
@@ -389,14 +414,20 @@ namespace dd4hep
       // Recursively walk an assembly volume's daughter tree, registering
       // every concrete (non-assembly) G4LogicalVolume found under the
       // given detector name. Nested assemblies are descended into.
-      void indexAssemblyDescendants(
+      //
+      // Returns the number of daughters that resolved to a G4LV but were
+      // *not* registered because another top-level detector already
+      // claimed them. This lets the caller distinguish "no resolvable
+      // children" from "all children belong to another detector".
+      std::size_t indexAssemblyDescendants(
           const Volume &assemblyVol,
           const std::string &detectorName)
       {
+        std::size_t lostToOtherDetector = 0;
         TGeoVolume *tvol = assemblyVol.ptr();
         if (tvol == nullptr)
         {
-          return;
+          return 0;
         }
         const Int_t nDaughters = tvol->GetNdaughters();
         for (Int_t i = 0; i < nDaughters; ++i)
@@ -415,7 +446,7 @@ namespace dd4hep
           if (daughter.isAssembly())
           {
             // Nested assembly: recurse without registering this level.
-            indexAssemblyDescendants(daughter, detectorName);
+            lostToOtherDetector += indexAssemblyDescendants(daughter, detectorName);
             continue;
           }
           // Concrete volume: find its G4LV and register it.
@@ -429,9 +460,10 @@ namespace dd4hep
             continue;
           }
           // First registration wins. If an LV is somehow reachable from
-          // two top-level detectors (shouldn't happen for direct world
-          // children, but defensive), the first one named owns it. We
-          // log the collision so it's not silent.
+          // two top-level detectors (e.g., two DetElements sharing the
+          // same physical tube), the first one named owns it. We log
+          // the collision exactly once per (LV, losing_detector) pair
+          // so duplicate placements within one assembly don't spam.
           auto existing = topLogVols.find(lv);
           if (existing == topLogVols.end())
           {
@@ -440,17 +472,23 @@ namespace dd4hep
           }
           else if (existing->second != detectorName)
           {
-            printout(
-                WARNING,
-                "DD4benchRegionTimingAction",
-                "G4LogicalVolume '%s' is reachable from both top-level "
-                "detector '%s' (first claim) and '%s' (ignored). Steps "
-                "in this LV will be attributed to the first claimer.",
-                daughterName.c_str(),
-                existing->second.c_str(),
-                detectorName.c_str());
+            lostToOtherDetector += 1;
+            const auto warnKey = std::make_pair(lv, detectorName);
+            if (warnedCollisions.insert(warnKey).second)
+            {
+              printout(
+                  WARNING,
+                  "DD4benchRegionTimingAction",
+                  "G4LogicalVolume '%s' is reachable from both top-level "
+                  "detector '%s' (first claim) and '%s' (ignored). Steps "
+                  "in this LV will be attributed to the first claimer.",
+                  daughterName.c_str(),
+                  existing->second.c_str(),
+                  detectorName.c_str());
+            }
           }
         }
+        return lostToOtherDetector;
       }
 
       // Resolve a LogicalVolume to its containing top-level detector name.
@@ -507,9 +545,11 @@ namespace dd4hep
           }
         }
 
-        // No ancestor matched. Don't cache "unattributed": the same LV
-        // may be visited again under a different placement that resolves
-        // to a registered detector.
+        // No ancestor matched. We deliberately do not cache an
+        // "unattributed" verdict against currentLv: the same LV may be
+        // visited again under a different placement chain that DOES
+        // reach a registered detector, and a cached negative result
+        // would force it to remain unattributed forever.
         return kUnattributed;
       }
 

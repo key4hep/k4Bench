@@ -335,6 +335,15 @@ class TestSetupPluginEnvironment:
 
     # --- new tests for the region_json_path parameter ----------------------
 
+    def test_stale_region_env_var_cleared_when_path_is_none(self, tmp_path):
+        env: dict[str, str] = {"DD4BENCH_REGION_JSON": "/old/path/regions.json"}
+        with (
+            patch.object(plugin_runtime, "ensure_plugin_built"),
+            patch.object(plugin_runtime, "find_plugin_lib_dir", return_value=tmp_path / "lib"),
+        ):
+            setup_plugin_environment(env=env, event_json_path=tmp_path / "ev.json")
+        assert "DD4BENCH_REGION_JSON" not in env
+
     def test_region_env_var_unset_when_path_not_provided(self, tmp_path):
         env: dict[str, str] = {}
         with (

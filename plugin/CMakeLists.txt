@@ -56,6 +56,10 @@ endif()
 
 dd4hep_instantiate_package(DD4benchTimingAction)
 
+# ${CMAKE_INSTALL_LIBDIR} is "lib" on Debian/Ubuntu and "lib64" on RHEL/Fedora
+# (set by GNUInstallDirs based on the platform multiarch convention).
+# dd4bench/plugin/runtime.py::find_plugin_lib_dir() searches both
+# install/lib and install/lib64, so either layout is handled automatically.
 install(
   TARGETS
     DD4benchTimingAction

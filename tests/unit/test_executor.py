@@ -161,6 +161,15 @@ class TestBuildCommandPluginAvailability:
         assert cmd.count("DD4benchRegionTrackingAction") == 1
         assert cmd.count("DD4benchRegionEventAction") == 1
 
+    def test_action_name_in_non_action_flag_does_not_suppress_injection(self):
+        # Action name appearing after a non --action.* flag must not count
+        # as the action being registered (old substring match would suppress it).
+        cmd = self._cmd(
+            plugin_available=True,
+            extra_args=["--somearg", "DD4benchRegionTimingAction"],
+        )
+        assert cmd.count("DD4benchRegionTimingAction") == 2
+
     def test_missing_region_actions_injected_when_only_step_is_present(self):
         # If the user supplies only the step action, track and event should
         # still be injected rather than silently left out.
