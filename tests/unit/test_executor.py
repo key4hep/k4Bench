@@ -136,6 +136,51 @@ class TestBuildCommandPluginAvailability:
         )
         assert cmd.count("DD4benchTimingAction") == 1
 
+    def test_region_actions_injected_when_plugin_available(self):
+        cmd = self._cmd(plugin_available=True)
+        assert "--action.step" in cmd
+        assert "DD4benchRegionTimingAction" in cmd
+        assert "--action.track" in cmd
+        assert "DD4benchRegionTrackingAction" in cmd
+        assert "DD4benchRegionEventAction" in cmd
+
+    def test_region_actions_absent_when_plugin_unavailable(self):
+        cmd = self._cmd(plugin_available=False)
+        assert "DD4benchRegion" not in cmd
+
+    def test_region_actions_not_duplicated_when_already_in_extra_args(self):
+        cmd = self._cmd(
+            plugin_available=True,
+            extra_args=[
+                "--action.step",  "DD4benchRegionTimingAction",
+                "--action.track", "DD4benchRegionTrackingAction",
+                "--action.event", "DD4benchRegionEventAction",
+            ],
+        )
+        assert cmd.count("DD4benchRegionTimingAction") == 1
+        assert cmd.count("DD4benchRegionTrackingAction") == 1
+        assert cmd.count("DD4benchRegionEventAction") == 1
+
+    def test_action_name_in_non_action_flag_does_not_suppress_injection(self):
+        # Action name appearing after a non --action.* flag must not count
+        # as the action being registered (old substring match would suppress it).
+        cmd = self._cmd(
+            plugin_available=True,
+            extra_args=["--somearg", "DD4benchRegionTimingAction"],
+        )
+        assert cmd.count("DD4benchRegionTimingAction") == 2
+
+    def test_missing_region_actions_injected_when_only_step_is_present(self):
+        # If the user supplies only the step action, track and event should
+        # still be injected rather than silently left out.
+        cmd = self._cmd(
+            plugin_available=True,
+            extra_args=["--action.step", "DD4benchRegionTimingAction"],
+        )
+        assert cmd.count("DD4benchRegionTimingAction") == 1
+        assert "DD4benchRegionTrackingAction" in cmd
+        assert "DD4benchRegionEventAction" in cmd
+
 
 class TestVerboseReturncode:
     """Regression: returncode must not be None after either streaming path."""

@@ -99,15 +99,18 @@ def run_ddsim(
 
     log_path = log_dir / f"{label}.log"
 
-    # Optional plugin output artifact
+    # Optional plugin output artifacts
     event_json_path = log_dir / f"{label}_events.json"
     event_json_path.unlink(missing_ok=True)
+    region_json_path = log_dir / f"{label}_regions.json"
+    region_json_path.unlink(missing_ok=True)
 
     env = os.environ.copy()
 
     plugin_available = setup_plugin_environment(
         env=env,
         event_json_path=event_json_path,
+        region_json_path=region_json_path,
     )
 
     cmd = _build_command(
@@ -209,6 +212,14 @@ def run_ddsim(
 # ---------------------------------------------------------------------------
 
 
+def _has_action(args: list[str], action_name: str) -> bool:
+    """Return True if action_name is the value of an --action.* flag in args."""
+    for flag, value in zip(args, args[1:]):
+        if flag.startswith("--action.") and value == action_name:
+            return True
+    return False
+
+
 def _build_command(
     *,
     xml_path: Path,
@@ -232,15 +243,21 @@ def _build_command(
         f"--outputFile={shlex.quote(str(output_file))}",
     ]
 
-    has_timing_action = any("DD4benchTimingAction" in arg for arg in extra_args)
+    has_timing_action = _has_action(extra_args, "DD4benchTimingAction")
+    has_region_step   = _has_action(extra_args, "DD4benchRegionTimingAction")
+    has_region_track  = _has_action(extra_args, "DD4benchRegionTrackingAction")
+    has_region_event  = _has_action(extra_args, "DD4benchRegionEventAction")
 
     if plugin_available and not has_timing_action:
-        managed.extend(
-            [
-                "--action.event",
-                "DD4benchTimingAction",
-            ]
-        )
+        managed.extend(["--action.event", "DD4benchTimingAction"])
+
+    if plugin_available:
+        if not has_region_step:
+            managed.extend(["--action.step", "DD4benchRegionTimingAction"])
+        if not has_region_track:
+            managed.extend(["--action.track", "DD4benchRegionTrackingAction"])
+        if not has_region_event:
+            managed.extend(["--action.event", "DD4benchRegionEventAction"])
 
     caller = [shlex.quote(a) for a in extra_args]
 
