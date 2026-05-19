@@ -82,6 +82,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -429,28 +430,42 @@ namespace dd4hep
           }
           // First registration wins. If an LV is somehow reachable from
           // two top-level detectors (shouldn't happen for direct world
-          // children, but defensive), the first one named owns it.
-          if (topLogVols.find(lv) == topLogVols.end())
+          // children, but defensive), the first one named owns it. We
+          // log the collision so it's not silent.
+          auto existing = topLogVols.find(lv);
+          if (existing == topLogVols.end())
           {
             topLogVols[lv] = detectorName;
             lvToDetector[lv] = detectorName;
           }
+          else if (existing->second != detectorName)
+          {
+            printout(
+                WARNING,
+                "DD4benchRegionTimingAction",
+                "G4LogicalVolume '%s' is reachable from both top-level "
+                "detector '%s' (first claim) and '%s' (ignored). Steps "
+                "in this LV will be attributed to the first claimer.",
+                daughterName.c_str(),
+                existing->second.c_str(),
+                detectorName.c_str());
+          }
         }
       }
 
-      // Resolve a LogicalVolume to its containing top-level detector name,
-      // using and updating the cache. Walking is done via a touchable when
-      // possible; if not available (the touchable is the right way to walk
-      // the *placement* tree, since the LV alone has no notion of where it
-      // is placed), the caller should pass the touchable.
+      // Resolve a LogicalVolume to its containing top-level detector name.
       //
-      // For the hot path we accept either:
-      //   - a fully resolved LV+touchable (preferred), or
-      //   - just an LV (we then can only check direct top-level membership)
+      // Caching policy: we ONLY cache positive results that depend solely
+      // on the LogicalVolume identity (i.e., the LV is itself a registered
+      // top-level placement). We do NOT cache results obtained by walking
+      // the touchable ancestry, because the same LV can be placed under
+      // different parents in principle, reaching different top-level
+      // detectors. Caching the walk result would force one answer
+      // globally and silently misattribute on the second placement.
       //
-      // The touchable-based version walks parent physical volumes. The
-      // bare-LV version is a fallback used only when the touchable is
-      // unavailable (should be never in normal stepping).
+      // In practice for ALLEGRO each detector's LVs are unique to that
+      // detector, so the touchable walk gives the same answer every time,
+      // but we don't rely on that assumption.
       const std::string &resolveByTouchable(
           const G4LogicalVolume *currentLv,
           const G4VTouchable *touch)
@@ -460,13 +475,19 @@ namespace dd4hep
           return kUnattributed;
         }
 
-        auto cacheHit = lvToDetector.find(currentLv);
-        if (cacheHit != lvToDetector.end())
+        // Direct hit: currentLv is itself a registered top-level placement.
+        // This case is LV-only and safe to cache (and was pre-cached at
+        // index time).
+        auto direct = lvToDetector.find(currentLv);
+        if (direct != lvToDetector.end())
         {
-          return cacheHit->second;
+          return direct->second;
         }
 
-        // Walk up the touchable hierarchy.
+        // Walk up the touchable hierarchy looking for an ancestor that IS
+        // registered. Do NOT cache the result against currentLv, because
+        // the answer depended on the specific placement chain, not on the
+        // LV identity alone.
         if (touch != nullptr)
         {
           const int depth = touch->GetHistoryDepth();
@@ -481,16 +502,17 @@ namespace dd4hep
             auto it = topLogVols.find(lv);
             if (it != topLogVols.end())
             {
-              const std::string &name = it->second;
-              lvToDetector[currentLv] = name;
-              return lvToDetector[currentLv];
+              return it->second;
             }
           }
         }
 
-        // Not under any indexed top-level detector.
-        lvToDetector[currentLv] = kUnattributed;
-        return lvToDetector[currentLv];
+        // No ancestor matched. The previous implementation cached
+        // "unattributed" here, but doing so prevents a future visit to
+        // the same LV (under a different placement that DOES reach a
+        // registered detector) from being resolved correctly. So we
+        // return without caching.
+        return kUnattributed;
       }
 
     private:
@@ -786,7 +808,15 @@ namespace dd4hep
 
         if (m_haveLastTick)
         {
-          const std::uint64_t delta = nowTick - m_lastTick;
+          // Guard against non-monotonic ticks. With __rdtscp this is rare
+          // but possible across core migrations or clock resync events.
+          // Without the guard, unsigned subtraction would produce a huge
+          // bogus delta that corrupts all timing for the event.
+          std::uint64_t delta = 0;
+          if (nowTick >= m_lastTick)
+          {
+            delta = nowTick - m_lastTick;
+          }
           state.atLocationTicks[m_lastAtLocation] += delta;
           state.byBirthTicks[m_lastByBirth] += delta;
           state.intervalCounts[m_lastAtLocation] += 1;
@@ -1063,9 +1093,14 @@ namespace dd4hep
       out << "  \"timer\": \""
           << (state.timer.useRdtscp ? "rdtscp" : "steady_clock")
           << "\",\n";
-      out << "  \"per_step_overhead_ns\": "
+      out << "  \"per_step_timer_overhead_ns\": "
           << std::fixed << std::setprecision(2)
           << (state.perStepOverheadSeconds * 1e9) << ",\n";
+      out << "  \"per_step_timer_overhead_note\": \"Cost of two timer "
+          << "reads plus a map increment, measured at startup. Does NOT "
+          << "include the per-step touchable walk or hash lookup costs "
+          << "for detector attribution; those are typically 50-100 ns "
+          << "additional but vary with placement depth.\",\n";
       out << "  \"interval_counts_note\": \"Counts of timer intervals "
           << "attributed to each detector, not strict step counts. Off "
           << "by one from 'steps in detector' at event boundaries.\",\n";

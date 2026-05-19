@@ -151,9 +151,26 @@ class TestBuildCommandPluginAvailability:
     def test_region_actions_not_duplicated_when_already_in_extra_args(self):
         cmd = self._cmd(
             plugin_available=True,
+            extra_args=[
+                "--action.step",  "DD4benchRegionTimingAction",
+                "--action.track", "DD4benchRegionTrackingAction",
+                "--action.event", "DD4benchRegionEventAction",
+            ],
+        )
+        assert cmd.count("DD4benchRegionTimingAction") == 1
+        assert cmd.count("DD4benchRegionTrackingAction") == 1
+        assert cmd.count("DD4benchRegionEventAction") == 1
+
+    def test_missing_region_actions_injected_when_only_step_is_present(self):
+        # If the user supplies only the step action, track and event should
+        # still be injected rather than silently left out.
+        cmd = self._cmd(
+            plugin_available=True,
             extra_args=["--action.step", "DD4benchRegionTimingAction"],
         )
         assert cmd.count("DD4benchRegionTimingAction") == 1
+        assert "DD4benchRegionTrackingAction" in cmd
+        assert "DD4benchRegionEventAction" in cmd
 
 
 class TestVerboseReturncode:

@@ -126,6 +126,8 @@ def setup_plugin_environment(
 
         if region_json_path is not None:
             env["DD4BENCH_REGION_JSON"] = str(region_json_path.resolve())
+        else:
+            env.pop("DD4BENCH_REGION_JSON", None)
 
         return True
 

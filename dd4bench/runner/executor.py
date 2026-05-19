@@ -236,17 +236,20 @@ def _build_command(
     ]
 
     has_timing_action = any("DD4benchTimingAction" in arg for arg in extra_args)
-    has_region_actions = any("DD4benchRegion" in arg for arg in extra_args)
+    has_region_step = any("DD4benchRegionTimingAction" in arg for arg in extra_args)
+    has_region_track = any("DD4benchRegionTrackingAction" in arg for arg in extra_args)
+    has_region_event = any("DD4benchRegionEventAction" in arg for arg in extra_args)
 
     if plugin_available and not has_timing_action:
         managed.extend(["--action.event", "DD4benchTimingAction"])
 
-    if plugin_available and not has_region_actions:
-        managed.extend([
-            "--action.step",  "DD4benchRegionTimingAction",
-            "--action.track", "DD4benchRegionTrackingAction",
-            "--action.event", "DD4benchRegionEventAction",
-        ])
+    if plugin_available:
+        if not has_region_step:
+            managed.extend(["--action.step", "DD4benchRegionTimingAction"])
+        if not has_region_track:
+            managed.extend(["--action.track", "DD4benchRegionTrackingAction"])
+        if not has_region_event:
+            managed.extend(["--action.event", "DD4benchRegionEventAction"])
 
     caller = [shlex.quote(a) for a in extra_args]
 
