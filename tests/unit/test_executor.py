@@ -136,6 +136,25 @@ class TestBuildCommandPluginAvailability:
         )
         assert cmd.count("DD4benchTimingAction") == 1
 
+    def test_region_actions_injected_when_plugin_available(self):
+        cmd = self._cmd(plugin_available=True)
+        assert "--action.stepping" in cmd
+        assert "DD4benchRegionTimingAction" in cmd
+        assert "--action.tracking" in cmd
+        assert "DD4benchRegionTrackingAction" in cmd
+        assert "DD4benchRegionEventAction" in cmd
+
+    def test_region_actions_absent_when_plugin_unavailable(self):
+        cmd = self._cmd(plugin_available=False)
+        assert "DD4benchRegion" not in cmd
+
+    def test_region_actions_not_duplicated_when_already_in_extra_args(self):
+        cmd = self._cmd(
+            plugin_available=True,
+            extra_args=["--action.stepping", "DD4benchRegionTimingAction"],
+        )
+        assert cmd.count("DD4benchRegionTimingAction") == 1
+
 
 class TestVerboseReturncode:
     """Regression: returncode must not be None after either streaming path."""

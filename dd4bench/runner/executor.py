@@ -99,15 +99,18 @@ def run_ddsim(
 
     log_path = log_dir / f"{label}.log"
 
-    # Optional plugin output artifact
+    # Optional plugin output artifacts
     event_json_path = log_dir / f"{label}_events.json"
     event_json_path.unlink(missing_ok=True)
+    region_json_path = log_dir / f"{label}_regions.json"
+    region_json_path.unlink(missing_ok=True)
 
     env = os.environ.copy()
 
     plugin_available = setup_plugin_environment(
         env=env,
         event_json_path=event_json_path,
+        region_json_path=region_json_path,
     )
 
     cmd = _build_command(
@@ -233,14 +236,17 @@ def _build_command(
     ]
 
     has_timing_action = any("DD4benchTimingAction" in arg for arg in extra_args)
+    has_region_actions = any("DD4benchRegion" in arg for arg in extra_args)
 
     if plugin_available and not has_timing_action:
-        managed.extend(
-            [
-                "--action.event",
-                "DD4benchTimingAction",
-            ]
-        )
+        managed.extend(["--action.event", "DD4benchTimingAction"])
+
+    if plugin_available and not has_region_actions:
+        managed.extend([
+            "--action.stepping", "DD4benchRegionTimingAction",
+            "--action.tracking", "DD4benchRegionTrackingAction",
+            "--action.event",    "DD4benchRegionEventAction",
+        ])
 
     caller = [shlex.quote(a) for a in extra_args]
 

@@ -1,30 +1,47 @@
 #!/bin/bash
-# Build the DD4bench timing plugin.
+# Build the DD4bench timing plugins.
 #
-# Idempotent: skips the build if the .so already exists and sources are
-# unchanged.  Run this after sourcing the key4hep/DD4hep environment.
+# Idempotent: skips the build if both .so files exist and are newer than
+# their respective sources. Run this after sourcing the key4hep/DD4hep
+# environment.
 #
 # Usage:
 #   source setup.sh          # sets up DD4hep environment
-#   bash plugin/build.sh     # builds the plugin
+#   bash plugin/build.sh     # builds the plugins
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${SCRIPT_DIR}/build"
 INSTALL_DIR="${SCRIPT_DIR}/install"
-SOURCE="${SCRIPT_DIR}/DD4benchTimingAction.cpp"
-LIB="${INSTALL_DIR}/lib/libDD4benchTimingAction.so"
 
-# Skip rebuild if the .so is newer than the source
-if [ -f "${LIB}" ] && [ "${LIB}" -nt "${SOURCE}" ]; then
-    echo "✅ DD4bench timing plugin is up to date."
-    exit 0
+SOURCE_EVENT="${SCRIPT_DIR}/DD4benchTimingAction.cpp"
+SOURCE_REGION="${SCRIPT_DIR}/DD4benchRegionTimingAction.cpp"
+LIB_EVENT="${INSTALL_DIR}/lib/libDD4benchTimingAction.so"
+LIB_REGION="${INSTALL_DIR}/lib/libDD4benchRegionTimingAction.so"
+
+needs_build() {
+  local lib="$1"
+  local src="$2"
+  if [ ! -f "${lib}" ]; then
+    return 0  # needs build
+  fi
+  if [ "${src}" -nt "${lib}" ]; then
+    return 0  # needs build
+  fi
+  return 1  # up to date
+}
+
+if ! needs_build "${LIB_EVENT}" "${SOURCE_EVENT}" \
+   && ! needs_build "${LIB_REGION}" "${SOURCE_REGION}"; then
+  echo "✅ DD4bench timing plugins are up to date."
+  exit 0
 fi
 
-echo "🔄 Building DD4bench timing plugin..."
+echo "🔄 Building DD4bench timing plugins..."
 
 mkdir -p "${BUILD_DIR}"
+
 cmake -S "${SCRIPT_DIR}" \
       -B "${BUILD_DIR}" \
       -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}" \
@@ -36,4 +53,6 @@ cmake -S "${SCRIPT_DIR}" \
 cmake --build "${BUILD_DIR}" --parallel "$(nproc)" > /dev/null
 cmake --install "${BUILD_DIR}" > /dev/null
 
-echo "✅ DD4bench timing plugin built: ${LIB}"
+echo "✅ DD4bench timing plugins built:"
+echo "    - ${LIB_EVENT}"
+echo "    - ${LIB_REGION}"
