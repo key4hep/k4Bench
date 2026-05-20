@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 
+
 def load_results(log_dir: str | Path, labels: list[str] | None = None) -> pd.DataFrame:
     """Load benchmark results from a log directory into a DataFrame.
 
@@ -127,5 +128,119 @@ def load_event_timing(
         )
         df["rss_delta_mb"] = df["rss_end_mb"] - df["rss_begin_mb"]
         out[label] = df
+
+    return out
+
+
+def load_region_timing(
+    log_dir: str | Path,
+    labels: list[str] | None = None,
+) -> dict[str, dict]:
+    """Load per-region timing JSON files from a log directory.
+
+    Each ``{label}_regions.json`` file written by the DD4benchRegionTimingAction
+    plugin is parsed into structured data.
+
+    Parameters
+    ----------
+    log_dir : str or Path
+        Directory containing ``*_regions.json`` files.
+    labels : list[str] or None
+        Load only these run labels.  If ``None``, all ``*_regions.json`` files
+        in *log_dir* are loaded.
+
+    Returns
+    -------
+    dict[str, dict]
+        Maps label → dict with keys:
+
+        - ``"meta"``: dict with schema_version, timer, overhead_ns, detectors,
+          lv_counts.
+        - ``"events"``: DataFrame with columns ``event_number``,
+          ``event_wall_s``, ``event_region_sum_s``, ``event_unaccounted_s``.
+        - ``"at_location"``: DataFrame indexed by ``event_number``, one column
+          per top-level detector (seconds), time charged to where the Geant4
+          step physically occurred.
+        - ``"by_birth"``: same shape as ``at_location``, time charged to the
+          detector where the primary track was created.
+    """
+    log_dir = Path(log_dir)
+    _suffix = "_regions.json"
+
+    if labels is not None:
+        candidates = [(log_dir / f"{lbl}{_suffix}", lbl) for lbl in labels]
+    else:
+        candidates = [
+            (p, p.name[: -len(_suffix)])
+            for p in sorted(log_dir.glob(f"*{_suffix}"))
+        ]
+
+    if labels is not None:
+        missing = [lbl for path, lbl in candidates if not path.exists()]
+        if missing:
+            raise ValueError(f"Missing region files for labels: {missing}")
+
+    out: dict[str, dict] = {}
+    for path, label in candidates:
+        if not path.exists():
+            continue
+        with path.open() as f:
+            raw = json.load(f)
+
+        _required = [
+            "event_numbers", "event_wall_seconds",
+            "event_region_sum_seconds", "event_unaccounted_seconds",
+            "at_location_seconds", "by_birth_seconds",
+        ]
+        _missing = [k for k in _required if k not in raw]
+        if _missing:
+            raise ValueError(f"{path} missing keys: {_missing}")
+
+        n_ev = len(raw["event_numbers"])
+        if len(set(raw["event_numbers"])) != n_ev:
+            raise ValueError(f"{path}: event_numbers contains duplicates")
+        for k in ["event_wall_seconds", "event_region_sum_seconds",
+                  "event_unaccounted_seconds", "at_location_seconds", "by_birth_seconds"]:
+            if len(raw[k]) != n_ev:
+                raise ValueError(f"{path}: array length mismatch for '{k}'")
+
+        events_df = pd.DataFrame({
+            "event_number":       raw["event_numbers"],
+            "event_wall_s":       raw["event_wall_seconds"],
+            "event_region_sum_s": raw["event_region_sum_seconds"],
+            "event_unaccounted_s": raw["event_unaccounted_seconds"],
+        })
+
+        ev_index = pd.Index(raw["event_numbers"], name="event_number")
+        at_loc_df   = pd.DataFrame(raw["at_location_seconds"], index=ev_index).fillna(0.0)
+        by_birth_df = pd.DataFrame(raw["by_birth_seconds"],    index=ev_index).fillna(0.0)
+
+        declared = raw.get("indexed_top_level_detectors", [])
+        if declared:
+            extra_at  = [c for c in at_loc_df.columns  if c not in declared]
+            extra_by  = [c for c in by_birth_df.columns if c not in declared]
+            at_loc_df   = at_loc_df.reindex(  columns=declared + extra_at,  fill_value=0.0)
+            by_birth_df = by_birth_df.reindex( columns=declared + extra_by, fill_value=0.0)
+
+        out[label] = {
+            "meta": {
+                "schema_version":    raw.get("schema_version", 1),
+                "attribution_method": raw.get("attribution", "dd4hep_top_level_detelement"),
+                "timer":             raw.get("timer", "unknown"),
+                "overhead_ns":       raw.get("per_step_timer_overhead_ns"),
+                "detectors":         raw.get("indexed_top_level_detectors", []),
+                "lv_counts":         raw.get("indexed_top_level_detector_lv_counts", {}),
+            },
+            "events":      events_df,
+            "at_location": at_loc_df,
+            "by_birth":    by_birth_df,
+        }
+
+    if not out:
+        if labels is not None:
+            raise ValueError(
+                f"No region files found for labels={labels} in '{log_dir}'."
+            )
+        raise ValueError(f"No *_regions.json files found in '{log_dir}'.")
 
     return out

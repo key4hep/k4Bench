@@ -18,8 +18,9 @@ import pytest
 from dd4bench.analysis.loader import load_results
 from dd4bench.analysis.plots import (
     _compute_core_range,
-    plot_event_timing,
     plot_event_memory,
+    plot_event_timing,
+    plot_region_timing,
     plot_run_overview,
 )
 
@@ -285,3 +286,155 @@ class TestPlotRunOverview:
         df = _sweep_df(tmp_path)
         with pytest.raises(ValueError, match="not found"):
             plot_run_overview(df, relative=True, baseline_label="nonexistent")
+
+
+# ---------------------------------------------------------------------------
+# plot_region_timing helpers
+# ---------------------------------------------------------------------------
+
+
+def _write_region_json(path: Path, n_events: int = 10,
+                       detectors: list[str] | None = None) -> None:
+    if detectors is None:
+        detectors = ["ECalBarrel", "HCalBarrel", "DCH_v2", "Vertex",
+                     "BeamPipe", "SiWrB", "LumiCal", "MuonTaggerBarrel",
+                     "HCalThreePartsEndcap", "EMEC_turbine"]
+    rng = np.random.default_rng(42)
+    at_loc = [
+        {d: float(rng.uniform(0.01, 0.40)) for d in detectors}
+        for _ in range(n_events)
+    ]
+    wall = [sum(row.values()) + float(rng.uniform(0.02, 0.08)) for row in at_loc]
+    unacc = [wall[i] - sum(at_loc[i].values()) for i in range(n_events)]
+    data = {
+        "schema_version": 1,
+        "attribution": "dd4hep_top_level_detelement",
+        "timer": "rdtscp",
+        "per_step_timer_overhead_ns": 25.0,
+        "indexed_top_level_detectors": detectors,
+        "indexed_top_level_detector_lv_counts": {d: 4 for d in detectors},
+        "event_numbers": list(range(n_events)),
+        "event_wall_seconds": wall,
+        "event_region_sum_seconds": [sum(row.values()) for row in at_loc],
+        "event_unaccounted_seconds": unacc,
+        "event_birth_fallbacks": [0] * n_events,
+        "at_location_seconds": at_loc,
+        "by_birth_seconds": at_loc,
+        "interval_counts": [{d: 1000 for d in detectors}] * n_events,
+    }
+    path.write_text(json.dumps(data))
+
+
+# ---------------------------------------------------------------------------
+# plot_region_timing
+# ---------------------------------------------------------------------------
+
+
+class TestPlotRegionTiming:
+    def test_single_run_both_returns_figure(self, tmp_path):
+        _write_region_json(tmp_path / "baseline_all_regions.json")
+        fig = plot_region_timing(tmp_path)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_single_run_breakdown_returns_figure(self, tmp_path):
+        _write_region_json(tmp_path / "baseline_all_regions.json")
+        fig = plot_region_timing(tmp_path, show="breakdown")
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_single_run_sequence_returns_figure(self, tmp_path):
+        _write_region_json(tmp_path / "baseline_all_regions.json")
+        fig = plot_region_timing(tmp_path, show="sequence")
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_by_birth_attribution(self, tmp_path):
+        _write_region_json(tmp_path / "baseline_all_regions.json")
+        fig = plot_region_timing(tmp_path, attribution="by_birth")
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_multi_run_both_returns_figure(self, tmp_path):
+        _write_region_json(tmp_path / "baseline_all_regions.json")
+        _write_region_json(tmp_path / "without_Ecal_regions.json")
+        fig = plot_region_timing(tmp_path)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_multi_run_breakdown_returns_figure(self, tmp_path):
+        _write_region_json(tmp_path / "baseline_all_regions.json")
+        _write_region_json(tmp_path / "without_Ecal_regions.json")
+        fig = plot_region_timing(tmp_path, show="breakdown")
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_multi_run_sequence_returns_figure(self, tmp_path):
+        _write_region_json(tmp_path / "baseline_all_regions.json")
+        _write_region_json(tmp_path / "without_Ecal_regions.json")
+        fig = plot_region_timing(tmp_path, show="sequence")
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_label_filter(self, tmp_path):
+        _write_region_json(tmp_path / "baseline_all_regions.json")
+        _write_region_json(tmp_path / "without_Ecal_regions.json")
+        fig = plot_region_timing(tmp_path, labels=["baseline_all"])
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_top_n_fewer_than_detectors(self, tmp_path):
+        _write_region_json(tmp_path / "baseline_all_regions.json")
+        fig = plot_region_timing(tmp_path, top_n=3)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_top_n_more_than_detectors(self, tmp_path):
+        _write_region_json(tmp_path / "baseline_all_regions.json", detectors=["ECalBarrel", "HCalBarrel"])
+        fig = plot_region_timing(tmp_path, top_n=20)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_accepts_preloaded_dict(self, tmp_path):
+        _write_region_json(tmp_path / "baseline_all_regions.json")
+        from dd4bench.analysis.loader import load_region_timing
+        data = load_region_timing(tmp_path)
+        fig = plot_region_timing(data)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_invalid_show_raises(self, tmp_path):
+        _write_region_json(tmp_path / "baseline_all_regions.json")
+        with pytest.raises(ValueError, match="show must be"):
+            plot_region_timing(tmp_path, show="invalid")
+
+    def test_invalid_attribution_raises(self, tmp_path):
+        _write_region_json(tmp_path / "baseline_all_regions.json")
+        with pytest.raises(ValueError, match="attribution must be"):
+            plot_region_timing(tmp_path, attribution="nowhere")
+
+    def test_exclude_events_all_removed_raises(self, tmp_path):
+        _write_region_json(tmp_path / "baseline_all_regions.json", n_events=3)
+        with pytest.raises(ValueError, match="No events left"):
+            plot_region_timing(tmp_path, exclude_events=[0, 1, 2])
+
+    def test_empty_dir_raises(self, tmp_path):
+        with pytest.raises(ValueError, match=r"No \*_regions.json"):
+            plot_region_timing(tmp_path)
+
+    def test_asymmetric_runs_other_row_shown(self, tmp_path):
+        """When a later run has extra detectors not present in run 0, 'Other'
+        must appear in the multi-run breakdown panel even if run 0 alone would
+        not have triggered an Other bucket."""
+        # run A: exactly 2 detectors — with top_n=2, no Other from run A alone
+        _write_region_json(tmp_path / "runA_regions.json",
+                           detectors=["ECalBarrel", "HCalBarrel"])
+        # run B: same 2 plus an extra — extra must be folded into Other
+        _write_region_json(tmp_path / "runB_regions.json",
+                           detectors=["ECalBarrel", "HCalBarrel", "Vertex"])
+        fig = plot_region_timing(tmp_path, top_n=2, show="breakdown")
+        assert isinstance(fig, plt.Figure)
+        ax = fig.axes[0]
+        ytick_labels = [t.get_text() for t in ax.get_yticklabels()]
+        assert "Other" in ytick_labels, f"'Other' not in y-axis labels: {ytick_labels}"
+        plt.close(fig)
