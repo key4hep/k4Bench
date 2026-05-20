@@ -9,7 +9,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from dd4bench.analysis.loader import load_event_timing, load_results
+from dd4bench.analysis.loader import load_event_timing, load_region_timing, load_results
 
 
 # ---------------------------------------------------------------------------
@@ -176,3 +176,128 @@ class TestLoadEventTiming:
         _write_event_json(tmp_path / "baseline_all_events.json")
         result = load_event_timing(str(tmp_path))
         assert "baseline_all" in result
+
+
+# ---------------------------------------------------------------------------
+# load_region_timing
+# ---------------------------------------------------------------------------
+
+
+def _write_region_json(path: Path, n_events: int = 5, detectors: list[str] | None = None) -> None:
+    if detectors is None:
+        detectors = ["ECalBarrel", "HCalBarrel", "Vertex"]
+    data = {
+        "schema_version": 1,
+        "attribution": "dd4hep_top_level_detelement",
+        "timer": "rdtscp",
+        "per_step_timer_overhead_ns": 25.0,
+        "indexed_top_level_detectors": detectors,
+        "indexed_top_level_detector_lv_counts": {d: 4 for d in detectors},
+        "event_numbers": list(range(n_events)),
+        "event_wall_seconds": [0.5 + 0.01 * i for i in range(n_events)],
+        "event_region_sum_seconds": [0.45 + 0.01 * i for i in range(n_events)],
+        "event_unaccounted_seconds": [0.05] * n_events,
+        "event_birth_fallbacks": [0] * n_events,
+        "at_location_seconds": [
+            {"ECalBarrel": 0.30, "HCalBarrel": 0.10, "Vertex": 0.05}
+            for _ in range(n_events)
+        ],
+        "by_birth_seconds": [
+            {"ECalBarrel": 0.28, "HCalBarrel": 0.12, "Vertex": 0.05}
+            for _ in range(n_events)
+        ],
+        "interval_counts": [
+            {"ECalBarrel": 3000, "HCalBarrel": 1000, "Vertex": 500}
+            for _ in range(n_events)
+        ],
+    }
+    path.write_text(json.dumps(data))
+
+
+class TestLoadRegionTiming:
+    def test_returns_dict(self, tmp_path):
+        _write_region_json(tmp_path / "baseline_all_regions.json")
+        result = load_region_timing(tmp_path)
+        assert isinstance(result, dict)
+
+    def test_label_extracted_from_filename(self, tmp_path):
+        _write_region_json(tmp_path / "baseline_all_regions.json")
+        result = load_region_timing(tmp_path)
+        assert "baseline_all" in result
+
+    def test_result_has_required_keys(self, tmp_path):
+        _write_region_json(tmp_path / "baseline_all_regions.json")
+        entry = load_region_timing(tmp_path)["baseline_all"]
+        assert set(entry.keys()) == {"meta", "events", "at_location", "by_birth"}
+
+    def test_events_dataframe_columns(self, tmp_path):
+        _write_region_json(tmp_path / "baseline_all_regions.json", n_events=3)
+        df = load_region_timing(tmp_path)["baseline_all"]["events"]
+        assert set(df.columns) == {
+            "event_number", "event_wall_s",
+            "event_region_sum_s", "event_unaccounted_s",
+        }
+
+    def test_at_location_indexed_by_event(self, tmp_path):
+        _write_region_json(tmp_path / "baseline_all_regions.json", n_events=3)
+        at_loc = load_region_timing(tmp_path)["baseline_all"]["at_location"]
+        assert at_loc.index.name == "event_number"
+        assert "ECalBarrel" in at_loc.columns
+
+    def test_by_birth_same_shape_as_at_location(self, tmp_path):
+        _write_region_json(tmp_path / "baseline_all_regions.json", n_events=4)
+        entry = load_region_timing(tmp_path)["baseline_all"]
+        assert entry["at_location"].shape == entry["by_birth"].shape
+
+    def test_multiple_files_loaded(self, tmp_path):
+        _write_region_json(tmp_path / "baseline_all_regions.json")
+        _write_region_json(tmp_path / "without_Ecal_regions.json")
+        result = load_region_timing(tmp_path)
+        assert set(result.keys()) == {"baseline_all", "without_Ecal"}
+
+    def test_label_filter(self, tmp_path):
+        _write_region_json(tmp_path / "baseline_all_regions.json")
+        _write_region_json(tmp_path / "without_Ecal_regions.json")
+        result = load_region_timing(tmp_path, labels=["baseline_all"])
+        assert list(result.keys()) == ["baseline_all"]
+
+    def test_missing_label_raises(self, tmp_path):
+        with pytest.raises(ValueError, match="Missing region files"):
+            load_region_timing(tmp_path, labels=["nonexistent"])
+
+    def test_empty_dir_raises(self, tmp_path):
+        with pytest.raises(ValueError, match=r"No \*_regions.json"):
+            load_region_timing(tmp_path)
+
+    def test_accepts_string_path(self, tmp_path):
+        _write_region_json(tmp_path / "baseline_all_regions.json")
+        result = load_region_timing(str(tmp_path))
+        assert "baseline_all" in result
+
+    def test_mismatched_array_lengths_raises(self, tmp_path):
+        path = tmp_path / "bad_regions.json"
+        data = {
+            "schema_version": 1, "attribution": "dd4hep_top_level_detelement",
+            "timer": "rdtscp", "per_step_timer_overhead_ns": 25.0,
+            "indexed_top_level_detectors": ["ECalBarrel"],
+            "indexed_top_level_detector_lv_counts": {"ECalBarrel": 4},
+            "event_numbers": [0, 1, 2],
+            "event_wall_seconds": [0.5, 0.5],  # wrong length
+            "event_region_sum_seconds": [0.45, 0.45, 0.45],
+            "event_unaccounted_seconds": [0.05, 0.05, 0.05],
+            "event_birth_fallbacks": [0, 0, 0],
+            "at_location_seconds": [{"ECalBarrel": 0.3}] * 3,
+            "by_birth_seconds": [{"ECalBarrel": 0.3}] * 3,
+            "interval_counts": [{"ECalBarrel": 3000}] * 3,
+        }
+        path.write_text(json.dumps(data))
+        with pytest.raises(ValueError, match="length mismatch"):
+            load_region_timing(tmp_path)
+
+    def test_meta_fields_populated(self, tmp_path):
+        _write_region_json(tmp_path / "baseline_all_regions.json")
+        meta = load_region_timing(tmp_path)["baseline_all"]["meta"]
+        assert meta["schema_version"] == 1
+        assert meta["timer"] == "rdtscp"
+        assert isinstance(meta["detectors"], list)
+        assert isinstance(meta["lv_counts"], dict)

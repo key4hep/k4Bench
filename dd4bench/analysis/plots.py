@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 
-from dd4bench.analysis.loader import load_event_timing, load_results
+from dd4bench.analysis.loader import load_event_timing, load_region_timing, load_results
 
 # ---------------------------------------------------------------------------
 # Style & colours
@@ -1044,6 +1044,409 @@ def plot_event_memory(
                 tbl[(i + 1, j)].set_facecolor(tint)
 
     base_title = "Per-Event Memory" if n == 1 else "Per-Event Memory Comparison"
+    suptitle = f"{base_title} ({det_title})" if det_title else base_title
+    fig.suptitle(suptitle, fontweight="bold")
+    fig.tight_layout()
+    plt.close(fig)
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Region timing helpers
+# ---------------------------------------------------------------------------
+
+_UNACCOUNTED_COLOR = "#999999"
+_OTHER_COLOR       = "#d0d0d0"
+
+
+def _ensure_region_data(
+    source: dict[str, dict] | str | Path | list[str | Path],
+    labels: list[str] | None = None,
+) -> dict[str, dict]:
+    """Accept a pre-loaded dict, a single log-dir path, or a list of paths."""
+    if isinstance(source, dict):
+        if labels is not None:
+            return {k: v for k, v in source.items() if k in labels}
+        return source
+    if isinstance(source, list):
+        out: dict[str, dict] = {}
+        for path in source:
+            prefix = Path(path).name
+            for lbl, data in load_region_timing(path).items():
+                key = lbl if lbl.startswith(f"{prefix}/") else f"{prefix}/{lbl}"
+                if key in out:
+                    raise ValueError(
+                        f"Duplicate label '{key}': two source paths share the directory name "
+                        f"'{prefix}'. Rename the directories to disambiguate."
+                    )
+                out[key] = data
+        if labels is not None:
+            out = {k: v for k, v in out.items()
+                   if k in labels or any(k.endswith(f"/{w}") for w in labels)}
+        return out
+    return load_region_timing(source, labels=labels)
+
+
+def _region_top_n(
+    time_df: pd.DataFrame,
+    top_n: int,
+) -> tuple[list[str], list[str]]:
+    """Return (top_dets, all_dets_sorted) by mean time descending, skipping zero-time columns."""
+    means = time_df.mean()
+    active = means[means > 0].sort_values(ascending=False)
+    all_sorted = active.index.tolist()
+    return all_sorted[:top_n], all_sorted
+
+
+def _build_stacked_arrays(
+    time_df: pd.DataFrame,
+    top_dets: list[str],
+    all_dets_sorted: list[str],
+) -> dict[str, np.ndarray]:
+    """Build per-detector time arrays; detectors outside top_dets are grouped as 'Other'.
+
+    Any columns in *time_df* not covered by *all_dets_sorted* are also folded into 'Other'
+    so no data is silently dropped when runs have different detector sets.
+    """
+    n = len(time_df)
+    arrays: dict[str, np.ndarray] = {}
+    for det in top_dets:
+        arrays[det] = time_df[det].to_numpy() if det in time_df.columns else np.zeros(n)
+
+    other_dets = [d for d in all_dets_sorted if d not in top_dets]
+    extra_dets = [d for d in time_df.columns if d not in top_dets and d not in all_dets_sorted]
+    if other_dets or extra_dets:
+        other_arr = np.zeros(n)
+        for det in other_dets + extra_dets:
+            if det in time_df.columns:
+                other_arr = other_arr + time_df[det].to_numpy()
+        arrays["Other"] = other_arr
+    return arrays
+
+
+# ---------------------------------------------------------------------------
+# plot_region_timing
+# ---------------------------------------------------------------------------
+
+
+def plot_region_timing(
+    source: dict[str, dict] | str | Path | list[str | Path],
+    *,
+    labels: list[str] | None = None,
+    show: str = "both",
+    attribution: str = "at_location",
+    top_n: int = 8,
+    figsize: tuple[float, float] | None = None,
+    exclude_events: list[int] | None = None,
+) -> plt.Figure:
+    """Plot per-detector timing breakdown and/or per-event sequence for one or more runs.
+
+    Single run: a donut chart + sorted horizontal bar chart (breakdown panel) and/or
+    a stacked-area sequence chart.  Multiple runs: a grouped horizontal bar chart
+    (breakdown) and/or a vertical stack of per-run stacked-area sequence charts.
+
+    Parameters
+    ----------
+    source : dict[str, dict], str/Path, or list of str/Path
+        Pre-loaded dict from :func:`~dd4bench.analysis.loader.load_region_timing`,
+        a single log-dir path, or a list of log-dir paths.  When a list is given,
+        run labels are prefixed with the directory name.
+    labels : list[str] or None
+        Restrict to these run labels.  Loads all runs when ``None``.
+    show : {"both", "breakdown", "sequence"}
+        ``"both"`` (default): breakdown + stacked-area sequence.
+        ``"breakdown"``: detector time breakdown panel only.
+        ``"sequence"``: per-event stacked area chart only.
+    attribution : {"at_location", "by_birth"}
+        Which attribution to use.  ``"at_location"`` (default) charges time to
+        the detector where the Geant4 step physically occurred.  ``"by_birth"``
+        charges time to the detector where the primary track was created.
+    top_n : int
+        Show the top *n* detectors by mean time; remaining detectors are grouped
+        into ``"Other"``.  Default: 8.
+    figsize : (width, height) or None
+        Figure size in inches.
+    exclude_events : list[int] or None
+        Event numbers to exclude.  Defaults to ``[0]`` (first event is typically
+        an initialisation outlier).  Pass ``[]`` to disable.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    if show not in ("both", "breakdown", "sequence"):
+        raise ValueError(f"show must be 'both', 'breakdown', or 'sequence', got {show!r}")
+    if attribution not in ("at_location", "by_birth"):
+        raise ValueError(f"attribution must be 'at_location' or 'by_birth', got {attribution!r}")
+
+    _use_style()
+    det_title = _detector_title(source)
+
+    if exclude_events is None:
+        exclude_events = _DEFAULT_EXCLUDE_EVENTS
+
+    region_data = _ensure_region_data(source, labels=labels)
+    if not region_data:
+        raise ValueError(f"No region data found for labels={labels}.")
+
+    label_list = list(region_data.keys())
+    n = len(label_list)
+
+    # -----------------------------------------------------------------------
+    # Filter events and align timing / event DataFrames
+    # -----------------------------------------------------------------------
+    filtered: dict[str, dict] = {}
+    for lbl, data in region_data.items():
+        ev_df = data["events"]
+        mask  = ~ev_df["event_number"].isin(exclude_events)
+        ev_filt = ev_df[mask].copy().reset_index(drop=True)
+        if ev_filt.empty:
+            raise ValueError(f"No events left after applying exclude_events for '{lbl}'.")
+        time_df  = data[attribution]
+        time_filt = (
+            time_df.loc[time_df.index.isin(ev_filt["event_number"])]
+            .reindex(ev_filt["event_number"].values)
+            .fillna(0.0)
+        )
+        filtered[lbl] = {"events": ev_filt, "time": time_filt}
+
+    # -----------------------------------------------------------------------
+    # Determine top-N detectors (ordered by first run; other runs folded correctly
+    # via _build_stacked_arrays's extra_dets logic)
+    # -----------------------------------------------------------------------
+    top_dets, all_dets_sorted = _region_top_n(filtered[label_list[0]]["time"], top_n)
+
+    det_display = top_dets + (["Other"] if len(all_dets_sorted) > top_n else [])
+    det_colors: dict[str, str] = {
+        det: _PALETTE[i % len(_PALETTE)] for i, det in enumerate(top_dets)
+    }
+    if "Other" in det_display:
+        det_colors["Other"] = _OTHER_COLOR
+    det_colors["Unaccounted"] = _UNACCOUNTED_COLOR
+
+    attr_str      = "at location" if attribution == "at_location" else "by birth"
+    show_breakdown = show in ("both", "breakdown")
+    show_seq       = show in ("both", "sequence")
+
+    # -----------------------------------------------------------------------
+    # Figure layout
+    # -----------------------------------------------------------------------
+    ax_donut: plt.Axes | None = None
+    ax_bar:   plt.Axes | None = None
+    ax_seq:   plt.Axes | None = None
+    ax_seq_list: list[plt.Axes] = []
+
+    if n == 1:
+        if show == "both":
+            fw, fh = figsize or (13.0, 8.5)
+            fig = plt.figure(figsize=(fw, fh))
+            gs = GridSpec(2, 2, figure=fig, height_ratios=[5, 3.5], hspace=0.4, wspace=0.3)
+            ax_donut = fig.add_subplot(gs[0, 0])
+            ax_bar   = fig.add_subplot(gs[0, 1])
+            ax_seq   = fig.add_subplot(gs[1, :])
+        elif show == "breakdown":
+            fw, fh = figsize or (11.0, 4.5)
+            fig, axes = plt.subplots(1, 2, figsize=(fw, fh))
+            ax_donut, ax_bar = axes[0], axes[1]
+        else:
+            fw, fh = figsize or (10.0, 4.5)
+            fig, ax_seq = plt.subplots(figsize=(fw, fh))
+    else:
+        bar_h = max(4.5, 0.5 * (len(det_display) + 2) + 1.5)
+        if show == "both":
+            seq_h = 3.5
+            fw, fh = figsize or (11.0, bar_h + seq_h * n)
+            fig = plt.figure(figsize=(fw, fh))
+            gs = GridSpec(1 + n, 1, figure=fig,
+                          height_ratios=[bar_h] + [seq_h] * n, hspace=0.45)
+            ax_bar      = fig.add_subplot(gs[0, 0])
+            ax_seq_list = [fig.add_subplot(gs[1 + i, 0]) for i in range(n)]
+        elif show == "breakdown":
+            fw, fh = figsize or (10.0, bar_h)
+            fig, ax_bar = plt.subplots(figsize=(fw, fh))
+        else:
+            seq_h = 3.5
+            fw, fh = figsize or (10.0, seq_h * n)
+            fig, axes_arr = plt.subplots(n, 1, figsize=(fw, fh), sharex=True)
+            ax_seq_list = list(np.atleast_1d(axes_arr))
+
+    # -----------------------------------------------------------------------
+    # Breakdown panel
+    # -----------------------------------------------------------------------
+    if show_breakdown:
+        lbl0        = label_list[0]
+        time_df0    = filtered[lbl0]["time"]
+        ev_df0      = filtered[lbl0]["events"]
+        stacked0    = _build_stacked_arrays(time_df0, top_dets, all_dets_sorted)
+        means0      = {det: float(arr.mean()) for det, arr in stacked0.items()}
+        sems0       = {
+            det: (float(arr.std(ddof=1)) / np.sqrt(len(arr)) if len(arr) > 1 else 0.0)
+            for det, arr in stacked0.items()
+        }
+        mean_unacc  = float(ev_df0["event_unaccounted_s"].mean())
+        unacc_arr   = ev_df0["event_unaccounted_s"].to_numpy()
+        sem_unacc   = (float(unacc_arr.std(ddof=1)) / np.sqrt(len(unacc_arr))) if len(unacc_arr) > 1 else 0.0
+        total_wall0 = float(ev_df0["event_wall_s"].mean())
+
+        if n == 1 and ax_donut is not None:
+            donut_cats   = det_display + ["Unaccounted"]
+            donut_vals   = [means0.get(d, 0.0) for d in det_display]
+            donut_vals.append(max(0.0, mean_unacc))
+            donut_clrs   = [det_colors[c] for c in donut_cats]
+
+            valid_idx = [i for i, v in enumerate(donut_vals) if v > 0]
+            vv = [donut_vals[i] for i in valid_idx]
+            vc = [donut_clrs[i] for i in valid_idx]
+
+            if vv:
+                wedges, _, autotexts = ax_donut.pie(
+                    vv,
+                    colors=vc,
+                    autopct=lambda pct: f"{pct:.1f}%" if pct >= 3.0 else "",
+                    pctdistance=0.75,
+                    wedgeprops=dict(width=0.5, edgecolor="white", linewidth=1.5),
+                    startangle=90,
+                    counterclock=False,
+                )
+                for at in autotexts:
+                    at.set_fontsize(8)
+                ax_donut.text(
+                    0, 0, f"μ = {total_wall0:.3g} s\nper event",
+                    ha="center", va="center", fontsize=9.5, fontweight="bold",
+                    color="#333333",
+                )
+            else:
+                ax_donut.text(0.5, 0.5, "No timing data",
+                              ha="center", va="center", transform=ax_donut.transAxes)
+            ax_donut.set_title(f"Time Breakdown ({attr_str})", pad=10)
+
+        if ax_bar is not None:
+            if n == 1:
+                bar_cats  = det_display + ["Unaccounted"]
+                bar_means = [means0.get(d, 0.0) for d in det_display] + [max(0.0, mean_unacc)]
+                bar_stds  = [sems0.get(d, 0.0) for d in det_display] + [sem_unacc]
+                bar_clrs  = [det_colors.get(d, _UNACCOUNTED_COLOR) for d in bar_cats]
+
+                n_det_cats = len(det_display)
+                order = sorted(range(n_det_cats), key=lambda i: bar_means[i], reverse=True)
+                order.append(n_det_cats)  # Unaccounted at bottom
+
+                s_cats  = [bar_cats[i]  for i in order]
+                s_means = [bar_means[i] for i in order]
+                s_stds  = [bar_stds[i]  for i in order]
+                s_clrs  = [bar_clrs[i]  for i in order]
+
+                y_pos = list(range(len(s_cats)))
+                ax_bar.barh(
+                    y_pos, s_means, xerr=s_stds,
+                    color=s_clrs, edgecolor="white", linewidth=0.5, height=0.65,
+                    error_kw=dict(elinewidth=0.8, capsize=3, capthick=0.8, ecolor="#555555"),
+                )
+                ax_bar.set_yticks(y_pos)
+                ax_bar.set_yticklabels(s_cats, fontsize=8.5)
+                x_max = max(s_means) if s_means else 1.0
+                # xlim must clear the error caps, not just the bar ends
+                x_right = max((v + s for v, s in zip(s_means, s_stds)), default=x_max)
+                for i, (val, std_v) in enumerate(zip(s_means, s_stds)):
+                    ax_bar.text(
+                        val + std_v + 0.02 * x_right, i,
+                        f"{val:.3g} s", va="center", ha="left", fontsize=7.5, color="#444444",
+                    )
+                ax_bar.set_xlim(0, x_right * 1.35)
+                ax_bar.set_xlabel("Mean time per event (s)")
+                ax_bar.set_title(f"Mean time per detector ({attr_str})", pad=6)
+                ax_bar.grid(False)
+                _apply_tick_style(ax_bar)
+
+            else:
+                all_run_means: dict[str, dict[str, float]] = {}
+                all_run_unacc: dict[str, float] = {}
+                for lbl in label_list:
+                    td = filtered[lbl]["time"]
+                    ed = filtered[lbl]["events"]
+                    st = _build_stacked_arrays(td, top_dets, all_dets_sorted)
+                    all_run_means[lbl] = {det: float(arr.mean()) for det, arr in st.items()}
+                    all_run_unacc[lbl] = max(0.0, float(ed["event_unaccounted_s"].mean()))
+
+                run_palette  = {lbl: _PALETTE[i % len(_PALETTE)] for i, lbl in enumerate(label_list)}
+                all_bar_dets = det_display + ["Unaccounted"]
+                n_det_rows   = len(all_bar_dets)
+                bar_h_each   = 0.7 / n
+                base_pos     = np.arange(n_det_rows, dtype=float)
+
+                for run_i, lbl in enumerate(label_list):
+                    run_vals = [all_run_means[lbl].get(d, 0.0) for d in det_display]
+                    run_vals.append(all_run_unacc[lbl])
+                    offsets = base_pos - 0.35 + (run_i + 0.5) * bar_h_each
+                    ax_bar.barh(
+                        offsets, run_vals, height=bar_h_each * 0.85,
+                        color=run_palette[lbl], alpha=0.85,
+                        edgecolor="white", linewidth=0.3, label=lbl,
+                    )
+
+                ax_bar.set_yticks(base_pos)
+                ax_bar.set_yticklabels(all_bar_dets, fontsize=8.5)
+                ax_bar.set_xlabel("Mean time per event (s)")
+                ax_bar.set_title(f"Detector time breakdown ({attr_str}) — multi-run", pad=6)
+                ax_bar.legend(loc="lower right", fontsize="small")
+                ax_bar.grid(False)
+                _apply_tick_style(ax_bar)
+
+    # -----------------------------------------------------------------------
+    # Sequence panel(s)
+    # -----------------------------------------------------------------------
+    if show_seq:
+        seq_axes = [ax_seq] if n == 1 else ax_seq_list
+
+        for run_i, (lbl, ax_s) in enumerate(zip(label_list, seq_axes)):
+            time_df = filtered[lbl]["time"]
+            ev_df   = filtered[lbl]["events"]
+
+            event_nums = time_df.index.to_numpy()
+            ev_idx     = ev_df.set_index("event_number").reindex(event_nums)
+            wall_times = ev_idx["event_wall_s"].to_numpy()
+            unaccounted = np.maximum(0.0, ev_idx["event_unaccounted_s"].to_numpy())
+
+            stacked = _build_stacked_arrays(time_df, top_dets, all_dets_sorted)
+
+            # Largest detector at the bottom of the stack (plotted first)
+            stack_order = sorted(stacked, key=lambda d: stacked[d].mean(), reverse=True)
+            stack_ys    = [stacked[d] for d in stack_order]
+            stack_clrs  = [det_colors.get(d, _OTHER_COLOR) for d in stack_order]
+
+            stack_ys.append(unaccounted)
+            stack_clrs.append(_UNACCOUNTED_COLOR)
+            stack_labels = list(stack_order) + ["Unaccounted"]
+
+            ax_s.stackplot(
+                event_nums, *stack_ys,
+                colors=stack_clrs, labels=stack_labels, alpha=0.85,
+            )
+            ax_s.plot(
+                event_nums, wall_times,
+                color="black", linewidth=0.9, alpha=0.6, linestyle="--", label="Wall time",
+            )
+            ax_s.set_xlabel("Event number")
+            ax_s.set_ylabel("Time (s)")
+            ax_s.set_title(
+                f"Per-Event Detector Time ({attr_str})" if n == 1 else lbl
+            )
+            ax_s.grid(False)
+            _apply_tick_style(ax_s)
+
+            # Reverse legend so it reads top-of-stack → bottom (Wall time first)
+            handles, leg_labels = ax_s.get_legend_handles_labels()
+            ax_s.legend(
+                handles[::-1], leg_labels[::-1],
+                loc="upper right", fontsize=7.5, ncol=2, framealpha=0.85,
+            )
+
+    # -----------------------------------------------------------------------
+    # Super-title
+    # -----------------------------------------------------------------------
+    base_title = "Per-Region Timing"
+    if n > 1:
+        base_title += " — Multi-Run Comparison"
     suptitle = f"{base_title} ({det_title})" if det_title else base_title
     fig.suptitle(suptitle, fontweight="bold")
     fig.tight_layout()
