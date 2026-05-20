@@ -13,11 +13,19 @@
 //
 //   - "at_location": time charged to the detector the step is currently in.
 //   - "by_birth":    time charged to the detector in which the track was
-//                    created. Charges secondaries back to where they were
-//                    born, regardless of where they end up being tracked.
+//                    created. Secondaries inherit their parent step's
+//                    resolved detector (stamped by the stepping action
+//                    before track-begin fires), so e.g. shower secondaries
+//                    born deep inside ECalBarrel are correctly attributed
+//                    to ECalBarrel rather than falling through to
+//                    "unattributed" because their birth LV is a sub-volume.
+//                    Primaries born in vacuum (e.g., the IP) attribute to
+//                    "unattributed" since they truly are not inside any
+//                    subdetector at creation.
 //
 // The gap between the two views is informative: it tells you how much of a
-// detector's cost is intrinsic vs. imported from upstream showers.
+// detector's cost is intrinsic (born and tracked there) vs. imported
+// (born there but tracked through downstream detectors).
 //
 // Steps that fall outside any DetElement (typically vacuum transport
 // through the world volume, or beampipe-like structures that are not
@@ -593,6 +601,23 @@ namespace dd4hep
       // Track ID -> birth detector name. Cleared at event begin.
       std::unordered_map<int, std::string> birthDetector;
 
+      // Track ID -> last resolved detector for the most recent step of
+      // that track. Maintained by the stepping action. The tracking
+      // action's begin() reads parent[trackID].parentID to look up
+      // lastStepLocation[parentID] and inherit it as the secondary's
+      // birth detector. This is how shower secondaries born in deep
+      // sub-volumes correctly inherit their parent step's resolved
+      // top-level detector (e.g., a Compton electron born deep inside
+      // ECalBarrel layers is attributed to ECalBarrel, not to the
+      // layer's anonymous sub-volume).
+      //
+      // Entries persist for the entire event (cleared at event begin)
+      // because Geant4 processes tracks depth-first: a parent finishes
+      // tracking before its sibling secondaries pop from the stack, so
+      // we must keep the parent's last location reachable even after
+      // the parent has terminated.
+      std::unordered_map<int, std::string> lastStepLocation;
+
       // Per-event accumulators.
       std::map<std::string, std::uint64_t> atLocationTicks;
       std::map<std::string, std::uint64_t> byBirthTicks;
@@ -762,6 +787,30 @@ namespace dd4hep
         {
           return;
         }
+
+        const int parentID = track->GetParentID();
+        if (parentID > 0)
+        {
+          // Secondary track: inherit the parent's last-known step
+          // location. The parent step that produced this secondary has
+          // already published its resolved detector to
+          // lastStepLocation[parentID], so we just read it back.
+          // This works regardless of how deeply nested the birth
+          // sub-volume is, because the parent step had a touchable and
+          // walked the placement hierarchy.
+          auto it = state.lastStepLocation.find(parentID);
+          if (it != state.lastStepLocation.end())
+          {
+            state.birthDetector[track->GetTrackID()] = it->second;
+            return;
+          }
+          // Parent's entry missing -- shouldn't happen given Geant4
+          // ordering, but fall through to LV lookup just in case.
+        }
+
+        // Primary track (parentID == 0) or orphaned secondary: fall
+        // back to LV-based attribution. For primaries born in vacuum
+        // at the IP this correctly returns "unattributed".
         state.birthDetector[track->GetTrackID()] =
             trackBirthDetectorName(track, state.detIndex);
       }
@@ -773,7 +822,13 @@ namespace dd4hep
         {
           return;
         }
-        state.birthDetector.erase(track->GetTrackID());
+        const int trackID = track->GetTrackID();
+        state.birthDetector.erase(trackID);
+        // Do NOT erase lastStepLocation: a parent track finishes
+        // tracking before its secondaries are popped from the stack
+        // (Geant4 processes tracks depth-first within a parent's
+        // lifetime, but siblings wait on the stack until their turn).
+        // The map is cleared at event begin, which bounds its size.
       }
     };
 
@@ -866,7 +921,14 @@ namespace dd4hep
         const G4Track *track = step ? step->GetTrack() : nullptr;
         if (track != nullptr)
         {
-          auto it = state.birthDetector.find(track->GetTrackID());
+          const int trackID = track->GetTrackID();
+
+          // Publish the current track's location so any secondaries
+          // produced by this step (whose begin() fires after we return)
+          // can inherit it via parent-ID lookup.
+          state.lastStepLocation[trackID] = m_lastAtLocation;
+
+          auto it = state.birthDetector.find(trackID);
           if (it != state.birthDetector.end())
           {
             m_lastByBirth = it->second;
@@ -878,7 +940,7 @@ namespace dd4hep
             // approximation (the track is, after all, currently here)
             // and bump the diagnostic counter.
             const std::string &birth = m_lastAtLocation;
-            state.birthDetector[track->GetTrackID()] = birth;
+            state.birthDetector[trackID] = birth;
             m_lastByBirth = birth;
             state.birthFallbackCount += 1;
           }
@@ -932,6 +994,7 @@ namespace dd4hep
         state.byBirthTicks.clear();
         state.intervalCounts.clear();
         state.birthDetector.clear();
+        state.lastStepLocation.clear();
 
         m_eventBeginFallbackBaseline = state.birthFallbackCount;
 
