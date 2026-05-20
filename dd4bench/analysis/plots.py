@@ -1321,6 +1321,8 @@ def plot_region_timing(
                 )
                 for at in autotexts:
                     at.set_fontsize(8)
+                ax_donut.set_xlim(-1.05, 1.05)
+                ax_donut.set_ylim(-1.05, 1.05)
                 ax_donut.text(
                     0, 0, f"μ = {total_wall0:.3g} s\nper event",
                     ha="center", va="center", fontsize=9.5, fontweight="bold",
