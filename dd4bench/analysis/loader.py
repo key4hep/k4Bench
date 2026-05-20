@@ -197,6 +197,8 @@ def load_region_timing(
             raise ValueError(f"{path} missing keys: {_missing}")
 
         n_ev = len(raw["event_numbers"])
+        if len(set(raw["event_numbers"])) != n_ev:
+            raise ValueError(f"{path}: event_numbers contains duplicates")
         for k in ["event_wall_seconds", "event_region_sum_seconds",
                   "event_unaccounted_seconds", "at_location_seconds", "by_birth_seconds"]:
             if len(raw[k]) != n_ev:

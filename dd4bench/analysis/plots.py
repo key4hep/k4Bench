@@ -1114,6 +1114,8 @@ def _build_stacked_arrays(
         arrays[det] = time_df[det].to_numpy() if det in time_df.columns else np.zeros(n)
 
     other_dets = [d for d in all_dets_sorted if d not in top_dets]
+    # extra_dets: columns present in this run but absent from all_dets_sorted, which was
+    # computed from the first run only. These are detectors unique to later runs.
     extra_dets = [d for d in time_df.columns if d not in top_dets and d not in all_dets_sorted]
     if other_dets or extra_dets:
         other_arr = np.zeros(n)
@@ -1163,7 +1165,9 @@ def plot_region_timing(
         charges time to the detector where the primary track was created.
     top_n : int
         Show the top *n* detectors by mean time; remaining detectors are grouped
-        into ``"Other"``.  Default: 8.
+        into ``"Other"``.  Default: 8.  When multiple runs are given, top-N is
+        determined from the **first run only**; detectors dominant in other runs
+        but not the first run are folded into ``"Other"``.
     figsize : (width, height) or None
         Figure size in inches.
     exclude_events : list[int] or None
@@ -1206,8 +1210,15 @@ def plot_region_timing(
         time_filt = (
             time_df.loc[time_df.index.isin(ev_filt["event_number"])]
             .reindex(ev_filt["event_number"].values)
-            .fillna(0.0)
         )
+        missing_ev = time_filt.index[time_filt.isnull().any(axis=1)].tolist()
+        if missing_ev:
+            warnings.warn(
+                f"'{lbl}': {len(missing_ev)} event(s) missing from time_df "
+                f"(e.g. {missing_ev[:3]}); filling with 0.0 — means will be biased downward.",
+                stacklevel=2,
+            )
+        time_filt = time_filt.fillna(0.0)
         filtered[lbl] = {"events": ev_filt, "time": time_filt}
 
     # -----------------------------------------------------------------------
@@ -1405,7 +1416,15 @@ def plot_region_timing(
             event_nums = time_df.index.to_numpy()
             ev_idx     = ev_df.set_index("event_number").reindex(event_nums)
             wall_times = ev_idx["event_wall_s"].to_numpy()
-            unaccounted = np.maximum(0.0, ev_idx["event_unaccounted_s"].to_numpy())
+            _unacc_raw = ev_idx["event_unaccounted_s"].to_numpy()
+            _neg_frac = (_unacc_raw < -1e-6).mean()
+            if _neg_frac > 0.05:
+                warnings.warn(
+                    f"'{lbl}': {_neg_frac:.0%} of events have negative unaccounted time "
+                    f"(min={_unacc_raw.min():.3g} s). Region timing sum may exceed wall time.",
+                    stacklevel=2,
+                )
+            unaccounted = np.maximum(0.0, _unacc_raw)
 
             stacked = _build_stacked_arrays(time_df, top_dets, all_dets_sorted)
 
@@ -1449,7 +1468,7 @@ def plot_region_timing(
         base_title += " — Multi-Run Comparison"
     suptitle = f"{base_title} ({det_title})" if det_title else base_title
     fig.suptitle(suptitle, fontweight="bold")
-    fig.tight_layout()
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
     plt.close(fig)
     return fig
 
