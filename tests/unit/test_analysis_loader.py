@@ -301,3 +301,31 @@ class TestLoadRegionTiming:
         assert meta["timer"] == "rdtscp"
         assert isinstance(meta["detectors"], list)
         assert isinstance(meta["lv_counts"], dict)
+
+    def test_declared_detector_absent_from_all_events_is_zero_column(self, tmp_path):
+        """A detector in indexed_top_level_detectors but absent from every event
+        map must appear as an all-zero column — not be silently dropped."""
+        path = tmp_path / "run_regions.json"
+        data = {
+            "schema_version": 1, "attribution": "dd4hep_top_level_detelement",
+            "timer": "rdtscp", "per_step_timer_overhead_ns": 25.0,
+            "indexed_top_level_detectors": ["ECalBarrel", "HCalBarrel", "GhostDet"],
+            "indexed_top_level_detector_lv_counts": {
+                "ECalBarrel": 4, "HCalBarrel": 2, "GhostDet": 1,
+            },
+            "event_numbers": [0, 1, 2],
+            "event_wall_seconds": [0.5, 0.5, 0.5],
+            "event_region_sum_seconds": [0.4, 0.4, 0.4],
+            "event_unaccounted_seconds": [0.1, 0.1, 0.1],
+            "event_birth_fallbacks": [0, 0, 0],
+            # GhostDet never appears in any event map
+            "at_location_seconds": [{"ECalBarrel": 0.3, "HCalBarrel": 0.1}] * 3,
+            "by_birth_seconds":    [{"ECalBarrel": 0.3, "HCalBarrel": 0.1}] * 3,
+            "interval_counts":     [{"ECalBarrel": 3000, "HCalBarrel": 1000}] * 3,
+        }
+        path.write_text(json.dumps(data))
+        entry = load_region_timing(tmp_path)["run"]
+        for key in ("at_location", "by_birth"):
+            df = entry[key]
+            assert "GhostDet" in df.columns, f"GhostDet missing from {key}"
+            assert (df["GhostDet"] == 0.0).all(), f"GhostDet not zero in {key}"

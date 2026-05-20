@@ -421,3 +421,20 @@ class TestPlotRegionTiming:
     def test_empty_dir_raises(self, tmp_path):
         with pytest.raises(ValueError, match=r"No \*_regions.json"):
             plot_region_timing(tmp_path)
+
+    def test_asymmetric_runs_other_row_shown(self, tmp_path):
+        """When a later run has extra detectors not present in run 0, 'Other'
+        must appear in the multi-run breakdown panel even if run 0 alone would
+        not have triggered an Other bucket."""
+        # run A: exactly 2 detectors — with top_n=2, no Other from run A alone
+        _write_region_json(tmp_path / "runA_regions.json",
+                           detectors=["ECalBarrel", "HCalBarrel"])
+        # run B: same 2 plus an extra — extra must be folded into Other
+        _write_region_json(tmp_path / "runB_regions.json",
+                           detectors=["ECalBarrel", "HCalBarrel", "Vertex"])
+        fig = plot_region_timing(tmp_path, top_n=2, show="breakdown")
+        assert isinstance(fig, plt.Figure)
+        ax = fig.axes[0]
+        ytick_labels = [t.get_text() for t in ax.get_yticklabels()]
+        assert "Other" in ytick_labels, f"'Other' not in y-axis labels: {ytick_labels}"
+        plt.close(fig)

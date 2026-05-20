@@ -1227,7 +1227,14 @@ def plot_region_timing(
     # -----------------------------------------------------------------------
     top_dets, all_dets_sorted = _region_top_n(filtered[label_list[0]]["time"], top_n)
 
-    det_display = top_dets + (["Other"] if len(all_dets_sorted) > top_n else [])
+    # "Other" is needed if run-0 has more detectors than top_n, OR if any later
+    # run has columns not covered by top_dets (extra_dets path in _build_stacked_arrays).
+    needs_other = len(all_dets_sorted) > top_n or any(
+        col not in top_dets and col not in all_dets_sorted
+        for lbl in label_list[1:]
+        for col in filtered[lbl]["time"].columns
+    )
+    det_display = top_dets + (["Other"] if needs_other else [])
     det_colors: dict[str, str] = {
         det: _PALETTE[i % len(_PALETTE)] for i, det in enumerate(top_dets)
     }

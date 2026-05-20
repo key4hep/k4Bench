@@ -215,6 +215,13 @@ def load_region_timing(
         at_loc_df   = pd.DataFrame(raw["at_location_seconds"], index=ev_index).fillna(0.0)
         by_birth_df = pd.DataFrame(raw["by_birth_seconds"],    index=ev_index).fillna(0.0)
 
+        declared = raw.get("indexed_top_level_detectors", [])
+        if declared:
+            extra_at  = [c for c in at_loc_df.columns  if c not in declared]
+            extra_by  = [c for c in by_birth_df.columns if c not in declared]
+            at_loc_df   = at_loc_df.reindex(  columns=declared + extra_at,  fill_value=0.0)
+            by_birth_df = by_birth_df.reindex( columns=declared + extra_by, fill_value=0.0)
+
         out[label] = {
             "meta": {
                 "schema_version":    raw.get("schema_version", 1),
