@@ -110,7 +110,13 @@ def _plot_event_metric(
 
     all_event_data = _ensure_event_data(source)
     available = sorted(all_event_data.keys())
-    event_data = _ensure_event_data(source, labels=labels)
+    if labels is None:
+        event_data = all_event_data
+    else:
+        event_data = {
+            k: v for k, v in all_event_data.items()
+            if k in labels or any(k.endswith(f"/{w}") for w in labels)
+        }
     if not event_data:
         raise ValueError(
             f"No *_events.json files found for labels={labels}.\n"
@@ -131,6 +137,12 @@ def _plot_event_metric(
             + ", ".join(empty_labels)
         )
 
+    required_cols = {column, "event_number"}
+    for lbl, df in filtered_data.items():
+        missing = required_cols - set(df.columns)
+        if missing:
+            raise ValueError(f"'{lbl}': missing columns {missing}")
+
     arrays = {lbl: filtered_data[lbl][column].to_numpy() for lbl in label_list}
     all_data = np.concatenate(list(arrays.values()))
 
@@ -139,11 +151,13 @@ def _plot_event_metric(
     clipped_all = all_data[(all_data >= core_range[0]) & (all_data <= core_range[1])]
     if len(clipped_all) == 0:
         clipped_all = all_data
+        core_range = (float(all_data.min()), float(all_data.max()))
     _, common_edges = np.histogram(clipped_all, bins=bins)
 
     two_run_ratio = (n == 2) and (show == "both")
 
     total_clipped = 0
+    pending_warnings: list[str] = []
     for lbl, arr in arrays.items():
         nc = int(np.sum((arr < core_range[0]) | (arr > core_range[1])))
         total_clipped += nc
@@ -151,12 +165,13 @@ def _plot_event_metric(
             frac = nc / len(arr)
             extreme = arr.max() > _OUTLIER_EXTREME_RATIO * core_range[1]
             if frac > _OUTLIER_FRACTION_WARN or extreme:
-                warnings.warn(
+                pending_warnings.append(
                     f"{warn_name}: {lbl}: {nc} event(s) ({frac:.1%}) outside plotted range. "
                     f"Max value: {arr.max():.4g} {warn_unit}, core upper bound: {core_range[1]:.4g} {warn_unit}. "
-                    "Check for simulation anomalies or adjust outlier_threshold.",
-                    stacklevel=3,
+                    "Check for simulation anomalies or adjust outlier_threshold."
                 )
+    for msg in pending_warnings:
+        warnings.warn(msg, stacklevel=3)
 
     clipping_note = ""
     if total_clipped > 0:

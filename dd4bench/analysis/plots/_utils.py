@@ -12,14 +12,20 @@ from ..loader import load_event_timing, load_region_timing, load_results
 
 _DEFAULT_EXCLUDE_EVENTS = [0]
 
+
+def _path_name(p: str | Path) -> str:
+    """Return the final path component, stripping trailing slashes first."""
+    return Path(str(p).rstrip("/")).name
+
 _OUTLIER_FRACTION_WARN = 0.05
 _OUTLIER_EXTREME_RATIO = 5.0
 
 
 def _compute_stats(data: np.ndarray) -> tuple[float, float, float, float]:
     """Return (mean, std, sem, se_std) with se_std = std / sqrt(2*(n-1))."""
+    data = data[~np.isnan(data)]
     n = len(data)
-    mean = float(data.mean())
+    mean = float(data.mean()) if n > 0 else float("nan")
     if n > 1:
         std    = float(data.std(ddof=1))
         sem    = std / np.sqrt(n)
@@ -37,7 +43,7 @@ def _ensure_df(results: pd.DataFrame | str | Path | list) -> pd.DataFrame:
         frames = []
         for path in results:
             df = load_results(path).copy()
-            prefix = Path(path).name
+            prefix = _path_name(path)
             df["label"] = df["label"].astype(str).apply(
                 lambda lbl, p=prefix: lbl if lbl.startswith(f"{p}/") else f"{p}/{lbl}"
             )
@@ -50,7 +56,12 @@ def _ensure_event_data(
     source: dict[str, pd.DataFrame] | str | Path | list,
     labels: list[str] | None = None,
 ) -> dict[str, pd.DataFrame]:
-    """Accept a pre-loaded dict, a single log-dir path, or a list of paths."""
+    """Accept a pre-loaded dict, a single log-dir path, or a list of paths.
+
+    ``labels`` matching supports both exact keys and suffix matching: a key
+    ``"dir/run"`` matches the label ``"run"``.  When two labels share the same
+    suffix, pass the full prefixed key to disambiguate.
+    """
     if isinstance(source, dict):
         if labels is not None:
             return {k: v for k, v in source.items() if k in labels}
@@ -58,7 +69,7 @@ def _ensure_event_data(
     if isinstance(source, list):
         out: dict[str, pd.DataFrame] = {}
         for path in source:
-            prefix = Path(path).name
+            prefix = _path_name(path)
             for lbl, df in load_event_timing(path).items():
                 key = lbl if lbl.startswith(f"{prefix}/") else f"{prefix}/{lbl}"
                 if key in out:
@@ -86,7 +97,7 @@ def _ensure_region_data(
     if isinstance(source, list):
         out: dict[str, dict] = {}
         for path in source:
-            prefix = Path(path).name
+            prefix = _path_name(path)
             for lbl, data in load_region_timing(path).items():
                 key = lbl if lbl.startswith(f"{prefix}/") else f"{prefix}/{lbl}"
                 if key in out:
@@ -105,9 +116,9 @@ def _ensure_region_data(
 def _detector_title(source: object) -> str | None:
     """Return a display name from path(s); None for pre-loaded data."""
     if isinstance(source, (str, Path)):
-        return Path(source).name
+        return _path_name(source)
     if isinstance(source, list) and source:
-        return " vs ".join(Path(s).name for s in source)
+        return " vs ".join(_path_name(s) for s in source)
     return None
 
 

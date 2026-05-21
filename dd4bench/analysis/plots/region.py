@@ -6,6 +6,7 @@ import warnings
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
@@ -100,15 +101,17 @@ def plot_region_timing(
         filtered[lbl] = {"events": ev_filt, "time": time_filt}
 
     # ------------------------------------------------------------------
-    # Top-N detectors
+    # Top-N detectors — ranked by max-of-means across all runs so that
+    # detectors dominant in any run are not folded into "Other".
     # ------------------------------------------------------------------
-    top_dets, all_dets_sorted = _region_top_n(filtered[label_list[0]]["time"], top_n)
-
-    needs_other = len(all_dets_sorted) > top_n or any(
-        col not in top_dets and col not in all_dets_sorted
-        for lbl in label_list[1:]
-        for col in filtered[lbl]["time"].columns
+    means_per_run = [filtered[lbl]["time"].mean() for lbl in label_list]
+    all_cols = sorted({col for s in means_per_run for col in s.index})
+    union_max = pd.Series(
+        {col: max(float(s.get(col, 0.0)) for s in means_per_run) for col in all_cols}
     )
+    top_dets, all_dets_sorted = _region_top_n(union_max.to_frame().T, top_n)
+
+    needs_other = len(all_dets_sorted) > top_n
     det_display = top_dets + (["Other"] if needs_other else [])
     det_colors: dict[str, str] = {
         det: _PALETTE[i % len(_PALETTE)] for i, det in enumerate(top_dets)

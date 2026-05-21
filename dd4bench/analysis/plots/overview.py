@@ -64,6 +64,8 @@ def plot_run_overview(
     metric_cols = [col for col, _ in metrics if col in results.columns]
     df = results.dropna(subset=metric_cols, how="all").copy()
 
+    # Capture label order before the wall-time sort so that baseline resolution
+    # is deterministic (first loaded row) regardless of display order.
     load_order_labels = df["label"].tolist()
 
     baseline_vals: dict[str, float] = {}
@@ -73,6 +75,12 @@ def plot_run_overview(
         if not bl_mask.any():
             hint = " Pass baseline_label=... to specify the reference run." if baseline_label is None else ""
             raise ValueError(f"baseline_label '{_bl}' not found for relative=True.{hint}")
+        if bl_mask.sum() > 1:
+            matched = df.loc[bl_mask, "label"].tolist()
+            raise ValueError(
+                f"baseline_label '{_bl}' matches multiple runs: {matched}. "
+                "Pass the full prefixed label to disambiguate."
+            )
         for col, _ in metrics:
             if col in df.columns:
                 bv = float(df.loc[bl_mask, col].iloc[0])
