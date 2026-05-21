@@ -213,7 +213,6 @@ class TestPlotEventTiming:
         with _w.catch_warnings():
             _w.simplefilter("error")
             plot_event_timing(tmp_path, exclude_events=[])  # should not raise
-
     def test_outlier_warns_when_fraction_high(self, tmp_path):
         """More than 5 % outliers triggers a UserWarning."""
         path = tmp_path / "baseline_all_events.json"
@@ -235,6 +234,45 @@ class TestPlotEventTiming:
     def test_empty_dir_raises(self, tmp_path):
         with pytest.raises(ValueError, match=r"No \*_events.json"):
             plot_event_timing(tmp_path)
+
+    def test_duplicate_event_number_raises(self, tmp_path):
+        """Duplicate event_number values in a run must raise ValueError."""
+        path = tmp_path / "baseline_all_events.json"
+        data = {
+            "event_numbers": [1, 1, 2, 3],
+            "event_times_s": [0.1, 0.2, 0.3, 0.4],
+            "event_rss_begin_mb": [500.0] * 4,
+            "event_rss_end_mb": [510.0] * 4,
+        }
+        path.write_text(json.dumps(data))
+        with pytest.raises(ValueError, match="duplicate event_number"):
+            plot_event_timing(tmp_path, exclude_events=[])
+
+    def test_ratio_panel_excludes_filtered_events(self, tmp_path):
+        """Excluded events must not appear in the ratio sequence panel."""
+        for stem in ("run_a_events.json", "run_b_events.json"):
+            data = {
+                "event_numbers": [0, 1, 2, 3, 4],
+                "event_times_s": [99.0, 0.1, 0.2, 0.3, 0.4],
+                "event_rss_begin_mb": [500.0] * 5,
+                "event_rss_end_mb": [510.0] * 5,
+            }
+            (tmp_path / stem).write_text(json.dumps(data))
+        fig = plot_event_timing(tmp_path, exclude_events=[0])
+        scatter_x = [
+            x
+            for tr in fig.data
+            if hasattr(tr, "x") and tr.x is not None
+            for x in tr.x
+        ]
+        assert 0 not in scatter_x, "Excluded event 0 appeared in the figure traces"
+
+    def test_default_baseline_is_deterministic(self, tmp_path):
+        """_default_baseline must return the same run regardless of dict insertion order."""
+        from dd4bench.analysis.plots._utils import _default_baseline
+        labels_a = ["zrun", "arun", "mrun"]
+        labels_b = ["mrun", "zrun", "arun"]
+        assert _default_baseline(labels_a) == _default_baseline(labels_b) == "arun"
 
 
 # ---------------------------------------------------------------------------

@@ -123,7 +123,7 @@ def _detector_title(source: object) -> str | None:
 
 
 def _default_baseline(labels: list[str]) -> str:
-    return labels[0]
+    return sorted(labels)[0]
 
 
 def _matches_baseline(label: str, baseline_label: str | None) -> bool:

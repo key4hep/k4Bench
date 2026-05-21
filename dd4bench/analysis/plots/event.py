@@ -142,6 +142,12 @@ def _plot_event_metric(
         missing = required_cols - set(df.columns)
         if missing:
             raise ValueError(f"'{lbl}': missing columns {missing}")
+        if df["event_number"].duplicated().any():
+            dups = df.loc[df["event_number"].duplicated(keep=False), "event_number"].unique().tolist()
+            raise ValueError(
+                f"'{lbl}': duplicate event_number values detected: {dups[:5]}"
+                + (" ..." if len(dups) > 5 else "")
+            )
 
     arrays = {lbl: filtered_data[lbl][column].to_numpy() for lbl in label_list}
     all_data = np.concatenate(list(arrays.values()))
@@ -153,6 +159,11 @@ def _plot_event_metric(
         clipped_all = all_data
         core_range = (float(all_data.min()), float(all_data.max()))
     _, common_edges = np.histogram(clipped_all, bins=bins)
+
+    hist_arrays = {
+        lbl: arr[(arr >= core_range[0]) & (arr <= core_range[1])]
+        for lbl, arr in arrays.items()
+    }
 
     two_run_ratio = (n == 2) and (show == "both")
 
@@ -195,7 +206,7 @@ def _plot_event_metric(
     # ------------------------------------------------------------------
     hist_alpha = alpha if n == 1 else min(alpha, 0.6)
     if dist_rc is not None:
-        for tr in _histogram_traces(arrays, common_edges, label_list, hist_alpha, n > 1):
+        for tr in _histogram_traces(hist_arrays, common_edges, label_list, hist_alpha, n > 1):
             fig.add_trace(tr, row=dist_rc[0], col=dist_rc[1])
 
         for i, lbl in enumerate(label_list):
@@ -260,8 +271,8 @@ def _plot_event_metric(
     if two_run_ratio:
         other_label = next(lbl for lbl in label_list if lbl != ref_label)
 
-        ref_counts, _   = np.histogram(arrays[ref_label],   bins=common_edges)
-        other_counts, _ = np.histogram(arrays[other_label], bins=common_edges)
+        ref_counts, _   = np.histogram(hist_arrays[ref_label],   bins=common_edges)
+        other_counts, _ = np.histogram(hist_arrays[other_label], bins=common_edges)
         ref_counts   = ref_counts.astype(float)
         other_counts = other_counts.astype(float)
 
@@ -297,8 +308,8 @@ def _plot_event_metric(
         fig.update_yaxes(title_text="Ratio (other/ref.)", title_font=dict(size=10),
                          row=ratio_dist_rc[0], col=ratio_dist_rc[1])
 
-        df_ref   = event_data[ref_label].set_index("event_number")
-        df_other = event_data[other_label].set_index("event_number")
+        df_ref   = filtered_data[ref_label].set_index("event_number")
+        df_other = filtered_data[other_label].set_index("event_number")
         common_evts = df_ref.index.intersection(df_other.index)
         if len(common_evts) > 0:
             t_ref   = df_ref.loc[common_evts, column].to_numpy()

@@ -36,6 +36,22 @@ def _histogram_traces(
     return traces
 
 
+def _format_delta_cell(mean: float, sem: float, ref_mean: float, ref_sem: float) -> str:
+    """Return a formatted Δμ ± δ(Δμ) string for use as a stats-table cell.
+
+    Returns ``"—"`` for the reference run (mean == ref_mean) and
+    ``"undefined"`` when ref_mean is zero to avoid division by zero.
+    """
+    if mean == ref_mean:
+        return "—"
+    if ref_mean == 0:
+        return "undefined"
+    delta_pct = (mean - ref_mean) / ref_mean * 100
+    delta_err = (100.0 / ref_mean) * np.sqrt(sem**2 + (mean / ref_mean * ref_sem) ** 2)
+    sign = "+" if delta_pct >= 0 else ""
+    return f"{sign}{delta_pct:.2f}% ± {delta_err:.2f}%"
+
+
 def _stats_table_trace(
     table_rows: list[list[str]],
     ref_label: str,
