@@ -9,7 +9,7 @@ requires-python = ">=3.13"
 # are determined by the Key4hep stack, so no version constraints are set.
 dependencies = [
     "pandas",
-    "matplotlib",
+    "plotly",
 ]
 
 [project.urls]
