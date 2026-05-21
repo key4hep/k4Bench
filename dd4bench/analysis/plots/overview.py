@@ -5,11 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+import plotly.colors as pc
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from ._theme import _BLUE, _METRIC_UNITS, _PALETTE, _TEMPLATE
+from ._theme import _METRIC_UNITS, _TEMPLATE
 from ._utils import _default_baseline, _detector_title, _ensure_df, _matches_baseline
+
+_LOWER_IS_BETTER = {"wall_time_s", "peak_rss_mb", "user_cpu_s"}
 
 _OVERVIEW_METRICS = [
     ("wall_time_s",    f"Wall Time {_METRIC_UNITS['wall_time_s']}"),
@@ -97,13 +100,6 @@ def plot_run_overview(
     run_labels = df["label"].tolist()
     n_runs = len(run_labels)
 
-    prefixes = [lbl.split("/")[0] if "/" in lbl else None for lbl in run_labels]
-    unique_prefixes = list(dict.fromkeys(p for p in prefixes if p is not None))
-    if unique_prefixes:
-        prefix_color = {p: _PALETTE[i % len(_PALETTE)] for i, p in enumerate(unique_prefixes)}
-        bar_colors = [prefix_color[p] for p in prefixes]
-    else:
-        bar_colors = [_BLUE] * n_runs
 
     n_metrics = len(metrics)
     if n_metrics == 0:
@@ -115,10 +111,7 @@ def plot_run_overview(
     subplot_titles = []
     for col, ylabel in metrics:
         if relative:
-            bv = baseline_vals.get(col)
-            unit = _METRIC_UNITS.get(col, "")
-            bv_str = f"{bv:.4g} {unit}".strip() if bv is not None else ""
-            subplot_titles.append(f"{ylabel.split(' (')[0]} % (baseline = {bv_str})")
+            subplot_titles.append(f"{ylabel.split(' (')[0]} %")
         else:
             subplot_titles.append(ylabel)
 
@@ -141,28 +134,41 @@ def plot_run_overview(
         valid_v = [v for v in values if pd.notna(v)]
         x_max = max(valid_v) if valid_v else 1.0
 
-        if relative:
-            text_labels = [f"{v:.1f}%" if pd.notna(v) else "" for v in values]
-            hover_tmpl = "%{y}<br><b>%{x:.1f}%</b><extra></extra>"
-        else:
-            text_labels = [f"{v:.4g}" if pd.notna(v) else "" for v in values]
-            hover_tmpl = "%{y}<br><b>%{x:.4g}</b><extra></extra>"
+        # Gradient: green (best) → yellow → red (worst), ranked per metric.
+        col_series = df.set_index("label")[col]
+        n_valid = int(col_series.notna().sum())
+        ranks = col_series.rank(ascending=(col in _LOWER_IS_BETTER), na_option="bottom")
+        sample_pts = [
+            float(1.0 - (float(ranks.at[lbl]) - 1.0) / max(n_valid - 1, 1))
+            if lbl in ranks.index else 0.0
+            for lbl in run_labels
+        ]
+        bar_colors = pc.sample_colorscale("RdYlGn", sample_pts)
 
-        fig.add_trace(
-            go.Bar(
-                x=values,
-                y=run_labels,
-                orientation="h",
-                marker_color=bar_colors,
-                marker_line_width=0,
-                text=text_labels,
-                textposition="outside",
-                textfont=dict(size=9, color="#444444"),
-                showlegend=False,
-                hovertemplate=hover_tmpl,
-            ),
-            row=row, col=col_num,
-        )
+        for i, (run_label, val) in enumerate(zip(run_labels, values)):
+            if relative:
+                text = f"{val:.1f}%" if pd.notna(val) else ""
+                hover_tmpl = "%{y}<br><b>%{x:.1f}%</b><extra></extra>"
+            else:
+                text = f"{val:.4g}" if pd.notna(val) else ""
+                hover_tmpl = "%{y}<br><b>%{x:.4g}</b><extra></extra>"
+
+            fig.add_trace(
+                go.Bar(
+                    x=[val],
+                    y=[run_label],
+                    orientation="h",
+                    marker_color=bar_colors[i],
+                    marker_line_width=0,
+                    name=run_label,
+                    showlegend=False,
+                    text=[text],
+                    textposition="outside",
+                    textfont=dict(size=9, color="#444444"),
+                    hovertemplate=hover_tmpl,
+                ),
+                row=row, col=col_num,
+            )
 
         axis_kw = dict(range=[0, x_max * 1.22], row=row, col=col_num)
         if relative:
@@ -180,6 +186,7 @@ def plot_run_overview(
         template=_TEMPLATE,
         height=max(400, 45 * n_runs + 220) * nrows // 2,
         bargap=0.35,
+        showlegend=False,
         margin=dict(l=20, r=20, t=80, b=40),
     )
 
