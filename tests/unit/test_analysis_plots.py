@@ -10,9 +10,9 @@ import csv
 import json
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import pytest
 
 from dd4bench.analysis.loader import load_results
@@ -128,44 +128,38 @@ class TestPlotEventTiming:
     def test_single_run_returns_figure(self, tmp_path):
         _write_event_json(tmp_path / "baseline_all_events.json")
         fig = plot_event_timing(tmp_path)
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_multiple_runs_returns_figure(self, tmp_path):
         _write_event_json(tmp_path / "baseline_all_events.json")
         _write_event_json(tmp_path / "without_Ecal_events.json")
         fig = plot_event_timing(tmp_path)
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_three_runs_returns_figure(self, tmp_path):
         _write_event_json(tmp_path / "baseline_all_events.json")
         _write_event_json(tmp_path / "without_Ecal_events.json")
         _write_event_json(tmp_path / "without_Hcal_events.json")
         fig = plot_event_timing(tmp_path)
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_label_filter(self, tmp_path):
         _write_event_json(tmp_path / "baseline_all_events.json")
         _write_event_json(tmp_path / "without_Ecal_events.json")
         fig = plot_event_timing(tmp_path, labels=["baseline_all"])
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_show_distribution(self, tmp_path):
         _write_event_json(tmp_path / "baseline_all_events.json")
         _write_event_json(tmp_path / "without_Ecal_events.json")
         fig = plot_event_timing(tmp_path, show="distribution")
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_show_sequence(self, tmp_path):
         _write_event_json(tmp_path / "baseline_all_events.json")
         _write_event_json(tmp_path / "without_Ecal_events.json")
         fig = plot_event_timing(tmp_path, show="sequence")
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_show_invalid_raises(self, tmp_path):
         _write_event_json(tmp_path / "baseline_all_events.json")
@@ -176,8 +170,7 @@ class TestPlotEventTiming:
         _write_event_json(tmp_path / "baseline_all_events.json")
         _write_event_json(tmp_path / "without_Ecal_events.json")
         fig = plot_event_timing(tmp_path, baseline_label="without_Ecal")
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_invalid_baseline_raises(self, tmp_path):
         _write_event_json(tmp_path / "baseline_all_events.json")
@@ -191,20 +184,17 @@ class TestPlotEventTiming:
         from dd4bench.analysis.loader import load_event_timing
         data = load_event_timing(tmp_path)
         fig = plot_event_timing(data)
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_bins_int(self, tmp_path):
         _write_event_json(tmp_path / "baseline_all_events.json", n=20)
         fig = plot_event_timing(tmp_path, bins=10)
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_bins_auto(self, tmp_path):
         _write_event_json(tmp_path / "baseline_all_events.json", n=50)
         fig = plot_event_timing(tmp_path, bins="auto")
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_outlier_clipped_silently(self, tmp_path):
         """A single moderate outlier (<5 % of events) clips without a warning.
@@ -216,36 +206,31 @@ class TestPlotEventTiming:
         """
         path = tmp_path / "baseline_all_events.json"
         _write_event_json(path, n=100)
-        import json
+        import warnings as _w
         raw = json.loads(path.read_text())
         raw["event_times_s"][-1] = 30.0
         path.write_text(json.dumps(raw))
-        import warnings as _w
         with _w.catch_warnings():
             _w.simplefilter("error")
-            fig = plot_event_timing(tmp_path, exclude_events=[])  # should not raise
-        plt.close(fig)
+            plot_event_timing(tmp_path, exclude_events=[])  # should not raise
 
     def test_outlier_warns_when_fraction_high(self, tmp_path):
         """More than 5 % outliers triggers a UserWarning."""
         path = tmp_path / "baseline_all_events.json"
         _write_event_json(path, n=20)
-        import json
         raw = json.loads(path.read_text())
         # Inject 2/20 = 10 % outliers
         raw["event_times_s"][0]  = 9999.0
         raw["event_times_s"][-1] = 9999.0
         path.write_text(json.dumps(raw))
         with pytest.warns(UserWarning, match="outside plotted range"):
-            fig = plot_event_timing(tmp_path)
-        plt.close(fig)
+            plot_event_timing(tmp_path)
 
     def test_outlier_threshold_respected(self, tmp_path):
         """Raising outlier_threshold keeps more of the tail in view."""
         _write_event_json(tmp_path / "baseline_all_events.json", n=30)
         fig = plot_event_timing(tmp_path, outlier_threshold=10.0)
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_empty_dir_raises(self, tmp_path):
         with pytest.raises(ValueError, match=r"No \*_events.json"):
@@ -261,26 +246,22 @@ class TestPlotRunOverview:
     def test_returns_figure(self, tmp_path):
         df = _sweep_df(tmp_path)
         fig = plot_run_overview(df)
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_custom_metrics(self, tmp_path):
         df = _sweep_df(tmp_path)
         fig = plot_run_overview(df, metrics=[("wall_time_s", "Wall (s)"), ("peak_rss_mb", "RSS (MB)")])
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_compare_results(self, tmp_path):
         df = _compare_df(tmp_path)
         fig = plot_run_overview(df)
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_relative_mode(self, tmp_path):
         df = _sweep_df(tmp_path)
         fig = plot_run_overview(df, relative=True)
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_relative_missing_baseline_raises(self, tmp_path):
         df = _sweep_df(tmp_path)
@@ -334,74 +315,63 @@ class TestPlotRegionTiming:
     def test_single_run_both_returns_figure(self, tmp_path):
         _write_region_json(tmp_path / "baseline_all_regions.json")
         fig = plot_region_timing(tmp_path)
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_single_run_breakdown_returns_figure(self, tmp_path):
         _write_region_json(tmp_path / "baseline_all_regions.json")
         fig = plot_region_timing(tmp_path, show="breakdown")
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_single_run_sequence_returns_figure(self, tmp_path):
         _write_region_json(tmp_path / "baseline_all_regions.json")
         fig = plot_region_timing(tmp_path, show="sequence")
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_by_birth_attribution(self, tmp_path):
         _write_region_json(tmp_path / "baseline_all_regions.json")
         fig = plot_region_timing(tmp_path, attribution="by_birth")
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_multi_run_both_returns_figure(self, tmp_path):
         _write_region_json(tmp_path / "baseline_all_regions.json")
         _write_region_json(tmp_path / "without_Ecal_regions.json")
         fig = plot_region_timing(tmp_path)
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_multi_run_breakdown_returns_figure(self, tmp_path):
         _write_region_json(tmp_path / "baseline_all_regions.json")
         _write_region_json(tmp_path / "without_Ecal_regions.json")
         fig = plot_region_timing(tmp_path, show="breakdown")
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_multi_run_sequence_returns_figure(self, tmp_path):
         _write_region_json(tmp_path / "baseline_all_regions.json")
         _write_region_json(tmp_path / "without_Ecal_regions.json")
         fig = plot_region_timing(tmp_path, show="sequence")
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_label_filter(self, tmp_path):
         _write_region_json(tmp_path / "baseline_all_regions.json")
         _write_region_json(tmp_path / "without_Ecal_regions.json")
         fig = plot_region_timing(tmp_path, labels=["baseline_all"])
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_top_n_fewer_than_detectors(self, tmp_path):
         _write_region_json(tmp_path / "baseline_all_regions.json")
         fig = plot_region_timing(tmp_path, top_n=3)
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_top_n_more_than_detectors(self, tmp_path):
         _write_region_json(tmp_path / "baseline_all_regions.json", detectors=["ECalBarrel", "HCalBarrel"])
         fig = plot_region_timing(tmp_path, top_n=20)
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_accepts_preloaded_dict(self, tmp_path):
         _write_region_json(tmp_path / "baseline_all_regions.json")
         from dd4bench.analysis.loader import load_region_timing
         data = load_region_timing(tmp_path)
         fig = plot_region_timing(data)
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
 
     def test_invalid_show_raises(self, tmp_path):
         _write_region_json(tmp_path / "baseline_all_regions.json")
@@ -433,8 +403,12 @@ class TestPlotRegionTiming:
         _write_region_json(tmp_path / "runB_regions.json",
                            detectors=["ECalBarrel", "HCalBarrel", "Vertex"])
         fig = plot_region_timing(tmp_path, top_n=2, show="breakdown")
-        assert isinstance(fig, plt.Figure)
-        ax = fig.axes[0]
-        ytick_labels = [t.get_text() for t in ax.get_yticklabels()]
-        assert "Other" in ytick_labels, f"'Other' not in y-axis labels: {ytick_labels}"
-        plt.close(fig)
+        assert isinstance(fig, go.Figure)
+        # Check that at least one bar trace has "Other" in its y categories
+        bar_y_labels = {
+            label
+            for trace in fig.data
+            if isinstance(trace, go.Bar) and trace.y is not None
+            for label in trace.y
+        }
+        assert "Other" in bar_y_labels, f"'Other' not in bar y-labels: {bar_y_labels}"
