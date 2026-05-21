@@ -27,14 +27,21 @@ def main() -> None:
         st.header("Data Source")
         data_dir = st.text_input("Data directory", value=config.data_dir)
 
-        results = cached_load_results(data_dir)
-        event_data = cached_load_event_timing(data_dir)
-        region_data = cached_load_region_timing(data_dir)
+        _data_path = Path(data_dir) if data_dir else None
+        _path_valid = bool(_data_path and _data_path.exists() and _data_path.is_dir())
+        if not _path_valid:
+            st.error(f"Data directory not found: '{data_dir}'. Check for typos or a missing directory.")
+            results = event_data = region_data = None
+            available_labels: list[str] = []
+        else:
+            results = cached_load_results(data_dir)
+            event_data = cached_load_event_timing(data_dir)
+            region_data = cached_load_region_timing(data_dir)
+            available_labels = collect_labels(results, event_data, region_data)
 
-        available_labels = collect_labels(results, event_data, region_data)
-
-        if not available_labels:
+        if _path_valid and not available_labels:
             st.warning("No benchmark data found in the specified directory.")
+        if not available_labels:
             selected_labels: list[str] = []
             baseline_label: str | None = None
         else:

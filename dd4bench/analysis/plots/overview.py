@@ -137,12 +137,14 @@ def plot_run_overview(
         # Gradient: green (best) → yellow → red (worst), ranked per metric.
         col_series = df.set_index("label")[col]
         n_valid = int(col_series.notna().sum())
-        ranks = col_series.rank(ascending=(col in _LOWER_IS_BETTER), na_option="bottom")
-        sample_pts = [
-            float(1.0 - (float(ranks.at[lbl]) - 1.0) / max(n_valid - 1, 1))
-            if lbl in ranks.index else 0.0
-            for lbl in run_labels
-        ]
+        ranks = col_series.rank(ascending=(col in _LOWER_IS_BETTER), na_option="keep")
+        denom = max(n_valid - 1, 1)
+        sample_pts = []
+        for lbl in run_labels:
+            if lbl not in ranks.index or pd.isna(ranks.at[lbl]):
+                sample_pts.append(0.0)
+            else:
+                sample_pts.append(float(1.0 - (float(ranks.at[lbl]) - 1.0) / denom))
         bar_colors = pc.sample_colorscale("RdYlGn", sample_pts)
 
         for i, (run_label, val) in enumerate(zip(run_labels, values)):

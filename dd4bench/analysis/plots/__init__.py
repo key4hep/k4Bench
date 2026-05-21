@@ -15,6 +15,7 @@ Typical notebook usage::
 from .event import plot_event_memory, plot_event_timing
 from .overview import plot_run_overview
 from .region import plot_region_timing
+from ._theme import PALETTE
 from ._utils import _compute_core_range  # re-exported: used in tests
 
 __all__ = [
@@ -22,5 +23,6 @@ __all__ = [
     "plot_event_timing",
     "plot_event_memory",
     "plot_region_timing",
+    "PALETTE",
     "_compute_core_range",
 ]

@@ -12,7 +12,7 @@ def render(
     baseline_label: str | None,
 ) -> None:
     if event_data is None:
-        st.info("No event timing data available in the selected directory.")
+        st.info("No event memory data available in the selected directory.")
         return
     if not selected_labels:
         st.info("Select at least one run in the sidebar.")

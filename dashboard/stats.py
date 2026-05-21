@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from dd4bench.analysis.plots._theme import _PALETTE
+from dd4bench.analysis.plots import PALETTE as _PALETTE
 
 
 def build_event_stats_table(
@@ -68,12 +68,16 @@ def select_top_n_by_ratio(
     n: int,
 ) -> list[str]:
     """Return n labels: baseline + top (n-1) non-baseline runs by |ratio − 1|."""
-    if len(selected_labels) <= n or baseline_label is None:
+    if len(selected_labels) <= n:
         return selected_labels
+    if baseline_label is None:
+        return selected_labels[:n]
     stats = build_event_stats_table(
         event_data, selected_labels, column, unit, baseline_label, exclude_warmup
     )
     if "Ratio to baseline" not in stats.columns:
+        if baseline_label in selected_labels:
+            return [baseline_label] + [l for l in selected_labels if l != baseline_label][: n - 1]
         return selected_labels[:n]
     non_bl = stats.index[stats.index != baseline_label]
     sorted_non_bl = (
