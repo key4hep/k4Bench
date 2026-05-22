@@ -185,9 +185,10 @@ echo "::endgroup::"
 # ── 8. Upload to EOS ──────────────────────────────────────────────────────────
 echo "::group::8. Upload to EOS"
 export X509_CERT_DIR=/cvmfs/grid.cern.ch/etc/grid-security/certificates
+export X509_VOMS_DIR=/cvmfs/grid.cern.ch/etc/grid-security/vomsdir
 export VOMS_USERCONF=/cvmfs/grid.cern.ch/etc/vomses
-voms-proxy-init --cert "${X509_USER_CERT}" --key "${X509_USER_KEY}" --out /tmp/x509_proxy --voms cern --vomsdir /cvmfs/grid.cern.ch/etc/grid-security/vomsdir --pwstdin <<< ""
 export X509_USER_PROXY=/tmp/x509_proxy
+voms-proxy-init --cert "${X509_USER_CERT}" --key "${X509_USER_KEY}" --out "${X509_USER_PROXY}" --pwstdin <<< ""
 voms-proxy-info -identity
 EOS_RUN="${EOS_ROOT}/runs/${DETECTOR}/${RUN_LABEL}"
 EOS_URL="root://${EOS_FQDN}/${EOS_RUN}"
