@@ -29,6 +29,9 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
 
     present_metrics = [(col, label) for col, label in _METRICS if col in df.columns]
     n = len(present_metrics)
+    if n == 0:
+        st.warning("No supported metrics found for the current dataframe.")
+        return
 
     fig = make_subplots(
         rows=n,

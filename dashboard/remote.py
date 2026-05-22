@@ -70,9 +70,13 @@ def download_all_runs(base_url: str, detector: str) -> Path:
     dest = Path(tempfile.mkdtemp(prefix="dd4bench_"))
     for run in runs:
         run_dir = dest / run
-        run_dir.mkdir()
+        run_dir.mkdir(exist_ok=True)
         run_url = f"{base_url.rstrip('/')}/{detector}/{run}"
         for fname in _list_files(run_url):
-            content = requests.get(f"{run_url}/{fname}", timeout=_TIMEOUT).content
-            (run_dir / fname).write_bytes(content)
+            safe_name = Path(fname).name
+            if not safe_name or safe_name != fname:
+                raise ValueError(f"Unsafe filename in listing: {fname!r}")
+            resp = requests.get(f"{run_url}/{fname}", timeout=_TIMEOUT)
+            resp.raise_for_status()
+            (run_dir / safe_name).write_bytes(resp.content)
     return dest

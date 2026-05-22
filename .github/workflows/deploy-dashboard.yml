@@ -11,14 +11,17 @@ on:
 
 permissions:
   contents: read
-  packages: write   # needed to push to ghcr.io
 
 jobs:
   build-and-push:
     name: Build & push Docker image
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # needed to push to ghcr.io
     outputs:
       image: ${{ steps.meta.outputs.tags }}
+      sha-tag: ${{ steps.sha-tag.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -51,11 +54,20 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Set image SHA tag
+        id: sha-tag
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          echo "tag=ghcr.io/${{ github.repository_owner }}/dd4bench-dashboard:${short_sha}" >> "$GITHUB_OUTPUT"
+
   deploy:
     name: Deploy to CERN PaaS
     needs: build-and-push
     runs-on: ubuntu-latest
     environment: production
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -87,7 +99,7 @@ jobs:
       - name: Rollout new image
         run: |
           oc set image deployment/dd4bench-dashboard \
-            dashboard=ghcr.io/${{ github.repository_owner }}/dd4bench-dashboard:latest \
+            dashboard=${{ needs.build-and-push.outputs.sha-tag }} \
             -n dd4bench
           oc rollout status deployment/dd4bench-dashboard -n dd4bench --timeout=120s
 

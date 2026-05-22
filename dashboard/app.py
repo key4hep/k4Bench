@@ -15,13 +15,13 @@ from data import (
 from tabs import event_memory, event_timing, overview, region_timing, trends
 
 
-@st.cache_data(show_spinner="Fetching available detectors...")
+@st.cache_data(show_spinner="Fetching available detectors...", ttl=3600)
 def _cached_list_detectors(base_url: str) -> list[str]:
     from remote import list_detectors
     return list_detectors(base_url)
 
 
-@st.cache_data(show_spinner="Downloading all runs...")
+@st.cache_data(show_spinner="Downloading all runs...", ttl=3600)
 def _cached_download_all_runs(base_url: str, detector: str) -> str:
     from remote import download_all_runs
     return str(download_all_runs(base_url, detector))
@@ -43,17 +43,28 @@ def main() -> None:
         if config.data_url:
             # ── Remote mode: fetch all runs from WebEOS ────────────────────
             st.caption(f"WebEOS: `{config.data_url}`")
-            detectors = _cached_list_detectors(config.data_url)
+            try:
+                detectors = _cached_list_detectors(config.data_url)
+            except Exception as err:
+                st.error(f"Failed to list detectors: {err}")
+                return
             if not detectors:
                 st.error("No detectors found at the configured WebEOS URL.")
                 return
             detector = st.selectbox("Detector", detectors)
             if not detector:
                 return
-            detector_dir = _cached_download_all_runs(config.data_url, detector)
+            try:
+                detector_dir = _cached_download_all_runs(config.data_url, detector)
+            except Exception as err:
+                st.error(f"Failed to download runs for detector {detector}: {err}")
+                return
             # Use the most recent run for single-run tabs
             run_dirs = sorted(Path(detector_dir).iterdir())
-            data_dir = str(run_dirs[-1]) if run_dirs else ""
+            if not run_dirs:
+                st.warning(f"No runs found for detector '{detector}'.")
+                return
+            data_dir = str(run_dirs[-1])
         else:
             # ── Local mode: manual path ────────────────────────────────────
             data_dir = st.text_input("Data directory", value=config.data_dir)
