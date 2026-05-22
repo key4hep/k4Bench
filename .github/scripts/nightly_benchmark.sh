@@ -201,7 +201,7 @@ voms-proxy-init \
 unset X509_USER_CERT
 unset X509_USER_KEY
 
-EOS_RUN="${EOS_ROOT}/runs/${DETECTOR}/${RUN_LABEL}"
+EOS_RUN="${EOS_ROOT}/${DETECTOR}/${RUN_LABEL}"
 EOS_URL="root://${EOS_FQDN}/${EOS_RUN}"
 
 command -v xrdfs >/dev/null || { echo "ERROR: xrdfs not found" >&2; exit 1; }
