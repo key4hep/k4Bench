@@ -34,6 +34,7 @@ jobs:
               | xargs -I{} basename {} .yml \
               | python3 -c "import sys, json; print(json.dumps(sys.stdin.read().split()))"
           )
+          [[ "${configs}" != "[]" ]] || { echo "ERROR: No benchmark configs found in .github/benchmarks/" >&2; exit 1; }
           echo "configs=${configs}" >> "$GITHUB_OUTPUT"
           echo "Found configs: ${configs}"
 
@@ -74,7 +75,7 @@ jobs:
       - name: Benchmark ${{ matrix.config }}
         run: |
           mkdir -p /tmp/dnf-cache
-          docker run --rm \
+          docker run --rm --init \
             --device /dev/fuse \
             --cap-add SYS_ADMIN \
             --volume /cvmfs:/cvmfs:shared \

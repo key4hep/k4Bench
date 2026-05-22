@@ -26,7 +26,12 @@ echo "::group::2. Detector config (${CONFIG_FILE})"
 _cfg() {
     python3 -c "
 import sys, yaml
-cfg = yaml.safe_load(open('${CONFIG_FILE}'))
+try:
+    with open('${CONFIG_FILE}') as f:
+        cfg = yaml.safe_load(f) or {}
+except Exception as e:
+    print(f'ERROR: Failed to read config: {e}', file=sys.stderr)
+    sys.exit(1)
 val = cfg.get(sys.argv[1])
 if val is None:
     print(sys.argv[2] if len(sys.argv) > 2 else '')
@@ -41,7 +46,12 @@ else:
 _cfg_list() {
     python3 -c "
 import sys, yaml
-cfg = yaml.safe_load(open('${CONFIG_FILE}'))
+try:
+    with open('${CONFIG_FILE}') as f:
+        cfg = yaml.safe_load(f) or {}
+except Exception as e:
+    print(f'ERROR: Failed to read config: {e}', file=sys.stderr)
+    sys.exit(1)
 val = cfg.get(sys.argv[1])
 if isinstance(val, list):
     print(' '.join(str(v) for v in val))
@@ -82,6 +92,7 @@ source /cvmfs/sw-nightlies.hsf.org/key4hep/setup.sh
 set -u
 [[ -n "${KEY4HEP_STACK:-}" ]] || { echo "ERROR: KEY4HEP_STACK not set after sourcing Key4hep setup" >&2; exit 1; }
 K4H_RELEASE=$(echo "${KEY4HEP_STACK}" | grep -oP '\d{4}-\d{2}-\d{2}' | head -1)
+[[ -n "${K4H_RELEASE}" ]] || { echo "ERROR: Failed to extract Key4hep release date from KEY4HEP_STACK" >&2; exit 1; }
 echo "Release: key4hep-${K4H_RELEASE}"
 echo "Stack  : ${KEY4HEP_STACK}"
 echo "::endgroup::"
@@ -174,11 +185,15 @@ echo "::group::8. Upload to EOS"
 EOS_RUN="${EOS_ROOT}/runs/${DETECTOR}/${RUN_LABEL}"
 EOS_URL="root://${EOS_FQDN}/${EOS_RUN}"
 
-xrdfs "${EOS_FQDN}" mkdir -p "${EOS_RUN}"
+command -v xrdfs >/dev/null || { echo "ERROR: xrdfs not found" >&2; exit 1; }
+command -v xrdcp >/dev/null || { echo "ERROR: xrdcp not found" >&2; exit 1; }
+
+xrdfs "root://${EOS_FQDN}" mkdir -p "${EOS_RUN}"
 
 for f in "logs/${DETECTOR}"/*; do
     echo "  → $(basename "${f}")"
-    xrdcp --force "${f}" "${EOS_URL}/$(basename "${f}")"
+    xrdcp --force "${f}" "${EOS_URL}/$(basename "${f}")" \
+        || { echo "ERROR: Failed to upload ${f}" >&2; exit 1; }
 done
 echo "Uploaded to: ${EOS_URL}"
 echo "::endgroup::"
