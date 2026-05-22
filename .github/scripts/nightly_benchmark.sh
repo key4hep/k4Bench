@@ -148,7 +148,7 @@ CMD=(dd4bench
 [[ -n "${DDSIM_ARGS}" ]]     && CMD+=(--ddsim-args="${DDSIM_ARGS}")
 
 echo "$ ${CMD[*]}"
-'"${CMD[@]}"'
+"${CMD[@]}"
 echo "::endgroup::"
 
 # ── 7. Write run metadata ─────────────────────────────────────────────────────
