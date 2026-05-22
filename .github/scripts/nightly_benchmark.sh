@@ -182,6 +182,8 @@ echo "::endgroup::"
 
 # ── 8. Upload to EOS ──────────────────────────────────────────────────────────
 echo "::group::8. Upload to EOS"
+voms-proxy-init --cert "${X509_USER_CERT}" --key "${X509_USER_KEY}" --out /tmp/x509_proxy --pwstdin <<< ""
+export X509_USER_PROXY=/tmp/x509_proxy
 EOS_RUN="${EOS_ROOT}/runs/${DETECTOR}/${RUN_LABEL}"
 EOS_URL="root://${EOS_FQDN}/${EOS_RUN}"
 
