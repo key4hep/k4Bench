@@ -1,9 +1,19 @@
-# DD4bench
+
+<p align="center">
+  <a href="https://dd4bench-dashboard.app.cern.ch/">
+    <img src="https://capsule-render.vercel.app/api?type=waving&color=0:1E90FF,100:00C9A7&height=130&section=header&text=DD4bench&fontSize=48&fontAlignY=40&fontColor=ffffff" />
+  </a><br>
+  <b>Explore runs, metrics, and performance at a glance</b><br>
+  👉 <a href="https://dd4bench-dashboard.app.cern.ch/">Open Dashboard</a>
+</p>
+
+<br>
 
 [![Release](https://img.shields.io/github/v/release/jbeirer/DD4bench?include_prereleases)](https://github.com/jbeirer/DD4bench/releases)
 [![Build status](https://img.shields.io/github/actions/workflow/status/jbeirer/DD4bench/ci.yml?branch=main)](https://github.com/jbeirer/DD4bench/actions/workflows/ci.yml?query=branch%3Amain)
 [![codecov](https://codecov.io/gh/jbeirer/DD4bench/graph/badge.svg?token=oYOxyHkHuP)](https://codecov.io/gh/jbeirer/DD4bench)
 [![DOI](https://zenodo.org/badge/1229933191.svg)](https://doi.org/10.5281/zenodo.20268042)
+
 
 Performance benchmarking for DD4hep-based simulations and reconstruction in Key4hep.
 
