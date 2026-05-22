@@ -10,8 +10,8 @@
 
 set -euo pipefail
 
-EOS_FQDN="eosuser.cern.ch"
-EOS_ROOT="/eos/user/j/jbeirer/dd4bench"
+EOS_FQDN="eospublic.cern.ch"
+EOS_ROOT="/eos/experiment/fcc/ee/dd4bench"
 CONFIG_FILE=".github/benchmarks/${BENCHMARK_CONFIG}.yml"
 
 # ── 1. System dependencies ────────────────────────────────────────────────────
@@ -189,7 +189,6 @@ export X509_VOMS_DIR=/cvmfs/grid.cern.ch/etc/grid-security/vomsdir
 export VOMS_USERCONF=/cvmfs/grid.cern.ch/etc/vomses
 export X509_USER_PROXY=/tmp/x509_proxy
 voms-proxy-init --cert "${X509_USER_CERT}" --key "${X509_USER_KEY}" --out "${X509_USER_PROXY}" --pwstdin <<< ""
-voms-proxy-info -identity
 EOS_RUN="${EOS_ROOT}/runs/${DETECTOR}/${RUN_LABEL}"
 EOS_URL="root://${EOS_FQDN}/${EOS_RUN}"
 
