@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -49,6 +50,36 @@ def cached_load_region_timing(data_dir: str) -> dict | None:
         _log.exception("cached_load_region_timing: unexpected error loading '%s'", data_dir)
         st.warning(f"Unexpected error loading region timing from '{data_dir}'. Check logs for details.")
         return None
+
+
+@st.cache_data(show_spinner="Loading trend data...")
+def cached_load_trend_results(detector_dir: str) -> pd.DataFrame | None:
+    """Load results from all run subdirectories and return a combined DataFrame.
+
+    Each row gets ``run_id``, ``run_date`` (datetime), and ``k4h_release``
+    columns so the Trends tab can plot metrics over time.
+    Run subdirectories are named ``{YYYY-MM-DD}_{k4h_release}``.
+    """
+    frames = []
+    for run_dir in sorted(Path(detector_dir).iterdir()):
+        if not run_dir.is_dir():
+            continue
+        try:
+            df = load_results(run_dir)
+        except _EXPECTED_ERRORS:
+            continue
+        except Exception:
+            _log.exception("cached_load_trend_results: error loading '%s'", run_dir)
+            continue
+        run_id = run_dir.name
+        date_part, _, release_part = run_id.partition("_")
+        df["run_id"] = run_id
+        df["run_date"] = pd.to_datetime(date_part, errors="coerce")
+        df["k4h_release"] = release_part
+        frames.append(df)
+    if not frames:
+        return None
+    return pd.concat(frames, ignore_index=True)
 
 
 def collect_labels(

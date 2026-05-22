@@ -1,0 +1,19 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: dd4bench-dashboard
+  namespace: dd4bench
+  labels:
+    app: dd4bench-dashboard
+spec:
+  # OpenShift will assign a hostname automatically if this is omitted.
+  # Uncomment and set a CERN web.cern.ch subdomain if you want a fixed URL:
+  # host: dd4bench.web.cern.ch
+  to:
+    kind: Service
+    name: dd4bench-dashboard
+  port:
+    targetPort: 8080
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
