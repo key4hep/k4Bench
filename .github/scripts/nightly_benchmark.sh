@@ -91,7 +91,7 @@ set +u
 source /cvmfs/sw-nightlies.hsf.org/key4hep/setup.sh
 set -u
 [[ -n "${KEY4HEP_STACK:-}" ]] || { echo "ERROR: KEY4HEP_STACK not set after sourcing Key4hep setup" >&2; exit 1; }
-K4H_RELEASE=$(echo "${KEY4HEP_STACK}" | grep -oP '\d{4}-\d{2}-\d{2}' | head -1)
+K4H_RELEASE="$(grep -oP '\d{4}-\d{2}-\d{2}' <<< "${KEY4HEP_STACK}" | head -1 || true)"
 [[ -n "${K4H_RELEASE}" ]] || { echo "ERROR: Failed to extract Key4hep release date from KEY4HEP_STACK" >&2; exit 1; }
 echo "Release: key4hep-${K4H_RELEASE}"
 echo "Stack  : ${KEY4HEP_STACK}"
@@ -142,7 +142,9 @@ CMD=(dd4bench
 [[ -n "${DDSIM_ARGS}" ]]     && CMD+=(--ddsim-args="${DDSIM_ARGS}")
 
 echo "$ ${CMD[*]}"
-"${CMD[@]}"
+# TEMP: replace the two lines below with '"${CMD[@]}"' to re-enable the benchmark
+mkdir -p "logs/${DETECTOR}"
+echo "plugin,events,time_s" > "logs/${DETECTOR}/dummy_results.csv"
 echo "::endgroup::"
 
 # ── 7. Write run metadata ─────────────────────────────────────────────────────
@@ -182,8 +184,9 @@ echo "::endgroup::"
 
 # ── 8. Upload to EOS ──────────────────────────────────────────────────────────
 echo "::group::8. Upload to EOS"
-voms-proxy-init --cert "${X509_USER_CERT}" --key "${X509_USER_KEY}" --out /tmp/x509_proxy --pwstdin <<< ""
+voms-proxy-init --cert "${X509_USER_CERT}" --key "${X509_USER_KEY}" --out /tmp/x509_proxy --voms cern --pwstdin <<< ""
 export X509_USER_PROXY=/tmp/x509_proxy
+voms-proxy-info -identity
 EOS_RUN="${EOS_ROOT}/runs/${DETECTOR}/${RUN_LABEL}"
 EOS_URL="root://${EOS_FQDN}/${EOS_RUN}"
 

@@ -68,11 +68,15 @@ jobs:
           chmod 400 "$RUNNER_TEMP/eos-auth/userkey.pem"
 
       - name: Validate config name
+        env:
+          CONFIG_NAME: ${{ matrix.config }}
         run: |
-          config="${{ matrix.config }}"
+          config="$CONFIG_NAME"
           [[ "$config" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "ERROR: Invalid config name '${config}'" >&2; exit 1; }
 
       - name: Benchmark ${{ matrix.config }}
+        env:
+          CONFIG_NAME: ${{ matrix.config }}
         run: |
           mkdir -p /tmp/dnf-cache
           docker run --rm --init \
@@ -85,7 +89,7 @@ jobs:
             --workdir /workspace \
             -e X509_USER_CERT=/tmp/eos-auth/usercert.pem \
             -e X509_USER_KEY=/tmp/eos-auth/userkey.pem \
-            -e BENCHMARK_CONFIG="${{ matrix.config }}" \
+            -e BENCHMARK_CONFIG="$CONFIG_NAME" \
             -e GITHUB_RUN_ID="${{ github.run_id }}" \
             -e GITHUB_SHA="${{ github.sha }}" \
             -e GITHUB_REPOSITORY="${{ github.repository }}" \
