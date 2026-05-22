@@ -6,9 +6,7 @@ metadata:
   labels:
     app: dd4bench-dashboard
 spec:
-  # OpenShift will assign a hostname automatically if this is omitted.
-  # Uncomment and set a CERN web.cern.ch subdomain if you want a fixed URL:
-  # host: dd4bench.web.cern.ch
+  host: dd4bench-dashboard.app.cern.ch
   to:
     kind: Service
     name: dd4bench-dashboard
