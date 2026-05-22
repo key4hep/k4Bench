@@ -4,9 +4,6 @@ on:
   schedule:
     - cron: '0 2 * * *'  # 02:00 UTC every night
   workflow_dispatch:
-  push:
-    branches:
-      - main-addBenchMarkPerfMon  # temporary: remove before merging
 
 env:
   CONTAINER_IMAGE: ghcr.io/key4hep/key4hep-images/alma9

@@ -10,6 +10,9 @@
 
 set -euo pipefail
 
+# TODO: switch to eospublic once directory creation is allowed there (!d)
+# (See eos root://eospublic.cern.ch attr ls /eos/experiment/fcc/ee/dd4bench) 
+
 # EOS_FQDN="eospublic.cern.ch"
 # EOS_ROOT="/eos/experiment/fcc/ee/dd4bench"
 EOS_FQDN="eosuser.cern.ch"
@@ -145,9 +148,7 @@ CMD=(dd4bench
 [[ -n "${DDSIM_ARGS}" ]]     && CMD+=(--ddsim-args="${DDSIM_ARGS}")
 
 echo "$ ${CMD[*]}"
-# TEMP: replace the two lines below with '"${CMD[@]}"' to re-enable the benchmark
-mkdir -p "logs/${DETECTOR}"
-echo "plugin,events,time_s" > "logs/${DETECTOR}/dummy_results.csv"
+'"${CMD[@]}"'
 echo "::endgroup::"
 
 # ── 7. Write run metadata ─────────────────────────────────────────────────────
@@ -196,6 +197,9 @@ voms-proxy-init \
   --cert "${X509_USER_CERT}" \
   --key "${X509_USER_KEY}" \
   --out "${X509_USER_PROXY}"
+
+unset X509_USER_CERT
+unset X509_USER_KEY
 
 EOS_RUN="${EOS_ROOT}/runs/${DETECTOR}/${RUN_LABEL}"
 EOS_URL="root://${EOS_FQDN}/${EOS_RUN}"
