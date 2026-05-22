@@ -1,1 +1,2 @@
 streamlit>=1.55,<2.0
+requests>=2.31

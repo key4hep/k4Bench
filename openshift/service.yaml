@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: dd4bench-dashboard
+  namespace: dd4bench
+  labels:
+    app: dd4bench-dashboard
+spec:
+  selector:
+    app: dd4bench-dashboard
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP

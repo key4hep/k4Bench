@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dd4bench-dashboard
+  namespace: dd4bench
+  labels:
+    app: dd4bench-dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dd4bench-dashboard
+  template:
+    metadata:
+      labels:
+        app: dd4bench-dashboard
+    spec:
+      # OpenShift assigns a random UID at runtime; runAsNonRoot enforces that.
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: dashboard
+          image: ghcr.io/jbeirer/dd4bench-dashboard:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          env:
+            - name: DD4BENCH_DATA_URL
+              value: "https://dd4bench-data.web.cern.ch"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
