@@ -16,7 +16,7 @@ CONFIG_FILE=".github/benchmarks/${BENCHMARK_CONFIG}.yml"
 
 # ── 1. System dependencies ────────────────────────────────────────────────────
 echo "::group::1. System dependencies"
-dnf install -y --quiet time python3-pyyaml
+dnf install -y --quiet time python3-pyyaml voms-clients
 echo "::endgroup::"
 
 # ── 2. Read detector config ───────────────────────────────────────────────────
