@@ -10,8 +10,11 @@
 
 set -euo pipefail
 
-EOS_FQDN="eospublic.cern.ch"
-EOS_ROOT="/eos/experiment/fcc/ee/dd4bench"
+# EOS_FQDN="eospublic.cern.ch"
+# EOS_ROOT="/eos/experiment/fcc/ee/dd4bench"
+EOS_FQDN="eosuser.cern.ch"
+EOS_ROOT="/eos/user/j/jbeirer/dd4bench"
+
 CONFIG_FILE=".github/benchmarks/${BENCHMARK_CONFIG}.yml"
 
 # ── 1. System dependencies ────────────────────────────────────────────────────
