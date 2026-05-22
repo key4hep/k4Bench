@@ -4,9 +4,15 @@ on:
   schedule:
     - cron: '0 2 * * *'  # 02:00 UTC every night
   workflow_dispatch:
+  push:
+    branches:
+      - main-addBenchMarkPerfMon  # temporary: remove before merging
 
 env:
   CONTAINER_IMAGE: ghcr.io/key4hep/key4hep-images/alma9
+
+permissions:
+  contents: read
 
 jobs:
   # ── Discover which detectors to benchmark ──────────────────────────────────
@@ -17,6 +23,8 @@ jobs:
       configs: ${{ steps.list.outputs.configs }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: List benchmark configs
         id: list
@@ -40,6 +48,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: cvmfs-contrib/github-action-cvmfs@v5
 
@@ -51,10 +61,15 @@ jobs:
 
       - name: Set up EOS service certificate
         run: |
-          mkdir -p /tmp/eos-auth
-          echo "${{ secrets.EOS_SERVICE_CERT_BASE64 }}" | base64 -d > /tmp/eos-auth/usercert.pem
-          echo "${{ secrets.EOS_SERVICE_KEY_BASE64 }}"  | base64 -d > /tmp/eos-auth/userkey.pem
-          chmod 400 /tmp/eos-auth/userkey.pem
+          mkdir -p "$RUNNER_TEMP/eos-auth"
+          echo "${{ secrets.EOS_SERVICE_CERT_BASE64 }}" | base64 -d > "$RUNNER_TEMP/eos-auth/usercert.pem"
+          echo "${{ secrets.EOS_SERVICE_KEY_BASE64 }}"  | base64 -d > "$RUNNER_TEMP/eos-auth/userkey.pem"
+          chmod 400 "$RUNNER_TEMP/eos-auth/userkey.pem"
+
+      - name: Validate config name
+        run: |
+          config="${{ matrix.config }}"
+          [[ "$config" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "ERROR: Invalid config name '${config}'" >&2; exit 1; }
 
       - name: Benchmark ${{ matrix.config }}
         run: |
@@ -64,7 +79,7 @@ jobs:
             --cap-add SYS_ADMIN \
             --volume /cvmfs:/cvmfs:shared \
             --volume "${{ github.workspace }}":/workspace \
-            --volume /tmp/eos-auth:/tmp/eos-auth:ro \
+            --volume "$RUNNER_TEMP/eos-auth":/tmp/eos-auth:ro \
             --volume /tmp/dnf-cache:/var/cache/dnf \
             --workdir /workspace \
             -e X509_USER_CERT=/tmp/eos-auth/usercert.pem \
@@ -79,4 +94,4 @@ jobs:
 
       - name: Clean up EOS certificate
         if: always()
-        run: rm -rf /tmp/eos-auth
+        run: rm -rf "$RUNNER_TEMP/eos-auth"

@@ -16,7 +16,7 @@ CONFIG_FILE=".github/benchmarks/${BENCHMARK_CONFIG}.yml"
 
 # ── 1. System dependencies ────────────────────────────────────────────────────
 echo "::group::1. System dependencies"
-dnf install -y --setopt=metadata_expire=-1 --quiet time python3-pyyaml
+dnf install -y --quiet time python3-pyyaml
 echo "::endgroup::"
 
 # ── 2. Read detector config ───────────────────────────────────────────────────
@@ -52,7 +52,7 @@ SWEEP=$(_cfg sweep "false")
 INCLUDE_ONLY=$(_cfg_list include_only)
 EXCLUDE_ONLY=$(_cfg_list exclude_only)
 N_EVENTS=$(_cfg n_events)
-[[ -n "${N_EVENTS}" ]] || { echo "ERROR: 'n_events' is required in ${CONFIG_FILE}"; exit 1; }
+[[ "${N_EVENTS}" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: 'n_events' must be a positive integer in ${CONFIG_FILE}"; exit 1; }
 
 # sweep / include_only / exclude_only are mutually exclusive
 SWEEP_MODES=0
@@ -73,6 +73,7 @@ echo "::endgroup::"
 # ── 3. Key4hep nightly ────────────────────────────────────────────────────────
 echo "::group::3. Key4hep nightly"
 source /cvmfs/sw-nightlies.hsf.org/key4hep/setup.sh
+[[ -n "${KEY4HEP_STACK:-}" ]] || { echo "ERROR: KEY4HEP_STACK not set after sourcing Key4hep setup" >&2; exit 1; }
 K4H_RELEASE=$(echo "${KEY4HEP_STACK}" | grep -oP '\d{4}-\d{2}-\d{2}' | head -1)
 echo "Release: key4hep-${K4H_RELEASE}"
 echo "Stack  : ${KEY4HEP_STACK}"
@@ -132,8 +133,8 @@ DATE=$(date +%Y-%m-%d)
 RUN_LABEL="${DATE}_key4hep-${K4H_RELEASE}"
 
 CONFIGS_JSON=$(
-    ls "logs/${DETECTOR}"/*_results.csv \
-    | xargs -I{} basename {} _results.csv \
+    find "logs/${DETECTOR}" -maxdepth 1 -name '*_results.csv' -print0 2>/dev/null \
+    | xargs -0 -r -I{} basename {} _results.csv \
     | python3 -c "import sys, json; print(json.dumps(sys.stdin.read().split()))"
 )
 
