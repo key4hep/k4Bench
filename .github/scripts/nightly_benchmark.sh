@@ -72,7 +72,9 @@ echo "::endgroup::"
 
 # ── 3. Key4hep nightly ────────────────────────────────────────────────────────
 echo "::group::3. Key4hep nightly"
+set +u
 source /cvmfs/sw-nightlies.hsf.org/key4hep/setup.sh
+set -u
 [[ -n "${KEY4HEP_STACK:-}" ]] || { echo "ERROR: KEY4HEP_STACK not set after sourcing Key4hep setup" >&2; exit 1; }
 K4H_RELEASE=$(echo "${KEY4HEP_STACK}" | grep -oP '\d{4}-\d{2}-\d{2}' | head -1)
 echo "Release: key4hep-${K4H_RELEASE}"
