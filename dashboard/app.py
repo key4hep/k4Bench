@@ -39,6 +39,9 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Data Source")
+        if st.button("Refresh Data", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
 
         if config.data_url:
             # ── Remote mode: fetch all runs from WebEOS ────────────────────
