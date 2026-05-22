@@ -28,7 +28,12 @@ _cfg() {
 import sys, yaml
 cfg = yaml.safe_load(open('${CONFIG_FILE}'))
 val = cfg.get(sys.argv[1])
-print(str(val).strip() if val is not None else (sys.argv[2] if len(sys.argv) > 2 else ''))
+if val is None:
+    print(sys.argv[2] if len(sys.argv) > 2 else '')
+elif isinstance(val, bool):
+    print(str(val).lower())
+else:
+    print(str(val).strip())
 " "$@"
 }
 
