@@ -8,7 +8,7 @@ ENV SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0
 # Install dd4bench package (provides the analysis loader)
 COPY pyproject.toml README.md ./
 COPY dd4bench/ ./dd4bench/
-RUN pip install --no-cache-dir -e "." --no-build-isolation
+RUN pip install --no-cache-dir .
 
 # Install dashboard dependencies
 COPY dashboard/requirements.txt ./dashboard/requirements.txt
