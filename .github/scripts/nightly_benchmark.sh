@@ -188,7 +188,12 @@ export X509_CERT_DIR=/cvmfs/grid.cern.ch/etc/grid-security/certificates
 export X509_VOMS_DIR=/cvmfs/grid.cern.ch/etc/grid-security/vomsdir
 export VOMS_USERCONF=/cvmfs/grid.cern.ch/etc/vomses
 export X509_USER_PROXY=/tmp/x509_proxy
-voms-proxy-init --cert "${X509_USER_CERT}" --key "${X509_USER_KEY}" --out "${X509_USER_PROXY}" --pwstdin <<< ""
+# Initialize VOMS proxy for EOS upload
+voms-proxy-init \
+  --cert "${X509_USER_CERT}" \
+  --key "${X509_USER_KEY}" \
+  --out "${X509_USER_PROXY}"
+
 EOS_RUN="${EOS_ROOT}/runs/${DETECTOR}/${RUN_LABEL}"
 EOS_URL="root://${EOS_FQDN}/${EOS_RUN}"
 
