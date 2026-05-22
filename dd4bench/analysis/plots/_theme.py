@@ -12,6 +12,8 @@ _PALETTE = [
     "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
 ]
 
+PALETTE = _PALETTE
+
 _METRIC_UNITS: dict[str, str] = {
     "wall_time_s":    "(s)",
     "peak_rss_mb":    "(MB)",

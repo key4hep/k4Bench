@@ -38,7 +38,7 @@ def _build_event_layout(
     px_h: int,
 ) -> tuple[go.Figure, tuple | None, tuple | None, tuple | None, tuple | None, int]:
     """Build the subplot grid and return (fig, dist_rc, seq_rc, ratio_dist_rc, ratio_seq_rc, total_h)."""
-    two_run_ratio = (n == 2) and (show == "both")
+    show_ratio = (n >= 2) and (show == "both")
 
     if show == "both" and n == 1:
         fig = make_subplots(rows=1, cols=2, horizontal_spacing=0.1)
@@ -52,7 +52,7 @@ def _build_event_layout(
         fig = make_subplots(rows=1, cols=1)
         return fig, None, (1, 1), None, None, px_h
 
-    if two_run_ratio:
+    if show_ratio:
         total_h = px_h + int(1.6 * 96)
         ratio_frac = (1.6 * 96) / total_h
         main_frac  = px_h / total_h
@@ -71,7 +71,7 @@ def _build_event_layout(
         fig.update_xaxes(title_standoff=15, row=2, col=2)
         return fig, (1, 1), (1, 2), (2, 1), (2, 2), total_h
 
-    # n > 2, show == "both"
+    # show != "both" fallthrough (unreachable given checks above, kept for safety)
     fig = make_subplots(rows=1, cols=2, horizontal_spacing=0.1)
     return fig, (1, 1), (1, 2), None, None, px_h
 
@@ -165,7 +165,7 @@ def _plot_event_metric(
         for lbl, arr in arrays.items()
     }
 
-    two_run_ratio = (n == 2) and (show == "both")
+    show_ratio = (n >= 2) and (show == "both")
 
     total_clipped = 0
     pending_warnings: list[str] = []
@@ -234,7 +234,7 @@ def _plot_event_metric(
             )
             _xlabel = f"{xlabel}<br><sup>{clipping_note}</sup>" if clipping_note else xlabel
             fig.update_xaxes(title_text=_xlabel, row=dist_rc[0], col=dist_rc[1])
-        elif not two_run_ratio:
+        elif not show_ratio:
             _xlabel = f"{xlabel}<br><sup>{clipping_note}</sup>" if clipping_note else xlabel
             fig.update_xaxes(title_text=_xlabel, row=dist_rc[0], col=dist_rc[1])
 
@@ -261,92 +261,108 @@ def _plot_event_metric(
                 ),
                 row=seq_rc[0], col=seq_rc[1],
             )
-        if not two_run_ratio:
+        if not show_ratio:
             fig.update_xaxes(title_text="Event number", row=seq_rc[0], col=seq_rc[1])
         fig.update_yaxes(title_text=yseq_label, row=seq_rc[0], col=seq_rc[1])
 
     # ------------------------------------------------------------------
-    # Ratio panels (n == 2, show == "both")
+    # Ratio panels (n >= 2, show == "both") — one trace per non-baseline run
     # ------------------------------------------------------------------
-    if two_run_ratio:
-        other_label = next(lbl for lbl in label_list if lbl != ref_label)
-
-        ref_counts, _   = np.histogram(hist_arrays[ref_label],   bins=common_edges)
-        other_counts, _ = np.histogram(hist_arrays[other_label], bins=common_edges)
-        ref_counts   = ref_counts.astype(float)
-        other_counts = other_counts.astype(float)
-
-        with np.errstate(invalid="ignore", divide="ignore"):
-            ratio = np.where(
-                (ref_counts > 0) & (other_counts > 0),
-                other_counts / ref_counts, np.nan,
-            )
-            ratio_err = np.where(
-                (ref_counts > 0) & (other_counts > 0),
-                ratio * np.sqrt(1.0 / other_counts + 1.0 / ref_counts), np.nan,
-            )
-
+    if show_ratio:
+        ref_counts, _ = np.histogram(hist_arrays[ref_label], bins=common_edges)
+        ref_counts = ref_counts.astype(float)
         bin_centers = 0.5 * (common_edges[:-1] + common_edges[1:])
-        valid = ~np.isnan(ratio)
+        df_ref = filtered_data[ref_label].set_index("event_number")
 
-        fig.add_trace(
-            go.Scatter(
-                x=bin_centers[valid], y=ratio[valid],
-                error_y=dict(type="data", array=ratio_err[valid], visible=True,
-                             thickness=0.8, width=4, color="#444444"),
-                mode="markers",
-                marker=dict(color="#444444", size=5),
-                showlegend=False,
-                hovertemplate="bin: %{x:.4g}<br>ratio: %{y:.3f}<extra></extra>",
-            ),
-            row=ratio_dist_rc[0], col=ratio_dist_rc[1],
-        )
+        for other_label in label_list:
+            if other_label == ref_label:
+                continue
+            other_idx = label_list.index(other_label)
+            ratio_color = _PALETTE[other_idx % len(_PALETTE)]
+
+            other_counts, _ = np.histogram(hist_arrays[other_label], bins=common_edges)
+            other_counts = other_counts.astype(float)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                ratio = np.where(
+                    (ref_counts > 0) & (other_counts > 0),
+                    other_counts / ref_counts, np.nan,
+                )
+                ratio_err = np.where(
+                    (ref_counts > 0) & (other_counts > 0),
+                    ratio * np.sqrt(1.0 / other_counts + 1.0 / ref_counts), np.nan,
+                )
+            valid = ~np.isnan(ratio)
+            fig.add_trace(
+                go.Scatter(
+                    x=bin_centers[valid], y=ratio[valid],
+                    error_y=dict(type="data", array=ratio_err[valid], visible=True,
+                                 thickness=0.8, width=4, color=ratio_color),
+                    mode="markers",
+                    marker=dict(color=ratio_color, size=5),
+                    name=other_label,
+                    legendgroup=other_label,
+                    showlegend=False,
+                    hovertemplate=(
+                        f"<b>{other_label}</b><br>bin: %{{x:.4g}}<br>ratio: %{{y:.3f}}<extra></extra>"
+                    ),
+                ),
+                row=ratio_dist_rc[0], col=ratio_dist_rc[1],
+            )
+
+            df_other = filtered_data[other_label].set_index("event_number")
+            common_evts = df_ref.index.intersection(df_other.index)
+            if len(common_evts) > 0:
+                t_ref = df_ref.loc[common_evts, column].to_numpy()
+                t_other = df_other.loc[common_evts, column].to_numpy()
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    evt_ratio = np.where(t_ref > 0, t_other / t_ref, np.nan)
+                valid_e = ~np.isnan(evt_ratio)
+                fig.add_trace(
+                    go.Scattergl(
+                        x=common_evts[valid_e], y=evt_ratio[valid_e],
+                        mode="markers",
+                        marker=dict(color=ratio_color, size=4, opacity=0.5),
+                        name=other_label,
+                        legendgroup=other_label,
+                        showlegend=False,
+                        hovertemplate=(
+                            f"<b>{other_label}</b><br>event: %{{x}}<br>ratio: %{{y:.3f}}<extra></extra>"
+                        ),
+                    ),
+                    row=ratio_seq_rc[0], col=ratio_seq_rc[1],
+                )
+
         fig.add_hline(y=1.0, line_dash="dash", line_color="black", line_width=1.0,
                       opacity=0.5, row=ratio_dist_rc[0], col=ratio_dist_rc[1])
-        _xlabel_r = f"{xlabel}<br><sup>{clipping_note}</sup>" if clipping_note else xlabel
-        fig.update_xaxes(title_text=_xlabel_r, row=ratio_dist_rc[0], col=ratio_dist_rc[1])
-        fig.update_yaxes(title_text="Ratio (other/ref.)", title_font=dict(size=10),
-                         row=ratio_dist_rc[0], col=ratio_dist_rc[1])
-
-        df_ref   = filtered_data[ref_label].set_index("event_number")
-        df_other = filtered_data[other_label].set_index("event_number")
-        common_evts = df_ref.index.intersection(df_other.index)
-        if len(common_evts) > 0:
-            t_ref   = df_ref.loc[common_evts, column].to_numpy()
-            t_other = df_other.loc[common_evts, column].to_numpy()
-            with np.errstate(invalid="ignore", divide="ignore"):
-                evt_ratio = np.where(t_ref > 0, t_other / t_ref, np.nan)
-            valid_e = ~np.isnan(evt_ratio)
-            fig.add_trace(
-                go.Scattergl(
-                    x=common_evts[valid_e], y=evt_ratio[valid_e],
-                    mode="markers",
-                    marker=dict(color="#444444", size=4, opacity=0.5),
-                    showlegend=False,
-                    hovertemplate="event: %{x}<br>ratio: %{y:.3f}<extra></extra>",
-                ),
-                row=ratio_seq_rc[0], col=ratio_seq_rc[1],
-            )
         fig.add_hline(y=1.0, line_dash="dash", line_color="black", line_width=1.0,
                       opacity=0.5, row=ratio_seq_rc[0], col=ratio_seq_rc[1])
+        _xlabel_r = f"{xlabel}<br><sup>{clipping_note}</sup>" if clipping_note else xlabel
+        fig.update_xaxes(title_text=_xlabel_r, row=ratio_dist_rc[0], col=ratio_dist_rc[1])
         fig.update_xaxes(title_text="Event number", row=ratio_seq_rc[0], col=ratio_seq_rc[1])
-        fig.update_yaxes(title_text="Ratio (other/ref.)", title_font=dict(size=10),
+        ratio_ylabel = "Ratio (run/ref.)"
+        fig.update_yaxes(title_text=ratio_ylabel, title_font=dict(size=10),
+                         row=ratio_dist_rc[0], col=ratio_dist_rc[1])
+        fig.update_yaxes(title_text=ratio_ylabel, title_font=dict(size=10),
                          row=ratio_seq_rc[0], col=ratio_seq_rc[1])
 
     if n > 1:
         fig.update_layout(barmode="overlay")
 
-    suptitle_base = base_title if n == 1 else f"{base_title} Comparison"
-    suptitle = f"{suptitle_base} — {det_title}" if det_title else suptitle_base
+    # Top margin grows with the number of horizontal legend rows so they never
+    # overlap the plot.  Assumes ~170 px per legend item at the default width.
+    if n > 1:
+        items_per_row = max(1, px_w // 170)
+        n_legend_rows = (n + items_per_row - 1) // items_per_row
+        t_margin = 40 + max(0, n_legend_rows - 1) * 24
+    else:
+        t_margin = 40
 
     fig.update_layout(
-        title_text=suptitle,
-        title_font=dict(size=16, color="#222222"),
         template=_TEMPLATE,
         width=px_w,
         height=total_h,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        margin=dict(l=20, r=20, t=80, b=10),
+        margin=dict(l=20, r=20, t=t_margin, b=10),
     )
 
     return fig
@@ -371,8 +387,8 @@ def plot_event_timing(
     """Plot per-event timing distributions for one or more runs.
 
     Single run: histogram with μ ± SEM and σ ± SE(σ) shown as an annotation.
-    Multiple runs: overlaid histograms and, for exactly two runs with
-    ``show="both"``, bin-by-bin ratio panels.
+    Multiple runs: overlaid histograms and, with ``show="both"``, bin-by-bin
+    and per-event ratio panels for every non-baseline run against the reference.
 
     Parameters
     ----------
