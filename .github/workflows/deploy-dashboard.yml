@@ -81,14 +81,19 @@ jobs:
         with:
           oc: latest
 
+      - name: Test API connectivity
+        run: curl -vk https://api.paas.okd.cern.ch/version
+
       - name: Log in to CERN OpenShift
-        # OC_SERVER  = https://api.paas.okd.cern.ch  (or the paas.cern.ch API endpoint)
-        # OC_TOKEN   = service-account token with edit rights on the dd4bench namespace
-        #              Create on paas.cern.ch: Project → Service Accounts → create token
+        env:
+          OC_SERVER: ${{ secrets.OC_SERVER }}
+          OC_TOKEN: ${{ secrets.OC_TOKEN }}
         run: |
-          oc login "${{ secrets.OC_SERVER }}" \
-            --token="${{ secrets.OC_TOKEN }}" \
-            --insecure-skip-tls-verify=true
+          oc login \
+            --token="${OC_TOKEN// /}" \
+            --server="${OC_SERVER// /}" \
+            --insecure-skip-tls-verify=true \
+            --loglevel=8
 
       - name: Apply WebEOS UserProvidedDirectory
         run: oc apply -f openshift/userprovideddirectory.yaml
