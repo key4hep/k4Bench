@@ -20,8 +20,10 @@ def build_event_stats_table(
     rows = []
     for palette_idx, lbl in enumerate(ordered_labels):
         df = event_data[lbl]
-        if exclude_warmup:
+        if exclude_warmup and "event_number" in df.columns:
             df = df[df["event_number"] != 0]
+        if column not in df.columns:
+            continue
         arr = df[column].dropna().to_numpy()
         if len(arr) == 0:
             continue

@@ -50,3 +50,5 @@ def render(
     )
     if not stats.empty:
         st.dataframe(style_stats_table(stats), width="stretch")
+    else:
+        st.info("No valid statistics available (missing or empty data).")
