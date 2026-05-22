@@ -9,7 +9,7 @@ ddsim_args: >-
   --gun.energy 10*GeV
 
 # Events per run (required)
-n_events: 100
+n_events: 500
 
 # Stream ddsim output to stdout during each run
 verbose: true
@@ -27,4 +27,4 @@ verbose: true
 #
 
 # Leave all commented out (or sweep: false) for a single baseline run.
-sweep: false
+sweep: true
