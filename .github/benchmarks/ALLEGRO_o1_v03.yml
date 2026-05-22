@@ -1,0 +1,30 @@
+# Detector geometry XML, relative to $K4GEO (or an absolute path)
+xml: FCCee/ALLEGRO/compact/ALLEGRO_o1_v03/ALLEGRO_o1_v03.xml
+
+# Arguments passed verbatim to ddsim
+ddsim_args: >-
+  --enableGun
+  --gun.particle e-
+  --gun.distribution uniform
+  --gun.energy 10*GeV
+
+# Events per run (required)
+n_events: 100
+
+# Stream ddsim output to stdout during each run
+verbose: true
+
+# Run mode — pick at most one (they are mutually exclusive):
+#
+#   sweep: true          baseline + one run per subdetector removed (full sweep)
+#
+#   include_only:        single run with only these subdetectors active
+#     - ECalBarrel
+#     - HCalBarrel
+#
+#   exclude_only:        single run with these subdetectors removed
+#     - ECalBarrel
+#
+
+# Leave all commented out (or sweep: false) for a single baseline run.
+sweep: false
