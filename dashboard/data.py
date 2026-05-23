@@ -130,7 +130,7 @@ def _parse_run_dir(run_dir: Path) -> dict:
     }
 
 
-@st.cache_data(show_spinner=False, ttl=3600)
+@st.cache_data(show_spinner=False, ttl=60)
 def list_run_metadata(detector_dir: str) -> list[dict]:
     """Return metadata dicts for every run subdirectory, cheaply (no CSV loading)."""
     meta = []

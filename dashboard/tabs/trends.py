@@ -125,5 +125,13 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
         ticktext=tick_labels,
         tickangle=-30,
     )
+    # Label the x-axis only on the bottom subplot (xaxis{n}) so it doesn't
+    # repeat on every shared panel.
+    fig.update_layout({f"xaxis{n}": {"title": {"text": "Key4hep Release Date"}}})
 
+    st.caption(
+        "X-axis: Key4hep release date (the date embedded in the release tag, "
+        "e.g. `key4hep-2026-05-19`). Multiple CI runs of the same release share "
+        "one x-position. Hover over a point to see the exact CI run date."
+    )
     st.plotly_chart(fig, width='stretch')

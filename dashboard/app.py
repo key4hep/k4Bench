@@ -94,7 +94,13 @@ def main() -> None:
                 and m["k4h_release"] == selected_release
             ]
             matching.sort(key=lambda m: m["run_date"] if pd.notna(m["run_date"]) else pd.Timestamp.min)
-            data_dir = matching[-1]["run_dir"] if matching else run_meta[-1]["run_dir"]
+            if not matching:
+                st.warning(
+                    f"No runs found for platform '{selected_platform}' "
+                    f"and release '{selected_release}'. Try refreshing the data."
+                )
+                return
+            data_dir = matching[-1]["run_dir"]
         else:
             # ── Local mode: manual path ────────────────────────────────────
             data_dir = st.text_input("Data directory", value=config.data_dir)
