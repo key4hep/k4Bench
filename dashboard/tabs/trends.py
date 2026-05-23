@@ -22,11 +22,14 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
         st.info("Select at least one configuration in the sidebar.")
         return
 
-    df = trend_df[trend_df["label"].isin(selected_labels)].dropna(subset=["k4h_release_date"]).copy()
-    # Use the release date (date inside the key4hep tag) as the x-axis so that
-    # multiple nightly CI runs of the same release map to the same x-position.
+    df = trend_df[trend_df["label"].isin(selected_labels)].copy()
     df["k4h_release_date"] = pd.to_datetime(df["k4h_release_date"]).dt.normalize()
     df["run_date"] = pd.to_datetime(df["run_date"]).dt.normalize()
+    # Use the release date as x-axis so multiple CI runs of the same release
+    # map to the same x-position.  Fall back to run_date for old runs that
+    # predate the k4h_release_date metadata field — better than dropping them.
+    df["x_date"] = df["k4h_release_date"].fillna(df["run_date"])
+    df = df.dropna(subset=["x_date"])
     # Pre-format run_date as string for clean hover display.
     df["run_date_str"] = df["run_date"].dt.strftime("%Y-%m-%d").fillna("unknown")
     if df.empty:
@@ -48,7 +51,7 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
     )
 
     for cfg_idx, cfg_label in enumerate(selected_labels):
-        cfg_df = df[df["label"] == cfg_label].sort_values("k4h_release_date")
+        cfg_df = df[df["label"] == cfg_label].sort_values("x_date")
         if cfg_df.empty:
             continue
         color = PALETTE[cfg_idx % len(PALETTE)]
@@ -57,7 +60,7 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
         for row_idx, (col, metric_label) in enumerate(present_metrics):
             fig.add_trace(
                 go.Scatter(
-                    x=cfg_df["k4h_release_date"],
+                    x=cfg_df["x_date"],
                     y=cfg_df[col],
                     mode="lines+markers",
                     name=cfg_label,
@@ -112,8 +115,8 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
         margin=dict(l=20, r=20, t=t_margin, b=b_margin),
     )
 
-    # ── X-axis: one tick per unique release date, no repeats ────────────────
-    unique_dates = sorted(df["k4h_release_date"].dropna().unique())
+    # ── X-axis: one tick per unique x-date, no repeats ─────────────────────
+    unique_dates = sorted(df["x_date"].dropna().unique())
     tick_labels = [pd.Timestamp(d).strftime("%Y-%m-%d") for d in unique_dates]
     fig.update_xaxes(
         type="date",

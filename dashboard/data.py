@@ -105,10 +105,21 @@ def _parse_run_dir(run_dir: Path) -> dict:
         k4h_release_date = pd.to_datetime(k4h_match.group(1), errors="coerce")
         platform_part = rest[: rest.index("key4hep-")].rstrip("_")
         platform = platform_part if platform_part else "unknown"
+        if platform == "unknown":
+            _log.warning(
+                "_parse_run_dir: could not determine platform from dir name '%s'; defaulting to 'unknown'",
+                run_dir.name,
+            )
     else:
         k4h_release = rest
         k4h_release_date = pd.NaT
         platform = "unknown"
+        _log.warning(
+            "_parse_run_dir: could not parse key4hep release from dir name '%s'; "
+            "platform='unknown', k4h_release=%r",
+            run_dir.name,
+            k4h_release,
+        )
 
     return {
         "run_dir":          str(run_dir),

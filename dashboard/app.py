@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 from config import Config
@@ -69,7 +70,10 @@ def main() -> None:
                 return
 
             # ── Platform selector ──────────────────────────────────────────
-            platforms = sorted({m["platform"] for m in run_meta})
+            platforms = sorted({m["platform"] for m in run_meta if m["platform"]})
+            if not platforms:
+                st.warning("No valid platforms found in run metadata.")
+                return
             selected_platform = st.selectbox("Platform", platforms)
 
             # ── Release selector (filtered by platform, newest first) ──────
@@ -78,7 +82,10 @@ def main() -> None:
                  if m["platform"] == selected_platform and m["k4h_release"]},
                 reverse=True,
             )
-            selected_release = st.selectbox("Release", releases) if releases else None
+            if not releases:
+                st.warning(f"No releases found for platform '{selected_platform}'.")
+                return
+            selected_release = st.selectbox("Release", releases)
 
             # Pick the most recent run dir matching (platform, release)
             matching = [
@@ -86,7 +93,7 @@ def main() -> None:
                 if m["platform"] == selected_platform
                 and m["k4h_release"] == selected_release
             ]
-            matching.sort(key=lambda m: m["run_date"] or 0)
+            matching.sort(key=lambda m: m["run_date"] if pd.notna(m["run_date"]) else pd.Timestamp.min)
             data_dir = matching[-1]["run_dir"] if matching else run_meta[-1]["run_dir"]
         else:
             # ── Local mode: manual path ────────────────────────────────────
