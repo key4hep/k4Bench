@@ -131,17 +131,20 @@ def plot_region_timing(
 
     if n == 1:
         if show == "both":
+            # Named constants so annotation positions can be derived analytically.
+            _v_sp, _h_sp = 0.16, 0.18
+            _r1_h, _r2_h = 0.40, 0.60
             fig = make_subplots(
                 rows=2, cols=2,
                 specs=[
                     [{"type": "domain"}, {"type": "xy"}],
                     [{"type": "xy", "colspan": 2}, None],
                 ],
-                row_heights=[0.45, 0.55],
-                vertical_spacing=0.08,
-                horizontal_spacing=0.08,
+                row_heights=[_r1_h, _r2_h],
+                vertical_spacing=_v_sp,
+                horizontal_spacing=_h_sp,
             )
-            px_h = figsize[1] * 96 if figsize else 900
+            px_h = figsize[1] * 96 if figsize else 1000
         elif show == "breakdown":
             fig = make_subplots(
                 rows=1, cols=2,
@@ -157,20 +160,23 @@ def plot_region_timing(
             seq_h_frac = 0.25
             bar_h_frac = max(0.15, 1.0 - seq_h_frac * n)
             row_heights = [bar_h_frac] + [seq_h_frac] * n
+            n_rows_both = 1 + n
+            v_spacing_both = min(0.06, 1.0 / (n_rows_both - 1)) if n_rows_both > 1 else 0.06
             fig = make_subplots(
-                rows=1 + n, cols=1,
+                rows=n_rows_both, cols=1,
                 row_heights=row_heights,
-                vertical_spacing=0.06,
+                vertical_spacing=v_spacing_both,
             )
             px_h = figsize[1] * 96 if figsize else (500 + 350 * n)
         elif show == "breakdown":
             fig = make_subplots(rows=1, cols=1)
             px_h = figsize[1] * 96 if figsize else 500
         else:
+            v_spacing_seq = min(0.06, 1.0 / (n - 1)) if n > 1 else 0.06
             fig = make_subplots(
                 rows=n, cols=1,
                 shared_xaxes=True,
-                vertical_spacing=0.06,
+                vertical_spacing=v_spacing_seq,
             )
             px_h = figsize[1] * 96 if figsize else 350 * n
 
@@ -215,10 +221,19 @@ def plot_region_timing(
                     ),
                     row=1, col=1,
                 )
-                _donut_y = 0.793 if show == "both" else 0.5
+                if show == "both":
+                    # Centre of col-1 / row-1 in paper coordinates, derived from
+                    # the make_subplots constants defined above.
+                    # Col-1 occupies x ∈ [0, (1-_h_sp)/2]; centre = (1-_h_sp)/4
+                    # Row-1 occupies y ∈ [_r2_h*(1-_v_sp)+_v_sp, 1.0]; centre = mid-point
+                    _ann_x = (1 - _h_sp) / 4
+                    _r1_bottom = _r2_h * (1 - _v_sp) + _v_sp
+                    _ann_y = (_r1_bottom + 1.0) / 2
+                else:
+                    _ann_x, _ann_y = 0.23, 0.5
                 fig.add_annotation(
                     text=f"μ = {total_wall0:.3g} s<br>per event",
-                    x=0.23, y=_donut_y,
+                    x=_ann_x, y=_ann_y,
                     xref="paper", yref="paper",
                     xanchor="center", yanchor="middle",
                     showarrow=False,
@@ -389,15 +404,7 @@ def plot_region_timing(
 
     # ------------------------------------------------------------------
     # Layout
-    # ------------------------------------------------------------------
-    base_title = "Per-Region Timing"
-    if n > 1:
-        base_title += " — Multi-Run Comparison"
-    suptitle = f"{base_title} — {det_title}" if det_title else base_title
-
     fig.update_layout(
-        title_text=suptitle,
-        title_font=dict(size=16, color="#222222"),
         template=_TEMPLATE,
         width=px_w,
         height=int(px_h),
@@ -407,7 +414,7 @@ def plot_region_timing(
             xanchor="left", x=1.01,
             font=dict(size=9),
         ),
-        margin=dict(l=20, r=160, t=80, b=40),
+        margin=dict(l=20, r=160, t=30, b=40),
     )
 
     return fig

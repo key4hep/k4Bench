@@ -16,7 +16,16 @@ def render(
         st.info("Select at least one run in the sidebar.")
         return
 
-    col_attr, col_topn, col_warmup = st.columns([2, 2, 1])
+    # Only offer labels that actually have region data so the user never
+    # selects a config that immediately triggers the "no data" warning.
+    filtered_labels = [lbl for lbl in selected_labels if lbl in region_data and region_data[lbl]]
+    if not filtered_labels:
+        st.info("No region timing data available for any of the selected configurations.")
+        return
+
+    col_cfg, col_attr, col_topn, col_warmup = st.columns([2, 2, 2, 1])
+    with col_cfg:
+        config = st.selectbox("Configuration", filtered_labels, key="region_config")
     with col_attr:
         attribution = st.radio(
             "Attribution",
@@ -32,7 +41,7 @@ def render(
 
     fig = plot_region_timing(
         region_data,
-        labels=selected_labels,
+        labels=[config],
         show="both",
         attribution=attribution,
         top_n=top_n,

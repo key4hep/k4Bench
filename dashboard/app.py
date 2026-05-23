@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 from config import Config
@@ -11,6 +12,7 @@ from data import (
     cached_load_results,
     cached_load_trend_results,
     collect_labels,
+    list_run_metadata,
 )
 from tabs import event_memory, event_timing, overview, region_timing, trends
 
@@ -39,7 +41,7 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Data Source")
-        if st.button("Refresh Data", use_container_width=True):
+        if st.button("Refresh Data", width='content'):
             st.cache_data.clear()
             st.rerun()
 
@@ -62,12 +64,43 @@ def main() -> None:
             except Exception as err:
                 st.error(f"Failed to download runs for detector {detector}: {err}")
                 return
-            # Use the most recent run for single-run tabs
-            run_dirs = sorted(Path(detector_dir).iterdir())
-            if not run_dirs:
+            run_meta = list_run_metadata(detector_dir)
+            if not run_meta:
                 st.warning(f"No runs found for detector '{detector}'.")
                 return
-            data_dir = str(run_dirs[-1])
+
+            # ── Platform selector ──────────────────────────────────────────
+            platforms = sorted({m["platform"] for m in run_meta if m["platform"]})
+            if not platforms:
+                st.warning("No valid platforms found in run metadata.")
+                return
+            selected_platform = st.selectbox("Platform", platforms)
+
+            # ── Release selector (filtered by platform, newest first) ──────
+            releases = sorted(
+                {m["k4h_release"] for m in run_meta
+                 if m["platform"] == selected_platform and m["k4h_release"]},
+                reverse=True,
+            )
+            if not releases:
+                st.warning(f"No releases found for platform '{selected_platform}'.")
+                return
+            selected_release = st.selectbox("Release", releases)
+
+            # Pick the most recent run dir matching (platform, release)
+            matching = [
+                m for m in run_meta
+                if m["platform"] == selected_platform
+                and m["k4h_release"] == selected_release
+            ]
+            matching.sort(key=lambda m: m["run_date"] if pd.notna(m["run_date"]) else pd.Timestamp.min)
+            if not matching:
+                st.warning(
+                    f"No runs found for platform '{selected_platform}' "
+                    f"and release '{selected_release}'. Try refreshing the data."
+                )
+                return
+            data_dir = matching[-1]["run_dir"]
         else:
             # ── Local mode: manual path ────────────────────────────────────
             data_dir = st.text_input("Data directory", value=config.data_dir)
@@ -100,8 +133,7 @@ def main() -> None:
                 else None
             )
 
-    det_name = Path(data_dir).name if data_dir else "DD4bench"
-    st.title(f"{det_name} — Benchmark Dashboard")
+    st.title("Benchmark Dashboard")
 
     if not available_labels:
         st.info(

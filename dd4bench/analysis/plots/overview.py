@@ -115,12 +115,16 @@ def plot_run_overview(
         else:
             subplot_titles.append(ylabel)
 
+    # Keep the inter-row gap fixed at ~80 px regardless of figure height.
+    fig_height = max(300, 45 * n_runs + 150) * nrows
+    v_spacing = (80 / fig_height) if nrows > 1 else 0.0
+
     fig = make_subplots(
         rows=nrows, cols=ncols,
         subplot_titles=subplot_titles,
         shared_yaxes=True,
         horizontal_spacing=0.12,
-        vertical_spacing=0.10,
+        vertical_spacing=v_spacing,
     )
 
     for idx, (col, _ylabel) in enumerate(metrics):
@@ -186,7 +190,7 @@ def plot_run_overview(
         title_text=title,
         title_font=dict(size=16, color="#222222"),
         template=_TEMPLATE,
-        height=max(400, 45 * n_runs + 220) * nrows // 2,
+        height=fig_height,
         bargap=0.35,
         showlegend=False,
         margin=dict(l=20, r=20, t=80, b=40),

@@ -22,7 +22,16 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
         st.info("Select at least one configuration in the sidebar.")
         return
 
-    df = trend_df[trend_df["label"].isin(selected_labels)].dropna(subset=["run_date"])
+    df = trend_df[trend_df["label"].isin(selected_labels)].copy()
+    df["k4h_release_date"] = pd.to_datetime(df["k4h_release_date"]).dt.normalize()
+    df["run_date"] = pd.to_datetime(df["run_date"]).dt.normalize()
+    # Use the release date as x-axis so multiple CI runs of the same release
+    # map to the same x-position.  Fall back to run_date for old runs that
+    # predate the k4h_release_date metadata field — better than dropping them.
+    df["x_date"] = df["k4h_release_date"].fillna(df["run_date"])
+    df = df.dropna(subset=["x_date"])
+    # Pre-format run_date as string for clean hover display.
+    df["run_date_str"] = df["run_date"].dt.strftime("%Y-%m-%d").fillna("unknown")
     if df.empty:
         st.warning("No trend data for the selected configurations.")
         return
@@ -38,18 +47,20 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
         cols=1,
         subplot_titles=[label for _, label in present_metrics],
         shared_xaxes=True,
-        vertical_spacing=0.08,
+        vertical_spacing=0.14,
     )
 
     for cfg_idx, cfg_label in enumerate(selected_labels):
-        cfg_df = df[df["label"] == cfg_label].sort_values("run_date")
+        cfg_df = df[df["label"] == cfg_label].sort_values("x_date")
         if cfg_df.empty:
             continue
         color = PALETTE[cfg_idx % len(PALETTE)]
+        # customdata columns: [run_date_str, k4h_release]
+        custom = cfg_df[["run_date_str", "k4h_release"]].values
         for row_idx, (col, metric_label) in enumerate(present_metrics):
             fig.add_trace(
                 go.Scatter(
-                    x=cfg_df["run_date"],
+                    x=cfg_df["x_date"],
                     y=cfg_df[col],
                     mode="lines+markers",
                     name=cfg_label,
@@ -57,26 +68,70 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
                     showlegend=(row_idx == 0),
                     line=dict(color=color, width=2),
                     marker=dict(size=6),
-                    customdata=cfg_df["k4h_release"],
+                    customdata=custom,
                     hovertemplate=(
                         f"<b>{cfg_label}</b><br>"
-                        "%{x|%Y-%m-%d}<br>"
+                        "Release: %{customdata[1]} (%{x|%Y-%m-%d})<br>"
                         f"{metric_label}: %{{y:.4g}}<br>"
-                        "Release: %{customdata}<extra></extra>"
+                        "CI run: %{customdata[0]}<extra></extra>"
                     ),
                 ),
                 row=row_idx + 1,
                 col=1,
             )
 
-    fig.update_layout(
-        title_text="Performance Trends Over Time",
-        title_font=dict(size=16, color="#222222"),
-        template=_TEMPLATE,
-        height=280 * n + 100,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        margin=dict(l=20, r=20, t=100, b=40),
-    )
-    fig.update_xaxes(tickformat="%Y-%m-%d", row=n, col=1)
+    # ── Legend sizing ──────────────────────────────────────────────────────
+    n_cfg = len(selected_labels)
+    # How many legend entries fit per row (generous: 3 wide)
+    legend_rows = max(1, -(-n_cfg // 3))
+    legend_px = 30 + legend_rows * 24   # px height of the legend block
 
-    st.plotly_chart(fig, use_container_width=True)
+    # ── Margins ────────────────────────────────────────────────────────────
+    t_margin = 40
+    # x-tick labels are rotated; allow 80 px below the bottom axis, then the
+    # legend, then a small buffer.
+    x_tick_gap_px = 80
+    b_margin = x_tick_gap_px + legend_px + 30
+    fig_height = 280 * n + t_margin + b_margin
+
+    # ── Legend y position in "paper" coords ────────────────────────────────
+    # paper y=0 is the bottom edge of the plot area; negative values are inside
+    # the bottom margin.  We want the top of the legend to start just below the
+    # x-tick labels, i.e. x_tick_gap_px into the margin.
+    plot_area_h = fig_height - t_margin - b_margin   # ≈ 280 * n
+    y_legend = -(x_tick_gap_px / plot_area_h)
+
+    fig.update_layout(
+        template=_TEMPLATE,
+        height=fig_height,
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=y_legend,
+            xanchor="center",
+            x=0.5,
+            tracegroupgap=4,
+        ),
+        margin=dict(l=20, r=20, t=t_margin, b=b_margin),
+    )
+
+    # ── X-axis: one tick per unique x-date, no repeats ─────────────────────
+    unique_dates = sorted(df["x_date"].dropna().unique())
+    tick_labels = [pd.Timestamp(d).strftime("%Y-%m-%d") for d in unique_dates]
+    fig.update_xaxes(
+        type="date",
+        tickmode="array",
+        tickvals=unique_dates,
+        ticktext=tick_labels,
+        tickangle=-30,
+    )
+    # Label the x-axis only on the bottom subplot (xaxis{n}) so it doesn't
+    # repeat on every shared panel.
+    fig.update_layout({f"xaxis{n}": {"title": {"text": "Key4hep Release Date"}}})
+
+    st.caption(
+        "X-axis: Key4hep release date (the date embedded in the release tag, "
+        "e.g. `key4hep-2026-05-19`). Multiple CI runs of the same release share "
+        "one x-position. Hover over a point to see the exact CI run date."
+    )
+    st.plotly_chart(fig, width='stretch')
