@@ -99,8 +99,12 @@ set -u
 [[ -n "${KEY4HEP_STACK:-}" ]] || { echo "ERROR: KEY4HEP_STACK not set after sourcing Key4hep setup" >&2; exit 1; }
 K4H_RELEASE="$(grep -oP '\d{4}-\d{2}-\d{2}' <<< "${KEY4HEP_STACK}" | head -1 || true)"
 [[ -n "${K4H_RELEASE}" ]] || { echo "ERROR: Failed to extract Key4hep release date from KEY4HEP_STACK" >&2; exit 1; }
-echo "Release: key4hep-${K4H_RELEASE}"
-echo "Stack  : ${KEY4HEP_STACK}"
+# Extract platform tag (path component right after the release date, e.g. x86_64-el9-gcc14-opt)
+K4H_PLATFORM="$(grep -oP '(?<=\d{4}-\d{2}-\d{2}\/)[^/:]+' <<< "${KEY4HEP_STACK}" | head -1 || true)"
+[[ -n "${K4H_PLATFORM}" ]] || { echo "WARNING: Could not extract platform from KEY4HEP_STACK; using 'unknown'" >&2; K4H_PLATFORM="unknown"; }
+echo "Release : key4hep-${K4H_RELEASE}"
+echo "Platform: ${K4H_PLATFORM}"
+echo "Stack   : ${KEY4HEP_STACK}"
 echo "::endgroup::"
 
 # ── 4. Install dd4bench ───────────────────────────────────────────────────────
@@ -154,7 +158,7 @@ echo "::endgroup::"
 # ── 7. Write run metadata ─────────────────────────────────────────────────────
 echo "::group::7. Write run metadata"
 DATE=$(date +%Y-%m-%d)
-RUN_LABEL="${DATE}_key4hep-${K4H_RELEASE}"
+RUN_LABEL="${DATE}_${K4H_PLATFORM}_key4hep-${K4H_RELEASE}"
 
 CONFIGS_JSON=$(
     find "logs/${DETECTOR}" -maxdepth 1 -name '*_results.csv' -print0 2>/dev/null \
@@ -166,10 +170,12 @@ python3 - <<PYEOF
 import json, os
 
 run_info = {
-    "date":            "${DATE}",
-    "detector":        "${DETECTOR}",
-    "key4hep_release": "key4hep-${K4H_RELEASE}",
-    "github_run_id":   os.environ["GITHUB_RUN_ID"],
+    "date":              "${DATE}",
+    "platform":          "${K4H_PLATFORM}",
+    "k4h_release":       "key4hep-${K4H_RELEASE}",
+    "k4h_release_date":  "${K4H_RELEASE}",
+    "detector":          "${DETECTOR}",
+    "github_run_id":     os.environ["GITHUB_RUN_ID"],
     "github_run_url":  (
         f"{os.environ['GITHUB_SERVER_URL']}"
         f"/{os.environ['GITHUB_REPOSITORY']}"

@@ -16,7 +16,9 @@ def render(
         st.info("Select at least one run in the sidebar.")
         return
 
-    col_attr, col_topn, col_warmup = st.columns([2, 2, 1])
+    col_cfg, col_attr, col_topn, col_warmup = st.columns([2, 2, 2, 1])
+    with col_cfg:
+        config = st.selectbox("Configuration", selected_labels, key="region_config")
     with col_attr:
         attribution = st.radio(
             "Attribution",
@@ -30,9 +32,13 @@ def render(
     with col_warmup:
         exclude_warmup = st.toggle("Exclude event 0 (warmup)", value=True, key="region_warmup")
 
+    if config not in region_data:
+        st.warning(f"No region timing data available for '{config}'.")
+        return
+
     fig = plot_region_timing(
         region_data,
-        labels=selected_labels,
+        labels=[config],
         show="both",
         attribution=attribution,
         top_n=top_n,

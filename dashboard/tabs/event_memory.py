@@ -23,9 +23,13 @@ def render(
         exclude_warmup = st.toggle("Exclude event 0 (warmup)", value=True, key="evt_memory_warmup")
     with col_topn:
         max_n = len(selected_labels)
+        # Reset the slider to show all configs whenever the selection size changes.
+        if st.session_state.get("_evt_memory_max_n") != max_n:
+            st.session_state["evt_memory_topn"] = min(5, max_n)
+            st.session_state["_evt_memory_max_n"] = max_n
         top_n = st.slider(
             "Top N runs by memory ratio",
-            min_value=2, max_value=max(2, max_n),
+            min_value=2, max_value=max(3, max_n),
             value=min(5, max_n),
             key="evt_memory_topn",
             disabled=(max_n <= 2),

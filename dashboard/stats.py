@@ -3,8 +3,6 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from dd4bench.analysis.plots import PALETTE as _PALETTE
-
 
 def build_event_stats_table(
     event_data: dict,
@@ -18,7 +16,7 @@ def build_event_stats_table(
     ordered_labels = [lbl for lbl in event_data if lbl in set(selected_labels)]
 
     rows = []
-    for palette_idx, lbl in enumerate(ordered_labels):
+    for lbl in ordered_labels:
         df = event_data[lbl]
         if exclude_warmup and "event_number" in df.columns:
             df = df[df["event_number"] != 0]
@@ -34,7 +32,6 @@ def build_event_stats_table(
         se_std = std / np.sqrt(2 * (n - 1)) if n > 1 else float("nan")
         rows.append({
             "Run": lbl,
-            "_palette_idx": palette_idx,
             "_mean": mean,
             f"Mean ({unit})": float(mean),
             f"SEM ({unit})": float(sem),
@@ -102,15 +99,4 @@ def style_stats_table(stats_df: pd.DataFrame) -> pd.io.formats.style.Styler:
     if "Ratio to baseline" in visible_cols:
         fmt["Ratio to baseline"] = "{:.3f}"
 
-    def _row_bg(row: pd.Series) -> list[str]:
-        idx = int(stats_df.loc[row.name, "_palette_idx"])
-        hex_c = _PALETTE[idx % len(_PALETTE)]
-        r, g, b = int(hex_c[1:3], 16), int(hex_c[3:5], 16), int(hex_c[5:7], 16)
-        return [f"background-color: rgba({r},{g},{b},0.12)"] * len(row)
-
-    return (
-        stats_df[visible_cols]
-        .style
-        .format(fmt)
-        .apply(_row_bg, axis=1)
-    )
+    return stats_df[visible_cols].style.format(fmt)
