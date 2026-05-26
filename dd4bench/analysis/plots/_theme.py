@@ -27,8 +27,20 @@ _UNACCOUNTED_COLOR = "#999999"
 _OTHER_COLOR       = "#d0d0d0"
 
 
-def _hex_to_rgba(hex_color: str, alpha: float) -> str:
-    """Convert a hex color string to an rgba() string."""
-    h = hex_color.lstrip("#")
+def _hex_to_rgba(color: str, alpha: float) -> str:
+    """Convert a hex or rgb() color string to an rgba() string."""
+    color = color.strip()
+    if color.startswith("rgba("):
+        # Already has alpha — replace it
+        inner = color[5:].rstrip(")")
+        parts = inner.rsplit(",", 1)
+        return f"rgba({parts[0]},{alpha})"
+    if color.startswith("rgb("):
+        inner = color[4:].rstrip(")")
+        return f"rgba({inner},{alpha})"
+    # Hex (#RRGGBB or #RGB)
+    h = color.lstrip("#")
+    if len(h) == 3:
+        h = h[0]*2 + h[1]*2 + h[2]*2
     r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     return f"rgba({r},{g},{b},{alpha})"

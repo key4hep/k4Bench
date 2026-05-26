@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from dd4bench.analysis.loader import load_event_timing, load_region_timing, load_results
+from dd4bench.analysis.loader import load_event_timing, load_region_timing, load_results  # noqa: F401 (re-exported)
 
 _log = logging.getLogger(__name__)
 
@@ -146,7 +146,8 @@ def cached_load_trend_results(sample_dir: str) -> pd.DataFrame | None:
         meta = _parse_run_dir(run_dir)
         try:
             df = load_results(run_dir)
-        except _EXPECTED_ERRORS:
+        except _EXPECTED_ERRORS as exc:
+            _log.debug("cached_load_trend_results: skipping '%s': %s", run_dir, exc)
             continue
         except Exception:
             _log.exception("cached_load_trend_results: error loading '%s'", run_dir)
@@ -159,7 +160,153 @@ def cached_load_trend_results(sample_dir: str) -> pd.DataFrame | None:
         frames.append(df)
     if not frames:
         return None
-    return pd.concat(frames, ignore_index=True)
+    combined = pd.concat(frames, ignore_index=True)
+    combined["run_date"]         = pd.to_datetime(combined["run_date"]).dt.normalize()
+    combined["k4h_release_date"] = pd.to_datetime(combined["k4h_release_date"]).dt.normalize()
+    combined["x_date"]           = combined["k4h_release_date"].fillna(combined["run_date"])
+    return combined
+
+
+@st.cache_data(show_spinner="Loading region timing trends...", ttl=3600)
+def cached_load_trend_region_timing(trends_dir: str) -> pd.DataFrame | None:
+    """Load per-region timing summary across all run-date subdirectories of *trends_dir*.
+
+    For each run directory, region timing is loaded for all available configs.
+    Per detector per config per run, the median and mean event-level time are
+    computed (event 0 excluded as warmup).
+
+    Returns a long-form DataFrame with columns:
+        run_date, k4h_release_date, label, attribution, detector,
+        median_time_s, mean_time_s
+    or ``None`` if no data could be loaded.
+    """
+    p = Path(trends_dir)
+    if not p.is_dir():
+        _log.warning("cached_load_trend_region_timing: directory not found: '%s'", trends_dir)
+        return None
+
+    rows: list[dict] = []
+    for run_dir in sorted(p.iterdir()):
+        if not run_dir.is_dir():
+            continue
+        meta = _parse_run_dir(run_dir)
+        try:
+            region_data = load_region_timing(run_dir)
+        except _EXPECTED_ERRORS as exc:
+            _log.debug("cached_load_trend_region_timing: skipping '%s': %s", run_dir, exc)
+            continue
+        except Exception:
+            _log.exception("cached_load_trend_region_timing: error loading '%s'", run_dir)
+            continue
+
+        for label, rdata in region_data.items():
+            for attribution in ("at_location", "by_birth"):
+                df_attr: pd.DataFrame = rdata.get(attribution)
+                if df_attr is None or df_attr.empty:
+                    continue
+                # Exclude event 0 (warmup) from the index
+                df_attr = df_attr[df_attr.index != 0]
+                if df_attr.empty:
+                    continue
+                for detector in df_attr.columns:
+                    vals = df_attr[detector].dropna().to_numpy()
+                    if len(vals) == 0:
+                        continue
+                    s = pd.Series(vals)
+                    n = len(vals)
+                    rows.append({
+                        "run_date":         meta["run_date"],
+                        "k4h_release_date": meta["k4h_release_date"],
+                        "k4h_release":      meta["k4h_release"],
+                        "label":            label,
+                        "attribution":      attribution,
+                        "detector":         detector,
+                        "n_events":         n,
+                        "median_time_s":    float(s.median()),
+                        "mean_time_s":      float(s.mean()),
+                        "std_time_s":       float(s.std()) if n > 1 else 0.0,
+                    })
+
+    if not rows:
+        return None
+    df = pd.DataFrame(rows)
+    df["run_date"]         = pd.to_datetime(df["run_date"]).dt.normalize()
+    df["k4h_release_date"] = pd.to_datetime(df["k4h_release_date"]).dt.normalize()
+    df["x_date"] = df["k4h_release_date"].fillna(df["run_date"])
+    return df
+
+
+@st.cache_data(show_spinner="Loading event timing trends...", ttl=3600)
+def cached_load_trend_event_timing(trends_dir: str) -> pd.DataFrame | None:
+    """Load per-event timing and memory summary across all run-date subdirectories.
+
+    For each run directory, event timing is loaded for all available configs.
+    Per config per run, summary statistics are computed (event 0 excluded):
+        mean_time_s, median_time_s, p95_time_s,
+        mean_rss_mb, median_rss_mb, p95_rss_mb, max_rss_mb
+
+    Returns a long-form DataFrame with those columns plus
+        run_date, k4h_release_date, k4h_release, label
+    or ``None`` if no data could be loaded.
+    """
+    p = Path(trends_dir)
+    if not p.is_dir():
+        _log.warning("cached_load_trend_event_timing: directory not found: '%s'", trends_dir)
+        return None
+
+    rows: list[dict] = []
+    for run_dir in sorted(p.iterdir()):
+        if not run_dir.is_dir():
+            continue
+        meta = _parse_run_dir(run_dir)
+        try:
+            event_data = load_event_timing(run_dir)
+        except _EXPECTED_ERRORS as exc:
+            _log.debug("cached_load_trend_event_timing: skipping '%s': %s", run_dir, exc)
+            continue
+        except Exception:
+            _log.exception("cached_load_trend_event_timing: error loading '%s'", run_dir)
+            continue
+
+        for label, df_ev in event_data.items():
+            # Exclude event 0 (warmup)
+            df_ev = df_ev[df_ev["event_number"] != 0]
+            if df_ev.empty:
+                continue
+            row: dict = {
+                "run_date":         meta["run_date"],
+                "k4h_release_date": meta["k4h_release_date"],
+                "k4h_release":      meta["k4h_release"],
+                "label":            label,
+            }
+            if "event_time_s" in df_ev.columns:
+                t = df_ev["event_time_s"].dropna()
+                nt = len(t)
+                if nt:
+                    row["n_events"]      = nt
+                    row["mean_time_s"]   = float(t.mean())
+                    row["median_time_s"] = float(t.median())
+                    row["p95_time_s"]    = float(t.quantile(0.95))
+                    row["std_time_s"]    = float(t.std()) if nt > 1 else 0.0
+            if "rss_end_mb" in df_ev.columns:
+                r = df_ev["rss_end_mb"].dropna()
+                nr = len(r)
+                if nr:
+                    row["n_events_rss"]  = nr
+                    row["mean_rss_mb"]   = float(r.mean())
+                    row["median_rss_mb"] = float(r.median())
+                    row["p95_rss_mb"]    = float(r.quantile(0.95))
+                    row["max_rss_mb"]    = float(r.max())
+                    row["std_rss_mb"]    = float(r.std()) if nr > 1 else 0.0
+            rows.append(row)
+
+    if not rows:
+        return None
+    df = pd.DataFrame(rows)
+    df["run_date"]         = pd.to_datetime(df["run_date"]).dt.normalize()
+    df["k4h_release_date"] = pd.to_datetime(df["k4h_release_date"]).dt.normalize()
+    df["x_date"] = df["k4h_release_date"].fillna(df["run_date"])
+    return df
 
 
 @st.cache_data(show_spinner=False, ttl=60)

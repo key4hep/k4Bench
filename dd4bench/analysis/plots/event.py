@@ -99,6 +99,7 @@ def _plot_event_metric(
     figsize: tuple[float, float] | None = None,
     outlier_threshold: float = 3.5,
     exclude_events: list[int] | None = None,
+    palette: list[str] | None = None,
 ) -> go.Figure:
     if show not in ("both", "distribution", "sequence"):
         raise ValueError(f"show must be 'both', 'distribution', or 'sequence', got {show!r}")
@@ -125,6 +126,7 @@ def _plot_event_metric(
 
     label_list = list(event_data.keys())
     n = len(label_list)
+    _pal = palette if palette is not None else _PALETTE
 
     filtered_data = {
         lbl: df[~df["event_number"].isin(exclude_events)]
@@ -184,11 +186,6 @@ def _plot_event_metric(
     for msg in pending_warnings:
         warnings.warn(msg, stacklevel=3)
 
-    clipping_note = ""
-    if total_clipped > 0:
-        frac = total_clipped / len(all_data)
-        clipping_note = f"{total_clipped} event(s) ({frac:.1%}) outside plotted range"
-
     ref_label = baseline_label if baseline_label is not None else _default_baseline(label_list)
     if n > 1 and ref_label not in arrays:
         raise ValueError(
@@ -206,11 +203,11 @@ def _plot_event_metric(
     # ------------------------------------------------------------------
     hist_alpha = alpha if n == 1 else min(alpha, 0.6)
     if dist_rc is not None:
-        for tr in _histogram_traces(hist_arrays, common_edges, label_list, hist_alpha, n > 1):
+        for tr in _histogram_traces(hist_arrays, common_edges, label_list, hist_alpha, n > 1, palette=_pal):
             fig.add_trace(tr, row=dist_rc[0], col=dist_rc[1])
 
         for i, lbl in enumerate(label_list):
-            color = _BLUE if n == 1 else _PALETTE[i % len(_PALETTE)]
+            color = _BLUE if n == 1 else _pal[i % len(_pal)]
             fig.add_vline(
                 x=float(arrays[lbl].mean()), line_dash="dash", line_color=color,
                 line_width=1.2, opacity=0.8, row=dist_rc[0], col=dist_rc[1],
@@ -232,18 +229,16 @@ def _plot_event_metric(
                 font=dict(size=11),
                 row=dist_rc[0], col=dist_rc[1],
             )
-            _xlabel = f"{xlabel}<br><sup>{clipping_note}</sup>" if clipping_note else xlabel
-            fig.update_xaxes(title_text=_xlabel, row=dist_rc[0], col=dist_rc[1])
+            fig.update_xaxes(title_text=xlabel, row=dist_rc[0], col=dist_rc[1])
         elif not show_ratio:
-            _xlabel = f"{xlabel}<br><sup>{clipping_note}</sup>" if clipping_note else xlabel
-            fig.update_xaxes(title_text=_xlabel, row=dist_rc[0], col=dist_rc[1])
+            fig.update_xaxes(title_text=xlabel, row=dist_rc[0], col=dist_rc[1])
 
     # ------------------------------------------------------------------
     # Sequence panel
     # ------------------------------------------------------------------
     if seq_rc is not None:
         for i, lbl in enumerate(label_list):
-            color = _BLUE if n == 1 else _PALETTE[i % len(_PALETTE)]
+            color = _BLUE if n == 1 else _pal[i % len(_pal)]
             df_lbl = filtered_data[lbl]
             fig.add_trace(
                 go.Scattergl(
@@ -278,7 +273,7 @@ def _plot_event_metric(
             if other_label == ref_label:
                 continue
             other_idx = label_list.index(other_label)
-            ratio_color = _PALETTE[other_idx % len(_PALETTE)]
+            ratio_color = _pal[other_idx % len(_pal)]
 
             other_counts, _ = np.histogram(hist_arrays[other_label], bins=common_edges)
             other_counts = other_counts.astype(float)
@@ -336,8 +331,7 @@ def _plot_event_metric(
                       opacity=0.5, row=ratio_dist_rc[0], col=ratio_dist_rc[1])
         fig.add_hline(y=1.0, line_dash="dash", line_color="black", line_width=1.0,
                       opacity=0.5, row=ratio_seq_rc[0], col=ratio_seq_rc[1])
-        _xlabel_r = f"{xlabel}<br><sup>{clipping_note}</sup>" if clipping_note else xlabel
-        fig.update_xaxes(title_text=_xlabel_r, row=ratio_dist_rc[0], col=ratio_dist_rc[1])
+        fig.update_xaxes(title_text=xlabel, row=ratio_dist_rc[0], col=ratio_dist_rc[1])
         fig.update_xaxes(title_text="Event number", row=ratio_seq_rc[0], col=ratio_seq_rc[1])
         ratio_ylabel = "Ratio (run/ref.)"
         fig.update_yaxes(title_text=ratio_ylabel, title_font=dict(size=10),
@@ -348,21 +342,40 @@ def _plot_event_metric(
     if n > 1:
         fig.update_layout(barmode="overlay")
 
-    # Top margin grows with the number of horizontal legend rows so they never
-    # overlap the plot.  Assumes ~170 px per legend item at the default width.
+    # ── Legend & margin layout ─────────────────────────────────────────────────
+    # For multi-config plots use a fixed-width column layout below the figure
+    # (4 entries per row, 220 px each) — the same style as the Historical Trends
+    # views.  For single-config plots there is no legend at all.
+    t_margin = 40
     if n > 1:
-        items_per_row = max(1, px_w // 170)
-        n_legend_rows = (n + items_per_row - 1) // items_per_row
-        t_margin = 40 + max(0, n_legend_rows - 1) * 24
+        n_legend_rows = max(1, -(-n // 4))       # ceiling(n / 4)
+        legend_px     = 24 + n_legend_rows * 32  # header + rows
+        x_tick_gap    = 60                        # room for x-axis tick labels
+        b_margin      = x_tick_gap + legend_px + 20
+        total_h       = total_h + b_margin - 10  # grow figure; replace old b=10
+        plot_h        = total_h - t_margin - b_margin
+        y_legend      = -(x_tick_gap / plot_h)
+        legend_dict   = dict(
+            orientation="h",
+            yanchor="top",
+            y=y_legend,
+            xanchor="center",
+            x=0.5,
+            entrywidth=220,
+            entrywidthmode="pixels",
+            tracegroupgap=0,
+            font=dict(size=13),
+        )
     else:
-        t_margin = 40
+        b_margin    = 10
+        legend_dict = {}
 
     fig.update_layout(
         template=_TEMPLATE,
         width=px_w,
         height=total_h,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        margin=dict(l=20, r=20, t=t_margin, b=10),
+        legend=legend_dict,
+        margin=dict(l=20, r=20, t=t_margin, b=b_margin),
     )
 
     return fig
@@ -383,6 +396,7 @@ def plot_event_timing(
     figsize: tuple[float, float] | None = None,
     outlier_threshold: float = 3.5,
     exclude_events: list[int] | None = None,
+    palette: list[str] | None = None,
 ) -> go.Figure:
     """Plot per-event timing distributions for one or more runs.
 
@@ -434,6 +448,7 @@ def plot_event_timing(
         figsize=figsize,
         outlier_threshold=outlier_threshold,
         exclude_events=exclude_events,
+        palette=palette,
     )
 
 
@@ -448,6 +463,7 @@ def plot_event_memory(
     figsize: tuple[float, float] | None = None,
     outlier_threshold: float = 3.5,
     exclude_events: list[int] | None = None,
+    palette: list[str] | None = None,
 ) -> go.Figure:
     """Plot per-event memory (RSS) distributions for one or more runs.
 
@@ -498,4 +514,5 @@ def plot_event_memory(
         figsize=figsize,
         outlier_threshold=outlier_threshold,
         exclude_events=exclude_events,
+        palette=palette,
     )
