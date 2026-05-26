@@ -19,11 +19,14 @@ Expected layout::
 
 from __future__ import annotations
 
+import logging
 import re
 import tempfile
 from pathlib import Path
 
 import requests
+
+_log = logging.getLogger(__name__)
 
 _DIR_LINK_RE = re.compile(r'href="([^"/][^"]*/?)"', re.IGNORECASE)
 _TIMEOUT = 15
@@ -118,8 +121,12 @@ def download_all_stacks_for_sample(
         )
         try:
             runs = _list_subdirs(stack_sample_url)
-        except Exception:
-            continue  # sample may not exist for every stack — skip silently
+        except requests.RequestException as exc:
+            _log.debug(
+                "download_all_stacks_for_sample: skipping %s — %s",
+                stack_sample_url, exc,
+            )
+            continue  # sample may not exist for every stack
         for run in runs:
             run_dir = dest / f"{stack}__{run}"
             run_dir.mkdir(exist_ok=True)

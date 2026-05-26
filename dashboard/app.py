@@ -162,7 +162,7 @@ def main() -> None:
 
             run_meta = list_run_metadata(sample_dir)
             if not run_meta:
-                st.warning(f"No runs found for the selected combination.")
+                st.warning("No runs found for the selected combination.")
                 return
 
             # Pick the most recent run date

@@ -121,12 +121,14 @@ def render(machine_info: dict | None, run_meta: dict | None = None) -> None:
                  delta=(l5_end - l5_start) if (l5_end is not None and l5_start is not None) else None,
                  help_text="5-minute load average after benchmark.")
 
-    # Warn if the runner was under significant load, which could skew results
-    if l1_start is not None and n_cores and (l1_start / n_cores) > 0.5:
+    # Warn if the runner was saturated at benchmark start.
+    # Load average ≥ n_cores means the run queue was full — a reliable signal
+    # that competing processes could skew timing results.
+    if l1_start is not None and n_cores and l1_start >= n_cores:
         st.warning(
-            f"⚠️ High system load at benchmark start "
-            f"({l1_start:.2f} / {n_cores} cores = {l1_start/n_cores*100:.0f}%). "
-            "Timing results may be affected by competing workloads."
+            f"⚠️ System was saturated at benchmark start "
+            f"(1-min load avg {l1_start:.2f} ≥ {n_cores} logical cores). "
+            "Timing results may be affected by competing workloads on this runner."
         )
 
     st.divider()

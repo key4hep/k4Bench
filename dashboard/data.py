@@ -64,6 +64,20 @@ def _parse_run_dir(run_dir: Path) -> dict:
     Prefers ``run_info.json`` when present; falls back to inferring fields
     from the directory path.
     """
+    def _unknown_meta(run_dir: Path) -> dict:
+        """Return a minimal metadata dict when no structured info is available."""
+        return {
+            "run_dir":          str(run_dir),
+            "run_date":         pd.to_datetime(run_dir.name[:10], errors="coerce"),
+            "platform":         "unknown",
+            "k4h_release":      "unknown",
+            "k4h_release_date": pd.NaT,
+            "sample":           "unknown",
+            "github_run_url":   None,
+            "commit_sha":       None,
+            "n_events":         None,
+        }
+
     info_path = run_dir / "run_info.json"
     if info_path.exists():
         try:
@@ -85,45 +99,29 @@ def _parse_run_dir(run_dir: Path) -> dict:
                 "commit_sha":       info.get("commit_sha"),
                 "n_events":         info.get("n_events"),
             }
-        except Exception:
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
             _log.warning("_parse_run_dir: could not read run_info.json in '%s'", run_dir)
+            # Do NOT fall through to path-based parsing: in the temp download
+            # directories created by remote.py the parent path components are
+            # meaningless tmp names, not the EOS hierarchy.
+            return _unknown_meta(run_dir)
 
-    # ── Fallback: infer from path structure ───────────────────────────────────
-    # Expected: .../detector/platform/stack/sample/YYYY-MM-DD
-    parts = run_dir.parts
-    run_date = pd.to_datetime(run_dir.name, errors="coerce", format="%Y-%m-%d")
-
-    # Walk up: [-1]=date, [-2]=sample, [-3]=stack, [-4]=platform, [-5]=detector
-    try:
-        k4h_release = parts[-3] if len(parts) >= 3 else "unknown"
-        k4h_release_date_raw = re.search(r"\d{4}-\d{2}-\d{2}", k4h_release)
-        k4h_release_date = (
-            pd.to_datetime(k4h_release_date_raw.group(), errors="coerce")
-            if k4h_release_date_raw else pd.NaT
-        )
-        platform = parts[-4] if len(parts) >= 4 else "unknown"
-        sample   = parts[-2] if len(parts) >= 2 else "unknown"
-    except Exception:
-        k4h_release = k4h_release_date = platform = sample = "unknown"  # type: ignore[assignment]
-
-    return {
-        "run_dir":          str(run_dir),
-        "run_date":         run_date,
-        "platform":         platform,
-        "k4h_release":      k4h_release,
-        "k4h_release_date": k4h_release_date,
-        "sample":           sample,
-        "github_run_url":   None,
-        "commit_sha":       None,
-        "n_events":         None,
-    }
+    # run_info.json absent — infer only the run date from the directory name.
+    # Path-component parsing is intentionally omitted: run dirs live inside
+    # temp directories whose parent paths carry no semantic meaning.
+    _log.warning("_parse_run_dir: run_info.json missing in '%s'", run_dir)
+    return _unknown_meta(run_dir)
 
 
 @st.cache_data(show_spinner=False, ttl=60)
 def list_run_metadata(sample_dir: str) -> list[dict]:
     """Return metadata dicts for every run (date) subdirectory of *sample_dir*."""
+    p = Path(sample_dir)
+    if not p.is_dir():
+        _log.warning("list_run_metadata: directory not found: '%s'", sample_dir)
+        return []
     meta = []
-    for run_dir in sorted(Path(sample_dir).iterdir()):
+    for run_dir in sorted(p.iterdir()):
         if run_dir.is_dir():
             meta.append(_parse_run_dir(run_dir))
     return meta
@@ -137,8 +135,12 @@ def cached_load_trend_results(sample_dir: str) -> pd.DataFrame | None:
     Each row gets ``run_id``, ``run_date``, ``platform``, ``k4h_release``, and
     ``k4h_release_date`` columns.
     """
+    p = Path(sample_dir)
+    if not p.is_dir():
+        _log.warning("cached_load_trend_results: directory not found: '%s'", sample_dir)
+        return None
     frames = []
-    for run_dir in sorted(Path(sample_dir).iterdir()):
+    for run_dir in sorted(p.iterdir()):
         if not run_dir.is_dir():
             continue
         meta = _parse_run_dir(run_dir)
@@ -169,7 +171,7 @@ def load_machine_info(run_dir: str) -> dict | None:
     try:
         with open(path) as fh:
             return json.load(fh)
-    except Exception:
+    except (OSError, json.JSONDecodeError):
         _log.warning("load_machine_info: could not read '%s'", path)
         return None
 

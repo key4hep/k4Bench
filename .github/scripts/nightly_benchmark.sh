@@ -166,11 +166,25 @@ def _read(path, default=''):
 detector = sys.argv[1]
 
 # CPU
-cpuinfo      = _read('/proc/cpuinfo')
-cpu_model    = next((l.split(':',1)[1].strip() for l in cpuinfo.splitlines() if 'model name' in l), 'unknown')
-cpu_logical  = cpuinfo.count('processor\t:')
-phys_ids     = {l.split(':',1)[1].strip() for l in cpuinfo.splitlines() if 'physical id' in l}
-cpu_physical = len(phys_ids) if phys_ids else cpu_logical
+cpuinfo   = _read('/proc/cpuinfo')
+cpu_model = next((l.split(':',1)[1].strip() for l in cpuinfo.splitlines() if 'model name' in l), 'unknown')
+cpu_logical = cpuinfo.count('processor\t:')
+# Count unique (physical_id, core_id) pairs — more accurate than socket count alone.
+# Falls back to logical count on systems where these fields are absent (VMs, containers).
+phys_core_pairs: set = set()
+current: dict = {}
+for line in cpuinfo.splitlines():
+    if not line.strip():
+        if 'processor' in current:
+            phys_core_pairs.add((
+                current.get('physical id', '0'),
+                current.get('core id', current.get('processor', '0')),
+            ))
+        current = {}
+    elif ':' in line:
+        k, _, v = line.partition(':')
+        current[k.strip()] = v.strip()
+cpu_physical = len(phys_core_pairs) if phys_core_pairs else cpu_logical
 cpu_flags    = next((l.split(':',1)[1].strip().split() for l in cpuinfo.splitlines() if l.startswith('flags')), [])
 
 # Memory
@@ -286,9 +300,13 @@ def _read(path, default=''):
     except Exception: return default
 
 start_path = f"logs/{detector}/_machine_info_start.json"
-with open(start_path) as fh:
-    machine_info = json.load(fh)
-os.remove(start_path)
+if os.path.exists(start_path):
+    with open(start_path) as fh:
+        machine_info = json.load(fh)
+    os.remove(start_path)
+else:
+    print(f"WARNING: {start_path} not found — machine info start snapshot missing", flush=True)
+    machine_info = {}
 
 meminfo = _read('/proc/meminfo')
 mem = {}
