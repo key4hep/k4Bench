@@ -214,8 +214,9 @@ def main() -> None:
     st.title("Benchmark Dashboard")
 
     if not available_labels:
+        path_hint = f" in **{data_dir}**" if data_dir else ""
         st.info(
-            f"No benchmark results found in **{data_dir}**. "
+            f"No benchmark results found{path_hint}. "
             "Set the `DD4BENCH_DATA_DIR` environment variable or update the path in the sidebar."
         )
         return

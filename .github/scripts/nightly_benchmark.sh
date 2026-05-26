@@ -152,6 +152,10 @@ echo "Detector : ${DETECTOR}"
 echo "XML      : ${DETECTOR_XML}"
 echo "::endgroup::"
 
+# Capture the date once here so run_info.json and the EOS upload path always agree,
+# even if the benchmark runs across a midnight boundary.
+DATE=$(date +%Y-%m-%d)
+
 # ── 6. Collect machine info (start snapshot, before benchmark) ────────────────
 echo "::group::6. Collect machine info (start)"
 mkdir -p "logs/${DETECTOR}"
@@ -250,8 +254,6 @@ echo "::endgroup::"
 
 # ── 8. Write run_info.json + finalise machine_info.json ───────────────────────
 echo "::group::8. Write run metadata"
-DATE=$(date +%Y-%m-%d)
-
 CONFIGS_JSON=$(
     find "logs/${DETECTOR}" -maxdepth 1 -name '*_results.csv' -print0 2>/dev/null \
     | xargs -0 -r -I{} basename {} _results.csv \
@@ -341,7 +343,6 @@ voms-proxy-init \
 unset X509_USER_CERT
 unset X509_USER_KEY
 
-DATE=$(date +%Y-%m-%d)
 # New EOS path: {detector}/{platform}/key4hep-{release}/{sample}/{date}
 EOS_RUN="${EOS_ROOT}/${DETECTOR}/${K4H_PLATFORM}/key4hep-${K4H_RELEASE}/${SAMPLE}/${DATE}"
 EOS_URL="root://${EOS_FQDN}/${EOS_RUN}"
