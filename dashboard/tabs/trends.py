@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import plotly.colors as _pc
 from plotly.colors import qualitative as _ql
 from plotly.subplots import make_subplots
 
@@ -10,16 +11,19 @@ from dd4bench.analysis.plots._theme import PALETTE, _TEMPLATE
 
 
 def _to_rgba(color: str, alpha: float) -> str:
-    """Convert a hex *or* rgb() colour string to an rgba() string."""
+    """Apply alpha to any Plotly colour string, returning rgba()."""
     color = color.strip()
-    if color.startswith("#"):
-        h = color.lstrip("#")
-        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-    elif color.startswith("rgb("):
-        r, g, b = [int(x.strip()) for x in color[4:-1].split(",")]
-    else:
-        return color  # unknown format — pass through unchanged
-    return f"rgba({r},{g},{b},{alpha})"
+    if color.startswith("rgba("):
+        return color                                   # already has alpha
+    try:
+        r, g, b = (
+            _pc.hex_to_rgb(color)
+            if color.startswith("#")
+            else _pc.unlabel_rgb(color)                # handles rgb(...)
+        )
+        return f"rgba({r},{g},{b},{alpha})"
+    except Exception:
+        return color                                   # unknown format, pass through
 
 
 _METRICS = [
@@ -29,11 +33,22 @@ _METRICS = [
 ]
 
 _PALETTES = {
-    "Matplotlib": PALETTE,          # default — matches the rest of the dashboard
-    "Dark24":     _ql.Dark24,       # 24 distinct colours, good for many configs
-    "Vivid":      _ql.Vivid,        # high-contrast, punchy
-    "Safe":       _ql.Safe,         # colourblind-friendly
+    "Matplotlib": PALETTE,
+    "Plotly":     _ql.Plotly,
+    "D3":         _ql.D3,
+    "G10":        _ql.G10,
+    "Dark24":     _ql.Dark24,
+    "Light24":    _ql.Light24,
+    "Alphabet":   _ql.Alphabet,
+    "Safe":       _ql.Safe,
+    "Bold":       _ql.Bold,
 }
+
+# Secondary differentiators for when colour alone doesn't scale (15+ configs).
+# Dash and symbol cycle once per full palette sweep.
+_DASHES  = ["solid", "dash", "dot", "dashdot"]
+_SYMBOLS = ["circle", "square", "diamond", "cross",
+            "triangle-up", "star", "pentagon", "hexagon"]
 
 
 def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
@@ -45,23 +60,34 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
         return
 
     # ── Display controls ───────────────────────────────────────────────────────
-    ctrl_l, ctrl_r, _ = st.columns([1.2, 1.2, 2.6])
+    ctrl_l, ctrl_m, ctrl_r, ctrl_s = st.columns(4, vertical_alignment="bottom")
     with ctrl_l:
         palette_name = st.selectbox(
             "Colour palette",
             options=list(_PALETTES.keys()),
             index=0,
         )
-    with ctrl_r:
-        line_style = st.radio(
-            "Line style",
-            options=["Linear", "Spline"],
-            horizontal=True,
+    with ctrl_m:
+        style_cycling = st.selectbox(
+            "Style cycling",
+            options=["Colour only", "Colour + Dash", "Colour + Marker", "Colour + Dash + Marker"],
             index=0,
         )
+    with ctrl_r:
+        alpha = st.slider(
+            "Opacity",
+            min_value=0.1, max_value=1.0,
+            value=0.75, step=0.05,
+        )
+    with ctrl_s:
+        smooth = st.toggle("Smooth lines", value=False)
 
-    palette    = _PALETTES[palette_name]
-    line_shape = "spline" if line_style == "Spline" else "linear"
+    palette      = _PALETTES[palette_name]
+    line_shape   = "spline" if smooth else "linear"
+    line_alpha   = alpha
+    marker_alpha = max(0.1, alpha - 0.2)
+    use_dash     = style_cycling in ("Colour + Dash",   "Colour + Dash + Marker")
+    use_marker   = style_cycling in ("Colour + Marker", "Colour + Dash + Marker")
 
     # ── Data prep ─────────────────────────────────────────────────────────────
     df = trend_df[trend_df["label"].isin(selected_labels)].copy()
@@ -70,7 +96,9 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
     df["x_date"] = df["k4h_release_date"].fillna(df["run_date"])
     df = df.dropna(subset=["x_date"])
     # When multiple CI runs share the same nightly tag, keep only the latest run.
-    df = df.sort_values("run_date").groupby(["label", "x_date"], as_index=False).last()
+    # idxmax skips NaN and doesn't rely on sort order, so the full row is always
+    # from the run with the highest (most recent) run_date.
+    df = df.loc[df.groupby(["label", "x_date"])["run_date"].idxmax()].reset_index(drop=True)
     df["run_date_str"] = df["run_date"].dt.strftime("%Y-%m-%d").fillna("unknown")
     if df.empty:
         st.warning("No trend data for the selected configurations.")
@@ -81,7 +109,7 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
         st.warning("No supported metrics found for the current dataframe.")
         return
 
-    unique_dates = sorted(df["x_date"].dropna().unique())
+    unique_dates = sorted(pd.to_datetime(df["x_date"].dropna().unique()))
     tick_labels  = [pd.Timestamp(d).strftime("%Y-%m-%d") for d in unique_dates]
     n = len(present_metrics)
 
@@ -97,9 +125,13 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
         cfg_df = df[df["label"] == cfg_label].sort_values("x_date")
         if cfg_df.empty:
             continue
-        color        = palette[cfg_idx % len(palette)]
-        line_color   = _to_rgba(color, 0.75)
-        marker_color = _to_rgba(color, 0.55)
+        n_colors     = len(palette)
+        cycle        = cfg_idx // n_colors      # how many full palette sweeps so far
+        color        = palette[cfg_idx % n_colors]
+        line_color   = _to_rgba(color, line_alpha)
+        marker_color = _to_rgba(color, marker_alpha)
+        dash         = _DASHES [cycle % len(_DASHES) ] if use_dash   else "solid"
+        symbol       = _SYMBOLS[cycle % len(_SYMBOLS)] if use_marker else "circle"
         custom = cfg_df[["run_date_str", "k4h_release"]].values
 
         for col_idx, (metric_col, metric_label) in enumerate(present_metrics):
@@ -111,8 +143,9 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
                     name=cfg_label,
                     legendgroup=cfg_label,
                     showlegend=(col_idx == 0),
-                    line=dict(color=line_color, width=2, shape=line_shape),
-                    marker=dict(size=7, color=marker_color, line=dict(color=color, width=1.5)),
+                    line=dict(color=line_color, width=2, shape=line_shape, dash=dash),
+                    marker=dict(size=7, color=marker_color, symbol=symbol,
+                                line=dict(color=color, width=1.5)),
                     customdata=custom,
                     hovertemplate=(
                         f"<b>{cfg_label}</b><br>"
@@ -145,7 +178,8 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
     x_tick_gap  = 140
     b_margin    = x_tick_gap + legend_px + 20
     fig_height  = 380 + t_margin + b_margin
-    y_legend    = -(x_tick_gap / 380)
+    plot_h      = fig_height - t_margin - b_margin   # actual chart area height
+    y_legend    = -(x_tick_gap / plot_h)
 
     fig.update_layout(
         template=_TEMPLATE,
