@@ -14,13 +14,15 @@ def _histogram_traces(
     label_list: list[str],
     alpha: float,
     show_legend: bool,
+    palette: list[str] | None = None,
 ) -> list[go.Bar]:
     """Return one histogram Bar trace per label using shared bin edges."""
     centers = 0.5 * (common_edges[:-1] + common_edges[1:])
     widths  = common_edges[1:] - common_edges[:-1]
+    _pal    = palette if palette is not None else _PALETTE
     traces = []
     for i, lbl in enumerate(label_list):
-        color = _BLUE if len(label_list) == 1 else _PALETTE[i % len(_PALETTE)]
+        color = _BLUE if len(label_list) == 1 else _pal[i % len(_pal)]
         counts, _ = np.histogram(arrays[lbl], bins=common_edges)
         traces.append(go.Bar(
             x=centers,

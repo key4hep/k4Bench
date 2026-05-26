@@ -29,6 +29,8 @@ def plot_region_timing(
     top_n: int = 8,
     figsize: tuple[float, float] | None = None,
     exclude_events: list[int] | None = None,
+    palette: list[str] | None = None,
+    alpha: float = 0.85,
 ) -> go.Figure:
     """Plot per-detector timing breakdown and/or per-event sequence for one or more runs.
 
@@ -74,6 +76,7 @@ def plot_region_timing(
 
     label_list = list(region_data.keys())
     n = len(label_list)
+    _pal = palette if palette is not None else _PALETTE
 
     # ------------------------------------------------------------------
     # Filter events and align DataFrames
@@ -114,7 +117,7 @@ def plot_region_timing(
     needs_other = len(all_dets_sorted) > top_n
     det_display = top_dets + (["Other"] if needs_other else [])
     det_colors: dict[str, str] = {
-        det: _PALETTE[i % len(_PALETTE)] for i, det in enumerate(top_dets)
+        det: _pal[i % len(_pal)] for i, det in enumerate(top_dets)
     }
     if "Other" in det_display:
         det_colors["Other"] = _OTHER_COLOR
@@ -306,8 +309,8 @@ def plot_region_timing(
                         y=all_bar_dets, x=run_vals,
                         orientation="h",
                         name=lbl,
-                        marker_color=_PALETTE[run_i % len(_PALETTE)],
-                        opacity=0.85,
+                        marker_color=_pal[run_i % len(_pal)],
+                        opacity=alpha,
                         marker_line_width=0,
                         hovertemplate=f"<b>{lbl}</b><br>%{{y}}: %{{x:.3g}} s<extra></extra>",
                     ),
@@ -355,7 +358,7 @@ def plot_region_timing(
                         name=det,
                         mode="lines",
                         line=dict(width=0, color=color),
-                        fillcolor=_hex_to_rgba(color, 0.85),
+                        fillcolor=_hex_to_rgba(color, alpha),
                         fill="tonexty",
                         stackgroup=f"stack_{lbl}",
                         legendgroup=det,
@@ -371,7 +374,7 @@ def plot_region_timing(
                     name="Unaccounted",
                     mode="lines",
                     line=dict(width=0, color=_UNACCOUNTED_COLOR),
-                    fillcolor=_hex_to_rgba(_UNACCOUNTED_COLOR, 0.85),
+                    fillcolor=_hex_to_rgba(_UNACCOUNTED_COLOR, alpha),
                     fill="tonexty",
                     stackgroup=f"stack_{lbl}",
                     legendgroup="Unaccounted",

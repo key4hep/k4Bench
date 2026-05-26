@@ -11,11 +11,13 @@ from data import (
     cached_load_region_timing,
     cached_load_results,
     cached_load_trend_results,
+    cached_load_trend_region_timing,
+    cached_load_trend_event_timing,
     collect_labels,
     list_run_metadata,
     load_machine_info,
 )
-from tabs import event_memory, event_timing, machine_info, overview, region_timing, trends
+from tabs import event_memory, event_timing, impact, machine_info, region_timing, trends
 
 
 # ── Cached remote helpers ─────────────────────────────────────────────────────
@@ -70,14 +72,13 @@ def main() -> None:
     config = Config.from_env()
 
     # ``trends_dir``  — flat temp dir with ALL stacks' runs for this (detector, platform, sample).
-    #                   Used exclusively by the Trends tab.
+    #                   Used by the Trends tab and the historical sub-views.
     # ``sample_dir``  — temp dir with runs for the selected (detector, platform, stack, sample).
     #                   Used to pick the most recent run for single-run tabs.
     # ``data_dir``    — path to the selected date-level run dir (single-run tabs).
-    trends_dir: str | None = None
-    sample_dir: str | None = None
-    data_dir:   str | None = None
-    # Metadata for the selected run (used by Machine Info tab)
+    trends_dir: str | None         = None
+    sample_dir: str | None         = None
+    data_dir:   str | None         = None
     selected_run_meta: dict | None = None
 
     with st.sidebar:
@@ -126,6 +127,7 @@ def main() -> None:
                 st.warning(f"No stacks found for '{detector} / {platform}'.")
                 return
             stack = st.selectbox("Stack", stacks)
+            st.caption("Used by single-run tabs. Trends shows all stacks.")
             if not stack:
                 return
 
@@ -151,7 +153,7 @@ def main() -> None:
                 st.error(f"Failed to download runs: {err}")
                 return
 
-            # Download runs across ALL stacks for this sample (Trends tab)
+            # Download runs across ALL stacks for this sample (Trends + historical views)
             try:
                 trends_dir = _cached_download_all_stacks(
                     config.data_url, detector, platform, sample
@@ -177,7 +179,7 @@ def main() -> None:
             # ── Local mode ─────────────────────────────────────────────────────
             data_dir = st.text_input("Data directory", value=config.data_dir)
 
-        # ── Validate data_dir & load data ──────────────────────────────────────
+        # ── Validate data_dir & load single-run data ───────────────────────────
         _data_path  = Path(data_dir) if data_dir else None
         _path_valid = bool(_data_path and _data_path.exists() and _data_path.is_dir())
 
@@ -197,18 +199,13 @@ def main() -> None:
         if _path_valid and not available_labels:
             st.warning("No benchmark data found in the specified directory.")
 
+        # ── Filters ────────────────────────────────────────────────────────────
         if not available_labels:
             selected_labels: list[str] = []
-            baseline_label: str | None = None
         else:
             st.header("Filters")
             selected_labels = st.multiselect(
                 "Configurations", available_labels, default=available_labels
-            )
-            baseline_label = (
-                st.selectbox("Baseline", options=selected_labels, index=0)
-                if selected_labels
-                else None
             )
 
     st.title("Benchmark Dashboard")
@@ -221,11 +218,20 @@ def main() -> None:
         )
         return
 
+    # ── Load trend data (remote only) ─────────────────────────────────────────
+    trend_results_df = None
+    trend_region_df  = None
+    trend_event_df   = None
+    if trends_dir is not None:
+        trend_results_df = cached_load_trend_results(trends_dir)
+        trend_region_df  = cached_load_trend_region_timing(trends_dir)
+        trend_event_df   = cached_load_trend_event_timing(trends_dir)
+
     # ── Build tab list ─────────────────────────────────────────────────────────
-    tab_names = ["Trends", "Region Timing", "Run Overview", "Event Timing", "Event Memory", "Machine Info"]
+    tab_names = ["Run Trends", "Config Impact", "Region Timing", "Event Timing", "Event Memory", "Machine Info"]
     if trends_dir is None:
-        # Trends only makes sense with multi-run (remote) data
-        tab_names = tab_names[1:]
+        # Trends / Impact only make sense with multi-run (remote) data
+        tab_names = tab_names[2:]
 
     tabs = st.tabs(tab_names)
     tab_idx = 0
@@ -233,28 +239,26 @@ def main() -> None:
     # Trends (remote only) — uses all stacks so history is complete
     if trends_dir is not None:
         with tabs[tab_idx]:
-            trend_data = cached_load_trend_results(trends_dir)
-            trends.render(trend_data, selected_labels)
+            trends.render(trend_results_df, selected_labels)
+        tab_idx += 1
+
+        with tabs[tab_idx]:
+            impact.render(trend_results_df, selected_labels)
         tab_idx += 1
 
     # Region Timing
     with tabs[tab_idx]:
-        region_timing.render(region_data, selected_labels)
-    tab_idx += 1
-
-    # Run Overview
-    with tabs[tab_idx]:
-        overview.render(results, selected_labels, baseline_label)
+        region_timing.render(region_data, trend_region_df, selected_labels)
     tab_idx += 1
 
     # Event Timing
     with tabs[tab_idx]:
-        event_timing.render(event_data, selected_labels, baseline_label)
+        event_timing.render(event_data, trend_event_df, selected_labels)
     tab_idx += 1
 
     # Event Memory
     with tabs[tab_idx]:
-        event_memory.render(event_data, selected_labels, baseline_label)
+        event_memory.render(event_data, trend_event_df, selected_labels)
     tab_idx += 1
 
     # Machine Info
