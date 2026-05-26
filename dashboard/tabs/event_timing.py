@@ -34,7 +34,6 @@ def render(
         top_n = st.slider(
             "Top N runs by timing ratio",
             min_value=min_n, max_value=max(min_n, max_n),
-            value=min(5, max_n),
             key="evt_timing_topn",
             disabled=(max_n <= 2),
         )

@@ -1,6 +1,10 @@
 # Detector geometry XML, relative to $K4GEO (or an absolute path)
 xml: FCCee/ALLEGRO/compact/ALLEGRO_o1_v03/ALLEGRO_o1_v03.xml
 
+# Physics sample name — used as a directory level in EOS storage.
+# Use a short, filesystem-safe slug that describes the simulated process.
+sample: single_e-_10GeV
+
 # Arguments passed verbatim to ddsim
 ddsim_args: >-
   --enableGun

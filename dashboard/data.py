@@ -55,25 +55,35 @@ def cached_load_region_timing(data_dir: str) -> dict | None:
 
 
 def _parse_run_dir(run_dir: Path) -> dict:
-    """Extract (run_date, platform, k4h_release, k4h_release_date) from a run directory.
+    """Extract run metadata from a date-level run directory.
 
-    Prefers ``run_info.json`` when present; falls back to parsing the directory
-    name for both the new format ``{date}_{platform}_key4hep-{release_date}``
-    and the old format ``{date}_key4hep-{release_date}``.
+    Expected path structure::
+
+        {detector}/{platform}/{stack}/{sample}/{YYYY-MM-DD}/
+
+    Prefers ``run_info.json`` when present; falls back to inferring fields
+    from the directory path.
     """
+    def _unknown_meta(run_dir: Path) -> dict:
+        """Return a minimal metadata dict when no structured info is available."""
+        return {
+            "run_dir":          str(run_dir),
+            "run_date":         pd.to_datetime(run_dir.name[:10], errors="coerce"),
+            "platform":         "unknown",
+            "k4h_release":      "unknown",
+            "k4h_release_date": pd.NaT,
+            "sample":           "unknown",
+            "github_run_url":   None,
+            "commit_sha":       None,
+            "n_events":         None,
+        }
+
     info_path = run_dir / "run_info.json"
     if info_path.exists():
         try:
             with open(info_path) as fh:
                 info = json.load(fh)
-            # Support both the new key "k4h_release" and the old key "key4hep_release".
-            k4h_release = (
-                info.get("k4h_release")
-                or info.get("key4hep_release")
-                or ""
-            )
-            # Derive k4h_release_date from the release tag when the explicit
-            # field is absent (old run_info.json format).
+            k4h_release = info.get("k4h_release") or ""
             k4h_release_date_raw = info.get("k4h_release_date")
             if not k4h_release_date_raw and k4h_release:
                 m = re.search(r"(\d{4}-\d{2}-\d{2})", k4h_release)
@@ -84,71 +94,53 @@ def _parse_run_dir(run_dir: Path) -> dict:
                 "platform":         info.get("platform", "unknown") or "unknown",
                 "k4h_release":      k4h_release,
                 "k4h_release_date": pd.to_datetime(k4h_release_date_raw, errors="coerce"),
+                "sample":           info.get("sample", "unknown") or "unknown",
+                "github_run_url":   info.get("github_run_url"),
+                "commit_sha":       info.get("commit_sha"),
+                "n_events":         info.get("n_events"),
             }
-        except Exception:
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
             _log.warning("_parse_run_dir: could not read run_info.json in '%s'", run_dir)
+            # Do NOT fall through to path-based parsing: in the temp download
+            # directories created by remote.py the parent path components are
+            # meaningless tmp names, not the EOS hierarchy.
+            return _unknown_meta(run_dir)
 
-    # ── Fallback: parse directory name ────────────────────────────────────
-    name = run_dir.name
-    # Both formats start with YYYY-MM-DD_
-    date_match = re.match(r"(\d{4}-\d{2}-\d{2})_(.*)", name)
-    if date_match:
-        run_date = pd.to_datetime(date_match.group(1), errors="coerce")
-        rest = date_match.group(2)
-    else:
-        run_date = pd.NaT
-        rest = name
-
-    k4h_match = re.search(r"key4hep-(\d{4}-\d{2}-\d{2})", rest)
-    if k4h_match:
-        k4h_release = f"key4hep-{k4h_match.group(1)}"
-        k4h_release_date = pd.to_datetime(k4h_match.group(1), errors="coerce")
-        platform_part = rest[: rest.index("key4hep-")].rstrip("_")
-        platform = platform_part if platform_part else "unknown"
-        if platform == "unknown":
-            _log.warning(
-                "_parse_run_dir: could not determine platform from dir name '%s'; defaulting to 'unknown'",
-                run_dir.name,
-            )
-    else:
-        k4h_release = rest
-        k4h_release_date = pd.NaT
-        platform = "unknown"
-        _log.warning(
-            "_parse_run_dir: could not parse key4hep release from dir name '%s'; "
-            "platform='unknown', k4h_release=%r",
-            run_dir.name,
-            k4h_release,
-        )
-
-    return {
-        "run_dir":          str(run_dir),
-        "run_date":         run_date,
-        "platform":         platform,
-        "k4h_release":      k4h_release,
-        "k4h_release_date": k4h_release_date,
-    }
+    # run_info.json absent — infer only the run date from the directory name.
+    # Path-component parsing is intentionally omitted: run dirs live inside
+    # temp directories whose parent paths carry no semantic meaning.
+    _log.warning("_parse_run_dir: run_info.json missing in '%s'", run_dir)
+    return _unknown_meta(run_dir)
 
 
 @st.cache_data(show_spinner=False, ttl=60)
-def list_run_metadata(detector_dir: str) -> list[dict]:
-    """Return metadata dicts for every run subdirectory, cheaply (no CSV loading)."""
+def list_run_metadata(sample_dir: str) -> list[dict]:
+    """Return metadata dicts for every run (date) subdirectory of *sample_dir*."""
+    p = Path(sample_dir)
+    if not p.is_dir():
+        _log.warning("list_run_metadata: directory not found: '%s'", sample_dir)
+        return []
     meta = []
-    for run_dir in sorted(Path(detector_dir).iterdir()):
+    for run_dir in sorted(p.iterdir()):
         if run_dir.is_dir():
             meta.append(_parse_run_dir(run_dir))
     return meta
 
 
 @st.cache_data(show_spinner="Loading trend data...", ttl=3600)
-def cached_load_trend_results(detector_dir: str) -> pd.DataFrame | None:
-    """Load results from all run subdirectories and return a combined DataFrame.
+def cached_load_trend_results(sample_dir: str) -> pd.DataFrame | None:
+    """Load results from all run-date subdirectories of *sample_dir* and return
+    a combined DataFrame for the Trends tab.
 
     Each row gets ``run_id``, ``run_date``, ``platform``, ``k4h_release``, and
-    ``k4h_release_date`` columns so the Trends tab can plot metrics over time.
+    ``k4h_release_date`` columns.
     """
+    p = Path(sample_dir)
+    if not p.is_dir():
+        _log.warning("cached_load_trend_results: directory not found: '%s'", sample_dir)
+        return None
     frames = []
-    for run_dir in sorted(Path(detector_dir).iterdir()):
+    for run_dir in sorted(p.iterdir()):
         if not run_dir.is_dir():
             continue
         meta = _parse_run_dir(run_dir)
@@ -168,6 +160,20 @@ def cached_load_trend_results(detector_dir: str) -> pd.DataFrame | None:
     if not frames:
         return None
     return pd.concat(frames, ignore_index=True)
+
+
+@st.cache_data(show_spinner=False, ttl=60)
+def load_machine_info(run_dir: str) -> dict | None:
+    """Load ``machine_info.json`` from a run directory, or return ``None`` if absent."""
+    path = Path(run_dir) / "machine_info.json"
+    if not path.exists():
+        return None
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        _log.warning("load_machine_info: could not read '%s'", path)
+        return None
 
 
 def collect_labels(

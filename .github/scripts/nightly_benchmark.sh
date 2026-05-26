@@ -7,11 +7,20 @@
 #   BENCHMARK_CONFIG  — config file stem, e.g. "ALLEGRO_o1_v03"
 #   X509_USER_CERT, X509_USER_KEY — EOS service certificate paths
 #   GITHUB_RUN_ID, GITHUB_SHA, GITHUB_REPOSITORY, GITHUB_SERVER_URL
+#
+# EOS layout written by this script:
+#   {EOS_ROOT}/{detector}/{platform}/key4hep-{release}/{sample}/{YYYY-MM-DD}/
+#     run_info.json
+#     machine_info.json
+#     {config}_results.csv
+#     {config}_events.json
+#     {config}_regions.json
+#     {config}.log
 
 set -euo pipefail
 
 # TODO: switch to eospublic once directory creation is allowed there (!d)
-# (See eos root://eospublic.cern.ch attr ls /eos/experiment/fcc/ee/dd4bench) 
+# (See eos root://eospublic.cern.ch attr ls /eos/experiment/fcc/ee/dd4bench)
 
 # EOS_FQDN="eospublic.cern.ch"
 # EOS_ROOT="/eos/experiment/fcc/ee/dd4bench"
@@ -67,6 +76,7 @@ elif val is not None:
 }
 
 XML_PATH=$(_cfg xml)
+SAMPLE=$(_cfg sample)
 DDSIM_ARGS=$(_cfg ddsim_args "")
 VERBOSE=$(_cfg verbose "false")
 SWEEP=$(_cfg sweep "false")
@@ -74,6 +84,9 @@ INCLUDE_ONLY=$(_cfg_list include_only)
 EXCLUDE_ONLY=$(_cfg_list exclude_only)
 N_EVENTS=$(_cfg n_events)
 [[ "${N_EVENTS}" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: 'n_events' must be a positive integer in ${CONFIG_FILE}"; exit 1; }
+[[ -n "${SAMPLE}" ]]                  || { echo "ERROR: 'sample' must be set in ${CONFIG_FILE}"; exit 1; }
+# Validate sample slug: filesystem-safe characters only
+[[ "${SAMPLE}" =~ ^[A-Za-z0-9_.+-]+$ ]] || { echo "ERROR: 'sample' must only contain [A-Za-z0-9_.-+] — got: '${SAMPLE}'"; exit 1; }
 
 # sweep / include_only / exclude_only are mutually exclusive
 SWEEP_MODES=0
@@ -83,6 +96,7 @@ SWEEP_MODES=0
 (( SWEEP_MODES <= 1 )) || { echo "ERROR: sweep, include_only, and exclude_only are mutually exclusive"; exit 1; }
 
 echo "  xml          : ${XML_PATH}"
+echo "  sample       : ${SAMPLE}"
 echo "  n_events     : ${N_EVENTS}"
 echo "  verbose      : ${VERBOSE}"
 echo "  sweep        : ${SWEEP}"
@@ -138,8 +152,91 @@ echo "Detector : ${DETECTOR}"
 echo "XML      : ${DETECTOR_XML}"
 echo "::endgroup::"
 
-# ── 6. Run benchmark ──────────────────────────────────────────────────────────
-echo "::group::6. Run benchmark"
+# Capture the date once here so run_info.json and the EOS upload path always agree,
+# even if the benchmark runs across a midnight boundary.
+DATE=$(date +%Y-%m-%d)
+
+# ── 6. Collect machine info (start snapshot, before benchmark) ────────────────
+echo "::group::6. Collect machine info (start)"
+mkdir -p "logs/${DETECTOR}"
+python3 - "${DETECTOR}" <<'PYEOF'
+import json, os, platform, sys
+
+def _read(path, default=''):
+    try:
+        with open(path) as f: return f.read()
+    except Exception: return default
+
+detector = sys.argv[1]
+
+# CPU
+cpuinfo   = _read('/proc/cpuinfo')
+cpu_model = next((l.split(':',1)[1].strip() for l in cpuinfo.splitlines() if 'model name' in l), 'unknown')
+cpu_logical = cpuinfo.count('processor\t:')
+# Count unique (physical_id, core_id) pairs — more accurate than socket count alone.
+# Falls back to logical count on systems where these fields are absent (VMs, containers).
+phys_core_pairs: set = set()
+current: dict = {}
+for line in cpuinfo.splitlines():
+    if not line.strip():
+        if 'processor' in current:
+            phys_core_pairs.add((
+                current.get('physical id', '0'),
+                current.get('core id', current.get('processor', '0')),
+            ))
+        current = {}
+    elif ':' in line:
+        k, _, v = line.partition(':')
+        current[k.strip()] = v.strip()
+cpu_physical = len(phys_core_pairs) if phys_core_pairs else cpu_logical
+cpu_flags    = next((l.split(':',1)[1].strip().split() for l in cpuinfo.splitlines() if l.startswith('flags')), [])
+
+# Memory
+meminfo = _read('/proc/meminfo')
+mem = {}
+for line in meminfo.splitlines():
+    p = line.split()
+    if len(p) >= 2:
+        try: mem[p[0].rstrip(':')] = int(p[1])
+        except ValueError: pass
+
+# Load average
+loadavg = _read('/proc/loadavg').split()
+
+# OS
+os_release = _read('/etc/os-release')
+os_name = next(
+    (l.split('=',1)[1].strip('"') for l in os_release.splitlines() if l.startswith('PRETTY_NAME=')),
+    'unknown',
+)
+
+info = {
+    "cpu_model":              cpu_model,
+    "cpu_physical_cores":     cpu_physical,
+    "cpu_logical_cores":      cpu_logical,
+    "cpu_flags":              cpu_flags[:30],
+    "ram_total_gb":           round(mem.get('MemTotal',    0) / 1024**2, 2),
+    "ram_available_gb_start": round(mem.get('MemAvailable',0) / 1024**2, 2),
+    "swap_total_gb":          round(mem.get('SwapTotal',   0) / 1024**2, 2),
+    "load_avg_1m_start":      float(loadavg[0]) if len(loadavg) > 0 else None,
+    "load_avg_5m_start":      float(loadavg[1]) if len(loadavg) > 1 else None,
+    "kernel":                 platform.release(),
+    "os":                     os_name,
+    "hostname":               os.uname().nodename,
+    "in_container":           os.path.exists('/.dockerenv'),
+}
+with open(f"logs/{detector}/_machine_info_start.json", "w") as f:
+    json.dump(info, f, indent=2)
+print(f"cpu_model        : {info['cpu_model']}")
+print(f"cpu_logical_cores: {info['cpu_logical_cores']}")
+print(f"ram_total_gb     : {info['ram_total_gb']:.2f} GB")
+print(f"ram_available    : {info['ram_available_gb_start']:.2f} GB")
+print(f"load_avg_1m      : {info['load_avg_1m_start']}")
+PYEOF
+echo "::endgroup::"
+
+# ── 7. Run benchmark ──────────────────────────────────────────────────────────
+echo "::group::7. Run benchmark"
 CMD=(dd4bench
     --xml        "${DETECTOR_XML}"
     --events     "${N_EVENTS}"
@@ -155,50 +252,89 @@ echo "$ ${CMD[*]}"
 "${CMD[@]}"
 echo "::endgroup::"
 
-# ── 7. Write run metadata ─────────────────────────────────────────────────────
-echo "::group::7. Write run metadata"
-DATE=$(date +%Y-%m-%d)
-RUN_LABEL="${DATE}_${K4H_PLATFORM}_key4hep-${K4H_RELEASE}"
-
+# ── 8. Write run_info.json + finalise machine_info.json ───────────────────────
+echo "::group::8. Write run metadata"
 CONFIGS_JSON=$(
     find "logs/${DETECTOR}" -maxdepth 1 -name '*_results.csv' -print0 2>/dev/null \
     | xargs -0 -r -I{} basename {} _results.csv \
     | python3 -c "import sys, json; print(json.dumps(sys.stdin.read().split()))"
 )
 
-python3 - <<PYEOF
-import json, os
+python3 - "${DETECTOR}" "${SAMPLE}" "${DATE}" "${K4H_PLATFORM}" "${K4H_RELEASE}" \
+          "${N_EVENTS}" "${SWEEP}" <<PYEOF
+import json, os, sys
 
+detector   = sys.argv[1]
+sample     = sys.argv[2]
+date       = sys.argv[3]
+platform   = sys.argv[4]
+k4h_rel    = sys.argv[5]
+n_events   = int(sys.argv[6])
+sweep      = sys.argv[7] == "true"
+
+# ── run_info.json ──────────────────────────────────────────────────────────
 run_info = {
-    "date":              "${DATE}",
-    "platform":          "${K4H_PLATFORM}",
-    "k4h_release":       "key4hep-${K4H_RELEASE}",
-    "k4h_release_date":  "${K4H_RELEASE}",
-    "detector":          "${DETECTOR}",
-    "github_run_id":     os.environ["GITHUB_RUN_ID"],
-    "github_run_url":  (
+    "date":             date,
+    "platform":         platform,
+    "k4h_release":      f"key4hep-{k4h_rel}",
+    "k4h_release_date": k4h_rel,
+    "detector":         detector,
+    "sample":           sample,
+    "github_run_id":    os.environ["GITHUB_RUN_ID"],
+    "github_run_url": (
         f"{os.environ['GITHUB_SERVER_URL']}"
         f"/{os.environ['GITHUB_REPOSITORY']}"
         f"/actions/runs/{os.environ['GITHUB_RUN_ID']}"
     ),
-    "commit_sha":      os.environ["GITHUB_SHA"],
-    "n_events":        int("${N_EVENTS}"),
-    "sweep":           "${SWEEP}" == "true",
-    "configs":         ${CONFIGS_JSON},
+    "commit_sha":       os.environ["GITHUB_SHA"],
+    "n_events":         n_events,
+    "sweep":            sweep,
+    "configs":          ${CONFIGS_JSON},
 }
-with open("logs/${DETECTOR}/run_info.json", "w") as f:
+with open(f"logs/{detector}/run_info.json", "w") as f:
     json.dump(run_info, f, indent=2)
-print("Written: logs/${DETECTOR}/run_info.json")
+print(f"Written: logs/{detector}/run_info.json")
+
+# ── machine_info.json: merge start snapshot + end-of-run dynamic fields ────
+def _read(path, default=''):
+    try:
+        with open(path) as fh: return fh.read()
+    except Exception: return default
+
+start_path = f"logs/{detector}/_machine_info_start.json"
+if os.path.exists(start_path):
+    with open(start_path) as fh:
+        machine_info = json.load(fh)
+    os.remove(start_path)
+else:
+    print(f"WARNING: {start_path} not found — machine info start snapshot missing", flush=True)
+    machine_info = {}
+
+meminfo = _read('/proc/meminfo')
+mem = {}
+for line in meminfo.splitlines():
+    p = line.split()
+    if len(p) >= 2:
+        try: mem[p[0].rstrip(':')] = int(p[1])
+        except ValueError: pass
+loadavg = _read('/proc/loadavg').split()
+
+machine_info["ram_available_gb_end"] = round(mem.get('MemAvailable', 0) / 1024**2, 2)
+machine_info["load_avg_1m_end"]      = float(loadavg[0]) if len(loadavg) > 0 else None
+machine_info["load_avg_5m_end"]      = float(loadavg[1]) if len(loadavg) > 1 else None
+
+with open(f"logs/{detector}/machine_info.json", "w") as fh:
+    json.dump(machine_info, fh, indent=2)
+print(f"Written: logs/{detector}/machine_info.json")
 PYEOF
 echo "::endgroup::"
 
-# ── 8. Upload to EOS ──────────────────────────────────────────────────────────
-echo "::group::8. Upload to EOS"
+# ── 9. Upload to EOS ──────────────────────────────────────────────────────────
+echo "::group::9. Upload to EOS"
 export X509_CERT_DIR=/cvmfs/grid.cern.ch/etc/grid-security/certificates
 export X509_VOMS_DIR=/cvmfs/grid.cern.ch/etc/grid-security/vomsdir
 export VOMS_USERCONF=/cvmfs/grid.cern.ch/etc/vomses
 export X509_USER_PROXY=/tmp/x509_proxy
-# Initialize VOMS proxy for EOS upload
 voms-proxy-init \
   --cert "${X509_USER_CERT}" \
   --key "${X509_USER_KEY}" \
@@ -207,7 +343,8 @@ voms-proxy-init \
 unset X509_USER_CERT
 unset X509_USER_KEY
 
-EOS_RUN="${EOS_ROOT}/${DETECTOR}/${RUN_LABEL}"
+# New EOS path: {detector}/{platform}/key4hep-{release}/{sample}/{date}
+EOS_RUN="${EOS_ROOT}/${DETECTOR}/${K4H_PLATFORM}/key4hep-${K4H_RELEASE}/${SAMPLE}/${DATE}"
 EOS_URL="root://${EOS_FQDN}/${EOS_RUN}"
 
 command -v xrdfs >/dev/null || { echo "ERROR: xrdfs not found" >&2; exit 1; }
