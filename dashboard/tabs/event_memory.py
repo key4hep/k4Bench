@@ -5,7 +5,7 @@ import streamlit as st
 
 from dd4bench.analysis.plots import plot_event_memory
 from stats import build_event_stats_table, select_top_n_by_ratio, style_stats_table
-from ui_utils import _PALETTES, _render_historical_trends
+from ui_utils import _is_valid_df, _PALETTES, _render_historical_trends
 
 
 _STAT_COLS = {
@@ -107,6 +107,9 @@ def _render_historical(
     if not filtered_labels:
         st.info("No historical event memory data available for the selected configurations.")
         return
+    missing = sorted(set(selected_labels) - set(avail_labels))
+    if missing:
+        st.warning(f"No historical event memory data for: {', '.join(missing)}")
 
     present_stats = [(col, lbl) for col, lbl in _HIST_STATS if col in trend_event_df.columns]
     if not present_stats:
@@ -136,8 +139,7 @@ def render(
         return
 
     has_historical = (
-        trend_event_df is not None
-        and not trend_event_df.empty
+        _is_valid_df(trend_event_df)
         and any(col in trend_event_df.columns for col, _ in _HIST_STATS)
     )
 

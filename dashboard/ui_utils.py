@@ -16,6 +16,13 @@ from plotly.subplots import make_subplots
 from dd4bench.analysis.plots._theme import PALETTE, _TEMPLATE
 
 
+# ── Data-validation helpers ────────────────────────────────────────────────────
+
+def _is_valid_df(df: "pd.DataFrame | None") -> bool:
+    """Return *True* iff *df* is a non-``None``, non-empty :class:`~pandas.DataFrame`."""
+    return df is not None and not df.empty
+
+
 # ── Colour helper ──────────────────────────────────────────────────────────────
 
 def _to_rgba(color: str, alpha: float) -> str:
@@ -218,11 +225,15 @@ def _render_historical_trends(
         n_col   = next((c for c in n_col_candidates if c in cfg_df.columns), None)
         has_err = std_col in cfg_df.columns and n_col is not None
         if has_err:
-            std          = cfg_df[std_col].to_numpy()
-            n            = cfg_df[n_col].to_numpy().clip(2)
-            sem_mean     = std / n ** 0.5
-            sem_median   = std * (np.pi / 2) ** 0.5 / n ** 0.5
-            sem_std      = std / (2 * (n - 1)) ** 0.5
+            std  = cfg_df[std_col].to_numpy()
+            n    = cfg_df[n_col].to_numpy()
+            # n=1  → SEM of mean/median is undefined (need ≥2 events)
+            # n≤2  → SEM of std is undefined  (need ≥3 events for unbiased estimate)
+            valid_mean   = n > 1
+            valid_std    = n > 2
+            sem_mean     = np.where(valid_mean, std / np.sqrt(n), np.nan)
+            sem_median   = np.where(valid_mean, std * np.sqrt(np.pi / 2) / np.sqrt(n), np.nan)
+            sem_std      = np.where(valid_std,  std / np.sqrt(2 * (n - 1)), np.nan)
             sem_by_panel = [sem_median.tolist(), sem_mean.tolist(), sem_std.tolist()]
         else:
             sem_by_panel = [None, None, None]

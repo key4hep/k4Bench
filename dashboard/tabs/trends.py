@@ -173,10 +173,10 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
     use_marker = style_cycling in ("Colour + Marker", "Colour + Dash + Marker")
 
     # ── Data prep ─────────────────────────────────────────────────────────────
+    # Dates and x_date are already normalised by cached_load_trend_results.
     df = trend_df[trend_df["label"].isin(selected_labels)].copy()
-    df["k4h_release_date"] = pd.to_datetime(df["k4h_release_date"]).dt.normalize()
-    df["run_date"]         = pd.to_datetime(df["run_date"]).dt.normalize()
-    df["x_date"] = df["k4h_release_date"].fillna(df["run_date"])
+    df["x_date"]   = pd.to_datetime(df["x_date"])
+    df["run_date"] = pd.to_datetime(df["run_date"])
     df = df.dropna(subset=["x_date"])
     # When multiple CI runs share the same nightly tag, keep only the latest run.
     df = df.loc[df.groupby(["label", "x_date"])["run_date"].idxmax()].reset_index(drop=True)
@@ -184,6 +184,16 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
     if df.empty:
         st.warning("No trend data for the selected configurations.")
         return
+
+    # ── Data freshness ────────────────────────────────────────────────────────
+    earliest = df["x_date"].min()
+    latest   = df["x_date"].max()
+    if pd.notna(earliest) and pd.notna(latest):
+        st.caption(
+            f"Data range: **{earliest.strftime('%Y-%m-%d')}** → "
+            f"**{latest.strftime('%Y-%m-%d')}** "
+            f"({df['x_date'].nunique()} nightly tags)"
+        )
 
     # ── Time-series plots ──────────────────────────────────────────────────────
     _render_timeseries(df, selected_labels, palette, line_shape, alpha, use_dash, use_marker)

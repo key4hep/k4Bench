@@ -67,10 +67,10 @@ def _score_to_css(score: float, bad: str, mid: str, good: str) -> str:
 # ── Data helpers ──────────────────────────────────────────────────────────────
 
 def _prep_data(trend_df: pd.DataFrame, selected_labels: list[str]) -> pd.DataFrame:
+    # Dates and x_date are already normalised by cached_load_trend_results.
     df = trend_df[trend_df["label"].isin(selected_labels)].copy()
-    df["k4h_release_date"] = pd.to_datetime(df["k4h_release_date"]).dt.normalize()
-    df["run_date"]         = pd.to_datetime(df["run_date"]).dt.normalize()
-    df["x_date"] = df["k4h_release_date"].fillna(df["run_date"])
+    df["x_date"]   = pd.to_datetime(df["x_date"])
+    df["run_date"] = pd.to_datetime(df["run_date"])
     df = df.dropna(subset=["x_date"])
     df = df.loc[df.groupby(["label", "x_date"])["run_date"].idxmax()]
     return df.loc[df.groupby("label")["x_date"].idxmax()].copy()
@@ -91,6 +91,9 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
     if not snap_labels:
         st.warning("No snapshot data for the selected configurations.")
         return
+    missing_snap = sorted(set(selected_labels) - set(snap_labels))
+    if missing_snap:
+        st.warning(f"No recent snapshot data for: {', '.join(missing_snap)}")
 
     present = [(col, lbl) for col, lbl in _METRICS if col in snapshot.columns]
     if not present:
@@ -139,8 +142,13 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
     # ── Build percentage DataFrame ────────────────────────────────────────────
     pct_df = pd.DataFrame(index=snap_labels, columns=metric_labels, dtype=float)
     for col, lbl in present:
-        bl_val = float(raw.loc[baseline_label, col])
-        pct_df[lbl] = (raw[col] / bl_val * 100.0) if bl_val != 0 else raw[col]
+        bl_val = raw.loc[baseline_label, col]
+        if pd.isna(bl_val) or bl_val == 0:
+            # Missing / zero baseline → leave the whole column as NaN rather
+            # than propagating nonsense percentages silently.
+            pct_df[lbl] = np.nan
+        else:
+            pct_df[lbl] = raw[col] / float(bl_val) * 100.0
 
     # ── Sort rows ─────────────────────────────────────────────────────────────
     sort_col = next((c for c, l in present if l == sort_by), None)

@@ -146,7 +146,8 @@ def cached_load_trend_results(sample_dir: str) -> pd.DataFrame | None:
         meta = _parse_run_dir(run_dir)
         try:
             df = load_results(run_dir)
-        except _EXPECTED_ERRORS:
+        except _EXPECTED_ERRORS as exc:
+            _log.debug("cached_load_trend_results: skipping '%s': %s", run_dir, exc)
             continue
         except Exception:
             _log.exception("cached_load_trend_results: error loading '%s'", run_dir)
@@ -159,7 +160,11 @@ def cached_load_trend_results(sample_dir: str) -> pd.DataFrame | None:
         frames.append(df)
     if not frames:
         return None
-    return pd.concat(frames, ignore_index=True)
+    combined = pd.concat(frames, ignore_index=True)
+    combined["run_date"]         = pd.to_datetime(combined["run_date"]).dt.normalize()
+    combined["k4h_release_date"] = pd.to_datetime(combined["k4h_release_date"]).dt.normalize()
+    combined["x_date"]           = combined["k4h_release_date"].fillna(combined["run_date"])
+    return combined
 
 
 @st.cache_data(show_spinner="Loading region timing trends...", ttl=3600)
@@ -187,7 +192,8 @@ def cached_load_trend_region_timing(trends_dir: str) -> pd.DataFrame | None:
         meta = _parse_run_dir(run_dir)
         try:
             region_data = load_region_timing(run_dir)
-        except _EXPECTED_ERRORS:
+        except _EXPECTED_ERRORS as exc:
+            _log.debug("cached_load_trend_region_timing: skipping '%s': %s", run_dir, exc)
             continue
         except Exception:
             _log.exception("cached_load_trend_region_timing: error loading '%s'", run_dir)
@@ -255,7 +261,8 @@ def cached_load_trend_event_timing(trends_dir: str) -> pd.DataFrame | None:
         meta = _parse_run_dir(run_dir)
         try:
             event_data = load_event_timing(run_dir)
-        except _EXPECTED_ERRORS:
+        except _EXPECTED_ERRORS as exc:
+            _log.debug("cached_load_trend_event_timing: skipping '%s': %s", run_dir, exc)
             continue
         except Exception:
             _log.exception("cached_load_trend_event_timing: error loading '%s'", run_dir)

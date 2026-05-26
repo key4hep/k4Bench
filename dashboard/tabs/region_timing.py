@@ -8,7 +8,7 @@ from plotly.subplots import make_subplots
 
 from dd4bench.analysis.plots import plot_region_timing
 from dd4bench.analysis.plots._theme import _TEMPLATE
-from ui_utils import _DASHES, _PALETTES, _SYMBOLS, _bottom_legend_params, _to_rgba
+from ui_utils import _DASHES, _PALETTES, _SYMBOLS, _bottom_legend_params, _is_valid_df, _to_rgba
 
 
 def _render_current_run(region_data: dict, selected_labels: list[str]) -> None:
@@ -73,6 +73,9 @@ def _render_historical(
     if not filtered_labels:
         st.info("No historical region timing data available for the selected configurations.")
         return
+    missing = sorted(set(selected_labels) - set(avail_labels))
+    if missing:
+        st.warning(f"No historical region timing data for: {', '.join(missing)}")
 
     col_cfg, col_attr = st.columns([2, 2])
     with col_cfg:
@@ -192,10 +195,14 @@ def _render_historical(
         has_err = "std_time_s" in det_df.columns and "n_events" in det_df.columns
         if has_err:
             std  = det_df["std_time_s"].to_numpy()
-            n    = det_df["n_events"].to_numpy().clip(2)
-            sem_mean   = (std / n ** 0.5).tolist()
-            sem_median = (std * (np.pi / 2) ** 0.5 / n ** 0.5).tolist()
-            sem_std    = (std / (2 * (n - 1)) ** 0.5).tolist()
+            n    = det_df["n_events"].to_numpy()
+            # n=1  → SEM of mean/median is undefined (need ≥2 events)
+            # n≤2  → SEM of std is undefined  (need ≥3 events for unbiased estimate)
+            valid_mean = n > 1
+            valid_std  = n > 2
+            sem_mean   = np.where(valid_mean, std / np.sqrt(n), np.nan).tolist()
+            sem_median = np.where(valid_mean, std * np.sqrt(np.pi / 2) / np.sqrt(n), np.nan).tolist()
+            sem_std    = np.where(valid_std,  std / np.sqrt(2 * (n - 1)), np.nan).tolist()
             sem_by_panel = [sem_median, sem_mean, sem_std]
         else:
             sem_by_panel = [None, None, None]
@@ -275,7 +282,7 @@ def render(
         return
 
     # Show view-mode toggle only when historical data is available
-    if trend_region_df is not None and not trend_region_df.empty:
+    if _is_valid_df(trend_region_df):
         view = st.radio(
             "View",
             options=["Current Run", "Historical Trends"],
