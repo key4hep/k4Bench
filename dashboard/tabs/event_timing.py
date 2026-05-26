@@ -23,20 +23,26 @@ def render(
         exclude_warmup = st.toggle("Exclude event 0 (warmup)", value=True, key="evt_timing_warmup")
     with col_topn:
         max_n = len(selected_labels)
-        # min_value must be ≤ session-state value at all times; when only one
-        # label is selected the minimum is 1 (slider is disabled anyway).
-        min_n = min(2, max_n)
-        # Reset the slider to show all configs whenever the selection size changes
-        # so a stale session-state value never silently hides newly added configs.
-        if st.session_state.get("_evt_timing_max_n") != max_n:
-            st.session_state["evt_timing_topn"] = max(min_n, min(5, max_n))
+        # Slider requires min_value < max_value, and is only meaningful when
+        # there are more than 2 runs to filter. Skip it otherwise.
+        if max_n > 2:
+            min_n = 2
+            # Reset the slider to show all configs whenever the selection size
+            # changes so a stale session-state value never silently hides newly
+            # added configs.
+            if st.session_state.get("_evt_timing_max_n") != max_n:
+                st.session_state["evt_timing_topn"] = min(5, max_n)
+                st.session_state["_evt_timing_max_n"] = max_n
+            top_n = st.slider(
+                "Top N runs by timing ratio",
+                min_value=min_n,
+                max_value=max_n,
+                key="evt_timing_topn",
+            )
+        else:
+            # With 1 or 2 runs there is nothing to filter — show all.
+            top_n = max_n
             st.session_state["_evt_timing_max_n"] = max_n
-        top_n = st.slider(
-            "Top N runs by timing ratio",
-            min_value=min_n, max_value=max(min_n, max_n),
-            key="evt_timing_topn",
-            disabled=(max_n <= 2),
-        )
 
     display_labels = select_top_n_by_ratio(
         event_data, selected_labels, "event_time_s", "s", baseline_label, exclude_warmup, top_n
