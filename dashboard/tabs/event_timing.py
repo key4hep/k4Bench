@@ -106,10 +106,6 @@ def _render_historical(
     if not filtered_labels:
         st.info("No historical event timing data available for the selected configurations.")
         return
-    missing = sorted(set(selected_labels) - set(avail_labels))
-    if missing:
-        st.warning(f"No historical event timing data for: {', '.join(missing)}")
-
     present_stats = [(col, lbl) for col, lbl in _HIST_STATS if col in trend_event_df.columns]
     if not present_stats:
         st.info("No historical event timing statistics available.")

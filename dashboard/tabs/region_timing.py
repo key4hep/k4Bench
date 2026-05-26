@@ -73,10 +73,6 @@ def _render_historical(
     if not filtered_labels:
         st.info("No historical region timing data available for the selected configurations.")
         return
-    missing = sorted(set(selected_labels) - set(avail_labels))
-    if missing:
-        st.warning(f"No historical region timing data for: {', '.join(missing)}")
-
     col_cfg, col_attr = st.columns([2, 2])
     with col_cfg:
         config = st.selectbox(
