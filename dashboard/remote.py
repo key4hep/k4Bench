@@ -23,6 +23,7 @@ import logging
 import re
 import tempfile
 from pathlib import Path
+from urllib.parse import unquote
 
 import requests
 
@@ -137,7 +138,8 @@ def download_all_stacks_for_sample(
                     raise ValueError(f"Unsafe filename in listing: {fname!r}")
                 resp = requests.get(f"{run_url}/{fname}", timeout=_TIMEOUT)
                 resp.raise_for_status()
-                (run_dir / safe_name).write_bytes(resp.content)
+                # Decode %20 etc. so local filenames match the label stored in CSV content
+                (run_dir / unquote(safe_name)).write_bytes(resp.content)
     return dest
 
 
@@ -170,5 +172,6 @@ def download_all_runs(
                 raise ValueError(f"Unsafe filename in listing: {fname!r}")
             resp = requests.get(f"{run_url}/{fname}", timeout=_TIMEOUT)
             resp.raise_for_status()
-            (run_dir / safe_name).write_bytes(resp.content)
+            # Decode %20 etc. so local filenames match the label stored in CSV content
+            (run_dir / unquote(safe_name)).write_bytes(resp.content)
     return dest
