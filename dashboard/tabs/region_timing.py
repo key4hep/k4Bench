@@ -10,6 +10,254 @@ from dd4bench.analysis.plots import plot_region_timing
 from dd4bench.analysis.plots._theme import _TEMPLATE
 from ui_utils import _DASHES, _PALETTES, _SYMBOLS, _bottom_legend_params, _is_valid_df, _to_rgba
 
+# Fixed colours for source / sink — independent of user palette
+_SINK_COLOR   = "#3FA5C8"   # teal-blue  — absorbs secondaries
+_SOURCE_COLOR = "#E07A5D"   # warm orange — emits secondaries
+
+
+# ── Attribution Analysis view ──────────────────────────────────────────────────
+
+def _attribution_explainer() -> None:
+    """Two coloured cards explaining source / sink in plain language."""
+    col_src, col_snk = st.columns(2)
+    with col_src:
+        st.markdown(
+            f'<div style="background:rgba(224,122,93,0.10);border-left:4px solid {_SOURCE_COLOR};'
+            'padding:10px 14px;border-radius:4px">'
+            f'<b style="color:{_SOURCE_COLOR}">&#x1F7E0; Source region</b><br>'
+            "Particles <em>created</em> here spend most of their simulation tracking time in other regions.<br>"
+            '<small style="color:#888">by birth &gt; at location &mdash; bar extends left</small>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
+    with col_snk:
+        st.markdown(
+            f'<div style="background:rgba(63,165,200,0.10);border-left:4px solid {_SINK_COLOR};'
+            'padding:10px 14px;border-radius:4px">'
+            f'<b style="color:{_SINK_COLOR}">&#x1F535; Sink region</b><br>'
+            "Simulation tracking time here is dominated by particles created in other regions.<br>"
+            '<small style="color:#888">at location &gt; by birth &mdash; bar extends right</small>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
+    st.write("")
+
+
+def _render_attribution_analysis(region_data: dict, selected_labels: list[str]) -> None:
+    """Attribution analysis: scatter (at location vs by birth) + diverging asymmetry bar.
+
+    Key implementation note
+    -----------------------
+    The zero-line for the diverging bar is drawn with ``fig.add_shape`` rather
+    than a ``go.Scatter`` trace.  Adding a numeric-y Scatter to the same
+    subplot *before* the categorical-y Bar would lock the y-axis to linear
+    mode, silently dropping all bar labels — that was the root cause of the
+    previously empty bar panel.
+    """
+    filtered_labels = [lbl for lbl in selected_labels if lbl in region_data and region_data[lbl]]
+    if not filtered_labels:
+        st.info("No region timing data available for any of the selected configurations.")
+        return
+
+    # ── Controls — no Top N slider; all detectors are shown ───────────────────
+    col_cfg, col_pal = st.columns([3, 1])
+    with col_cfg:
+        config = st.selectbox("Configuration", filtered_labels, key="ss_config")
+    with col_pal:
+        palette_name = st.selectbox(
+            "Colour palette", options=list(_PALETTES.keys()), index=0, key="ss_palette"
+        )
+    palette = _PALETTES[palette_name]
+
+    st.divider()
+    _attribution_explainer()
+
+    # ── Data ───────────────────────────────────────────────────────────────────
+    data  = region_data.get(config, {})
+    al_df = data.get("at_location")
+    bb_df = data.get("by_birth")
+    if al_df is None or bb_df is None:
+        st.info("Both attributions are required for this view.")
+        return
+
+    al_df = al_df.drop(index=0, errors="ignore")   # exclude warm-up event 0
+    bb_df = bb_df.drop(index=0, errors="ignore")
+
+    al_means = al_df.mean()
+    bb_means = bb_df.mean()
+
+    # All detectors with non-trivial signal, ranked by max of both attributions
+    all_dets  = sorted(set(al_means.index) | set(bb_means.index))
+    union_max = pd.Series({
+        d: max(float(al_means.get(d, 0.0)), float(bb_means.get(d, 0.0)))
+        for d in all_dets
+    })
+    det_list = union_max[union_max > 1e-9].sort_values(ascending=False).index.tolist()
+    if not det_list:
+        st.info("No detector data to show.")
+        return
+
+    n       = len(det_list)
+    al_vals = np.array([float(al_means.get(d, 0.0)) for d in det_list])
+    bb_vals = np.array([float(bb_means.get(d, 0.0)) for d in det_list])
+    delta   = al_vals - bb_vals
+
+    # % asymmetry = (al − bb) / avg(al, bb) × 100
+    # Always visible regardless of absolute scale; symmetric around zero.
+    denom     = np.where((al_vals + bb_vals) > 1e-12, (al_vals + bb_vals) / 2.0, 1e-12)
+    pct_asymm = delta / denom * 100.0
+
+    # Bar ordering: descending pct → biggest sinks at top (Plotly puts first
+    # category at the top for horizontal bars)
+    bar_ord   = np.argsort(pct_asymm)[::-1]
+    bar_dets  = [det_list[i]  for i in bar_ord]
+    bar_pct   = pct_asymm[bar_ord]
+    bar_delta = delta[bar_ord]
+    bar_al    = al_vals[bar_ord]
+    bar_bb    = bb_vals[bar_ord]
+    bar_colors = [
+        _to_rgba(_SINK_COLOR,   0.82) if p >= 0 else _to_rgba(_SOURCE_COLOR, 0.82)
+        for p in bar_pct
+    ]
+
+    pt_colors = [palette[i % len(palette)] for i in range(n)]
+
+    # ── Figure ─────────────────────────────────────────────────────────────────
+    fig = make_subplots(
+        rows=1, cols=2,
+        column_widths=[0.46, 0.54],
+        horizontal_spacing=0.14,
+        subplot_titles=[
+            "At location vs By birth",
+            "Asymmetry  (at location − by birth) / avg  [%]",
+        ],
+    )
+
+    # ── Left panel: scatter ────────────────────────────────────────────────────
+    ax_max = max(float(al_vals.max()), float(bb_vals.max())) * 1.18
+    ax_max = max(ax_max, 1e-9)
+
+    # y = x diagonal (no legend entry)
+    fig.add_trace(
+        go.Scatter(
+            x=[0, ax_max], y=[0, ax_max],
+            mode="lines",
+            line=dict(color="rgba(140,140,140,0.45)", width=1.5, dash="dot"),
+            showlegend=False, hoverinfo="skip", name="",
+        ),
+        row=1, col=1,
+    )
+
+    # One trace per detector → individual named legend entries
+    for i, det in enumerate(det_list):
+        fig.add_trace(
+            go.Scatter(
+                x=[bb_vals[i]], y=[al_vals[i]],
+                mode="markers",
+                name=det,
+                legendgroup=det,
+                marker=dict(size=12, color=pt_colors[i], line=dict(color="white", width=1.5)),
+                showlegend=True,
+                customdata=[(det, float(bb_vals[i]), float(al_vals[i]),
+                             float(delta[i]), float(pct_asymm[i]))],
+                hovertemplate=(
+                    "<b>%{customdata[0]}</b><br>"
+                    "By birth: %{customdata[1]:.4g} s<br>"
+                    "At location: %{customdata[2]:.4g} s<br>"
+                    "Δ: %{customdata[3]:+.4g} s  (%{customdata[4]:+.1f}%)<extra></extra>"
+                ),
+            ),
+            row=1, col=1,
+        )
+
+    # Zone badges
+    fig.add_annotation(
+        x=ax_max * 0.07, y=ax_max * 0.91,
+        xref="x", yref="y",
+        text="<b>Sink</b>",
+        showarrow=False,
+        font=dict(size=10, color=_SINK_COLOR),
+        bgcolor="rgba(63,165,200,0.10)",
+        bordercolor="rgba(63,165,200,0.35)",
+        borderwidth=1, borderpad=5,
+    )
+    fig.add_annotation(
+        x=ax_max * 0.93, y=ax_max * 0.09,
+        xref="x", yref="y",
+        text="<b>Source</b>",
+        showarrow=False,
+        font=dict(size=10, color=_SOURCE_COLOR),
+        bgcolor="rgba(224,122,93,0.10)",
+        bordercolor="rgba(224,122,93,0.35)",
+        borderwidth=1, borderpad=5,
+    )
+
+    fig.update_xaxes(title_text="By birth — mean time per event (s)",    range=[0, ax_max], row=1, col=1)
+    fig.update_yaxes(title_text="At location — mean time per event (s)", range=[0, ax_max], row=1, col=1)
+
+    # ── Right panel: diverging bar ─────────────────────────────────────────────
+    # Zero line via add_shape — NOT a go.Scatter.
+    # A Scatter with numeric y placed before the Bar would force the shared
+    # y-axis to linear mode, silently rendering all categorical bar labels as
+    # NaN and making the bars invisible.
+    fig.add_shape(
+        type="line",
+        x0=0, x1=0,
+        y0=0, y1=1,
+        xref="x2", yref="y2 domain",
+        line=dict(color="rgba(100,100,100,0.55)", width=1),
+    )
+
+    fig.add_trace(
+        go.Bar(
+            y=bar_dets,
+            x=bar_pct.tolist(),
+            orientation="h",
+            marker_color=bar_colors,
+            marker_line_width=0,
+            customdata=list(zip(
+                bar_dets,
+                bar_pct.tolist(),
+                bar_delta.tolist(),
+                bar_al.tolist(),
+                bar_bb.tolist(),
+            )),
+            hovertemplate=(
+                "<b>%{customdata[0]}</b><br>"
+                "Asymmetry: %{customdata[1]:+.1f}%<br>"
+                "Δ = %{customdata[2]:+.4g} s<br>"
+                "At location: %{customdata[3]:.4g} s<br>"
+                "By birth: %{customdata[4]:.4g} s<extra></extra>"
+            ),
+            showlegend=False,
+        ),
+        row=1, col=2,
+    )
+
+    x_abs = float(max(abs(float(bar_pct.min())), abs(float(bar_pct.max())))) * 1.20
+    x_abs = max(x_abs, 5.0)
+    fig.update_xaxes(
+        title_text="← source  |  asymmetry (%)  |  sink →",
+        range=[-x_abs, x_abs],
+        row=1, col=2,
+    )
+
+    # ── Legend at bottom ───────────────────────────────────────────────────────
+    fig_h    = max(420, 70 + n * 35)
+    b_margin, legend_dict = _bottom_legend_params(
+        n_items=n, plot_h=fig_h, x_tick_gap=80, entry_width=200, font_size=12
+    )
+    fig.update_layout(
+        template=_TEMPLATE,
+        height=fig_h + b_margin,
+        margin=dict(l=20, r=20, t=45, b=b_margin),
+        legend=legend_dict,
+    )
+
+    st.plotly_chart(fig, width="stretch")
+
+
+# ── Current-run view ───────────────────────────────────────────────────────────
 
 def _render_current_run(region_data: dict, selected_labels: list[str]) -> None:
     """Render the current-run region timing view (existing behaviour)."""
@@ -18,7 +266,6 @@ def _render_current_run(region_data: dict, selected_labels: list[str]) -> None:
         st.info("No region timing data available for any of the selected configurations.")
         return
 
-    # Row 1 — data selection
     col_cfg, col_attr = st.columns([2, 2])
     with col_cfg:
         config = st.selectbox("Configuration", filtered_labels, key="region_config")
@@ -38,7 +285,6 @@ def _render_current_run(region_data: dict, selected_labels: list[str]) -> None:
             ),
         )
 
-    # Row 2 — display options
     col_topn, col_pal = st.columns([2, 2])
     with col_topn:
         top_n = st.slider("Top N detectors", min_value=3, max_value=15, value=8, key="region_topn")
@@ -62,22 +308,22 @@ def _render_current_run(region_data: dict, selected_labels: list[str]) -> None:
     st.plotly_chart(fig, width="stretch")
 
 
+# ── Historical-trends view ─────────────────────────────────────────────────────
+
 def _render_historical(
     trend_region_df: pd.DataFrame,
     selected_labels: list[str],
 ) -> None:
     """Render the historical region timing trends view."""
-    # ── Data controls ─────────────────────────────────────────────────────────
-    avail_labels = sorted(trend_region_df["label"].unique())
+    avail_labels   = sorted(trend_region_df["label"].unique())
     filtered_labels = [lbl for lbl in selected_labels if lbl in avail_labels]
     if not filtered_labels:
         st.info("No historical region timing data available for the selected configurations.")
         return
+
     col_cfg, col_attr = st.columns([2, 2])
     with col_cfg:
-        config = st.selectbox(
-            "Configuration", filtered_labels, key="region_hist_config"
-        )
+        config = st.selectbox("Configuration", filtered_labels, key="region_hist_config")
     with col_attr:
         attribution = st.radio(
             "Attribution",
@@ -95,14 +341,10 @@ def _render_historical(
             ),
         )
 
-    # ── Style controls ─────────────────────────────────────────────────────────
     ctrl_l, ctrl_m, ctrl_r = st.columns(3, vertical_alignment="bottom")
     with ctrl_l:
         palette_name = st.selectbox(
-            "Colour palette",
-            options=list(_PALETTES.keys()),
-            index=0,
-            key="region_hist_palette",
+            "Colour palette", options=list(_PALETTES.keys()), index=0, key="region_hist_palette"
         )
     with ctrl_m:
         style_cycling = st.selectbox(
@@ -113,9 +355,7 @@ def _render_historical(
         )
     with ctrl_r:
         alpha = st.slider(
-            "Opacity",
-            min_value=0.1, max_value=1.0,
-            value=0.85, step=0.05,
+            "Opacity", min_value=0.1, max_value=1.0, value=0.85, step=0.05,
             key="region_hist_alpha",
         )
 
@@ -123,7 +363,6 @@ def _render_historical(
     use_dash   = style_cycling in ("Colour + Dash",   "Colour + Dash + Marker")
     use_marker = style_cycling in ("Colour + Marker", "Colour + Dash + Marker")
 
-    # ── Filter data ───────────────────────────────────────────────────────────
     sub = trend_region_df[
         (trend_region_df["label"] == config)
         & (trend_region_df["attribution"] == attribution)
@@ -136,32 +375,27 @@ def _render_historical(
         )
         return
 
-    sub["x_date"] = pd.to_datetime(sub["x_date"])
+    sub["x_date"]   = pd.to_datetime(sub["x_date"])
     sub["run_date"] = pd.to_datetime(sub["run_date"])
 
-    # Deduplicate: when multiple CI runs share the same nightly tag, keep latest
+    # Deduplicate: keep the latest CI run per (detector, nightly tag)
     sub = sub.loc[
         sub.groupby(["detector", "x_date"])["run_date"].idxmax()
     ].reset_index(drop=True)
 
-    # Order detectors by overall median (largest first)
     detector_rank = (
-        sub.groupby("detector")["median_time_s"]
-        .median()
-        .sort_values(ascending=False)
+        sub.groupby("detector")["median_time_s"].median().sort_values(ascending=False)
     )
     top_detectors = detector_rank.index.tolist()
 
     unique_dates = sorted(sub["x_date"].dropna().unique())
     tick_labels  = [pd.Timestamp(d).strftime("%Y-%m-%d") for d in unique_dates]
 
-    # ── Build three-panel figure (Median | Mean | Std) ────────────────────────
     _STATS = [
         ("median_time_s", "Median time (s)"),
         ("mean_time_s",   "Mean time (s)"),
         ("std_time_s",    "Std dev (s)"),
     ]
-    # Fall back gracefully if std column is missing (old cached data)
     present_stats = [(col, lbl) for col, lbl in _STATS if col in sub.columns]
 
     fig = make_subplots(
@@ -190,31 +424,25 @@ def _render_historical(
 
         has_err = "std_time_s" in det_df.columns and "n_events" in det_df.columns
         if has_err:
-            std  = det_df["std_time_s"].to_numpy()
-            n    = det_df["n_events"].to_numpy()
-            # n=1  → SEM of mean/median is undefined (need ≥2 events)
-            # n≤2  → SEM of std is undefined  (need ≥3 events for unbiased estimate)
-            valid_mean = n > 1
-            valid_std  = n > 2
-            sem_mean   = np.where(valid_mean, std / np.sqrt(n), np.nan).tolist()
-            sem_median = np.where(valid_mean, std * np.sqrt(np.pi / 2) / np.sqrt(n), np.nan).tolist()
-            sem_std    = np.where(valid_std,  std / np.sqrt(2 * (n - 1)), np.nan).tolist()
+            std          = det_df["std_time_s"].to_numpy()
+            n            = det_df["n_events"].to_numpy()
+            valid_mean   = n > 1
+            valid_std    = n > 2
+            sem_mean     = np.where(valid_mean, std / np.sqrt(n), np.nan).tolist()
+            sem_median   = np.where(valid_mean, std * np.sqrt(np.pi / 2) / np.sqrt(n), np.nan).tolist()
+            sem_std      = np.where(valid_std,  std / np.sqrt(2 * (n - 1)), np.nan).tolist()
             sem_by_panel = [sem_median, sem_mean, sem_std]
         else:
             sem_by_panel = [None, None, None]
 
         for col_idx, (stat_col, stat_label) in enumerate(present_stats):
-            sem = sem_by_panel[col_idx] if col_idx < len(sem_by_panel) else None
+            sem   = sem_by_panel[col_idx] if col_idx < len(sem_by_panel) else None
             err_y = None
             if sem is not None:
                 err_y = dict(
-                    type="data",
-                    array=sem,
-                    arrayminus=sem,
-                    visible=True,
-                    color=_to_rgba(color, 0.3),
-                    thickness=1.5,
-                    width=4,
+                    type="data", array=sem, arrayminus=sem,
+                    visible=True, color=_to_rgba(color, 0.3),
+                    thickness=1.5, width=4,
                 )
             fig.add_trace(
                 go.Scatter(
@@ -239,7 +467,6 @@ def _render_historical(
                 row=1, col=col_idx + 1,
             )
 
-    attr_label = "At location" if attribution == "at_location" else "By birth"
     fig.update_xaxes(
         type="date",
         tickmode="array",
@@ -253,17 +480,17 @@ def _render_historical(
     b_margin, legend_dict = _bottom_legend_params(
         len(top_detectors), 380, entry_width=180, font_size=12
     )
-    fig_height = 380 + t_margin + b_margin
-
     fig.update_layout(
         template=_TEMPLATE,
-        height=fig_height,
+        height=380 + t_margin + b_margin,
         margin=dict(l=20, r=20, t=t_margin, b=b_margin),
         legend=legend_dict,
     )
 
     st.plotly_chart(fig, width="stretch")
 
+
+# ── Tab entry point ────────────────────────────────────────────────────────────
 
 def render(
     region_data: dict | None,
@@ -277,21 +504,25 @@ def render(
         st.info("Select at least one run in the sidebar.")
         return
 
-    # Show view-mode toggle only when historical data is available
+    # Build view options dynamically based on available data
+    view_options: list[str] = ["Current Run"]
     if _is_valid_df(trend_region_df):
-        view = st.radio(
-            "View",
-            options=["Current Run", "Historical Trends"],
-            horizontal=True,
-            key="region_view_mode",
-        )
-    else:
-        view = "Current Run"
+        view_options.append("Historical Trends")
+    if region_data is not None:
+        view_options.append("Attribution Analysis")
+
+    view = (
+        st.radio("View", options=view_options, horizontal=True, key="region_view_mode")
+        if len(view_options) > 1
+        else view_options[0]
+    )
 
     if view == "Current Run":
         if region_data is None:
             st.info("No region timing data available in the selected directory.")
         else:
             _render_current_run(region_data, selected_labels)
-    else:
+    elif view == "Historical Trends":
         _render_historical(trend_region_df, selected_labels)
+    elif view == "Attribution Analysis":
+        _render_attribution_analysis(region_data, selected_labels)
