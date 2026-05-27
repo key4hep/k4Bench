@@ -57,15 +57,19 @@ def render(machine_info: dict | None, run_meta: dict | None = None) -> None:
     l5_start     = machine_info.get("load_avg_5m_start")
     l1_end       = machine_info.get("load_avg_1m_end")
     l5_end       = machine_info.get("load_avg_5m_end")
-    ram_total    = machine_info.get("ram_total_gb") or 0
+    ram_total    = machine_info.get("ram_total_gb")
     ram_start    = machine_info.get("ram_available_gb_start")
     ram_end      = machine_info.get("ram_available_gb_end")
-    swap_used    = machine_info.get("swap_used_gb_start")
+    swap_used       = machine_info.get("swap_used_gb_start")
     throttle_events = machine_info.get("thermal_throttle_events")
+    freq_start      = machine_info.get("cpu_freq_mhz_start")
+    freq_end        = machine_info.get("cpu_freq_mhz_end")
 
     # ── CPU ───────────────────────────────────────────────────────────────────
     st.subheader("🖥️ CPU")
-    cpu_cols = st.columns(5)
+
+    # Row 1: hardware characteristics
+    cpu_cols = st.columns(6)
     cpu_cols[0].metric("Model",          machine_info.get("cpu_model", "N/A"))
     cpu_cols[1].metric("Physical cores", cpu_physical or "N/A")
     cpu_cols[2].metric("Logical cores",  cpu_logical  or "N/A")
@@ -87,6 +91,21 @@ def render(machine_info: dict | None, run_meta: dict | None = None) -> None:
         cpu_cols[3].metric("Hyperthreading", "N/A")
 
     cpu_cols[4].metric(
+        "CPU freq",
+        f"{freq_start:.0f} MHz" if freq_start is not None else "N/A",
+        delta=(
+            f"{freq_end - freq_start:.0f} MHz"
+            if (freq_start is not None and freq_end is not None) else None
+        ),
+        delta_color="normal",
+        help=(
+            "Kernel-reported CPU frequency before the benchmark (delta = change by end). "
+            "A drop indicates the CPU slowed down — possible throttling due to heat or governor policy. "
+            "Note: this is a snapshot reading and may not reflect exact effective frequency."
+        ),
+    )
+
+    cpu_cols[5].metric(
         "CPU governor",
         governor if governor else "N/A",
         help=(
@@ -98,18 +117,18 @@ def render(machine_info: dict | None, run_meta: dict | None = None) -> None:
         ),
     )
 
-    # Key CPU features relevant to simulation workloads
+    # Row 2: SIMD features relevant to simulation workloads
     if flags:
         flag_set  = set(flags)
         feat_cols = st.columns(len(_KEY_FLAGS))
-        for col, (flag_key, label) in zip(feat_cols, _KEY_FLAGS.items()):
+        for col, (flag_key, label) in zip(feat_cols, _KEY_FLAGS.items(), strict=True):
             present = flag_key in flag_set
             col.metric(
                 label,
                 "✅" if present else "—",
                 help=f"{'Supported' if present else 'Not supported'} by this CPU.",
             )
-        with st.expander(f"All CPU flags ({len(flags)})"):
+        with st.expander(f"All CPU flags ({len(flags)} total)"):
             st.code(" ".join(flags), language=None)
 
     st.divider()
@@ -122,7 +141,7 @@ def render(machine_info: dict | None, run_meta: dict | None = None) -> None:
         return f"{v:.1f} GB" if v is not None else "N/A"
 
     # Memory pressure verdict
-    if ram_start is None or ram_total == 0:
+    if ram_start is None or not ram_total:
         mem_cols[0].metric("Memory pressure", "Unknown",
                            help="RAM availability was not recorded for this run.")
     else:
@@ -199,13 +218,14 @@ def render(machine_info: dict | None, run_meta: dict | None = None) -> None:
                             help="Throttle counters not available — likely running inside a container.")
     elif throttle_events == 0:
         load_cols[1].metric("Thermal throttling", "✅ None",
-                            help="No CPU thermal throttle events were recorded during the benchmark. "
-                                 "The CPU ran at full speed throughout.")
+                            help="No thermal throttle events were recorded during the benchmark. "
+                                 "The CPU was not forced to reduce its clock speed due to heat.")
     else:
-        load_cols[1].metric("Thermal throttling", f"⚠️ {throttle_events}",
-                            help=f"{throttle_events} thermal throttle event{'s' if throttle_events > 1 else ''} "
-                                 "occurred during the benchmark. The CPU reduced its clock speed due to heat — "
-                                 "timings will be inflated and less reproducible.")
+        load_cols[1].metric("Thermal throttling", "⚠️ Detected",
+                            help="The CPU was thermally throttled during the benchmark — it reduced its "
+                                 "clock speed due to heat. Timings may be inflated and less reproducible. "
+                                 "(Note: the raw event count is not shown as kernel counters increment "
+                                 "per-core and can overcount a single thermal incident.)")
 
     def _fmt(v: float | None) -> str:
         return f"{v:.2f}" if v is not None else "N/A"

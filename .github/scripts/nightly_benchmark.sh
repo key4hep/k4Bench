@@ -235,17 +235,17 @@ info = {
     "cpu_model":              cpu_model,
     "cpu_physical_cores":     cpu_physical,
     "cpu_logical_cores":      cpu_logical,
-    "cpu_flags":              cpu_flags[:30],
+    "cpu_flags":              cpu_flags,
     "ram_total_gb":           round(mem.get('MemTotal',    0) / 1024**2, 2),
     "ram_available_gb_start": round(mem.get('MemAvailable',0) / 1024**2, 2),
     "swap_total_gb":          round(mem.get('SwapTotal',   0) / 1024**2, 2),
     "swap_used_gb_start":     swap_used_start,
     "load_avg_1m_start":      float(loadavg[0]) if len(loadavg) > 0 else None,
     "load_avg_5m_start":      float(loadavg[1]) if len(loadavg) > 1 else None,
-    "cpu_governor":               cpu_governor,
-    "cpu_freq_mhz_start":         cpu_freq_mhz_start,
-    "thermal_throttle_count_start": thermal_throttle_start,
-    "kernel":                 platform.release(),
+    "cpu_governor":                  cpu_governor,
+    "cpu_freq_mhz_start":            cpu_freq_mhz_start,
+    "thermal_throttle_count_start":  thermal_throttle_start,
+    "kernel":                        platform.release(),
     "os":                     os_name,
     "hostname":               os.uname().nodename,
     "in_container":           os.path.exists('/.dockerenv'),
@@ -357,7 +357,7 @@ _throttle_paths = _glob.glob('/sys/devices/system/cpu/cpu*/thermal_throttle/core
 _throttle_end   = sum(int(_read(p).strip()) for p in _throttle_paths if _read(p).strip().isdigit())
 _throttle_start = machine_info.get("thermal_throttle_count_start")
 machine_info["thermal_throttle_events"] = (
-    int(_throttle_end) - int(_throttle_start)
+    max(0, int(_throttle_end) - int(_throttle_start))
     if (_throttle_paths and _throttle_start is not None) else None
 )
 
