@@ -497,11 +497,14 @@ def _render_historical(
         title_text="Key4hep Nightly Tag",
     )
 
+    # Extra 40 px so the "Key4hep Nightly Tag" x-axis title has breathing room
+    # before the horizontal legend — same treatment as trends.py.
+    _b_margin = _LEGEND_B_MARGIN + 40
     fig.update_layout(
         template=_TEMPLATE,
-        height=380 + 40 + _LEGEND_B_MARGIN,
-        margin=dict(l=20, r=20, t=40, b=_LEGEND_B_MARGIN),
-        legend=_legend_below(380, entry_width=180, font_size=12),
+        height=380 + 40 + _b_margin,
+        margin=dict(l=20, r=20, t=40, b=_b_margin),
+        legend=_legend_below(380, entry_width=180, font_size=12, y_offset=110),
     )
 
     st.plotly_chart(fig, width="stretch")
