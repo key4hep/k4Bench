@@ -160,7 +160,7 @@ DATE=$(date +%Y-%m-%d)
 echo "::group::6. Collect machine info (start)"
 mkdir -p "logs/${DETECTOR}"
 python3 - "${DETECTOR}" <<'PYEOF'
-import json, os, platform, sys
+import glob, json, os, platform, sys
 
 def _read(path, default=''):
     try:
@@ -203,6 +203,27 @@ for line in meminfo.splitlines():
 # Load average
 loadavg = _read('/proc/loadavg').split()
 
+# Swap in use
+swap_used_start = round((mem.get('SwapTotal', 0) - mem.get('SwapFree', mem.get('SwapTotal', 0))) / 1024**2, 2)
+
+# CPU governor and frequency (may not be available inside containers)
+cpu_governor = _read('/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor').strip() or None
+_freq_raw = _read('/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq').strip()
+try:    cpu_freq_mhz_start = round(int(_freq_raw) / 1000, 1) if _freq_raw else None
+except ValueError: cpu_freq_mhz_start = None
+
+# Thermal throttle events — cumulative counter; we store the baseline here and
+# compute the delta at the end of the run to get events during the benchmark only.
+_throttle_paths = glob.glob('/sys/devices/system/cpu/cpu*/thermal_throttle/core_throttle_count')
+def _sum_throttle(paths):
+    total = 0
+    for p in paths:
+        raw = _read(p).strip()
+        try: total += int(raw)
+        except ValueError: pass
+    return total if paths else None
+thermal_throttle_start = _sum_throttle(_throttle_paths)
+
 # OS
 os_release = _read('/etc/os-release')
 os_name = next(
@@ -218,8 +239,12 @@ info = {
     "ram_total_gb":           round(mem.get('MemTotal',    0) / 1024**2, 2),
     "ram_available_gb_start": round(mem.get('MemAvailable',0) / 1024**2, 2),
     "swap_total_gb":          round(mem.get('SwapTotal',   0) / 1024**2, 2),
+    "swap_used_gb_start":     swap_used_start,
     "load_avg_1m_start":      float(loadavg[0]) if len(loadavg) > 0 else None,
     "load_avg_5m_start":      float(loadavg[1]) if len(loadavg) > 1 else None,
+    "cpu_governor":               cpu_governor,
+    "cpu_freq_mhz_start":         cpu_freq_mhz_start,
+    "thermal_throttle_count_start": thermal_throttle_start,
     "kernel":                 platform.release(),
     "os":                     os_name,
     "hostname":               os.uname().nodename,
@@ -320,8 +345,21 @@ for line in meminfo.splitlines():
 loadavg = _read('/proc/loadavg').split()
 
 machine_info["ram_available_gb_end"] = round(mem.get('MemAvailable', 0) / 1024**2, 2)
+machine_info["swap_used_gb_end"]     = round((mem.get('SwapTotal', 0) - mem.get('SwapFree', mem.get('SwapTotal', 0))) / 1024**2, 2)
 machine_info["load_avg_1m_end"]      = float(loadavg[0]) if len(loadavg) > 0 else None
 machine_info["load_avg_5m_end"]      = float(loadavg[1]) if len(loadavg) > 1 else None
+_freq_raw = _read('/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq').strip()
+try:    machine_info["cpu_freq_mhz_end"] = round(int(_freq_raw) / 1000, 1) if _freq_raw else None
+except ValueError: machine_info["cpu_freq_mhz_end"] = None
+
+import glob as _glob
+_throttle_paths = _glob.glob('/sys/devices/system/cpu/cpu*/thermal_throttle/core_throttle_count')
+_throttle_end   = sum(int(_read(p).strip()) for p in _throttle_paths if _read(p).strip().isdigit())
+_throttle_start = machine_info.get("thermal_throttle_count_start")
+machine_info["thermal_throttle_events"] = (
+    int(_throttle_end) - int(_throttle_start)
+    if (_throttle_paths and _throttle_start is not None) else None
+)
 
 with open(f"logs/{detector}/machine_info.json", "w") as fh:
     json.dump(machine_info, fh, indent=2)

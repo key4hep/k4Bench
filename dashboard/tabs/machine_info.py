@@ -4,6 +4,16 @@ from __future__ import annotations
 
 import streamlit as st
 
+# CPU flags relevant to simulation / floating-point heavy workloads.
+# Presence of these affects vectorisation and therefore benchmark performance.
+_KEY_FLAGS: dict[str, str] = {
+    "avx512f": "AVX-512",
+    "avx2":    "AVX2",
+    "avx":     "AVX",
+    "fma":     "FMA",
+    "sse4_2":  "SSE4.2",
+}
+
 
 def render(machine_info: dict | None, run_meta: dict | None = None) -> None:
     """Render the Machine Info tab.
@@ -38,98 +48,172 @@ def render(machine_info: dict | None, run_meta: dict | None = None) -> None:
 
     st.divider()
 
+    # ── Extract values used across multiple sections ───────────────────────────
+    cpu_physical = machine_info.get("cpu_physical_cores") or 0
+    cpu_logical  = machine_info.get("cpu_logical_cores")  or 0
+    governor     = machine_info.get("cpu_governor")
+    flags        = machine_info.get("cpu_flags", [])
+    l1_start     = machine_info.get("load_avg_1m_start")
+    l5_start     = machine_info.get("load_avg_5m_start")
+    l1_end       = machine_info.get("load_avg_1m_end")
+    l5_end       = machine_info.get("load_avg_5m_end")
+    ram_total    = machine_info.get("ram_total_gb") or 0
+    ram_start    = machine_info.get("ram_available_gb_start")
+    ram_end      = machine_info.get("ram_available_gb_end")
+    swap_used    = machine_info.get("swap_used_gb_start")
+    throttle_events = machine_info.get("thermal_throttle_events")
+
     # ── CPU ───────────────────────────────────────────────────────────────────
     st.subheader("🖥️ CPU")
-    cpu_cols = st.columns(4)
+    cpu_cols = st.columns(5)
     cpu_cols[0].metric("Model",          machine_info.get("cpu_model", "N/A"))
-    cpu_cols[1].metric("Physical cores", machine_info.get("cpu_physical_cores", "N/A"))
-    cpu_cols[2].metric("Logical cores",  machine_info.get("cpu_logical_cores",  "N/A"))
+    cpu_cols[1].metric("Physical cores", cpu_physical or "N/A")
+    cpu_cols[2].metric("Logical cores",  cpu_logical  or "N/A")
 
-    flags = machine_info.get("cpu_flags", [])
+    if cpu_physical > 0 and cpu_logical > 0:
+        ht_on = cpu_logical > cpu_physical
+        cpu_cols[3].metric(
+            "Hyperthreading",
+            "On ⚠️" if ht_on else "Off ✅",
+            help=(
+                "Hyperthreading is enabled. The benchmark thread shares execution units "
+                "(caches, branch predictor, execution ports) with its HT sibling — "
+                "this can add variance to single-core timings even when no other processes are running."
+                if ht_on else
+                "Hyperthreading is disabled — the benchmark thread has exclusive use of its physical core."
+            ),
+        )
+    else:
+        cpu_cols[3].metric("Hyperthreading", "N/A")
+
+    cpu_cols[4].metric(
+        "CPU governor",
+        governor if governor else "N/A",
+        help=(
+            "The Linux CPU frequency scaling governor active during the benchmark. "
+            "'performance' locks the CPU at max frequency — best for reproducible results. "
+            "'powersave' or 'schedutil' may throttle the clock and inflate timings."
+            if governor else
+            "Not available — likely running inside a container without cpufreq access."
+        ),
+    )
+
+    # Key CPU features relevant to simulation workloads
     if flags:
-        with st.expander(f"CPU flags ({len(flags)} shown)"):
+        flag_set  = set(flags)
+        feat_cols = st.columns(len(_KEY_FLAGS))
+        for col, (flag_key, label) in zip(feat_cols, _KEY_FLAGS.items()):
+            present = flag_key in flag_set
+            col.metric(
+                label,
+                "✅" if present else "—",
+                help=f"{'Supported' if present else 'Not supported'} by this CPU.",
+            )
+        with st.expander(f"All CPU flags ({len(flags)})"):
             st.code(" ".join(flags), language=None)
 
     st.divider()
 
     # ── Memory ────────────────────────────────────────────────────────────────
     st.subheader("🧠 Memory")
-    mem_cols = st.columns(4)
-    ram_total = machine_info.get("ram_total_gb", 0)
-    ram_start = machine_info.get("ram_available_gb_start")
-    ram_end   = machine_info.get("ram_available_gb_end")
-    swap      = machine_info.get("swap_total_gb", 0)
+    mem_cols = st.columns(5)
 
     def _gb(v: float | None) -> str:
         return f"{v:.1f} GB" if v is not None else "N/A"
 
-    mem_cols[0].metric("Total RAM",       _gb(ram_total))
-    mem_cols[1].metric(
+    # Memory pressure verdict
+    if ram_start is None or ram_total == 0:
+        mem_cols[0].metric("Memory pressure", "Unknown",
+                           help="RAM availability was not recorded for this run.")
+    else:
+        avail_pct = ram_start / ram_total * 100
+        if avail_pct >= 50:
+            mem_cols[0].metric("Memory pressure", "✅ None",
+                               help=f"{avail_pct:.0f}% of RAM was free — no memory pressure.")
+        elif avail_pct >= 25:
+            mem_cols[0].metric("Memory pressure", "🟡 Low",
+                               help=f"{avail_pct:.0f}% of RAM was free — adequate, but some pages may be reclaimed under load.")
+        elif avail_pct >= 10:
+            mem_cols[0].metric("Memory pressure", "🟠 Moderate",
+                               help=f"Only {avail_pct:.0f}% of RAM was free — OS may have been reclaiming pages, which can affect timings.")
+        else:
+            mem_cols[0].metric("Memory pressure", "🔴 High",
+                               help=f"Only {avail_pct:.0f}% of RAM was free — system was likely swapping. Timing results are unreliable.")
+
+    mem_cols[1].metric("Total RAM", _gb(ram_total))
+    mem_cols[2].metric(
         "Available (start)",
         _gb(ram_start),
         help="Free RAM measured immediately before the benchmark started.",
     )
-    mem_cols[2].metric(
+    mem_cols[3].metric(
         "Available (end)",
         _gb(ram_end),
         delta=f"{ram_end - ram_start:.1f} GB" if (ram_start is not None and ram_end is not None) else None,
-        delta_color="inverse",
-        help="Free RAM measured after all benchmark runs completed.",
+        delta_color="off",
+        help="Free RAM measured after all benchmark runs completed. "
+             "A drop here is normal — the benchmark consumed memory during the run.",
     )
-    mem_cols[3].metric("Swap total",      _gb(swap))
+    swap_label = (
+        f"{swap_used:.2f} GB {'⚠️' if swap_used > 0 else ''}"
+        if swap_used is not None else "N/A"
+    )
+    mem_cols[4].metric(
+        "Swap in use",
+        swap_label,
+        help="Swap actively in use before the benchmark. "
+             "Any non-zero value means the OS was paging to disk — timings will be inflated.",
+    )
 
     st.divider()
 
     # ── System load ───────────────────────────────────────────────────────────
     st.subheader("⚡ System Load")
-    load_cols = st.columns(4)
 
-    n_cores     = machine_info.get("cpu_logical_cores") or 1
-    l1_start    = machine_info.get("load_avg_1m_start")
-    l5_start    = machine_info.get("load_avg_5m_start")
-    l1_end      = machine_info.get("load_avg_1m_end")
-    l5_end      = machine_info.get("load_avg_5m_end")
+    _LOAD_HELP = (
+        "Linux load average — counts processes actively running or waiting for a CPU core. "
+        "Since the benchmark is single-core, values ≥ 1.0 indicate competing processes "
+        "that may have caused context-switches and inflated timings."
+    )
 
-    def _load_metric(col: st.delta_generator.DeltaGenerator,
-                     label: str,
-                     value: float | None,
-                     delta: float | None = None,
-                     help_text: str = "") -> None:
-        if value is None:
-            col.metric(label, "N/A", help=help_text)
-            return
-        pct = value / n_cores * 100
-        annotation = ""
-        if pct > 80:
-            annotation = " ⚠️"
-        col.metric(
-            label,
-            f"{value:.2f}{annotation}",
-            delta=f"{delta:.2f}" if delta is not None else None,
-            delta_color="inverse",
-            help=help_text + (f"\n\n{pct:.0f}% of logical cores." if n_cores else ""),
-        )
+    load_cols = st.columns(6)
 
-    _load_metric(load_cols[0], "1-min load (start)", l1_start,
-                 help_text="1-minute load average before benchmark.")
-    _load_metric(load_cols[1], "5-min load (start)", l5_start,
-                 help_text="5-minute load average before benchmark.")
-    _load_metric(load_cols[2], "1-min load (end)", l1_end,
-                 delta=(l1_end - l1_start) if (l1_end is not None and l1_start is not None) else None,
-                 help_text="1-minute load average after benchmark.")
-    _load_metric(load_cols[3], "5-min load (end)", l5_end,
-                 delta=(l5_end - l5_start) if (l5_end is not None and l5_start is not None) else None,
-                 help_text="5-minute load average after benchmark.")
+    if l1_start is None:
+        load_cols[0].metric("Run reliability", "Unknown",
+                            help="No load average was recorded before this run.")
+    elif l1_start < 0.5:
+        load_cols[0].metric("Run reliability", "✅ Clean",
+                            help="Machine was idle before the benchmark started.")
+    elif l1_start < 1.0:
+        load_cols[0].metric("Run reliability", "🟡 Probably fine",
+                            help="Some background activity was present, but below one full competing process.")
+    elif l1_start < 2.0:
+        load_cols[0].metric("Run reliability", "🟠 Caution",
+                            help="At least one other process was competing for CPU — timings may be inflated.")
+    else:
+        load_cols[0].metric("Run reliability", "🔴 Unreliable",
+                            help="Multiple processes were competing for CPU — timings are likely skewed.")
 
-    # Warn if the runner was saturated at benchmark start.
-    # Load average ≥ n_cores means the run queue was full — a reliable signal
-    # that competing processes could skew timing results.
-    if l1_start is not None and n_cores and l1_start >= n_cores:
-        st.warning(
-            f"⚠️ System was saturated at benchmark start "
-            f"(1-min load avg {l1_start:.2f} ≥ {n_cores} logical cores). "
-            "Timing results may be affected by competing workloads on this runner."
-        )
+    if throttle_events is None:
+        load_cols[1].metric("Thermal throttling", "N/A",
+                            help="Throttle counters not available — likely running inside a container.")
+    elif throttle_events == 0:
+        load_cols[1].metric("Thermal throttling", "✅ None",
+                            help="No CPU thermal throttle events were recorded during the benchmark. "
+                                 "The CPU ran at full speed throughout.")
+    else:
+        load_cols[1].metric("Thermal throttling", f"⚠️ {throttle_events}",
+                            help=f"{throttle_events} thermal throttle event{'s' if throttle_events > 1 else ''} "
+                                 "occurred during the benchmark. The CPU reduced its clock speed due to heat — "
+                                 "timings will be inflated and less reproducible.")
+
+    def _fmt(v: float | None) -> str:
+        return f"{v:.2f}" if v is not None else "N/A"
+
+    load_cols[2].metric("Load 1-min (start)", _fmt(l1_start), help=_LOAD_HELP)
+    load_cols[3].metric("Load 5-min (start)", _fmt(l5_start), help=_LOAD_HELP)
+    load_cols[4].metric("Load 1-min (end)",   _fmt(l1_end),   help=_LOAD_HELP)
+    load_cols[5].metric("Load 5-min (end)",   _fmt(l5_end),   help=_LOAD_HELP)
 
     st.divider()
 
