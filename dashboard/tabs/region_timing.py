@@ -562,18 +562,34 @@ def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None
     dets = [d for d in al_df.columns if d in steps_df.columns and d != "unattributed"]
 
     al_means    = al_df[dets].mean()
-    steps_means = steps_df[dets].fillna(0).mean().clip(lower=0)
+    # Explicit float cast before mean/clip to avoid nullable-integer edge cases.
+    steps_means = steps_df[dets].fillna(0).astype(float).mean().clip(lower=0)
 
     # Sort by total mean time (most expensive first)
     ranked = al_means[al_means > 1e-9].sort_values(ascending=False)
-    det_list = ranked.index.tolist()
-    if not det_list:
+    all_det_list = ranked.index.tolist()
+    if not all_det_list:
         with col_pal:
             st.selectbox("Colour palette", options=_PALETTE_NAMES, index=0, key="sa_palette")
         st.info("No detector data to show.")
         return
 
+    # ── Secondary controls (need data to set slider max) ──────────────────────
+    n_total = len(all_det_list)
+    ctrl_topn, ctrl_logy, _ = st.columns([2, 1, 1])
+    with ctrl_topn:
+        top_n = st.slider(
+            "Top N detectors", min_value=3, max_value=n_total,
+            value=min(n_total, 15), key="sa_topn",
+        )
+    with ctrl_logy:
+        log_y = st.toggle("Log Y-axis", value=False, key="sa_logy",
+                          help="Switch the cost-per-step axis to log scale — "
+                               "useful when a few detectors dominate by orders of magnitude.")
+
+    det_list = all_det_list[:top_n]
     n = len(det_list)
+
     with col_pal:
         palette_name = st.selectbox(
             "Colour palette", options=_PALETTE_NAMES,
@@ -602,11 +618,17 @@ def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None
     )
 
     # ── Scatter: one trace per detector for individual legend entries ──────────
-    # Bubble size ∝ √(total_time), scaled to [10, 38] px
+    # Bubble size ∝ √(total_time), scaled to [10, 38] px.
+    # When all values are identical (single detector or uniform cost), use the
+    # midpoint size so bubbles don't all collapse to the minimum.
     sqrt_t     = np.sqrt(total_time)
     size_range = (10.0, 38.0)
-    t_norm     = (sqrt_t - sqrt_t.min()) / (sqrt_t.max() - sqrt_t.min() + 1e-12)
-    msize      = size_range[0] + t_norm * (size_range[1] - size_range[0])
+    t_range    = float(sqrt_t.max() - sqrt_t.min())
+    if np.isclose(t_range, 0.0):
+        msize = np.full_like(sqrt_t, float(np.mean(size_range)))
+    else:
+        t_norm = (sqrt_t - sqrt_t.min()) / t_range
+        msize  = size_range[0] + t_norm * (size_range[1] - size_range[0])
 
     for i, det in enumerate(det_list):
         cycle  = pt_cycles[i]
@@ -672,6 +694,7 @@ def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None
     )
     fig.update_yaxes(
         title_text="Time per step (µs)",
+        type="log" if log_y else "linear",
         row=1, col=1,
     )
 

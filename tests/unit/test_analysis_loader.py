@@ -228,7 +228,7 @@ class TestLoadRegionTiming:
     def test_result_has_required_keys(self, tmp_path):
         _write_region_json(tmp_path / "baseline_all_regions.json")
         entry = load_region_timing(tmp_path)["baseline_all"]
-        assert set(entry.keys()) == {"meta", "events", "at_location", "by_birth"}
+        assert set(entry.keys()) == {"meta", "events", "at_location", "by_birth", "steps"}
 
     def test_events_dataframe_columns(self, tmp_path):
         _write_region_json(tmp_path / "baseline_all_regions.json", n_events=3)

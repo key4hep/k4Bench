@@ -228,7 +228,7 @@ def load_region_timing(
         raw_steps = raw.get("interval_counts", [])
         if raw_steps and len(raw_steps) == n_ev:
             steps_df: pd.DataFrame | None = (
-                pd.DataFrame(raw_steps, index=ev_index).fillna(0).astype("Int64")
+                pd.DataFrame(raw_steps, index=ev_index).fillna(0).astype(float)
             )
         else:
             steps_df = None

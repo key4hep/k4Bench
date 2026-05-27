@@ -42,7 +42,7 @@ def _render_timeseries(
     tick_labels  = [pd.Timestamp(d).strftime("%Y-%m-%d") for d in unique_dates]
     n = len(present_metrics)
 
-    # Lay out metrics in a 3-column grid (ceil(n/3) rows × 3 cols)
+    # Lay out metrics in a 3-column grid (ceil(n/3) rows x 3 cols)
     n_cols = min(n, 3)
     n_rows = -(-n // n_cols)   # ceiling division
 
@@ -127,6 +127,13 @@ def _render_timeseries(
     )
 
     st.plotly_chart(fig, width="stretch")
+
+    if any(col == "cpu_efficiency" for col, _ in present_metrics):
+        st.caption(
+            "ℹ️ **CPU Efficiency** = User CPU time / Wall time. "
+            "Values > 1 are expected for multi-threaded jobs "
+            "(more CPU-seconds consumed than wall-clock seconds elapsed)."
+        )
 
 
 def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
