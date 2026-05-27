@@ -1,8 +1,7 @@
 <p align="center">
   <a href="https://dd4bench-dashboard.app.cern.ch/">
     <img src="https://capsule-render.vercel.app/api?type=waving&color=0:1E90FF,100:00C9A7&height=130&section=header&text=DD4bench&fontSize=48&fontAlignY=40&fontColor=ffffff" />
-    <img width="850" height="600" alt="Screenshot 2026-05-27 at 13 24 42" src="https://github.com/user-attachments/assets/e032809f-2b0e-4bbf-be17-70c441fd4852" />
-  </a><br>
+    </a><br>
   <b>Explore runs, metrics, and performance at a glance</b><br>
   👉 <a href="https://dd4bench-dashboard.app.cern.ch/">Open Dashboard</a>
 </p>
