@@ -105,49 +105,32 @@ _SYMBOLS = ["circle", "square", "diamond", "cross",
             "triangle-up", "star", "pentagon", "hexagon"]
 
 
-# ── Legend layout helper ───────────────────────────────────────────────────────
+# ── Legend helpers ─────────────────────────────────────────────────────────────
 
-def _bottom_legend_params(
-    n_items: int,
+#: Bottom margin (px) reserved for tick labels + horizontal legend.
+#: 160 px comfortably fits up to ~3 legend rows beneath rotated date tick labels.
+_LEGEND_B_MARGIN = 160
+
+def _legend_below(
     plot_h: int,
     *,
-    x_tick_gap: int = 120,
-    n_cols: int = 4,
     entry_width: int = 220,
     font_size: int = 13,
-) -> tuple[int, dict]:
-    """Compute bottom margin and legend dict for a fixed-width column-grid legend.
+    y_offset: int = 80,
+) -> dict:
+    """Return a ``legend=`` dict that places a horizontal legend *y_offset* px below the axes.
 
-    Parameters
-    ----------
-    n_items : int
-        Number of distinct legend entries.
-    plot_h : int
-        Height of the *data* area in pixels (used to compute the ``y`` anchor).
-    x_tick_gap : int
-        Vertical gap in pixels between the plot bottom edge and the legend top.
-    n_cols : int
-        Maximum number of legend entries per row.
-    entry_width : int
-        Width in pixels allocated to each entry.
-    font_size : int
-        Legend font size in points.
+    ``plot_h`` is the height of the data area in pixels; it converts the pixel
+    offset into Plotly's paper-coordinate ``y`` value.
 
-    Returns
-    -------
-    b_margin : int
-        Bottom figure margin (pixels) to pass to ``fig.update_layout``.
-    legend_dict : dict
-        Keyword arguments suitable for ``fig.update_layout(legend=…)``.
+    Use a larger ``y_offset`` when rotated x-tick labels need extra clearance
+    (e.g. multi-row subplots with ``tickangle=-30``).  Pair with
+    ``margin=dict(b=_LEGEND_B_MARGIN)`` so the legend is never clipped.
     """
-    n_rows    = max(1, -(-n_items // n_cols))   # ceiling division
-    legend_px = 24 + n_rows * 32
-    b_margin  = x_tick_gap + legend_px + 20
-    y_legend  = -(x_tick_gap / plot_h)
-    return b_margin, dict(
+    return dict(
         orientation="h",
         yanchor="top",
-        y=y_legend,
+        y=-y_offset / plot_h,   # y_offset px below the axis bottom, in paper coordinates
         xanchor="center",
         x=0.5,
         entrywidth=entry_width,
@@ -333,14 +316,11 @@ def _render_historical_trends(
     # ── Legend & margins ──────────────────────────────────────────────────────
     _PLOT_H   = 380
     _T_MARGIN = 40
-    b_margin, legend_dict = _bottom_legend_params(len(filtered_labels), _PLOT_H)
-    fig_height = _PLOT_H + _T_MARGIN + b_margin
-
     fig.update_layout(
         template=_TEMPLATE,
-        height=fig_height,
-        margin=dict(l=20, r=20, t=_T_MARGIN, b=b_margin),
-        legend=legend_dict,
+        height=_PLOT_H + _T_MARGIN + _LEGEND_B_MARGIN,
+        margin=dict(l=20, r=20, t=_T_MARGIN, b=_LEGEND_B_MARGIN),
+        legend=_legend_below(_PLOT_H),
     )
 
     st.plotly_chart(fig, width="stretch")

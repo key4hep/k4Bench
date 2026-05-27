@@ -62,11 +62,95 @@ def _cached_download_all_stacks(
     return str(download_all_stacks_for_sample(base_url, detector, platform, sample))
 
 
+def _render_footer() -> None:
+    """Render a CERN / FCC copyright footer at the bottom of the page."""
+    st.markdown(
+        """
+        <hr style="border:none;border-top:1px solid rgba(128,128,128,0.25);margin:2.5rem 0 0.8rem 0;">
+        <div style="
+            display:flex;
+            justify-content:center;
+            align-items:center;
+            gap:1.2rem;
+            padding:0.2rem 0 1.2rem 0;
+            font-size:0.80rem;
+            color:#9a9a9a;
+            line-height:1.7;
+            text-align:center;
+        ">
+            <span style="font-size:1.8rem;opacity:0.75;">⚛️</span>
+            <div>
+                <strong style="color:#c0c0c0;letter-spacing:0.02em;">© 2026 CERN</strong>
+                &nbsp;·&nbsp;
+                For the benefit of the&nbsp;<a
+                    href="https://fcc.web.cern.ch/"
+                    target="_blank"
+                    style="color:#5b9bd5;text-decoration:none;font-weight:600;"
+                >FCC project</a>
+                <br>
+                Created by <strong style="color:#c0c0c0;">Joshua Falco Beirer</strong>
+                &nbsp;<span style="opacity:0.6;">(CERN)</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_sidebar_footer() -> None:
+    """Render a compact attribution note at the bottom of the sidebar."""
+    st.markdown(
+        """
+        <hr style="border:none;border-top:1px solid rgba(128,128,128,0.2);margin:1.5rem 0 0.6rem 0;">
+        <div style="font-size:0.72rem;color:#888;text-align:center;line-height:1.6;padding-bottom:0.4rem;">
+            <strong style="color:#a0a0a0;">© 2026 CERN</strong><br>
+            For the benefit of the<br>
+            <a href="https://fcc.web.cern.ch/" target="_blank"
+               style="color:#5b9bd5;text-decoration:none;">FCC project</a><br>
+            <span style="opacity:0.7;">J. F. Beirer (CERN)</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def main() -> None:
     st.set_page_config(
         page_title="DD4bench Dashboard",
         page_icon="⚡",
         layout="wide",
+    )
+
+    # ── Global CSS tweaks ─────────────────────────────────────────────────────
+    st.markdown(
+        """
+        <style>
+        /* Make the top toolbar transparent so it doesn't obscure tabs */
+        [data-testid="stToolbar"],
+        header[data-testid="stHeader"] {
+            background: transparent !important;
+            backdrop-filter: none !important;
+        }
+        /* Push content down just enough so tabs aren't hidden under the toolbar */
+        .block-container, .stMainBlockContainer {
+            padding-top: 3.5rem !important;
+            padding-bottom: 1rem !important;
+        }
+        /* Collapse the blank gap Streamlit inserts below plotly iframes */
+        [data-testid="stPlotlyChart"] > div,
+        .stPlotlyChart > div {
+            line-height: 0;
+        }
+        /* Remove extra bottom margin on plotly chart wrappers */
+        [data-testid="stPlotlyChart"],
+        .stPlotlyChart {
+            margin-bottom: 0 !important;
+        }
+        /* Tighten the gap between the last element and the footer */
+        footer { margin-top: 0 !important; padding-top: 0 !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
 
     config = Config.from_env()
@@ -89,7 +173,45 @@ def main() -> None:
 
         if config.data_url:
             # ── Remote mode ────────────────────────────────────────────────────
-            st.caption(f"WebEOS: `{config.data_url}`")
+            st.markdown(
+                f"""
+                <a href="{config.data_url}" target="_blank" style="text-decoration:none;">
+                  <div style="
+                    background: rgba(91,155,213,0.08);
+                    border: 1px solid rgba(91,155,213,0.28);
+                    border-radius: 8px;
+                    padding: 0.45rem 0.75rem;
+                    margin-bottom: 0.25rem;
+                    display: flex;
+                    align-items: center;
+                    gap: 0.55rem;
+                    transition: background 0.2s;
+                  ">
+                    <span style="font-size:1.1rem;line-height:1;">🗄️</span>
+                    <div style="overflow:hidden;">
+                      <div style="
+                        font-size:0.63rem;
+                        text-transform:uppercase;
+                        letter-spacing:0.07em;
+                        color:#7a9fbf;
+                        font-weight:600;
+                        margin-bottom:0.1rem;
+                      ">WebEOS data</div>
+                      <div style="
+                        font-size:0.70rem;
+                        color:#5b9bd5;
+                        font-weight:500;
+                        white-space:nowrap;
+                        overflow:hidden;
+                        text-overflow:ellipsis;
+                        max-width:180px;
+                      ">{config.data_url.rstrip('/')} ↗</div>
+                    </div>
+                  </div>
+                </a>
+                """,
+                unsafe_allow_html=True,
+            )
 
             # Detector
             try:
@@ -208,7 +330,7 @@ def main() -> None:
                 "Configurations", available_labels, default=available_labels
             )
 
-    st.title("Benchmark Dashboard")
+        _render_sidebar_footer()
 
     if not available_labels:
         path_hint = f" in **{data_dir}**" if data_dir else ""
@@ -265,6 +387,8 @@ def main() -> None:
     with tabs[tab_idx]:
         minfo = load_machine_info(data_dir) if _path_valid else None
         machine_info.render(minfo, run_meta=selected_run_meta)
+
+    _render_footer()
 
 
 main()

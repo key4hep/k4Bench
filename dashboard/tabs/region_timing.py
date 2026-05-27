@@ -8,7 +8,7 @@ from plotly.subplots import make_subplots
 
 from dd4bench.analysis.plots import plot_region_timing
 from dd4bench.analysis.plots._theme import _TEMPLATE
-from ui_utils import _DASHES, _PALETTES, _PALETTE_NAMES, _SYMBOLS, _auto_palette_index, _bottom_legend_params, _is_valid_df, _to_rgba
+from ui_utils import _DASHES, _LEGEND_B_MARGIN, _PALETTES, _PALETTE_NAMES, _SYMBOLS, _auto_palette_index, _is_valid_df, _legend_below, _to_rgba
 
 # Fixed colours for source / sink — independent of user palette
 _SINK_COLOR   = "#3FA5C8"   # teal-blue  — absorbs secondaries
@@ -259,15 +259,12 @@ def _render_attribution_analysis(region_data: dict, selected_labels: list[str]) 
     )
 
     # ── Legend at bottom ───────────────────────────────────────────────────────
-    fig_h    = min(max(420, 70 + n * 35), 1400)  # cap at 1400 px to stay sane in Streamlit
-    b_margin, legend_dict = _bottom_legend_params(
-        n_items=n, plot_h=fig_h, x_tick_gap=80, entry_width=200, font_size=12
-    )
+    fig_h = min(max(420, 70 + n * 35), 1400)  # cap at 1400 px to stay sane in Streamlit
     fig.update_layout(
         template=_TEMPLATE,
-        height=fig_h + b_margin,
-        margin=dict(l=20, r=20, t=45, b=b_margin),
-        legend=legend_dict,
+        height=fig_h + _LEGEND_B_MARGIN,
+        margin=dict(l=20, r=20, t=45, b=_LEGEND_B_MARGIN),
+        legend=_legend_below(fig_h, entry_width=200, font_size=12),
     )
 
     st.plotly_chart(fig, width="stretch")
@@ -500,15 +497,11 @@ def _render_historical(
         title_text="Key4hep Nightly Tag",
     )
 
-    t_margin = 40
-    b_margin, legend_dict = _bottom_legend_params(
-        len(top_detectors), 380, entry_width=180, font_size=12
-    )
     fig.update_layout(
         template=_TEMPLATE,
-        height=380 + t_margin + b_margin,
-        margin=dict(l=20, r=20, t=t_margin, b=b_margin),
-        legend=legend_dict,
+        height=380 + 40 + _LEGEND_B_MARGIN,
+        margin=dict(l=20, r=20, t=40, b=_LEGEND_B_MARGIN),
+        legend=_legend_below(380, entry_width=180, font_size=12),
     )
 
     st.plotly_chart(fig, width="stretch")
@@ -749,10 +742,7 @@ def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None
     fig.update_yaxes(showticklabels=False, row=1, col=3)
 
     # ── Legend at bottom ───────────────────────────────────────────────────────
-    fig_h    = max(420, 70 + n * 35)
-    b_margin, legend_dict = _bottom_legend_params(
-        n_items=n, plot_h=fig_h, x_tick_gap=80, entry_width=200, font_size=12
-    )
+    fig_h = max(420, 70 + n * 35)
     # Bubble-size legend note
     st.caption(
         "Bubble area is proportional to total mean simulation time per event. "
@@ -760,9 +750,9 @@ def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None
     )
     fig.update_layout(
         template=_TEMPLATE,
-        height=fig_h + b_margin,
-        margin=dict(l=20, r=20, t=45, b=b_margin),
-        legend=legend_dict,
+        height=fig_h + _LEGEND_B_MARGIN,
+        margin=dict(l=20, r=20, t=45, b=_LEGEND_B_MARGIN),
+        legend=_legend_below(fig_h, entry_width=200, font_size=12),
     )
 
     st.plotly_chart(fig, width="stretch")
