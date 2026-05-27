@@ -8,7 +8,7 @@ from plotly.subplots import make_subplots
 
 from dd4bench.analysis.plots import plot_region_timing
 from dd4bench.analysis.plots._theme import _TEMPLATE
-from ui_utils import _DASHES, _PALETTES, _SYMBOLS, _bottom_legend_params, _is_valid_df, _to_rgba
+from ui_utils import _DASHES, _PALETTES, _PALETTE_NAMES, _SYMBOLS, _auto_palette_index, _bottom_legend_params, _is_valid_df, _to_rgba
 
 # Fixed colours for source / sink — independent of user palette
 _SINK_COLOR   = "#3FA5C8"   # teal-blue  — absorbs secondaries
@@ -63,20 +63,14 @@ def _render_attribution_analysis(region_data: dict, selected_labels: list[str]) 
     col_cfg, col_pal = st.columns([3, 1])
     with col_cfg:
         config = st.selectbox("Configuration", filtered_labels, key="ss_config")
-    with col_pal:
-        palette_name = st.selectbox(
-            "Colour palette", options=list(_PALETTES.keys()), index=0, key="ss_palette"
-        )
-    palette = _PALETTES[palette_name]
 
-    st.divider()
-    _attribution_explainer()
-
-    # ── Data ───────────────────────────────────────────────────────────────────
+    # ── Data (computed before palette selectbox so n is known for auto-index) ──
     data  = region_data.get(config, {})
     al_df = data.get("at_location")
     bb_df = data.get("by_birth")
     if al_df is None or bb_df is None:
+        with col_pal:
+            st.selectbox("Colour palette", options=_PALETTE_NAMES, index=0, key="ss_palette")
         st.info("Both attributions are required for this view.")
         return
 
@@ -94,10 +88,22 @@ def _render_attribution_analysis(region_data: dict, selected_labels: list[str]) 
     })
     det_list = union_max[union_max > 1e-9].sort_values(ascending=False).index.tolist()
     if not det_list:
+        with col_pal:
+            st.selectbox("Colour palette", options=_PALETTE_NAMES, index=0, key="ss_palette")
         st.info("No detector data to show.")
         return
 
-    n       = len(det_list)
+    n = len(det_list)
+    with col_pal:
+        palette_name = st.selectbox(
+            "Colour palette", options=_PALETTE_NAMES,
+            index=_auto_palette_index(n), key="ss_palette",
+        )
+    palette = _PALETTES[palette_name]
+
+    st.divider()
+    _attribution_explainer()
+
     al_vals = np.array([float(al_means.get(d, 0.0)) for d in det_list])
     bb_vals = np.array([float(bb_means.get(d, 0.0)) for d in det_list])
     delta   = al_vals - bb_vals
@@ -301,8 +307,8 @@ def _render_current_run(region_data: dict, selected_labels: list[str]) -> None:
     with col_pal:
         palette_name = st.selectbox(
             "Colour palette",
-            options=list(_PALETTES.keys()),
-            index=0,
+            options=_PALETTE_NAMES,
+            index=_auto_palette_index(top_n),
             key="region_cur_palette",
         )
 
@@ -351,11 +357,9 @@ def _render_historical(
             ),
         )
 
+    # Style controls — palette selectbox is rendered last (after top_detectors is
+    # known) so its default index can auto-select the right Matplotlib tab-N.
     ctrl_l, ctrl_m, ctrl_r = st.columns(3, vertical_alignment="bottom")
-    with ctrl_l:
-        palette_name = st.selectbox(
-            "Colour palette", options=list(_PALETTES.keys()), index=0, key="region_hist_palette"
-        )
     with ctrl_m:
         style_cycling = st.selectbox(
             "Style cycling",
@@ -369,7 +373,6 @@ def _render_historical(
             key="region_hist_alpha",
         )
 
-    palette    = _PALETTES[palette_name]
     use_dash   = style_cycling in ("Colour + Dash",   "Colour + Dash + Marker")
     use_marker = style_cycling in ("Colour + Marker", "Colour + Dash + Marker")
 
@@ -379,6 +382,8 @@ def _render_historical(
     ].copy()
 
     if sub.empty:
+        with ctrl_l:
+            st.selectbox("Colour palette", options=_PALETTE_NAMES, index=0, key="region_hist_palette")
         st.info(
             f"No historical region timing data for **{config}** "
             f"({attribution.replace('_', ' ')})."
@@ -399,6 +404,13 @@ def _render_historical(
         sub.groupby("detector")["median_time_s"].median().sort_values(ascending=False)
     )
     top_detectors = detector_rank.index.tolist()
+
+    with ctrl_l:
+        palette_name = st.selectbox(
+            "Colour palette", options=_PALETTE_NAMES,
+            index=_auto_palette_index(len(top_detectors)), key="region_hist_palette",
+        )
+    palette = _PALETTES[palette_name]
 
     unique_dates = sorted(sub["x_date"].dropna().unique())
     tick_labels  = [pd.Timestamp(d).strftime("%Y-%m-%d") for d in unique_dates]
@@ -502,6 +514,244 @@ def _render_historical(
     st.plotly_chart(fig, width="stretch")
 
 
+# ── Step Analysis view ────────────────────────────────────────────────────────
+
+def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None:
+    """Step count decomposition: scatter (steps vs µs/step) + ranked bar panels.
+
+    Answers: *why* is a region expensive?
+      - Many cheap steps  → geometry-dominated  (geometry simplification / step limits)
+      - Few expensive steps → physics-dominated (physics list / production cuts)
+
+    Uses ``interval_counts`` from the regions JSON, which the loader exposes
+    as ``region_data[label]["steps"]`` (a DataFrame indexed by event_number).
+    """
+    filtered_labels = [lbl for lbl in selected_labels if lbl in region_data and region_data[lbl]]
+    if not filtered_labels:
+        st.info("No region timing data available for any of the selected configurations.")
+        return
+
+    # ── Controls — config first, then data, then palette (needs n) ───────────
+    col_cfg, col_pal = st.columns([3, 1])
+    with col_cfg:
+        config = st.selectbox("Configuration", filtered_labels, key="sa_config")
+
+    data     = region_data.get(config, {})
+    al_df    = data.get("at_location")
+    steps_df = data.get("steps")
+
+    if al_df is None:
+        with col_pal:
+            st.selectbox("Colour palette", options=_PALETTE_NAMES, index=0, key="sa_palette")
+        st.info("No timing data available for this configuration.")
+        return
+    if steps_df is None:
+        with col_pal:
+            st.selectbox("Colour palette", options=_PALETTE_NAMES, index=0, key="sa_palette")
+        st.info(
+            "Step count data (`interval_counts`) is not available in this run's regions JSON. "
+            "Regenerate the benchmark output with a newer dd4bench version."
+        )
+        return
+
+    # Exclude warm-up event 0
+    al_df    = al_df.drop(index=0, errors="ignore")
+    steps_df = steps_df.drop(index=0, errors="ignore")
+
+    # Detectors present in both timing and step data (exclude "unattributed" steps)
+    dets = [d for d in al_df.columns if d in steps_df.columns and d != "unattributed"]
+
+    al_means    = al_df[dets].mean()
+    steps_means = steps_df[dets].fillna(0).mean().clip(lower=0)
+
+    # Sort by total mean time (most expensive first)
+    ranked = al_means[al_means > 1e-9].sort_values(ascending=False)
+    det_list = ranked.index.tolist()
+    if not det_list:
+        with col_pal:
+            st.selectbox("Colour palette", options=_PALETTE_NAMES, index=0, key="sa_palette")
+        st.info("No detector data to show.")
+        return
+
+    n = len(det_list)
+    with col_pal:
+        palette_name = st.selectbox(
+            "Colour palette", options=_PALETTE_NAMES,
+            index=_auto_palette_index(n), key="sa_palette",
+        )
+    palette    = _PALETTES[palette_name]
+    total_time = np.array([float(al_means[d])    for d in det_list])   # s
+    step_cnt   = np.array([max(float(steps_means.get(d, 0.0)), 0.1) for d in det_list])  # steps (floor for log)
+    tps_us     = total_time / step_cnt * 1e6   # µs per step
+
+    n_colors   = len(palette)
+    pt_colors  = [palette[i % n_colors] for i in range(n)]
+    # Which palette cycle each detector falls into (0 = first 10, 1 = next 10, …)
+    pt_cycles  = [i // n_colors for i in range(n)]
+
+    # ── Figure: scatter (left) + two bar panels (right) ───────────────────────
+    fig = make_subplots(
+        rows=1, cols=3,
+        column_widths=[0.44, 0.28, 0.28],
+        horizontal_spacing=0.06,
+        subplot_titles=[
+            "Steps vs cost per step",
+            "Mean steps / event",
+            "Time per step (µs)",
+        ],
+    )
+
+    # ── Scatter: one trace per detector for individual legend entries ──────────
+    # Bubble size ∝ √(total_time), scaled to [10, 38] px
+    sqrt_t     = np.sqrt(total_time)
+    size_range = (10.0, 38.0)
+    t_norm     = (sqrt_t - sqrt_t.min()) / (sqrt_t.max() - sqrt_t.min() + 1e-12)
+    msize      = size_range[0] + t_norm * (size_range[1] - size_range[0])
+
+    for i, det in enumerate(det_list):
+        cycle  = pt_cycles[i]
+        # Change marker symbol and border for each palette cycle so repeated
+        # colours are still visually distinguishable in the legend and scatter.
+        symbol       = _SYMBOLS[cycle % len(_SYMBOLS)]
+        border_color = pt_colors[i] if cycle > 0 else "white"
+        fig.add_trace(
+            go.Scatter(
+                x=[step_cnt[i]], y=[tps_us[i]],
+                mode="markers",
+                name=det,
+                legendgroup=det,
+                marker=dict(
+                    size=float(msize[i]),
+                    color=pt_colors[i],
+                    symbol=symbol,
+                    line=dict(color=border_color, width=1.5),
+                    opacity=0.88,
+                ),
+                showlegend=True,
+                customdata=[(det, float(step_cnt[i]), float(tps_us[i]),
+                             float(total_time[i]),
+                             float(total_time[i] / total_time.sum() * 100))],
+                hovertemplate=(
+                    "<b>%{customdata[0]}</b><br>"
+                    "Mean steps / event: %{customdata[1]:,.0f}<br>"
+                    "Time per step: %{customdata[2]:.2f} µs<br>"
+                    "Total mean time: %{customdata[3]:.4g} s<br>"
+                    "Share of event: %{customdata[4]:.1f}%<extra></extra>"
+                ),
+            ),
+            row=1, col=1,
+        )
+
+    # Quadrant zone labels (corner annotations in normalised subplot coords)
+    for ann in [
+        dict(x=0.02, y=0.97, text="<b>Physics-dominated</b><br><i>few, costly steps</i>",
+             color="#C05820", xanchor="left",  yanchor="top"),
+        dict(x=0.98, y=0.97, text="<b>Both</b><br><i>many costly steps</i>",
+             color="#880000", xanchor="right", yanchor="top"),
+        dict(x=0.98, y=0.03, text="<b>Geometry-dominated</b><br><i>many cheap steps</i>",
+             color="#1A7A1A", xanchor="right", yanchor="bottom"),
+        dict(x=0.02, y=0.03, text="<b>Negligible</b>",
+             color="#888888", xanchor="left",  yanchor="bottom"),
+    ]:
+        fig.add_annotation(
+            x=ann["x"], y=ann["y"],
+            xref="x domain", yref="y domain",
+            text=ann["text"],
+            showarrow=False,
+            font=dict(size=9, color=ann["color"]),
+            align="left" if ann["xanchor"] == "left" else "right",
+            xanchor=ann["xanchor"], yanchor=ann["yanchor"],
+            bgcolor="rgba(255,255,255,0.55)",
+            borderpad=3,
+        )
+
+    fig.update_xaxes(
+        title_text="Mean steps per event",
+        type="log",
+        row=1, col=1,
+    )
+    fig.update_yaxes(
+        title_text="Time per step (µs)",
+        row=1, col=1,
+    )
+
+    # ── Bar panels: one trace per detector so legend clicks hide/show bars too ──
+    # Each bar shares legendgroup with its scatter point → clicking a legend
+    # entry toggles visibility across all three panels simultaneously.
+    #
+    # Col 2 (mean steps/event): ordered by total mean time desc (matches scatter)
+    # Col 3 (time per step):    ordered independently by tps desc (highest at top)
+    # Y-tick labels are suppressed on both bars; the legend carries the names.
+
+    # Col 2 — add detectors in ascending total-time order so the most expensive
+    # ends up at the top (Plotly places the last-added category at the top).
+    # Second-palette-cycle detectors get a coloured border to stay distinguishable.
+    for i in reversed(range(n)):                    # cheapest first → most expensive last → top
+        det   = det_list[i]
+        cycle = pt_cycles[i]
+        fig.add_trace(
+            go.Bar(
+                y=[det],
+                x=[float(step_cnt[i])],
+                orientation="h",
+                name=det,
+                legendgroup=det,
+                showlegend=False,
+                marker_color=_to_rgba(pt_colors[i], 0.80),
+                marker_line_color=pt_colors[i] if cycle > 0 else "rgba(0,0,0,0)",
+                marker_line_width=2.0 if cycle > 0 else 0,
+                customdata=[(det, float(step_cnt[i]))],
+                hovertemplate="<b>%{customdata[0]}</b><br>Steps: %{customdata[1]:,.0f}<extra></extra>",
+            ),
+            row=1, col=2,
+        )
+    fig.update_xaxes(title_text="Mean steps / event", row=1, col=2)
+    fig.update_yaxes(showticklabels=False, row=1, col=2)
+
+    # Col 3 — sorted independently by tps ascending so the highest tps lands at top.
+    tps_order = sorted(range(n), key=lambda i: tps_us[i])   # lowest tps first → highest last → top
+    for i in tps_order:
+        det   = det_list[i]
+        cycle = pt_cycles[i]
+        fig.add_trace(
+            go.Bar(
+                y=[det],
+                x=[float(tps_us[i])],
+                orientation="h",
+                name=det,
+                legendgroup=det,
+                showlegend=False,
+                marker_color=_to_rgba(pt_colors[i], 0.80),
+                marker_line_color=pt_colors[i] if cycle > 0 else "rgba(0,0,0,0)",
+                marker_line_width=2.0 if cycle > 0 else 0,
+                customdata=[(det, float(tps_us[i]))],
+                hovertemplate="<b>%{customdata[0]}</b><br>%{customdata[1]:.2f} µs / step<extra></extra>",
+            ),
+            row=1, col=3,
+        )
+    fig.update_xaxes(title_text="Time per step (µs)", row=1, col=3)
+    fig.update_yaxes(showticklabels=False, row=1, col=3)
+
+    # ── Legend at bottom ───────────────────────────────────────────────────────
+    fig_h    = max(420, 70 + n * 35)
+    b_margin, legend_dict = _bottom_legend_params(
+        n_items=n, plot_h=fig_h, x_tick_gap=80, entry_width=200, font_size=12
+    )
+    # Bubble-size legend note
+    st.caption(
+        "Bubble area is proportional to total mean simulation time per event. "
+        "Log x-axis — step counts span several orders of magnitude."
+    )
+    fig.update_layout(
+        template=_TEMPLATE,
+        height=fig_h + b_margin,
+        margin=dict(l=20, r=20, t=45, b=b_margin),
+        legend=legend_dict,
+    )
+
+    st.plotly_chart(fig, width="stretch")
+
+
 # ── Tab entry point ────────────────────────────────────────────────────────────
 
 def render(
@@ -517,11 +767,20 @@ def render(
         return
 
     # Build view options dynamically based on available data
+    # Order: current-run analyses first, then historical trends
     view_options: list[str] = ["Current Run"]
-    if _is_valid_df(trend_region_df):
-        view_options.append("Historical Trends")
     if region_data is not None:
         view_options.append("Attribution Analysis")
+        # Step Analysis requires interval_counts — check any label has it
+        has_steps = any(
+            region_data[lbl].get("steps") is not None
+            for lbl in selected_labels
+            if lbl in region_data
+        )
+        if has_steps:
+            view_options.append("Step Analysis")
+    if _is_valid_df(trend_region_df):
+        view_options.append("Historical Trends")
 
     view = (
         st.radio("View", options=view_options, horizontal=True, key="region_view_mode")
@@ -538,3 +797,5 @@ def render(
         _render_historical(trend_region_df, selected_labels)
     elif view == "Attribution Analysis":
         _render_attribution_analysis(region_data, selected_labels)
+    elif view == "Step Analysis":
+        _render_step_analysis(region_data, selected_labels)
