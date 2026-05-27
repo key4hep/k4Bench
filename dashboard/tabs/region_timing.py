@@ -567,28 +567,21 @@ def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None
 
     # Sort by total mean time (most expensive first)
     ranked = al_means[al_means > 1e-9].sort_values(ascending=False)
-    all_det_list = ranked.index.tolist()
-    if not all_det_list:
+    det_list = ranked.index.tolist()
+    if not det_list:
         with col_pal:
             st.selectbox("Colour palette", options=_PALETTE_NAMES, index=0, key="sa_palette")
         st.info("No detector data to show.")
         return
 
-    # ── Secondary controls (need data to set slider max) ──────────────────────
-    n_total = len(all_det_list)
-    ctrl_topn, ctrl_logy, _ = st.columns([2, 1, 1])
-    with ctrl_topn:
-        top_n = st.slider(
-            "Top N detectors", min_value=3, max_value=n_total,
-            value=min(n_total, 15), key="sa_topn",
-        )
+    n = len(det_list)
+
+    # ── Log Y-axis toggle ─────────────────────────────────────────────────────
+    _, ctrl_logy = st.columns([3, 1])
     with ctrl_logy:
         log_y = st.toggle("Log Y-axis", value=False, key="sa_logy",
                           help="Switch the cost-per-step axis to log scale — "
                                "useful when a few detectors dominate by orders of magnitude.")
-
-    det_list = all_det_list[:top_n]
-    n = len(det_list)
 
     with col_pal:
         palette_name = st.selectbox(
