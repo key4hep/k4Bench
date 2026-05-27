@@ -103,22 +103,31 @@ def _render_attribution_analysis(region_data: dict, selected_labels: list[str]) 
     delta   = al_vals - bb_vals
 
     # % asymmetry = (al − bb) / avg(al, bb) × 100
-    # Always visible regardless of absolute scale; symmetric around zero.
-    denom     = np.where((al_vals + bb_vals) > 1e-12, (al_vals + bb_vals) / 2.0, 1e-12)
-    pct_asymm = delta / denom * 100.0
+    # Detectors whose combined signal is too small (< 1e-6 s) are masked to NaN
+    # to avoid noise-dominated asymmetries exploding the axis scale.
+    total     = al_vals + bb_vals
+    valid     = total > 1e-6
+    pct_asymm = np.full_like(delta, np.nan)
+    pct_asymm[valid] = delta[valid] / (total[valid] / 2.0) * 100.0
 
-    # Bar ordering: descending pct → biggest sinks at top (Plotly puts first
-    # category at the top for horizontal bars)
-    bar_ord   = np.argsort(pct_asymm)[::-1]
+    # Bar ordering: descending pct → positive (at_location > by_birth, i.e. sink-like)
+    # at top.  Convention: positive asymmetry ⇒ at_location dominates ⇒ sink-like.
+    # NaN (unmeasurable signal) is treated as zero for ordering so it sinks to the
+    # middle; Plotly places the first category at the top for horizontal bars.
+    bar_ord   = np.argsort(np.nan_to_num(pct_asymm, nan=0.0))[::-1]
     bar_dets  = [det_list[i]  for i in bar_ord]
     bar_pct   = pct_asymm[bar_ord]
     bar_delta = delta[bar_ord]
     bar_al    = al_vals[bar_ord]
     bar_bb    = bb_vals[bar_ord]
-    bar_colors = [
-        _to_rgba(_SINK_COLOR,   0.82) if p >= 0 else _to_rgba(_SOURCE_COLOR, 0.82)
-        for p in bar_pct
-    ]
+    bar_colors = []
+    for p in bar_pct:
+        if np.isnan(p):
+            bar_colors.append("rgba(160,160,160,0.55)")  # grey — signal too small
+        elif p >= 0:
+            bar_colors.append(_to_rgba(_SINK_COLOR,   0.82))
+        else:
+            bar_colors.append(_to_rgba(_SOURCE_COLOR, 0.82))
 
     pt_colors = [palette[i % len(palette)] for i in range(n)]
 
@@ -173,7 +182,7 @@ def _render_attribution_analysis(region_data: dict, selected_labels: list[str]) 
     # Zone badges
     fig.add_annotation(
         x=ax_max * 0.07, y=ax_max * 0.91,
-        xref="x", yref="y",
+        xref="x1", yref="y1",
         text="<b>Sink</b>",
         showarrow=False,
         font=dict(size=10, color=_SINK_COLOR),
@@ -183,7 +192,7 @@ def _render_attribution_analysis(region_data: dict, selected_labels: list[str]) 
     )
     fig.add_annotation(
         x=ax_max * 0.93, y=ax_max * 0.09,
-        xref="x", yref="y",
+        xref="x1", yref="y1",
         text="<b>Source</b>",
         showarrow=False,
         font=dict(size=10, color=_SOURCE_COLOR),
@@ -234,7 +243,8 @@ def _render_attribution_analysis(region_data: dict, selected_labels: list[str]) 
         row=1, col=2,
     )
 
-    x_abs = float(max(abs(float(bar_pct.min())), abs(float(bar_pct.max())))) * 1.20
+    # Use nan-safe min/max since bar_pct may contain NaN for tiny-signal detectors.
+    x_abs = float(max(abs(np.nanmin(bar_pct)), abs(np.nanmax(bar_pct)))) * 1.20
     x_abs = max(x_abs, 5.0)
     fig.update_xaxes(
         title_text="← source  |  asymmetry (%)  |  sink →",
@@ -243,7 +253,7 @@ def _render_attribution_analysis(region_data: dict, selected_labels: list[str]) 
     )
 
     # ── Legend at bottom ───────────────────────────────────────────────────────
-    fig_h    = max(420, 70 + n * 35)
+    fig_h    = min(max(420, 70 + n * 35), 1400)  # cap at 1400 px to stay sane in Streamlit
     b_margin, legend_dict = _bottom_legend_params(
         n_items=n, plot_h=fig_h, x_tick_gap=80, entry_width=200, font_size=12
     )
@@ -378,7 +388,9 @@ def _render_historical(
     sub["x_date"]   = pd.to_datetime(sub["x_date"])
     sub["run_date"] = pd.to_datetime(sub["run_date"])
 
-    # Deduplicate: keep the latest CI run per (detector, nightly tag)
+    # Deduplicate: keep the latest CI run per (detector, nightly tag).
+    # Drop rows where run_date is NaT first — idxmax() raises on all-NaT groups.
+    sub = sub.dropna(subset=["run_date"])
     sub = sub.loc[
         sub.groupby(["detector", "x_date"])["run_date"].idxmax()
     ].reset_index(drop=True)
