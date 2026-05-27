@@ -222,6 +222,17 @@ def load_region_timing(
             at_loc_df   = at_loc_df.reindex(  columns=declared + extra_at,  fill_value=0.0)
             by_birth_df = by_birth_df.reindex( columns=declared + extra_by, fill_value=0.0)
 
+        # Step counts per detector per event (interval_counts field, optional).
+        # Columns include all detector names plus "unattributed" for steps that
+        # could not be assigned to a top-level detector element.
+        raw_steps = raw.get("interval_counts", [])
+        if raw_steps and len(raw_steps) == n_ev:
+            steps_df: pd.DataFrame | None = (
+                pd.DataFrame(raw_steps, index=ev_index).fillna(0).astype(float)
+            )
+        else:
+            steps_df = None
+
         out[label] = {
             "meta": {
                 "schema_version":    raw.get("schema_version", 1),
@@ -234,6 +245,7 @@ def load_region_timing(
             "events":      events_df,
             "at_location": at_loc_df,
             "by_birth":    by_birth_df,
+            "steps":       steps_df,   # None when interval_counts absent in JSON
         }
 
     if not out:

@@ -5,7 +5,7 @@ import streamlit as st
 
 from dd4bench.analysis.plots import plot_event_timing
 from stats import build_event_stats_table, select_top_n_by_ratio, style_stats_table
-from ui_utils import _is_valid_df, _PALETTES, _render_historical_trends
+from ui_utils import _is_valid_df, _PALETTES, _PALETTE_NAMES, _auto_palette_index, _render_historical_trends
 
 
 _STAT_COLS = {
@@ -67,8 +67,8 @@ def _render_current_run(
     with col_pal:
         palette_name = st.selectbox(
             "Colour palette",
-            options=list(_PALETTES.keys()),
-            index=0,
+            options=_PALETTE_NAMES,
+            index=_auto_palette_index(top_n),
             key="evt_timing_palette",
         )
 

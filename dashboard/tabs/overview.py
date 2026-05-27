@@ -6,10 +6,14 @@ import streamlit as st
 from dd4bench.analysis.plots import plot_run_overview
 
 _ALL_METRICS = [
-    ("wall_time_s", "Wall Time (s)"),
-    ("peak_rss_mb", "Peak RSS (MB)"),
-    ("user_cpu_s", "User CPU (s)"),
-    ("events_per_sec", "Throughput (ev/s)"),
+    # Performance
+    ("wall_time_s",              "Wall Time (s)"),
+    ("events_per_sec",           "Throughput (ev/s)"),
+    ("cpu_efficiency",           "CPU Efficiency"),
+    # Resources
+    ("user_cpu_s",               "User CPU (s)"),
+    ("peak_rss_mb",              "Peak RSS (MB)"),
+    ("involuntary_ctx_switches", "Involuntary Ctx Switches"),
 ]
 
 
@@ -34,6 +38,13 @@ def render(
 
     chosen_metrics = [(col, label) for col, label in _ALL_METRICS if label in chosen_labels]
     metrics = chosen_metrics if chosen_metrics else None
+
+    # Compute derived columns before handing the DataFrame to the plot function
+    results = results.copy()
+    if "user_cpu_s" in results.columns and "wall_time_s" in results.columns:
+        results["cpu_efficiency"] = (
+            results["user_cpu_s"] / results["wall_time_s"].replace(0, float("nan"))
+        )
 
     fig = plot_run_overview(
         results,

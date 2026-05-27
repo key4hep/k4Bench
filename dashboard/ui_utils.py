@@ -43,17 +43,62 @@ def _to_rgba(color: str, alpha: float) -> str:
 
 # ── Style constants ────────────────────────────────────────────────────────────
 
+
+# ── Matplotlib qualitative palettes (tab10 / tab20 / tab30 / tab40) ───────────
+# tab20 = tab10 hues reordered so all 10 dark shades come first, then the 10
+# lighter companions → ≤10 items look identical to plain "Matplotlib".
+# tab30 adds 10 hand-picked distinct colours from matplotlib's tab20b map.
+# tab40 extends further with 10 from tab20c.
+# "Matplotlib (auto)" picks the smallest variant that covers n without cycling.
+_TAB20_DARK  = ["#1f77b4","#ff7f0e","#2ca02c","#d62728","#9467bd",
+                "#8c564b","#e377c2","#7f7f7f","#bcbd22","#17becf"]
+_TAB20_LIGHT = ["#aec7e8","#ffbb78","#98df8a","#ff9896","#c5b0d5",
+                "#c49c94","#f7b6d2","#c7c7c7","#dbdb8d","#9edae5"]
+_TAB20  = _TAB20_DARK + _TAB20_LIGHT
+# One medium-dark representative per hue group in tab20b
+_TAB20B_10 = ["#5254a3","#8ca252","#bd9e39","#ad494a","#a55194",
+              "#6b6ecf","#b5cf6b","#e7ba52","#d6616b","#ce6dbd"]
+# One medium representative per hue group in tab20c
+_TAB20C_10 = ["#3182bd","#e6550d","#31a354","#756bb1","#636363",
+              "#6baed6","#fd8d3c","#74c476","#9e9ac8","#969696"]
+_TAB30 = _TAB20 + _TAB20B_10
+_TAB40 = _TAB30 + _TAB20C_10
+
 _PALETTES: dict[str, list[str]] = {
-    "Matplotlib": PALETTE,
-    "Plotly":     _ql.Plotly,
-    "D3":         _ql.D3,
-    "G10":        _ql.G10,
-    "Dark24":     _ql.Dark24,
-    "Light24":    _ql.Light24,
-    "Alphabet":   _ql.Alphabet,
-    "Safe":       _ql.Safe,
-    "Bold":       _ql.Bold,
+    "Matplotlib":       PALETTE,
+    "Matplotlib tab20": _TAB20,
+    "Matplotlib tab30": _TAB30,
+    "Matplotlib tab40": _TAB40,
+    "Plotly":           _ql.Plotly,
+    "D3":               _ql.D3,
+    "G10":              _ql.G10,
+    "Dark24":           _ql.Dark24,
+    "Light24":          _ql.Light24,
+    "Alphabet":         _ql.Alphabet,
+    "Safe":             _ql.Safe,
+    "Bold":             _ql.Bold,
 }
+_PALETTE_NAMES = list(_PALETTES.keys())
+
+
+def _auto_palette_index(n: int) -> int:
+    """Return the *_PALETTES* index for the smallest Matplotlib tab-N that fits *n*
+    items without colour cycling.  Used as the ``index`` default for palette
+    selectboxes so the dropdown already shows the right entry on first render.
+    The user can always switch back to plain "Matplotlib" (10-colour cycling).
+    """
+    if n <= len(PALETTE):
+        name = "Matplotlib"
+    elif n <= len(_TAB20):
+        name = "Matplotlib tab20"
+    elif n <= len(_TAB30):
+        name = "Matplotlib tab30"
+    else:
+        name = "Matplotlib tab40"
+    try:
+        return _PALETTE_NAMES.index(name)
+    except ValueError:
+        return 0
 
 _DASHES  = ["solid", "dash", "dot", "dashdot"]
 _SYMBOLS = ["circle", "square", "diamond", "cross",
@@ -155,8 +200,8 @@ def _render_historical_trends(
     with ctrl_l:
         palette_name = st.selectbox(
             "Colour palette",
-            options=list(_PALETTES.keys()),
-            index=0,
+            options=_PALETTE_NAMES,
+            index=_auto_palette_index(len(filtered_labels)),
             key=f"{key_prefix}_palette",
         )
     with ctrl_m:

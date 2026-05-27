@@ -6,14 +6,18 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from dd4bench.analysis.plots._theme import _TEMPLATE
-from ui_utils import _DASHES, _PALETTES, _SYMBOLS, _to_rgba
+from ui_utils import _DASHES, _PALETTES, _PALETTE_NAMES, _SYMBOLS, _auto_palette_index, _bottom_legend_params, _to_rgba
 
 
 _METRICS = [
-    ("wall_time_s",    "Wall Time (s)"),
-    ("user_cpu_s",     "User CPU (s)"),
-    ("peak_rss_mb",    "Peak RSS (MB)"),
-    ("events_per_sec", "Throughput (ev/s)"),
+    # Row 1 — performance: how fast, how many events, how efficiently
+    ("wall_time_s",               "Wall Time (s)"),
+    ("events_per_sec",            "Throughput (ev/s)"),
+    ("cpu_efficiency",            "CPU Efficiency"),
+    # Row 2 — resources: CPU, memory, OS pressure
+    ("user_cpu_s",                "User CPU (s)"),
+    ("peak_rss_mb",               "Peak RSS (MB)"),
+    ("involuntary_ctx_switches",  "Involuntary Context Switches"),
 ]
 
 
@@ -38,16 +42,16 @@ def _render_timeseries(
     tick_labels  = [pd.Timestamp(d).strftime("%Y-%m-%d") for d in unique_dates]
     n = len(present_metrics)
 
-    # Lay out metrics in a 2-column grid (ceil(n/2) rows × 2 cols)
-    n_cols = min(n, 2)
+    # Lay out metrics in a 3-column grid (ceil(n/3) rows x 3 cols)
+    n_cols = min(n, 3)
     n_rows = -(-n // n_cols)   # ceiling division
 
     fig = make_subplots(
         rows=n_rows,
         cols=n_cols,
         shared_xaxes="all",
-        horizontal_spacing=0.10,
-        vertical_spacing=0.08,
+        horizontal_spacing=0.08,
+        vertical_spacing=0.14,   # room for per-row x-tick labels
     )
 
     for cfg_idx, cfg_label in enumerate(selected_labels):
@@ -88,46 +92,48 @@ def _render_timeseries(
                 row=row, col=col,
             )
 
-    # Apply ticks to all axes first, then hide them on the top row
+    # Show tick labels on every row; axis title only on the bottom row.
     fig.update_xaxes(
         type="date",
         tickmode="array",
         tickvals=unique_dates,
         ticktext=tick_labels,
         tickangle=-30,
-        title_text="Key4hep Nightly Tag",
+        showticklabels=True,
+        title_text="",          # suppress by default; added to bottom row below
     )
-    if n_rows > 1:
-        for col in range(1, n_cols + 1):
-            fig.update_xaxes(
-                showticklabels=False,
-                title_text="",
-                row=1, col=col,
-            )
+    for col in range(1, n_cols + 1):
+        fig.update_xaxes(title_text="Key4hep Nightly Tag", row=n_rows, col=col)
+
     for plot_idx, (_, metric_label) in enumerate(present_metrics):
         ykey = "yaxis" if plot_idx == 0 else f"yaxis{plot_idx + 1}"
         fig.update_layout({ykey: {"title": {"text": f"<b>{metric_label}</b>"}}})
 
-    t_margin   = 40
-    b_margin   = 100   # room for bottom-row x-tick labels only
-    fig_height = n_rows * 380 + t_margin + b_margin
+    t_margin  = 40
+    plot_h    = n_rows * 350
+    b_margin, legend_dict = _bottom_legend_params(
+        n_items=len(selected_labels),
+        plot_h=plot_h,
+        x_tick_gap=130,
+        entry_width=200,
+        font_size=12,
+    )
 
     fig.update_layout(
         template=_TEMPLATE,
-        height=fig_height,
-        margin=dict(l=20, r=200, t=t_margin, b=b_margin),
-        legend=dict(
-            orientation="v",
-            x=1.02,
-            xanchor="left",
-            y=0.5,
-            yanchor="middle",
-            tracegroupgap=4,
-            font=dict(size=13),
-        ),
+        height=plot_h + t_margin + b_margin,
+        margin=dict(l=20, r=20, t=t_margin, b=b_margin),
+        legend=legend_dict,
     )
 
     st.plotly_chart(fig, width="stretch")
+
+    if any(col == "cpu_efficiency" for col, _ in present_metrics):
+        st.caption(
+            "ℹ️ **CPU Efficiency** = User CPU time / Wall time. "
+            "Values > 1 are expected for multi-threaded jobs "
+            "(more CPU-seconds consumed than wall-clock seconds elapsed)."
+        )
 
 
 def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
@@ -143,8 +149,8 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
     with ctrl_l:
         palette_name = st.selectbox(
             "Colour palette",
-            options=list(_PALETTES.keys()),
-            index=0,
+            options=_PALETTE_NAMES,
+            index=_auto_palette_index(len(selected_labels)),
         )
     with ctrl_m:
         style_cycling = st.selectbox(
@@ -181,6 +187,10 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
     # When multiple CI runs share the same nightly tag, keep only the latest run.
     df = df.loc[df.groupby(["label", "x_date"])["run_date"].idxmax()].reset_index(drop=True)
     df["run_date_str"] = df["run_date"].dt.strftime("%Y-%m-%d").fillna("unknown")
+
+    # Derived metrics
+    if "user_cpu_s" in df.columns and "wall_time_s" in df.columns:
+        df["cpu_efficiency"] = df["user_cpu_s"] / df["wall_time_s"].replace(0, float("nan"))
     if df.empty:
         st.warning("No trend data for the selected configurations.")
         return
