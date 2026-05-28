@@ -83,11 +83,7 @@ jobs:
           oc login \
             --token="${OC_TOKEN// /}" \
             --server="${OC_SERVER// /}" \
-            --insecure-skip-tls-verify=true \
-            --loglevel=8
-
-      - name: Apply WebEOS UserProvidedDirectory
-        run: oc apply -f openshift/userprovideddirectory.yaml
+            --insecure-skip-tls-verify=true
 
       - name: Apply Deployment / Service / Route
         run: |
