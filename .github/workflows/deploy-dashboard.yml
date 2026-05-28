@@ -6,6 +6,13 @@ on:
     workflows: ["Nightly Benchmark"]
     types: [completed]
     branches: [main]
+  # Redeploy immediately when dashboard or deployment config changes
+  push:
+    branches: [main]
+    paths:
+      - 'dashboard/**'
+      - 'openshift/**'
+      - '.github/workflows/deploy-dashboard.yml'
   # Allow manual redeploy at any time
   workflow_dispatch:
 
@@ -61,6 +68,7 @@ jobs:
     environment: production
     if: >-
       github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
       github.event.workflow_run.conclusion == 'success'
     steps:
       - uses: actions/checkout@v4
