@@ -116,6 +116,13 @@ if [[ -n "${STEERING_FILE}" ]]; then
     DDSIM_ARGS="--steeringFile ${STEERING_PATH} ${DDSIM_ARGS}"
     echo "Steering : ${STEERING_PATH}"
 fi
+
+# dd4bench has no top-level --inputFiles flag; it forwards everything in
+# --ddsim-args verbatim to ddsim. So we prepend --inputFiles into DDSIM_ARGS.
+if [[ -n "${INPUT_FILES}" ]]; then
+    DDSIM_ARGS="--inputFiles ${INPUT_FILES} ${DDSIM_ARGS}"
+    echo "Inputs   : ${INPUT_FILES}"
+fi
 echo "::endgroup::"
 
 # Capture the date once here so run_info.json and the EOS upload path always agree,
@@ -138,7 +145,6 @@ CMD=(dd4bench
 [[ -n "${INCLUDE_ONLY}" ]]   && read -ra _arr <<< "${INCLUDE_ONLY}" && CMD+=(--include-only "${_arr[@]}")
 [[ -n "${EXCLUDE_ONLY}" ]]   && read -ra _arr <<< "${EXCLUDE_ONLY}" && CMD+=(--exclude-only "${_arr[@]}")
 [[ "${VERBOSE}" == "true" ]] && CMD+=(--verbose)
-[[ -n "${INPUT_FILES}" ]]    && read -ra _arr <<< "${INPUT_FILES}"  && CMD+=(--inputFiles "${_arr[@]}")
 [[ -n "${DDSIM_ARGS}" ]]     && CMD+=(--ddsim-args="${DDSIM_ARGS}")
 
 echo "$ ${CMD[*]}"

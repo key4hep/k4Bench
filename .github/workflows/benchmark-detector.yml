@@ -48,6 +48,15 @@ jobs:
           path: /tmp/dnf-cache
           key: dnf-alma9-nightly-v1
 
+      - name: Warm up CVMFS repos
+        # Force host-side autofs to mount the repos before docker run inherits
+        # them via :shared propagation; without this the container can see EIO
+        # the first time it traverses an unmounted CVMFS path.
+        run: |
+          ls /cvmfs/sw-nightlies.hsf.org/ > /dev/null
+          ls /cvmfs/sw.hsf.org/          > /dev/null
+          ls /cvmfs/grid.cern.ch/        > /dev/null
+
       - name: Set up EOS service certificate
         run: |
           mkdir -p "$RUNNER_TEMP/eos-auth"
