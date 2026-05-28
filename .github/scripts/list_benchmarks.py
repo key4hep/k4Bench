@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """
-Expand .github/benchmarks/*.yml into a flat list of benchmark jobs and print
-it as JSON to stdout. The output feeds the nightly workflow matrix; each
-record is a fully-merged config that can be consumed by the runner as plain
-env vars — no YAML parsing happens downstream.
+Expand .github/benchmarks/*.yml into benchmark jobs and print them as JSON
+on stdout. Two output shapes:
+
+  default  — flat list, one record per (detector, sample)
+  --grouped — list of {detector, samples: [...]} so the nightly workflow can
+              fan out one reusable-workflow call per detector and nest the
+              sample matrix beneath it in the Actions UI
+
+Each sample record is a fully-merged config consumed downstream as plain env
+vars — no YAML parsing happens after this script runs.
 
 Top-level keys in a benchmark file are detector-wide defaults; keys inside a
 samples[] entry override them for that sample only. The single exception is
@@ -94,12 +100,20 @@ def expand(path: Path) -> list[dict]:
     return records
 
 
+def _group_by_detector(items: list[dict]) -> list[dict]:
+    grouped: dict[str, list[dict]] = {}
+    for item in items:
+        grouped.setdefault(item["config"], []).append(item)
+    return [{"detector": d, "samples": s} for d, s in grouped.items()]
+
+
 def main() -> None:
+    grouped = "--grouped" in sys.argv[1:]
     paths = sorted(BENCH_DIR.glob("*.yml"))
     if not paths:
         _die(f"no benchmark configs found in {BENCH_DIR}/")
     items = [r for p in paths for r in expand(p)]
-    print(json.dumps(items))
+    print(json.dumps(_group_by_detector(items) if grouped else items))
 
 
 if __name__ == "__main__":
