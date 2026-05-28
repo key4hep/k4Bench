@@ -33,6 +33,7 @@ jobs:
   # ── Run one benchmark job per (detector, sample) ──────────────────────────
   benchmark:
     needs: discover
+    name: ${{ matrix.config }} / ${{ matrix.sample }}
     runs-on: [self-hosted, fcc-ironic]
     strategy:
       matrix:
@@ -44,7 +45,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: cvmfs-contrib/github-action-cvmfs@v5
+      # /cvmfs is pre-mounted on self-hosted ironic runners; only GitHub-hosted
+      # runners need the installer (and the installer assumes Ubuntu).
+      - name: Install CVMFS (GitHub-hosted runners only)
+        if: runner.environment == 'github-hosted'
+        uses: cvmfs-contrib/github-action-cvmfs@v5
 
       - name: Cache DNF packages
         uses: actions/cache@v5
