@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -51,13 +52,19 @@ def expand(path: Path) -> list[dict]:
         _die(f"invalid config name {config!r} (from {path})")
 
     cfg = yaml.safe_load(path.read_text()) or {}
+    if not isinstance(cfg, dict):
+        _die(f"top-level YAML must be a mapping in {path}")
     samples = cfg.get("samples") or []
+    if not isinstance(samples, list):
+        _die(f"'samples' must be a list in {path}")
     if not samples:
         _die(f"no samples defined in {path}")
 
     records = []
     for s in samples:
-        name = s.get("name") if isinstance(s, dict) else None
+        if not isinstance(s, dict):
+            _die(f"sample entries in {path} must be mappings, got {type(s).__name__}")
+        name = s.get("name")
         if not name:
             _die(f"sample entry in {path} is missing 'name'")
         if not SAMPLE_RE.match(name):
@@ -77,7 +84,7 @@ def expand(path: Path) -> list[dict]:
         loc = f"{path}::{name}"
         if not rec["n_events"].isdigit() or int(rec["n_events"]) <= 0:
             _die(f"n_events must be a positive integer ({loc})")
-        if rec["input_files"] and "--enableGun" in rec["ddsim_args"]:
+        if rec["input_files"] and "--enableGun" in shlex.split(rec["ddsim_args"]):
             _die(f"input_files and '--enableGun' in ddsim_args are mutually exclusive ({loc})")
         modes = (rec["sweep"] == "true") + bool(rec["include_only"]) + bool(rec["exclude_only"])
         if modes > 1:

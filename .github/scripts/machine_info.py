@@ -86,23 +86,29 @@ def collect_start() -> dict:
         (l.split(":", 1)[1].strip() for l in cpuinfo.splitlines() if "model name" in l),
         "unknown",
     )
-    cpu_logical = cpuinfo.count("processor\t:")
+    # Tolerate any whitespace between the field name and the colon.
+    cpu_logical = sum(1 for l in cpuinfo.splitlines() if l.startswith("processor"))
 
     # Count unique (physical_id, core_id) pairs — more accurate than socket count
     # alone. Falls back to logical count if these fields are absent (VMs, containers).
     pairs: set = set()
     current: dict = {}
+
+    def _flush(block: dict) -> None:
+        if "processor" in block:
+            pairs.add((
+                block.get("physical id", "0"),
+                block.get("core id", block.get("processor", "0")),
+            ))
+
     for line in cpuinfo.splitlines():
         if not line.strip():
-            if "processor" in current:
-                pairs.add((
-                    current.get("physical id", "0"),
-                    current.get("core id", current.get("processor", "0")),
-                ))
+            _flush(current)
             current = {}
         elif ":" in line:
             k, _, v = line.partition(":")
             current[k.strip()] = v.strip()
+    _flush(current)  # capture the final block when no trailing blank line
     cpu_physical = len(pairs) if pairs else cpu_logical
     cpu_flags = next(
         (l.split(":", 1)[1].strip().split() for l in cpuinfo.splitlines() if l.startswith("flags")),

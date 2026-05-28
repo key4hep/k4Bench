@@ -27,7 +27,7 @@ jobs:
       - name: List benchmark configs
         id: list
         run: |
-          pip3 install --quiet pyyaml
+          pip3 install --quiet 'pyyaml>=6.0,<6.1'
           echo "configs=$(python3 .github/scripts/list_benchmarks.py)" >> "$GITHUB_OUTPUT"
 
   # ── Run one benchmark job per (detector, sample) ──────────────────────────
