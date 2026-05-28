@@ -1,10 +1,22 @@
 #!/bin/bash
 #
 # Runs a single dd4bench benchmark and uploads results to CERN EOS.
-# Detector configuration is read from .github/benchmarks/${BENCHMARK_CONFIG}.yml.
+# All configuration arrives via environment variables; the matrix in
+# .github/workflows/nightly.yml expands .github/benchmarks/*.yml into a
+# flat set of jobs (see .github/scripts/list_benchmarks.py).
 #
 # Required env vars (set by the workflow):
 #   BENCHMARK_CONFIG  — config file stem, e.g. "ALLEGRO_o1_v03"
+#   BENCHMARK_SAMPLE  — sample name, e.g. "single_e-_10GeV"
+#   XML_PATH          — detector geometry, $K4GEO-relative or absolute
+#   N_EVENTS          — positive integer
+#   DDSIM_ARGS        — verbatim ddsim flags (string, may be empty)
+#   INPUT_FILES       — space-separated HepMC paths (may be empty)
+#   STEERING_FILE     — optional ddsim --steeringFile path; $VAR expansion supported
+#   SWEEP             — "true"/"false"
+#   VERBOSE           — "true"/"false"
+#   INCLUDE_ONLY      — space-separated subdetector names (may be empty)
+#   EXCLUDE_ONLY      — space-separated subdetector names (may be empty)
 #   X509_USER_CERT, X509_USER_KEY — EOS service certificate paths
 #   GITHUB_RUN_ID, GITHUB_SHA, GITHUB_REPOSITORY, GITHUB_SERVER_URL
 #
@@ -27,81 +39,25 @@ set -euo pipefail
 EOS_FQDN="eosuser.cern.ch"
 EOS_ROOT="/eos/user/j/jbeirer/dd4bench"
 
-CONFIG_FILE=".github/benchmarks/${BENCHMARK_CONFIG}.yml"
+SAMPLE="${BENCHMARK_SAMPLE}"
 
 # ── 1. System dependencies ────────────────────────────────────────────────────
 echo "::group::1. System dependencies"
-dnf install -y --quiet time python3-pyyaml voms-clients
+dnf install -y --quiet time voms-clients
 echo "::endgroup::"
 
-# ── 2. Read detector config ───────────────────────────────────────────────────
-echo "::group::2. Detector config (${CONFIG_FILE})"
-
-# Read a scalar value from the YAML config.  Usage: _cfg <key> [default]
-_cfg() {
-    python3 -c "
-import sys, yaml
-try:
-    with open('${CONFIG_FILE}') as f:
-        cfg = yaml.safe_load(f) or {}
-except Exception as e:
-    print(f'ERROR: Failed to read config: {e}', file=sys.stderr)
-    sys.exit(1)
-val = cfg.get(sys.argv[1])
-if val is None:
-    print(sys.argv[2] if len(sys.argv) > 2 else '')
-elif isinstance(val, bool):
-    print(str(val).lower())
-else:
-    print(str(val).strip())
-" "$@"
-}
-
-# Read a list value as space-separated tokens.  Usage: _cfg_list <key>
-_cfg_list() {
-    python3 -c "
-import sys, yaml
-try:
-    with open('${CONFIG_FILE}') as f:
-        cfg = yaml.safe_load(f) or {}
-except Exception as e:
-    print(f'ERROR: Failed to read config: {e}', file=sys.stderr)
-    sys.exit(1)
-val = cfg.get(sys.argv[1])
-if isinstance(val, list):
-    print(' '.join(str(v) for v in val))
-elif val is not None:
-    print(str(val).strip())
-" "$@"
-}
-
-XML_PATH=$(_cfg xml)
-SAMPLE=$(_cfg sample)
-DDSIM_ARGS=$(_cfg ddsim_args "")
-VERBOSE=$(_cfg verbose "false")
-SWEEP=$(_cfg sweep "false")
-INCLUDE_ONLY=$(_cfg_list include_only)
-EXCLUDE_ONLY=$(_cfg_list exclude_only)
-N_EVENTS=$(_cfg n_events)
-[[ "${N_EVENTS}" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: 'n_events' must be a positive integer in ${CONFIG_FILE}"; exit 1; }
-[[ -n "${SAMPLE}" ]]                  || { echo "ERROR: 'sample' must be set in ${CONFIG_FILE}"; exit 1; }
-# Validate sample slug: filesystem-safe characters only
-[[ "${SAMPLE}" =~ ^[A-Za-z0-9_.+-]+$ ]] || { echo "ERROR: 'sample' must only contain [A-Za-z0-9_.-+] — got: '${SAMPLE}'"; exit 1; }
-
-# sweep / include_only / exclude_only are mutually exclusive
-SWEEP_MODES=0
-[[ "${SWEEP}"         == "true" ]] && (( SWEEP_MODES++ )) || true
-[[ -n "${INCLUDE_ONLY}" ]]         && (( SWEEP_MODES++ )) || true
-[[ -n "${EXCLUDE_ONLY}" ]]         && (( SWEEP_MODES++ )) || true
-(( SWEEP_MODES <= 1 )) || { echo "ERROR: sweep, include_only, and exclude_only are mutually exclusive"; exit 1; }
-
-echo "  xml          : ${XML_PATH}"
+# ── 2. Job parameters ─────────────────────────────────────────────────────────
+echo "::group::2. Job parameters"
+echo "  config       : ${BENCHMARK_CONFIG}"
 echo "  sample       : ${SAMPLE}"
+echo "  xml          : ${XML_PATH}"
 echo "  n_events     : ${N_EVENTS}"
 echo "  verbose      : ${VERBOSE}"
 echo "  sweep        : ${SWEEP}"
 echo "  include_only : ${INCLUDE_ONLY:-<none>}"
 echo "  exclude_only : ${EXCLUDE_ONLY:-<none>}"
+echo "  input_files  : ${INPUT_FILES:-<none>}"
+echo "  steering_file: ${STEERING_FILE:-<none>}"
 echo "  ddsim_args   : ${DDSIM_ARGS:-<none>}"
 echo "::endgroup::"
 
@@ -139,8 +95,8 @@ pip install --no-build-isolation --quiet "."
 bash plugin/build.sh
 echo "::endgroup::"
 
-# ── 5. Resolve geometry ───────────────────────────────────────────────────────
-echo "::group::5. Resolve geometry"
+# ── 5. Resolve inputs (geometry + optional ddsim steering file) ───────────────
+echo "::group::5. Resolve inputs"
 if [[ "${XML_PATH}" = /* ]]; then
     DETECTOR_XML="${XML_PATH}"
 else
@@ -150,6 +106,16 @@ fi
 DETECTOR=$(basename "${DETECTOR_XML}" .xml)
 echo "Detector : ${DETECTOR}"
 echo "XML      : ${DETECTOR_XML}"
+
+# Optional steering file. The path may reference Key4hep env vars (e.g. $FCCCONFIG)
+# so we expand it here, after the Key4hep stack is sourced. Prepended to DDSIM_ARGS
+# so a sample-level --steeringFile flag would override it if both are given.
+if [[ -n "${STEERING_FILE}" ]]; then
+    STEERING_PATH=$(python3 -c "import os, sys; print(os.path.expandvars(sys.argv[1]))" "${STEERING_FILE}")
+    [[ -f "${STEERING_PATH}" ]] || { echo "ERROR: steering file not found: ${STEERING_PATH}"; exit 1; }
+    DDSIM_ARGS="--steeringFile ${STEERING_PATH} ${DDSIM_ARGS}"
+    echo "Steering : ${STEERING_PATH}"
+fi
 echo "::endgroup::"
 
 # Capture the date once here so run_info.json and the EOS upload path always agree,
@@ -158,106 +124,7 @@ DATE=$(date +%Y-%m-%d)
 
 # ── 6. Collect machine info (start snapshot, before benchmark) ────────────────
 echo "::group::6. Collect machine info (start)"
-mkdir -p "logs/${DETECTOR}"
-python3 - "${DETECTOR}" <<'PYEOF'
-import glob, json, os, platform, sys
-
-def _read(path, default=''):
-    try:
-        with open(path) as f: return f.read()
-    except Exception: return default
-
-detector = sys.argv[1]
-
-# CPU
-cpuinfo   = _read('/proc/cpuinfo')
-cpu_model = next((l.split(':',1)[1].strip() for l in cpuinfo.splitlines() if 'model name' in l), 'unknown')
-cpu_logical = cpuinfo.count('processor\t:')
-# Count unique (physical_id, core_id) pairs — more accurate than socket count alone.
-# Falls back to logical count on systems where these fields are absent (VMs, containers).
-phys_core_pairs: set = set()
-current: dict = {}
-for line in cpuinfo.splitlines():
-    if not line.strip():
-        if 'processor' in current:
-            phys_core_pairs.add((
-                current.get('physical id', '0'),
-                current.get('core id', current.get('processor', '0')),
-            ))
-        current = {}
-    elif ':' in line:
-        k, _, v = line.partition(':')
-        current[k.strip()] = v.strip()
-cpu_physical = len(phys_core_pairs) if phys_core_pairs else cpu_logical
-cpu_flags    = next((l.split(':',1)[1].strip().split() for l in cpuinfo.splitlines() if l.startswith('flags')), [])
-
-# Memory
-meminfo = _read('/proc/meminfo')
-mem = {}
-for line in meminfo.splitlines():
-    p = line.split()
-    if len(p) >= 2:
-        try: mem[p[0].rstrip(':')] = int(p[1])
-        except ValueError: pass
-
-# Load average
-loadavg = _read('/proc/loadavg').split()
-
-# Swap in use
-swap_used_start = round((mem.get('SwapTotal', 0) - mem.get('SwapFree', mem.get('SwapTotal', 0))) / 1024**2, 2)
-
-# CPU governor and frequency (may not be available inside containers)
-cpu_governor = _read('/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor').strip() or None
-_freq_raw = _read('/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq').strip()
-try:    cpu_freq_mhz_start = round(int(_freq_raw) / 1000, 1) if _freq_raw else None
-except ValueError: cpu_freq_mhz_start = None
-
-# Thermal throttle events — cumulative counter; we store the baseline here and
-# compute the delta at the end of the run to get events during the benchmark only.
-_throttle_paths = glob.glob('/sys/devices/system/cpu/cpu*/thermal_throttle/core_throttle_count')
-def _sum_throttle(paths):
-    total = 0
-    for p in paths:
-        raw = _read(p).strip()
-        try: total += int(raw)
-        except ValueError: pass
-    return total if paths else None
-thermal_throttle_start = _sum_throttle(_throttle_paths)
-
-# OS
-os_release = _read('/etc/os-release')
-os_name = next(
-    (l.split('=',1)[1].strip('"') for l in os_release.splitlines() if l.startswith('PRETTY_NAME=')),
-    'unknown',
-)
-
-info = {
-    "cpu_model":              cpu_model,
-    "cpu_physical_cores":     cpu_physical,
-    "cpu_logical_cores":      cpu_logical,
-    "cpu_flags":              cpu_flags,
-    "ram_total_gb":           round(mem.get('MemTotal',    0) / 1024**2, 2),
-    "ram_available_gb_start": round(mem.get('MemAvailable',0) / 1024**2, 2),
-    "swap_total_gb":          round(mem.get('SwapTotal',   0) / 1024**2, 2),
-    "swap_used_gb_start":     swap_used_start,
-    "load_avg_1m_start":      float(loadavg[0]) if len(loadavg) > 0 else None,
-    "load_avg_5m_start":      float(loadavg[1]) if len(loadavg) > 1 else None,
-    "cpu_governor":                  cpu_governor,
-    "cpu_freq_mhz_start":            cpu_freq_mhz_start,
-    "thermal_throttle_count_start":  thermal_throttle_start,
-    "kernel":                        platform.release(),
-    "os":                     os_name,
-    "hostname":               os.uname().nodename,
-    "in_container":           os.path.exists('/.dockerenv'),
-}
-with open(f"logs/{detector}/_machine_info_start.json", "w") as f:
-    json.dump(info, f, indent=2)
-print(f"cpu_model        : {info['cpu_model']}")
-print(f"cpu_logical_cores: {info['cpu_logical_cores']}")
-print(f"ram_total_gb     : {info['ram_total_gb']:.2f} GB")
-print(f"ram_available    : {info['ram_available_gb_start']:.2f} GB")
-print(f"load_avg_1m      : {info['load_avg_1m_start']}")
-PYEOF
+python3 .github/scripts/machine_info.py start "logs/${DETECTOR}"
 echo "::endgroup::"
 
 # ── 7. Run benchmark ──────────────────────────────────────────────────────────
@@ -271,6 +138,7 @@ CMD=(dd4bench
 [[ -n "${INCLUDE_ONLY}" ]]   && read -ra _arr <<< "${INCLUDE_ONLY}" && CMD+=(--include-only "${_arr[@]}")
 [[ -n "${EXCLUDE_ONLY}" ]]   && read -ra _arr <<< "${EXCLUDE_ONLY}" && CMD+=(--exclude-only "${_arr[@]}")
 [[ "${VERBOSE}" == "true" ]] && CMD+=(--verbose)
+[[ -n "${INPUT_FILES}" ]]    && read -ra _arr <<< "${INPUT_FILES}"  && CMD+=(--inputFiles "${_arr[@]}")
 [[ -n "${DDSIM_ARGS}" ]]     && CMD+=(--ddsim-args="${DDSIM_ARGS}")
 
 echo "$ ${CMD[*]}"
@@ -285,19 +153,15 @@ CONFIGS_JSON=$(
     | python3 -c "import sys, json; print(json.dumps(sys.stdin.read().split()))"
 )
 
+# run_info.json
 python3 - "${DETECTOR}" "${SAMPLE}" "${DATE}" "${K4H_PLATFORM}" "${K4H_RELEASE}" \
           "${N_EVENTS}" "${SWEEP}" <<PYEOF
 import json, os, sys
 
-detector   = sys.argv[1]
-sample     = sys.argv[2]
-date       = sys.argv[3]
-platform   = sys.argv[4]
-k4h_rel    = sys.argv[5]
-n_events   = int(sys.argv[6])
-sweep      = sys.argv[7] == "true"
+detector, sample, date, platform, k4h_rel = sys.argv[1:6]
+n_events = int(sys.argv[6])
+sweep    = sys.argv[7] == "true"
 
-# ── run_info.json ──────────────────────────────────────────────────────────
 run_info = {
     "date":             date,
     "platform":         platform,
@@ -319,52 +183,10 @@ run_info = {
 with open(f"logs/{detector}/run_info.json", "w") as f:
     json.dump(run_info, f, indent=2)
 print(f"Written: logs/{detector}/run_info.json")
-
-# ── machine_info.json: merge start snapshot + end-of-run dynamic fields ────
-def _read(path, default=''):
-    try:
-        with open(path) as fh: return fh.read()
-    except Exception: return default
-
-start_path = f"logs/{detector}/_machine_info_start.json"
-if os.path.exists(start_path):
-    with open(start_path) as fh:
-        machine_info = json.load(fh)
-    os.remove(start_path)
-else:
-    print(f"WARNING: {start_path} not found — machine info start snapshot missing", flush=True)
-    machine_info = {}
-
-meminfo = _read('/proc/meminfo')
-mem = {}
-for line in meminfo.splitlines():
-    p = line.split()
-    if len(p) >= 2:
-        try: mem[p[0].rstrip(':')] = int(p[1])
-        except ValueError: pass
-loadavg = _read('/proc/loadavg').split()
-
-machine_info["ram_available_gb_end"] = round(mem.get('MemAvailable', 0) / 1024**2, 2)
-machine_info["swap_used_gb_end"]     = round((mem.get('SwapTotal', 0) - mem.get('SwapFree', mem.get('SwapTotal', 0))) / 1024**2, 2)
-machine_info["load_avg_1m_end"]      = float(loadavg[0]) if len(loadavg) > 0 else None
-machine_info["load_avg_5m_end"]      = float(loadavg[1]) if len(loadavg) > 1 else None
-_freq_raw = _read('/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq').strip()
-try:    machine_info["cpu_freq_mhz_end"] = round(int(_freq_raw) / 1000, 1) if _freq_raw else None
-except ValueError: machine_info["cpu_freq_mhz_end"] = None
-
-import glob as _glob
-_throttle_paths = _glob.glob('/sys/devices/system/cpu/cpu*/thermal_throttle/core_throttle_count')
-_throttle_end   = sum(int(_read(p).strip()) for p in _throttle_paths if _read(p).strip().isdigit())
-_throttle_start = machine_info.get("thermal_throttle_count_start")
-machine_info["thermal_throttle_events"] = (
-    max(0, int(_throttle_end) - int(_throttle_start))
-    if (_throttle_paths and _throttle_start is not None) else None
-)
-
-with open(f"logs/{detector}/machine_info.json", "w") as fh:
-    json.dump(machine_info, fh, indent=2)
-print(f"Written: logs/{detector}/machine_info.json")
 PYEOF
+
+# machine_info.json (merge start snapshot + end-of-run dynamic fields)
+python3 .github/scripts/machine_info.py finalize "logs/${DETECTOR}"
 echo "::endgroup::"
 
 # ── 9. Upload to EOS ──────────────────────────────────────────────────────────
