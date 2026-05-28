@@ -1,4 +1,4 @@
-# DD4bench nightly benchmark config — ALLEGRO o1 v03
+# DD4bench nightly benchmark config — IDEA o2 v01
 #
 # The nightly workflow expands every file in .github/benchmarks/ into a matrix
 # of (detector × sample) jobs and uploads each result to EOS under:
@@ -17,7 +17,7 @@
 #                            are expanded inside the runner. Steering files for FCC
 #                            detectors live in https://github.com/HEP-FCC/FCC-config
 #                            and are installed under $FCCCONFIG by Key4hep, e.g.
-#                            $FCCCONFIG/FullSim/IDEA/IDEA_o1_v03/SteeringFile_IDEA_o1_v03.py
+#                            $FCCCONFIG/FullSim/IDEA/IDEA_o2_v01/SteeringFile_IDEA_o2_v01.py
 #   samples       required   list of sample entries — see below
 #
 # ── Per-sample keys (under samples:) ───────────────────────────────────────
@@ -30,13 +30,15 @@
 # Sample-level keys override top-level, except ddsim_args (which concatenates).
 # sweep / include_only / exclude_only are mutually exclusive.
 
-xml: FCCee/ALLEGRO/compact/ALLEGRO_o1_v03/ALLEGRO_o1_v03.xml
+xml: FCCee/IDEA/compact/IDEA_o2_v01/IDEA_o2_v01.xml
+steering_file: $FCCCONFIG/FullSim/IDEA/IDEA_o2_v01/SteeringFile_IDEA_o2_v01.py
+
 verbose: true
 sweep: true
 
 samples:
   - name: single_e-_10GeV
-    n_events: 500
+    n_events: 100
     ddsim_args: >-
       --enableGun
       --gun.particle e-
