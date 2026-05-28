@@ -51,11 +51,17 @@ jobs:
       - name: Warm up CVMFS repos
         # Force host-side autofs to mount the repos before docker run inherits
         # them via :shared propagation; without this the container can see EIO
-        # the first time it traverses an unmounted CVMFS path.
+        # the first time it traverses an unmounted CVMFS path. Missing repos
+        # are flagged but don't fail the step — the downstream stage that
+        # actually needs the repo will produce a more useful error.
         run: |
-          ls /cvmfs/sw-nightlies.hsf.org/ > /dev/null
-          ls /cvmfs/sw.hsf.org/          > /dev/null
-          ls /cvmfs/grid.cern.ch/        > /dev/null
+          for repo in sw-nightlies.hsf.org sw.hsf.org grid.cern.ch; do
+              if ls "/cvmfs/$repo/" > /dev/null 2>&1; then
+                  echo "ok       /cvmfs/$repo"
+              else
+                  echo "missing  /cvmfs/$repo  (host CVMFS may not be configured for this repo)"
+              fi
+          done
 
       - name: Set up EOS service certificate
         run: |
