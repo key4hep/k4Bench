@@ -120,8 +120,12 @@ fi
 # dd4bench has no top-level --inputFiles flag; it forwards everything in
 # --ddsim-args verbatim to ddsim. So we prepend --inputFiles into DDSIM_ARGS.
 if [[ -n "${INPUT_FILES}" ]]; then
-    DDSIM_ARGS="--inputFiles ${INPUT_FILES} ${DDSIM_ARGS}"
-    echo "Inputs   : ${INPUT_FILES}"
+    # HepMC inputs can't be streamed over xrootd (ROOT mis-parses the text as a
+    # ROOT file → SIGSEGV), so fetch to a local path first.
+    LOCAL_INPUT="/tmp/$(basename "${INPUT_FILES}")"
+    xrdcp --force "${INPUT_FILES}" "${LOCAL_INPUT}"
+    DDSIM_ARGS="--inputFiles ${LOCAL_INPUT} ${DDSIM_ARGS}"
+    echo "Inputs   : ${LOCAL_INPUT}"
 fi
 echo "::endgroup::"
 
