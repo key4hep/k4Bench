@@ -76,6 +76,9 @@ def _parse_run_dir(run_dir: Path) -> dict:
             "github_run_url":   None,
             "commit_sha":       None,
             "n_events":         None,
+            "status":           None,
+            "failed_configs":   [],
+            "machine_consistent": None,
         }
 
     info_path = run_dir / "run_info.json"
@@ -98,6 +101,9 @@ def _parse_run_dir(run_dir: Path) -> dict:
                 "github_run_url":   info.get("github_run_url"),
                 "commit_sha":       info.get("commit_sha"),
                 "n_events":         info.get("n_events"),
+                "status":           info.get("status"),
+                "failed_configs":   info.get("failed_configs") or [],
+                "machine_consistent": info.get("machine_consistent"),
             }
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
             _log.warning("_parse_run_dir: could not read run_info.json in '%s'", run_dir)

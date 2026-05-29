@@ -28,7 +28,13 @@ from remote_cache import (
 )
 from tabs import event_memory, event_timing, impact, machine_info, region_timing, trends
 from trend_window import WINDOW_PRESETS, resolve_window
-from ui_chrome import _drop_stale_selection, _render_footer, _render_sidebar_footer
+from ui_chrome import (
+    _drop_stale_selection,
+    _render_footer,
+    _render_sidebar_footer,
+    render_logs_tab,
+    render_run_status,
+)
 
 
 def main() -> None:
@@ -331,6 +337,9 @@ def main() -> None:
         )
         return
 
+    # ── Run status banners (per-config detail + logs live in the Logs tab) ─────
+    render_run_status(results, selected_run_meta)
+
     # ── Load trend data (remote only) ─────────────────────────────────────────
     trend_results_df = None
     trend_region_df  = None
@@ -347,7 +356,7 @@ def main() -> None:
     # is preserved when the user only adjusts the window; an empty window shows an
     # in-view "widen the window" message instead of removing the option.
     trends_enabled = bool(config.data_url)
-    tab_names = ["Run Trends", "Config Impact", "Region Timing", "Event Timing", "Event Memory", "Machine Info"]
+    tab_names = ["Run Trends", "Config Impact", "Region Timing", "Event Timing", "Event Memory", "Machine Info", "Logs"]
     if not trends_enabled:
         # Trends / Impact only make sense with multi-run (remote) data
         tab_names = tab_names[2:]
@@ -384,6 +393,11 @@ def main() -> None:
     with tabs[tab_idx]:
         minfo = load_machine_info(data_dir) if _path_valid else None
         machine_info.render(minfo, run_meta=selected_run_meta)
+    tab_idx += 1
+
+    # Logs (per-config status + log viewer)
+    with tabs[tab_idx]:
+        render_logs_tab(results, data_dir if _path_valid else None)
 
     _render_footer()
 
