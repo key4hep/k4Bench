@@ -20,8 +20,10 @@ Expected layout::
 from __future__ import annotations
 
 import logging
+import os
 import re
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -111,82 +113,137 @@ def list_runs(
     return sorted(runs, reverse=True)
 
 
-# ── Download ──────────────────────────────────────────────────────────────────
-
-def download_all_stacks_for_sample(
+def list_run_dates_all_stacks(
     base_url: str,
     detector: str,
     platform: str,
     sample: str,
-) -> Path:
-    """Download every run across **all** stacks for *(detector, platform, sample)*.
+) -> dict[str, list[str]]:
+    """Return ``{stack: [run_dates]}`` for *(detector, platform, sample)*.
 
-    Used by the Trends tab so it can plot performance across the full history of
-    Key4hep nightly releases, not just the currently-selected stack.
-
-    Returns a flat temp directory where each subdirectory is one run date
-    (named ``{stack}__{date}`` to avoid collisions when two stacks share a date).
-    Since ``_parse_run_dir`` prefers ``run_info.json`` for metadata, the directory
-    name itself is irrelevant — all fields come from the JSON.
+    Discovery only — issues directory listings and **no** file downloads. The
+    run-date directory names are ``YYYY-MM-DD``, so the full set of available
+    dates per stack is obtained cheaply; this populates the trend-window control
+    and lets the caller download only the runs inside the selected window.
+    Stacks that do not contain *sample* (or whose listing fails) are skipped.
     """
     stacks = _list_subdirs(f"{base_url.rstrip('/')}/{detector}/{platform}")
-    dest = Path(tempfile.mkdtemp(prefix="dd4bench_trends_"))
+    out: dict[str, list[str]] = {}
     for stack in stacks:
-        stack_sample_url = (
-            f"{base_url.rstrip('/')}/{detector}/{platform}/{stack}/{sample}"
-        )
+        url = f"{base_url.rstrip('/')}/{detector}/{platform}/{stack}/{sample}"
         try:
-            runs = _list_subdirs(stack_sample_url)
+            runs = _list_subdirs(url)
         except requests.RequestException as exc:
-            _log.debug(
-                "download_all_stacks_for_sample: skipping %s — %s",
-                stack_sample_url, exc,
-            )
+            _log.debug("list_run_dates_all_stacks: skipping %s — %s", url, exc)
             continue  # sample may not exist for every stack
-        for run in runs:
-            run_dir = dest / f"{stack}__{run}"
-            run_dir.mkdir(exist_ok=True)
-            run_url = f"{stack_sample_url}/{run}"
-            for fname in _list_files(run_url):
-                safe_name = Path(fname).name
-                if not safe_name or safe_name != fname:
-                    raise ValueError(f"Unsafe filename in listing: {fname!r}")
-                resp = requests.get(f"{run_url}/{fname}", timeout=_TIMEOUT)
-                resp.raise_for_status()
-                # Decode %20 etc. so local filenames match the label stored in CSV content
-                (run_dir / unquote(safe_name)).write_bytes(resp.content)
-    return dest
+        if runs:
+            out[stack] = sorted(runs)
+    return out
 
 
-def download_all_runs(
+# ── Download (persistent immutable cache) ──────────────────────────────────────
+
+def _default_cache_root() -> Path:
+    return Path(
+        os.environ.get(
+            "DD4BENCH_CACHE_DIR", str(Path(tempfile.gettempdir()) / "dd4bench_cache")
+        )
+    )
+
+
+def ensure_run_cached(
     base_url: str,
     detector: str,
     platform: str,
     stack: str,
     sample: str,
+    date: str,
+    cache_root: str | None = None,
 ) -> Path:
-    """Download every run date for *(detector, platform, stack, sample)* into
-    ``{tmpdir}/{date}/`` subdirectories.
+    """Download one run into a stable cache path and return it.
 
-    Returns the sample-level temp directory so callers can either pick the
-    latest run (for single-run tabs) or walk all subdirs (for the Trends tab).
-    Streamlit's ``@st.cache_data`` prevents redundant downloads across reruns.
+    Cache layout: ``{cache_root}/{detector}/{platform}/{stack}/{sample}/{date}/``.
+    Historical runs are immutable, so a run whose ``.complete`` sentinel exists is
+    returned without any HTTP. The sentinel is written only after every file lands,
+    so a partially-downloaded run (e.g. interrupted) is re-fetched rather than
+    trusted. Idempotent across reruns and processes.
     """
-    run_url_base = (
-        f"{base_url.rstrip('/')}/{detector}/{platform}/{stack}/{sample}"
+    root = Path(cache_root) if cache_root else _default_cache_root()
+    run_dir = root / detector / platform / stack / sample / date
+    sentinel = run_dir / ".complete"
+    if sentinel.exists():
+        return run_dir
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    run_url = f"{base_url.rstrip('/')}/{detector}/{platform}/{stack}/{sample}/{date}"
+    for fname in _list_files(run_url):
+        safe_name = Path(fname).name
+        if not safe_name or safe_name != fname:
+            raise ValueError(f"Unsafe filename in listing: {fname!r}")
+        resp = requests.get(f"{run_url}/{fname}", timeout=_TIMEOUT)
+        resp.raise_for_status()
+        # Decode %20 etc. so local filenames match the label stored in CSV content
+        (run_dir / unquote(safe_name)).write_bytes(resp.content)
+    sentinel.write_text("")
+    return run_dir
+
+
+def fetch_runs_windowed(
+    base_url: str,
+    detector: str,
+    platform: str,
+    sample: str,
+    stacks_dates: dict[str, list[str]],
+    cache_root: str | None = None,
+    max_workers: int = 16,
+) -> list[dict]:
+    """Fetch every ``(stack, date)`` in *stacks_dates* in parallel, returning a
+    list of ``{"stack", "date", "run_dir"}`` for the runs successfully cached.
+
+    Each run is fetched at most once (see :func:`ensure_run_cached`); callers pass
+    an already date-windowed *stacks_dates* so only in-window runs are downloaded.
+    Runs that fail to download are logged and skipped rather than aborting the load.
+    """
+    tasks = [(stack, date) for stack, dates in stacks_dates.items() for date in dates]
+    if not tasks:
+        return []
+
+    results: list[dict] = []
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(tasks))) as pool:
+        futures = {
+            pool.submit(
+                ensure_run_cached,
+                base_url, detector, platform, stack, sample, date, cache_root,
+            ): (stack, date)
+            for stack, date in tasks
+        }
+        for fut in as_completed(futures):
+            stack, date = futures[fut]
+            try:
+                run_dir = fut.result()
+            except (requests.RequestException, ValueError, OSError) as exc:
+                _log.warning("fetch_runs_windowed: failed %s/%s — %s", stack, date, exc)
+                continue
+            results.append({"stack": stack, "date": date, "run_dir": str(run_dir)})
+    return results
+
+
+def ensure_latest_run_cached(
+    base_url: str,
+    detector: str,
+    platform: str,
+    stack: str,
+    sample: str,
+    cache_root: str | None = None,
+) -> Path | None:
+    """Cache and return only the newest run for *(detector, platform, stack, sample)*.
+
+    Single-run tabs only ever display the latest run, so there is no need to
+    download the full date history for the selected stack.
+    """
+    runs = list_runs(base_url, detector, platform, stack, sample)  # newest first
+    if not runs:
+        return None
+    return ensure_run_cached(
+        base_url, detector, platform, stack, sample, runs[0], cache_root
     )
-    runs = _list_subdirs(run_url_base)
-    dest = Path(tempfile.mkdtemp(prefix="dd4bench_"))
-    for run in runs:
-        run_dir = dest / run
-        run_dir.mkdir(exist_ok=True)
-        run_url = f"{run_url_base}/{run}"
-        for fname in _list_files(run_url):
-            safe_name = Path(fname).name
-            if not safe_name or safe_name != fname:
-                raise ValueError(f"Unsafe filename in listing: {fname!r}")
-            resp = requests.get(f"{run_url}/{fname}", timeout=_TIMEOUT)
-            resp.raise_for_status()
-            # Decode %20 etc. so local filenames match the label stored in CSV content
-            (run_dir / unquote(safe_name)).write_bytes(resp.content)
-    return dest
