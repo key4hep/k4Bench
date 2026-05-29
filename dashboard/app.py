@@ -18,138 +18,17 @@ from data import (
     load_machine_info,
     run_metadata,
 )
+from remote_cache import (
+    _cached_fetch_latest_run,
+    _cached_fetch_runs_windowed,
+    _cached_list_detectors,
+    _cached_list_platforms,
+    _cached_list_run_dates,
+    _cached_scan_stack_samples,
+)
 from tabs import event_memory, event_timing, impact, machine_info, region_timing, trends
 from trend_window import WINDOW_PRESETS, resolve_window
-
-
-# ── Cached remote helpers ─────────────────────────────────────────────────────
-
-@st.cache_data(show_spinner="Fetching detectors...", ttl=3600)
-def _cached_list_detectors(base_url: str) -> list[str]:
-    from remote import list_detectors
-    return list_detectors(base_url)
-
-
-@st.cache_data(show_spinner="Fetching platforms...", ttl=3600)
-def _cached_list_platforms(base_url: str, detector: str) -> list[str]:
-    from remote import list_platforms
-    return list_platforms(base_url, detector)
-
-
-@st.cache_data(show_spinner="Scanning releases...", ttl=3600)
-def _cached_scan_stack_samples(
-    base_url: str, detector: str, platform: str
-) -> dict[str, list[str]]:
-    from remote import scan_stack_samples
-    return scan_stack_samples(base_url, detector, platform)
-
-
-@st.cache_data(show_spinner="Scanning run dates...", ttl=600)
-def _cached_list_run_dates(
-    base_url: str, detector: str, platform: str, sample: str
-) -> dict[str, list[str]]:
-    from remote import list_run_dates_all_stacks
-    return list_run_dates_all_stacks(base_url, detector, platform, sample)
-
-
-@st.cache_data(show_spinner="Downloading latest run...", ttl=3600)
-def _cached_fetch_latest_run(
-    base_url: str, detector: str, platform: str, stack: str, sample: str, cache_dir: str
-) -> str | None:
-    from remote import ensure_latest_run_cached
-    p = ensure_latest_run_cached(
-        base_url, detector, platform, stack, sample, cache_root=cache_dir
-    )
-    return str(p) if p else None
-
-
-@st.cache_data(show_spinner="Downloading trend data...", ttl=3600)
-def _cached_fetch_runs_windowed(
-    base_url: str,
-    detector: str,
-    platform: str,
-    sample: str,
-    cache_dir: str,
-    stacks_dates_items: tuple[tuple[str, tuple[str, ...]], ...],
-) -> tuple[str, ...]:
-    """Download the windowed ``(stack, date)`` set and return cached run dirs.
-
-    *stacks_dates_items* is a hashable ``((stack, (date, ...)), ...)`` so the cache
-    key varies with the selected window — widening reuses already-cached runs and
-    only the new runs are fetched.
-    """
-    from remote import fetch_runs_windowed
-    stacks_dates = {stack: list(dates) for stack, dates in stacks_dates_items}
-    runs = fetch_runs_windowed(
-        base_url, detector, platform, sample, stacks_dates, cache_root=cache_dir
-    )
-    return tuple(sorted(r["run_dir"] for r in runs))
-
-
-def _render_footer() -> None:
-    """Render a CERN / FCC copyright footer at the bottom of the page."""
-    st.markdown(
-        """
-        <hr style="border:none;border-top:1px solid rgba(128,128,128,0.25);margin:2.5rem 0 0.8rem 0;">
-        <div style="
-            display:flex;
-            justify-content:center;
-            align-items:center;
-            gap:1.2rem;
-            padding:0.2rem 0 1.2rem 0;
-            font-size:0.80rem;
-            color:#9a9a9a;
-            line-height:1.7;
-            text-align:center;
-        ">
-            <span style="font-size:1.8rem;opacity:0.75;">⚛️</span>
-            <div>
-                <strong style="color:#c0c0c0;letter-spacing:0.02em;">© 2026 CERN</strong>
-                &nbsp;·&nbsp;
-                For the benefit of the&nbsp;<a
-                    href="https://fcc.web.cern.ch/"
-                    target="_blank"
-                    style="color:#5b9bd5;text-decoration:none;font-weight:600;"
-                >FCC project</a>
-                <br>
-                Created by <strong style="color:#c0c0c0;">Joshua Falco Beirer</strong>
-                &nbsp;<span style="opacity:0.6;">(CERN)</span>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def _drop_stale_selection(key: str, options: list[str]) -> None:
-    """Clear a keyed selectbox's stored value when it's no longer a valid option.
-
-    The dependent dropdowns (Platform → Sample → Stack) rebuild their option lists
-    whenever an upstream selection changes, so a value left in ``session_state``
-    from the old options can be fed back into ``st.selectbox`` as an invalid
-    selection. Popping it *before* the widget is created (the only point at which
-    a widget-backed key may be mutated) lets the selectbox re-default cleanly to a
-    valid option. A no-op when the stored value is still present in *options*.
-    """
-    if key in st.session_state and st.session_state[key] not in options:
-        del st.session_state[key]
-
-
-def _render_sidebar_footer() -> None:
-    """Render a compact attribution note at the bottom of the sidebar."""
-    st.markdown(
-        """
-        <hr style="border:none;border-top:1px solid rgba(128,128,128,0.2);margin:1.5rem 0 0.6rem 0;">
-        <div style="font-size:0.72rem;color:#888;text-align:center;line-height:1.6;padding-bottom:0.4rem;">
-            <strong style="color:#a0a0a0;">© 2026 CERN</strong><br>
-            For the benefit of the<br>
-            <a href="https://fcc.web.cern.ch/" target="_blank"
-               style="color:#5b9bd5;text-decoration:none;">FCC project</a><br>
-            <span style="opacity:0.7;">J. F. Beirer (CERN)</span>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+from ui_chrome import _drop_stale_selection, _render_footer, _render_sidebar_footer
 
 
 def main() -> None:
