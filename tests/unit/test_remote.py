@@ -170,9 +170,17 @@ def test_ensure_run_cached_refetches_when_incomplete(web, tmp_path):
     assert (run_dir / "baseline_results.csv").exists()
 
 
-def test_ensure_run_cached_rejects_unsafe_filename(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "../evil.csv",          # raw traversal
+        "%2e%2e%2fevil.csv",    # percent-encoded "../evil.csv" — decodes to a separator
+        "%2e%2e",               # percent-encoded ".."
+    ],
+)
+def test_ensure_run_cached_rejects_unsafe_filename(monkeypatch, tmp_path, payload):
     fake = FakeWeb({
-        f"{BASE}/DET/PLAT/S/smp/2026-01-01": ["../evil.csv"],
+        f"{BASE}/DET/PLAT/S/smp/2026-01-01": [payload],
     })
     monkeypatch.setattr(remote.requests, "get", fake.get)
     with pytest.raises(ValueError, match="Unsafe filename"):

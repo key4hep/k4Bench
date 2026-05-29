@@ -19,6 +19,7 @@ from data import (
     run_metadata,
 )
 from tabs import event_memory, event_timing, impact, machine_info, region_timing, trends
+from trend_window import WINDOW_PRESETS, resolve_window
 
 
 # ── Cached remote helpers ─────────────────────────────────────────────────────
@@ -83,39 +84,6 @@ def _cached_fetch_runs_windowed(
         base_url, detector, platform, sample, stacks_dates, cache_root=cache_dir
     )
     return tuple(sorted(r["run_dir"] for r in runs))
-
-
-# Trend-window presets → look-back length in days; ``None`` means special handling.
-_WINDOW_PRESETS: dict[str, int | None] = {
-    "Last 7 days":   7,
-    "Last 30 days":  30,
-    "Last 90 days":  90,
-    "Last 6 months": 182,
-    "All":           None,
-    "Custom…":       None,
-}
-
-
-def _resolve_window(
-    preset: str,
-    all_dates: list[date],
-    custom_range: tuple[date, date] | None,
-) -> tuple[date, date]:
-    """Resolve a preset (or custom range) to an inclusive ``(start, end)`` window.
-
-    The window is anchored on the latest available run date, not today, so the
-    default preset always shows data even if the nightly has not run recently.
-    """
-    lo, hi = min(all_dates), max(all_dates)
-    if preset == "All":
-        return lo, hi
-    if preset == "Custom…":
-        if custom_range is None:
-            return lo, hi
-        start, end = custom_range
-        return start, end
-    days = _WINDOW_PRESETS[preset] or 0
-    return hi - timedelta(days=days), hi
 
 
 def _render_footer() -> None:
@@ -374,7 +342,7 @@ def main() -> None:
                 hi_date = all_dates[-1].date()
                 st.header("Trend window")
                 preset = st.selectbox(
-                    "Range", list(_WINDOW_PRESETS), index=0,  # default: Last 7 days
+                    "Range", list(WINDOW_PRESETS), index=0,  # default: Last 7 days
                     key="sb_trend_preset",
                     help="Limits the date range plotted in the Trends tabs. "
                          "Smaller windows load faster.",
@@ -396,13 +364,14 @@ def main() -> None:
                         st.info("Pick both a start and end date.")
 
                 if not custom_incomplete:
-                    start, end = _resolve_window(
+                    start, end = resolve_window(
                         preset, [d.date() for d in all_dates], custom_range
                     )
                     windowed = {
                         stk: [
                             dt for dt in dates
-                            if start <= pd.to_datetime(dt).date() <= end
+                            if pd.notna(_d := pd.to_datetime(dt, errors="coerce"))
+                            and start <= _d.date() <= end
                         ]
                         for stk, dates in stacks_dates.items()
                     }
@@ -481,7 +450,7 @@ def main() -> None:
     # view selector stable across trend-window changes, so the active tab / sub-view
     # is preserved when the user only adjusts the window; an empty window shows an
     # in-view "widen the window" message instead of removing the option.
-    trends_enabled = config.data_url is not None
+    trends_enabled = bool(config.data_url)
     tab_names = ["Run Trends", "Config Impact", "Region Timing", "Event Timing", "Event Memory", "Machine Info"]
     if not trends_enabled:
         # Trends / Impact only make sense with multi-run (remote) data

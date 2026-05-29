@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -164,9 +165,11 @@ def ensure_run_cached(
 
     Cache layout: ``{cache_root}/{detector}/{platform}/{stack}/{sample}/{date}/``.
     Historical runs are immutable, so a run whose ``.complete`` sentinel exists is
-    returned without any HTTP. The sentinel is written only after every file lands,
-    so a partially-downloaded run (e.g. interrupted) is re-fetched rather than
-    trusted. Idempotent across reruns and processes.
+    returned without any HTTP. To stay correct across concurrent reruns and
+    processes, files are downloaded into a private temp dir and the finished run
+    is published with a single atomic ``rename``: a reader therefore never sees a
+    half-written ``run_dir``, and an interrupted download leaves no partial run
+    behind (the temp dir is discarded) rather than a dir that looks cached.
     """
     root = Path(cache_root) if cache_root else _default_cache_root()
     run_dir = root / detector / platform / stack / sample / date
@@ -174,18 +177,50 @@ def ensure_run_cached(
     if sentinel.exists():
         return run_dir
 
-    run_dir.mkdir(parents=True, exist_ok=True)
     run_url = f"{base_url.rstrip('/')}/{detector}/{platform}/{stack}/{sample}/{date}"
-    for fname in _list_files(run_url):
-        safe_name = Path(fname).name
-        if not safe_name or safe_name != fname:
-            raise ValueError(f"Unsafe filename in listing: {fname!r}")
-        resp = requests.get(f"{run_url}/{fname}", timeout=_TIMEOUT)
-        resp.raise_for_status()
-        # Decode %20 etc. so local filenames match the label stored in CSV content
-        (run_dir / unquote(safe_name)).write_bytes(resp.content)
-    sentinel.write_text("")
+    run_dir.parent.mkdir(parents=True, exist_ok=True)
+    # Stage in a sibling temp dir (same filesystem, so the publish rename is atomic).
+    tmp_dir = Path(tempfile.mkdtemp(prefix=f".{date}.tmp-", dir=run_dir.parent))
+    try:
+        for fname in _list_files(run_url):
+            # Validate the *decoded* name: a percent-encoded separator (e.g.
+            # "%2e%2e%2fevil.csv" → "../evil.csv") slips past a raw-name check but
+            # escapes the run dir once written, so decode first, then reject any
+            # name that is not a single, plain path component.
+            decoded = unquote(fname)
+            if (
+                not decoded
+                or decoded in (".", "..")
+                or "/" in decoded
+                or "\\" in decoded
+                or Path(decoded).name != decoded
+            ):
+                raise ValueError(f"Unsafe filename in listing: {fname!r}")
+            resp = requests.get(f"{run_url}/{fname}", timeout=_TIMEOUT)
+            resp.raise_for_status()
+            (tmp_dir / decoded).write_bytes(resp.content)
+        (tmp_dir / ".complete").write_text("")
+        _publish_run_dir(tmp_dir, run_dir, sentinel)
+    except BaseException:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
     return run_dir
+
+
+def _publish_run_dir(tmp_dir: Path, run_dir: Path, sentinel: Path) -> None:
+    """Atomically move a fully-staged *tmp_dir* into its final *run_dir*."""
+    try:
+        os.replace(tmp_dir, run_dir)
+    except OSError:
+        # ``run_dir`` already exists and is non-empty. Either another worker
+        # published the same immutable run concurrently (sentinel present → trust
+        # it, drop our copy) or a stale partial dir from an interrupted attempt is
+        # in the way (clear it and retry, since rename can't replace a non-empty dir).
+        if sentinel.exists():
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return
+        shutil.rmtree(run_dir, ignore_errors=True)
+        os.replace(tmp_dir, run_dir)
 
 
 def fetch_runs_windowed(
