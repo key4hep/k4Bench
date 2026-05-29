@@ -242,7 +242,7 @@ def main() -> None:
                     config.data_url, detector, platform
                 )
             except Exception as err:
-                st.error(f"Failed to list samples: {err}")
+                st.error(f"Failed to scan releases: {err}")
                 return
 
             # Sample — union across all stacks, so a sample stays selectable
@@ -257,7 +257,12 @@ def main() -> None:
 
             # Stack — only releases that actually contain the chosen sample, newest
             # first, so the default jumps to the latest release that has the sample.
-            stacks = [stk for stk, samps in stack_samples.items() if sample in samps]
+            # Sort explicitly here so the "defaults to the newest" caption holds
+            # regardless of the order scan_stack_samples happens to return.
+            stacks = sorted(
+                (stk for stk, samps in stack_samples.items() if sample in samps),
+                reverse=True,
+            )
             if not stacks:
                 st.warning(f"No releases contain sample '{sample}' for '{detector} / {platform}'.")
                 return
