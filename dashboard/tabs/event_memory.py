@@ -85,7 +85,7 @@ def _render_current_run(
         exclude_events=[0],
         palette=_PALETTES[palette_name],
     )
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, width="stretch", key="evt_memory_current_chart")
 
     st.subheader("Statistics")
     stats = build_event_stats_table(
@@ -102,6 +102,12 @@ def _render_historical(
     selected_labels: list[str],
 ) -> None:
     """Render the historical event memory trends view (3-panel: Median | Mean | Std)."""
+    if not _is_valid_df(trend_event_df):
+        st.info(
+            "No event memory trend data in the selected window. "
+            "Widen the trend window in the sidebar."
+        )
+        return
     avail_labels = sorted(trend_event_df["label"].unique())
     filtered_labels = [lbl for lbl in selected_labels if lbl in avail_labels]
     if not filtered_labels:
@@ -127,20 +133,18 @@ def render(
     event_data: dict | None,
     trend_event_df: pd.DataFrame | None,
     selected_labels: list[str],
+    trends_enabled: bool = False,
 ) -> None:
-    if event_data is None and trend_event_df is None:
+    if event_data is None and not trends_enabled:
         st.info("No event memory data available in the selected directory.")
         return
     if not selected_labels:
         st.info("Select at least one run in the sidebar.")
         return
 
-    has_historical = (
-        _is_valid_df(trend_event_df)
-        and any(col in trend_event_df.columns for col, _ in _HIST_STATS)
-    )
-
-    if has_historical:
+    # The "Historical Trends" option is gated on remote mode (not on the current
+    # window's data) so the view selector stays put when the trend window changes.
+    if trends_enabled:
         view = st.radio(
             "View",
             options=["Current Run", "Historical Trends"],

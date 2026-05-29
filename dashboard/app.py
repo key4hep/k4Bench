@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -14,10 +15,11 @@ from data import (
     cached_load_trend_region_timing,
     cached_load_trend_event_timing,
     collect_labels,
-    list_run_metadata,
     load_machine_info,
+    run_metadata,
 )
 from tabs import event_memory, event_timing, impact, machine_info, region_timing, trends
+from trend_window import WINDOW_PRESETS, resolve_window
 
 
 # ── Cached remote helpers ─────────────────────────────────────────────────────
@@ -42,20 +44,46 @@ def _cached_scan_stack_samples(
     return scan_stack_samples(base_url, detector, platform)
 
 
-@st.cache_data(show_spinner="Downloading runs...", ttl=3600)
-def _cached_download_all_runs(
-    base_url: str, detector: str, platform: str, stack: str, sample: str
-) -> str:
-    from remote import download_all_runs
-    return str(download_all_runs(base_url, detector, platform, stack, sample))
-
-
-@st.cache_data(show_spinner="Downloading trend data (all stacks)...", ttl=3600)
-def _cached_download_all_stacks(
+@st.cache_data(show_spinner="Scanning run dates...", ttl=600)
+def _cached_list_run_dates(
     base_url: str, detector: str, platform: str, sample: str
-) -> str:
-    from remote import download_all_stacks_for_sample
-    return str(download_all_stacks_for_sample(base_url, detector, platform, sample))
+) -> dict[str, list[str]]:
+    from remote import list_run_dates_all_stacks
+    return list_run_dates_all_stacks(base_url, detector, platform, sample)
+
+
+@st.cache_data(show_spinner="Downloading latest run...", ttl=3600)
+def _cached_fetch_latest_run(
+    base_url: str, detector: str, platform: str, stack: str, sample: str, cache_dir: str
+) -> str | None:
+    from remote import ensure_latest_run_cached
+    p = ensure_latest_run_cached(
+        base_url, detector, platform, stack, sample, cache_root=cache_dir
+    )
+    return str(p) if p else None
+
+
+@st.cache_data(show_spinner="Downloading trend data...", ttl=3600)
+def _cached_fetch_runs_windowed(
+    base_url: str,
+    detector: str,
+    platform: str,
+    sample: str,
+    cache_dir: str,
+    stacks_dates_items: tuple[tuple[str, tuple[str, ...]], ...],
+) -> tuple[str, ...]:
+    """Download the windowed ``(stack, date)`` set and return cached run dirs.
+
+    *stacks_dates_items* is a hashable ``((stack, (date, ...)), ...)`` so the cache
+    key varies with the selected window — widening reuses already-cached runs and
+    only the new runs are fetched.
+    """
+    from remote import fetch_runs_windowed
+    stacks_dates = {stack: list(dates) for stack, dates in stacks_dates_items}
+    runs = fetch_runs_windowed(
+        base_url, detector, platform, sample, stacks_dates, cache_root=cache_dir
+    )
+    return tuple(sorted(r["run_dir"] for r in runs))
 
 
 def _render_footer() -> None:
@@ -91,6 +119,20 @@ def _render_footer() -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def _drop_stale_selection(key: str, options: list[str]) -> None:
+    """Clear a keyed selectbox's stored value when it's no longer a valid option.
+
+    The dependent dropdowns (Platform → Sample → Stack) rebuild their option lists
+    whenever an upstream selection changes, so a value left in ``session_state``
+    from the old options can be fed back into ``st.selectbox`` as an invalid
+    selection. Popping it *before* the widget is created (the only point at which
+    a widget-backed key may be mutated) lets the selectbox re-default cleanly to a
+    valid option. A no-op when the stored value is still present in *options*.
+    """
+    if key in st.session_state and st.session_state[key] not in options:
+        del st.session_state[key]
 
 
 def _render_sidebar_footer() -> None:
@@ -151,21 +193,25 @@ def main() -> None:
 
     config = Config.from_env()
 
-    # ``trends_dir``  — flat temp dir with ALL stacks' runs for this (detector, platform, sample).
-    #                   Used by the Trends tab and the historical sub-views.
-    # ``sample_dir``  — temp dir with runs for the selected (detector, platform, stack, sample).
-    #                   Used to pick the most recent run for single-run tabs.
-    # ``data_dir``    — path to the selected date-level run dir (single-run tabs).
-    trends_dir: str | None         = None
-    sample_dir: str | None         = None
+    # ``run_dirs``  — windowed set of cached run dirs across ALL stacks for this
+    #                 (detector, platform, sample). Used by the Trends tabs.
+    # ``data_dir``  — path to the latest run dir for the selected stack (single-run tabs).
+    run_dirs:   tuple[str, ...]    = ()
     data_dir:   str | None         = None
     selected_run_meta: dict | None = None
 
     with st.sidebar:
         st.header("Data Source")
         if st.button("Refresh Data", width="content"):
+            # Deliberately NO st.rerun() here. This button renders *before* the
+            # Detector/Platform/Sample/Stack selectboxes below, so rerunning now
+            # would abort the run before those widgets are registered — Streamlit
+            # then garbage-collects their session_state as "stale" and the
+            # dropdowns snap back to their defaults (the bug where Refresh showed
+            # the wrong sample). Instead we just clear the caches and let the run
+            # continue: the selectboxes re-render (keeping the current selection)
+            # and the now-empty caches are repopulated with fresh data below.
             st.cache_data.clear()
-            st.rerun()
 
         if config.data_url:
             # ── Remote mode ────────────────────────────────────────────────────
@@ -218,7 +264,7 @@ def main() -> None:
             if not detectors:
                 st.error("No detectors found at the configured WebEOS URL.")
                 return
-            detector = st.selectbox("Detector", detectors)
+            detector = st.selectbox("Detector", detectors, key="sb_detector")
             if not detector:
                 return
 
@@ -231,7 +277,8 @@ def main() -> None:
             if not platforms:
                 st.warning(f"No platforms found for detector '{detector}'.")
                 return
-            platform = st.selectbox("Platform", platforms)
+            _drop_stale_selection("sb_platform", platforms)
+            platform = st.selectbox("Platform", platforms, key="sb_platform")
             if not platform:
                 return
 
@@ -251,7 +298,8 @@ def main() -> None:
             if not samples:
                 st.warning(f"No samples found for '{detector} / {platform}'.")
                 return
-            sample = st.selectbox("Sample", samples)
+            _drop_stale_selection("sb_sample", samples)
+            sample = st.selectbox("Sample", samples, key="sb_sample")
             if not sample:
                 return
 
@@ -266,7 +314,8 @@ def main() -> None:
             if not stacks:
                 st.warning(f"No releases contain sample '{sample}' for '{detector} / {platform}'.")
                 return
-            stack = st.selectbox("Stack", stacks)
+            _drop_stale_selection("sb_stack", stacks)
+            stack = st.selectbox("Stack", stacks, key="sb_stack")
             st.caption(
                 f"Available in {len(stacks)} release(s); defaults to the newest. "
                 "Single-run tabs use it; Trends shows all releases."
@@ -274,36 +323,91 @@ def main() -> None:
             if not stack:
                 return
 
-            # Download runs for the selected stack (single-run tabs)
+            # Single-run tabs only ever show the latest run for the selected
+            # stack — fetch just that one (cached), not the whole date history.
             try:
-                sample_dir = _cached_download_all_runs(
-                    config.data_url, detector, platform, stack, sample
+                data_dir = _cached_fetch_latest_run(
+                    config.data_url, detector, platform, stack, sample, config.cache_dir
                 )
             except Exception as err:
-                st.error(f"Failed to download runs: {err}")
+                st.error(f"Failed to download latest run: {err}")
                 return
+            if not data_dir:
+                st.warning("No runs found for the selected combination.")
+                return
+            selected_run_meta = run_metadata(data_dir)
 
-            # Download runs across ALL stacks for this sample (Trends + historical views)
+            # ── Trend window ───────────────────────────────────────────────────
+            # Discover available run dates across ALL stacks (directory listings
+            # only, no file downloads), then download only the windowed subset.
             try:
-                trends_dir = _cached_download_all_stacks(
+                stacks_dates = _cached_list_run_dates(
                     config.data_url, detector, platform, sample
                 )
             except Exception as err:
-                st.warning(f"Could not load cross-stack trend data: {err}")
-                trends_dir = None
+                st.warning(f"Could not scan trend run dates: {err}")
+                stacks_dates = {}
 
-            run_meta = list_run_metadata(sample_dir)
-            if not run_meta:
-                st.warning("No runs found for the selected combination.")
-                return
+            all_dates = sorted({
+                d
+                for dates in stacks_dates.values()
+                for d in (pd.to_datetime(dt, errors="coerce") for dt in dates)
+                if pd.notna(d)
+            })
+            if all_dates:
+                lo_date = all_dates[0].date()
+                hi_date = all_dates[-1].date()
+                st.header("Trend window")
+                preset = st.selectbox(
+                    "Range", list(WINDOW_PRESETS), index=0,  # default: Last 7 days
+                    key="sb_trend_preset",
+                    help="Limits the date range plotted in the Trends tabs. "
+                         "Smaller windows load faster.",
+                )
+                custom_range: tuple[date, date] | None = None
+                custom_incomplete = False
+                if preset == "Custom…":
+                    picked = st.date_input(
+                        "From → to",
+                        value=(max(lo_date, hi_date - timedelta(days=90)), hi_date),
+                        min_value=lo_date, max_value=hi_date,
+                    )
+                    if isinstance(picked, (tuple, list)) and len(picked) == 2:
+                        custom_range = (picked[0], picked[1])
+                    else:
+                        # Mid-selection: don't fall back to the full range (which
+                        # would trigger a download of every run) — wait for both dates.
+                        custom_incomplete = True
+                        st.info("Pick both a start and end date.")
 
-            # Pick the most recent run date
-            run_meta_sorted = sorted(
-                run_meta,
-                key=lambda m: m["run_date"] if pd.notna(m["run_date"]) else pd.Timestamp.min,
-            )
-            selected_run_meta = run_meta_sorted[-1]
-            data_dir = selected_run_meta["run_dir"]
+                if not custom_incomplete:
+                    start, end = resolve_window(
+                        preset, [d.date() for d in all_dates], custom_range
+                    )
+                    windowed = {
+                        stk: [
+                            dt for dt in dates
+                            if pd.notna(_d := pd.to_datetime(dt, errors="coerce"))
+                            and start <= _d.date() <= end
+                        ]
+                        for stk, dates in stacks_dates.items()
+                    }
+                    windowed_items = tuple(
+                        (stk, tuple(sorted(ds))) for stk, ds in sorted(windowed.items()) if ds
+                    )
+                    n_runs = sum(len(ds) for _, ds in windowed_items)
+                    st.caption(
+                        f"{start:%Y-%m-%d} → {end:%Y-%m-%d} · "
+                        f"{n_runs} run(s) across {len(windowed_items)} release(s)"
+                    )
+                    try:
+                        run_dirs = _cached_fetch_runs_windowed(
+                            config.data_url, detector, platform, sample,
+                            config.cache_dir, windowed_items,
+                        )
+                    except Exception as err:
+                        st.warning(f"Could not load trend data: {err}")
+                        run_dirs = ()
 
         else:
             # ── Local mode ─────────────────────────────────────────────────────
@@ -352,14 +456,20 @@ def main() -> None:
     trend_results_df = None
     trend_region_df  = None
     trend_event_df   = None
-    if trends_dir is not None:
-        trend_results_df = cached_load_trend_results(trends_dir)
-        trend_region_df  = cached_load_trend_region_timing(trends_dir)
-        trend_event_df   = cached_load_trend_event_timing(trends_dir)
+    if run_dirs:
+        trend_results_df = cached_load_trend_results(run_dirs)
+        trend_region_df  = cached_load_trend_region_timing(run_dirs)
+        trend_event_df   = cached_load_trend_event_timing(run_dirs)
 
     # ── Build tab list ─────────────────────────────────────────────────────────
+    # Trends-capable tabs are gated on *remote mode*, not on whether the current
+    # trend window happens to have data. This keeps the tab set and each tab's
+    # view selector stable across trend-window changes, so the active tab / sub-view
+    # is preserved when the user only adjusts the window; an empty window shows an
+    # in-view "widen the window" message instead of removing the option.
+    trends_enabled = bool(config.data_url)
     tab_names = ["Run Trends", "Config Impact", "Region Timing", "Event Timing", "Event Memory", "Machine Info"]
-    if trends_dir is None:
+    if not trends_enabled:
         # Trends / Impact only make sense with multi-run (remote) data
         tab_names = tab_names[2:]
 
@@ -367,7 +477,7 @@ def main() -> None:
     tab_idx = 0
 
     # Trends (remote only) — uses all stacks so history is complete
-    if trends_dir is not None:
+    if trends_enabled:
         with tabs[tab_idx]:
             trends.render(trend_results_df, selected_labels)
         tab_idx += 1
@@ -378,17 +488,17 @@ def main() -> None:
 
     # Region Timing
     with tabs[tab_idx]:
-        region_timing.render(region_data, trend_region_df, selected_labels)
+        region_timing.render(region_data, trend_region_df, selected_labels, trends_enabled)
     tab_idx += 1
 
     # Event Timing
     with tabs[tab_idx]:
-        event_timing.render(event_data, trend_event_df, selected_labels)
+        event_timing.render(event_data, trend_event_df, selected_labels, trends_enabled)
     tab_idx += 1
 
     # Event Memory
     with tabs[tab_idx]:
-        event_memory.render(event_data, trend_event_df, selected_labels)
+        event_memory.render(event_data, trend_event_df, selected_labels, trends_enabled)
     tab_idx += 1
 
     # Machine Info

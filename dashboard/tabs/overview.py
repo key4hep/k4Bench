@@ -53,4 +53,4 @@ def render(
         relative=relative,
         baseline_label=baseline_label,
     )
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, width="stretch", key="overview_chart")

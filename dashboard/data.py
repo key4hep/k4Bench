@@ -113,34 +113,29 @@ def _parse_run_dir(run_dir: Path) -> dict:
     return _unknown_meta(run_dir)
 
 
-@st.cache_data(show_spinner=False, ttl=60)
-def list_run_metadata(sample_dir: str) -> list[dict]:
-    """Return metadata dicts for every run (date) subdirectory of *sample_dir*."""
-    p = Path(sample_dir)
-    if not p.is_dir():
-        _log.warning("list_run_metadata: directory not found: '%s'", sample_dir)
-        return []
-    meta = []
-    for run_dir in sorted(p.iterdir()):
-        if run_dir.is_dir():
-            meta.append(_parse_run_dir(run_dir))
-    return meta
+def run_metadata(run_dir: str) -> dict:
+    """Return metadata for a single run (date) directory.
+
+    Thin public wrapper over :func:`_parse_run_dir` for callers that already hold
+    one concrete run directory (e.g. the cached latest run for single-run tabs).
+    """
+    return _parse_run_dir(Path(run_dir))
 
 
 @st.cache_data(show_spinner="Loading trend data...", ttl=3600)
-def cached_load_trend_results(sample_dir: str) -> pd.DataFrame | None:
-    """Load results from all run-date subdirectories of *sample_dir* and return
-    a combined DataFrame for the Trends tab.
+def cached_load_trend_results(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
+    """Load results from the given *run_dirs* and return a combined DataFrame for
+    the Trends tab.
 
-    Each row gets ``run_id``, ``run_date``, ``platform``, ``k4h_release``, and
-    ``k4h_release_date`` columns.
+    *run_dirs* is the already date-windowed set of cached run directories
+    (see ``remote.fetch_runs_windowed``). Each row gets ``run_id``, ``run_date``,
+    ``platform``, ``k4h_release``, and ``k4h_release_date`` columns.
     """
-    p = Path(sample_dir)
-    if not p.is_dir():
-        _log.warning("cached_load_trend_results: directory not found: '%s'", sample_dir)
+    if not run_dirs:
         return None
     frames = []
-    for run_dir in sorted(p.iterdir()):
+    for d in run_dirs:
+        run_dir = Path(d)
         if not run_dir.is_dir():
             continue
         meta = _parse_run_dir(run_dir)
@@ -168,25 +163,27 @@ def cached_load_trend_results(sample_dir: str) -> pd.DataFrame | None:
 
 
 @st.cache_data(show_spinner="Loading region timing trends...", ttl=3600)
-def cached_load_trend_region_timing(trends_dir: str) -> pd.DataFrame | None:
-    """Load per-region timing summary across all run-date subdirectories of *trends_dir*.
+def cached_load_trend_region_timing(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
+    """Load per-region timing summary across the given *run_dirs*.
 
     For each run directory, region timing is loaded for all available configs.
     Per detector per config per run, the median and mean event-level time are
     computed (event 0 excluded as warmup).
+
+    *run_dirs* is the already date-windowed set of cached run directories
+    (see ``remote.fetch_runs_windowed``).
 
     Returns a long-form DataFrame with columns:
         run_date, k4h_release_date, label, attribution, detector,
         median_time_s, mean_time_s
     or ``None`` if no data could be loaded.
     """
-    p = Path(trends_dir)
-    if not p.is_dir():
-        _log.warning("cached_load_trend_region_timing: directory not found: '%s'", trends_dir)
+    if not run_dirs:
         return None
 
     rows: list[dict] = []
-    for run_dir in sorted(p.iterdir()):
+    for d in run_dirs:
+        run_dir = Path(d)
         if not run_dir.is_dir():
             continue
         meta = _parse_run_dir(run_dir)
@@ -237,25 +234,27 @@ def cached_load_trend_region_timing(trends_dir: str) -> pd.DataFrame | None:
 
 
 @st.cache_data(show_spinner="Loading event timing trends...", ttl=3600)
-def cached_load_trend_event_timing(trends_dir: str) -> pd.DataFrame | None:
-    """Load per-event timing and memory summary across all run-date subdirectories.
+def cached_load_trend_event_timing(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
+    """Load per-event timing and memory summary across the given *run_dirs*.
 
     For each run directory, event timing is loaded for all available configs.
     Per config per run, summary statistics are computed (event 0 excluded):
         mean_time_s, median_time_s, p95_time_s,
         mean_rss_mb, median_rss_mb, p95_rss_mb, max_rss_mb
 
+    *run_dirs* is the already date-windowed set of cached run directories
+    (see ``remote.fetch_runs_windowed``).
+
     Returns a long-form DataFrame with those columns plus
         run_date, k4h_release_date, k4h_release, label
     or ``None`` if no data could be loaded.
     """
-    p = Path(trends_dir)
-    if not p.is_dir():
-        _log.warning("cached_load_trend_event_timing: directory not found: '%s'", trends_dir)
+    if not run_dirs:
         return None
 
     rows: list[dict] = []
-    for run_dir in sorted(p.iterdir()):
+    for d in run_dirs:
+        run_dir = Path(d)
         if not run_dir.is_dir():
             continue
         meta = _parse_run_dir(run_dir)

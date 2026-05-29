@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass
@@ -11,10 +13,19 @@ class Config:
     # instead of reading from a local directory.
     # Example: https://dd4bench-data.web.cern.ch
     data_url: str | None
+    # Root directory for the persistent on-disk cache of downloaded runs.
+    # Historical runs are immutable, so each is fetched at most once and reused
+    # across reruns. On OpenShift point this at a mounted volume to survive pod
+    # restarts; the default tmp path is fine locally.
+    cache_dir: str
 
     @classmethod
     def from_env(cls) -> Config:
         return cls(
             data_dir=os.environ.get("DD4BENCH_DATA_DIR", "logs"),
             data_url=os.environ.get("DD4BENCH_DATA_URL"),
+            cache_dir=os.environ.get(
+                "DD4BENCH_CACHE_DIR",
+                str(Path(tempfile.gettempdir()) / "dd4bench_cache"),
+            ),
         )
