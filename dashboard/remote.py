@@ -76,44 +76,25 @@ def list_samples(base_url: str, detector: str, platform: str, stack: str) -> lis
     ))
 
 
-def list_all_samples(base_url: str, detector: str, platform: str) -> list[str]:
-    """Return the union of physics samples across **all** stacks for *(detector, platform)*.
+def scan_stack_samples(
+    base_url: str, detector: str, platform: str
+) -> dict[str, list[str]]:
+    """Return ``{stack: [samples]}`` for *(detector, platform)*, newest stack first.
 
-    A sample may be added or dropped between Key4hep releases. Listing the union
-    (rather than only the samples in one stack) keeps every sample selectable so
-    its trend history stays visible even when the newest release no longer carries it.
+    Single source of truth for both the cross-release sample union and the
+    per-sample stack list, so the sidebar scans the release tree only once
+    (one listing per stack) instead of twice. A sample may be added or dropped
+    between Key4hep releases; callers derive the union and the per-sample stacks
+    from this map. Stacks whose listing fails are skipped (logged at debug).
     """
     stacks = _list_subdirs(f"{base_url.rstrip('/')}/{detector}/{platform}")
-    samples: set[str] = set()
-    for stack in stacks:
+    out: dict[str, list[str]] = {}
+    for stack in sorted(stacks, reverse=True):
         try:
-            samples.update(list_samples(base_url, detector, platform, stack))
+            out[stack] = list_samples(base_url, detector, platform, stack)
         except requests.RequestException as exc:
-            _log.debug("list_all_samples: skipping stack %s — %s", stack, exc)
-            continue
-    return sorted(samples)
-
-
-def list_stacks_for_sample(
-    base_url: str, detector: str, platform: str, sample: str
-) -> list[str]:
-    """Return the stacks that contain *sample*, newest first.
-
-    Used to populate the Stack dropdown once a sample is chosen, so it offers
-    only releases that actually have data for that sample and defaults to the
-    most recent one.
-    """
-    stacks = _list_subdirs(f"{base_url.rstrip('/')}/{detector}/{platform}")
-    hits = []
-    for stack in stacks:
-        try:
-            samples = list_samples(base_url, detector, platform, stack)
-        except requests.RequestException as exc:
-            _log.debug("list_stacks_for_sample: skipping stack %s — %s", stack, exc)
-            continue
-        if sample in samples:
-            hits.append(stack)
-    return sorted(hits, reverse=True)
+            _log.debug("scan_stack_samples: skipping stack %s — %s", stack, exc)
+    return out
 
 
 def list_runs(

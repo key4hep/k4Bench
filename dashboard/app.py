@@ -34,18 +34,12 @@ def _cached_list_platforms(base_url: str, detector: str) -> list[str]:
     return list_platforms(base_url, detector)
 
 
-@st.cache_data(show_spinner="Fetching samples...", ttl=3600)
-def _cached_list_all_samples(base_url: str, detector: str, platform: str) -> list[str]:
-    from remote import list_all_samples
-    return list_all_samples(base_url, detector, platform)
-
-
-@st.cache_data(show_spinner="Fetching stacks...", ttl=3600)
-def _cached_list_stacks_for_sample(
-    base_url: str, detector: str, platform: str, sample: str
-) -> list[str]:
-    from remote import list_stacks_for_sample
-    return list_stacks_for_sample(base_url, detector, platform, sample)
+@st.cache_data(show_spinner="Scanning releases...", ttl=3600)
+def _cached_scan_stack_samples(
+    base_url: str, detector: str, platform: str
+) -> dict[str, list[str]]:
+    from remote import scan_stack_samples
+    return scan_stack_samples(base_url, detector, platform)
 
 
 @st.cache_data(show_spinner="Downloading runs...", ttl=3600)
@@ -241,13 +235,19 @@ def main() -> None:
             if not platform:
                 return
 
-            # Sample — union across all stacks, so a sample stays selectable
-            # (and its trend history visible) even when the newest release dropped it.
+            # Scan the release tree once; derive both the sample union and the
+            # per-sample stack list from the same {stack: [samples]} map.
             try:
-                samples = _cached_list_all_samples(config.data_url, detector, platform)
+                stack_samples = _cached_scan_stack_samples(
+                    config.data_url, detector, platform
+                )
             except Exception as err:
                 st.error(f"Failed to list samples: {err}")
                 return
+
+            # Sample — union across all stacks, so a sample stays selectable
+            # (and its trend history visible) even when the newest release dropped it.
+            samples = sorted({s for samps in stack_samples.values() for s in samps})
             if not samples:
                 st.warning(f"No samples found for '{detector} / {platform}'.")
                 return
@@ -257,18 +257,15 @@ def main() -> None:
 
             # Stack — only releases that actually contain the chosen sample, newest
             # first, so the default jumps to the latest release that has the sample.
-            try:
-                stacks = _cached_list_stacks_for_sample(
-                    config.data_url, detector, platform, sample
-                )
-            except Exception as err:
-                st.error(f"Failed to list stacks: {err}")
-                return
+            stacks = [stk for stk, samps in stack_samples.items() if sample in samps]
             if not stacks:
                 st.warning(f"No releases contain sample '{sample}' for '{detector} / {platform}'.")
                 return
             stack = st.selectbox("Stack", stacks)
-            st.caption("Latest release with this sample. Single-run tabs use it; Trends shows all releases.")
+            st.caption(
+                f"Available in {len(stacks)} release(s); defaults to the newest. "
+                "Single-run tabs use it; Trends shows all releases."
+            )
             if not stack:
                 return
 
