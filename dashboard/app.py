@@ -121,6 +121,20 @@ def _render_footer() -> None:
     )
 
 
+def _drop_stale_selection(key: str, options: list[str]) -> None:
+    """Clear a keyed selectbox's stored value when it's no longer a valid option.
+
+    The dependent dropdowns (Platform → Sample → Stack) rebuild their option lists
+    whenever an upstream selection changes, so a value left in ``session_state``
+    from the old options can be fed back into ``st.selectbox`` as an invalid
+    selection. Popping it *before* the widget is created (the only point at which
+    a widget-backed key may be mutated) lets the selectbox re-default cleanly to a
+    valid option. A no-op when the stored value is still present in *options*.
+    """
+    if key in st.session_state and st.session_state[key] not in options:
+        del st.session_state[key]
+
+
 def _render_sidebar_footer() -> None:
     """Render a compact attribution note at the bottom of the sidebar."""
     st.markdown(
@@ -263,6 +277,7 @@ def main() -> None:
             if not platforms:
                 st.warning(f"No platforms found for detector '{detector}'.")
                 return
+            _drop_stale_selection("sb_platform", platforms)
             platform = st.selectbox("Platform", platforms, key="sb_platform")
             if not platform:
                 return
@@ -283,6 +298,7 @@ def main() -> None:
             if not samples:
                 st.warning(f"No samples found for '{detector} / {platform}'.")
                 return
+            _drop_stale_selection("sb_sample", samples)
             sample = st.selectbox("Sample", samples, key="sb_sample")
             if not sample:
                 return
@@ -298,6 +314,7 @@ def main() -> None:
             if not stacks:
                 st.warning(f"No releases contain sample '{sample}' for '{detector} / {platform}'.")
                 return
+            _drop_stale_selection("sb_stack", stacks)
             stack = st.selectbox("Stack", stacks, key="sb_stack")
             st.caption(
                 f"Available in {len(stacks)} release(s); defaults to the newest. "
