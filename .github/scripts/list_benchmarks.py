@@ -31,7 +31,8 @@ BENCH_DIR = Path(".github/benchmarks")
 CONFIG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 SAMPLE_RE = re.compile(r"^[A-Za-z0-9_.+-]+$")
 
-SCALAR_KEYS = ("xml", "n_events", "ddsim_args", "verbose", "sweep", "steering_file")
+SCALAR_KEYS = ("xml", "n_events", "ddsim_args", "verbose", "sweep", "steering_file",
+               "timeout")
 LIST_KEYS   = ("input_files", "include_only", "exclude_only")
 
 
@@ -95,6 +96,8 @@ def expand(path: Path) -> list[dict]:
         modes = (rec["sweep"] == "true") + bool(rec["include_only"]) + bool(rec["exclude_only"])
         if modes > 1:
             _die(f"sweep / include_only / exclude_only are mutually exclusive ({loc})")
+        if rec["timeout"] and not (rec["timeout"].replace(".", "", 1).isdigit() and float(rec["timeout"]) > 0):
+            _die(f"timeout must be a positive number ({loc})")
 
         records.append(rec)
     return records

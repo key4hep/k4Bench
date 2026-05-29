@@ -1,9 +1,15 @@
 #!/bin/bash
 #
-# Runs a single dd4bench benchmark and uploads results to CERN EOS.
-# All configuration arrives via environment variables; the matrix in
-# .github/workflows/nightly.yml expands .github/benchmarks/*.yml into a
-# flat set of jobs (see .github/scripts/list_benchmarks.py).
+# Runs a single dd4bench benchmark (sequential sweep or single run) and uploads
+# results to CERN EOS. All configuration arrives via environment variables; the
+# matrix in .github/workflows/benchmark-detector.yml expands
+# .github/benchmarks/*.yml into a flat set of jobs (see list_benchmarks.py).
+#
+# Failure handling: the benchmark's exit code is captured rather than allowed to
+# abort the script, so results — including failed configs' CSV + .log — are
+# always written and uploaded. The script then exits with that code, so the CI
+# job still goes red on a benchmark failure while the data reaches EOS. Pure
+# infra errors (missing XML, Key4hep, EOS auth) still hard-fail with no upload.
 #
 # Required env vars (set by the workflow):
 #   BENCHMARK_CONFIG  — config file stem, e.g. "ALLEGRO_o1_v03"
@@ -15,45 +21,43 @@
 #   STEERING_FILE     — optional ddsim --steeringFile path; $VAR expansion supported
 #   SWEEP             — "true"/"false"
 #   VERBOSE           — "true"/"false"
+#   TIMEOUT           — optional per-run wall-clock limit in seconds (may be empty)
 #   INCLUDE_ONLY      — space-separated subdetector names (may be empty)
 #   EXCLUDE_ONLY      — space-separated subdetector names (may be empty)
 #   X509_USER_CERT, X509_USER_KEY — EOS service certificate paths
 #   GITHUB_RUN_ID, GITHUB_SHA, GITHUB_REPOSITORY, GITHUB_SERVER_URL
 #
+# Optional (set by the parallel-sweep path, sweep-parallel.yml, so every variant
+# job writes into one shared EOS run dir; unset for the sequential path):
+#   EOS_DATE, EOS_PLATFORM, EOS_RELEASE — pinned run-path components
+#   PARALLEL                            — "true" to tag run_info.json
+#
 # EOS layout written by this script:
 #   {EOS_ROOT}/{detector}/{platform}/key4hep-{release}/{sample}/{YYYY-MM-DD}/
-#     run_info.json
-#     machine_info.json
-#     {config}_results.csv
-#     {config}_events.json
-#     {config}_regions.json
-#     {config}.log
+#     run_info.json  machine_info.json
+#     {config}_results.csv  {config}_events.json  {config}_regions.json  {config}.log
 
 set -euo pipefail
 
-# TODO: switch to eospublic once directory creation is allowed there (!d)
-# (See eos root://eospublic.cern.ch attr ls /eos/experiment/fcc/ee/dd4bench)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=.github/scripts/lib_setup.sh
+source "${SCRIPT_DIR}/lib_setup.sh"
 
-# EOS_FQDN="eospublic.cern.ch"
-# EOS_ROOT="/eos/experiment/fcc/ee/dd4bench"
+# TODO: switch to eospublic once directory creation is allowed there (!d)
 EOS_FQDN="eosuser.cern.ch"
 EOS_ROOT="/eos/user/j/jbeirer/dd4bench"
 
 SAMPLE="${BENCHMARK_SAMPLE}"
 
-# ── 1. System dependencies ────────────────────────────────────────────────────
-echo "::group::1. System dependencies"
-dnf install -y --quiet time voms-clients
-echo "::endgroup::"
-
-# ── 2. Job parameters ─────────────────────────────────────────────────────────
-echo "::group::2. Job parameters"
+# ── Job parameters ─────────────────────────────────────────────────────────────
+echo "::group::Job parameters"
 echo "  config       : ${BENCHMARK_CONFIG}"
 echo "  sample       : ${SAMPLE}"
 echo "  xml          : ${XML_PATH}"
 echo "  n_events     : ${N_EVENTS}"
 echo "  verbose      : ${VERBOSE}"
 echo "  sweep        : ${SWEEP}"
+echo "  timeout      : ${TIMEOUT:-<none>}"
 echo "  include_only : ${INCLUDE_ONLY:-<none>}"
 echo "  exclude_only : ${EXCLUDE_ONLY:-<none>}"
 echo "  input_files  : ${INPUT_FILES:-<none>}"
@@ -61,171 +65,69 @@ echo "  steering_file: ${STEERING_FILE:-<none>}"
 echo "  ddsim_args   : ${DDSIM_ARGS:-<none>}"
 echo "::endgroup::"
 
-# ── 3. Key4hep nightly ────────────────────────────────────────────────────────
-echo "::group::3. Key4hep nightly"
-set +u
-source /cvmfs/sw-nightlies.hsf.org/key4hep/setup.sh
-set -u
-[[ -n "${KEY4HEP_STACK:-}" ]] || { echo "ERROR: KEY4HEP_STACK not set after sourcing Key4hep setup" >&2; exit 1; }
-K4H_RELEASE="$(grep -oP '\d{4}-\d{2}-\d{2}' <<< "${KEY4HEP_STACK}" | head -1 || true)"
-[[ -n "${K4H_RELEASE}" ]] || { echo "ERROR: Failed to extract Key4hep release date from KEY4HEP_STACK" >&2; exit 1; }
-# Extract platform tag (path component right after the release date, e.g. x86_64-el9-gcc14-opt)
-K4H_PLATFORM="$(grep -oP '(?<=\d{4}-\d{2}-\d{2}\/)[^/:]+' <<< "${KEY4HEP_STACK}" | head -1 || true)"
-[[ -n "${K4H_PLATFORM}" ]] || { echo "WARNING: Could not extract platform from KEY4HEP_STACK; using 'unknown'" >&2; K4H_PLATFORM="unknown"; }
-echo "Release : key4hep-${K4H_RELEASE}"
-echo "Platform: ${K4H_PLATFORM}"
-echo "Stack   : ${KEY4HEP_STACK}"
+# ── Environment ────────────────────────────────────────────────────────────────
+setup_system_deps
+setup_key4hep
+install_dd4bench
+resolve_geometry
+resolve_inputs
+
+# Path components. A parallel-sweep variant job inherits EOS_DATE/EOS_PLATFORM/
+# EOS_RELEASE pinned by the discover job, so every variant lands in one EOS run
+# dir. The sequential path leaves them unset and derives them here (date captured
+# once so run_info.json and the upload path agree across a midnight boundary).
+DATE="${EOS_DATE:-$(date +%Y-%m-%d)}"
+PLATFORM="${EOS_PLATFORM:-${K4H_PLATFORM}}"
+RELEASE="${EOS_RELEASE:-${K4H_RELEASE}}"
+LOG_DIR="logs/${DETECTOR}"
+
+# ── Collect machine info (start snapshot, before benchmark) ────────────────────
+echo "::group::Collect machine info (start)"
+python3 .github/scripts/machine_info.py start "${LOG_DIR}"
 echo "::endgroup::"
 
-# ── 4. Install dd4bench ───────────────────────────────────────────────────────
-echo "::group::4. Install dd4bench"
-export DD4BENCH_REPO="$(pwd)"
-export LD_LIBRARY_PATH="${DD4BENCH_REPO}/plugin/install/lib:${DD4BENCH_REPO}/plugin/build:${LD_LIBRARY_PATH:-}"
-mkdir -p ~/.local/bin
-export PATH=~/.local/bin:"${PATH}"
-
-if [ ! -f ~/.local/bin/cvmfs-venv ]; then
-    curl -sL https://raw.githubusercontent.com/jbeirer/cvmfs-venv/main/cvmfs-venv.sh \
-        -o ~/.local/bin/cvmfs-venv
-    chmod +x ~/.local/bin/cvmfs-venv
-fi
-cvmfs-venv py-venv
-. py-venv/bin/activate
-pip install --no-build-isolation --quiet "."
-bash plugin/build.sh
-echo "::endgroup::"
-
-# ── 5. Resolve inputs (geometry + optional ddsim steering file) ───────────────
-echo "::group::5. Resolve inputs"
-if [[ "${XML_PATH}" = /* ]]; then
-    DETECTOR_XML="${XML_PATH}"
-else
-    DETECTOR_XML="${K4GEO}/${XML_PATH}"
-fi
-[[ -f "${DETECTOR_XML}" ]] || { echo "ERROR: XML not found: ${DETECTOR_XML}"; exit 1; }
-DETECTOR=$(basename "${DETECTOR_XML}" .xml)
-echo "Detector : ${DETECTOR}"
-echo "XML      : ${DETECTOR_XML}"
-
-# Optional steering file. The path may reference Key4hep env vars (e.g. $FCCCONFIG)
-# so we expand it here, after the Key4hep stack is sourced. Prepended to DDSIM_ARGS
-# so a sample-level --steeringFile flag would override it if both are given.
-if [[ -n "${STEERING_FILE}" ]]; then
-    STEERING_PATH=$(python3 -c "import os, sys; print(os.path.expandvars(sys.argv[1]))" "${STEERING_FILE}")
-    [[ -f "${STEERING_PATH}" ]] || { echo "ERROR: steering file not found: ${STEERING_PATH}"; exit 1; }
-    DDSIM_ARGS="--steeringFile ${STEERING_PATH} ${DDSIM_ARGS}"
-    echo "Steering : ${STEERING_PATH}"
-fi
-
-# dd4bench has no top-level --inputFiles flag; it forwards everything in
-# --ddsim-args verbatim to ddsim. So we prepend --inputFiles into DDSIM_ARGS.
-if [[ -n "${INPUT_FILES}" ]]; then
-    # HepMC inputs can't be streamed over xrootd (ROOT mis-parses the text as a
-    # ROOT file → SIGSEGV), so fetch to a local path first.
-    LOCAL_INPUT="/tmp/$(basename "${INPUT_FILES}")"
-    xrdcp --force "${INPUT_FILES}" "${LOCAL_INPUT}"
-    DDSIM_ARGS="--inputFiles ${LOCAL_INPUT} ${DDSIM_ARGS}"
-    echo "Inputs   : ${LOCAL_INPUT}"
-fi
-echo "::endgroup::"
-
-# Capture the date once here so run_info.json and the EOS upload path always agree,
-# even if the benchmark runs across a midnight boundary.
-DATE=$(date +%Y-%m-%d)
-
-# ── 6. Collect machine info (start snapshot, before benchmark) ────────────────
-echo "::group::6. Collect machine info (start)"
-python3 .github/scripts/machine_info.py start "logs/${DETECTOR}"
-echo "::endgroup::"
-
-# ── 7. Run benchmark ──────────────────────────────────────────────────────────
-echo "::group::7. Run benchmark"
+# ── Run benchmark (capture exit code; never abort the upload below) ────────────
+echo "::group::Run benchmark"
 CMD=(dd4bench
     --xml        "${DETECTOR_XML}"
     --events     "${N_EVENTS}"
-    --output-dir "logs/${DETECTOR}"
+    --output-dir "${LOG_DIR}"
 )
 [[ "${SWEEP}"   == "true" ]] && CMD+=(--sweep)
 [[ -n "${INCLUDE_ONLY}" ]]   && read -ra _arr <<< "${INCLUDE_ONLY}" && CMD+=(--include-only "${_arr[@]}")
 [[ -n "${EXCLUDE_ONLY}" ]]   && read -ra _arr <<< "${EXCLUDE_ONLY}" && CMD+=(--exclude-only "${_arr[@]}")
 [[ "${VERBOSE}" == "true" ]] && CMD+=(--verbose)
+[[ -n "${TIMEOUT:-}" ]]      && CMD+=(--timeout "${TIMEOUT}")
 [[ -n "${DDSIM_ARGS}" ]]     && CMD+=(--ddsim-args="${DDSIM_ARGS}")
 
 echo "$ ${CMD[*]}"
-"${CMD[@]}"
+BENCH_RC=0
+"${CMD[@]}" || BENCH_RC=$?
+echo "benchmark exit code: ${BENCH_RC}"
 echo "::endgroup::"
 
-# ── 8. Write run_info.json + finalise machine_info.json ───────────────────────
-echo "::group::8. Write run metadata"
-CONFIGS_JSON=$(
-    find "logs/${DETECTOR}" -maxdepth 1 -name '*_results.csv' -print0 2>/dev/null \
-    | xargs -0 -r -I{} basename {} _results.csv \
-    | python3 -c "import sys, json; print(json.dumps(sys.stdin.read().split()))"
-)
-
-# run_info.json
-python3 - "${DETECTOR}" "${SAMPLE}" "${DATE}" "${K4H_PLATFORM}" "${K4H_RELEASE}" \
-          "${N_EVENTS}" "${SWEEP}" <<PYEOF
-import json, os, sys
-
-detector, sample, date, platform, k4h_rel = sys.argv[1:6]
-n_events = int(sys.argv[6])
-sweep    = sys.argv[7] == "true"
-
-run_info = {
-    "date":             date,
-    "platform":         platform,
-    "k4h_release":      f"key4hep-{k4h_rel}",
-    "k4h_release_date": k4h_rel,
-    "detector":         detector,
-    "sample":           sample,
-    "github_run_id":    os.environ["GITHUB_RUN_ID"],
-    "github_run_url": (
-        f"{os.environ['GITHUB_SERVER_URL']}"
-        f"/{os.environ['GITHUB_REPOSITORY']}"
-        f"/actions/runs/{os.environ['GITHUB_RUN_ID']}"
-    ),
-    "commit_sha":       os.environ["GITHUB_SHA"],
-    "n_events":         n_events,
-    "sweep":            sweep,
-    "configs":          ${CONFIGS_JSON},
-}
-with open(f"logs/{detector}/run_info.json", "w") as f:
-    json.dump(run_info, f, indent=2)
-print(f"Written: logs/{detector}/run_info.json")
-PYEOF
-
-# machine_info.json (merge start snapshot + end-of-run dynamic fields)
-python3 .github/scripts/machine_info.py finalize "logs/${DETECTOR}"
+# ── Write run metadata (always, even on benchmark failure) ─────────────────────
+echo "::group::Write run metadata"
+python3 .github/scripts/write_run_info.py \
+    --results-dir "${LOG_DIR}" \
+    --detector    "${DETECTOR}" \
+    --sample      "${SAMPLE}" \
+    --date        "${DATE}" \
+    --platform    "${PLATFORM}" \
+    --release     "${RELEASE}" \
+    --n-events    "${N_EVENTS}" \
+    --sweep       "${SWEEP}" \
+    --parallel    "${PARALLEL:-false}"
+python3 .github/scripts/machine_info.py finalize "${LOG_DIR}"
 echo "::endgroup::"
 
-# ── 9. Upload to EOS ──────────────────────────────────────────────────────────
-echo "::group::9. Upload to EOS"
-export X509_CERT_DIR=/cvmfs/grid.cern.ch/etc/grid-security/certificates
-export X509_VOMS_DIR=/cvmfs/grid.cern.ch/etc/grid-security/vomsdir
-export VOMS_USERCONF=/cvmfs/grid.cern.ch/etc/vomses
-export X509_USER_PROXY=/tmp/x509_proxy
-voms-proxy-init \
-  --cert "${X509_USER_CERT}" \
-  --key "${X509_USER_KEY}" \
-  --out "${X509_USER_PROXY}"
-
-unset X509_USER_CERT
-unset X509_USER_KEY
-
-# New EOS path: {detector}/{platform}/key4hep-{release}/{sample}/{date}
-EOS_RUN="${EOS_ROOT}/${DETECTOR}/${K4H_PLATFORM}/key4hep-${K4H_RELEASE}/${SAMPLE}/${DATE}"
-EOS_URL="root://${EOS_FQDN}/${EOS_RUN}"
-
-command -v xrdfs >/dev/null || { echo "ERROR: xrdfs not found" >&2; exit 1; }
-command -v xrdcp >/dev/null || { echo "ERROR: xrdcp not found" >&2; exit 1; }
-
-xrdfs "root://${EOS_FQDN}" mkdir -p "${EOS_RUN}"
-
-for f in "logs/${DETECTOR}"/*; do
-    echo "  → $(basename "${f}")"
-    xrdcp --force "${f}" "${EOS_URL}/$(basename "${f}")" \
-        || { echo "ERROR: Failed to upload ${f}" >&2; exit 1; }
-done
-echo "Uploaded to: ${EOS_URL}"
+# ── Upload to EOS (always) ─────────────────────────────────────────────────────
+echo "::group::Upload to EOS"
+setup_eos_proxy
+EOS_RUN="${EOS_ROOT}/${DETECTOR}/${PLATFORM}/key4hep-${RELEASE}/${SAMPLE}/${DATE}"
+eos_upload_dir "${LOG_DIR}" "${EOS_FQDN}" "${EOS_RUN}"
+echo "Uploaded to: root://${EOS_FQDN}/${EOS_RUN}"
 echo "::endgroup::"
+
+# Reflect the benchmark outcome in the job status now that data is safely on EOS.
+exit "${BENCH_RC}"

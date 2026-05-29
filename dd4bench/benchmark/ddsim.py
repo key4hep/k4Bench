@@ -90,6 +90,10 @@ class BenchmarkConfig:
         (e.g. ``["--runType=batch", "--enableGun", "--gun.particle", "e-"]``).
     verbose:
         If True, print ddsim stdout in real time instead of buffering until run-end.
+    timeout_s:
+        Optional per-run wall-clock limit in seconds. A run exceeding it is
+        killed and recorded as failed (non-zero return code) instead of
+        blocking the sweep. ``None`` disables the timeout.
     """
 
     xml_path: Path
@@ -101,6 +105,7 @@ class BenchmarkConfig:
     setup_script: Path | None = None
     extra_args: list[str] = field(default_factory=list)
     verbose: bool = False
+    timeout_s: float | None = None
 
     def __post_init__(self) -> None:
         if self.mode == SweepMode.INCLUDE_ONLY and not self.detector_names:
@@ -205,9 +210,14 @@ def _run_removal_sweep(config: BenchmarkConfig) -> list[RunResult]:
                     _timed_run(xml_path=tmp_xml, label=label, config=config)
                 )
         except DetectorNotFoundError as exc:
-            print(f"  SKIP {label}: {exc}\n")
+            # In FULL mode the names come from scanning this same geometry, so a
+            # patch-time miss is a real inconsistency — record it as a failed run
+            # rather than silently dropping the detector from the results.
+            print(f"  ERROR {label}: {exc}\n")
+            results.append(_errored_result(label, config))
         except Exception:
             print(f"  ERROR in {label}:\n{traceback.format_exc()}")
+            results.append(_errored_result(label, config))
 
     return results
 
@@ -306,6 +316,16 @@ def _resolve_detectors(config: BenchmarkConfig) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+def _errored_result(label: str, config: BenchmarkConfig) -> RunResult:
+    """Return a failed :class:`RunResult` for a run that never executed ddsim.
+
+    Used when geometry patching raises before the executor runs: the result is
+    marked failed (non-zero return code, all metrics ``None``) so the config is
+    still recorded and surfaces as a failure downstream instead of vanishing.
+    """
+    return RunResult(label=label, returncode=1, n_events=config.n_events)
+
+
 def _timed_run(*, xml_path: Path, label: str, config: BenchmarkConfig) -> RunResult:
     """Execute one ddsim run and print a one-line status summary."""
     result = run_ddsim(
@@ -317,6 +337,7 @@ def _timed_run(*, xml_path: Path, label: str, config: BenchmarkConfig) -> RunRes
         setup_script=config.setup_script,
         extra_args=config.extra_args,
         verbose=config.verbose,
+        timeout_s=config.timeout_s,
     )
     _print_run_result(result)
     return result

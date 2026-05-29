@@ -197,7 +197,17 @@ def _build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Stream ddsim output to stdout during each run.",
     )
-    
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Per-run wall-clock limit in seconds. A run exceeding it is killed "
+            "and recorded as failed instead of blocking the sweep (default: no limit)."
+        ),
+    )
+
     return parser
 
 
@@ -233,5 +243,6 @@ def _build_config(args: argparse.Namespace) -> BenchmarkConfig:
         mode=mode,
         detector_names=detector_names,
         extra_args=extra_args,
-        verbose=args.verbose
+        verbose=args.verbose,
+        timeout_s=args.timeout,
     )

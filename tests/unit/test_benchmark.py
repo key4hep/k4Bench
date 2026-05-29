@@ -232,7 +232,10 @@ class TestFailureHandling:
 
         assert len(results) == 5
 
-    def test_unexpected_exception_skips_run_continues(self, tmp_path):
+    def test_unexpected_exception_recorded_as_failed_run(self, tmp_path):
+        # A crash during a removal run (e.g. geometry patching) must be recorded
+        # as a failed result rather than silently dropped, so the config still
+        # surfaces downstream. The sweep continues to completion.
         def side_effect(**kw):
             if kw["label"] == "without_EcalBarrel":
                 raise RuntimeError("unexpected crash")
@@ -241,6 +244,7 @@ class TestFailureHandling:
         with patch("dd4bench.benchmark.ddsim.run_ddsim", side_effect=side_effect):
             results = run_sweep(_make_config(tmp_path, mode=SweepMode.FULL))
 
-        labels = {r.label for r in results}
-        assert "without_EcalBarrel" not in labels
-        assert len(results) == 4
+        assert len(results) == 5
+        failed = [r for r in results if r.label == "without_EcalBarrel"]
+        assert len(failed) == 1
+        assert not failed[0].succeeded

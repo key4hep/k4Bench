@@ -167,3 +167,18 @@ class TestPickleArgs:
     def test_pickle_custom(self):
         args = _parse(["--xml", str(XML_A), "--pickle", "results.pkl"])
         assert args.pickle == "results.pkl"
+
+
+# ---------------------------------------------------------------------------
+# Timeout
+# ---------------------------------------------------------------------------
+
+
+class TestTimeout:
+    def test_default_timeout_is_none(self):
+        config = _config(["--xml", str(XML_A)])
+        assert config.timeout_s is None
+
+    def test_timeout_threaded_into_config(self):
+        config = _config(["--xml", str(XML_A), "--timeout", "120"])
+        assert config.timeout_s == 120.0

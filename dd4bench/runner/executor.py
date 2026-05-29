@@ -32,6 +32,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import threading
 from pathlib import Path
 from collections import deque
 
@@ -54,6 +55,7 @@ def run_ddsim(
     setup_script: Path | None = None,
     extra_args: list[str] | None = None,
     verbose: bool = False,
+    timeout_s: float | None = None,
 ) -> RunResult:
     """Run ddsim for one geometry configuration and return collected metrics.
 
@@ -90,6 +92,13 @@ def run_ddsim(
     verbose:
         Stream ddsim output live to stdout.
 
+    timeout_s:
+        Optional wall-clock limit in seconds. When exceeded, the ddsim
+        process group is terminated (SIGTERM, then SIGKILL after a short
+        grace) and the returned :class:`RunResult` carries a non-zero
+        returncode so the run is recorded as failed rather than blocking
+        indefinitely. ``None`` disables the timeout.
+
     Returns
     -------
     RunResult
@@ -122,6 +131,9 @@ def run_ddsim(
         plugin_available=plugin_available,
     )
 
+    timed_out = threading.Event()
+    watchdog: threading.Timer | None = None
+
     try:
         proc = subprocess.Popen(
             cmd,
@@ -133,6 +145,13 @@ def run_ddsim(
             env=env,
             start_new_session=True,
         )
+
+        if timeout_s is not None:
+            watchdog = threading.Timer(
+                timeout_s, _kill_on_timeout, args=(proc, timed_out)
+            )
+            watchdog.daemon = True
+            watchdog.start()
 
         time_output_lines = deque(maxlen=200)
 
@@ -155,6 +174,11 @@ def run_ddsim(
 
             proc.wait()  # ensure returncode is populated
 
+            # Killing the process group ends the stdout stream above; record the
+            # timeout in the log so it is visible in downstream log viewers.
+            if timed_out.is_set():
+                log_file.write(f"\n[dd4bench] TIMEOUT after {timeout_s:g}s — process killed.\n")
+
     except KeyboardInterrupt:
         print("\nStopping ddsim...", flush=True)
 
@@ -171,6 +195,10 @@ def run_ddsim(
                 pass
 
         raise
+
+    finally:
+        if watchdog is not None:
+            watchdog.cancel()
 
     metrics = parse_time_output("".join(time_output_lines))
 
@@ -210,6 +238,28 @@ def run_ddsim(
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+
+def _kill_on_timeout(proc: subprocess.Popen, timed_out: threading.Event) -> None:
+    """Terminate *proc*'s process group when the run exceeds its time budget.
+
+    Runs in a watchdog thread. Sends SIGTERM, then SIGKILL after a short grace,
+    to the whole session (ddsim + GNU time + any children) started via
+    ``start_new_session=True``. Sets *timed_out* so the caller can record the
+    timeout. A no-op if the process has already exited (avoids racing a clean
+    finish).
+    """
+    if proc.poll() is not None:
+        return
+    timed_out.set()
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        proc.wait(timeout=5)
+    except (subprocess.TimeoutExpired, ProcessLookupError):
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 def _has_action(args: list[str], action_name: str) -> bool:

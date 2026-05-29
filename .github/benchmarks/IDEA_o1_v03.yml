@@ -10,6 +10,8 @@
 #   xml           required   detector geometry, $K4GEO-relative or absolute path
 #   verbose       optional   stream ddsim output to stdout      (default: false)
 #   sweep         optional   baseline + one run per subdetector dropped
+#   timeout       optional   per-run wall-clock limit in seconds; a run exceeding
+#                            it is killed and recorded as failed (default: no limit)
 #   include_only  optional   keep only these subdetectors       (list, single run)
 #   exclude_only  optional   drop these subdetectors            (list, single run)
 #   ddsim_args    optional   ddsim flags applied to every sample
