@@ -69,17 +69,51 @@ def list_platforms(base_url: str, detector: str) -> list[str]:
     return _list_subdirs(f"{base_url.rstrip('/')}/{detector}")
 
 
-def list_stacks(base_url: str, detector: str, platform: str) -> list[str]:
-    """Return available Key4hep stack releases for *(detector, platform)*, newest first."""
-    stacks = _list_subdirs(f"{base_url.rstrip('/')}/{detector}/{platform}")
-    return sorted(stacks, reverse=True)
-
-
 def list_samples(base_url: str, detector: str, platform: str, stack: str) -> list[str]:
     """Return available physics samples for *(detector, platform, stack)*."""
     return sorted(_list_subdirs(
         f"{base_url.rstrip('/')}/{detector}/{platform}/{stack}"
     ))
+
+
+def list_all_samples(base_url: str, detector: str, platform: str) -> list[str]:
+    """Return the union of physics samples across **all** stacks for *(detector, platform)*.
+
+    A sample may be added or dropped between Key4hep releases. Listing the union
+    (rather than only the samples in one stack) keeps every sample selectable so
+    its trend history stays visible even when the newest release no longer carries it.
+    """
+    stacks = _list_subdirs(f"{base_url.rstrip('/')}/{detector}/{platform}")
+    samples: set[str] = set()
+    for stack in stacks:
+        try:
+            samples.update(list_samples(base_url, detector, platform, stack))
+        except requests.RequestException as exc:
+            _log.debug("list_all_samples: skipping stack %s — %s", stack, exc)
+            continue
+    return sorted(samples)
+
+
+def list_stacks_for_sample(
+    base_url: str, detector: str, platform: str, sample: str
+) -> list[str]:
+    """Return the stacks that contain *sample*, newest first.
+
+    Used to populate the Stack dropdown once a sample is chosen, so it offers
+    only releases that actually have data for that sample and defaults to the
+    most recent one.
+    """
+    stacks = _list_subdirs(f"{base_url.rstrip('/')}/{detector}/{platform}")
+    hits = []
+    for stack in stacks:
+        try:
+            samples = list_samples(base_url, detector, platform, stack)
+        except requests.RequestException as exc:
+            _log.debug("list_stacks_for_sample: skipping stack %s — %s", stack, exc)
+            continue
+        if sample in samples:
+            hits.append(stack)
+    return sorted(hits, reverse=True)
 
 
 def list_runs(

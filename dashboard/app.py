@@ -34,16 +34,18 @@ def _cached_list_platforms(base_url: str, detector: str) -> list[str]:
     return list_platforms(base_url, detector)
 
 
-@st.cache_data(show_spinner="Fetching stacks...", ttl=3600)
-def _cached_list_stacks(base_url: str, detector: str, platform: str) -> list[str]:
-    from remote import list_stacks
-    return list_stacks(base_url, detector, platform)
-
-
 @st.cache_data(show_spinner="Fetching samples...", ttl=3600)
-def _cached_list_samples(base_url: str, detector: str, platform: str, stack: str) -> list[str]:
-    from remote import list_samples
-    return list_samples(base_url, detector, platform, stack)
+def _cached_list_all_samples(base_url: str, detector: str, platform: str) -> list[str]:
+    from remote import list_all_samples
+    return list_all_samples(base_url, detector, platform)
+
+
+@st.cache_data(show_spinner="Fetching stacks...", ttl=3600)
+def _cached_list_stacks_for_sample(
+    base_url: str, detector: str, platform: str, sample: str
+) -> list[str]:
+    from remote import list_stacks_for_sample
+    return list_stacks_for_sample(base_url, detector, platform, sample)
 
 
 @st.cache_data(show_spinner="Downloading runs...", ttl=3600)
@@ -239,31 +241,35 @@ def main() -> None:
             if not platform:
                 return
 
-            # Stack
+            # Sample — union across all stacks, so a sample stays selectable
+            # (and its trend history visible) even when the newest release dropped it.
             try:
-                stacks = _cached_list_stacks(config.data_url, detector, platform)
-            except Exception as err:
-                st.error(f"Failed to list stacks: {err}")
-                return
-            if not stacks:
-                st.warning(f"No stacks found for '{detector} / {platform}'.")
-                return
-            stack = st.selectbox("Stack", stacks)
-            st.caption("Used by single-run tabs. Trends shows all stacks.")
-            if not stack:
-                return
-
-            # Sample
-            try:
-                samples = _cached_list_samples(config.data_url, detector, platform, stack)
+                samples = _cached_list_all_samples(config.data_url, detector, platform)
             except Exception as err:
                 st.error(f"Failed to list samples: {err}")
                 return
             if not samples:
-                st.warning(f"No samples found for '{detector} / {platform} / {stack}'.")
+                st.warning(f"No samples found for '{detector} / {platform}'.")
                 return
             sample = st.selectbox("Sample", samples)
             if not sample:
+                return
+
+            # Stack — only releases that actually contain the chosen sample, newest
+            # first, so the default jumps to the latest release that has the sample.
+            try:
+                stacks = _cached_list_stacks_for_sample(
+                    config.data_url, detector, platform, sample
+                )
+            except Exception as err:
+                st.error(f"Failed to list stacks: {err}")
+                return
+            if not stacks:
+                st.warning(f"No releases contain sample '{sample}' for '{detector} / {platform}'.")
+                return
+            stack = st.selectbox("Stack", stacks)
+            st.caption("Latest release with this sample. Single-run tabs use it; Trends shows all releases.")
+            if not stack:
                 return
 
             # Download runs for the selected stack (single-run tabs)
