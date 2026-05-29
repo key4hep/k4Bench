@@ -34,16 +34,12 @@ def _cached_list_platforms(base_url: str, detector: str) -> list[str]:
     return list_platforms(base_url, detector)
 
 
-@st.cache_data(show_spinner="Fetching stacks...", ttl=3600)
-def _cached_list_stacks(base_url: str, detector: str, platform: str) -> list[str]:
-    from remote import list_stacks
-    return list_stacks(base_url, detector, platform)
-
-
-@st.cache_data(show_spinner="Fetching samples...", ttl=3600)
-def _cached_list_samples(base_url: str, detector: str, platform: str, stack: str) -> list[str]:
-    from remote import list_samples
-    return list_samples(base_url, detector, platform, stack)
+@st.cache_data(show_spinner="Scanning releases...", ttl=3600)
+def _cached_scan_stack_samples(
+    base_url: str, detector: str, platform: str
+) -> dict[str, list[str]]:
+    from remote import scan_stack_samples
+    return scan_stack_samples(base_url, detector, platform)
 
 
 @st.cache_data(show_spinner="Downloading runs...", ttl=3600)
@@ -239,31 +235,43 @@ def main() -> None:
             if not platform:
                 return
 
-            # Stack
+            # Scan the release tree once; derive both the sample union and the
+            # per-sample stack list from the same {stack: [samples]} map.
             try:
-                stacks = _cached_list_stacks(config.data_url, detector, platform)
+                stack_samples = _cached_scan_stack_samples(
+                    config.data_url, detector, platform
+                )
             except Exception as err:
-                st.error(f"Failed to list stacks: {err}")
-                return
-            if not stacks:
-                st.warning(f"No stacks found for '{detector} / {platform}'.")
-                return
-            stack = st.selectbox("Stack", stacks)
-            st.caption("Used by single-run tabs. Trends shows all stacks.")
-            if not stack:
+                st.error(f"Failed to scan releases: {err}")
                 return
 
-            # Sample
-            try:
-                samples = _cached_list_samples(config.data_url, detector, platform, stack)
-            except Exception as err:
-                st.error(f"Failed to list samples: {err}")
-                return
+            # Sample — union across all stacks, so a sample stays selectable
+            # (and its trend history visible) even when the newest release dropped it.
+            samples = sorted({s for samps in stack_samples.values() for s in samps})
             if not samples:
-                st.warning(f"No samples found for '{detector} / {platform} / {stack}'.")
+                st.warning(f"No samples found for '{detector} / {platform}'.")
                 return
             sample = st.selectbox("Sample", samples)
             if not sample:
+                return
+
+            # Stack — only releases that actually contain the chosen sample, newest
+            # first, so the default jumps to the latest release that has the sample.
+            # Sort explicitly here so the "defaults to the newest" caption holds
+            # regardless of the order scan_stack_samples happens to return.
+            stacks = sorted(
+                (stk for stk, samps in stack_samples.items() if sample in samps),
+                reverse=True,
+            )
+            if not stacks:
+                st.warning(f"No releases contain sample '{sample}' for '{detector} / {platform}'.")
+                return
+            stack = st.selectbox("Stack", stacks)
+            st.caption(
+                f"Available in {len(stacks)} release(s); defaults to the newest. "
+                "Single-run tabs use it; Trends shows all releases."
+            )
+            if not stack:
                 return
 
             # Download runs for the selected stack (single-run tabs)

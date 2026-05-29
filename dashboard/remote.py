@@ -69,17 +69,32 @@ def list_platforms(base_url: str, detector: str) -> list[str]:
     return _list_subdirs(f"{base_url.rstrip('/')}/{detector}")
 
 
-def list_stacks(base_url: str, detector: str, platform: str) -> list[str]:
-    """Return available Key4hep stack releases for *(detector, platform)*, newest first."""
-    stacks = _list_subdirs(f"{base_url.rstrip('/')}/{detector}/{platform}")
-    return sorted(stacks, reverse=True)
-
-
 def list_samples(base_url: str, detector: str, platform: str, stack: str) -> list[str]:
     """Return available physics samples for *(detector, platform, stack)*."""
     return sorted(_list_subdirs(
         f"{base_url.rstrip('/')}/{detector}/{platform}/{stack}"
     ))
+
+
+def scan_stack_samples(
+    base_url: str, detector: str, platform: str
+) -> dict[str, list[str]]:
+    """Return ``{stack: [samples]}`` for *(detector, platform)*, newest stack first.
+
+    Single source of truth for both the cross-release sample union and the
+    per-sample stack list, so the sidebar scans the release tree only once
+    (one listing per stack) instead of twice. A sample may be added or dropped
+    between Key4hep releases; callers derive the union and the per-sample stacks
+    from this map. Stacks whose listing fails are skipped (logged at debug).
+    """
+    stacks = _list_subdirs(f"{base_url.rstrip('/')}/{detector}/{platform}")
+    out: dict[str, list[str]] = {}
+    for stack in sorted(stacks, reverse=True):
+        try:
+            out[stack] = list_samples(base_url, detector, platform, stack)
+        except requests.RequestException as exc:
+            _log.debug("scan_stack_samples: skipping stack %s — %s", stack, exc)
+    return out
 
 
 def list_runs(
