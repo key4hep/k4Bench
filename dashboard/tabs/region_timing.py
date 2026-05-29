@@ -267,7 +267,7 @@ def _render_attribution_analysis(region_data: dict, selected_labels: list[str]) 
         legend=_legend_below(fig_h, entry_width=200, font_size=12),
     )
 
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, width="stretch", key="region_attribution_chart")
 
 
 # ── Current-run view ───────────────────────────────────────────────────────────
@@ -318,7 +318,7 @@ def _render_current_run(region_data: dict, selected_labels: list[str]) -> None:
         exclude_events=[0],
         palette=_PALETTES[palette_name],
     )
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, width="stretch", key="region_current_chart")
 
 
 # ── Historical-trends view ─────────────────────────────────────────────────────
@@ -328,6 +328,12 @@ def _render_historical(
     selected_labels: list[str],
 ) -> None:
     """Render the historical region timing trends view."""
+    if not _is_valid_df(trend_region_df):
+        st.info(
+            "No region timing trend data in the selected window. "
+            "Widen the trend window in the sidebar."
+        )
+        return
     avail_labels   = sorted(trend_region_df["label"].unique())
     filtered_labels = [lbl for lbl in selected_labels if lbl in avail_labels]
     if not filtered_labels:
@@ -507,7 +513,7 @@ def _render_historical(
         legend=_legend_below(380, entry_width=180, font_size=12, y_offset=110),
     )
 
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, width="stretch", key="region_historical_chart")
 
 
 # ── Step Analysis view ────────────────────────────────────────────────────────
@@ -758,7 +764,7 @@ def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None
         legend=_legend_below(fig_h, entry_width=200, font_size=12),
     )
 
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, width="stretch", key="region_step_chart")
 
 
 # ── Tab entry point ────────────────────────────────────────────────────────────
@@ -767,8 +773,9 @@ def render(
     region_data: dict | None,
     trend_region_df: pd.DataFrame | None,
     selected_labels: list[str],
+    trends_enabled: bool = False,
 ) -> None:
-    if region_data is None and trend_region_df is None:
+    if region_data is None and not trends_enabled:
         st.info("No region timing data available in the selected directory.")
         return
     if not selected_labels:
@@ -776,7 +783,9 @@ def render(
         return
 
     # Build view options dynamically based on available data
-    # Order: current-run analyses first, then historical trends
+    # Order: current-run analyses first, then historical trends.
+    # "Historical Trends" is gated on remote mode (not on the current window's
+    # data) so the selector stays stable when the trend window changes.
     view_options: list[str] = ["Current Run"]
     if region_data is not None:
         view_options.append("Attribution Analysis")
@@ -788,7 +797,7 @@ def render(
         )
         if has_steps:
             view_options.append("Step Analysis")
-    if _is_valid_df(trend_region_df):
+    if trends_enabled:
         view_options.append("Historical Trends")
 
     view = (

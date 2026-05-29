@@ -326,4 +326,4 @@ def _render_historical_trends(
         legend=_legend_below(_PLOT_H, y_offset=110),
     )
 
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, width="stretch", key=f"{key_prefix}_chart")

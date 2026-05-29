@@ -221,8 +221,15 @@ def main() -> None:
     with st.sidebar:
         st.header("Data Source")
         if st.button("Refresh Data", width="content"):
+            # Deliberately NO st.rerun() here. This button renders *before* the
+            # Detector/Platform/Sample/Stack selectboxes below, so rerunning now
+            # would abort the run before those widgets are registered — Streamlit
+            # then garbage-collects their session_state as "stale" and the
+            # dropdowns snap back to their defaults (the bug where Refresh showed
+            # the wrong sample). Instead we just clear the caches and let the run
+            # continue: the selectboxes re-render (keeping the current selection)
+            # and the now-empty caches are repopulated with fresh data below.
             st.cache_data.clear()
-            st.rerun()
 
         if config.data_url:
             # ── Remote mode ────────────────────────────────────────────────────
@@ -275,7 +282,7 @@ def main() -> None:
             if not detectors:
                 st.error("No detectors found at the configured WebEOS URL.")
                 return
-            detector = st.selectbox("Detector", detectors)
+            detector = st.selectbox("Detector", detectors, key="sb_detector")
             if not detector:
                 return
 
@@ -288,7 +295,7 @@ def main() -> None:
             if not platforms:
                 st.warning(f"No platforms found for detector '{detector}'.")
                 return
-            platform = st.selectbox("Platform", platforms)
+            platform = st.selectbox("Platform", platforms, key="sb_platform")
             if not platform:
                 return
 
@@ -308,7 +315,7 @@ def main() -> None:
             if not samples:
                 st.warning(f"No samples found for '{detector} / {platform}'.")
                 return
-            sample = st.selectbox("Sample", samples)
+            sample = st.selectbox("Sample", samples, key="sb_sample")
             if not sample:
                 return
 
@@ -323,7 +330,7 @@ def main() -> None:
             if not stacks:
                 st.warning(f"No releases contain sample '{sample}' for '{detector} / {platform}'.")
                 return
-            stack = st.selectbox("Stack", stacks)
+            stack = st.selectbox("Stack", stacks, key="sb_stack")
             st.caption(
                 f"Available in {len(stacks)} release(s); defaults to the newest. "
                 "Single-run tabs use it; Trends shows all releases."
@@ -367,7 +374,8 @@ def main() -> None:
                 hi_date = all_dates[-1].date()
                 st.header("Trend window")
                 preset = st.selectbox(
-                    "Range", list(_WINDOW_PRESETS), index=2,  # default: Last 90 days
+                    "Range", list(_WINDOW_PRESETS), index=0,  # default: Last 7 days
+                    key="sb_trend_preset",
                     help="Limits the date range plotted in the Trends tabs. "
                          "Smaller windows load faster.",
                 )
@@ -468,8 +476,14 @@ def main() -> None:
         trend_event_df   = cached_load_trend_event_timing(run_dirs)
 
     # ── Build tab list ─────────────────────────────────────────────────────────
+    # Trends-capable tabs are gated on *remote mode*, not on whether the current
+    # trend window happens to have data. This keeps the tab set and each tab's
+    # view selector stable across trend-window changes, so the active tab / sub-view
+    # is preserved when the user only adjusts the window; an empty window shows an
+    # in-view "widen the window" message instead of removing the option.
+    trends_enabled = config.data_url is not None
     tab_names = ["Run Trends", "Config Impact", "Region Timing", "Event Timing", "Event Memory", "Machine Info"]
-    if not run_dirs:
+    if not trends_enabled:
         # Trends / Impact only make sense with multi-run (remote) data
         tab_names = tab_names[2:]
 
@@ -477,7 +491,7 @@ def main() -> None:
     tab_idx = 0
 
     # Trends (remote only) — uses all stacks so history is complete
-    if run_dirs:
+    if trends_enabled:
         with tabs[tab_idx]:
             trends.render(trend_results_df, selected_labels)
         tab_idx += 1
@@ -488,17 +502,17 @@ def main() -> None:
 
     # Region Timing
     with tabs[tab_idx]:
-        region_timing.render(region_data, trend_region_df, selected_labels)
+        region_timing.render(region_data, trend_region_df, selected_labels, trends_enabled)
     tab_idx += 1
 
     # Event Timing
     with tabs[tab_idx]:
-        event_timing.render(event_data, trend_event_df, selected_labels)
+        event_timing.render(event_data, trend_event_df, selected_labels, trends_enabled)
     tab_idx += 1
 
     # Event Memory
     with tabs[tab_idx]:
-        event_memory.render(event_data, trend_event_df, selected_labels)
+        event_memory.render(event_data, trend_event_df, selected_labels, trends_enabled)
     tab_idx += 1
 
     # Machine Info

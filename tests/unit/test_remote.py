@@ -195,9 +195,11 @@ def test_fetch_runs_windowed_fetches_only_given_runs(web, tmp_path):
     assert runs[0]["stack"] == "key4hep-2026-05-20"
     assert runs[0]["date"] == "2026-05-21"
     assert Path(runs[0]["run_dir"]).joinpath("baseline_results.csv").exists()
-    # The excluded dates' files were never requested.
-    assert not any("2026-05-20/" in u and "single_e" in u for u in web.requested)
-    assert not any("2026-05-10" in u for u in web.requested)
+    # The excluded *run dates* were never requested. Match on the run-date path
+    # segment ("/single_e/<date>") so we don't accidentally match the stack name
+    # "key4hep-2026-05-20", which embeds the same date string.
+    assert not any("/single_e/2026-05-20" in u for u in web.requested)
+    assert not any("/single_e/2026-05-10" in u for u in web.requested)
 
 
 def test_fetch_runs_windowed_empty_returns_empty(web, tmp_path):

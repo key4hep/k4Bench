@@ -121,7 +121,7 @@ def _render_timeseries(
         legend=_legend_below(plot_h, entry_width=200, font_size=12, y_offset=110),
     )
 
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, width="stretch", key="trends_timeseries_chart")
 
 
 
