@@ -76,7 +76,7 @@ def select_top_n_by_ratio(
     )
     if "Ratio to baseline" not in stats.columns:
         if baseline_label in selected_labels:
-            return [baseline_label] + [l for l in selected_labels if l != baseline_label][: n - 1]
+            return [baseline_label] + [lbl for lbl in selected_labels if lbl != baseline_label][: n - 1]
         return selected_labels[:n]
     non_bl = stats.index[stats.index != baseline_label]
     sorted_non_bl = (

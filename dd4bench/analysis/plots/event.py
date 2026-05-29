@@ -23,7 +23,6 @@ from ._utils import (
     _compute_core_range,
     _compute_stats,
     _default_baseline,
-    _detector_title,
     _ensure_event_data,
 )
 
@@ -90,7 +89,6 @@ def _plot_event_metric(
     stat_unit: str,
     warn_name: str,
     warn_unit: str,
-    base_title: str,
     labels: list[str] | None = None,
     baseline_label: str | None = None,
     show: str = "both",
@@ -103,8 +101,6 @@ def _plot_event_metric(
 ) -> go.Figure:
     if show not in ("both", "distribution", "sequence"):
         raise ValueError(f"show must be 'both', 'distribution', or 'sequence', got {show!r}")
-
-    det_title = _detector_title(source)
 
     if exclude_events is None:
         exclude_events = list(_DEFAULT_EXCLUDE_EVENTS)
@@ -439,7 +435,6 @@ def plot_event_timing(
         stat_unit="s",
         warn_name="plot_event_timing",
         warn_unit="s",
-        base_title="Per-Event Timing",
         labels=labels,
         baseline_label=baseline_label,
         show=show,
@@ -505,7 +500,6 @@ def plot_event_memory(
         stat_unit="MB",
         warn_name="plot_event_memory",
         warn_unit="MB",
-        base_title="Per-Event Memory",
         labels=labels,
         baseline_label=baseline_label,
         show=show,

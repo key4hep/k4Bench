@@ -102,7 +102,7 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
 
     snapshot = snapshot.set_index("label")
     metric_cols   = [c for c, _ in present]
-    metric_labels = [l for _, l in present]
+    metric_labels = [lbl for _, lbl in present]
     raw = snapshot[metric_cols].loc[snap_labels]
 
     # ── Controls ──────────────────────────────────────────────────────────────
@@ -151,7 +151,7 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
             pct_df[lbl] = raw[col] / float(bl_val) * 100.0
 
     # ── Sort rows ─────────────────────────────────────────────────────────────
-    sort_col = next((c for c, l in present if l == sort_by), None)
+    sort_col = next((c for c, lbl in present if lbl == sort_by), None)
     if sort_col is not None:
         pct_df = pct_df.sort_values(sort_by, ascending=sort_col in _LOWER_IS_BETTER)
 

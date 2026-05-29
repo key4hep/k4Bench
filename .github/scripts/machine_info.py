@@ -83,11 +83,11 @@ def _kib_to_gib(kib: int) -> float:
 def collect_start() -> dict:
     cpuinfo = _read("/proc/cpuinfo")
     cpu_model = next(
-        (l.split(":", 1)[1].strip() for l in cpuinfo.splitlines() if "model name" in l),
+        (line.split(":", 1)[1].strip() for line in cpuinfo.splitlines() if "model name" in line),
         "unknown",
     )
     # Tolerate any whitespace between the field name and the colon.
-    cpu_logical = sum(1 for l in cpuinfo.splitlines() if l.startswith("processor"))
+    cpu_logical = sum(1 for line in cpuinfo.splitlines() if line.startswith("processor"))
 
     # Count unique (physical_id, core_id) pairs — more accurate than socket count
     # alone. Falls back to logical count if these fields are absent (VMs, containers).
@@ -111,7 +111,7 @@ def collect_start() -> dict:
     _flush(current)  # capture the final block when no trailing blank line
     cpu_physical = len(pairs) if pairs else cpu_logical
     cpu_flags = next(
-        (l.split(":", 1)[1].strip().split() for l in cpuinfo.splitlines() if l.startswith("flags")),
+        (line.split(":", 1)[1].strip().split() for line in cpuinfo.splitlines() if line.startswith("flags")),
         [],
     )
 
@@ -120,8 +120,8 @@ def collect_start() -> dict:
     swap_used_kib = mem.get("SwapTotal", 0) - mem.get("SwapFree", mem.get("SwapTotal", 0))
 
     os_name = next(
-        (l.split("=", 1)[1].strip('"') for l in _read("/etc/os-release").splitlines()
-         if l.startswith("PRETTY_NAME=")),
+        (line.split("=", 1)[1].strip('"') for line in _read("/etc/os-release").splitlines()
+         if line.startswith("PRETTY_NAME=")),
         "unknown",
     )
 

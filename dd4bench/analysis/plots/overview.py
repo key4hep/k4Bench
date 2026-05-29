@@ -74,7 +74,7 @@ def plot_run_overview(
     baseline_vals: dict[str, float] = {}
     if relative:
         _bl = baseline_label if baseline_label is not None else _default_baseline(load_order_labels)
-        bl_mask = df["label"].apply(lambda l: _matches_baseline(l, _bl))
+        bl_mask = df["label"].apply(lambda lbl: _matches_baseline(lbl, _bl))
         if not bl_mask.any():
             hint = " Pass baseline_label=... to specify the reference run." if baseline_label is None else ""
             raise ValueError(f"baseline_label '{_bl}' not found for relative=True.{hint}")

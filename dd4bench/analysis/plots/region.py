@@ -14,7 +14,6 @@ from ._theme import _OTHER_COLOR, _PALETTE, _TEMPLATE, _UNACCOUNTED_COLOR, _hex_
 from ._utils import (
     _DEFAULT_EXCLUDE_EVENTS,
     _build_stacked_arrays,
-    _detector_title,
     _ensure_region_data,
     _region_top_n,
 )
@@ -64,8 +63,6 @@ def plot_region_timing(
         raise ValueError(f"show must be 'both', 'breakdown', or 'sequence', got {show!r}")
     if attribution not in ("at_location", "by_birth"):
         raise ValueError(f"attribution must be 'at_location' or 'by_birth', got {attribution!r}")
-
-    det_title = _detector_title(source)
 
     if exclude_events is None:
         exclude_events = list(_DEFAULT_EXCLUDE_EVENTS)
@@ -123,7 +120,6 @@ def plot_region_timing(
         det_colors["Other"] = _OTHER_COLOR
     det_colors["Unaccounted"] = _UNACCOUNTED_COLOR
 
-    attr_str       = "at location" if attribution == "at_location" else "by birth"
     show_breakdown = show in ("both", "breakdown")
     show_seq       = show in ("both", "sequence")
 
