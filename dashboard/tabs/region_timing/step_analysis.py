@@ -82,9 +82,11 @@ def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None
             index=_auto_palette_index(n), key="sa_palette",
         )
     palette    = _PALETTES[palette_name]
-    total_time = np.array([float(al_means[d])    for d in det_list])   # s
-    step_cnt   = np.array([max(float(steps_means.get(d, 0.0)), 0.1) for d in det_list])  # steps (floor for log)
-    tps_us     = total_time / step_cnt * 1e6   # µs per step
+    total_time    = np.array([float(al_means[d])             for d in det_list])  # s
+    raw_step_cnt  = np.array([float(steps_means.get(d, 0.0)) for d in det_list])  # steps
+    plot_step_cnt = np.maximum(raw_step_cnt, 0.1)            # floored for the log x-axis only
+    with np.errstate(divide="ignore", invalid="ignore"):     # 0-step detectors → NaN tps
+        tps_us = np.where(raw_step_cnt > 0, total_time / raw_step_cnt * 1e6, np.nan)  # µs per step
 
     n_colors   = len(palette)
     pt_colors  = [palette[i % n_colors] for i in range(n)]
@@ -124,7 +126,7 @@ def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None
         border_color = pt_colors[i] if cycle > 0 else "white"
         fig.add_trace(
             go.Scatter(
-                x=[step_cnt[i]], y=[tps_us[i]],
+                x=[plot_step_cnt[i]], y=[tps_us[i]],
                 mode="markers",
                 name=det,
                 legendgroup=det,
@@ -136,7 +138,7 @@ def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None
                     opacity=0.88,
                 ),
                 showlegend=True,
-                customdata=[(det, float(step_cnt[i]), float(tps_us[i]),
+                customdata=[(det, float(raw_step_cnt[i]), float(tps_us[i]),
                              float(total_time[i]),
                              float(total_time[i] / total_time.sum() * 100))],
                 hovertemplate=(
@@ -201,7 +203,7 @@ def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None
         fig.add_trace(
             go.Bar(
                 y=[det],
-                x=[float(step_cnt[i])],
+                x=[float(raw_step_cnt[i])],
                 orientation="h",
                 name=det,
                 legendgroup=det,
@@ -209,7 +211,7 @@ def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None
                 marker_color=_to_rgba(pt_colors[i], 0.80),
                 marker_line_color=pt_colors[i] if cycle > 0 else "rgba(0,0,0,0)",
                 marker_line_width=2.0 if cycle > 0 else 0,
-                customdata=[(det, float(step_cnt[i]))],
+                customdata=[(det, float(raw_step_cnt[i]))],
                 hovertemplate="<b>%{customdata[0]}</b><br>Steps: %{customdata[1]:,.0f}<extra></extra>",
             ),
             row=1, col=2,

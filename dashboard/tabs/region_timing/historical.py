@@ -140,12 +140,18 @@ def _render_historical(
             sem_mean     = np.where(valid_mean, std / np.sqrt(n), np.nan).tolist()
             sem_median   = np.where(valid_mean, std * np.sqrt(np.pi / 2) / np.sqrt(n), np.nan).tolist()
             sem_std      = np.where(valid_std,  std / np.sqrt(2 * (n - 1)), np.nan).tolist()
-            sem_by_panel = [sem_median, sem_mean, sem_std]
+            # Key by statistic column so a filtered ``present_stats`` (e.g. a
+            # missing column) still pairs each subplot with the right SEM series.
+            sem_by_stat  = {
+                "mean_time_s":   sem_mean,
+                "median_time_s": sem_median,
+                "std_time_s":    sem_std,
+            }
         else:
-            sem_by_panel = [None, None, None]
+            sem_by_stat = {}
 
         for col_idx, (stat_col, stat_label) in enumerate(present_stats):
-            sem   = sem_by_panel[col_idx] if col_idx < len(sem_by_panel) else None
+            sem   = sem_by_stat.get(stat_col)
             err_y = None
             if sem is not None:
                 err_y = dict(

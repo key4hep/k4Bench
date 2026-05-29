@@ -248,8 +248,13 @@ def _render_attribution_analysis(region_data: dict, selected_labels: list[str]) 
     )
 
     # Use nan-safe min/max since bar_pct may contain NaN for tiny-signal detectors.
-    x_abs = float(max(abs(np.nanmin(bar_pct)), abs(np.nanmax(bar_pct)))) * 1.20
-    x_abs = max(x_abs, 5.0)
+    # When *every* detector is below the signal threshold (all NaN), fall back to
+    # the floor range rather than letting nanmin/nanmax yield NaN bounds.
+    if np.all(np.isnan(bar_pct)):
+        x_abs = 5.0
+    else:
+        x_abs = float(max(abs(np.nanmin(bar_pct)), abs(np.nanmax(bar_pct)))) * 1.20
+        x_abs = max(x_abs, 5.0)
     fig.update_xaxes(
         title_text="← source  |  asymmetry (%)  |  sink →",
         range=[-x_abs, x_abs],

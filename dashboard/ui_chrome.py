@@ -5,13 +5,16 @@ clutter ``app.main()``.
 """
 from __future__ import annotations
 
+from datetime import date
+
 import streamlit as st
 
 
 def _render_footer() -> None:
     """Render a CERN / FCC copyright footer at the bottom of the page."""
+    year = date.today().year
     st.markdown(
-        """
+        f"""
         <hr style="border:none;border-top:1px solid rgba(128,128,128,0.25);margin:2.5rem 0 0.8rem 0;">
         <div style="
             display:flex;
@@ -26,11 +29,12 @@ def _render_footer() -> None:
         ">
             <span style="font-size:1.8rem;opacity:0.75;">⚛️</span>
             <div>
-                <strong style="color:#c0c0c0;letter-spacing:0.02em;">© 2026 CERN</strong>
+                <strong style="color:#c0c0c0;letter-spacing:0.02em;">© {year} CERN</strong>
                 &nbsp;·&nbsp;
                 For the benefit of the&nbsp;<a
                     href="https://fcc.web.cern.ch/"
                     target="_blank"
+                    rel="noopener noreferrer"
                     style="color:#5b9bd5;text-decoration:none;font-weight:600;"
                 >FCC project</a>
                 <br>
@@ -45,13 +49,14 @@ def _render_footer() -> None:
 
 def _render_sidebar_footer() -> None:
     """Render a compact attribution note at the bottom of the sidebar."""
+    year = date.today().year
     st.markdown(
-        """
+        f"""
         <hr style="border:none;border-top:1px solid rgba(128,128,128,0.2);margin:1.5rem 0 0.6rem 0;">
         <div style="font-size:0.72rem;color:#888;text-align:center;line-height:1.6;padding-bottom:0.4rem;">
-            <strong style="color:#a0a0a0;">© 2026 CERN</strong><br>
+            <strong style="color:#a0a0a0;">© {year} CERN</strong><br>
             For the benefit of the<br>
-            <a href="https://fcc.web.cern.ch/" target="_blank"
+            <a href="https://fcc.web.cern.ch/" target="_blank" rel="noopener noreferrer"
                style="color:#5b9bd5;text-decoration:none;">FCC project</a><br>
             <span style="opacity:0.7;">J. F. Beirer (CERN)</span>
         </div>
