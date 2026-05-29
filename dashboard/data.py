@@ -122,20 +122,6 @@ def run_metadata(run_dir: str) -> dict:
     return _parse_run_dir(Path(run_dir))
 
 
-@st.cache_data(show_spinner=False, ttl=60)
-def list_run_metadata(sample_dir: str) -> list[dict]:
-    """Return metadata dicts for every run (date) subdirectory of *sample_dir*."""
-    p = Path(sample_dir)
-    if not p.is_dir():
-        _log.warning("list_run_metadata: directory not found: '%s'", sample_dir)
-        return []
-    meta = []
-    for run_dir in sorted(p.iterdir()):
-        if run_dir.is_dir():
-            meta.append(_parse_run_dir(run_dir))
-    return meta
-
-
 @st.cache_data(show_spinner="Loading trend data...", ttl=3600)
 def cached_load_trend_results(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
     """Load results from the given *run_dirs* and return a combined DataFrame for

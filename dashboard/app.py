@@ -372,6 +372,7 @@ def main() -> None:
                          "Smaller windows load faster.",
                 )
                 custom_range: tuple[date, date] | None = None
+                custom_incomplete = False
                 if preset == "Custom…":
                     picked = st.date_input(
                         "From → to",
@@ -381,29 +382,38 @@ def main() -> None:
                     if isinstance(picked, (tuple, list)) and len(picked) == 2:
                         custom_range = (picked[0], picked[1])
                     else:
+                        # Mid-selection: don't fall back to the full range (which
+                        # would trigger a download of every run) — wait for both dates.
+                        custom_incomplete = True
                         st.info("Pick both a start and end date.")
 
-                start, end = _resolve_window(
-                    preset, [d.date() for d in all_dates], custom_range
-                )
-                windowed = {
-                    stk: [
-                        dt for dt in dates
-                        if start <= pd.to_datetime(dt).date() <= end
-                    ]
-                    for stk, dates in stacks_dates.items()
-                }
-                windowed_items = tuple(
-                    (stk, tuple(sorted(ds))) for stk, ds in sorted(windowed.items()) if ds
-                )
-                try:
-                    run_dirs = _cached_fetch_runs_windowed(
-                        config.data_url, detector, platform, sample,
-                        config.cache_dir, windowed_items,
+                if not custom_incomplete:
+                    start, end = _resolve_window(
+                        preset, [d.date() for d in all_dates], custom_range
                     )
-                except Exception as err:
-                    st.warning(f"Could not load trend data: {err}")
-                    run_dirs = ()
+                    windowed = {
+                        stk: [
+                            dt for dt in dates
+                            if start <= pd.to_datetime(dt).date() <= end
+                        ]
+                        for stk, dates in stacks_dates.items()
+                    }
+                    windowed_items = tuple(
+                        (stk, tuple(sorted(ds))) for stk, ds in sorted(windowed.items()) if ds
+                    )
+                    n_runs = sum(len(ds) for _, ds in windowed_items)
+                    st.caption(
+                        f"{start:%Y-%m-%d} → {end:%Y-%m-%d} · "
+                        f"{n_runs} run(s) across {len(windowed_items)} release(s)"
+                    )
+                    try:
+                        run_dirs = _cached_fetch_runs_windowed(
+                            config.data_url, detector, platform, sample,
+                            config.cache_dir, windowed_items,
+                        )
+                    except Exception as err:
+                        st.warning(f"Could not load trend data: {err}")
+                        run_dirs = ()
 
         else:
             # ── Local mode ─────────────────────────────────────────────────────
