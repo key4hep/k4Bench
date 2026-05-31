@@ -26,6 +26,7 @@ jobs:
   run:
     name: ${{ matrix.sample }}
     runs-on: [self-hosted, fcc-ironic]
+    timeout-minutes: 7200  # 5 days — GitHub's max job runtime (self-hosted)
     strategy:
       matrix:
         include: ${{ fromJson(inputs.samples_json) }}
