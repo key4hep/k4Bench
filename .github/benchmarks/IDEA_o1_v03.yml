@@ -33,7 +33,7 @@
 xml: FCCee/IDEA/compact/IDEA_o1_v03/IDEA_o1_v03.xml
 steering_file: $FCCCONFIG/FullSim/IDEA/IDEA_o1_v03/SteeringFile_IDEA_o1_v03.py
 
-verbose: true
+verbose: false
 sweep: true
 
 samples:

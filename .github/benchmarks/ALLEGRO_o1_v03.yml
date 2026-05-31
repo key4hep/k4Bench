@@ -31,7 +31,7 @@
 # sweep / include_only / exclude_only are mutually exclusive.
 
 xml: FCCee/ALLEGRO/compact/ALLEGRO_o1_v03/ALLEGRO_o1_v03.xml
-verbose: true
+verbose: false
 sweep: true
 
 samples:
