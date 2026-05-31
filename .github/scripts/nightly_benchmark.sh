@@ -151,8 +151,14 @@ CMD=(dd4bench
 [[ "${VERBOSE}" == "true" ]] && CMD+=(--verbose)
 [[ -n "${DDSIM_ARGS}" ]]     && CMD+=(--ddsim-args="${DDSIM_ARGS}")
 
+# Don't let a single failed sweep config abort the script: a sweep may produce
+# valid results for 27/28 configs and fail one. We still want to upload what
+# succeeded, then surface the failure via the final exit code so the job goes red.
 echo "$ ${CMD[*]}"
+set +e
 "${CMD[@]}"
+BENCH_RC=$?
+set -e
 echo "::endgroup::"
 
 # ── 8. Write run_info.json + finalise machine_info.json ───────────────────────
@@ -229,3 +235,10 @@ for f in "logs/${DETECTOR}"/*; do
 done
 echo "Uploaded to: ${EOS_URL}"
 echo "::endgroup::"
+
+# Surface the benchmark exit code now that results are safely uploaded, so a
+# failed sweep config (or any other ddsim failure) still turns the job red.
+if [[ "${BENCH_RC}" -ne 0 ]]; then
+    echo "ERROR: benchmark exited with code ${BENCH_RC} (one or more runs failed); results uploaded regardless" >&2
+    exit "${BENCH_RC}"
+fi
