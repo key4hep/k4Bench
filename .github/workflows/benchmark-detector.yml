@@ -46,7 +46,7 @@ jobs:
       - name: Cache DNF packages
         uses: actions/cache@v5
         with:
-          path: /tmp/dnf-cache
+          path: ${{ runner.temp }}/dnf-cache
           key: dnf-alma9-nightly-v1
 
       - name: Warm up CVMFS repos
@@ -85,14 +85,14 @@ jobs:
           INCLUDE_ONLY:     ${{ matrix.include_only }}
           EXCLUDE_ONLY:     ${{ matrix.exclude_only }}
         run: |
-          mkdir -p /tmp/dnf-cache
+          mkdir -p "$RUNNER_TEMP/dnf-cache"
           ${RUNNER_CPU_SET:+taskset -c "$RUNNER_CPU_SET"} docker run --rm --init \
             --device /dev/fuse \
             --cap-add SYS_ADMIN \
             --volume /cvmfs:/cvmfs:shared \
             --volume "${{ github.workspace }}":/workspace:Z \
             --volume "$RUNNER_TEMP/eos-auth":/tmp/eos-auth:ro,Z \
-            --volume /tmp/dnf-cache:/var/cache/dnf:Z \
+            --volume "$RUNNER_TEMP/dnf-cache":/var/cache/dnf:Z \
             --workdir /workspace \
             -e X509_USER_CERT=/tmp/eos-auth/usercert.pem \
             -e X509_USER_KEY=/tmp/eos-auth/userkey.pem \
