@@ -86,7 +86,7 @@ jobs:
           EXCLUDE_ONLY:     ${{ matrix.exclude_only }}
         run: |
           mkdir -p "$RUNNER_TEMP/dnf-cache"
-          ${RUNNER_CPU_SET:+taskset -c "$RUNNER_CPU_SET"} docker run --rm --init \
+          docker run --rm --init \
             --device /dev/fuse \
             --cap-add SYS_ADMIN \
             --volume /cvmfs:/cvmfs:shared \
@@ -99,6 +99,7 @@ jobs:
             -e BENCHMARK_CONFIG -e BENCHMARK_SAMPLE \
             -e XML_PATH -e N_EVENTS -e DDSIM_ARGS -e INPUT_FILES -e STEERING_FILE \
             -e SWEEP -e VERBOSE -e INCLUDE_ONLY -e EXCLUDE_ONLY \
+            -e RUNNER_CPU_SET \
             -e GITHUB_RUN_ID="${{ github.run_id }}" \
             -e GITHUB_SHA="${{ github.sha }}" \
             -e GITHUB_REPOSITORY="${{ github.repository }}" \

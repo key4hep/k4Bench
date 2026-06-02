@@ -154,9 +154,9 @@ CMD=(dd4bench
 # Don't let a single failed sweep config abort the script: a sweep may produce
 # valid results for 27/28 configs and fail one. We still want to upload what
 # succeeded, then surface the failure via the final exit code so the job goes red.
-echo "$ ${CMD[*]}"
+echo "$ ${RUNNER_CPU_SET:+taskset -c $RUNNER_CPU_SET }${CMD[*]}"
 set +e
-"${CMD[@]}"
+${RUNNER_CPU_SET:+taskset -c "$RUNNER_CPU_SET"} "${CMD[@]}"
 BENCH_RC=$?
 set -e
 echo "::endgroup::"
