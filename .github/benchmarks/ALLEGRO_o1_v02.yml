@@ -1,0 +1,48 @@
+# DD4bench nightly benchmark config — ALLEGRO o1 v02
+#
+# The nightly workflow expands every file in .github/benchmarks/ into a matrix
+# of (detector × sample) jobs and uploads each result to EOS under:
+#   {detector}/{platform}/key4hep-{release}/{sample}/{date}/
+# To add a new detector, drop a new <detector>.yml file in this directory.
+# To add a new sample, append an entry to samples: below.
+#
+# ── Top-level keys (apply to every sample in this file) ────────────────────
+#   xml           required   detector geometry, $K4GEO-relative or absolute path
+#   verbose       optional   stream ddsim output to stdout      (default: false)
+#   sweep         optional   baseline + one run per subdetector dropped
+#   include_only  optional   keep only these subdetectors       (list, single run)
+#   exclude_only  optional   drop these subdetectors            (list, single run)
+#   ddsim_args    optional   ddsim flags applied to every sample
+#   steering_file optional   ddsim --steeringFile path; $VAR refs (e.g. $FCCCONFIG)
+#                            are expanded inside the runner. Steering files for FCC
+#                            detectors live in https://github.com/HEP-FCC/FCC-config
+#                            and are installed under $FCCCONFIG by Key4hep, e.g.
+#                            $FCCCONFIG/FullSim/IDEA/IDEA_o1_v03/SteeringFile_IDEA_o1_v03.py
+#   samples       required   list of sample entries — see below
+#
+# ── Per-sample keys (under samples:) ───────────────────────────────────────
+#   name          required   slug — becomes the EOS sample directory + job label
+#   n_events      required   positive integer
+#   ddsim_args    optional   appended to top-level ddsim_args (not replaced)
+#   input_files   optional   HepMC path(s); mutually exclusive with --enableGun
+#   steering_file optional   overrides the top-level steering_file for this sample
+#
+# Sample-level keys override top-level, except ddsim_args (which concatenates).
+# sweep / include_only / exclude_only are mutually exclusive.
+
+xml: FCCee/ALLEGRO/compact/ALLEGRO_o1_v02/ALLEGRO_o1_v02.xml
+verbose: false
+sweep: true
+
+samples:
+  - name: single_e-_10GeV
+    n_events: 500
+    ddsim_args: >-
+      --enableGun
+      --gun.particle e-
+      --gun.distribution uniform
+      --gun.energy 10*GeV
+
+  - name: p8_ee_Zbb_ecm91
+    n_events: 100
+    input_files: root://eospublic.cern.ch//eos/experiment/fcc/ee/generation/hepmc/p8_ee_Zbb_ecm91/events_noVtxSmear.hepmc
