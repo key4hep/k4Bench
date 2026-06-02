@@ -34,7 +34,7 @@ xml: FCCee/IDEA/compact/IDEA_o2_v01/IDEA_o2_v01.xml
 steering_file: $FCCCONFIG/FullSim/IDEA/IDEA_o2_v01/SteeringFile_IDEA_o2_v01.py
 
 verbose: false
-sweep: true
+sweep: false
 
 samples:
   - name: single_e-_10GeV
