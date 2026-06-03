@@ -403,7 +403,7 @@ def plot_event_timing(
     Parameters
     ----------
     source : dict[str, pd.DataFrame], str/Path, or list of str/Path
-        Pre-loaded dict from :func:`~dd4bench.analysis.loader.load_event_timing`,
+        Pre-loaded dict from :func:`~k4bench.analysis.loader.load_event_timing`,
         a single log-dir path, or a list of log-dir paths.
     labels : list[str] or None
         Restrict to these run labels.
@@ -468,7 +468,7 @@ def plot_event_memory(
     Parameters
     ----------
     source : dict[str, pd.DataFrame], str/Path, or list of str/Path
-        Pre-loaded dict from :func:`~dd4bench.analysis.loader.load_event_timing`,
+        Pre-loaded dict from :func:`~k4bench.analysis.loader.load_event_timing`,
         a single log-dir path, or a list of log-dir paths.
     labels : list[str] or None
         Restrict to these run labels.

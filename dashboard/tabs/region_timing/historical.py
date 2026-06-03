@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from dd4bench.analysis.plots._theme import _TEMPLATE
+from k4bench.analysis.plots._theme import _TEMPLATE
 from ui_utils import _DASHES, _LEGEND_B_MARGIN, _PALETTES, _PALETTE_NAMES, _SYMBOLS, _auto_palette_index, _is_valid_df, _legend_below, _to_rgba
 
 from ._common import _ATTRIBUTION_HELP, _palette_placeholder

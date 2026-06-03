@@ -1,4 +1,4 @@
-"""Unit tests for dd4bench.geometry.scanner.
+"""Unit tests for k4bench.geometry.scanner.
 """
 
 from __future__ import annotations
@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from dd4bench.geometry.scanner import (
+from k4bench.geometry.scanner import (
     _detector_names_in_file,
     get_detector_names,
     resolve_includes,

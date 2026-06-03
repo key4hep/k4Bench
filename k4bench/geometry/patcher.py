@@ -6,7 +6,7 @@ such as CVMFS) is never modified.  All relative ``<include ref="...">``
 paths in the patched XMLs are rewritten to absolute paths so that
 ddsim can resolve them regardless of where the temp files land.
 
-Temporary files are prefixed with ``_dd4bench_tmp_`` so they are easy
+Temporary files are prefixed with ``_k4bench_tmp_`` so they are easy
 to identify and clean up.  The recommended usage is via the
 :func:`patched_geometry` context manager, which guarantees cleanup even
 if the simulation run raises an exception.
@@ -23,10 +23,10 @@ from pathlib import Path
 from xml.dom import minidom
 from xml.parsers.expat import ExpatError
 
-from dd4bench.geometry.scanner import resolve_includes
+from k4bench.geometry.scanner import resolve_includes
 
 # Prefix for all temporary files written by this module.
-_TMP_PREFIX = "_dd4bench_tmp_"
+_TMP_PREFIX = "_k4bench_tmp_"
 
 
 # ---------------------------------------------------------------------------

@@ -40,7 +40,7 @@ def plot_region_timing(
     Parameters
     ----------
     source : dict[str, dict], str/Path, or list of str/Path
-        Pre-loaded dict from :func:`~dd4bench.analysis.loader.load_region_timing`,
+        Pre-loaded dict from :func:`~k4bench.analysis.loader.load_region_timing`,
         a single log-dir path, or a list of log-dir paths.
     labels : list[str] or None
         Restrict to these run labels.

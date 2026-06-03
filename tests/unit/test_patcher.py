@@ -1,4 +1,4 @@
-"""Unit tests for dd4bench.geometry.patcher.
+"""Unit tests for k4bench.geometry.patcher.
 
 All tests use the minimal_geometry fixture — no ddsim, no DD4hep runtime.
 """
@@ -12,13 +12,13 @@ from xml.dom import minidom
 
 import pytest
 
-from dd4bench.geometry.patcher import (
+from k4bench.geometry.patcher import (
     DetectorNotFoundError,
     _TMP_PREFIX,
     build_patched_xml,
     patched_geometry,
 )
-from dd4bench.geometry.scanner import get_detector_names
+from k4bench.geometry.scanner import get_detector_names
 
 # ---------------------------------------------------------------------------
 # Fixture paths

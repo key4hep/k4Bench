@@ -5,9 +5,9 @@ WORKDIR /app
 # setuptools-scm requires git tags; pretend a version so it works without .git
 ENV SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0
 
-# Install dd4bench package (provides the analysis loader)
+# Install k4bench package (provides the analysis loader)
 COPY pyproject.toml README.md ./
-COPY dd4bench/ ./dd4bench/
+COPY k4bench/ ./k4bench/
 RUN pip install --no-cache-dir .
 
 # Install dashboard dependencies

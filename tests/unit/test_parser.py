@@ -1,4 +1,4 @@
-"""Unit tests for dd4bench.runner.parser.
+"""Unit tests for k4bench.runner.parser.
 
 All tests are pure: no subprocesses, no filesystem access, no ddsim.
 The fixture file (tests/fixtures/time_output.txt) is a realistic capture
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from dd4bench.runner.parser import _wall_to_seconds, parse_time_output
+from k4bench.runner.parser import _wall_to_seconds, parse_time_output
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures

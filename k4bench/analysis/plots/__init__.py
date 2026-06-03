@@ -1,4 +1,4 @@
-"""Plotly plotting functions for dd4bench results.
+"""Plotly plotting functions for k4bench results.
 
 All functions return a :class:`~plotly.graph_objects.Figure`.
 In Jupyter the figure renders inline automatically; call ``fig.show()``
@@ -6,7 +6,7 @@ to display it explicitly, or ``fig.write_html("out.html")`` to export.
 
 Typical notebook usage::
 
-    from dd4bench.analysis import load_results, plot_run_overview, plot_event_timing
+    from k4bench.analysis import load_results, plot_run_overview, plot_event_timing
 
     plot_run_overview("logs/")
     plot_event_timing("logs/")

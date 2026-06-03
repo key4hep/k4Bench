@@ -1,4 +1,4 @@
-"""Unit tests for dd4bench.results.reporter."""
+"""Unit tests for k4bench.results.reporter."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from dd4bench.results.model import RunResult
-from dd4bench.results.reporter import print_summary, save_csv
+from k4bench.results.model import RunResult
+from k4bench.results.reporter import print_summary, save_csv
 
 
 def _make_result(label: str, returncode: int = 0) -> RunResult:

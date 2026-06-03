@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from dd4bench.analysis.plots import plot_event_timing
+from k4bench.analysis.plots import plot_event_timing
 from stats import build_event_stats_table, select_top_n_by_ratio, style_stats_table
 from ui_utils import _is_valid_df, _PALETTES, _PALETTE_NAMES, _auto_palette_index, _render_historical_trends
 

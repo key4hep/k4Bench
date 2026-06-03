@@ -1,7 +1,7 @@
-"""Post-processing and visualisation for dd4bench results."""
+"""Post-processing and visualisation for k4bench results."""
 
-from dd4bench.analysis.loader import load_event_timing, load_region_timing, load_results
-from dd4bench.analysis.plots import (
+from k4bench.analysis.loader import load_event_timing, load_region_timing, load_results
+from k4bench.analysis.plots import (
     plot_event_memory,
     plot_event_timing,
     plot_region_timing,

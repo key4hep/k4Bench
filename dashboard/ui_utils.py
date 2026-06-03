@@ -13,7 +13,7 @@ import streamlit as st
 from plotly.colors import qualitative as _ql
 from plotly.subplots import make_subplots
 
-from dd4bench.analysis.plots._theme import PALETTE, _TEMPLATE
+from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
 
 
 # ── Data-validation helpers ────────────────────────────────────────────────────

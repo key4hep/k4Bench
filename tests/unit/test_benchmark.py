@@ -1,4 +1,4 @@
-"""Unit tests for dd4bench.benchmark.ddsim.
+"""Unit tests for k4bench.benchmark.ddsim.
 
 run_ddsim is monkey-patched throughout so no real ddsim is needed.
 """
@@ -10,8 +10,8 @@ from unittest.mock import patch
 
 import pytest
 
-from dd4bench.benchmark.ddsim import BenchmarkConfig, SweepMode, run_sweep
-from dd4bench.results.model import RunResult
+from k4bench.benchmark.ddsim import BenchmarkConfig, SweepMode, run_sweep
+from k4bench.results.model import RunResult
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -81,7 +81,7 @@ class TestBenchmarkConfigValidation:
 class TestFullMode:
     @pytest.fixture
     def results(self, tmp_path):
-        with patch("dd4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
+        with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
             return run_sweep(_make_config(tmp_path, mode=SweepMode.FULL))
 
     def test_baseline_is_first(self, results):
@@ -95,9 +95,9 @@ class TestFullMode:
         assert all(f"without_{d}" in labels for d in ALL_DETECTORS)
 
     def test_no_tmp_files_left_behind(self, tmp_path):
-        with patch("dd4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
+        with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
             run_sweep(_make_config(tmp_path, mode=SweepMode.FULL))
-        assert list(FIXTURES.glob("_dd4bench_tmp_*")) == []
+        assert list(FIXTURES.glob("_k4bench_tmp_*")) == []
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +113,7 @@ class TestIncludeMode:
             mode=SweepMode.INCLUDE_ONLY,
             detector_names=["EcalBarrel", "HcalBarrel"],
         )
-        with patch("dd4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
+        with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
             return run_sweep(config)
 
     def test_no_baseline(self, results):
@@ -136,7 +136,7 @@ class TestIncludeMode:
             mode=SweepMode.INCLUDE_ONLY,
             detector_names=["EcalBarrel", "NonExistent"],
         )
-        with patch("dd4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
+        with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
             results = run_sweep(config)
         assert len(results) == 1
         assert "EcalBarrel" in results[0].label
@@ -148,7 +148,7 @@ class TestIncludeMode:
             mode=SweepMode.INCLUDE_ONLY,
             detector_names=["NonExistent"],
         )
-        with patch("dd4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
+        with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
             with pytest.raises(ValueError, match="No valid detectors to keep"):
                 run_sweep(config)
 
@@ -166,7 +166,7 @@ class TestExcludeMode:
             mode=SweepMode.EXCLUDE_ONLY,
             detector_names=["InnerTracker", "OuterTracker"],
         )
-        with patch("dd4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
+        with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
             return run_sweep(config)
 
     def test_no_baseline(self, results):
@@ -188,7 +188,7 @@ class TestExcludeMode:
 
     def test_empty_exclude_runs_full_geometry(self, tmp_path):
         config = _make_config(tmp_path, mode=SweepMode.EXCLUDE_ONLY, detector_names=[])
-        with patch("dd4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
+        with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
             results = run_sweep(config)
         assert len(results) == 1
         assert results[0].label == "baseline_all"
@@ -199,7 +199,7 @@ class TestExcludeMode:
             mode=SweepMode.EXCLUDE_ONLY,
             detector_names=["NonExistent"],
         )
-        with patch("dd4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
+        with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
             with pytest.raises(ValueError, match="No valid detectors to exclude"):
                 run_sweep(config)
 
@@ -215,7 +215,7 @@ class TestFailureHandling:
             rc = 1 if kw["label"] == "without_EcalBarrel" else 0
             return _make_result(kw["label"], returncode=rc)
 
-        with patch("dd4bench.benchmark.ddsim.run_ddsim", side_effect=side_effect):
+        with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=side_effect):
             results = run_sweep(_make_config(tmp_path, mode=SweepMode.FULL))
 
         failed = [r for r in results if r.label == "without_EcalBarrel"]
@@ -227,7 +227,7 @@ class TestFailureHandling:
             rc = 1 if kw["label"] == "without_EcalBarrel" else 0
             return _make_result(kw["label"], returncode=rc)
 
-        with patch("dd4bench.benchmark.ddsim.run_ddsim", side_effect=side_effect):
+        with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=side_effect):
             results = run_sweep(_make_config(tmp_path, mode=SweepMode.FULL))
 
         assert len(results) == 5
@@ -238,7 +238,7 @@ class TestFailureHandling:
                 raise RuntimeError("unexpected crash")
             return _make_result(kw["label"])
 
-        with patch("dd4bench.benchmark.ddsim.run_ddsim", side_effect=side_effect):
+        with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=side_effect):
             results = run_sweep(_make_config(tmp_path, mode=SweepMode.FULL))
 
         labels = {r.label for r in results}

@@ -39,7 +39,7 @@ from ui_chrome import (
 
 def main() -> None:
     st.set_page_config(
-        page_title="DD4bench Dashboard",
+        page_title="k4Bench Dashboard",
         page_icon="⚡",
         layout="wide",
     )
@@ -333,7 +333,7 @@ def main() -> None:
         path_hint = f" in **{data_dir}**" if data_dir else ""
         st.info(
             f"No benchmark results found{path_hint}. "
-            "Set the `DD4BENCH_DATA_DIR` environment variable or update the path in the sidebar."
+            "Set the `K4BENCH_DATA_DIR` environment variable or update the path in the sidebar."
         )
         return
 

@@ -1,4 +1,4 @@
-"""Unit tests for dd4bench.plugin.runtime.
+"""Unit tests for k4bench.plugin.runtime.
 
 All tests are pure Python — no subprocess is executed and no filesystem
 paths outside tmp_path are touched. Subprocess calls and the
@@ -12,8 +12,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import dd4bench.plugin.runtime as plugin_runtime
-from dd4bench.plugin.runtime import (
+import k4bench.plugin.runtime as plugin_runtime
+from k4bench.plugin.runtime import (
     _find_plugin_root,
     ensure_plugin_built,
     find_plugin_lib_dir,
@@ -36,11 +36,11 @@ def _make_plugin_libs(base: Path, *parts: str, which: tuple[str, ...] = ("event"
     lib_dir = base.joinpath(*parts)
     lib_dir.mkdir(parents=True, exist_ok=True)
     if "event" in which:
-        (lib_dir / "libDD4benchTimingAction.so").touch()
-        (lib_dir / "libDD4benchTimingAction.components").touch()
+        (lib_dir / "libk4BenchTimingAction.so").touch()
+        (lib_dir / "libk4BenchTimingAction.components").touch()
     if "region" in which:
-        (lib_dir / "libDD4benchRegionTimingAction.so").touch()
-        (lib_dir / "libDD4benchRegionTimingAction.components").touch()
+        (lib_dir / "libk4BenchRegionTimingAction.so").touch()
+        (lib_dir / "libk4BenchRegionTimingAction.components").touch()
     return lib_dir
 
 
@@ -74,7 +74,7 @@ class TestFindPluginRoot:
         cwd_dir.mkdir()
         with (
             patch("pathlib.Path.cwd", return_value=cwd_dir),
-            patch.object(plugin_runtime, "_PACKAGE_ROOT", repo_dir / "dd4bench"),
+            patch.object(plugin_runtime, "_PACKAGE_ROOT", repo_dir / "k4bench"),
         ):
             assert _find_plugin_root() == plugin_dir
 
@@ -85,7 +85,7 @@ class TestFindPluginRoot:
         pkg_plugin.mkdir(parents=True)
         with (
             patch("pathlib.Path.cwd", return_value=tmp_path / "cwd"),
-            patch.object(plugin_runtime, "_PACKAGE_ROOT", tmp_path / "pkg" / "dd4bench"),
+            patch.object(plugin_runtime, "_PACKAGE_ROOT", tmp_path / "pkg" / "k4bench"),
         ):
             assert _find_plugin_root() == cwd_plugin
 
@@ -94,7 +94,7 @@ class TestFindPluginRoot:
         cwd_dir.mkdir()
         with (
             patch("pathlib.Path.cwd", return_value=cwd_dir),
-            patch.object(plugin_runtime, "_PACKAGE_ROOT", tmp_path / "pkg" / "dd4bench"),
+            patch.object(plugin_runtime, "_PACKAGE_ROOT", tmp_path / "pkg" / "k4bench"),
         ):
             with pytest.raises(FileNotFoundError, match="plugin directory"):
                 _find_plugin_root()
@@ -149,10 +149,10 @@ class TestFindPluginLibDir:
     def test_accepts_versioned_so_suffix(self, tmp_path):
         lib_dir = tmp_path / "install" / "lib"
         lib_dir.mkdir(parents=True)
-        (lib_dir / "libDD4benchTimingAction.so.1").touch()
-        (lib_dir / "libDD4benchTimingAction.components").touch()
-        (lib_dir / "libDD4benchRegionTimingAction.so.1").touch()
-        (lib_dir / "libDD4benchRegionTimingAction.components").touch()
+        (lib_dir / "libk4BenchTimingAction.so.1").touch()
+        (lib_dir / "libk4BenchTimingAction.components").touch()
+        (lib_dir / "libk4BenchRegionTimingAction.so.1").touch()
+        (lib_dir / "libk4BenchRegionTimingAction.components").touch()
         with patch.object(plugin_runtime, "_find_plugin_root", return_value=tmp_path):
             assert find_plugin_lib_dir() == lib_dir
 
@@ -184,8 +184,8 @@ class TestFindPluginLibDir:
         """.so files present but no .components → DDG4 can't resolve bundled factories."""
         lib_dir = tmp_path / "install" / "lib"
         lib_dir.mkdir(parents=True)
-        (lib_dir / "libDD4benchTimingAction.so").touch()
-        (lib_dir / "libDD4benchRegionTimingAction.so").touch()
+        (lib_dir / "libk4BenchTimingAction.so").touch()
+        (lib_dir / "libk4BenchRegionTimingAction.so").touch()
         # No .components files — simulates the lib vs lib64 split seen on
         # GNUInstallDirs systems where cmake installs .so into both but
         # .components only into lib64.
@@ -197,8 +197,8 @@ class TestFindPluginLibDir:
         """lib has .so only; lib64 has both .so and .components — should return lib64."""
         lib_dir = tmp_path / "install" / "lib"
         lib_dir.mkdir(parents=True)
-        (lib_dir / "libDD4benchTimingAction.so").touch()
-        (lib_dir / "libDD4benchRegionTimingAction.so").touch()
+        (lib_dir / "libk4BenchTimingAction.so").touch()
+        (lib_dir / "libk4BenchRegionTimingAction.so").touch()
         lib64_dir = _make_plugin_libs(tmp_path, "install", "lib64")
         with patch.object(plugin_runtime, "_find_plugin_root", return_value=tmp_path):
             assert find_plugin_lib_dir() == lib64_dir
@@ -215,7 +215,7 @@ class TestEnsurePluginBuilt:
     def test_already_built_skips_subprocess(self, tmp_path):
         with (
             patch.object(plugin_runtime, "find_plugin_lib_dir", return_value=tmp_path),
-            patch("dd4bench.plugin.runtime.subprocess.run") as mock_run,
+            patch("k4bench.plugin.runtime.subprocess.run") as mock_run,
         ):
             ensure_plugin_built()
             mock_run.assert_not_called()
@@ -234,7 +234,7 @@ class TestEnsurePluginBuilt:
             patch.object(plugin_runtime, "find_plugin_lib_dir", side_effect=FileNotFoundError),
             patch.object(plugin_runtime, "_find_plugin_root", return_value=tmp_path),
             patch(
-                "dd4bench.plugin.runtime.subprocess.run",
+                "k4bench.plugin.runtime.subprocess.run",
                 return_value=_mock_run(returncode=1, stderr="cmake error"),
             ),
         ):
@@ -248,7 +248,7 @@ class TestEnsurePluginBuilt:
             patch.object(plugin_runtime, "find_plugin_lib_dir", side_effect=FileNotFoundError),
             patch.object(plugin_runtime, "_find_plugin_root", return_value=tmp_path),
             patch(
-                "dd4bench.plugin.runtime.subprocess.run",
+                "k4bench.plugin.runtime.subprocess.run",
                 return_value=_mock_run(returncode=0),
             ) as mock_run,
         ):
@@ -305,7 +305,7 @@ class TestSetupPluginEnvironment:
             patch.object(plugin_runtime, "find_plugin_lib_dir", return_value=tmp_path / "lib"),
         ):
             setup_plugin_environment(env=env, event_json_path=event_json)
-        assert env["DD4BENCH_EVENT_JSON"] == str(event_json.resolve())
+        assert env["K4BENCH_EVENT_JSON"] == str(event_json.resolve())
 
     def test_returns_false_on_file_not_found(self, tmp_path):
         env: dict[str, str] = {}
@@ -330,19 +330,19 @@ class TestSetupPluginEnvironment:
         ):
             setup_plugin_environment(env=env, event_json_path=tmp_path / "ev.json")
         assert "LD_LIBRARY_PATH" not in env
-        assert "DD4BENCH_EVENT_JSON" not in env
+        assert "K4BENCH_EVENT_JSON" not in env
         assert env == {"EXISTING": "value"}
 
     # --- new tests for the region_json_path parameter ----------------------
 
     def test_stale_region_env_var_cleared_when_path_is_none(self, tmp_path):
-        env: dict[str, str] = {"DD4BENCH_REGION_JSON": "/old/path/regions.json"}
+        env: dict[str, str] = {"K4BENCH_REGION_JSON": "/old/path/regions.json"}
         with (
             patch.object(plugin_runtime, "ensure_plugin_built"),
             patch.object(plugin_runtime, "find_plugin_lib_dir", return_value=tmp_path / "lib"),
         ):
             setup_plugin_environment(env=env, event_json_path=tmp_path / "ev.json")
-        assert "DD4BENCH_REGION_JSON" not in env
+        assert "K4BENCH_REGION_JSON" not in env
 
     def test_region_env_var_unset_when_path_not_provided(self, tmp_path):
         env: dict[str, str] = {}
@@ -351,7 +351,7 @@ class TestSetupPluginEnvironment:
             patch.object(plugin_runtime, "find_plugin_lib_dir", return_value=tmp_path / "lib"),
         ):
             setup_plugin_environment(env=env, event_json_path=tmp_path / "ev.json")
-        assert "DD4BENCH_REGION_JSON" not in env
+        assert "K4BENCH_REGION_JSON" not in env
 
     def test_region_env_var_set_when_path_provided(self, tmp_path):
         region_json = tmp_path / "subdir" / "regions.json"
@@ -365,7 +365,7 @@ class TestSetupPluginEnvironment:
                 event_json_path=tmp_path / "ev.json",
                 region_json_path=region_json,
             )
-        assert env["DD4BENCH_REGION_JSON"] == str(region_json.resolve())
+        assert env["K4BENCH_REGION_JSON"] == str(region_json.resolve())
 
     def test_both_env_vars_set_independently(self, tmp_path):
         event_json = tmp_path / "events.json"
@@ -380,8 +380,8 @@ class TestSetupPluginEnvironment:
                 event_json_path=event_json,
                 region_json_path=region_json,
             )
-        assert env["DD4BENCH_EVENT_JSON"] == str(event_json.resolve())
-        assert env["DD4BENCH_REGION_JSON"] == str(region_json.resolve())
+        assert env["K4BENCH_EVENT_JSON"] == str(event_json.resolve())
+        assert env["K4BENCH_REGION_JSON"] == str(region_json.resolve())
 
     def test_returns_false_when_region_requested_but_plugin_unavailable(self, tmp_path):
         """Failure path is shared — region request doesn't change it."""
@@ -395,4 +395,4 @@ class TestSetupPluginEnvironment:
                 region_json_path=tmp_path / "rg.json",
             )
         assert result is False
-        assert "DD4BENCH_REGION_JSON" not in env
+        assert "K4BENCH_REGION_JSON" not in env

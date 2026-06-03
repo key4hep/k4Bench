@@ -1,6 +1,6 @@
 """Unit tests for the dashboard's remote WebEOS access layer.
 
-``dashboard/remote.py`` is not part of the importable ``dd4bench`` package and
+``dashboard/remote.py`` is not part of the importable ``k4bench`` package and
 its sibling modules (``data``/``config``) pull in Streamlit, so it is loaded here
 in isolation by file path. ``remote`` itself only depends on stdlib + requests.
 """
@@ -16,7 +16,7 @@ _REMOTE_PATH = Path(__file__).resolve().parents[2] / "dashboard" / "remote.py"
 
 
 def _load_remote():
-    spec = importlib.util.spec_from_file_location("dd4bench_dashboard_remote", _REMOTE_PATH)
+    spec = importlib.util.spec_from_file_location("k4bench_dashboard_remote", _REMOTE_PATH)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod

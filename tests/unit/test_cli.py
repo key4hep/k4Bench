@@ -1,4 +1,4 @@
-"""Unit tests for dd4bench.cli.
+"""Unit tests for k4bench.cli.
 
 Tests cover argument parsing and config building only — no ddsim is run.
 """
@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from dd4bench.benchmark.ddsim import SweepMode
-from dd4bench.cli import _build_config, _build_parser
+from k4bench.benchmark.ddsim import SweepMode
+from k4bench.cli import _build_config, _build_parser
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -136,7 +136,7 @@ class TestOutputOptions:
 
     def test_default_output_file(self):
         config = _config(["--xml", str(XML_A)])
-        assert config.output_file == Path("/tmp/dd4bench_out.edm4hep.root")
+        assert config.output_file == Path("/tmp/k4bench_out.edm4hep.root")
 
     def test_custom_output_file(self):
         config = _config([

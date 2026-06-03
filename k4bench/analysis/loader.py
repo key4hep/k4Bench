@@ -12,7 +12,7 @@ import pandas as pd
 def load_results(log_dir: str | Path, labels: list[str] | None = None) -> pd.DataFrame:
     """Load benchmark results from a log directory into a DataFrame.
 
-    Each ``{label}_results.csv`` file written by ``dd4bench`` is loaded and
+    Each ``{label}_results.csv`` file written by ``k4bench`` is loaded and
     concatenated into a single DataFrame.
 
     Parameters
@@ -71,7 +71,7 @@ def load_event_timing(
 ) -> dict[str, pd.DataFrame]:
     """Load per-event timing JSON files from a log directory.
 
-    Each ``{label}_events.json`` file written by the DD4benchTimingAction
+    Each ``{label}_events.json`` file written by the k4BenchTimingAction
     plugin is parsed into a DataFrame.
 
     Parameters
@@ -138,7 +138,7 @@ def load_region_timing(
 ) -> dict[str, dict]:
     """Load per-region timing JSON files from a log directory.
 
-    Each ``{label}_regions.json`` file written by the DD4benchRegionTimingAction
+    Each ``{label}_regions.json`` file written by the k4BenchRegionTimingAction
     plugin is parsed into structured data.
 
     Parameters
