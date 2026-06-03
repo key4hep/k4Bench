@@ -31,9 +31,9 @@
 
 set -euo pipefail
 
-# Shared FCC-ee experiment area on EOS public.
-EOS_FQDN="eospublic.cern.ch"
-EOS_ROOT="/eos/experiment/fcc/ee/k4bench"
+# Personal EOS area.
+EOS_FQDN="eosuser.cern.ch"
+EOS_ROOT="/eos/user/j/jbeirer/k4bench"
 
 SAMPLE="${BENCHMARK_SAMPLE}"
 
