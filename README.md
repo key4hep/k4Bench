@@ -39,16 +39,18 @@ The recommended install is from source, so the C++ timing plugins are built and
 you get the full set of metrics:
 
 ```bash
-# 1. Enter the Key4hep environment
-source /cvmfs/sw.hsf.org/key4hep/setup.sh -r 2026-04-08
-
-# 2. Clone and set up (builds the timing plugins, prepares the venv)
+# 1. Clone the repository
 git clone https://github.com/key4hep/k4Bench.git
 cd k4Bench
+
+# 2. Setup setup.sh to source Key4hep, make a CVMFS-aware venv, install deps,
+# build the timing plugins, and install pre-commit hooks.
 source setup.sh
+
+# 3. Install the k4bench command (editable)
 pip install --no-build-isolation -e .
 
-# 3. Benchmark a geometry (single particle-gun run)
+# 4. Benchmark a geometry (single particle-gun run)
 k4bench --xml $K4GEO/FCCee/ALLEGRO/compact/ALLEGRO_o1_v03/ALLEGRO_o1_v03.xml \
         --events 100 \
         --ddsim-args="--enableGun --gun.particle e- --gun.distribution uniform"
