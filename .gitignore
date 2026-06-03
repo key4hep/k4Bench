@@ -25,3 +25,4 @@ run.sh
 plugin/install
 JupyterNotebooks
 sweep_test
+site/
