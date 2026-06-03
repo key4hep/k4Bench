@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from dd4bench.analysis.plots import plot_region_timing
+from k4bench.analysis.plots import plot_region_timing
 from ui_utils import _PALETTES, _PALETTE_NAMES, _auto_palette_index
 
 from ._common import _ATTRIBUTION_HELP

@@ -11,7 +11,7 @@ import csv
 import dataclasses
 from pathlib import Path
 
-from dd4bench.results.model import RunResult
+from k4bench.results.model import RunResult
 
 # Column format string shared by header and data rows.
 _COL = "{:<45} {:>9} {:>10} {:>11} {:>9} {:>8} {:>4}"

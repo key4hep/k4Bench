@@ -1,6 +1,6 @@
 """Discover and download benchmark run data from a WebEOS HTTP endpoint.
 
-The WebEOS site serves an Apache-style directory listing at DD4BENCH_DATA_URL.
+The WebEOS site serves an Apache-style directory listing at K4BENCH_DATA_URL.
 Expected layout::
 
     {base_url}/
@@ -147,7 +147,7 @@ def list_run_dates_all_stacks(
 def _default_cache_root() -> Path:
     return Path(
         os.environ.get(
-            "DD4BENCH_CACHE_DIR", str(Path(tempfile.gettempdir()) / "dd4bench_cache")
+            "K4BENCH_CACHE_DIR", str(Path(tempfile.gettempdir()) / "k4bench_cache")
         )
     )
 

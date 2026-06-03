@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the DD4bench timing plugins.
+# Build the k4Bench timing plugins.
 #
 # Idempotent: skips the build if both .so files exist and are newer than
 # their respective sources. Run this after sourcing the key4hep/DD4hep
@@ -15,10 +15,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${SCRIPT_DIR}/build"
 INSTALL_DIR="${SCRIPT_DIR}/install"
 
-SOURCE_EVENT="${SCRIPT_DIR}/DD4benchTimingAction.cpp"
-SOURCE_REGION="${SCRIPT_DIR}/DD4benchRegionTimingAction.cpp"
-LIB_EVENT="${INSTALL_DIR}/lib/libDD4benchTimingAction.so"
-LIB_REGION="${INSTALL_DIR}/lib/libDD4benchRegionTimingAction.so"
+SOURCE_EVENT="${SCRIPT_DIR}/k4BenchTimingAction.cpp"
+SOURCE_REGION="${SCRIPT_DIR}/k4BenchRegionTimingAction.cpp"
+LIB_EVENT="${INSTALL_DIR}/lib/libk4BenchTimingAction.so"
+LIB_REGION="${INSTALL_DIR}/lib/libk4BenchRegionTimingAction.so"
 
 needs_build() {
   local lib="$1"
@@ -34,11 +34,11 @@ needs_build() {
 
 if ! needs_build "${LIB_EVENT}" "${SOURCE_EVENT}" \
    && ! needs_build "${LIB_REGION}" "${SOURCE_REGION}"; then
-  echo "✅ DD4bench timing plugins are up to date."
+  echo "✅ k4Bench timing plugins are up to date."
   exit 0
 fi
 
-echo "🔄 Building DD4bench timing plugins..."
+echo "🔄 Building k4Bench timing plugins..."
 
 mkdir -p "${BUILD_DIR}"
 
@@ -53,6 +53,6 @@ cmake -S "${SCRIPT_DIR}" \
 cmake --build "${BUILD_DIR}" --parallel "$(nproc)" > /dev/null
 cmake --install "${BUILD_DIR}" > /dev/null
 
-echo "✅ DD4bench timing plugins built:"
+echo "✅ k4Bench timing plugins built:"
 echo "    - ${LIB_EVENT}"
 echo "    - ${LIB_REGION}"

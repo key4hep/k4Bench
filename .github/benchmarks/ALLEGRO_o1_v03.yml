@@ -1,4 +1,4 @@
-# DD4bench nightly benchmark config — ALLEGRO o1 v03
+# k4Bench nightly benchmark config — ALLEGRO o1 v03
 #
 # The nightly workflow expands every file in .github/benchmarks/ into a matrix
 # of (detector × sample) jobs and uploads each result to EOS under:

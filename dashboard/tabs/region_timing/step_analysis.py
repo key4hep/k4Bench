@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from dd4bench.analysis.plots._theme import _TEMPLATE
+from k4bench.analysis.plots._theme import _TEMPLATE
 from ui_utils import _LEGEND_B_MARGIN, _PALETTES, _PALETTE_NAMES, _SYMBOLS, _auto_palette_index, _legend_below, _to_rgba
 
 from ._common import _palette_placeholder
@@ -44,7 +44,7 @@ def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None
         _palette_placeholder(col_pal, "sa_palette")
         st.info(
             "Step count data (`interval_counts`) is not available in this run's regions JSON. "
-            "Regenerate the benchmark output with a newer dd4bench version."
+            "Regenerate the benchmark output with a newer k4bench version."
         )
         return
 

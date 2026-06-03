@@ -1,4 +1,4 @@
-"""Integration tests for the DD4bench timing plugin build.
+"""Integration tests for the k4Bench timing plugin build.
 
 These tests call build.sh directly so that any change to the C++ source
 triggers a real recompile — bypassing the early-return in ensure_plugin_built()
@@ -13,7 +13,7 @@ import subprocess
 
 import pytest
 
-from dd4bench.plugin.runtime import _find_plugin_root, find_plugin_lib_dir
+from k4bench.plugin.runtime import _find_plugin_root, find_plugin_lib_dir
 
 
 @pytest.fixture(scope="module")
@@ -38,11 +38,11 @@ def test_plugin_build_succeeds(built_plugin):
 
 @pytest.mark.integration
 def test_plugin_library_is_found_after_build(built_plugin):
-    """find_plugin_lib_dir locates libDD4benchTimingAction.so after a successful build."""
+    """find_plugin_lib_dir locates libk4BenchTimingAction.so after a successful build."""
     assert built_plugin.returncode == 0, "Skipped: build already failed"
     lib_dir = find_plugin_lib_dir()
-    assert any(lib_dir.glob("libDD4benchTimingAction.so*")), (
-        f"No libDD4benchTimingAction.so* in {lib_dir}"
+    assert any(lib_dir.glob("libk4BenchTimingAction.so*")), (
+        f"No libk4BenchTimingAction.so* in {lib_dir}"
     )
 
 
@@ -51,5 +51,5 @@ def test_plugin_library_is_a_regular_file(built_plugin):
     """The located .so is a real file, not a directory or dangling symlink."""
     assert built_plugin.returncode == 0, "Skipped: build already failed"
     lib_dir = find_plugin_lib_dir()
-    so_files = list(lib_dir.glob("libDD4benchTimingAction.so*"))
+    so_files = list(lib_dir.glob("libk4BenchTimingAction.so*"))
     assert so_files and all(f.is_file() for f in so_files)

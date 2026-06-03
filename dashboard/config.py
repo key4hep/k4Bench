@@ -22,10 +22,10 @@ class Config:
     @classmethod
     def from_env(cls) -> Config:
         return cls(
-            data_dir=os.environ.get("DD4BENCH_DATA_DIR", "logs"),
-            data_url=os.environ.get("DD4BENCH_DATA_URL"),
+            data_dir=os.environ.get("K4BENCH_DATA_DIR", "logs"),
+            data_url=os.environ.get("K4BENCH_DATA_URL"),
             cache_dir=os.environ.get(
-                "DD4BENCH_CACHE_DIR",
-                str(Path(tempfile.gettempdir()) / "dd4bench_cache"),
+                "K4BENCH_CACHE_DIR",
+                str(Path(tempfile.gettempdir()) / "k4bench_cache"),
             ),
         )

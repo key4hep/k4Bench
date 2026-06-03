@@ -1,6 +1,6 @@
-"""Integration test: real ddsim simulation via the dd4bench CLI.
+"""Integration test: real ddsim simulation via the k4bench CLI.
 
-Invokes the ``dd4bench`` entry point as a subprocess against ALLEGRO_o1_v03
+Invokes the ``k4bench`` entry point as a subprocess against ALLEGRO_o1_v03
 and verifies that the process exits cleanly and that the CSV output contains
 sensible benchmark metrics.
 
@@ -33,8 +33,8 @@ pytestmark = [
         not K4GEO
         or not (ALLEGRO_XML is not None and ALLEGRO_XML.exists())
         or shutil.which("ddsim") is None
-        or shutil.which("dd4bench") is None,
-        reason="$K4GEO not set, ALLEGRO XML not found, or ddsim/dd4bench not in PATH",
+        or shutil.which("k4bench") is None,
+        reason="$K4GEO not set, ALLEGRO XML not found, or ddsim/k4bench not in PATH",
     ),
 ]
 
@@ -48,12 +48,12 @@ _N_EVENTS = 100
 
 @pytest.fixture(scope="module")
 def cli_run():
-    """Run dd4bench against ALLEGRO_o1_v03; yield (CompletedProcess, csv_row)."""
+    """Run k4bench against ALLEGRO_o1_v03; yield (CompletedProcess, csv_row)."""
     with tempfile.TemporaryDirectory() as tmp:
         output_dir = Path(tmp)
         result = subprocess.run(
             [
-                "dd4bench",
+                "k4bench",
                 "--verbose",
                 "--events", str(_N_EVENTS),
                 "--xml", str(ALLEGRO_XML),
@@ -101,9 +101,9 @@ def csv_row(cli_run):
 
 
 def test_cli_exits_zero(cli_result):
-    """dd4bench must exit with code 0."""
+    """k4bench must exit with code 0."""
     assert cli_result.returncode == 0, (
-        f"dd4bench exited {cli_result.returncode}\n"
+        f"k4bench exited {cli_result.returncode}\n"
         f"stdout:\n{cli_result.stdout}\n"
         f"stderr:\n{cli_result.stderr}"
     )

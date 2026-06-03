@@ -2,10 +2,10 @@
 
 This module is the top-level orchestrator.  It wires together:
 
-* :mod:`dd4bench.geometry.scanner`  — discover subdetector names
-* :mod:`dd4bench.geometry.patcher`  — produce patched XML files
-* :mod:`dd4bench.runner.executor`   — time each ddsim run
-* :mod:`dd4bench.results.model`     — collect results
+* :mod:`k4bench.geometry.scanner`  — discover subdetector names
+* :mod:`k4bench.geometry.patcher`  — produce patched XML files
+* :mod:`k4bench.runner.executor`   — time each ddsim run
+* :mod:`k4bench.results.model`     — collect results
 
 All runs are sequential.  Parallel execution would skew wall-time and
 RSS metrics because competing processes share CPU, cache, and memory
@@ -33,14 +33,14 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from dd4bench.geometry.patcher import (
+from k4bench.geometry.patcher import (
     DetectorNotFoundError,
     patched_geometry,
     patched_geometry_keep_only,
 )
-from dd4bench.geometry.scanner import get_detector_names
-from dd4bench.results.model import RunResult
-from dd4bench.runner.executor import run_ddsim
+from k4bench.geometry.scanner import get_detector_names
+from k4bench.results.model import RunResult
+from k4bench.runner.executor import run_ddsim
 
 
 # ---------------------------------------------------------------------------

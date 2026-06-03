@@ -54,16 +54,16 @@ jobs:
             echo '::endgroup::'
 
 
-            echo '::group::Install dd4bench'
+            echo '::group::Install k4bench'
             pip install --no-build-isolation ".[test]"
             echo '::endgroup::'
 
             echo '::group::Run unit tests'
-            python -m pytest tests/unit/ --cov=dd4bench --cov-report= --junitxml=junit-unit.xml -o junit_family=legacy
+            python -m pytest tests/unit/ --cov=k4bench --cov-report= --junitxml=junit-unit.xml -o junit_family=legacy
             echo '::endgroup::'
 
             echo '::group::Run integration tests'
-            python -m pytest tests/integration/ --cov=dd4bench --cov-append --cov-report=xml:/workspace/coverage.xml --junitxml=junit-integration.xml -o junit_family=legacy
+            python -m pytest tests/integration/ --cov=k4bench --cov-append --cov-report=xml:/workspace/coverage.xml --junitxml=junit-integration.xml -o junit_family=legacy
             echo '::endgroup::'
           "
 
@@ -71,7 +71,7 @@ jobs:
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          slug: jbeirer/DD4bench
+          slug: key4hep/k4Bench
 
       - name: Upload test results to Codecov
         if: ${{ !cancelled() }}

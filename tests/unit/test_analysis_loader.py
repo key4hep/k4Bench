@@ -1,4 +1,4 @@
-"""Unit tests for dd4bench.analysis.loader."""
+"""Unit tests for k4bench.analysis.loader."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from dd4bench.analysis.loader import load_event_timing, load_region_timing, load_results
+from k4bench.analysis.loader import load_event_timing, load_region_timing, load_results
 
 
 # ---------------------------------------------------------------------------

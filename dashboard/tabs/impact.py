@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from dd4bench.analysis.plots._theme import _TEMPLATE  # noqa: F401 (kept for consistency)
+from k4bench.analysis.plots._theme import _TEMPLATE  # noqa: F401 (kept for consistency)
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 _METRICS = [

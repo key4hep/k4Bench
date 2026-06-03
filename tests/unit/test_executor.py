@@ -1,4 +1,4 @@
-"""Unit tests for dd4bench.runner.executor.
+"""Unit tests for k4bench.runner.executor.
 
 _build_command is a pure function (no subprocess, no filesystem), so we
 test it directly.  run_ddsim itself requires a live ddsim binary and
@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from dd4bench.runner.executor import _build_command, run_ddsim
+from k4bench.runner.executor import _build_command, run_ddsim
 
 XML = Path("/geo/ALLEGRO_o1_v03.xml")
 OUTPUT = Path("/tmp/out.edm4hep.root")
@@ -122,64 +122,64 @@ class TestBuildCommandPluginAvailability:
 
     def test_timing_action_injected_when_plugin_available(self):
         cmd = self._cmd(plugin_available=True)
-        assert "DD4benchTimingAction" in cmd
+        assert "k4BenchTimingAction" in cmd
         assert "--action.event" in cmd
 
     def test_timing_action_absent_when_plugin_unavailable(self):
         cmd = self._cmd(plugin_available=False)
-        assert "DD4benchTimingAction" not in cmd
+        assert "k4BenchTimingAction" not in cmd
 
     def test_timing_action_not_duplicated_when_already_in_extra_args(self):
         cmd = self._cmd(
             plugin_available=True,
-            extra_args=["--action.event", "DD4benchTimingAction"],
+            extra_args=["--action.event", "k4BenchTimingAction"],
         )
-        assert cmd.count("DD4benchTimingAction") == 1
+        assert cmd.count("k4BenchTimingAction") == 1
 
     def test_region_actions_injected_when_plugin_available(self):
         cmd = self._cmd(plugin_available=True)
         assert "--action.step" in cmd
-        assert "DD4benchRegionTimingAction" in cmd
+        assert "k4BenchRegionTimingAction" in cmd
         assert "--action.track" in cmd
-        assert "DD4benchRegionTrackingAction" in cmd
-        assert "DD4benchRegionEventAction" in cmd
+        assert "k4BenchRegionTrackingAction" in cmd
+        assert "k4BenchRegionEventAction" in cmd
 
     def test_region_actions_absent_when_plugin_unavailable(self):
         cmd = self._cmd(plugin_available=False)
-        assert "DD4benchRegion" not in cmd
+        assert "k4BenchRegion" not in cmd
 
     def test_region_actions_not_duplicated_when_already_in_extra_args(self):
         cmd = self._cmd(
             plugin_available=True,
             extra_args=[
-                "--action.step",  "DD4benchRegionTimingAction",
-                "--action.track", "DD4benchRegionTrackingAction",
-                "--action.event", "DD4benchRegionEventAction",
+                "--action.step",  "k4BenchRegionTimingAction",
+                "--action.track", "k4BenchRegionTrackingAction",
+                "--action.event", "k4BenchRegionEventAction",
             ],
         )
-        assert cmd.count("DD4benchRegionTimingAction") == 1
-        assert cmd.count("DD4benchRegionTrackingAction") == 1
-        assert cmd.count("DD4benchRegionEventAction") == 1
+        assert cmd.count("k4BenchRegionTimingAction") == 1
+        assert cmd.count("k4BenchRegionTrackingAction") == 1
+        assert cmd.count("k4BenchRegionEventAction") == 1
 
     def test_action_name_in_non_action_flag_does_not_suppress_injection(self):
         # Action name appearing after a non --action.* flag must not count
         # as the action being registered (old substring match would suppress it).
         cmd = self._cmd(
             plugin_available=True,
-            extra_args=["--somearg", "DD4benchRegionTimingAction"],
+            extra_args=["--somearg", "k4BenchRegionTimingAction"],
         )
-        assert cmd.count("DD4benchRegionTimingAction") == 2
+        assert cmd.count("k4BenchRegionTimingAction") == 2
 
     def test_missing_region_actions_injected_when_only_step_is_present(self):
         # If the user supplies only the step action, track and event should
         # still be injected rather than silently left out.
         cmd = self._cmd(
             plugin_available=True,
-            extra_args=["--action.step", "DD4benchRegionTimingAction"],
+            extra_args=["--action.step", "k4BenchRegionTimingAction"],
         )
-        assert cmd.count("DD4benchRegionTimingAction") == 1
-        assert "DD4benchRegionTrackingAction" in cmd
-        assert "DD4benchRegionEventAction" in cmd
+        assert cmd.count("k4BenchRegionTimingAction") == 1
+        assert "k4BenchRegionTrackingAction" in cmd
+        assert "k4BenchRegionEventAction" in cmd
 
 
 class TestVerboseReturncode:
@@ -199,7 +199,7 @@ class TestVerboseReturncode:
 
     def _run(self, tmp_path: Path, verbose: bool):
         mock_proc = self._make_proc()
-        with patch("dd4bench.runner.executor.subprocess.Popen", return_value=mock_proc):
+        with patch("k4bench.runner.executor.subprocess.Popen", return_value=mock_proc):
             return run_ddsim(
                 xml_path=XML,
                 label="test",

@@ -1,4 +1,4 @@
-"""Smoke tests for dd4bench.analysis.plots.
+"""Smoke tests for k4bench.analysis.plots.
 
 These tests verify that each plotting function runs without error and
 returns a Figure.  Visual correctness is not tested here.
@@ -15,8 +15,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import pytest
 
-from dd4bench.analysis.loader import load_results
-from dd4bench.analysis.plots import (
+from k4bench.analysis.loader import load_results
+from k4bench.analysis.plots import (
     _compute_core_range,
     plot_event_memory,
     plot_event_timing,
@@ -181,7 +181,7 @@ class TestPlotEventTiming:
     def test_accepts_preloaded_dict(self, tmp_path):
         _write_event_json(tmp_path / "baseline_all_events.json")
         _write_event_json(tmp_path / "without_Ecal_events.json")
-        from dd4bench.analysis.loader import load_event_timing
+        from k4bench.analysis.loader import load_event_timing
         data = load_event_timing(tmp_path)
         fig = plot_event_timing(data)
         assert isinstance(fig, go.Figure)
@@ -269,7 +269,7 @@ class TestPlotEventTiming:
 
     def test_default_baseline_is_deterministic(self, tmp_path):
         """_default_baseline must return the same run regardless of dict insertion order."""
-        from dd4bench.analysis.plots._utils import _default_baseline
+        from k4bench.analysis.plots._utils import _default_baseline
         labels_a = ["zrun", "arun", "mrun"]
         labels_b = ["mrun", "zrun", "arun"]
         assert _default_baseline(labels_a) == _default_baseline(labels_b) == "arun"
@@ -406,7 +406,7 @@ class TestPlotRegionTiming:
 
     def test_accepts_preloaded_dict(self, tmp_path):
         _write_region_json(tmp_path / "baseline_all_regions.json")
-        from dd4bench.analysis.loader import load_region_timing
+        from k4bench.analysis.loader import load_region_timing
         data = load_region_timing(tmp_path)
         fig = plot_region_timing(data)
         assert isinstance(fig, go.Figure)

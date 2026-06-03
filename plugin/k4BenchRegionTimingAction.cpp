@@ -1,4 +1,4 @@
-// DD4benchRegionTimingAction.cpp
+// k4BenchRegionTimingAction.cpp
 //
 // DDG4 stepping + tracking + event actions that record per-event,
 // per-(top-level-)detector wall time spent inside Geant4 stepping. The
@@ -33,11 +33,11 @@
 //
 // Output path is controlled via:
 //
-//   DD4BENCH_REGION_JSON=/path/to/output.json
+//   K4BENCH_REGION_JSON=/path/to/output.json
 //
 // If unset, defaults to:
 //
-//   dd4bench_regions.json
+//   k4bench_regions.json
 //
 // (The env var name and class names keep the word "Region" for backward
 // compatibility with the build system and steering scripts. The output
@@ -96,9 +96,9 @@
 
 #if defined(__x86_64__) || defined(_M_X64)
 #include <x86intrin.h>
-#define DD4BENCH_HAVE_RDTSCP 1
+#define K4BENCH_HAVE_RDTSCP 1
 #else
-#define DD4BENCH_HAVE_RDTSCP 0
+#define K4BENCH_HAVE_RDTSCP 0
 #endif
 
 namespace dd4hep
@@ -125,7 +125,7 @@ namespace dd4hep
 
       static inline std::uint64_t rdtscpNow()
       {
-#if DD4BENCH_HAVE_RDTSCP
+#if K4BENCH_HAVE_RDTSCP
         unsigned int aux;
         return __rdtscp(&aux);
 #else
@@ -143,7 +143,7 @@ namespace dd4hep
 
       void calibrate()
       {
-#if DD4BENCH_HAVE_RDTSCP
+#if K4BENCH_HAVE_RDTSCP
         constexpr int kRounds = 3;
         constexpr auto kWindow = std::chrono::milliseconds(15);
 
@@ -191,7 +191,7 @@ namespace dd4hep
 
       inline std::uint64_t now() const
       {
-#if DD4BENCH_HAVE_RDTSCP
+#if K4BENCH_HAVE_RDTSCP
         if (useRdtscp)
         {
           return rdtscpNow();
@@ -202,7 +202,7 @@ namespace dd4hep
 
       inline double toSeconds(std::uint64_t ticks) const
       {
-#if DD4BENCH_HAVE_RDTSCP
+#if K4BENCH_HAVE_RDTSCP
         if (useRdtscp)
         {
           return static_cast<double>(ticks) * nsPerTick * 1e-9;
@@ -320,7 +320,7 @@ namespace dd4hep
                 // attribute, and that's correct.
                 printout(
                     INFO,
-                    "DD4benchRegionTimingAction",
+                    "k4BenchRegionTimingAction",
                     "Top-level detector '%s' is an empty assembly "
                     "(no daughter volumes). Skipping; no time can be "
                     "attributed to it.",
@@ -337,7 +337,7 @@ namespace dd4hep
                 // above already explained where the time went.
                 printout(
                     INFO,
-                    "DD4benchRegionTimingAction",
+                    "k4BenchRegionTimingAction",
                     "Top-level detector '%s' shares all %zu of its "
                     "resolvable daughters with another detector "
                     "(see collision warnings above). Time will be "
@@ -353,7 +353,7 @@ namespace dd4hep
                 // can't attribute.
                 printout(
                     WARNING,
-                    "DD4benchRegionTimingAction",
+                    "k4BenchRegionTimingAction",
                     "Top-level detector '%s' is an assembly with %zu "
                     "daughter node(s) but none resolved to a "
                     "G4LogicalVolume; steps inside it will be "
@@ -378,7 +378,7 @@ namespace dd4hep
           {
             printout(
                 WARNING,
-                "DD4benchRegionTimingAction",
+                "k4BenchRegionTimingAction",
                 "Could not find G4LogicalVolume for top-level detector "
                 "'%s' (volume '%s'); steps inside it will be "
                 "'unattributed'.",
@@ -395,7 +395,7 @@ namespace dd4hep
 
         printout(
             INFO,
-            "DD4benchRegionTimingAction",
+            "k4BenchRegionTimingAction",
             "Indexed %zu top-level detectors for timing attribution "
             "(%zu solid + %zu assemblies covering %zu child LVs; %zu failed).",
             solidCount + assemblyCount,
@@ -486,7 +486,7 @@ namespace dd4hep
             {
               printout(
                   WARNING,
-                  "DD4benchRegionTimingAction",
+                  "k4BenchRegionTimingAction",
                   "G4LogicalVolume '%s' is reachable from both top-level "
                   "detector '%s' (first claim) and '%s' (ignored). Steps "
                   "in this LV will be attributed to the first claimer.",
@@ -637,7 +637,7 @@ namespace dd4hep
       std::vector<std::uint64_t> eventBirthFallbacks;
 
       double perStepOverheadSeconds{0.0};
-      std::string outputFile{"dd4bench_regions.json"};
+      std::string outputFile{"k4bench_regions.json"};
       bool finalized{false};
 
       static RegionTimingState &instance()
@@ -659,7 +659,7 @@ namespace dd4hep
           enabled = false;
           printout(
               ERROR,
-              "DD4benchRegionTimingAction",
+              "k4BenchRegionTimingAction",
               "Multithreaded Geant4 detected; disabling per-detector "
               "timing. This plugin is single-threaded only.");
           return;
@@ -762,23 +762,23 @@ namespace dd4hep
     }
 
     // -----------------------------------------------------------------------
-    // DD4benchRegionTrackingAction
+    // k4BenchRegionTrackingAction
     //
     // Records the birth detector of every track at creation time so the
     // stepping action can charge time to the originating detector.
     // -----------------------------------------------------------------------
 
-    class DD4benchRegionTrackingAction : public Geant4TrackingAction
+    class k4BenchRegionTrackingAction : public Geant4TrackingAction
     {
     public:
-      DD4benchRegionTrackingAction(
+      k4BenchRegionTrackingAction(
           Geant4Context *ctx,
           const std::string &name)
           : Geant4TrackingAction(ctx, name)
       {
       }
 
-      virtual ~DD4benchRegionTrackingAction() = default;
+      virtual ~k4BenchRegionTrackingAction() = default;
 
       void begin(const G4Track *track) override
       {
@@ -836,13 +836,13 @@ namespace dd4hep
     static void finalizeAndWrite();
 
     // -----------------------------------------------------------------------
-    // DD4benchRegionTimingAction
+    // k4BenchRegionTimingAction
     //
     // The stepping action. Hot path: two timer reads, one cache lookup,
     // two map increments, one counter increment.
     // -----------------------------------------------------------------------
 
-    class DD4benchRegionTimingAction : public Geant4SteppingAction
+    class k4BenchRegionTimingAction : public Geant4SteppingAction
     {
     private:
       std::uint64_t m_lastTick{0};
@@ -851,14 +851,14 @@ namespace dd4hep
       std::string m_lastByBirth;
 
     public:
-      DD4benchRegionTimingAction(
+      k4BenchRegionTimingAction(
           Geant4Context *ctx,
           const std::string &name)
           : Geant4SteppingAction(ctx, name)
       {
-        const char *env = std::getenv("DD4BENCH_REGION_JSON");
+        const char *env = std::getenv("K4BENCH_REGION_JSON");
         auto &state = RegionTimingState::instance();
-        state.outputFile = env ? env : "dd4bench_regions.json";
+        state.outputFile = env ? env : "k4bench_regions.json";
 
         constexpr std::size_t reserveSize = 10000;
         state.eventNumbers.reserve(reserveSize);
@@ -872,12 +872,12 @@ namespace dd4hep
 
         printout(
             INFO,
-            "DD4benchRegionTimingAction",
+            "k4BenchRegionTimingAction",
             "Will write per-detector metrics to %s at end of run",
             state.outputFile.c_str());
       }
 
-      virtual ~DD4benchRegionTimingAction()
+      virtual ~k4BenchRegionTimingAction()
       {
         finalizeAndWrite();
       }
@@ -956,10 +956,10 @@ namespace dd4hep
     };
 
     // -----------------------------------------------------------------------
-    // DD4benchRegionEventAction
+    // k4BenchRegionEventAction
     // -----------------------------------------------------------------------
 
-    class DD4benchRegionEventAction : public Geant4EventAction
+    class k4BenchRegionEventAction : public Geant4EventAction
     {
     private:
       using Clock = std::chrono::steady_clock;
@@ -967,14 +967,14 @@ namespace dd4hep
       std::uint64_t m_eventBeginFallbackBaseline{0};
 
     public:
-      DD4benchRegionEventAction(
+      k4BenchRegionEventAction(
           Geant4Context *ctx,
           const std::string &name)
           : Geant4EventAction(ctx, name)
       {
       }
 
-      virtual ~DD4benchRegionEventAction()
+      virtual ~k4BenchRegionEventAction()
       {
         finalizeAndWrite();
       }
@@ -1003,8 +1003,8 @@ namespace dd4hep
         m_eventWallStart = Clock::now();
 
         Geant4Action *act = context()->kernel().steppingAction().get(
-            "DD4benchRegionTimingAction");
-        if (auto *step = dynamic_cast<DD4benchRegionTimingAction *>(act))
+            "k4BenchRegionTimingAction");
+        if (auto *step = dynamic_cast<k4BenchRegionTimingAction *>(act))
         {
           step->resetStepState();
         }
@@ -1180,7 +1180,7 @@ namespace dd4hep
       {
         printout(
             ERROR,
-            "DD4benchRegionTimingAction",
+            "k4BenchRegionTimingAction",
             "Could not open output file: %s",
             state.outputFile.c_str());
         state.finalized = true;
@@ -1261,7 +1261,7 @@ namespace dd4hep
 
       printout(
           INFO,
-          "DD4benchRegionTimingAction",
+          "k4BenchRegionTimingAction",
           "Per-detector metrics written to %s (%zu events, %llu total birth fallbacks)",
           state.outputFile.c_str(),
           state.atLocationHistory.size(),
@@ -1275,6 +1275,6 @@ namespace dd4hep
 
 #include <DDG4/Factories.h>
 
-DECLARE_GEANT4ACTION(DD4benchRegionTimingAction)
-DECLARE_GEANT4ACTION(DD4benchRegionTrackingAction)
-DECLARE_GEANT4ACTION(DD4benchRegionEventAction)
+DECLARE_GEANT4ACTION(k4BenchRegionTimingAction)
+DECLARE_GEANT4ACTION(k4BenchRegionTrackingAction)
+DECLARE_GEANT4ACTION(k4BenchRegionEventAction)

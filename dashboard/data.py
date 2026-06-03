@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from dd4bench.analysis.loader import load_event_timing, load_region_timing, load_results  # noqa: F401 (re-exported)
+from k4bench.analysis.loader import load_event_timing, load_region_timing, load_results  # noqa: F401 (re-exported)
 
 _log = logging.getLogger(__name__)
 

@@ -1,4 +1,4 @@
-// DD4benchTimingAction.cpp
+// k4BenchTimingAction.cpp
 //
 // DDG4 event action that records per-event wall time and RSS memory.
 //
@@ -9,11 +9,11 @@
 //
 // Output path is controlled via:
 //
-//   DD4BENCH_EVENT_JSON=/path/to/output.json
+//   K4BENCH_EVENT_JSON=/path/to/output.json
 //
 // If unset, defaults to:
 //
-//   dd4bench_events.json
+//   k4bench_events.json
 //
 // NOTE:
 // This implementation currently assumes sequential event processing.
@@ -69,10 +69,10 @@ namespace dd4hep
     }
 
     // ---------------------------------------------------------------------------
-    // DD4benchTimingAction
+    // k4BenchTimingAction
     // ---------------------------------------------------------------------------
 
-    class DD4benchTimingAction : public Geant4EventAction
+    class k4BenchTimingAction : public Geant4EventAction
     {
     public:
       std::string m_outputFile;
@@ -90,14 +90,14 @@ namespace dd4hep
       std::vector<long> m_rssEndValues;
 
     public:
-      DD4benchTimingAction(
+      k4BenchTimingAction(
           Geant4Context *ctx,
           const std::string &name)
           : Geant4EventAction(ctx, name)
       {
-        const char *env = std::getenv("DD4BENCH_EVENT_JSON");
+        const char *env = std::getenv("K4BENCH_EVENT_JSON");
 
-        m_outputFile = env ? env : "dd4bench_events.json";
+        m_outputFile = env ? env : "k4bench_events.json";
 
         constexpr std::size_t reserveSize = 10000;
 
@@ -108,12 +108,12 @@ namespace dd4hep
 
         printout(
             INFO,
-            "DD4benchTimingAction",
+            "k4BenchTimingAction",
             "Writing per-event metrics to %s",
             m_outputFile.c_str());
       }
 
-      virtual ~DD4benchTimingAction()
+      virtual ~k4BenchTimingAction()
       {
         writeResults();
       }
@@ -178,7 +178,7 @@ namespace dd4hep
         {
           printout(
               ERROR,
-              "DD4benchTimingAction",
+              "k4BenchTimingAction",
               "Could not open output file: %s",
               m_outputFile.c_str());
           return;
@@ -195,7 +195,7 @@ namespace dd4hep
 
         printout(
             INFO,
-            "DD4benchTimingAction",
+            "k4BenchTimingAction",
             "Per-event metrics written to %s (%zu events)",
             m_outputFile.c_str(),
             m_eventTimes.size());
@@ -207,4 +207,4 @@ namespace dd4hep
 
 #include <DDG4/Factories.h>
 
-DECLARE_GEANT4ACTION(DD4benchTimingAction)
+DECLARE_GEANT4ACTION(k4BenchTimingAction)

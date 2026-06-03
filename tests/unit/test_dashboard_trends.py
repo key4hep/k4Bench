@@ -20,7 +20,7 @@ _DATA_PATH = Path(__file__).resolve().parents[2] / "dashboard" / "data.py"
 
 
 def _load_data():
-    spec = importlib.util.spec_from_file_location("dd4bench_dashboard_data", _DATA_PATH)
+    spec = importlib.util.spec_from_file_location("k4bench_dashboard_data", _DATA_PATH)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod

@@ -1,34 +1,34 @@
-"""Command-line interface for dd4bench.
+"""Command-line interface for k4bench.
 
-Entry point registered as ``dd4bench`` in pyproject.toml.
+Entry point registered as ``k4bench`` in pyproject.toml.
 
 Usage examples
 --------------
 Single baseline run::
 
-    dd4bench --xml ALLEGRO.xml \\
+    k4bench --xml ALLEGRO.xml \\
              --ddsim-args="--enableGun --gun.particle e- --gun.distribution uniform"
 
 Full sweep (baseline + one run per detector removed)::
 
-    dd4bench --xml ALLEGRO.xml --sweep \\
+    k4bench --xml ALLEGRO.xml --sweep \\
              --ddsim-args="--enableGun --gun.particle e- --gun.distribution uniform"
 
 Simulate with only specific detectors::
 
-    dd4bench --xml ALLEGRO.xml \\
+    k4bench --xml ALLEGRO.xml \\
              --include-only ECalBarrel HCalBarrel \\
              --ddsim-args="--enableGun --gun.particle e- --gun.distribution uniform"
 
 Simulate with all detectors except specific ones::
 
-    dd4bench --xml ALLEGRO.xml \\
+    k4bench --xml ALLEGRO.xml \\
              --exclude-only ECalBarrel HCalBarrel \\
              --ddsim-args="--enableGun --gun.particle e- --gun.distribution uniform"
 
 Control output::
 
-    dd4bench --xml ALLEGRO.xml \\
+    k4bench --xml ALLEGRO.xml \\
              --output-dir logs/ \\
              --pickle results.pkl \\
              --ddsim-args="--enableGun --gun.particle e- --gun.distribution uniform"
@@ -42,15 +42,15 @@ import shlex
 import sys
 from pathlib import Path
 
-from dd4bench.benchmark.ddsim import BenchmarkConfig, SweepMode, run_sweep
-from dd4bench.results.reporter import print_summary, save_csv
+from k4bench.benchmark.ddsim import BenchmarkConfig, SweepMode, run_sweep
+from k4bench.results.reporter import print_summary, save_csv
 
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
 
 DEFAULT_LOG_ROOT     = Path("logs")
-DEFAULT_OUTPUT_FILE  = Path("/tmp/dd4bench_out.edm4hep.root")
+DEFAULT_OUTPUT_FILE  = Path("/tmp/k4bench_out.edm4hep.root")
 DEFAULT_EVENTS      = 2
 
 
@@ -103,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="dd4bench",
+        prog="k4bench",
         description="Benchmark ddsim across DD4hep geometry configurations.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,

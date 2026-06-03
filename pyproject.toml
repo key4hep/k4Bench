@@ -1,5 +1,5 @@
 [project]
-name = "dd4bench"
+name = "k4bench"
 dynamic = ["version"]
 description = "Performance benchmarking for DD4hep-based simulations and reconstruction in Key4hep"
 authors = [{name = "Joshua Falco Beirer", email = "jbeirer@cern.ch"}]
@@ -13,18 +13,18 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/jbeirer/DD4bench"
+Repository = "https://github.com/key4hep/k4Bench"
 
 [build-system]
 requires = ["setuptools>=64", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project.scripts]
-dd4bench = "dd4bench.cli:main"
+k4bench = "k4bench.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["dd4bench*"]
+include = ["k4bench*"]
 
 [tool.setuptools_scm]
 # version is derived automatically from git tags

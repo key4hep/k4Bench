@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(DD4benchPlugin VERSION 0.1.0 LANGUAGES CXX)
+project(k4BenchPlugin VERSION 0.1.0 LANGUAGES CXX)
 include(GNUInstallDirs)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -14,13 +14,13 @@ dd4hep_set_compiler_flags()
 # -----------------------------------------------------------------------------
 
 add_dd4hep_plugin(
-  DD4benchTimingAction
+  k4BenchTimingAction
   SHARED
-  DD4benchTimingAction.cpp
+  k4BenchTimingAction.cpp
 )
 
 target_link_libraries(
-  DD4benchTimingAction
+  k4BenchTimingAction
   PUBLIC
     DD4hep::DDCore
     DD4hep::DDG4
@@ -31,13 +31,13 @@ target_link_libraries(
 # -----------------------------------------------------------------------------
 
 add_dd4hep_plugin(
-  DD4benchRegionTimingAction
+  k4BenchRegionTimingAction
   SHARED
-  DD4benchRegionTimingAction.cpp
+  k4BenchRegionTimingAction.cpp
 )
 
 target_link_libraries(
-  DD4benchRegionTimingAction
+  k4BenchRegionTimingAction
   PUBLIC
     DD4hep::DDCore
     DD4hep::DDG4
@@ -47,22 +47,22 @@ target_link_libraries(
 # extra flags, but be explicit so a non-x86 build cleanly falls back to the
 # steady_clock path inside the source.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
-  target_compile_definitions(DD4benchRegionTimingAction PRIVATE DD4BENCH_X86_64=1)
+  target_compile_definitions(k4BenchRegionTimingAction PRIVATE K4BENCH_X86_64=1)
 endif()
 
 # -----------------------------------------------------------------------------
 # Package + install
 # -----------------------------------------------------------------------------
 
-dd4hep_instantiate_package(DD4benchTimingAction)
+dd4hep_instantiate_package(k4BenchTimingAction)
 
 # ${CMAKE_INSTALL_LIBDIR} is "lib" on Debian/Ubuntu and "lib64" on RHEL/Fedora
 # (set by GNUInstallDirs based on the platform multiarch convention).
-# dd4bench/plugin/runtime.py::find_plugin_lib_dir() searches both
+# k4bench/plugin/runtime.py::find_plugin_lib_dir() searches both
 # install/lib and install/lib64, so either layout is handled automatically.
 install(
   TARGETS
-    DD4benchTimingAction
-    DD4benchRegionTimingAction
+    k4BenchTimingAction
+    k4BenchRegionTimingAction
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )

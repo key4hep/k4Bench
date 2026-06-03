@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Runs a single dd4bench benchmark and uploads results to CERN EOS.
+# Runs a single k4bench benchmark and uploads results to CERN EOS.
 # All configuration arrives via environment variables; the matrix in
 # .github/workflows/nightly.yml expands .github/benchmarks/*.yml into a
 # flat set of jobs (see .github/scripts/list_benchmarks.py).
@@ -77,10 +77,10 @@ echo "Platform: ${K4H_PLATFORM}"
 echo "Stack   : ${KEY4HEP_STACK}"
 echo "::endgroup::"
 
-# ── 4. Install dd4bench ───────────────────────────────────────────────────────
-echo "::group::4. Install dd4bench"
-export DD4BENCH_REPO="$(pwd)"
-export LD_LIBRARY_PATH="${DD4BENCH_REPO}/plugin/install/lib:${DD4BENCH_REPO}/plugin/build:${LD_LIBRARY_PATH:-}"
+# ── 4. Install k4bench ───────────────────────────────────────────────────────
+echo "::group::4. Install k4bench"
+export K4BENCH_REPO="$(pwd)"
+export LD_LIBRARY_PATH="${K4BENCH_REPO}/plugin/install/lib:${K4BENCH_REPO}/plugin/build:${LD_LIBRARY_PATH:-}"
 mkdir -p ~/.local/bin
 export PATH=~/.local/bin:"${PATH}"
 
@@ -117,7 +117,7 @@ if [[ -n "${STEERING_FILE}" ]]; then
     echo "Steering : ${STEERING_PATH}"
 fi
 
-# dd4bench has no top-level --inputFiles flag; it forwards everything in
+# k4bench has no top-level --inputFiles flag; it forwards everything in
 # --ddsim-args verbatim to ddsim. So we prepend --inputFiles into DDSIM_ARGS.
 if [[ -n "${INPUT_FILES}" ]]; then
     # HepMC inputs can't be streamed over xrootd (ROOT mis-parses the text as a
@@ -140,7 +140,7 @@ echo "::endgroup::"
 
 # ── 7. Run benchmark ──────────────────────────────────────────────────────────
 echo "::group::7. Run benchmark"
-CMD=(dd4bench
+CMD=(k4bench
     --xml        "${DETECTOR_XML}"
     --events     "${N_EVENTS}"
     --output-dir "logs/${DETECTOR}"

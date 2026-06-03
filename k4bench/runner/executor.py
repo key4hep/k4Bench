@@ -18,7 +18,7 @@ steering files, …) is passed through verbatim via ``extra_args``.
 
 Per-event timing
 ----------------
-When available, the DD4bench C++ timing plugin is loaded
+When available, the k4Bench C++ timing plugin is loaded
 automatically as a DDG4 event action. The plugin writes
 per-event timing metrics to JSON files inside the log directory.
 These profiling artifacts are intentionally kept separate from
@@ -35,9 +35,9 @@ import subprocess
 from pathlib import Path
 from collections import deque
 
-from dd4bench.plugin.runtime import setup_plugin_environment
-from dd4bench.results.model import RunResult
-from dd4bench.runner.parser import parse_time_output
+from k4bench.plugin.runtime import setup_plugin_environment
+from k4bench.results.model import RunResult
+from k4bench.runner.parser import parse_time_output
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -243,21 +243,21 @@ def _build_command(
         f"--outputFile={shlex.quote(str(output_file))}",
     ]
 
-    has_timing_action = _has_action(extra_args, "DD4benchTimingAction")
-    has_region_step   = _has_action(extra_args, "DD4benchRegionTimingAction")
-    has_region_track  = _has_action(extra_args, "DD4benchRegionTrackingAction")
-    has_region_event  = _has_action(extra_args, "DD4benchRegionEventAction")
+    has_timing_action = _has_action(extra_args, "k4BenchTimingAction")
+    has_region_step   = _has_action(extra_args, "k4BenchRegionTimingAction")
+    has_region_track  = _has_action(extra_args, "k4BenchRegionTrackingAction")
+    has_region_event  = _has_action(extra_args, "k4BenchRegionEventAction")
 
     if plugin_available and not has_timing_action:
-        managed.extend(["--action.event", "DD4benchTimingAction"])
+        managed.extend(["--action.event", "k4BenchTimingAction"])
 
     if plugin_available:
         if not has_region_step:
-            managed.extend(["--action.step", "DD4benchRegionTimingAction"])
+            managed.extend(["--action.step", "k4BenchRegionTimingAction"])
         if not has_region_track:
-            managed.extend(["--action.track", "DD4benchRegionTrackingAction"])
+            managed.extend(["--action.track", "k4BenchRegionTrackingAction"])
         if not has_region_event:
-            managed.extend(["--action.event", "DD4benchRegionEventAction"])
+            managed.extend(["--action.event", "k4BenchRegionEventAction"])
 
     caller = [shlex.quote(a) for a in extra_args]
 
