@@ -1,0 +1,156 @@
+site_name: k4Bench
+site_description: >-
+  Detector-agnostic performance benchmarking for DD4hep / Geant4 (ddsim)
+  simulations in the Key4hep stack.
+site_url: https://key4hep.github.io/k4Bench/
+repo_name: key4hep/k4Bench
+repo_url: https://github.com/key4hep/k4Bench
+edit_uri: edit/main/docs/
+copyright: Copyright &copy; CERN / Key4hep — k4Bench contributors
+
+theme:
+  name: material
+  language: en
+  icon:
+    repo: fontawesome/brands/github
+    logo: material/speedometer
+  favicon: https://raw.githubusercontent.com/key4hep/key4hep-logos/main/k4hep/k4hep.svg
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.footer
+    - navigation.tracking
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - content.tooltips
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: teal
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: teal
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
+
+plugins:
+  - search
+  - section-index
+  # gen-files must run before literate-nav so the generated SUMMARY.md exists
+  # when literate-nav builds the API sub-navigation.
+  - gen-files:
+      scripts:
+        - docs/gen_ref_pages.py
+  - literate-nav:
+      nav_file: SUMMARY.md
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths: [.]
+          options:
+            docstring_style: numpy
+            show_root_heading: true
+            show_source: true
+            show_signature_annotations: true
+            separate_signature: true
+            signature_crossrefs: true
+            merge_init_into_class: true
+            members_order: source
+            filters: ["!^_"]
+            heading_level: 2
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.details
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.keys
+  - pymdownx.caret
+  - pymdownx.mark
+  - pymdownx.tilde
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/key4hep/k4Bench
+    - icon: material/view-dashboard
+      link: https://k4bench-dashboard.app.cern.ch/
+      name: Live dashboard
+  generator: false
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - getting-started/installation.md
+      - getting-started/quickstart.md
+      - getting-started/first-workflow.md
+  - User guide:
+      - user-guide/overview.md
+      - user-guide/configuration.md
+      - user-guide/commands.md
+      - Features:
+          - user-guide/features/sweep-modes.md
+          - user-guide/features/geometry-patching.md
+          - user-guide/features/timing-plugins.md
+          - user-guide/features/analysis.md
+          - user-guide/features/dashboard.md
+  - Architecture:
+      - architecture/overview.md
+      - architecture/component-diagrams.md
+      - architecture/data-flow.md
+  - Developer guide:
+      - developer-guide/repository-layout.md
+      - developer-guide/development-setup.md
+  - Reference:
+      - reference/configuration-reference.md
+      - reference/file-formats.md
+      - API:
+          - reference/api-reference.md
+          - Modules: reference/api/
+  - Examples:
+      - examples/common-workflows.md
+      - examples/advanced-workflows.md
+  - FAQ: faq.md
+  - Glossary: glossary.md
