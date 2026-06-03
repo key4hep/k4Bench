@@ -43,7 +43,7 @@ you get the full set of metrics:
 git clone https://github.com/key4hep/k4Bench.git
 cd k4Bench
 
-# 2. Setup setup.sh to source Key4hep, make a CVMFS-aware venv, install deps,
+# 2. Source setup.sh to source Key4hep, make a CVMFS-aware venv, install deps,
 # build the timing plugins, and install pre-commit hooks.
 source setup.sh
 
