@@ -39,7 +39,7 @@ SAMPLE="${BENCHMARK_SAMPLE}"
 
 # ── 1. System dependencies ────────────────────────────────────────────────────
 echo "::group::1. System dependencies"
-dnf install -y --quiet time voms-clients
+dnf install -y --quiet time voms-clients-cpp
 echo "::endgroup::"
 
 # ── 2. Job parameters ─────────────────────────────────────────────────────────
