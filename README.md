@@ -8,7 +8,10 @@
 
 <br>
 
-[![Release](https://img.shields.io/github/v/release/key4hep/k4Bench?include_prereleases)](https://github.com/key4hep/k4Bench/releases) [![Build status](https://img.shields.io/github/actions/workflow/status/key4hep/k4Bench/ci.yml?branch=main)](https://github.com/key4hep/k4Bench/actions/workflows/ci.yml?query=branch%3Amain) [![codecov](https://codecov.io/gh/key4hep/k4Bench/graph/badge.svg?token=oYOxyHkHuP)](https://codecov.io/gh/key4hep/k4Bench) [![DOI](https://zenodo.org/badge/1229933191.svg)](https://doi.org/10.5281/zenodo.20268042)
+[![Release](https://img.shields.io/github/v/release/key4hep/k4Bench?include_prereleases)](https://github.com/key4hep/k4Bench/releases) 
+[![Build status](https://img.shields.io/github/actions/workflow/status/key4hep/k4Bench/ci.yml?branch=main)](https://github.com/key4hep/k4Bench/actions/workflows/ci.yml?query=branch%3Amain) 
+[![codecov](https://codecov.io/gh/key4hep/k4Bench/graph/badge.svg?token=oYOxyHkHuP)](https://codecov.io/gh/key4hep/k4Bench) 
+[![DOI](https://zenodo.org/badge/1229933191.svg)](https://doi.org/10.5281/zenodo.20268041)
 
 ---
 
