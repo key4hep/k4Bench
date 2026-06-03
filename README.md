@@ -1,9 +1,9 @@
 <p align="center">
-  <a href="https://dd4bench-dashboard.app.cern.ch/">
+  <a href="https://k4bench-dashboard.app.cern.ch/">
     <img src="https://capsule-render.vercel.app/api?type=waving&color=0:1E90FF,100:00C9A7&height=130&section=header&text=k4Bench&fontSize=48&fontAlignY=40&fontColor=ffffff" />
     </a><br>
   <b>Explore runs, metrics, and performance at a glance</b><br>
-  👉 <a href="https://dd4bench-dashboard.app.cern.ch/">Open Dashboard</a>
+  👉 <a href="https://k4bench-dashboard.app.cern.ch/">Open Dashboard</a>
 </p>
 
 <br>

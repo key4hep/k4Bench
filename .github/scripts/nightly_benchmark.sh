@@ -32,12 +32,12 @@
 set -euo pipefail
 
 # TODO: switch to eospublic once directory creation is allowed there (!d)
-# (See eos root://eospublic.cern.ch attr ls /eos/experiment/fcc/ee/dd4bench)
+# (See eos root://eospublic.cern.ch attr ls /eos/experiment/fcc/ee/k4bench)
 
 # EOS_FQDN="eospublic.cern.ch"
-# EOS_ROOT="/eos/experiment/fcc/ee/dd4bench"
+# EOS_ROOT="/eos/experiment/fcc/ee/k4bench"
 EOS_FQDN="eosuser.cern.ch"
-EOS_ROOT="/eos/user/j/jbeirer/dd4bench"
+EOS_ROOT="/eos/user/j/jbeirer/k4bench"
 
 SAMPLE="${BENCHMARK_SAMPLE}"
 

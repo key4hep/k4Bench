@@ -1,8 +1,8 @@
-# WebEOS UserProvidedDirectory — serves /eos/user/j/jbeirer/dd4bench/runs
-# over HTTPS at https://dd4bench-data.web.cern.ch
+# WebEOS UserProvidedDirectory — serves /eos/user/j/jbeirer/k4bench/runs
+# over HTTPS at https://k4bench-data.web.cern.ch
 #
 # BEFORE APPLYING:
-#   1. The dd4bench project must exist on paas.cern.ch
+#   1. The k4bench project must exist on paas.cern.ch
 #   2. Your CERN account must own the EOS path below
 #
 # Apply with:
@@ -11,11 +11,11 @@
 apiVersion: webeos.cern.ch/v1alpha1
 kind: UserProvidedDirectory
 metadata:
-  name: dd4bench-data
-  namespace: dd4bench
+  name: k4bench-data
+  namespace: k4bench
 spec:
-  eosPath: /eos/user/j/jbeirer/dd4bench/runs
-  siteUrl: dd4bench-data.web.cern.ch
+  eosPath: /eos/user/j/jbeirer/k4bench/runs
+  siteUrl: k4bench-data.web.cern.ch
   # Allow public (unauthenticated) HTTP GET so the dashboard pod can fetch data
   # without needing CERN SSO inside the container.
   anonymousAccess: true

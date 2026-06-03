@@ -44,7 +44,7 @@ jobs:
         id: build
         run: |
           short_sha="${GITHUB_SHA::7}"
-          image_base="ghcr.io/${{ github.repository_owner }}/dd4bench-dashboard"
+          image_base="ghcr.io/${{ github.repository_owner }}/k4bench-dashboard"
           sha_tag="${image_base}:${short_sha}"
 
           docker build \
@@ -101,11 +101,11 @@ jobs:
 
       - name: Rollout new image
         run: |
-          oc set image deployment/dd4bench-dashboard \
+          oc set image deployment/k4bench-dashboard \
             dashboard=${{ needs.build-and-push.outputs.sha-tag }} \
-            -n dd4bench
-          oc rollout status deployment/dd4bench-dashboard -n dd4bench --timeout=120s
+            -n k4bench
+          oc rollout status deployment/k4bench-dashboard -n k4bench --timeout=120s
 
       - name: Print dashboard URL
         run: |
-          echo "Dashboard: https://$(oc get route dd4bench-dashboard -n dd4bench -o jsonpath='{.spec.host}')"
+          echo "Dashboard: https://$(oc get route k4bench-dashboard -n k4bench -o jsonpath='{.spec.host}')"
