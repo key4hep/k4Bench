@@ -1,9 +1,9 @@
-# WebEOS UserProvidedDirectory — serves /eos/experiment/fcc/ee/k4bench/runs
+# WebEOS UserProvidedDirectory — serves /eos/user/j/jbeirer/k4bench/runs
 # over HTTPS at https://k4bench-data.web.cern.ch
 #
 # BEFORE APPLYING:
 #   1. The k4bench project must exist on paas.cern.ch
-#   2. Your CERN account must have write access to the EOS path below
+#   2. Your CERN account must own the EOS path below
 #
 # Apply with:
 #   oc apply -f openshift/userprovideddirectory.yaml
@@ -14,7 +14,7 @@ metadata:
   name: k4bench-data
   namespace: k4bench
 spec:
-  eosPath: /eos/experiment/fcc/ee/k4bench/runs
+  eosPath: /eos/user/j/jbeirer/k4bench/runs
   siteUrl: k4bench-data.web.cern.ch
   # Allow public (unauthenticated) HTTP GET so the dashboard pod can fetch data
   # without needing CERN SSO inside the container.

@@ -98,7 +98,7 @@ samples:
 
 ## EOS layout
 
-Nightly results live under `EOS_ROOT = /eos/experiment/fcc/ee/k4bench`, encoding
+Nightly results live under `EOS_ROOT = /eos/user/j/jbeirer/k4bench`, encoding
 every browse dimension in the path so discovery is just directory listing:
 
 ```text

@@ -59,7 +59,7 @@ EDM4hep
 
 EOS
 :   CERN's large-scale disk storage. Nightly results are uploaded under
-    `/eos/experiment/fcc/ee/k4bench/...` and served to the dashboard over HTTPS
+    `/eos/user/j/jbeirer/k4bench/...` and served to the dashboard over HTTPS
     (WebEOS).
 
 Event 0 / warmup event
