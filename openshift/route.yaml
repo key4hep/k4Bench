@@ -1,15 +1,15 @@
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
-  name: dd4bench-dashboard
-  namespace: dd4bench
+  name: k4bench-dashboard
+  namespace: k4bench
   labels:
-    app: dd4bench-dashboard
+    app: k4bench-dashboard
 spec:
-  host: dd4bench-dashboard.app.cern.ch
+  host: k4bench-dashboard.app.cern.ch
   to:
     kind: Service
-    name: dd4bench-dashboard
+    name: k4bench-dashboard
   port:
     targetPort: 8080
   tls:

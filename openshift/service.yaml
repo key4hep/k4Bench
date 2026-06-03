@@ -1,13 +1,13 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: dd4bench-dashboard
-  namespace: dd4bench
+  name: k4bench-dashboard
+  namespace: k4bench
   labels:
-    app: dd4bench-dashboard
+    app: k4bench-dashboard
 spec:
   selector:
-    app: dd4bench-dashboard
+    app: k4bench-dashboard
   ports:
     - name: http
       port: 8080

@@ -11,7 +11,7 @@ class Config:
     data_dir: str
     # When set, the dashboard fetches run data from this WebEOS HTTPS base URL
     # instead of reading from a local directory.
-    # Example: https://dd4bench-data.web.cern.ch
+    # Example: https://k4bench-data.web.cern.ch
     data_url: str | None
     # Root directory for the persistent on-disk cache of downloaded runs.
     # Historical runs are immutable, so each is fetched at most once and reused
