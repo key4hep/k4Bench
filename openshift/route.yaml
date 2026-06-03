@@ -5,6 +5,9 @@ metadata:
   namespace: k4bench
   labels:
     app: k4bench-dashboard
+  annotations:
+    # Empty string removes the IP whitelist, making the app reachable from the public Internet 
+    haproxy.router.openshift.io/ip_whitelist: ""
 spec:
   host: k4bench-dashboard.app.cern.ch
   to:
