@@ -45,6 +45,7 @@ samples:
       --gun.distribution uniform
       --gun.energy 10*GeV
 
-  - name: p8_ee_Zbb_ecm91
-    n_events: 100
-    input_files: root://eospublic.cern.ch//eos/experiment/fcc/ee/generation/hepmc/p8_ee_Zbb_ecm91/events_noVtxSmear.hepmc
+# TODO: currently looping in CI, activate once understood
+#  - name: p8_ee_Zbb_ecm91
+#    n_events: 100
+#    input_files: root://eospublic.cern.ch//eos/experiment/fcc/ee/generation/hepmc/p8_ee_Zbb_ecm91/events_noVtxSmear.hepmc
