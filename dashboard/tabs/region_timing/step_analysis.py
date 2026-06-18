@@ -69,13 +69,6 @@ def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None
 
     n = len(det_list)
 
-    # ── Log Y-axis toggle ─────────────────────────────────────────────────────
-    _, ctrl_logy = st.columns([3, 1])
-    with ctrl_logy:
-        log_y = st.toggle("Log Y-axis", value=False, key="sa_logy",
-                          help="Switch the cost-per-step axis to log scale — "
-                               "useful when a few detectors dominate by orders of magnitude.")
-
     with col_pal:
         palette_name = st.selectbox(
             "Colour palette", options=_PALETTE_NAMES,
@@ -171,20 +164,40 @@ def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None
             font=dict(size=9, color=ann["color"]),
             align="left" if ann["xanchor"] == "left" else "right",
             xanchor=ann["xanchor"], yanchor=ann["yanchor"],
-            bgcolor="rgba(255,255,255,0.55)",
+            bgcolor="rgba(255,255,255,0.85)",
             borderpad=3,
         )
 
+    # Pad the axis ranges so the outermost bubbles stay clear of the corner
+    # quadrant labels (Plotly otherwise autoranges tight to the data, placing
+    # edge bubbles right on top of e.g. "Geometry-dominated").
+    _PAD = 0.18
+
+    # x is a log axis → its `range` is given in log10 units.
+    _lx = np.log10(plot_step_cnt)
+    _lx_lo, _lx_hi = float(_lx.min()), float(_lx.max())
+    _span_x = _lx_hi - _lx_lo
+    _pad_x = max(_PAD * _span_x, 0.30)          # ≥ ~0.3 decade even for a tight cluster
     fig.update_xaxes(
         title_text="Mean steps per event",
         type="log",
+        range=[_lx_lo - _pad_x, _lx_hi + _pad_x],
         row=1, col=1,
     )
-    fig.update_yaxes(
-        title_text="Time per step (µs)",
-        type="log" if log_y else "linear",
-        row=1, col=1,
-    )
+
+    # y is linear; tps may be NaN for 0-step detectors → range over finite values only.
+    _yv = tps_us[np.isfinite(tps_us)]
+    if _yv.size:
+        _y_lo, _y_hi = float(_yv.min()), float(_yv.max())
+        _span_y = _y_hi - _y_lo
+        _pad_y = _PAD * _span_y if _span_y > 0 else (abs(_y_hi) * 0.5 or 1.0)
+        fig.update_yaxes(
+            title_text="Time per step (µs)",
+            range=[_y_lo - _pad_y, _y_hi + _pad_y],
+            row=1, col=1,
+        )
+    else:
+        fig.update_yaxes(title_text="Time per step (µs)", row=1, col=1)
 
     # ── Bar panels: one trace per detector so legend clicks hide/show bars too ──
     # Each bar shares legendgroup with its scatter point → clicking a legend
@@ -194,10 +207,12 @@ def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None
     # Col 3 (time per step):    ordered independently by tps desc (highest at top)
     # Y-tick labels are suppressed on both bars; the legend carries the names.
 
-    # Col 2 — add detectors in ascending total-time order so the most expensive
-    # ends up at the top (Plotly places the last-added category at the top).
+    # Col 2 — sorted independently by step count ascending so the detector with
+    # the most steps lands at the top (Plotly places the last-added category at
+    # the top), mirroring col 3's self-ranking.
     # Second-palette-cycle detectors get a coloured border to stay distinguishable.
-    for i in reversed(range(n)):                    # cheapest first → most expensive last → top
+    steps_order = sorted(range(n), key=lambda i: raw_step_cnt[i])  # fewest first → most last → top
+    for i in steps_order:
         det   = det_list[i]
         cycle = pt_cycles[i]
         fig.add_trace(
@@ -244,7 +259,10 @@ def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None
     fig.update_yaxes(showticklabels=False, row=1, col=3)
 
     # ── Legend at bottom ───────────────────────────────────────────────────────
-    fig_h = max(420, 70 + n * 35)
+    # fig_h is the plot-area height; bars keep a readable per-row height with a
+    # floor (so a few detectors aren't stretched) and a cap (so the figure stays
+    # sane). The bottom legend sits below it, adding b_margin to the total.
+    fig_h = int(np.clip(90 + n * 26, 440, 820))
     # Bubble-size legend note
     st.caption(
         "Bubble area is proportional to total mean simulation time per event. "
@@ -253,6 +271,7 @@ def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None
     legend, b_margin = _legend_below(
         fig_h, n, t_margin=45, tick_clearance=50, entry_width=200, font_size=12,
     )
+    legend["groupclick"] = "togglegroup"   # legend click toggles point + both bars
     fig.update_layout(
         template=_TEMPLATE,
         height=fig_h + 45 + b_margin,
