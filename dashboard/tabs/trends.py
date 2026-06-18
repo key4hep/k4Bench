@@ -6,7 +6,7 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from k4bench.analysis.plots._theme import _TEMPLATE
-from ui_utils import _DASHES, _LEGEND_B_MARGIN, _PALETTES, _PALETTE_NAMES, _SYMBOLS, _auto_palette_index, _legend_below, _to_rgba
+from ui_utils import _DASHES, _PALETTES, _PALETTE_NAMES, _SYMBOLS, _auto_palette_index, _legend_below, _to_rgba
 
 
 _METRICS = [
@@ -111,14 +111,16 @@ def _render_timeseries(
 
     t_margin  = 40
     plot_h    = n_rows * 350
-    # Rotated (-30°) date tick labels need ~70 px clearance; legend sits below those.
-    # Use a larger y_offset so the legend never overlaps the x-axis labels.
-    b_margin  = _LEGEND_B_MARGIN + 40   # 200 px total: ~70 tick + ~130 legend rows
+    # tick_clearance=75: rotated (-30°) date ticks + "Key4hep Nightly Tag" title.
+    legend, b_margin = _legend_below(
+        plot_h, len(selected_labels), t_margin=t_margin, tick_clearance=75,
+        entry_width=200, font_size=12,
+    )
     fig.update_layout(
         template=_TEMPLATE,
         height=plot_h + t_margin + b_margin,
         margin=dict(l=20, r=20, t=t_margin, b=b_margin),
-        legend=_legend_below(plot_h, entry_width=200, font_size=12, y_offset=110),
+        legend=legend,
     )
 
     st.plotly_chart(fig, width="stretch", key="trends_timeseries_chart")

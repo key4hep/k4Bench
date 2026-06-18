@@ -8,7 +8,7 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from k4bench.analysis.plots._theme import _TEMPLATE
-from ui_utils import _DASHES, _LEGEND_B_MARGIN, _PALETTES, _PALETTE_NAMES, _SYMBOLS, _auto_palette_index, _is_valid_df, _legend_below, _to_rgba
+from ui_utils import _DASHES, _PALETTES, _PALETTE_NAMES, _SYMBOLS, _auto_palette_index, _is_valid_df, _legend_below, _to_rgba
 
 from ._common import _ATTRIBUTION_HELP, _palette_placeholder
 
@@ -193,12 +193,16 @@ def _render_historical(
 
     # Extra 40 px so the "Key4hep Nightly Tag" x-axis title has breathing room
     # before the horizontal legend — same treatment as trends.py.
-    _b_margin = _LEGEND_B_MARGIN + 40
+    # tick_clearance=75: rotated (-30°) date ticks + "Key4hep Nightly Tag" title.
+    _legend, _b_margin = _legend_below(
+        380, len(top_detectors), t_margin=40, tick_clearance=75,
+        entry_width=180, font_size=12,
+    )
     fig.update_layout(
         template=_TEMPLATE,
         height=380 + 40 + _b_margin,
         margin=dict(l=20, r=20, t=40, b=_b_margin),
-        legend=_legend_below(380, entry_width=180, font_size=12, y_offset=110),
+        legend=_legend,
     )
 
     st.plotly_chart(fig, width="stretch", key="region_historical_chart")
