@@ -204,7 +204,7 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
     styled = (
         pct_df.style
         .apply(_apply_colors, axis=None)
-        .format("{:.1f}%")
+        .format("{:.1f}%", na_rep="–")
         .apply_index(
             lambda idx: [
                 baseline_row_style if v == baseline_label else ""
@@ -212,6 +212,28 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
             ],
             axis=0,
         )
+        # Table chrome + a sticky header row so column labels stay visible while
+        # the body scrolls. Scoped to this table's generated id by pandas.
+        .set_table_styles([
+            {"selector": "", "props": [
+                ("border-collapse", "collapse"),
+                ("width", "100%"),
+            ]},
+            {"selector": "th, td", "props": [
+                ("padding", "6px 12px"),
+                ("text-align", "right"),
+                ("white-space", "nowrap"),
+                ("font-weight", "normal"),
+            ]},
+            {"selector": "thead th", "props": [
+                ("position", "sticky"),
+                ("top", "0"),
+                ("background", "#ffffff"),
+                ("z-index", "2"),
+                ("border-bottom", "2px solid rgba(49,51,63,0.2)"),
+            ]},
+            {"selector": "th.row_heading", "props": [("text-align", "left")]},
+        ])
     )
 
     if winners:
@@ -226,4 +248,17 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
                     delta_color=w["delta_color"],
                 )
 
-    st.dataframe(styled)
+    # Render as HTML inside a viewport-relative scroll container. The max-height
+    # is the window height minus the chrome above the table (header, tabs,
+    # subheader/caption, the controls row and the "Best alternative" cards) and
+    # the footer below it — so the table grows with the window but never pushes
+    # the footer off-screen. Enlarging the window grows the visible area, so
+    # fewer rows need scrolling; a tall enough window needs none. The 620px
+    # reserve is the one knob to tune if the footer ever gets clipped or there's
+    # too large a gap above it. max() keeps a usable floor on short windows.
+    st.markdown(
+        f'<div style="max-height: max(220px, calc(100vh - 620px)); overflow:auto; '
+        f'border:1px solid rgba(49,51,63,0.2); border-radius:0.5rem;">'
+        f'{styled.to_html()}</div>',
+        unsafe_allow_html=True,
+    )
