@@ -5,6 +5,8 @@ imports from one place rather than duplicating the same definitions.
 """
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pandas as pd
 import plotly.colors as _pc
@@ -108,29 +110,80 @@ _SYMBOLS = ["circle", "square", "diamond", "cross",
 # ── Legend helpers ─────────────────────────────────────────────────────────────
 
 #: Bottom margin (px) reserved for tick labels + horizontal legend.
-#: 160 px comfortably fits up to ~3 legend rows beneath rotated date tick labels.
+#: Kept as a floor for the dynamic sizing in :func:`_legend_below`.
 _LEGEND_B_MARGIN = 160
+
+#: Breathing room (px) between the x-tick labels and the legend, on top of the
+#: per-chart ``tick_clearance``.  ~75 px ≈ 2 cm at 96 DPI.
+_LEGEND_GAP = 75
 
 def _legend_below(
     plot_h: int,
+    n_entries: int,
     *,
+    t_margin: int = 40,
+    tick_clearance: int = 60,
+    gap: int = _LEGEND_GAP,
     entry_width: int = 220,
     font_size: int = 13,
-    y_offset: int = 80,
-) -> dict:
-    """Return a ``legend=`` dict that places a horizontal legend *y_offset* px below the axes.
+    ref_width: int = 760,
+    side_margin: int = 20,
+) -> tuple[dict, int]:
+    """Build a horizontal legend below the plot and the bottom margin that fits it.
 
-    ``plot_h`` is the height of the data area in pixels; it converts the pixel
-    offset into Plotly's paper-coordinate ``y`` value.
+    Returns ``(legend, b_margin)``.  The caller **must** use the returned
+    ``b_margin`` for both ``margin=dict(b=...)`` and the figure ``height``
+    (``height = plot_h + t_margin + b_margin``) so the reserved space matches the
+    legend exactly.
 
-    Use a larger ``y_offset`` when rotated x-tick labels need extra clearance
-    (e.g. multi-row subplots with ``tickangle=-30``).  Pair with
-    ``margin=dict(b=_LEGEND_B_MARGIN)`` so the legend is never clipped.
+    Why this is built this way
+    --------------------------
+    The legend is anchored to the figure *container* (``yref="container"``), not
+    the data area (``yref="paper"``).  A paper-referenced horizontal legend below
+    the plot participates in Plotly's *automargin*: at narrow widths the legend
+    wraps onto more rows, automargin grows the bottom margin, and because the
+    figure ``height`` is fixed the plot area is shrunk to compensate — and the
+    paper-referenced legend, measured against that shrinking area, creeps onto the
+    data.  That settling is iterative and racy, so it shows up intermittently when
+    the window is resized.  Anchoring to the container removes the legend from the
+    automargin loop, so it can never reshape or overlap the plot.
+
+    The trade-off of container anchoring is that the legend can no longer grow the
+    figure to make room — so it would clip if the reserved margin were too small.
+    We therefore size ``b_margin`` here to the legend's worst-case row count,
+    estimated against a deliberately conservative ``ref_width`` (so a moderately
+    narrow window still has room).  On wide screens the legend needs fewer rows
+    than reserved, leaving harmless whitespace below it; that is strictly
+    preferable to either overlapping the plot or clipping the legend.
+
+    Parameters
+    ----------
+    plot_h : data-area height in px.
+    n_entries : number of legend items (e.g. configs or detectors plotted).
+    t_margin : the figure's top margin in px (needed to place the container ref).
+    tick_clearance : px the x-tick labels / axis titles need below the plot
+        (use ~70 for rotated date ticks).
+    gap : extra breathing room between the ticks and the legend, on top of
+        ``tick_clearance`` (default :data:`_LEGEND_GAP` ≈ 2 cm).
+    ref_width : conservative plot width used to estimate items-per-row.
     """
-    return dict(
+    usable = max(1, ref_width - 2 * side_margin)
+    per_row = max(1, usable // entry_width)
+    rows = max(1, math.ceil(max(1, n_entries) / per_row))
+    row_h = font_size + 8
+    legend_h = rows * row_h + 12
+    # Offset from the plot's bottom edge to the legend's top edge.
+    offset = tick_clearance + gap
+    b_margin = max(_LEGEND_B_MARGIN, offset + legend_h)
+    total_h = plot_h + t_margin + b_margin
+    legend = dict(
         orientation="h",
+        yref="container",
         yanchor="top",
-        y=-y_offset / plot_h,   # y_offset px below the axis bottom, in paper coordinates
+        # Legend top sits `offset` px below the plot's bottom edge, which is itself
+        # b_margin px above the figure bottom — expressed as a fraction of the full
+        # figure height.
+        y=(b_margin - offset) / total_h,
         xanchor="center",
         x=0.5,
         entrywidth=entry_width,
@@ -138,6 +191,7 @@ def _legend_below(
         tracegroupgap=0,
         font=dict(size=font_size),
     )
+    return legend, b_margin
 
 
 # ── Shared historical-trends renderer ─────────────────────────────────────────
@@ -314,16 +368,17 @@ def _render_historical_trends(
     )
 
     # ── Legend & margins ──────────────────────────────────────────────────────
+    # tick_clearance=75: rotated (-30°) date ticks + "Key4hep Nightly Tag" title.
     _PLOT_H   = 380
     _T_MARGIN = 40
-    # Extra 40 px so the "Key4hep Nightly Tag" x-axis title has breathing room
-    # before the horizontal legend — same treatment as trends.py.
-    _B_MARGIN = _LEGEND_B_MARGIN + 40
+    _legend, _B_MARGIN = _legend_below(
+        _PLOT_H, len(filtered_labels), t_margin=_T_MARGIN, tick_clearance=75,
+    )
     fig.update_layout(
         template=_TEMPLATE,
         height=_PLOT_H + _T_MARGIN + _B_MARGIN,
         margin=dict(l=20, r=20, t=_T_MARGIN, b=_B_MARGIN),
-        legend=_legend_below(_PLOT_H, y_offset=110),
+        legend=_legend,
     )
 
     st.plotly_chart(fig, width="stretch", key=f"{key_prefix}_chart")

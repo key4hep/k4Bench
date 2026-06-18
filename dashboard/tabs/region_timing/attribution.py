@@ -8,7 +8,7 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from k4bench.analysis.plots._theme import _TEMPLATE
-from ui_utils import _LEGEND_B_MARGIN, _PALETTES, _PALETTE_NAMES, _auto_palette_index, _legend_below, _to_rgba
+from ui_utils import _PALETTES, _PALETTE_NAMES, _auto_palette_index, _legend_below, _to_rgba
 
 from ._common import _palette_placeholder
 
@@ -263,11 +263,14 @@ def _render_attribution_analysis(region_data: dict, selected_labels: list[str]) 
 
     # ── Legend at bottom ───────────────────────────────────────────────────────
     fig_h = min(max(420, 70 + n * 35), 1400)  # cap at 1400 px to stay sane in Streamlit
+    legend, b_margin = _legend_below(
+        fig_h, n, t_margin=45, tick_clearance=50, entry_width=200, font_size=12,
+    )
     fig.update_layout(
         template=_TEMPLATE,
-        height=fig_h + _LEGEND_B_MARGIN,
-        margin=dict(l=20, r=20, t=45, b=_LEGEND_B_MARGIN),
-        legend=_legend_below(fig_h, entry_width=200, font_size=12),
+        height=fig_h + 45 + b_margin,
+        margin=dict(l=20, r=20, t=45, b=b_margin),
+        legend=legend,
     )
 
     st.plotly_chart(fig, width="stretch", key="region_attribution_chart")

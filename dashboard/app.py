@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from config import Config
 from data import (
@@ -37,6 +38,47 @@ from ui_chrome import (
 )
 
 
+def _force_plotly_relayout_on_tab_switch() -> None:
+    """Make Plotly charts relayout when their ``st.tabs`` panel becomes visible.
+
+    Streamlit renders every tab panel into the DOM at once and hides the inactive
+    ones with ``display:none``. A chart that first lays out inside a hidden,
+    zero-width panel computes a degenerate layout (e.g. a horizontal legend wrapped
+    onto many rows that then overlaps the plot). Plotly only re-lays-out on a
+    window ``resize`` event, but tab switches are purely client-side and never fire
+    one — so the bad layout persists until the user manually resizes the window.
+
+    This injects a one-off script that listens for tab-button clicks and dispatches
+    a synthetic ``resize`` shortly after the panel is revealed, forcing every chart
+    to relayout at its real width. The script reaches the parent document from a
+    same-origin component iframe; it is idempotent (each button is bound once).
+    """
+    components.html(
+        """
+        <script>
+        (function () {
+          const doc = window.parent.document;
+          function bind() {
+            doc.querySelectorAll('button[data-baseweb="tab"]').forEach(function (btn) {
+              if (btn.dataset.k4ResizeBound) return;
+              btn.dataset.k4ResizeBound = "1";
+              btn.addEventListener("click", function () {
+                // Let the panel switch to display:block, then nudge Plotly.
+                setTimeout(function () {
+                  window.parent.dispatchEvent(new Event("resize"));
+                }, 150);
+              });
+            });
+          }
+          bind();
+          setTimeout(bind, 800);  // rebind in case tab buttons mount after this runs
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
 def main() -> None:
     st.set_page_config(
         page_title="k4Bench Dashboard",
@@ -54,9 +96,15 @@ def main() -> None:
             background: transparent !important;
             backdrop-filter: none !important;
         }
-        /* Push content down just enough so tabs aren't hidden under the toolbar */
+        /* The whitespace above the tabs is the (mostly empty) header band, not the
+           block padding — so shrink the header itself while keeping the toolbar
+           (menu / Deploy / Running) usable, and pull the content up under it. */
+        header[data-testid="stHeader"] {
+            height: 2.5rem !important;
+            min-height: 2.5rem !important;
+        }
         .block-container, .stMainBlockContainer {
-            padding-top: 3.5rem !important;
+            padding-top: 0.75rem !important;
             padding-bottom: 1rem !important;
         }
         /* Collapse the blank gap Streamlit inserts below plotly iframes */
@@ -71,6 +119,28 @@ def main() -> None:
         }
         /* Tighten the gap between the last element and the footer */
         footer { margin-top: 0 !important; padding-top: 0 !important; }
+
+        /* Sticky footer: keep the copyright pinned to the bottom of the viewport
+           when the page is short, but let it flow normally (and scroll) when the
+           content is taller than the window. Achieved with a full-height flex
+           column whose footer element gets margin-top:auto. */
+        .stMainBlockContainer {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        /* Let the root vertical block (one or two wrapper levels deep) grow to
+           fill the container so the auto margin below has space to consume. */
+        .stMainBlockContainer > div:first-child,
+        .stMainBlockContainer > div:first-child > [data-testid="stVerticalBlock"] {
+            flex: 1 0 auto;
+            display: flex;
+            flex-direction: column;
+        }
+        /* Push the footer's element container to the bottom of that free space. */
+        [data-testid="stElementContainer"]:has(.k4-footer) {
+            margin-top: auto;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -362,6 +432,7 @@ def main() -> None:
         tab_names = tab_names[2:]
 
     tabs = st.tabs(tab_names)
+    _force_plotly_relayout_on_tab_switch()
     tab_idx = 0
 
     # Trends (remote only) — uses all stacks so history is complete
