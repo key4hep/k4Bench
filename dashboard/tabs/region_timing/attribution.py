@@ -221,31 +221,34 @@ def _render_attribution_analysis(region_data: dict, selected_labels: list[str]) 
         line=dict(color="rgba(100,100,100,0.55)", width=1),
     )
 
-    fig.add_trace(
-        go.Bar(
-            y=bar_dets,
-            x=bar_pct.tolist(),
-            orientation="h",
-            marker_color=bar_colors,
-            marker_line_width=0,
-            customdata=list(zip(
-                bar_dets,
-                bar_pct.tolist(),
-                bar_delta.tolist(),
-                bar_al.tolist(),
-                bar_bb.tolist(),
-            )),
-            hovertemplate=(
-                "<b>%{customdata[0]}</b><br>"
-                "Asymmetry: %{customdata[1]:+.1f}%<br>"
-                "Δ = %{customdata[2]:+.4g} s<br>"
-                "At location: %{customdata[3]:.4g} s<br>"
-                "By birth: %{customdata[4]:.4g} s<extra></extra>"
+    # One Bar trace per detector so each shares its scatter marker's legendgroup.
+    # Combined with legend.groupclick="togglegroup" (set below), clicking a
+    # detector in the legend hides both its scatter point and its asymmetry bar.
+    # Adding the traces in bar_dets order reproduces the single-trace category
+    # ordering (descending asymmetry).
+    for i, det in enumerate(bar_dets):
+        fig.add_trace(
+            go.Bar(
+                y=[det],
+                x=[float(bar_pct[i])],
+                orientation="h",
+                name=det,
+                legendgroup=det,
+                marker_color=bar_colors[i],
+                marker_line_width=0,
+                customdata=[(det, float(bar_pct[i]), float(bar_delta[i]),
+                             float(bar_al[i]), float(bar_bb[i]))],
+                hovertemplate=(
+                    "<b>%{customdata[0]}</b><br>"
+                    "Asymmetry: %{customdata[1]:+.1f}%<br>"
+                    "Δ = %{customdata[2]:+.4g} s<br>"
+                    "At location: %{customdata[3]:.4g} s<br>"
+                    "By birth: %{customdata[4]:.4g} s<extra></extra>"
+                ),
+                showlegend=False,
             ),
-            showlegend=False,
-        ),
-        row=1, col=2,
-    )
+            row=1, col=2,
+        )
 
     # Use nan-safe min/max since bar_pct may contain NaN for tiny-signal detectors.
     # When *every* detector is below the signal threshold (all NaN), fall back to
@@ -261,11 +264,17 @@ def _render_attribution_analysis(region_data: dict, selected_labels: list[str]) 
         row=1, col=2,
     )
 
-    # ── Legend at bottom ───────────────────────────────────────────────────────
-    fig_h = min(max(420, 70 + n * 35), 1400)  # cap at 1400 px to stay sane in Streamlit
+    # ── Legend at the bottom ─────────────────────────────────────────────────────
+    # Bottom legend, consistent with the other charts. fig_h is the *plot-area*
+    # height (unchanged from the side-legend layout, so the bars keep the same
+    # proportions — not stretched); the legend simply sits below it, adding
+    # b_margin to the total. groupclick lets a legend click toggle each detector's
+    # scatter point and asymmetry bar together.
+    fig_h = int(np.clip(90 + n * 26, 440, 820))
     legend, b_margin = _legend_below(
         fig_h, n, t_margin=45, tick_clearance=50, entry_width=200, font_size=12,
     )
+    legend["groupclick"] = "togglegroup"
     fig.update_layout(
         template=_TEMPLATE,
         height=fig_h + 45 + b_margin,

@@ -126,7 +126,7 @@ def _legend_below(
     gap: int = _LEGEND_GAP,
     entry_width: int = 220,
     font_size: int = 13,
-    ref_width: int = 760,
+    ref_width: int = 1100,
     side_margin: int = 20,
 ) -> tuple[dict, int]:
     """Build a horizontal legend below the plot and the bottom margin that fits it.
@@ -149,12 +149,17 @@ def _legend_below(
     automargin loop, so it can never reshape or overlap the plot.
 
     The trade-off of container anchoring is that the legend can no longer grow the
-    figure to make room — so it would clip if the reserved margin were too small.
-    We therefore size ``b_margin`` here to the legend's worst-case row count,
-    estimated against a deliberately conservative ``ref_width`` (so a moderately
-    narrow window still has room).  On wide screens the legend needs fewer rows
-    than reserved, leaving harmless whitespace below it; that is strictly
-    preferable to either overlapping the plot or clipping the legend.
+    figure to make room — so it would clip if the reserved margin were too small,
+    and it leaves whitespace below itself if the margin is too large.  We therefore
+    size ``b_margin`` to the row count the legend actually wraps to at ``ref_width``.
+    The app runs ``layout="wide"`` and the charts use ``width="stretch"``, so
+    ``ref_width`` defaults to the real wide-layout render width (~1100 px) rather
+    than a narrow worst case — otherwise the reservation assumes far more rows than
+    the legend uses, and the unused rows show up as a gap between the legend and the
+    page footer.  Plotly wraps on the client against the true pixel width, which the
+    Python side can't know; this is the closest static proxy.  On a much narrower
+    window the legend may wrap onto an extra row and clip slightly — raise/lower
+    ``ref_width`` to trade clipping against whitespace.
 
     Parameters
     ----------
@@ -165,7 +170,10 @@ def _legend_below(
         (use ~70 for rotated date ticks).
     gap : extra breathing room between the ticks and the legend, on top of
         ``tick_clearance`` (default :data:`_LEGEND_GAP` ≈ 2 cm).
-    ref_width : conservative plot width used to estimate items-per-row.
+    ref_width : assumed plot width (px) used to estimate items-per-row; defaults
+        to the wide-layout render width so the reserved margin matches the legend's
+        actual wrapped height (smaller ⇒ more reserved/whitespace, larger ⇒ risk of
+        clipping on narrow windows).
     """
     usable = max(1, ref_width - 2 * side_margin)
     per_row = max(1, usable // entry_width)

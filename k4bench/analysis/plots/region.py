@@ -131,8 +131,13 @@ def plot_region_timing(
     if n == 1:
         if show == "both":
             # Named constants so annotation positions can be derived analytically.
-            _v_sp, _h_sp = 0.16, 0.18
-            _r1_h, _r2_h = 0.40, 0.60
+            # The donut is a circle, so its diameter is capped by the smaller of
+            # its cell's width/height. Giving row 1 a larger *share* of the height
+            # (and trimming the horizontal gap) lets the pie grow into the
+            # otherwise-empty space without making the overall figure taller —
+            # keep the total px_h fixed so the chart still fits without scrolling.
+            _v_sp, _h_sp = 0.16, 0.12
+            _r1_h, _r2_h = 0.50, 0.50
             fig = make_subplots(
                 rows=2, cols=2,
                 specs=[
