@@ -146,7 +146,8 @@ def run_reliability_map(
     # a fresh O(n_rows) scan of trend_results_df per run.
     have_results = _is_valid_df(trend_results_df) and "run_id" in trend_results_df.columns
     results_by_run = (
-        dict(trend_results_df.groupby("run_id")) if have_results else {}
+        {run_id: group for run_id, group in trend_results_df.groupby("run_id")}
+        if have_results else {}
     )
     verdicts: dict[str, bool | None] = {}
     for mrow in trend_machine_df.to_dict("records"):
