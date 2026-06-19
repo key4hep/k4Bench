@@ -29,7 +29,7 @@ jobs:
       # dashboard/Dockerfile.
       SETUPTOOLS_SCM_PRETEND_VERSION: "0.0.0"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0  # full history so setuptools-scm can derive the real version
 
