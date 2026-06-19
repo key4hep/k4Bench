@@ -453,7 +453,7 @@ def main() -> None:
     # Trends (remote only) — uses all stacks so history is complete
     if trends_enabled:
         with tabs[tab_idx]:
-            trends.render(trend_results_df, selected_labels)
+            trends.render(trend_results_df, selected_labels, trend_machine_df)
         tab_idx += 1
 
         with tabs[tab_idx]:

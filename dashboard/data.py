@@ -328,9 +328,11 @@ def cached_load_trend_machine_info(run_dirs: tuple[str, ...]) -> pd.DataFrame | 
     *run_dirs* is the already date-windowed set of cached run directories
     (see ``remote.fetch_runs_windowed``).
 
-    Returns a DataFrame with one row per run plus ``run_date``,
+    Returns a DataFrame with one row per run plus ``run_id``, ``run_date``,
     ``k4h_release_date``, ``k4h_release`` and ``x_date`` columns, or ``None``
-    if no machine info could be loaded.
+    if no machine info could be loaded. ``run_id`` lets callers join the
+    machine condition of a run with its per-config results (e.g. to attach a
+    reliability verdict to each run on the Trends tab).
     """
     if not run_dirs:
         return None
@@ -345,6 +347,7 @@ def cached_load_trend_machine_info(run_dirs: tuple[str, ...]) -> pd.DataFrame | 
             continue
         meta = _parse_run_dir(run_dir)
         rows.append({
+            "run_id":                  run_dir.name,
             "run_date":                meta["run_date"],
             "k4h_release_date":        meta["k4h_release_date"],
             "k4h_release":             meta["k4h_release"],

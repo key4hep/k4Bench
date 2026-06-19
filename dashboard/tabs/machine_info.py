@@ -240,6 +240,42 @@ def _reliability_verdict(
     )
 
 
+def run_reliability_map(
+    trend_results_df: pd.DataFrame | None,
+    trend_machine_df: pd.DataFrame | None,
+) -> dict[str, bool | None]:
+    """Compute the conservative reliability verdict for every run in the trends.
+
+    Reliability is a *per-run* property: one ``machine_info.json`` describes the
+    host condition for the whole run, so the same verdict applies to all of that
+    run's configs. This joins the per-run machine conditions in
+    *trend_machine_df* with the per-config metrics in *trend_results_df* (on
+    ``run_id``) and returns ``{run_id: reliable}``, where ``reliable`` is the
+    :attr:`ReliabilityVerdict.reliable` tri-state (``True``/``False``/``None``).
+
+    The context-switch baseline is left unset here (advisory only, so it never
+    changes the pass/fail verdict), keeping this independent of run history.
+    """
+    if not _is_valid_df(trend_machine_df) or "run_id" not in trend_machine_df.columns:
+        return {}
+    have_results = _is_valid_df(trend_results_df) and "run_id" in trend_results_df.columns
+    verdicts: dict[str, bool | None] = {}
+    for mrow in trend_machine_df.to_dict("records"):
+        run_id = mrow.get("run_id")
+        if not run_id:
+            continue
+        # A missing numeric column arrives as NaN; coerce to None so the
+        # conservative check treats it as *unknown* rather than a failure.
+        machine = {k: (None if pd.isna(v) else v) for k, v in mrow.items()}
+        results = (
+            trend_results_df[trend_results_df["run_id"] == run_id]
+            if have_results else None
+        )
+        verdict = evaluate_reliability(**_reliability_evidence(machine, results))
+        verdicts[run_id] = verdict.reliable
+    return verdicts
+
+
 def _reliability_banner(verdict: ReliabilityVerdict) -> tuple[str, str]:
     """Return ``(value, summary)`` for the at-a-glance reliability metric."""
     reliable = verdict.reliable
