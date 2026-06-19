@@ -221,6 +221,13 @@ def _eval_swap(swap_in_pages: int | None, swap_out_pages: int | None) -> Criteri
     limit = "0 pages"
     if swap_in_pages is None and swap_out_pages is None:
         return Criterion(name, Status.UNKNOWN, "Swap activity not recorded.", limit=limit)
+    if swap_in_pages is None or swap_out_pages is None:
+        return Criterion(
+            name,
+            Status.UNKNOWN,
+            "Swap activity only partially recorded.",
+            limit=limit,
+        )
     total = (swap_in_pages or 0) + (swap_out_pages or 0)
     if total == 0:
         return Criterion(name, Status.PASS, "No paging to disk during the run.",

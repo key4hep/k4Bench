@@ -71,6 +71,10 @@ class TestSwap:
         v = evaluate_reliability(swap_in_pages=None, swap_out_pages=None)
         assert _criterion(v, "Swap activity").status is Status.UNKNOWN
 
+    def test_partial_missing_is_unknown(self):
+        v = evaluate_reliability(swap_in_pages=0, swap_out_pages=None)
+        assert _criterion(v, "Swap activity").status is Status.UNKNOWN
+
 
 class TestThermal:
     def test_zero_passes(self):

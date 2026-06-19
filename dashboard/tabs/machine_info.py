@@ -210,9 +210,10 @@ def _reliability_evidence(
     ram_total = machine_info.get("ram_total_gb")
     avail = [machine_info.get(k) for k in ("ram_available_gb_start", "ram_available_gb_end")]
     avail = [a for a in avail if a is not None]
-    ram_used_fraction = (
-        1 - min(avail) / ram_total if (ram_total and avail) else None
-    )
+    if ram_total and avail:
+        ram_used_fraction = max(0.0, min(1.0, 1 - min(avail) / ram_total))
+    else:
+        ram_used_fraction = None
 
     return {
         "cpu_efficiency":           cpu_eff,
