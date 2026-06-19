@@ -211,12 +211,16 @@ def render(
     }
     if unreliable_ids:
         n = len(unreliable_ids)
+        unreliable_dates = sorted(
+            df.loc[df["run_id"].isin(unreliable_ids), "run_date_str"].unique()
+        )
         warn_col, toggle_col = st.columns([3, 1], vertical_alignment="center")
         with warn_col:
             st.warning(
                 f"⚠️ {n} unreliable run{'s' if n != 1 else ''} detected in this "
                 "window — likely affected by host contention (see the Machine "
-                "Info tab for the per-run verdict)."
+                "Info tab for the per-run verdict): "
+                f"{', '.join(unreliable_dates)}."
             )
         with toggle_col:
             exclude = st.toggle(
