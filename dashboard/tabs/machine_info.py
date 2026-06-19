@@ -42,8 +42,8 @@ from k4bench.results.reliability import (
     MIN_CPU_EFFICIENCY,
     ReliabilityVerdict,
     Status,
-    evaluate_reliability,
 )
+from tabs._reliability import _ctx_switch_baseline, _reliability_verdict
 from ui_utils import _is_valid_df, _to_rgba
 
 # CPU flags relevant to simulation / floating-point heavy workloads.
@@ -127,154 +127,6 @@ _STATUS_BADGE: dict[Status, str] = {
     Status.WARN:    "⚠️ Warn",
     Status.UNKNOWN: "➖ No data",
 }
-
-
-#: Minimum number of historical per-config samples before a context-switch
-#: baseline is trusted. Below this the criterion stays advisory (reported only).
-_BASELINE_MIN_SAMPLES = 20
-
-
-def _ctx_switch_baseline(
-    trend_results_df: pd.DataFrame | None, platform: str | None = None
-) -> float | None:
-    """Median involuntary context switches **per CPU-second** across prior runs.
-
-    Computed from the historical per-config results so the threshold adapts to
-    the host's normal scheduler behaviour. Normalising by total CPU time makes it
-    robust to run length and core count. When *platform* is given the pool is
-    restricted to runs on that platform, since context-switch rates are
-    host-specific. Returns ``None`` (criterion stays advisory) when too few
-    samples exist to form a stable baseline.
-
-    A median is used deliberately: it is unaffected by the occasional contaminated
-    run in the window, so a few noisy runs cannot inflate the baseline and mask
-    real interference.
-    """
-    if not _is_valid_df(trend_results_df):
-        return None
-    df = trend_results_df
-    cols = set(df.columns)
-    if "involuntary_ctx_switches" not in cols:
-        return None
-    if platform and "platform" in cols:
-        df = df[df["platform"] == platform]
-        if df.empty:
-            return None
-    if {"user_cpu_s", "sys_cpu_s"} <= cols:
-        cpu = df["user_cpu_s"] + df["sys_cpu_s"]
-    elif "user_cpu_s" in cols:
-        cpu = df["user_cpu_s"]
-    else:
-        return None
-    per_cpu_s = (
-        df["involuntary_ctx_switches"] / cpu.replace(0, float("nan"))
-    )
-    per_cpu_s = per_cpu_s.replace([float("inf"), float("-inf")], float("nan")).dropna()
-    per_cpu_s = per_cpu_s[per_cpu_s >= 0]
-    if len(per_cpu_s) < _BASELINE_MIN_SAMPLES:
-        return None
-    return float(per_cpu_s.median())
-
-
-def _reliability_evidence(
-    machine_info: dict,
-    results: pd.DataFrame | None,
-    ctx_switch_baseline_per_cpu_s: float | None = None,
-) -> dict:
-    """Collect the inputs :func:`evaluate_reliability` needs from this run.
-
-    Per-config metrics (CPU efficiency, context switches, total CPU) are averaged
-    across the run's configs; machine-condition signals come straight from
-    ``machine_info``. Missing values are left as ``None`` so the evaluator treats
-    them as *unknown* rather than failing on them. *ctx_switch_baseline_per_cpu_s*
-    is the historical baseline from :func:`_ctx_switch_baseline`, or ``None`` to
-    keep the context-switch criterion advisory.
-    """
-    cpu_eff = total_cpu = invol = None
-    if _is_valid_df(results):
-        cols = set(results.columns)
-        if {"user_cpu_s", "sys_cpu_s", "wall_time_s"} <= cols:
-            tot = results["user_cpu_s"] + results["sys_cpu_s"]
-            eff = (tot / results["wall_time_s"].replace(0, float("nan"))).dropna()
-            if not eff.empty:
-                cpu_eff = float(eff.mean())
-            tot = tot.dropna()
-            if not tot.empty:
-                total_cpu = float(tot.mean())
-        if "involuntary_ctx_switches" in cols:
-            v = results["involuntary_ctx_switches"].dropna()
-            if not v.empty:
-                invol = float(v.mean())
-
-    # Worst-case RAM utilisation across the start/end snapshots.
-    ram_total = machine_info.get("ram_total_gb")
-    avail = [machine_info.get(k) for k in ("ram_available_gb_start", "ram_available_gb_end")]
-    avail = [a for a in avail if a is not None]
-    if ram_total and avail:
-        ram_used_fraction = max(0.0, min(1.0, 1 - min(avail) / ram_total))
-    else:
-        ram_used_fraction = None
-
-    return {
-        "cpu_efficiency":           cpu_eff,
-        "total_cpu_s":              total_cpu,
-        "involuntary_ctx_switches": invol,
-        "ctx_switch_baseline_per_cpu_s": ctx_switch_baseline_per_cpu_s,
-        "load_avg_1m_pre":          machine_info.get("load_avg_1m_start"),
-        "load_avg_1m_post":         machine_info.get("load_avg_1m_end"),
-        "physical_cores":           machine_info.get("cpu_physical_cores"),
-        "swap_in_pages":            machine_info.get("swap_in_pages"),
-        "swap_out_pages":           machine_info.get("swap_out_pages"),
-        "thermal_throttle_events":  machine_info.get("thermal_throttle_events"),
-        "ram_used_fraction":        ram_used_fraction,
-    }
-
-
-def _reliability_verdict(
-    machine_info: dict,
-    results: pd.DataFrame | None,
-    ctx_switch_baseline_per_cpu_s: float | None = None,
-) -> ReliabilityVerdict:
-    """Build the conservative pass/fail verdict for the selected run."""
-    return evaluate_reliability(
-        **_reliability_evidence(machine_info, results, ctx_switch_baseline_per_cpu_s)
-    )
-
-
-def run_reliability_map(
-    trend_results_df: pd.DataFrame | None,
-    trend_machine_df: pd.DataFrame | None,
-) -> dict[str, bool | None]:
-    """Compute the conservative reliability verdict for every run in the trends.
-
-    Reliability is a *per-run* property: one ``machine_info.json`` describes the
-    host condition for the whole run, so the same verdict applies to all of that
-    run's configs. This joins the per-run machine conditions in
-    *trend_machine_df* with the per-config metrics in *trend_results_df* (on
-    ``run_id``) and returns ``{run_id: reliable}``, where ``reliable`` is the
-    :attr:`ReliabilityVerdict.reliable` tri-state (``True``/``False``/``None``).
-
-    The context-switch baseline is left unset here (advisory only, so it never
-    changes the pass/fail verdict), keeping this independent of run history.
-    """
-    if not _is_valid_df(trend_machine_df) or "run_id" not in trend_machine_df.columns:
-        return {}
-    have_results = _is_valid_df(trend_results_df) and "run_id" in trend_results_df.columns
-    verdicts: dict[str, bool | None] = {}
-    for mrow in trend_machine_df.to_dict("records"):
-        run_id = mrow.get("run_id")
-        if not run_id:
-            continue
-        # A missing numeric column arrives as NaN; coerce to None so the
-        # conservative check treats it as *unknown* rather than a failure.
-        machine = {k: (None if pd.isna(v) else v) for k, v in mrow.items()}
-        results = (
-            trend_results_df[trend_results_df["run_id"] == run_id]
-            if have_results else None
-        )
-        verdict = evaluate_reliability(**_reliability_evidence(machine, results))
-        verdicts[run_id] = verdict.reliable
-    return verdicts
 
 
 def _reliability_banner(verdict: ReliabilityVerdict) -> tuple[str, str]:
@@ -782,9 +634,10 @@ def _render_historical(
             # Reliability threshold: 10× the median clean-run rate (same basis as
             # the per-run verdict). Shade the region above it.
             base = _ctx_switch_baseline(trend_results_df)
-            if base is not None:
+            invol_vals = agg["invol"].dropna()
+            if base is not None and not invol_vals.empty:
                 limit = base * CTX_SWITCH_BASELINE_MULTIPLIER
-                c_top = max(float(agg["invol"].max()), limit) * 1.2
+                c_top = max(float(invol_vals.max()), limit) * 1.2
                 _add_reliability_threshold(fig, 2, 1, y=limit, top=c_top)
                 fig.update_yaxes(range=[0, c_top], title_text="switches / CPU-s", row=2, col=1)
             else:
@@ -803,10 +656,14 @@ def _render_historical(
                 row=2, col=2,
             )
             # Reliability floor: runs below 95% efficiency are rejected; shade below.
-            eff_min = float(agg["eff"].min())
-            e_bottom = min(eff_min - 0.02, MIN_CPU_EFFICIENCY - 0.02)
-            _add_reliability_threshold(fig, 2, 2, y=MIN_CPU_EFFICIENCY, bottom=e_bottom, below=True)
-            fig.update_yaxes(range=[e_bottom, 1.02], title_text="efficiency", row=2, col=2)
+            eff_vals = agg["eff"].dropna()
+            if not eff_vals.empty:
+                eff_min = float(eff_vals.min())
+                e_bottom = min(eff_min - 0.02, MIN_CPU_EFFICIENCY - 0.02)
+                _add_reliability_threshold(fig, 2, 2, y=MIN_CPU_EFFICIENCY, bottom=e_bottom, below=True)
+                fig.update_yaxes(range=[e_bottom, 1.02], title_text="efficiency", row=2, col=2)
+            else:
+                fig.update_yaxes(range=[0, 1.02], title_text="efficiency", row=2, col=2)
 
     # ── Axes / layout ─────────────────────────────────────────────────────────
     fig.update_xaxes(

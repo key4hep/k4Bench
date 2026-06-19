@@ -67,3 +67,40 @@ def test_trend_results_skips_missing_dirs(tmp_path):
     r1 = _make_run(tmp_path / "a", "2026-05-20", "key4hep-2026-05-20", 5.0)
     df = data.cached_load_trend_results((str(r1), str(tmp_path / "does-not-exist")))
     assert df is not None and len(df) == 1
+
+
+def _make_machine_run(parent: Path, date: str, k4h_release: str, hostname: str) -> Path:
+    """Create a cache-style run dir with run_info.json + machine_info.json."""
+    run_dir = _make_run(parent, date, k4h_release, wall_time_s=1.0)
+    (run_dir / "machine_info.json").write_text(json.dumps({
+        "hostname": hostname,
+        "cpu_physical_cores": 8,
+        "cpu_logical_cores": 16,
+        "load_avg_1m_start": 1.0,
+        "ram_total_gb": 32.0,
+        "ram_available_gb_start": 16.0,
+    }))
+    return run_dir
+
+
+def test_trend_machine_info_loads_from_run_dir_tuple(tmp_path):
+    r1 = _make_machine_run(tmp_path / "a", "2026-05-20", "key4hep-2026-05-20", "host-a")
+    r2 = _make_machine_run(tmp_path / "b", "2026-05-21", "key4hep-2026-05-21", "host-b")
+
+    df = data.cached_load_trend_machine_info((str(r1), str(r2)))
+    assert df is not None
+    assert len(df) == 2
+    for col in ("run_id", "run_date", "k4h_release", "x_date", "hostname", "cpu_physical_cores"):
+        assert col in df.columns
+    assert set(df["hostname"]) == {"host-a", "host-b"}
+
+
+def test_trend_machine_info_empty_tuple_returns_none():
+    assert data.cached_load_trend_machine_info(()) is None
+
+
+def test_trend_machine_info_skips_dirs_without_machine_info(tmp_path):
+    r1 = _make_machine_run(tmp_path / "a", "2026-05-20", "key4hep-2026-05-20", "host-a")
+    r2 = _make_run(tmp_path / "b", "2026-05-21", "key4hep-2026-05-21", wall_time_s=1.0)
+    df = data.cached_load_trend_machine_info((str(r1), str(r2)))
+    assert df is not None and len(df) == 1

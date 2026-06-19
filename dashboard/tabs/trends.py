@@ -6,7 +6,7 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from k4bench.analysis.plots._theme import _TEMPLATE
-from tabs.machine_info import run_reliability_map
+from tabs._reliability import run_reliability_map
 from ui_utils import _DASHES, _PALETTES, _PALETTE_NAMES, _SYMBOLS, _auto_palette_index, _legend_below, _to_rgba
 
 
