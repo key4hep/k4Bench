@@ -15,6 +15,7 @@ from data import (
     cached_load_trend_results,
     cached_load_trend_region_timing,
     cached_load_trend_event_timing,
+    cached_load_trend_machine_info,
     collect_labels,
     load_machine_info,
     run_metadata,
@@ -119,6 +120,18 @@ def main() -> None:
         }
         /* Tighten the gap between the last element and the footer */
         footer { margin-top: 0 !important; padding-top: 0 !important; }
+
+        /* Let st.metric values wrap instead of truncating long strings with an
+           ellipsis (e.g. a full OS name "AlmaLinux 9.7 (Seafoam Ocelot)" or a
+           kernel version). Keeps every metric the same size while showing the
+           value in full. */
+        [data-testid="stMetricValue"],
+        [data-testid="stMetricValue"] > div {
+            white-space: normal !important;
+            overflow: visible !important;
+            text-overflow: clip !important;
+            overflow-wrap: anywhere;
+        }
 
         /* Sticky footer: keep the copyright pinned to the bottom of the viewport
            when the page is short, but let it flow normally (and scroll) when the
@@ -414,10 +427,12 @@ def main() -> None:
     trend_results_df = None
     trend_region_df  = None
     trend_event_df   = None
+    trend_machine_df = None
     if run_dirs:
         trend_results_df = cached_load_trend_results(run_dirs)
         trend_region_df  = cached_load_trend_region_timing(run_dirs)
         trend_event_df   = cached_load_trend_event_timing(run_dirs)
+        trend_machine_df = cached_load_trend_machine_info(run_dirs)
 
     # ── Build tab list ─────────────────────────────────────────────────────────
     # Trends-capable tabs are gated on *remote mode*, not on whether the current
@@ -463,7 +478,14 @@ def main() -> None:
     # Machine Info
     with tabs[tab_idx]:
         minfo = load_machine_info(data_dir) if _path_valid else None
-        machine_info.render(minfo, run_meta=selected_run_meta)
+        machine_info.render(
+            minfo,
+            run_meta=selected_run_meta,
+            results=results,
+            trend_machine_df=trend_machine_df,
+            trend_results_df=trend_results_df,
+            trends_enabled=trends_enabled,
+        )
     tab_idx += 1
 
     # Logs (per-config status + log viewer)

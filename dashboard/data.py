@@ -314,6 +314,66 @@ def cached_load_trend_event_timing(run_dirs: tuple[str, ...]) -> pd.DataFrame | 
     return df
 
 
+@st.cache_data(show_spinner="Loading machine info trends...", ttl=3600)
+def cached_load_trend_machine_info(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
+    """Load per-run machine load / memory metrics across the given *run_dirs*.
+
+    Unlike the other trend loaders there is no per-config dimension: each run
+    directory has a single ``machine_info.json`` describing the physical machine
+    that executed the benchmark. One row per run captures the load average,
+    available RAM, swap, frequency and throttle counters, so the Machine Info
+    tab can plot how the host's condition varied across nightly releases (e.g.
+    a day where the machine was under unusually high load).
+
+    *run_dirs* is the already date-windowed set of cached run directories
+    (see ``remote.fetch_runs_windowed``).
+
+    Returns a DataFrame with one row per run plus ``run_date``,
+    ``k4h_release_date``, ``k4h_release`` and ``x_date`` columns, or ``None``
+    if no machine info could be loaded.
+    """
+    if not run_dirs:
+        return None
+
+    rows: list[dict] = []
+    for d in run_dirs:
+        run_dir = Path(d)
+        if not run_dir.is_dir():
+            continue
+        mi = load_machine_info(str(run_dir))
+        if not mi:
+            continue
+        meta = _parse_run_dir(run_dir)
+        rows.append({
+            "run_date":                meta["run_date"],
+            "k4h_release_date":        meta["k4h_release_date"],
+            "k4h_release":             meta["k4h_release"],
+            "hostname":                mi.get("hostname"),
+            "cpu_logical_cores":       mi.get("cpu_logical_cores"),
+            "cpu_physical_cores":      mi.get("cpu_physical_cores"),
+            "load_avg_1m_start":       mi.get("load_avg_1m_start"),
+            "load_avg_5m_start":       mi.get("load_avg_5m_start"),
+            "load_avg_1m_end":         mi.get("load_avg_1m_end"),
+            "load_avg_5m_end":         mi.get("load_avg_5m_end"),
+            "ram_total_gb":            mi.get("ram_total_gb"),
+            "ram_available_gb_start":  mi.get("ram_available_gb_start"),
+            "ram_available_gb_end":    mi.get("ram_available_gb_end"),
+            "swap_used_gb_start":      mi.get("swap_used_gb_start"),
+            "swap_in_pages":           mi.get("swap_in_pages"),
+            "swap_out_pages":          mi.get("swap_out_pages"),
+            "cpu_freq_mhz_start":      mi.get("cpu_freq_mhz_start"),
+            "thermal_throttle_events": mi.get("thermal_throttle_events"),
+        })
+
+    if not rows:
+        return None
+    df = pd.DataFrame(rows)
+    df["run_date"]         = pd.to_datetime(df["run_date"]).dt.normalize()
+    df["k4h_release_date"] = pd.to_datetime(df["k4h_release_date"]).dt.normalize()
+    df["x_date"] = df["k4h_release_date"].fillna(df["run_date"])
+    return df
+
+
 @st.cache_data(show_spinner=False, ttl=60)
 def load_machine_info(run_dir: str) -> dict | None:
     """Load ``machine_info.json`` from a run directory, or return ``None`` if absent."""

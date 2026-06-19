@@ -63,6 +63,30 @@ def _throttle_paths() -> list[str]:
     return glob.glob("/sys/devices/system/cpu/cpu*/thermal_throttle/core_throttle_count")
 
 
+def _vmstat() -> dict[str, int]:
+    """Parse ``/proc/vmstat`` into a name -> counter mapping."""
+    out: dict[str, int] = {}
+    for line in _read("/proc/vmstat").splitlines():
+        p = line.split()
+        if len(p) == 2:
+            try:
+                out[p[0]] = int(p[1])
+            except ValueError:
+                pass
+    return out
+
+
+def _swap_pages() -> tuple[int | None, int | None]:
+    """Return cumulative (pages swapped in, pages swapped out) since boot.
+
+    These are monotonically increasing kernel counters; the *delta* across the
+    run is what reveals paging *activity* (as opposed to a static swap *level*,
+    which can be non-zero without any I/O during the run).
+    """
+    vm = _vmstat()
+    return vm.get("pswpin"), vm.get("pswpout")
+
+
 def _sum_throttle(paths: list[str]) -> int | None:
     if not paths:
         return None
@@ -118,6 +142,7 @@ def collect_start() -> dict:
     mem = _parse_meminfo()
     loadavg = _loadavg()
     swap_used_kib = mem.get("SwapTotal", 0) - mem.get("SwapFree", mem.get("SwapTotal", 0))
+    swap_in, swap_out = _swap_pages()
 
     os_name = next(
         (line.split("=", 1)[1].strip('"') for line in _read("/etc/os-release").splitlines()
@@ -134,6 +159,8 @@ def collect_start() -> dict:
         "ram_available_gb_start":       _kib_to_gib(mem.get("MemAvailable", 0)),
         "swap_total_gb":                _kib_to_gib(mem.get("SwapTotal", 0)),
         "swap_used_gb_start":           _kib_to_gib(swap_used_kib),
+        "swap_in_pages_start":          swap_in,
+        "swap_out_pages_start":         swap_out,
         "load_avg_1m_start":            float(loadavg[0]) if len(loadavg) > 0 else None,
         "load_avg_5m_start":            float(loadavg[1]) if len(loadavg) > 1 else None,
         "cpu_governor":                 _read("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor").strip() or None,
@@ -162,6 +189,21 @@ def finalize(machine_info: dict) -> dict:
     start = machine_info.get("thermal_throttle_count_start")
     machine_info["thermal_throttle_events"] = (
         max(0, end - start) if (paths and start is not None and end is not None) else None
+    )
+
+    # Swap *activity* over the run: the delta of the cumulative pswpin/pswpout
+    # counters. Any non-zero value means the kernel paged to/from disk while the
+    # benchmark ran — a strong sign memory pressure may have affected timings.
+    swap_in_end, swap_out_end = _swap_pages()
+    swap_in_start  = machine_info.get("swap_in_pages_start")
+    swap_out_start = machine_info.get("swap_out_pages_start")
+    machine_info["swap_in_pages"] = (
+        max(0, swap_in_end - swap_in_start)
+        if (swap_in_end is not None and swap_in_start is not None) else None
+    )
+    machine_info["swap_out_pages"] = (
+        max(0, swap_out_end - swap_out_start)
+        if (swap_out_end is not None and swap_out_start is not None) else None
     )
     return machine_info
 
