@@ -4,7 +4,7 @@ Answers the question: "If I remove one subdetector, which gives the most gain?"
 """
 from __future__ import annotations
 
-import matplotlib.cm as _mcm
+import matplotlib as _mpl
 import matplotlib.colors as _mc
 import numpy as np
 import pandas as pd
@@ -29,7 +29,7 @@ _CMAP_NAMES = ["PiYG", "PRGn", "BrBG", "RdBu", "RdYlGn", "Spectral"]
 
 def _palette(cmap_name: str) -> tuple[str, str, str]:
     """Return (bad_hex, mid_hex, good_hex) sampled from a matplotlib diverging cmap."""
-    cmap = _mcm.get_cmap(cmap_name)
+    cmap = _mpl.colormaps[cmap_name]
     return (
         _mc.to_hex(cmap(0.15)),   # bad  — pastel "left" end
         _mc.to_hex(cmap(0.50)),   # mid  — neutral centre (≈ white for most diverging cmaps)
