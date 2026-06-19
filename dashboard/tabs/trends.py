@@ -6,6 +6,7 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from k4bench.analysis.plots._theme import _TEMPLATE
+from tabs._reliability import run_reliability_map
 from ui_utils import _DASHES, _PALETTES, _PALETTE_NAMES, _SYMBOLS, _auto_palette_index, _legend_below, _to_rgba
 
 
@@ -127,7 +128,11 @@ def _render_timeseries(
 
 
 
-def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
+def render(
+    trend_df: pd.DataFrame | None,
+    selected_labels: list[str],
+    trend_machine_df: pd.DataFrame | None = None,
+) -> None:
     if trend_df is None:
         st.info("No trend data available. Run the nightly benchmark at least once.")
         return
@@ -195,6 +200,44 @@ def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
             f"**{latest.strftime('%Y-%m-%d')}** "
             f"({df['x_date'].nunique()} nightly tags)"
         )
+
+    # ── Reliability filter ──────────────────────────────────────────────────────
+    # Reliability is a per-run verdict (one machine condition per run, shared by
+    # all its configs), computed from the full trend so it matches the Machine
+    # Info tab regardless of which configs are selected here.
+    reliability   = run_reliability_map(trend_df, trend_machine_df)
+    unreliable_ids = {
+        rid for rid in df["run_id"].unique() if reliability.get(rid) is False
+    }
+    if unreliable_ids:
+        n = len(unreliable_ids)
+        unreliable_dates = sorted(
+            df.loc[df["run_id"].isin(unreliable_ids), "run_date_str"].unique()
+        )
+        warn_col, toggle_col = st.columns([3, 1], vertical_alignment="center")
+        with warn_col:
+            st.warning(
+                f"⚠️ {n} unreliable run{'s' if n != 1 else ''} detected in this "
+                "window — likely affected by host contention (see the Machine "
+                "Info tab for the per-run verdict): "
+                f"{', '.join(unreliable_dates)}."
+            )
+        with toggle_col:
+            exclude = st.toggle(
+                "Exclude unreliable runs",
+                value=False,
+                key="trends_exclude_unreliable",
+                help="Drop runs that failed the conservative reliability check "
+                     "from the plots below.",
+            )
+        if exclude:
+            df = df[~df["run_id"].isin(unreliable_ids)]
+            if df.empty:
+                st.warning(
+                    "Every run for the selected configurations was excluded as "
+                    "unreliable — nothing left to plot."
+                )
+                return
 
     # ── Time-series plots ──────────────────────────────────────────────────────
     _render_timeseries(df, selected_labels, palette, line_shape, alpha, use_dash, use_marker)
