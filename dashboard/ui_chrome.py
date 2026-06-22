@@ -514,7 +514,7 @@ def _render_footer() -> None:
     year = date.today().year
     st.markdown(
         f"""
-        <hr class="k4-footer" style="border:none;border-top:1px solid rgba(128,128,128,0.25);margin:2.5rem 0 0.8rem 0;">
+        <hr class="k4-footer" style="border:none;border-top:1px solid rgba(128,128,128,0.25);margin:0rem 0 0rem 0;">
         <div style="
             display:flex;
             justify-content:center;
