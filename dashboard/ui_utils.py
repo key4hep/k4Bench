@@ -152,19 +152,6 @@ def _legend_below(
     figure to make room — so it would clip if the reserved margin were too small,
     and it leaves whitespace below itself if the margin is too large.  We therefore
     size ``b_margin`` to the row count the legend actually wraps to at ``ref_width``.
-    The app runs ``layout="wide"`` and the charts use ``width="stretch"``, so
-    ``ref_width`` defaults to the real wide-layout render width rather than a
-    narrow worst case — otherwise the reservation assumes far more rows than the
-    legend uses, and the unused rows show up as a gap between the legend and
-    whatever follows. Plotly wraps on the client against the true pixel width,
-    which the Python side can't know; this is the closest static proxy. On a much
-    narrower window the legend may wrap onto an extra row and clip slightly —
-    raise/lower ``ref_width`` to trade clipping against whitespace.
-
-    A live-width probe (custom Streamlit component reporting the real browser
-    width) was tried and reverted — it failed to load in this app's deployment
-    (path-based custom components are fragile behind a reverse proxy, e.g. the
-    OpenShift route this app runs behind). ``ref_width`` stays a tuned constant.
 
     Parameters
     ----------
