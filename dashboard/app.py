@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 from config import Config
 from data import (
@@ -54,7 +53,10 @@ def _force_plotly_relayout_on_tab_switch() -> None:
     to relayout at its real width. The script reaches the parent document from a
     same-origin component iframe; it is idempotent (each button is bound once).
     """
-    components.html(
+    # st.iframe embeds an HTML string via the iframe's srcdoc (scripts run, same
+    # as the deprecated st.components.v1.html). height must be ≥ 1; 1px is
+    # effectively invisible for this script-only injector.
+    st.iframe(
         """
         <script>
         (function () {
@@ -76,7 +78,7 @@ def _force_plotly_relayout_on_tab_switch() -> None:
         })();
         </script>
         """,
-        height=0,
+        height=1,
     )
 
 
@@ -488,9 +490,9 @@ def main() -> None:
         )
     tab_idx += 1
 
-    # Logs (per-config status + log viewer)
+    # Logs (per-config status + log explorer)
     with tabs[tab_idx]:
-        render_logs_tab(results, data_dir if _path_valid else None)
+        render_logs_tab(results, data_dir if _path_valid else None, selected_run_meta)
 
     _render_footer()
 
