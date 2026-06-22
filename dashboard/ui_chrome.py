@@ -458,6 +458,57 @@ def render_logs_tab(
     st.caption(cap)
 
 
+# ── Project links ────────────────────────────────────────────────────────────
+# Surfaced natively via st.set_page_config(menu_items=...) in app.py (the "☰"
+# menu's Get Help / Report a bug / About entries) rather than as sidebar cards,
+# which got crowded once WebEOS data, GitHub, and docs all competed for space.
+GITHUB_URL = "https://github.com/key4hep/k4Bench"
+DOCS_URL = "https://key4hep.github.io/k4Bench/"
+
+
+def resource_link_card(href: str, icon_html: str, label: str, text: str) -> str:
+    """Return the HTML for a styled sidebar link card (currently used by WebEOS data).
+
+    ``icon_html`` may be an emoji or an inline SVG.
+    """
+    return f"""
+        <a href="{href}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;">
+          <div style="
+            background: rgba(91,155,213,0.08);
+            border: 1px solid rgba(91,155,213,0.28);
+            border-radius: 8px;
+            padding: 0.45rem 0.75rem;
+            margin-bottom: 0.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.55rem;
+            transition: background 0.2s;
+          ">
+            <span style="font-size:1.1rem;line-height:1;display:flex;">{icon_html}</span>
+            <div style="overflow:hidden;">
+              <div style="
+                font-size:0.63rem;
+                text-transform:uppercase;
+                letter-spacing:0.07em;
+                color:#7a9fbf;
+                font-weight:600;
+                margin-bottom:0.1rem;
+              ">{label}</div>
+              <div style="
+                font-size:0.70rem;
+                color:#5b9bd5;
+                font-weight:500;
+                white-space:nowrap;
+                overflow:hidden;
+                text-overflow:ellipsis;
+                max-width:180px;
+              ">{text} ↗</div>
+            </div>
+          </div>
+        </a>
+    """
+
+
 def _render_footer() -> None:
     """Render a CERN / FCC copyright footer at the bottom of the page."""
     year = date.today().year

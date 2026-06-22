@@ -30,11 +30,14 @@ from remote_cache import (
 from tabs import event_memory, event_timing, impact, machine_info, region_timing, trends
 from trend_window import WINDOW_PRESETS, resolve_window
 from ui_chrome import (
+    DOCS_URL,
+    GITHUB_URL,
     _drop_stale_selection,
     _render_footer,
     _render_sidebar_footer,
     render_logs_tab,
     render_run_status,
+    resource_link_card,
 )
 
 
@@ -87,6 +90,11 @@ def main() -> None:
         page_title="k4Bench Dashboard",
         page_icon="⚡",
         layout="wide",
+        menu_items={
+            "Get Help": DOCS_URL,
+            "Report a bug": f"{GITHUB_URL}/issues",
+            "About": f"[GitHub repository]({GITHUB_URL}) · [Documentation]({DOCS_URL})",
+        },
     )
 
     # ── Global CSS tweaks ─────────────────────────────────────────────────────
@@ -186,42 +194,9 @@ def main() -> None:
         if config.data_url:
             # ── Remote mode ────────────────────────────────────────────────────
             st.markdown(
-                f"""
-                <a href="{config.data_url}" target="_blank" style="text-decoration:none;">
-                  <div style="
-                    background: rgba(91,155,213,0.08);
-                    border: 1px solid rgba(91,155,213,0.28);
-                    border-radius: 8px;
-                    padding: 0.45rem 0.75rem;
-                    margin-bottom: 0.25rem;
-                    display: flex;
-                    align-items: center;
-                    gap: 0.55rem;
-                    transition: background 0.2s;
-                  ">
-                    <span style="font-size:1.1rem;line-height:1;">🗄️</span>
-                    <div style="overflow:hidden;">
-                      <div style="
-                        font-size:0.63rem;
-                        text-transform:uppercase;
-                        letter-spacing:0.07em;
-                        color:#7a9fbf;
-                        font-weight:600;
-                        margin-bottom:0.1rem;
-                      ">WebEOS data</div>
-                      <div style="
-                        font-size:0.70rem;
-                        color:#5b9bd5;
-                        font-weight:500;
-                        white-space:nowrap;
-                        overflow:hidden;
-                        text-overflow:ellipsis;
-                        max-width:180px;
-                      ">{config.data_url.rstrip('/')} ↗</div>
-                    </div>
-                  </div>
-                </a>
-                """,
+                resource_link_card(
+                    config.data_url, "🗄️", "WebEOS data", config.data_url.rstrip("/")
+                ),
                 unsafe_allow_html=True,
             )
 
