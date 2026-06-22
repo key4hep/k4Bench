@@ -5,6 +5,7 @@ clutter ``app.main()``.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import date
 from pathlib import Path
@@ -50,47 +51,57 @@ _WARN_RE = re.compile(r"\bwarn(?:ing)?\b", re.IGNORECASE)
 _K4BENCH_RE = re.compile(r"^(?:k4bench|dd4bench)\w*", re.IGNORECASE)
 
 
-def _read_log_text(path: Path) -> str | None:
-    """Read a log file, tolerating undecodable bytes; ``None`` on I/O error."""
-    try:
-        return path.read_text(errors="replace")
-    except OSError:
-        return None
+@st.cache_data(show_spinner=False)
+def _load_log(path: str, mtime: float, size: int) -> tuple[bytes, list[str]]:
+    """Read a log once and return ``(raw_bytes, decoded_lines)``.
+
+    Cached on ``path`` + ``mtime`` + ``size`` so repeated reruns (every filter
+    keystroke, severity/config switch) don't re-read or re-split a 10k+ line log;
+    the entry refreshes when the file changes. The raw bytes feed the download
+    button (a faithful copy of the file); the decoded lines feed display and
+    filtering — so the file is read exactly once per (re)load.
+    """
+    raw = Path(path).read_bytes()
+    return raw, raw.decode("utf-8", errors="replace").splitlines()
 
 
-def _log_body(text: str) -> list[str]:
-    """Return log lines with the trailing ``/usr/bin/time -v`` table removed.
+def _log_body(lines: list[str]) -> list[str]:
+    """Return *lines* with the trailing ``/usr/bin/time -v`` table removed.
 
     The ``Command exited with non-zero status N`` line that immediately precedes
     the table is *kept* — it's the one line of the trailer worth seeing.
     """
-    lines = text.splitlines()
     for i, ln in enumerate(lines):
         if _TIME_TRAILER_RE.match(ln):
             return lines[:i]
     return lines
 
 
-def _extract_error_excerpt(text: str, max_lines: int = 40) -> str | None:
+def _extract_error_excerpt(lines: list[str], max_lines: int = 40) -> str | None:
     """Best-effort isolation of the part of a log that explains a failure.
 
     Strategy, in order of preference:
 
-    1. A Python / cppyy traceback — captured from ``Traceback (most recent
-       call last):`` through the end of the run output (the actual exception
-       message sits at the bottom).
+    1. The **last** Python / cppyy traceback — captured from its
+       ``Traceback (most recent call last):`` through the end of the run output.
+       Using the last (not first) traceback surfaces the fatal one in logs that
+       recover from earlier tracebacks before ultimately failing.
     2. Otherwise, a window centred on the last error-looking line.
     3. Otherwise, the tail of the output.
 
     Returns ``None`` only for an empty log.
     """
-    body = _log_body(text)
+    body = _log_body(lines)
     if not body:
         return None
 
-    for i, ln in enumerate(body):
-        if "traceback (most recent call last)" in ln.lower():
-            return "\n".join(body[i:][-max_lines:]).strip() or None
+    tb_starts = [
+        i for i, ln in enumerate(body)
+        if "traceback (most recent call last)" in ln.lower()
+    ]
+    if tb_starts:
+        i = tb_starts[-1]
+        return "\n".join(body[i:][-max_lines:]).strip() or None
 
     hits = [i for i, ln in enumerate(body) if _ERROR_RE.search(ln)]
     if hits:
@@ -178,14 +189,21 @@ def _autoscroll_log_to_bottom(nonce: str) -> None:
             }}
             return null;
           }}
+          let attempts = 0;
           function setup() {{
             const box = findBox();
-            if (!box) {{ setTimeout(setup, 100); return; }}
+            if (!box) {{ if (attempts++ < 50) setTimeout(setup, 100); return; }}
             const pin = function () {{ box.scrollTop = box.scrollHeight; }};
             pin();
             setTimeout(pin, 80);
             setTimeout(pin, 350);
-            try {{ new ResizeObserver(pin).observe(box); }} catch (e) {{}}
+            // Replace any prior observer (a previous rerun's iframe may have left
+            // a now-dead reference on this element) so exactly one stays active.
+            try {{ if (box.__k4Observer) box.__k4Observer.disconnect(); }} catch (e) {{}}
+            try {{
+              box.__k4Observer = new ResizeObserver(pin);
+              box.__k4Observer.observe(box);
+            }} catch (e) {{}}
           }}
           setup();
         }})();
@@ -316,18 +334,19 @@ def render_logs_tab(
         return
 
     log_path = Path(run_dir) / f"{chosen}.log"
-    if not log_path.exists():
+    try:
+        stat = log_path.stat()
+    except OSError:
         st.caption(f"No log file found for `{chosen}`.")
         return
 
-    text = _read_log_text(log_path) or ""
-    all_lines = text.splitlines()
+    raw, all_lines = _load_log(str(log_path), stat.st_mtime, stat.st_size)
 
     # For a failed config, surface the extracted cause up front.
     if chosen in failed_set:
         rc = rc_by_label.get(chosen)
         rc_txt = f"exit code {int(rc)}" if pd.notna(rc) else "no exit code"
-        excerpt = _extract_error_excerpt(text)
+        excerpt = _extract_error_excerpt(all_lines)
         if excerpt:
             st.error(f"**Likely cause of failure** ({rc_txt}):")
             st.code(excerpt, language="log")
@@ -376,10 +395,12 @@ def render_logs_tab(
              "is active this caps how many of the matching lines are shown. "
              "Download always returns the complete log.",
     )
-    # Severity filter; pre-selects "Errors" for a failing config.
+    # Severity filter. Defaults to "All": for a failed config the cause is already
+    # surfaced in the extracted-error panel above, so the full log keeps full
+    # context here rather than silently hiding everything but error lines.
     severity = f_sev.selectbox(
         "Severity", ["All", "Errors", "Warnings", "Errors + warnings"],
-        index=(1 if chosen in failed_set else 0),
+        index=0,
         help="Keep only lines of the chosen severity. "
              "Errors = ERROR/FATAL lines, Python tracebacks and Geant4 "
              "G4Exception error blocks; Warnings = WARN lines and G4Exception "
@@ -401,7 +422,7 @@ def render_logs_tab(
         lines = lines[-max_lines:]
 
     f_dl.download_button(
-        "⬇ Download", log_path.read_bytes(),
+        "⬇ Download", raw,
         file_name=log_path.name, mime="text/plain",
         use_container_width=True,
     )
@@ -415,16 +436,18 @@ def render_logs_tab(
             '<span class="k4-log-end" style="display:none"></span>',
             unsafe_allow_html=True,
         )
-    # Hash (not raw text) so a query containing e.g. "</script>" can't break the
-    # injected component; the value only needs to change when the view changes.
-    _autoscroll_log_to_bottom(
-        str(hash((chosen, total, max_lines, query, show_errors, show_warnings)))
-    )
+    # A deterministic digest (not Python's per-process-salted hash()) so it's
+    # stable across restarts; hex-only, so a query containing e.g. "</script>"
+    # can't break the injected component. Only needs to change when the view does.
+    nonce = hashlib.sha256(
+        repr((chosen, total, max_lines, query, show_errors, show_warnings)).encode()
+    ).hexdigest()[:16]
+    _autoscroll_log_to_bottom(nonce)
 
     # ── File / match summary (below the log) ────────────────────────────────────
     cap = (
         f"`{log_path.name}` · {len(all_lines):,} lines · "
-        f"{log_path.stat().st_size / 1024:,.0f} KB"
+        f"{stat.st_size / 1024:,.0f} KB"
     )
     if filtering:
         cap += f"  —  {total:,} match(es)"
