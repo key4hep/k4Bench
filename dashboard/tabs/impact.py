@@ -79,6 +79,9 @@ def _prep_data(trend_df: pd.DataFrame, selected_labels: list[str]) -> pd.DataFra
 # ── Main render ───────────────────────────────────────────────────────────────
 
 def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
+    # Config Impact is a per-run snapshot (latest run per config), not a historical
+    # time series, so it carries no window-level "unreliable runs" warning/toggle —
+    # the selected run's quality is surfaced by the sidebar run-quality card instead.
     if trend_df is None:
         st.info("No trend data available. Run the nightly benchmark at least once.")
         return

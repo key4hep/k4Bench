@@ -20,6 +20,7 @@ def render(
     trend_region_df: pd.DataFrame | None,
     selected_labels: list[str],
     trends_enabled: bool = False,
+    reliability: dict[str, bool | None] | None = None,
 ) -> None:
     if region_data is None and not trends_enabled:
         st.info("No region timing data available in the selected directory.")
@@ -58,7 +59,7 @@ def render(
         else:
             _render_current_run(region_data, selected_labels)
     elif view == "Historical Trends":
-        _render_historical(trend_region_df, selected_labels)
+        _render_historical(trend_region_df, selected_labels, reliability)
     elif view == "Attribution Analysis":
         _render_attribution_analysis(region_data, selected_labels)
     elif view == "Step Analysis":

@@ -180,9 +180,10 @@ def cached_load_trend_region_timing(run_dirs: tuple[str, ...]) -> pd.DataFrame |
     (see ``remote.fetch_runs_windowed``).
 
     Returns a long-form DataFrame with columns:
-        run_date, k4h_release_date, label, attribution, detector,
+        run_id, run_date, k4h_release_date, label, attribution, detector,
         median_time_s, mean_time_s
-    or ``None`` if no data could be loaded.
+    or ``None`` if no data could be loaded. ``run_id`` lets callers join each row
+    with its run's reliability verdict (see ``tabs._reliability``).
     """
     if not run_dirs:
         return None
@@ -218,6 +219,7 @@ def cached_load_trend_region_timing(run_dirs: tuple[str, ...]) -> pd.DataFrame |
                     s = pd.Series(vals)
                     n = len(vals)
                     rows.append({
+                        "run_id":           run_dir.name,
                         "run_date":         meta["run_date"],
                         "k4h_release_date": meta["k4h_release_date"],
                         "k4h_release":      meta["k4h_release"],
@@ -252,8 +254,9 @@ def cached_load_trend_event_timing(run_dirs: tuple[str, ...]) -> pd.DataFrame | 
     (see ``remote.fetch_runs_windowed``).
 
     Returns a long-form DataFrame with those columns plus
-        run_date, k4h_release_date, k4h_release, label
-    or ``None`` if no data could be loaded.
+        run_id, run_date, k4h_release_date, k4h_release, label
+    or ``None`` if no data could be loaded. ``run_id`` lets callers join each row
+    with its run's reliability verdict (see ``tabs._reliability``).
     """
     if not run_dirs:
         return None
@@ -279,6 +282,7 @@ def cached_load_trend_event_timing(run_dirs: tuple[str, ...]) -> pd.DataFrame | 
             if df_ev.empty:
                 continue
             row: dict = {
+                "run_id":           run_dir.name,
                 "run_date":         meta["run_date"],
                 "k4h_release_date": meta["k4h_release_date"],
                 "k4h_release":      meta["k4h_release"],

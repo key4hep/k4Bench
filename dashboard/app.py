@@ -28,6 +28,7 @@ from remote_cache import (
     _cached_scan_stack_samples,
 )
 from tabs import event_memory, event_timing, impact, machine_info, region_timing, trends
+from tabs._reliability import render_sidebar_run_quality, run_reliability_map
 from trend_window import WINDOW_PRESETS, resolve_window
 from ui_chrome import (
     DOCS_URL,
@@ -282,6 +283,12 @@ def main() -> None:
                 return
             selected_run_meta = run_metadata(data_dir)
 
+            # Run-quality card for the selected release's latest run, right under the
+            # stack selector (loads are cached, so the reuse below is free).
+            render_sidebar_run_quality(
+                load_machine_info(data_dir), cached_load_results(data_dir)
+            )
+
             # ── Trend window ───────────────────────────────────────────────────
             # Discover available run dates across ALL stacks (directory listings
             # only, no file downloads), then download only the windowed subset.
@@ -374,6 +381,10 @@ def main() -> None:
             event_data   = cached_load_event_timing(data_dir)
             region_data  = cached_load_region_timing(data_dir)
             available_labels = collect_labels(results, event_data, region_data)
+            # Local mode has no stack selector, so show the run-quality card here.
+            # (Remote mode renders it under the Stack selector above.)
+            if not config.data_url:
+                render_sidebar_run_quality(load_machine_info(data_dir), results)
 
         if _path_valid and not available_labels:
             st.warning("No benchmark data found in the specified directory.")
@@ -398,7 +409,14 @@ def main() -> None:
         return
 
     # ── Run status banners (per-config detail + logs live in the Logs tab) ─────
-    render_run_status(results, selected_run_meta)
+    # Render inside a *fixed* container so a banner appearing or disappearing (e.g.
+    # switching to a run with failed configs) never shifts the position of st.tabs
+    # below. Streamlit matches frontend elements by position: inserting a root-level
+    # element above the tab bar remounts it and snaps the active tab back to the
+    # first ("Run Trends"). The always-present container keeps that slot stable.
+    # (The per-run reliability status lives in the sidebar run-quality card.)
+    with st.container():
+        render_run_status(results, selected_run_meta)
 
     # ── Load trend data (remote only) ─────────────────────────────────────────
     trend_results_df = None
@@ -410,6 +428,12 @@ def main() -> None:
         trend_region_df  = cached_load_trend_region_timing(run_dirs)
         trend_event_df   = cached_load_trend_event_timing(run_dirs)
         trend_machine_df = cached_load_trend_machine_info(run_dirs)
+
+    # Per-run reliability verdict ({run_id: reliable}), computed once from the full
+    # trend so every historical tab shares one consistent warning / exclude filter
+    # that matches the Machine Info tab's per-run verdict. Empty in local mode or
+    # when no machine info is available, in which case the filter is a no-op.
+    reliability = run_reliability_map(trend_results_df, trend_machine_df)
 
     # ── Build tab list ─────────────────────────────────────────────────────────
     # Trends-capable tabs are gated on *remote mode*, not on whether the current
@@ -430,7 +454,7 @@ def main() -> None:
     # Trends (remote only) — uses all stacks so history is complete
     if trends_enabled:
         with tabs[tab_idx]:
-            trends.render(trend_results_df, selected_labels, trend_machine_df)
+            trends.render(trend_results_df, selected_labels, reliability)
         tab_idx += 1
 
         with tabs[tab_idx]:
@@ -439,17 +463,17 @@ def main() -> None:
 
     # Region Timing
     with tabs[tab_idx]:
-        region_timing.render(region_data, trend_region_df, selected_labels, trends_enabled)
+        region_timing.render(region_data, trend_region_df, selected_labels, trends_enabled, reliability)
     tab_idx += 1
 
     # Event Timing
     with tabs[tab_idx]:
-        event_timing.render(event_data, trend_event_df, selected_labels, trends_enabled)
+        event_timing.render(event_data, trend_event_df, selected_labels, trends_enabled, reliability)
     tab_idx += 1
 
     # Event Memory
     with tabs[tab_idx]:
-        event_memory.render(event_data, trend_event_df, selected_labels, trends_enabled)
+        event_memory.render(event_data, trend_event_df, selected_labels, trends_enabled, reliability)
     tab_idx += 1
 
     # Machine Info
