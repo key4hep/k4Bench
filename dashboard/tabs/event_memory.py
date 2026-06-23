@@ -5,6 +5,7 @@ import streamlit as st
 
 from k4bench.analysis.plots import plot_event_memory
 from stats import build_event_stats_table, select_top_n_by_ratio, style_stats_table
+from tabs._reliability import render_reliability_filter
 from ui_utils import _is_valid_df, _PALETTES, _PALETTE_NAMES, _auto_palette_index, _render_historical_trends
 
 
@@ -100,6 +101,7 @@ def _render_current_run(
 def _render_historical(
     trend_event_df: pd.DataFrame,
     selected_labels: list[str],
+    reliability: dict[str, bool | None] | None = None,
 ) -> None:
     """Render the historical event memory trends view (3-panel: Median | Mean | Std)."""
     if not _is_valid_df(trend_event_df):
@@ -112,6 +114,13 @@ def _render_historical(
     filtered_labels = [lbl for lbl in selected_labels if lbl in avail_labels]
     if not filtered_labels:
         st.info("No historical event memory data available for the selected configurations.")
+        return
+
+    trend_event_df = render_reliability_filter(
+        trend_event_df[trend_event_df["label"].isin(filtered_labels)],
+        reliability, key="evt_memory_hist_exclude_unreliable",
+    )
+    if trend_event_df.empty:
         return
 
     present_stats = [(col, lbl) for col, lbl in _HIST_STATS if col in trend_event_df.columns]
@@ -134,6 +143,7 @@ def render(
     trend_event_df: pd.DataFrame | None,
     selected_labels: list[str],
     trends_enabled: bool = False,
+    reliability: dict[str, bool | None] | None = None,
 ) -> None:
     if event_data is None and not trends_enabled:
         st.info("No event memory data available in the selected directory.")
@@ -160,4 +170,4 @@ def render(
         else:
             _render_current_run(event_data, selected_labels)
     else:
-        _render_historical(trend_event_df, selected_labels)
+        _render_historical(trend_event_df, selected_labels, reliability)

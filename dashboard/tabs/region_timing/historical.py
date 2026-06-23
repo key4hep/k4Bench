@@ -8,6 +8,7 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from k4bench.analysis.plots._theme import _TEMPLATE
+from tabs._reliability import render_reliability_filter
 from ui_utils import _DASHES, _PALETTES, _PALETTE_NAMES, _SYMBOLS, _auto_palette_index, _is_valid_df, _legend_below, _to_rgba
 
 from ._common import _ATTRIBUTION_HELP, _palette_placeholder
@@ -16,6 +17,7 @@ from ._common import _ATTRIBUTION_HELP, _palette_placeholder
 def _render_historical(
     trend_region_df: pd.DataFrame,
     selected_labels: list[str],
+    reliability: dict[str, bool | None] | None = None,
 ) -> None:
     """Render the historical region timing trends view."""
     if not _is_valid_df(trend_region_df):
@@ -28,6 +30,13 @@ def _render_historical(
     filtered_labels = [lbl for lbl in selected_labels if lbl in avail_labels]
     if not filtered_labels:
         st.info("No historical region timing data available for the selected configurations.")
+        return
+
+    trend_region_df = render_reliability_filter(
+        trend_region_df[trend_region_df["label"].isin(filtered_labels)],
+        reliability, key="region_hist_exclude_unreliable",
+    )
+    if trend_region_df.empty:
         return
 
     col_cfg, col_attr = st.columns([2, 2])
