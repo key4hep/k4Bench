@@ -1,12 +1,18 @@
 <p align="center">
   <a href="https://k4bench-dashboard.app.cern.ch/">
-    <img src="https://capsule-render.vercel.app/api?type=waving&color=0:1E90FF,100:00C9A7&height=130&section=header&text=k4Bench&fontSize=48&fontAlignY=40&fontColor=ffffff" />
-    </a><br>
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/key4hep/k4Bench/main/assets/k4bench-logo-dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/key4hep/k4Bench/main/assets/k4bench-logo-light.svg">
+      <img alt="k4Bench — detector-agnostic performance benchmarking for Key4hep" src="https://raw.githubusercontent.com/key4hep/k4Bench/main/assets/k4bench-logo-light.svg" width="520">
+    </picture>
+  </a>
+  <br><br>
   <b>Detector-agnostic performance benchmarking for Key4hep simulations</b><br>
   👉 <a href="https://k4bench-dashboard.app.cern.ch/">Open the live dashboard</a> &nbsp;·&nbsp; 📖 <a href="https://key4hep.github.io/k4Bench/">Read the docs</a>
 </p>
 
 <br>
+
 
 [![Release](https://img.shields.io/github/v/release/key4hep/k4Bench?include_prereleases)](https://github.com/key4hep/k4Bench/releases) 
 [![Build status](https://img.shields.io/github/actions/workflow/status/key4hep/k4Bench/ci.yml?branch=main)](https://github.com/key4hep/k4Bench/actions/workflows/ci.yml?query=branch%3Amain) 

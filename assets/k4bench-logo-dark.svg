@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="690" height="205"
+     viewBox="5 0 690 205"
+     role="img" aria-label="k4Bench — benchmarking for Key4hep">
+<title>k4Bench</title>
+<style>
+.k4{font-family:Arial,Helvetica,sans-serif;font-size:120px;font-weight:700;fill:#e6edf3;}
+.bench{font-family:Arial,Helvetica,sans-serif;font-size:120px;font-weight:700;fill:#16b05f;}
+.tag{font-family:Arial,Helvetica,sans-serif;font-size:28px;letter-spacing:2px;fill:#8b949e;}
+.sym{stroke:#16b05f;stroke-width:10;stroke-linecap:square;}
+</style>
+
+<text x="20" y="120" class="k4">k4</text>
+<text x="165" y="120" class="bench">Bench</text>
+<text x="25" y="165" class="tag">BENCHMARKING FOR KEY4HEP</text>
+
+<g transform="translate(580,105)">
+  <line class="sym" x1="0" y1="0" x2="-30" y2="-50"/>
+  <line class="sym" x1="0" y1="0" x2="55" y2="-85"/>
+  <line class="sym" x1="0" y1="0" x2="85" y2="-18"/>
+  <line class="sym" x1="0" y1="0" x2="45" y2="70"/>
+  <line class="sym" x1="0" y1="0" x2="-25" y2="55"/>
+</g>
+</svg>
