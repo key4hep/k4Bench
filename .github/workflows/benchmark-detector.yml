@@ -86,6 +86,7 @@ jobs:
           EXCLUDE_ONLY:     ${{ matrix.exclude_only }}
         run: |
           mkdir -p "$RUNNER_TEMP/dnf-cache"
+          docker pull "${{ env.CONTAINER_IMAGE }}"
           docker run --rm --init \
             --device /dev/fuse \
             --cap-add SYS_ADMIN \
