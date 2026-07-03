@@ -465,6 +465,32 @@ def render_logs_tab(
 GITHUB_URL = "https://github.com/key4hep/k4Bench"
 DOCS_URL = "https://key4hep.github.io/k4Bench/"
 
+# ── Non-experiment ("example") detectors ────────────────────────────────────
+# Detector names (the EOS top-level directory, derived from the compact XML's
+# basename — see DETECTOR in nightly_benchmark.sh) that come from a simulation
+# toolkit's own reference/tutorial geometry rather than a maintained FCC/Key4hep
+# experiment design. Flagged here so the sidebar can make that distinction
+# obvious instead of the name silently looking like "just another detector".
+EXAMPLE_DETECTORS: dict[str, tuple[str, str]] = {
+    # detector name -> (toolkit label, source URL)
+    "SiD": ("DD4hep", "https://github.com/AIDASoft/DD4hep/tree/main/DDDetectors"),
+}
+
+
+def render_example_detector_badge(detector: str) -> None:
+    """Sidebar note flagging *detector* as a toolkit example, not a real experiment.
+
+    A no-op for anything not in :data:`EXAMPLE_DETECTORS`.
+    """
+    entry = EXAMPLE_DETECTORS.get(detector)
+    if not entry:
+        return
+    toolkit, source_url = entry
+    st.caption(
+        f"🧪 **{detector}** is a {toolkit} reference/example detector, not a "
+        f"maintained FCC/Key4hep experiment geometry. [Source ↗]({source_url})"
+    )
+
 
 def resource_link_card(href: str, icon_html: str, label: str, text: str) -> str:
     """Return the HTML for a styled sidebar link card (currently used by WebEOS data).

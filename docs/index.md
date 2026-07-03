@@ -72,8 +72,10 @@ that feed a historical dashboard.
     written to be general — geometry handling, the runner, the result model,
     and the analysis layer are not simulation-specific — and is intended to
     widen to **reconstruction** in the future. Likewise, nothing is tied to
-    FCC-ee: any DD4hep compact geometry works. ALLEGRO and IDEA simply happen
-    to be the examples used throughout these docs and in nightly CI.
+    FCC-ee: any DD4hep compact geometry works. ALLEGRO, IDEA, CLD and the
+    FCC-ee-adapted ILD (`ILD_FCCee`) simply happen to be the examples used
+    throughout these docs and in nightly CI, alongside DD4hep's own SiD
+    reference detector.
 
 ## How it fits together
 

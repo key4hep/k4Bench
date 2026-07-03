@@ -28,7 +28,7 @@ Not via k4Bench — `--output-file` is reused and overwritten across runs, and o
 
 ## Does k4Bench only work with FCC-ee / ALLEGRO / IDEA?
 
-No. The geometry scanner and patcher work on **any** DD4hep compact-XML geometry. ALLEGRO and IDEA are just the worked examples and the detectors tracked in nightly CI. Point `--xml` at your geometry and it works.
+No. The geometry scanner and patcher work on **any** DD4hep compact-XML geometry. ALLEGRO, IDEA, ILD_FCCee and CLD are just the worked examples and the detectors tracked in nightly CI, alongside DD4hep's own SiD reference detector (the [dashboard](user-guide/features/dashboard.md) flags SiD as a toolkit example rather than an FCC experiment geometry). Point `--xml` at your geometry and it works.
 
 ## Does it support reconstruction, not just simulation?
 
