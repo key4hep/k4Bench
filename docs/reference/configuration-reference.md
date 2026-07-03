@@ -47,13 +47,13 @@ name (must match `^[A-Za-z0-9_-]+$`). Validated by `list_benchmarks.py`.
 
 | Key | Type | Required | Description |
 | --- | --- | --- | --- |
-| `xml` | str | ✅ | Geometry, `$K4GEO`-relative or absolute. |
+| `xml` | str | ✅ | Geometry, `$K4GEO`-relative or absolute. May contain `$VAR` refs (e.g. `$DD4hepINSTALL` for DD4hep's own example detectors), expanded in the runner. |
 | `verbose` | bool | — | Stream ddsim output (default `false`). |
 | `sweep` | bool | — | Baseline + one run per subdetector dropped. |
 | `include_only` | list | — | Keep only these subdetectors (single run). |
 | `exclude_only` | list | — | Drop these subdetectors (single run). |
 | `ddsim_args` | str | — | ddsim flags applied to every sample (concatenated with sample-level). |
-| `steering_file` | str | — | `ddsim --steeringFile` path; `$VAR` (e.g. `$FCCCONFIG`) expanded in the runner. |
+| `steering_file` | str | — | `ddsim --steeringFile` path; `$VAR` (e.g. `$FCCCONFIG`) expanded in the runner. Its containing directory is put on `PYTHONPATH`, so a steering file that itself does a relative `from sibling import *` (e.g. CLDConfig's `cld_arc_steer.py`) resolves. |
 | `samples` | list | ✅ | List of sample entries (below). |
 
 ### Per-sample keys (under `samples:`)

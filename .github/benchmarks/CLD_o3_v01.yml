@@ -1,4 +1,4 @@
-# k4Bench nightly benchmark config — IDEA o2 v01
+# k4Bench nightly benchmark config — CLD o3_v01 (ARC PID)
 #
 # The nightly workflow expands every file in .github/benchmarks/ into a matrix
 # of (detector × sample) jobs and uploads each result to EOS under:
@@ -19,7 +19,7 @@
 #                            are expanded inside the runner. Steering files for FCC
 #                            detectors live in https://github.com/HEP-FCC/FCC-config
 #                            and are installed under $FCCCONFIG by Key4hep, e.g.
-#                            $FCCCONFIG/FullSim/IDEA/IDEA_o2_v01/SteeringFile_IDEA_o2_v01.py
+#                            $FCCCONFIG/FullSim/IDEA/IDEA_o1_v03/SteeringFile_IDEA_o1_v03.py
 #   samples       required   list of sample entries — see below
 #
 # ── Per-sample keys (under samples:) ───────────────────────────────────────
@@ -31,16 +31,25 @@
 #
 # Sample-level keys override top-level, except ddsim_args (which concatenates).
 # sweep / include_only / exclude_only are mutually exclusive.
+#
+# CLD_o3_v01 = CLD_o2 with an ARC (Array of RICH Cells) PID subdetector added
+# between tracker and calorimeters. Docs (CERN SSO):
+# https://fcc-ee-detector-full-sim.docs.cern.ch/CLD/
+# Needs CLDConfig's ARC-specific steering file, cld_arc_steer.py, *not*
+# cld_steer.py — the plain one leaves the ARC region without a defined
+# tracking_volume and ddsim aborts. cld_arc_steer.py itself does
+# `from cld_steer import *`, a relative import that only resolves because
+# nightly_benchmark.sh puts the steering file's own directory on PYTHONPATH.
 
-xml: FCCee/IDEA/compact/IDEA_o2_v01/IDEA_o2_v01.xml
-steering_file: $FCCCONFIG/FullSim/IDEA/IDEA_o2_v01/SteeringFile_IDEA_o2_v01.py
+xml: FCCee/CLD/compact/CLD_o3_v01/CLD_o3_v01.xml
+steering_file: $CLDCONFIG/share/CLDConfig/cld_arc_steer.py
 
 verbose: false
-sweep: false
+sweep: true
 
 samples:
   - name: single_e-_10GeV
-    n_events: 100
+    n_events: 500
     ddsim_args: >-
       --enableGun
       --gun.particle e-

@@ -1,4 +1,4 @@
-# k4Bench nightly benchmark config — IDEA o2 v01
+# k4Bench nightly benchmark config — DD4hep SiD (reference example detector)
 #
 # The nightly workflow expands every file in .github/benchmarks/ into a matrix
 # of (detector × sample) jobs and uploads each result to EOS under:
@@ -19,7 +19,7 @@
 #                            are expanded inside the runner. Steering files for FCC
 #                            detectors live in https://github.com/HEP-FCC/FCC-config
 #                            and are installed under $FCCCONFIG by Key4hep, e.g.
-#                            $FCCCONFIG/FullSim/IDEA/IDEA_o2_v01/SteeringFile_IDEA_o2_v01.py
+#                            $FCCCONFIG/FullSim/IDEA/IDEA_o1_v03/SteeringFile_IDEA_o1_v03.py
 #   samples       required   list of sample entries — see below
 #
 # ── Per-sample keys (under samples:) ───────────────────────────────────────
@@ -31,16 +31,26 @@
 #
 # Sample-level keys override top-level, except ddsim_args (which concatenates).
 # sweep / include_only / exclude_only are mutually exclusive.
+#
+# SiD is DD4hep's own reference/example detector (a CLIC-CDR-era silicon
+# tracking + calorimetry detector), not a maintained FCC/Key4hep experiment
+# geometry — it exists to exercise DD4hep itself and ships with every DD4hep
+# install under $DD4hepINSTALL, so no extra geometry package (like k4geo) is
+# needed. Source: https://github.com/AIDASoft/DD4hep/tree/main/DDDetectors
+#
+# NOTE: SiD's compact XML has ~78 top-level <detector> entries (vs. ~31 for
+# ALLEGRO) — many are cables/supports/shields rather than distinct physics
+# subdetectors, but --sweep drops every one of them, so this sweep runs ~2.5x
+# more sub-configs than any other detector in this repo. Watch the first
+# nightly run's wall time; drop back to sweep: false here if it's a problem.
 
-xml: FCCee/IDEA/compact/IDEA_o2_v01/IDEA_o2_v01.xml
-steering_file: $FCCCONFIG/FullSim/IDEA/IDEA_o2_v01/SteeringFile_IDEA_o2_v01.py
-
+xml: $DD4hepINSTALL/DDDetectors/compact/SiD.xml
 verbose: false
-sweep: false
+sweep: true
 
 samples:
   - name: single_e-_10GeV
-    n_events: 100
+    n_events: 500
     ddsim_args: >-
       --enableGun
       --gun.particle e-

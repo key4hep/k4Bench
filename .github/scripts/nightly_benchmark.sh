@@ -93,6 +93,11 @@ echo "::endgroup::"
 
 # ── 5. Resolve inputs (geometry + optional ddsim steering file) ───────────────
 echo "::group::5. Resolve inputs"
+# The XML path may reference Key4hep env vars (e.g. $DD4hepINSTALL, used by
+# DD4hep's own reference/example detectors, which live outside $K4GEO) so expand
+# them here, after the Key4hep stack is sourced, before checking for an absolute
+# path.
+XML_PATH=$(python3 -c "import os, sys; print(os.path.expandvars(sys.argv[1]))" "${XML_PATH}")
 if [[ "${XML_PATH}" = /* ]]; then
     DETECTOR_XML="${XML_PATH}"
 else
@@ -111,6 +116,11 @@ if [[ -n "${STEERING_FILE}" ]]; then
     [[ -f "${STEERING_PATH}" ]] || { echo "ERROR: steering file not found: ${STEERING_PATH}"; exit 1; }
     DDSIM_ARGS="--steeringFile ${STEERING_PATH} ${DDSIM_ARGS}"
     echo "Steering : ${STEERING_PATH}"
+    # ddsim exec()s the steering file directly, without adding its own directory
+    # to sys.path, so a steering file that does its own relative import of a
+    # sibling module (e.g. CLDConfig's cld_arc_steer.py -> `from cld_steer
+    # import *`) fails unless that directory is already importable.
+    export PYTHONPATH="$(dirname "${STEERING_PATH}"):${PYTHONPATH:-}"
 fi
 
 # k4bench has no top-level --inputFiles flag; it forwards everything in

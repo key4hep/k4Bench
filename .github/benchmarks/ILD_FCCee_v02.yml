@@ -1,4 +1,4 @@
-# k4Bench nightly benchmark config — IDEA o2 v01
+# k4Bench nightly benchmark config — ILD_FCCee v02
 #
 # The nightly workflow expands every file in .github/benchmarks/ into a matrix
 # of (detector × sample) jobs and uploads each result to EOS under:
@@ -19,7 +19,7 @@
 #                            are expanded inside the runner. Steering files for FCC
 #                            detectors live in https://github.com/HEP-FCC/FCC-config
 #                            and are installed under $FCCCONFIG by Key4hep, e.g.
-#                            $FCCCONFIG/FullSim/IDEA/IDEA_o2_v01/SteeringFile_IDEA_o2_v01.py
+#                            $FCCCONFIG/FullSim/IDEA/IDEA_o1_v03/SteeringFile_IDEA_o1_v03.py
 #   samples       required   list of sample entries — see below
 #
 # ── Per-sample keys (under samples:) ───────────────────────────────────────
@@ -31,16 +31,22 @@
 #
 # Sample-level keys override top-level, except ddsim_args (which concatenates).
 # sweep / include_only / exclude_only are mutually exclusive.
+#
+# ILD_FCCee_v02 is the same FCC-ee adaptation of ILD_l5_v02 as ILD_FCCee_v01,
+# but goes further: vertex detector, inner tracker *and* TPC inner radius are
+# all reworked around a CLD-style inner tracker (TPC inner radius 329 -> 701mm)
+# instead of only opening the MDI cone. See
+# $K4GEO/FCCee/ILD_FCCee/compact/README.md. Marked "experimental" upstream;
+# no steering file needed — runs with plain ddsim defaults, same as ALLEGRO.
+# ~38 top-level subdetectors, so --sweep is comparable in cost to ALLEGRO's.
 
-xml: FCCee/IDEA/compact/IDEA_o2_v01/IDEA_o2_v01.xml
-steering_file: $FCCCONFIG/FullSim/IDEA/IDEA_o2_v01/SteeringFile_IDEA_o2_v01.py
-
+xml: FCCee/ILD_FCCee/compact/ILD_FCCee_v02/ILD_FCCee_v02.xml
 verbose: false
-sweep: false
+sweep: true
 
 samples:
   - name: single_e-_10GeV
-    n_events: 100
+    n_events: 500
     ddsim_args: >-
       --enableGun
       --gun.particle e-

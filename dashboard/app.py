@@ -36,6 +36,7 @@ from ui_chrome import (
     _drop_stale_selection,
     _render_footer,
     _render_sidebar_footer,
+    render_example_detector_badge,
     render_logs_tab,
     render_run_status,
     resource_link_card,
@@ -213,6 +214,7 @@ def main() -> None:
             detector = st.selectbox("Detector", detectors, key="sb_detector")
             if not detector:
                 return
+            render_example_detector_badge(detector)
 
             # Platform
             try:

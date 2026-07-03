@@ -40,7 +40,8 @@ file or recompiling anything.
   bundled helpers, or browse historical trends across Key4hep releases on the
   [live dashboard](https://k4bench-dashboard.app.cern.ch/).
 - 🔭 **Detector-agnostic** — works on any DD4hep compact XML. FCC-ee detectors
-  (ALLEGRO, IDEA) are the worked examples and nightly-CI targets, not a limit.
+  (ALLEGRO, IDEA, ILD_FCCee, CLD) and DD4hep's own SiD example are the worked
+  examples and nightly-CI targets, not a limit.
 
 ## Quick start
 

@@ -7,7 +7,9 @@
 # To add a new sample, append an entry to samples: below.
 #
 # ── Top-level keys (apply to every sample in this file) ────────────────────
-#   xml           required   detector geometry, $K4GEO-relative or absolute path
+#   xml           required   detector geometry. $K4GEO-relative or absolute; may
+#                            contain $VAR refs (e.g. $DD4hepINSTALL for DD4hep's own
+#                            example detectors), expanded inside the runner.
 #   verbose       optional   stream ddsim output to stdout      (default: false)
 #   sweep         optional   baseline + one run per subdetector dropped
 #   include_only  optional   keep only these subdetectors       (list, single run)

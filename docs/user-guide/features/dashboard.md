@@ -33,6 +33,14 @@ reads them over HTTPS from a WebEOS endpoint. The EOS layout is hierarchical:
 The sidebar lets you drill down through that hierarchy: **detector → platform →
 Key4hep release → physics sample → run date**.
 
+!!! note "Example detectors"
+    A couple of detectors (currently: `SiD`) come from a simulation toolkit's
+    own reference/tutorial geometry rather than a maintained FCC/Key4hep
+    experiment design. Picking one of these shows a note in the sidebar
+    linking back to its source, so it doesn't read as "just another
+    experiment" (see `EXAMPLE_DETECTORS` in
+    [`dashboard/ui_chrome.py`](../../architecture/data-flow.md)).
+
 ## The tabs
 
 | Tab | What it shows | Backed by |
