@@ -39,11 +39,7 @@ steering_file: $FCCCONFIG/FullSim/IDEA/IDEA_o1_v03/SteeringFile_IDEA_o1_v03.py
 
 verbose: false
 
-# Partial sweep — full sweep is ~27 subdetectors x 1:15h/run, too long for
-# nightly CI. Restricted to detectors expected to actually move the needle:
-# the dual-readout calo and drift chamber (high volume/wire counts,
-# navigation-heavy) and the muon system (large absorber), plus the finer
-# tracking/preshower layers if there's budget.
+# Partial sweep — full sweep is currently too long for nightly CI. 
 sweep_detectors:
   - DRcalo
   - DCH_v2
