@@ -26,6 +26,10 @@ Simulate with all detectors except specific ones::
              --exclude-only ECalBarrel HCalBarrel \\
              --ddsim-args="--enableGun --gun.particle e- --gun.distribution uniform"
 
+List the detectors available in a geometry (no simulation is run)::
+
+    k4bench --xml ALLEGRO.xml --list-detectors
+
 Control output::
 
     k4bench --xml ALLEGRO.xml \\
@@ -43,6 +47,7 @@ import sys
 from pathlib import Path
 
 from k4bench.benchmark.ddsim import BenchmarkConfig, SweepMode, run_sweep
+from k4bench.geometry.scanner import get_detector_names
 from k4bench.results.reporter import print_summary, save_csv
 
 # ---------------------------------------------------------------------------
@@ -66,6 +71,9 @@ def main(argv: list[str] | None = None) -> int:
     """
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    if args.list_detectors:
+        return _list_detectors(args.xml)
 
     if args.output_dir is None:
         args.output_dir = DEFAULT_LOG_ROOT / args.xml.stem
@@ -116,6 +124,17 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         required=True,
         help="Top-level compact XML for the geometry under test.",
+    )
+    parser.add_argument(
+        "--list-detectors",
+        action="store_true",
+        default=False,
+        dest="list_detectors",
+        help=(
+            "Print the subdetector names found in --xml, one per line, and "
+            "exit without running any simulation. Useful for discovering "
+            "valid --include-only/--exclude-only names."
+        ),
     )
 
     # --- sweep mode (mutually exclusive) ---
@@ -199,6 +218,25 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     
     return parser
+
+
+# ---------------------------------------------------------------------------
+# Detector listing
+# ---------------------------------------------------------------------------
+
+
+def _list_detectors(xml_path: Path) -> int:
+    """Print the subdetector names discovered in *xml_path*, one per line."""
+    names = get_detector_names(xml_path)
+
+    if not names:
+        print(f"No subdetectors found in {xml_path}", file=sys.stderr)
+        return 1
+
+    for name in names:
+        print(name)
+
+    return 0
 
 
 # ---------------------------------------------------------------------------

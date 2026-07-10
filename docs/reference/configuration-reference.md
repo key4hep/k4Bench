@@ -10,6 +10,7 @@ explanations see [Configuration](../user-guide/configuration.md) and
 | Flag | Type | Default | Required | Description |
 | --- | --- | --- | --- | --- |
 | `--xml` | path | — | ✅ | Top-level DD4hep compact XML for the geometry under test. |
+| `--list-detectors` | bool | `false` | — | Print the subdetector names found in `--xml`, one per line, and exit; no simulation is run. |
 | `--sweep` | bool | `false` | — | Full sweep: baseline + one run per detector removed. Mutually exclusive with `--include-only` / `--exclude-only`. |
 | `--include-only` | str… | — | — | Single run keeping only the named detectors. Mutually exclusive group. |
 | `--exclude-only` | str… | — | — | Single run with the named detectors removed. Mutually exclusive group. |
@@ -22,6 +23,8 @@ explanations see [Configuration](../user-guide/configuration.md) and
 
 ### Interactions & validation
 
+- `--list-detectors` short-circuits in `main()` before config building: any
+  other flags (`--sweep`, `--events`, `--ddsim-args`, …) are parsed but ignored.
 - `--sweep` / `--include-only` / `--exclude-only` are an `argparse` mutually
   exclusive group — at most one. None → baseline.
 - `--include-only` with no names is impossible from the CLI (it requires `nargs="+"`),
