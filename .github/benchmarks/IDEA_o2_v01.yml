@@ -38,7 +38,18 @@ xml: FCCee/IDEA/compact/IDEA_o2_v01/IDEA_o2_v01.xml
 steering_file: $FCCCONFIG/FullSim/IDEA/IDEA_o2_v01/SteeringFile_IDEA_o2_v01.py
 
 verbose: false
-sweep: false
+
+# Partial sweep — full sweep is currently too long for nightly CI. 
+sweep_detectors:
+  - DRBarrelTubes
+  - DREndcapTubes
+  - DCH_v2
+  - SCEPCal_MainLayer
+  - Muon-System
+  - VertexBarrel
+  - VertexDisks
+  - SiWrB
+  - SiWrD
 
 samples:
   - name: single_e-_10GeV
