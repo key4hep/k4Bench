@@ -101,6 +101,50 @@ class TestFullMode:
 
 
 # ---------------------------------------------------------------------------
+# FULL mode restricted to a detector list (partial sweep)
+# ---------------------------------------------------------------------------
+
+
+class TestPartialSweep:
+    @pytest.fixture
+    def results(self, tmp_path):
+        config = _make_config(
+            tmp_path,
+            mode=SweepMode.FULL,
+            detector_names=["EcalBarrel", "HcalBarrel"],
+        )
+        with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
+            return run_sweep(config)
+
+    def test_baseline_plus_only_named_detectors(self, results):
+        labels = {r.label for r in results}
+        assert labels == {"baseline_all", "without_EcalBarrel", "without_HcalBarrel"}
+
+    def test_baseline_is_first(self, results):
+        assert results[0].label == "baseline_all"
+
+    def test_unknown_detector_is_skipped(self, tmp_path):
+        config = _make_config(
+            tmp_path,
+            mode=SweepMode.FULL,
+            detector_names=["EcalBarrel", "NonExistent"],
+        )
+        with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
+            results = run_sweep(config)
+        assert {r.label for r in results} == {"baseline_all", "without_EcalBarrel"}
+
+    def test_all_unknown_detectors_raises(self, tmp_path):
+        config = _make_config(
+            tmp_path,
+            mode=SweepMode.FULL,
+            detector_names=["NonExistent"],
+        )
+        with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
+            with pytest.raises(ValueError, match="No valid detectors to sweep"):
+                run_sweep(config)
+
+
+# ---------------------------------------------------------------------------
 # INCLUDE mode
 # ---------------------------------------------------------------------------
 

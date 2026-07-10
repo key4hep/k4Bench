@@ -1,16 +1,17 @@
 # Sweep modes
 
-Sweep modes decide *which* geometry configurations get benchmarked. There are
-four, selected by CLI flag (or by the `SweepMode` enum when using the library).
+Sweep modes decide *which* geometry configurations get benchmarked, selected by
+CLI flag (or by the `SweepMode` enum when using the library).
 
 | Mode | CLI | Runs | What it does |
 | --- | --- | --- | --- |
 | Baseline | *(no flag)* | 1 | Time the full, unmodified geometry once. |
 | Full | `--sweep` | 1 + N | Baseline, then one run per subdetector with that detector removed. |
+| Partial | `--sweep-detectors A B …` | 1 + k | Like `--sweep`, but restricted to the named detectors (baseline + one run per name removed). |
 | Include-only | `--include-only A B …` | 1 | Keep only the named detectors; remove all others. No baseline. |
 | Exclude-only | `--exclude-only A B …` | 1 | Remove the named detectors; keep all others. No baseline. |
 
-The three flags are mutually exclusive. To attribute cost to detectors you
+The four flags are mutually exclusive. To attribute cost to detectors you
 compare runs that differ only in which detectors are present — each mode is a
 different way to set that up. The patching that removes detectors safely is
 covered in [Geometry patching](geometry-patching.md).
@@ -18,7 +19,8 @@ covered in [Geometry patching](geometry-patching.md).
 ```mermaid
 flowchart LR
     Q{What do you<br/>want to know?} -->|Total cost| BASE[baseline]
-    Q -->|Per-detector cost| FULL["--sweep"]
+    Q -->|Per-detector cost, all detectors| FULL["--sweep"]
+    Q -->|Per-detector cost, a chosen few| PART["--sweep-detectors"]
     Q -->|A few detectors in isolation| INC["--include-only"]
     Q -->|Everything minus a few| EXC["--exclude-only"]
 ```
@@ -53,6 +55,23 @@ detectors yields just the baseline.
     and the per-detector deltas don't sum exactly to the baseline. For an
     intrinsic per-detector view, use the
     [region timing plugin](timing-plugins.md#per-region-timing).
+
+## Partial sweep
+
+A full sweep over a large detector can be dozens of runs. When you only care
+about a handful of subdetectors, `--sweep-detectors` runs the same baseline plus
+`without_<Name>` comparison but restricted to the names you list:
+
+```bash
+k4bench --xml IDEA_o1_v03.xml --sweep-detectors DCH VertexBarrel --events 500 \
+        --ddsim-args="--enableGun --gun.particle e- --gun.distribution uniform"
+```
+
+This is exactly `--sweep` with the removal set narrowed — same `SweepMode.FULL`,
+same `baseline_all` + `without_<Name>` labels, same resilience to unpatchable
+detectors. Names not present in the geometry are warned and dropped; if *all*
+requested names are unknown the run aborts and lists the available detectors.
+It's the mode to reach for in CI when a full sweep would take too long.
 
 ## Include-only / exclude-only
 

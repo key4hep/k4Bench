@@ -10,7 +10,7 @@ flags interact, see [Configuration](configuration.md).
 ```text
 k4bench --xml PATH
         [--list-detectors]
-        [--sweep | --include-only DET... | --exclude-only DET...]
+        [--sweep | --sweep-detectors DET... | --include-only DET... | --exclude-only DET...]
         [--events N]
         [--ddsim-args="..."]
         [--output-file PATH]
@@ -40,7 +40,7 @@ The XML's *stem* (`ALLEGRO_o1_v03`) becomes the default output directory name.
 
 Print the subdetector names found in `--xml`, one per line, and exit — no
 simulation is run and no other flags are needed. Use it to discover valid
-names for `--include-only`/`--exclude-only` before running a sweep.
+names for `--sweep-detectors`/`--include-only`/`--exclude-only` before running a sweep.
 
 ```bash
 k4bench --xml ALLEGRO_o1_v03.xml --list-detectors
@@ -56,7 +56,7 @@ geometry has no `<detector>` elements.
 
 ## Sweep selection
 
-These three are **mutually exclusive**. With none, k4bench does a single
+These four are **mutually exclusive**. With none, k4bench does a single
 baseline run. See [Sweep modes](features/sweep-modes.md) for full semantics.
 
 ### `--sweep`
@@ -67,6 +67,19 @@ removed.
 ```bash
 k4bench --xml ALLEGRO_o1_v03.xml --sweep \
         --ddsim-args="--enableGun --gun.particle e- --gun.distribution uniform"
+```
+
+### `--sweep-detectors DETECTOR [DETECTOR ...]`
+
+Like `--sweep`, but the removal sweep is restricted to the named detectors: the
+baseline plus one `without_<Name>` run per name. Handy when a full sweep would
+take too long — e.g. in CI. Unknown names are warned and skipped.
+
+```bash
+k4bench --xml ALLEGRO_o1_v03.xml \
+        --sweep-detectors ECalBarrel HCalBarrel \
+        --ddsim-args="--enableGun --gun.particle e- --gun.distribution uniform"
+# labels: baseline_all, without_ECalBarrel, without_HCalBarrel
 ```
 
 ### `--include-only DETECTOR [DETECTOR ...]`

@@ -160,6 +160,6 @@ flowchart LR
 From here:
 
 - [Sweep modes](../user-guide/features/sweep-modes.md) — when to use `--sweep`
-  vs `--include-only` vs `--exclude-only`.
+  vs `--sweep-detectors` vs `--include-only` vs `--exclude-only`.
 - [Commands](../user-guide/commands.md) — every CLI flag in depth.
 - [Examples](../examples/common-workflows.md) — more copy-paste scenarios.

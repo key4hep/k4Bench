@@ -47,6 +47,21 @@ df["saved_s"] = base - df["wall_time_s"]
 print(df.sort_values("saved_s", ascending=False)[["label", "wall_time_s", "saved_s"]])
 ```
 
+## 2b. Partial sweep over a few detectors
+
+When a full sweep is too long — dozens of detectors, or a CI budget — sweep only
+the ones you care about. Same baseline + `without_<Name>` comparison, restricted
+to the named detectors:
+
+```bash
+k4bench --xml IDEA_o1_v03.xml --sweep-detectors DCH VertexBarrel --events 500 \
+        --ddsim-args="--enableGun --gun.particle e- --gun.distribution uniform --gun.energy '10*GeV'"
+# → baseline_all + without_DCH + without_VertexBarrel
+```
+
+The analysis snippet above works unchanged — the labels are identical to a full
+sweep, there are just fewer of them.
+
 ## 3. Isolate the calorimeters (include-only)
 
 Run with *only* the ECal and HCal active — everything else stripped.

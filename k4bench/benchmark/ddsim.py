@@ -14,7 +14,9 @@ Sweep modes
 -----------
 FULL
     Baseline (full geometry) + one run per subdetector with that
-    detector removed.
+    detector removed.  If ``detector_names`` is given, the sweep is
+    restricted to those subdetectors (each removed in turn); otherwise
+    every discovered subdetector is swept.
 INCLUDE_ONLY
     Single run with only the named detectors active (all others
     removed).  No baseline.
@@ -82,7 +84,8 @@ class BenchmarkConfig:
     detector_names:
         For ``INCLUDE_ONLY`` — simulate with only these detectors active.
         For ``EXCLUDE_ONLY`` — simulate with all detectors except these.
-        Ignored for ``FULL`` mode.
+        For ``FULL`` — restrict the removal sweep to these subdetectors
+        (each removed in turn); empty means sweep over every subdetector.
     setup_script:
         Optional shell script sourced before each ddsim invocation.
     extra_args:
@@ -288,10 +291,26 @@ def _resolve_detectors(config: BenchmarkConfig) -> list[str]:
         warnings.warn("No subdetectors found — only baseline will run.", stacklevel=2)
         return []
 
-    if config.mode == SweepMode.FULL:
-        selected = all_names
-    else:
+    if config.mode != SweepMode.FULL:
         raise ValueError(f"Unexpected mode for removal sweep: {config.mode}")
+
+    if config.detector_names:
+        requested = set(config.detector_names)
+        unknown = requested - set(all_names)
+        if unknown:
+            warnings.warn(
+                f"Detectors not found in geometry, will be skipped: {sorted(unknown)}",
+                stacklevel=2,
+            )
+        # Preserve geometry order so a partial sweep is a strict subset of the full one.
+        selected = [n for n in all_names if n in requested]
+        if not selected:
+            raise ValueError(
+                f"No valid detectors to sweep — all of {sorted(config.detector_names)} "
+                f"are unknown in this geometry.\nAvailable detectors: {sorted(all_names)}"
+            )
+    else:
+        selected = all_names
 
     print(f"Found {len(all_names)} subdetectors, running {len(selected)}:")
     for name in selected:

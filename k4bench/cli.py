@@ -14,6 +14,11 @@ Full sweep (baseline + one run per detector removed)::
     k4bench --xml ALLEGRO.xml --sweep \\
              --ddsim-args="--enableGun --gun.particle e- --gun.distribution uniform"
 
+Partial sweep (baseline + one run per named detector removed)::
+
+    k4bench --xml ALLEGRO.xml --sweep-detectors ECalBarrel HCalBarrel \\
+             --ddsim-args="--enableGun --gun.particle e- --gun.distribution uniform"
+
 Simulate with only specific detectors::
 
     k4bench --xml ALLEGRO.xml \\
@@ -149,6 +154,16 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     sweep.add_argument(
+        "--sweep-detectors",
+        nargs="+",
+        metavar="DETECTOR",
+        dest="sweep_detectors",
+        help=(
+            "Partial sweep: baseline + one run per named detector removed in "
+            "turn. Like --sweep but restricted to the named detectors."
+        ),
+    )
+    sweep.add_argument(
         "--include-only",
         nargs="+",
         metavar="DETECTOR",
@@ -256,6 +271,9 @@ def _build_config(args: argparse.Namespace) -> BenchmarkConfig:
     elif args.exclude_only:
         mode = SweepMode.EXCLUDE_ONLY
         detector_names = args.exclude_only
+    elif args.sweep_detectors:
+        mode = SweepMode.FULL
+        detector_names = args.sweep_detectors
     elif args.sweep:
         mode = SweepMode.FULL
         detector_names = []
