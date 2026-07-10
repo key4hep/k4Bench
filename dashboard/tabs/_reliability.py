@@ -265,9 +265,10 @@ def render_reliability_filter(
     when *reliability* is empty/``None`` (e.g. local mode, or no machine info) — *df*
     is returned unchanged and nothing is drawn.
 
-    When the user enables the toggle, runs that failed the conservative reliability
-    check are dropped. If that empties the frame, an explanatory warning is shown and
-    the empty frame is returned, so the caller can ``return`` without plotting.
+    The toggle defaults to *on*: runs that failed the conservative reliability check
+    are dropped unless the user disables it. If that empties the frame, an
+    explanatory warning is shown and the empty frame is returned, so the caller can
+    ``return`` without plotting.
 
     *date_col* is the column whose dates are listed in the warning text; it defaults
     to ``x_date`` (the nightly tag) so the dates match the plot x-axis and the
@@ -305,10 +306,10 @@ def render_reliability_filter(
     with toggle_col:
         exclude = st.toggle(
             "Exclude unreliable runs",
-            value=False,
+            value=True,
             key=key,
             help="Drop runs that failed the conservative reliability check "
-                 "from the plots below.",
+                 "from the plots below. On by default; disable to include them.",
         )
     if exclude:
         df = df[~df["run_id"].isin(unreliable_ids)]
