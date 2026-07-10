@@ -9,6 +9,7 @@ flags interact, see [Configuration](configuration.md).
 
 ```text
 k4bench --xml PATH
+        [--list-detectors]
         [--sweep | --include-only DET... | --exclude-only DET...]
         [--events N]
         [--ddsim-args="..."]
@@ -34,6 +35,24 @@ k4bench --xml $K4GEO/FCCee/ALLEGRO/compact/ALLEGRO_o1_v03/ALLEGRO_o1_v03.xml \
 ```
 
 The XML's *stem* (`ALLEGRO_o1_v03`) becomes the default output directory name.
+
+### `--list-detectors`
+
+Print the subdetector names found in `--xml`, one per line, and exit — no
+simulation is run and no other flags are needed. Use it to discover valid
+names for `--include-only`/`--exclude-only` before running a sweep.
+
+```bash
+k4bench --xml ALLEGRO_o1_v03.xml --list-detectors
+# InnerTracker
+# OuterTracker
+# ECalBarrel
+# HCalBarrel
+# ...
+```
+
+Exits `0` with the names on stdout, or `1` with a message on stderr if the
+geometry has no `<detector>` elements.
 
 ## Sweep selection
 

@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from k4bench.benchmark.ddsim import SweepMode
-from k4bench.cli import _build_config, _build_parser
+from k4bench.cli import _build_config, _build_parser, main
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -18,6 +18,9 @@ from k4bench.cli import _build_config, _build_parser
 
 PARSER = _build_parser()
 XML_A = Path("geometry_a.xml")
+MINIMAL_XML = Path(__file__).parent.parent / "fixtures" / "minimal_geometry" / "minimal.xml"
+
+
 def _parse(args: list[str]):
     return PARSER.parse_args(args)
 
@@ -167,3 +170,46 @@ class TestPickleArgs:
     def test_pickle_custom(self):
         args = _parse(["--xml", str(XML_A), "--pickle", "results.pkl"])
         assert args.pickle == "results.pkl"
+
+
+# ---------------------------------------------------------------------------
+# --list-detectors
+# ---------------------------------------------------------------------------
+
+
+class TestListDetectorsArg:
+    def test_default_is_false(self):
+        args = _parse(["--xml", str(XML_A)])
+        assert args.list_detectors is False
+
+    def test_flag_sets_true(self):
+        args = _parse(["--xml", str(XML_A), "--list-detectors"])
+        assert args.list_detectors is True
+
+    def test_does_not_require_sweep_mode(self):
+        # --list-detectors needs only --xml; no ddsim-args required either.
+        args = _parse(["--xml", str(XML_A), "--list-detectors"])
+        assert args.list_detectors is True
+
+
+class TestListDetectorsMain:
+    def test_prints_detector_names_and_returns_zero(self, capsys):
+        rc = main(["--xml", str(MINIMAL_XML), "--list-detectors"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert set(out.split()) == {
+            "InnerTracker", "OuterTracker", "EcalBarrel", "HcalBarrel",
+        }
+
+    def test_no_simulation_is_run(self, capsys):
+        # A real run would need ddsim on PATH; reaching rc == 0 here proves
+        # main() returned before invoking run_sweep().
+        rc = main(["--xml", str(MINIMAL_XML), "--list-detectors", "--sweep"])
+        assert rc == 0
+
+    def test_empty_geometry_returns_one(self, tmp_path, capsys):
+        xml = tmp_path / "empty.xml"
+        xml.write_text('<?xml version="1.0"?><lccdd></lccdd>')
+        rc = main(["--xml", str(xml), "--list-detectors"])
+        assert rc == 1
+        assert "No subdetectors found" in capsys.readouterr().err
