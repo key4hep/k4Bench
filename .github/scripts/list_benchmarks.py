@@ -32,7 +32,7 @@ CONFIG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 SAMPLE_RE = re.compile(r"^[A-Za-z0-9_.+-]+$")
 
 SCALAR_KEYS = ("xml", "n_events", "ddsim_args", "verbose", "sweep", "steering_file")
-LIST_KEYS   = ("input_files", "include_only", "exclude_only")
+LIST_KEYS   = ("input_files", "sweep_detectors", "include_only", "exclude_only")
 
 
 def _scalar(v) -> str:
@@ -92,9 +92,14 @@ def expand(path: Path) -> list[dict]:
             _die(f"n_events must be a positive integer ({loc})")
         if rec["input_files"] and "--enableGun" in shlex.split(rec["ddsim_args"]):
             _die(f"input_files and '--enableGun' in ddsim_args are mutually exclusive ({loc})")
-        modes = (rec["sweep"] == "true") + bool(rec["include_only"]) + bool(rec["exclude_only"])
+        modes = (
+            (rec["sweep"] == "true")
+            + bool(rec["sweep_detectors"])
+            + bool(rec["include_only"])
+            + bool(rec["exclude_only"])
+        )
         if modes > 1:
-            _die(f"sweep / include_only / exclude_only are mutually exclusive ({loc})")
+            _die(f"sweep / sweep_detectors / include_only / exclude_only are mutually exclusive ({loc})")
 
         records.append(rec)
     return records

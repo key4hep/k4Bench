@@ -14,6 +14,7 @@
 #   INPUT_FILES       — space-separated HepMC paths (may be empty)
 #   STEERING_FILE     — optional ddsim --steeringFile path; $VAR expansion supported
 #   SWEEP             — "true"/"false"
+#   SWEEP_DETECTORS   — space-separated subdetector names (may be empty): partial sweep
 #   VERBOSE           — "true"/"false"
 #   INCLUDE_ONLY      — space-separated subdetector names (may be empty)
 #   EXCLUDE_ONLY      — space-separated subdetector names (may be empty)
@@ -50,6 +51,7 @@ echo "  xml          : ${XML_PATH}"
 echo "  n_events     : ${N_EVENTS}"
 echo "  verbose      : ${VERBOSE}"
 echo "  sweep        : ${SWEEP}"
+echo "  sweep_dets   : ${SWEEP_DETECTORS:-<none>}"
 echo "  include_only : ${INCLUDE_ONLY:-<none>}"
 echo "  exclude_only : ${EXCLUDE_ONLY:-<none>}"
 echo "  input_files  : ${INPUT_FILES:-<none>}"
@@ -152,6 +154,7 @@ CMD=(k4bench
     --output-dir "logs/${DETECTOR}"
 )
 [[ "${SWEEP}"   == "true" ]] && CMD+=(--sweep)
+[[ -n "${SWEEP_DETECTORS}" ]] && read -ra _arr <<< "${SWEEP_DETECTORS}" && CMD+=(--sweep-detectors "${_arr[@]}")
 [[ -n "${INCLUDE_ONLY}" ]]   && read -ra _arr <<< "${INCLUDE_ONLY}" && CMD+=(--include-only "${_arr[@]}")
 [[ -n "${EXCLUDE_ONLY}" ]]   && read -ra _arr <<< "${EXCLUDE_ONLY}" && CMD+=(--exclude-only "${_arr[@]}")
 [[ "${VERBOSE}" == "true" ]] && CMD+=(--verbose)

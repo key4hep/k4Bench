@@ -81,6 +81,7 @@ jobs:
           INPUT_FILES:      ${{ matrix.input_files }}
           STEERING_FILE:    ${{ matrix.steering_file }}
           SWEEP:            ${{ matrix.sweep }}
+          SWEEP_DETECTORS:  ${{ matrix.sweep_detectors }}
           VERBOSE:          ${{ matrix.verbose }}
           INCLUDE_ONLY:     ${{ matrix.include_only }}
           EXCLUDE_ONLY:     ${{ matrix.exclude_only }}
@@ -99,7 +100,7 @@ jobs:
             -e X509_USER_KEY=/tmp/eos-auth/userkey.pem \
             -e BENCHMARK_CONFIG -e BENCHMARK_SAMPLE \
             -e XML_PATH -e N_EVENTS -e DDSIM_ARGS -e INPUT_FILES -e STEERING_FILE \
-            -e SWEEP -e VERBOSE -e INCLUDE_ONLY -e EXCLUDE_ONLY \
+            -e SWEEP -e SWEEP_DETECTORS -e VERBOSE -e INCLUDE_ONLY -e EXCLUDE_ONLY \
             -e RUNNER_CPU_SET \
             -e GITHUB_RUN_ID="${{ github.run_id }}" \
             -e GITHUB_SHA="${{ github.sha }}" \

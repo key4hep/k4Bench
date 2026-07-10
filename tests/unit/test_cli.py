@@ -58,6 +58,22 @@ class TestSweepMode:
         config = _config(["--xml", str(XML_A), "--sweep"])
         assert config.mode == SweepMode.FULL
 
+    def test_sweep_detectors_sets_full_mode_with_names(self):
+        config = _config([
+            "--xml", str(XML_A),
+            "--sweep-detectors", "EcalBarrel", "HcalBarrel",
+        ])
+        assert config.mode == SweepMode.FULL
+        assert config.detector_names == ["EcalBarrel", "HcalBarrel"]
+
+    def test_sweep_and_sweep_detectors_mutually_exclusive(self):
+        with pytest.raises(SystemExit):
+            _parse([
+                "--xml", str(XML_A),
+                "--sweep",
+                "--sweep-detectors", "EcalBarrel",
+            ])
+
     def test_include_only_sets_mode(self):
         config = _config(["--xml", str(XML_A), "--include-only", "EcalBarrel"])
         assert config.mode == SweepMode.INCLUDE_ONLY

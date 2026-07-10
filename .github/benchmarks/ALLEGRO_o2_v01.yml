@@ -12,6 +12,8 @@
 #                            example detectors), expanded inside the runner.
 #   verbose       optional   stream ddsim output to stdout      (default: false)
 #   sweep         optional   baseline + one run per subdetector dropped
+#   sweep_detectors optional baseline + one run per named subdetector dropped
+#                            (list, partial sweep)
 #   include_only  optional   keep only these subdetectors       (list, single run)
 #   exclude_only  optional   drop these subdetectors            (list, single run)
 #   ddsim_args    optional   ddsim flags applied to every sample
@@ -30,7 +32,7 @@
 #   steering_file optional   overrides the top-level steering_file for this sample
 #
 # Sample-level keys override top-level, except ddsim_args (which concatenates).
-# sweep / include_only / exclude_only are mutually exclusive.
+# sweep / sweep_detectors / include_only / exclude_only are mutually exclusive.
 
 xml: FCCee/ALLEGRO/compact/ALLEGRO_o2_v01/ALLEGRO_o2_v01.xml
 verbose: false
