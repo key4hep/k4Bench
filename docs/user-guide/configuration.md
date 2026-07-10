@@ -18,7 +18,7 @@ Every invocation splits cleanly into two concerns:
 flowchart LR
     subgraph k4["k4Bench options (orchestration)"]
         X["--xml"]
-        S["--sweep / --include-only / --exclude-only"]
+        S["--sweep / --sweep-detectors / --include-only / --exclude-only"]
         N["--events"]
         O["--output-dir / --output-file / --pickle"]
         V["--verbose"]
@@ -67,15 +67,16 @@ Rules and gotchas:
 
 ## Sweep selection (mutually exclusive)
 
-`--sweep`, `--include-only`, and `--exclude-only` form a mutually exclusive
-group. With none of them, you get a single baseline run. Their exact semantics
-are in [Sweep modes](features/sweep-modes.md); the CLI maps the flags onto a
-`SweepMode` as follows:
+`--sweep`, `--sweep-detectors`, `--include-only`, and `--exclude-only` form a
+mutually exclusive group. With none of them, you get a single baseline run. Their
+exact semantics are in [Sweep modes](features/sweep-modes.md); the CLI maps the
+flags onto a `SweepMode` as follows:
 
 | Flags present | Resulting mode |
 | --- | --- |
 | *(none)* | `BASELINE` |
 | `--sweep` | `FULL` |
+| `--sweep-detectors A B` | `FULL` (removal set restricted to `A B`) |
 | `--include-only A B` | `INCLUDE_ONLY` |
 | `--exclude-only A B` | `EXCLUDE_ONLY` |
 

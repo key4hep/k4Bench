@@ -48,7 +48,8 @@ Baseline
 
 Sweep
 :   A *set* of runs that vary the geometry — typically the baseline plus one
-    run per detector removed. Selected with `--sweep`.
+    run per detector removed. Selected with `--sweep`, or `--sweep-detectors`
+    to restrict it to a chosen few.
 
 Subdetector / detector
 :   A `<detector name="...">` element in the DD4hep compact XML. k4Bench
@@ -66,12 +67,13 @@ ddsim args
 
 ## Choosing a sweep mode
 
-k4Bench has four strategies. Pick based on the question you're asking:
+Pick based on the question you're asking:
 
 | You want to… | Mode | Flag |
 | --- | --- | --- |
 | Just time the full geometry once | Baseline | *(none)* |
 | Measure every detector's individual cost | Full sweep | `--sweep` |
+| Measure a chosen few detectors' individual cost | Partial sweep | `--sweep-detectors A B` |
 | Measure cost of a specific subset only | Include-only | `--include-only A B` |
 | Measure the geometry minus a few detectors | Exclude-only | `--exclude-only A B` |
 
@@ -81,7 +83,8 @@ in [Sweep modes](features/sweep-modes.md).
 ```mermaid
 flowchart LR
     Q{What do you<br/>want to know?} -->|"Total cost"| BASE[baseline]
-    Q -->|"Per-detector cost"| FULL["--sweep"]
+    Q -->|"Per-detector cost,<br/>all detectors"| FULL["--sweep"]
+    Q -->|"Per-detector cost,<br/>a chosen few"| PART["--sweep-detectors"]
     Q -->|"Cost of a few<br/>detectors in isolation"| INC["--include-only"]
     Q -->|"Cost without<br/>a few detectors"| EXC["--exclude-only"]
 ```

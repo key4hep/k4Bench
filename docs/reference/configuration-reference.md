@@ -11,7 +11,8 @@ explanations see [Configuration](../user-guide/configuration.md) and
 | --- | --- | --- | --- | --- |
 | `--xml` | path | — | ✅ | Top-level DD4hep compact XML for the geometry under test. |
 | `--list-detectors` | bool | `false` | — | Print the subdetector names found in `--xml`, one per line, and exit; no simulation is run. |
-| `--sweep` | bool | `false` | — | Full sweep: baseline + one run per detector removed. Mutually exclusive with `--include-only` / `--exclude-only`. |
+| `--sweep` | bool | `false` | — | Full sweep: baseline + one run per detector removed. Mutually exclusive with `--sweep-detectors` / `--include-only` / `--exclude-only`. |
+| `--sweep-detectors` | str… | — | — | Partial sweep: baseline + one run per named detector removed (like `--sweep`, restricted). Mutually exclusive group. |
 | `--include-only` | str… | — | — | Single run keeping only the named detectors. Mutually exclusive group. |
 | `--exclude-only` | str… | — | — | Single run with the named detectors removed. Mutually exclusive group. |
 | `--events` | int | `2` | — | Events per run → injected as `--numberOfEvents`; used for `events_per_sec`. |
@@ -25,8 +26,11 @@ explanations see [Configuration](../user-guide/configuration.md) and
 
 - `--list-detectors` short-circuits in `main()` before config building: any
   other flags (`--sweep`, `--events`, `--ddsim-args`, …) are parsed but ignored.
-- `--sweep` / `--include-only` / `--exclude-only` are an `argparse` mutually
-  exclusive group — at most one. None → baseline.
+- `--sweep` / `--sweep-detectors` / `--include-only` / `--exclude-only` are an
+  `argparse` mutually exclusive group — at most one. None → baseline.
+- `--sweep-detectors` maps to `SweepMode.FULL` with the removal set narrowed to
+  the named detectors; unknown names are warned and skipped, and all-unknown →
+  `ValueError` listing the available detectors.
 - `--include-only` with no names is impossible from the CLI (it requires `nargs="+"`),
   and a programmatic empty list raises in `BenchmarkConfig.__post_init__`.
 - `--exclude-only` with names that are all unknown → `ValueError`; an effectively
@@ -53,6 +57,7 @@ name (must match `^[A-Za-z0-9_-]+$`). Validated by `list_benchmarks.py`.
 | `xml` | str | ✅ | Geometry, `$K4GEO`-relative or absolute. May contain `$VAR` refs (e.g. `$DD4hepINSTALL` for DD4hep's own example detectors), expanded in the runner. |
 | `verbose` | bool | — | Stream ddsim output (default `false`). |
 | `sweep` | bool | — | Baseline + one run per subdetector dropped. |
+| `sweep_detectors` | list | — | Baseline + one run per **named** subdetector dropped (partial sweep). |
 | `include_only` | list | — | Keep only these subdetectors (single run). |
 | `exclude_only` | list | — | Drop these subdetectors (single run). |
 | `ddsim_args` | str | — | ddsim flags applied to every sample (concatenated with sample-level). |
@@ -73,7 +78,7 @@ name (must match `^[A-Za-z0-9_-]+$`). Validated by `list_benchmarks.py`.
 
 - `n_events` must be a positive integer.
 - `input_files` and `--enableGun` (in `ddsim_args`) are mutually exclusive.
-- `sweep` / `include_only` / `exclude_only` are mutually exclusive (at most one).
+- `sweep` / `sweep_detectors` / `include_only` / `exclude_only` are mutually exclusive (at most one).
 - Lists are joined to space-separated strings so they round-trip through GitHub
   Actions env vars unchanged.
 - `ddsim_args` is the **only** key that concatenates (top + sample); all others
