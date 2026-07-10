@@ -41,6 +41,7 @@ addopts = "-v --tb=short -p no:collect_for_ctest -p no:ctest_measurements_report
 
 markers = [
     "integration: requires full Key4hep environment with ddsim",
+    "network: requires live network access to external hosts",
 ]
 
 [tool.ruff]

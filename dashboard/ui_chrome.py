@@ -473,7 +473,7 @@ DOCS_URL = "https://key4hep.github.io/k4Bench/"
 # obvious instead of the name silently looking like "just another detector".
 EXAMPLE_DETECTORS: dict[str, tuple[str, str]] = {
     # detector name -> (toolkit label, source URL)
-    "SiD": ("DD4hep", "https://github.com/AIDASoft/DD4hep/tree/main/DDDetectors"),
+    "SiD": ("DD4hep", "https://github.com/AIDASoft/DD4hep/tree/master/DDDetectors"),
 }
 
 

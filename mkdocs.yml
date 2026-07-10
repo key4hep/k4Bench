@@ -14,7 +14,7 @@ theme:
   icon:
     repo: fontawesome/brands/github
     logo: material/speedometer
-  favicon: https://raw.githubusercontent.com/key4hep/key4hep-logos/main/k4hep/k4hep.svg
+  favicon: https://raw.githubusercontent.com/key4hep/k4Bench/main/assets/k4bench-logo-light.svg
   features:
     - navigation.tabs
     - navigation.tabs.sticky
