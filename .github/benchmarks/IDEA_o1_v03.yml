@@ -38,7 +38,17 @@ xml: FCCee/IDEA/compact/IDEA_o1_v03/IDEA_o1_v03.xml
 steering_file: $FCCCONFIG/FullSim/IDEA/IDEA_o1_v03/SteeringFile_IDEA_o1_v03.py
 
 verbose: false
-sweep: false
+
+# Partial sweep — full sweep is currently too long for nightly CI. 
+sweep_detectors:
+  - DRcalo
+  - DCH_v2
+  - Muon-System
+  - Preshower
+  - VertexBarrel
+  - VertexDisks
+  - SiWrB
+  - SiWrD
 
 samples:
   - name: single_e-_10GeV
@@ -49,7 +59,7 @@ samples:
       --gun.distribution uniform
       --gun.energy 10*GeV
 
-# TODO: currently looping in CI, activate once understood
-#  - name: p8_ee_Zbb_ecm91
-#    n_events: 100
-#    input_files: root://eospublic.cern.ch//eos/experiment/fcc/ee/generation/hepmc/p8_ee_Zbb_ecm91/events_noVtxSmear.hepmc
+# NOTE: this has been reduced to 10 events for nightly CI, as very long simulation times have been observed for IDEA_o1_v03 with the p8_ee_Zbb_ecm91 sample
+  - name: p8_ee_Zbb_ecm91
+    n_events: 10
+    input_files: root://eospublic.cern.ch//eos/experiment/fcc/ee/generation/hepmc/p8_ee_Zbb_ecm91/events_noVtxSmear.hepmc
