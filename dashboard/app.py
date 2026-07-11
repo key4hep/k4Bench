@@ -37,92 +37,12 @@ from ui_chrome import (
     _drop_stale_selection,
     _render_footer,
     _render_sidebar_footer,
+    query_param_index,
     render_example_detector_badge,
     render_logs_tab,
     render_run_status,
     resource_link_card,
 )
-
-
-def _force_plotly_relayout_on_tab_switch() -> None:
-    """Make Plotly charts relayout when their ``st.tabs`` panel becomes visible.
-
-    Streamlit renders every tab panel into the DOM at once and hides the inactive
-    ones with ``display:none``. A chart that first lays out inside a hidden,
-    zero-width panel computes a degenerate layout (e.g. a horizontal legend wrapped
-    onto many rows that then overlaps the plot). Plotly only re-lays-out on a
-    window ``resize`` event, but tab switches are purely client-side and never fire
-    one — so the bad layout persists until the user manually resizes the window.
-
-    This injects a one-off script that listens for tab-button clicks and dispatches
-    a synthetic ``resize`` shortly after the panel is revealed, forcing every chart
-    to relayout at its real width. The script reaches the parent document from a
-    same-origin component iframe; it is idempotent (each button is bound once).
-    """
-    # st.iframe embeds an HTML string via the iframe's srcdoc (scripts run, same
-    # as the deprecated st.components.v1.html). height must be ≥ 1; 1px is
-    # effectively invisible for this script-only injector.
-    st.iframe(
-        """
-        <script>
-        (function () {
-          const doc = window.parent.document;
-          function bind() {
-            doc.querySelectorAll('button[data-baseweb="tab"]').forEach(function (btn) {
-              if (btn.dataset.k4ResizeBound) return;
-              btn.dataset.k4ResizeBound = "1";
-              btn.addEventListener("click", function () {
-                // Let the panel switch to display:block, then nudge Plotly.
-                setTimeout(function () {
-                  window.parent.dispatchEvent(new Event("resize"));
-                }, 150);
-              });
-            });
-          }
-          bind();
-          setTimeout(bind, 800);  // rebind in case tab buttons mount after this runs
-        })();
-        </script>
-        """,
-        height=1,
-    )
-
-
-def _activate_tab_from_query_param() -> None:
-    """Jump straight to the tab named by ``?tab=...`` in the page URL — used by
-    the nightly regression email's "view in dashboard" links (see
-    ``k4bench.regression.render._dashboard_link``) to land directly on
-    Regressions instead of the default first tab.
-
-    Streamlit has no API to set the active ``st.tabs`` panel, so — as in
-    ``tabs._reliability.render_sidebar_run_quality``'s click-through card —
-    a same-origin iframe script reaches the parent document and clicks the
-    tab button whose label matches, once the tab bar has mounted.
-    """
-    st.iframe(
-        """
-        <script>
-        (function () {
-          const doc = window.parent.document;
-          const params = new URLSearchParams(window.parent.location.search);
-          const wanted = (params.get("tab") || "").trim().toLowerCase();
-          if (!wanted) return;
-          function activate() {
-            const tabs = doc.querySelectorAll('button[data-baseweb="tab"]');
-            for (const t of tabs) {
-              if ((t.innerText || "").trim().toLowerCase() === wanted) {
-                if (t.getAttribute("aria-selected") !== "true") t.click();
-                return true;
-              }
-            }
-            return false;
-          }
-          if (!activate()) { setTimeout(activate, 800); }
-        })();
-        </script>
-        """,
-        height=1,
-    )
 
 
 def main() -> None:
@@ -249,9 +169,13 @@ def main() -> None:
             if not detectors:
                 st.error("No detectors found at the configured WebEOS URL.")
                 return
-            detector = st.selectbox("Detector", detectors, key="sb_detector")
+            detector = st.selectbox(
+                "Detector", detectors,
+                index=query_param_index("detector", detectors), key="sb_detector",
+            )
             if not detector:
                 return
+            st.query_params["detector"] = detector
             render_example_detector_badge(detector)
 
             # Platform
@@ -264,9 +188,13 @@ def main() -> None:
                 st.warning(f"No platforms found for detector '{detector}'.")
                 return
             _drop_stale_selection("sb_platform", platforms)
-            platform = st.selectbox("Platform", platforms, key="sb_platform")
+            platform = st.selectbox(
+                "Platform", platforms,
+                index=query_param_index("platform", platforms), key="sb_platform",
+            )
             if not platform:
                 return
+            st.query_params["platform"] = platform
 
             # Scan the release tree once; derive both the sample union and the
             # per-sample stack list from the same {stack: [samples]} map.
@@ -285,9 +213,13 @@ def main() -> None:
                 st.warning(f"No samples found for '{detector} / {platform}'.")
                 return
             _drop_stale_selection("sb_sample", samples)
-            sample = st.selectbox("Sample", samples, key="sb_sample")
+            sample = st.selectbox(
+                "Sample", samples,
+                index=query_param_index("sample", samples), key="sb_sample",
+            )
             if not sample:
                 return
+            st.query_params["sample"] = sample
 
             # Stack — only releases that actually contain the chosen sample, newest
             # first, so the default jumps to the latest release that has the sample.
@@ -301,13 +233,17 @@ def main() -> None:
                 st.warning(f"No releases contain sample '{sample}' for '{detector} / {platform}'.")
                 return
             _drop_stale_selection("sb_stack", stacks)
-            stack = st.selectbox("Stack", stacks, key="sb_stack")
+            stack = st.selectbox(
+                "Stack", stacks,
+                index=query_param_index("stack", stacks), key="sb_stack",
+            )
             st.caption(
                 f"Available in {len(stacks)} release(s); defaults to the newest. "
                 "Single-run tabs use it; Trends shows all releases."
             )
             if not stack:
                 return
+            st.query_params["stack"] = stack
 
             # Single-run tabs only ever show the latest run for the selected
             # stack — fetch just that one (cached), not the whole date history.
@@ -350,12 +286,17 @@ def main() -> None:
                 lo_date = all_dates[0].date()
                 hi_date = all_dates[-1].date()
                 st.header("Trend window")
+                window_presets = list(WINDOW_PRESETS)
                 preset = st.selectbox(
-                    "Range", list(WINDOW_PRESETS), index=0,  # default: Last 7 days
+                    # `?range=...` deep-links this too; falls back to index 0
+                    # ("Last 7 days") like before when absent/unmatched.
+                    "Range", window_presets,
+                    index=query_param_index("range", window_presets),
                     key="sb_trend_preset",
                     help="Limits the date range plotted in the Trends tabs. "
                          "Smaller windows load faster.",
                 )
+                st.query_params["range"] = preset
                 custom_range: tuple[date, date] | None = None
                 custom_incomplete = False
                 if preset == "Custom…":
@@ -434,9 +375,23 @@ def main() -> None:
             selected_labels: list[str] = []
         else:
             st.header("Filters")
-            selected_labels = st.multiselect(
-                "Configurations", available_labels, default=available_labels
+            # `?config=...` deep-links straight to one config's history (e.g. in
+            # Run Trends), narrowing the default selection to just that label.
+            requested_config = st.query_params.get("config")
+            default_labels = (
+                [requested_config] if requested_config in available_labels
+                else available_labels
             )
+            selected_labels = st.multiselect(
+                "Configurations", available_labels, default=default_labels
+            )
+            # Reflect the filter in the URL only when it actually narrows something —
+            # otherwise every normal view (all configs selected) would grow a
+            # `config=&config=...` query string for no reason.
+            if selected_labels and set(selected_labels) != set(available_labels):
+                st.query_params["config"] = selected_labels
+            else:
+                st.query_params.pop("config", None)
 
         _render_sidebar_footer()
 
@@ -448,15 +403,9 @@ def main() -> None:
         )
         return
 
-    # ── Run status banners (per-config detail + logs live in the Logs tab) ─────
-    # Render inside a *fixed* container so a banner appearing or disappearing (e.g.
-    # switching to a run with failed configs) never shifts the position of st.tabs
-    # below. Streamlit matches frontend elements by position: inserting a root-level
-    # element above the tab bar remounts it and snaps the active tab back to the
-    # first ("Run Trends"). The always-present container keeps that slot stable.
-    # (The per-run reliability status lives in the sidebar run-quality card.)
-    with st.container():
-        render_run_status(results, selected_run_meta)
+    # Run status banners (per-config detail + logs live in the Logs tab; the
+    # per-run reliability status lives in the sidebar run-quality card).
+    render_run_status(results, selected_run_meta)
 
     # ── Load trend data (remote only) ─────────────────────────────────────────
     trend_results_df = None
@@ -475,56 +424,56 @@ def main() -> None:
     # when no machine info is available, in which case the filter is a no-op.
     reliability = run_reliability_map(trend_results_df, trend_machine_df)
 
-    # ── Build tab list ─────────────────────────────────────────────────────────
-    # Trends-capable tabs are gated on *remote mode*, not on whether the current
-    # trend window happens to have data. This keeps the tab set and each tab's
-    # view selector stable across trend-window changes, so the active tab / sub-view
-    # is preserved when the user only adjusts the window; an empty window shows an
-    # in-view "widen the window" message instead of removing the option.
+    # ── Build section list ──────────────────────────────────────────────────────
+    # Trends-capable sections are gated on *remote mode*, not on whether the current
+    # trend window happens to have data. This keeps the section set and each one's
+    # view selector stable across trend-window changes, so the active section /
+    # sub-view is preserved when the user only adjusts the window; an empty window
+    # shows an in-view "widen the window" message instead of removing the option.
     trends_enabled = bool(config.data_url)
-    tab_names = ["Run Trends", "Regressions", "Config Impact", "Region Timing", "Event Timing", "Event Memory", "Machine Info", "Logs"]
+    section_names = ["Run Trends", "Regressions", "Config Impact", "Region Timing", "Event Timing", "Event Memory", "Machine Info", "Logs"]
     if not trends_enabled:
         # Trends / Regressions / Impact only make sense with multi-run (remote) data
-        tab_names = tab_names[3:]
+        section_names = section_names[3:]
 
-    tabs = st.tabs(tab_names)
-    _force_plotly_relayout_on_tab_switch()
-    _activate_tab_from_query_param()
-    tab_idx = 0
+    # ── Section switcher ────────────────────────────────────────────────────────
+    # st.segmented_control is backed by session_state, so a `?tab=...` deep link
+    # (used by the nightly regression email's "view in dashboard" links, see
+    # k4bench.regression.render._dashboard_link) seeds the initial value here and
+    # stays in sync via query_params as the user switches sections. Only the
+    # active section's content is built below, each behind its own `if`.
+    requested = (st.query_params.get("tab") or "").strip().lower()
+    default_section = next(
+        (name for name in section_names if name.lower() == requested), section_names[0]
+    )
+    active_section = st.segmented_control(
+        "Section", section_names, default=default_section,
+        key="active_section", label_visibility="collapsed", width="stretch",
+    ) or default_section
+    st.query_params["tab"] = active_section
 
     # Trends (remote only) — uses all stacks so history is complete
-    if trends_enabled:
-        with tabs[tab_idx]:
-            trends.render(trend_results_df, selected_labels, reliability)
-        tab_idx += 1
+    if active_section == "Run Trends":
+        trends.render(trend_results_df, selected_labels, reliability)
 
-        # Regressions (remote only) — cross-detector, reads the precomputed
-        # nightly reports from EOS rather than the sidebar-selected run window
-        with tabs[tab_idx]:
-            regressions.render(config.data_url, config.cache_dir)
-        tab_idx += 1
+    # Regressions (remote only) — cross-detector, reads the precomputed
+    # nightly reports from EOS rather than the sidebar-selected run window
+    if active_section == "Regressions":
+        regressions.render(config.data_url, config.cache_dir)
 
-        with tabs[tab_idx]:
-            impact.render(trend_results_df, selected_labels)
-        tab_idx += 1
+    if active_section == "Config Impact":
+        impact.render(trend_results_df, selected_labels)
 
-    # Region Timing
-    with tabs[tab_idx]:
+    if active_section == "Region Timing":
         region_timing.render(region_data, trend_region_df, selected_labels, trends_enabled, reliability)
-    tab_idx += 1
 
-    # Event Timing
-    with tabs[tab_idx]:
+    if active_section == "Event Timing":
         event_timing.render(event_data, trend_event_df, selected_labels, trends_enabled, reliability)
-    tab_idx += 1
 
-    # Event Memory
-    with tabs[tab_idx]:
+    if active_section == "Event Memory":
         event_memory.render(event_data, trend_event_df, selected_labels, trends_enabled, reliability)
-    tab_idx += 1
 
-    # Machine Info
-    with tabs[tab_idx]:
+    if active_section == "Machine Info":
         minfo = load_machine_info(data_dir) if _path_valid else None
         machine_info.render(
             minfo,
@@ -534,10 +483,9 @@ def main() -> None:
             trend_results_df=trend_results_df,
             trends_enabled=trends_enabled,
         )
-    tab_idx += 1
 
     # Logs (per-config status + log explorer)
-    with tabs[tab_idx]:
+    if active_section == "Logs":
         render_logs_tab(results, data_dir if _path_valid else None, selected_run_meta)
 
     _render_footer()

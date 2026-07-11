@@ -602,3 +602,18 @@ def _drop_stale_selection(key: str, options: list[str]) -> None:
     """
     if key in st.session_state and st.session_state[key] not in options:
         del st.session_state[key]
+
+
+def query_param_index(param: str, options: list[str]) -> int:
+    """Index into *options* named by ``?param=...`` in the page URL, or ``0``.
+
+    Seeds a keyed selectbox's initial value from a deep link (e.g. the nightly
+    regression email's "view in dashboard" links, see
+    ``k4bench.regression.render._dashboard_link``). Harmless once the widget's
+    key already has session_state — Streamlit only consults ``index=`` the
+    first time a keyed widget is created — and harmless when the query param
+    is absent or doesn't match *options*, both of which fall back to ``0``,
+    today's default.
+    """
+    wanted = st.query_params.get(param)
+    return options.index(wanted) if wanted in options else 0

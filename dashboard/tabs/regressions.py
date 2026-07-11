@@ -23,6 +23,7 @@ from k4bench.regression.models import (
 )
 from k4bench.regression.render import (
     _badge,
+    _detector_badge,
     _fmt,
     _fmt_pct,
     _group_title,
@@ -64,49 +65,7 @@ _ASSESSMENT_DOCS_URL = (
 )
 
 
-def _expand_detector_from_query_param() -> None:
-    """Auto-expand and scroll to one detector's expander when the page URL
-    carries ``&detector=...`` — used by the nightly regression email's "view
-    in dashboard" links (see ``k4bench.regression.render._dashboard_link``)
-    to land on the exact detector that triggered the alert instead of the
-    top of a long list of expanders.
-
-    Same same-origin-iframe technique as ``app._activate_tab_from_query_param``
-    and ``_reliability.render_sidebar_run_quality``'s click-through card —
-    Streamlit has no API to open a specific ``st.expander`` or scroll to it.
-    """
-    st.iframe(
-        """
-        <script>
-        (function () {
-          const doc = window.parent.document;
-          const params = new URLSearchParams(window.parent.location.search);
-          const wanted = params.get("detector");
-          if (!wanted) return;
-          function activate() {
-            const summaries = doc.querySelectorAll('summary');
-            for (const s of summaries) {
-              if ((s.innerText || "").includes(wanted)) {
-                const details = s.closest('details');
-                if (details && !details.open) s.click();
-                setTimeout(function () {
-                  s.scrollIntoView({behavior: 'smooth', block: 'start'});
-                }, 150);
-                return true;
-              }
-            }
-            return false;
-          }
-          if (!activate()) { setTimeout(activate, 800); }
-        })();
-        </script>
-        """,
-        height=1,
-    )
-
-
 def render(data_url: str, cache_dir: str) -> None:
-    _expand_detector_from_query_param()
     st.caption(
         "Nightly step-change detection across every detector's benchmark history. "
         f"[Learn how regressions are assessed →]({_ASSESSMENT_DOCS_URL})"
@@ -135,8 +94,20 @@ def render(data_url: str, cache_dir: str) -> None:
 
     _render_banner(report)
 
-    for detector, groups in report.by_detector().items():
-        _render_detector(detector, groups, data_url, cache_dir)
+    # `&detector=...` deep-links here (see k4bench.regression.render._dashboard_link,
+    # used by the nightly regression email's "view in dashboard" links): the named
+    # detector is moved to the front of the list and pre-expanded, so the reader
+    # lands on the detector that triggered the alert.
+    wanted_detector = st.query_params.get("detector")
+    by_detector = list(report.by_detector().items())
+    if wanted_detector:
+        by_detector.sort(key=lambda item: item[0] != wanted_detector)
+
+    for detector, groups in by_detector:
+        _render_detector(
+            detector, groups, data_url, cache_dir,
+            expanded=(detector == wanted_detector),
+        )
 
 
 def _render_banner(report: NightlyReport) -> None:
@@ -170,28 +141,19 @@ def _render_banner(report: NightlyReport) -> None:
         )
 
 
-def _detector_badge(groups: list[RunGroupReport]) -> str:
-    if any(g.failures or g.job_failures for g in groups):
-        return "❌"
-    if any(g.regressions for g in groups):
-        return "🔴"
-    if any(g.watches for g in groups):
-        return "⚠️"
-    if all(not g.verdicts and g.notes for g in groups):
-        return "❔"
-    return "✅"
-
-
 def _render_detector(
     detector: str,
     groups: list[RunGroupReport],
     data_url: str,
     cache_dir: str,
+    *,
+    expanded: bool = False,
 ) -> None:
     # Detectors always start collapsed — even when alerting — so a noisy sweep
     # night doesn't blow the page open into a wall of expanded charts. The badge
     # already telegraphs which detectors need attention; the reader opens those.
-    with st.expander(f"{_detector_badge(groups)} {detector}", expanded=False):
+    # A `?detector=...` deep link (see `render`) overrides this to land pre-opened.
+    with st.expander(f"{_detector_badge(groups)} {detector}", expanded=expanded):
         for i, group in enumerate(groups):
             # Sub-heading only when a detector has several (platform, sample)
             # groups — most have exactly one and a heading would be noise.
