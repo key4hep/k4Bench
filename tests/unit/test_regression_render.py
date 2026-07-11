@@ -57,7 +57,9 @@ def test_render_empty_report_does_not_crash():
 
 def test_markdown_orders_and_summarises():
     md = to_markdown(_full_report())
-    assert "## DET" in md
+    # Heading is prefixed with the detector's overall status badge — this
+    # group has a job failure, which outranks everything else.
+    assert "## ❌ DET" in md
     assert "| wall_time_s | baseline | 120 | 100 | +20.0% | 🔴 Regression |" in md
     # Both directions get the same badge — no good/bad split by direction.
     assert md.count("🔴 Regression") == 2
@@ -93,9 +95,15 @@ def test_dashboard_links_merge_into_an_existing_query_string():
 
 def test_markdown_links_to_dashboard_only_when_url_given():
     md_with = to_markdown(_full_report(), dashboard_url="https://dash.example/")
-    assert "view in dashboard](https://dash.example/?tab=Regressions&detector=DET)" in md_with
+    assert "↗ Regressions](https://dash.example/?tab=Regressions&detector=DET)" in md_with
+    # Single-group report also gets a Run Trends link, scoped to (detector, platform, sample).
+    assert (
+        "[↗ Run Trends](https://dash.example/?tab=Run+Trends"
+        "&detector=DET&platform=PLAT&sample=single_e)" in md_with
+    )
     md_without = to_markdown(_full_report())
-    assert "view in dashboard" not in md_without
+    assert "↗ Regressions" not in md_without
+    assert "↗ Run Trends" not in md_without
 
 
 def test_footer_present_in_both_formats():

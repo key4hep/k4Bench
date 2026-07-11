@@ -55,6 +55,21 @@ def _badge(v: MetricVerdict) -> str:
     return _BADGES.get(v.severity, v.severity.value)
 
 
+def _detector_badge(groups: list[RunGroupReport]) -> str:
+    """One glance-able status emoji for a whole detector (which can span
+    several (platform, sample) run groups) — worst-first, matching the
+    severity ordering everywhere else in the report."""
+    if any(g.failures or g.job_failures for g in groups):
+        return "❌"
+    if any(g.regressions for g in groups):
+        return "🔴"
+    if any(g.watches for g in groups):
+        return "⚠️"
+    if all(not g.verdicts and g.notes for g in groups):
+        return "❔"
+    return "✅"
+
+
 def _table_rows(group: RunGroupReport) -> list[MetricVerdict]:
     """The verdicts that get their own table row, in display order."""
     return group.failures + group.regressions
@@ -208,21 +223,35 @@ def to_markdown(report: NightlyReport, *, dashboard_url: str | None = None) -> s
         "",
         f"Generated {report.generated_at}. "
         f"{len(report.by_detector())} detector(s) checked: "
-        f"🟡 {len(report.regressions)} regression(s), "
+        f"🔴 {len(report.regressions)} regression(s), "
         f"❌ {len(report.failures) + len(report.job_failures)} failure(s), "
         f"⚠️ {len(report.watches)} on watch.",
         "",
     ]
     for detector, groups in report.by_detector().items():
-        heading = f"## {detector}"
+        heading = f"## {_detector_badge(groups)} {detector}"
         if dashboard_url:
             href = _dashboard_link(dashboard_url, tab="Regressions", detector=detector)
-            heading += f" · [↗ view in dashboard]({href})"
+            heading += f" · [↗ Regressions]({href})"
         lines.append(heading)
         lines.append("")
         for group in groups:
+            # Run Trends needs a (detector, platform, sample) triple, unlike the
+            # detector-wide Regressions link above, so it's scoped per group.
+            trends_href = (
+                _dashboard_link(
+                    dashboard_url, tab="Run Trends", detector=group.detector,
+                    platform=group.platform, sample=group.sample,
+                ) if dashboard_url else None
+            )
             if len(groups) > 1:
-                lines.append(f"### {_group_title(group)}")
+                group_heading = f"### {_group_title(group)}"
+                if trends_href:
+                    group_heading += f" · [↗ Run Trends]({trends_href})"
+                lines.append(group_heading)
+                lines.append("")
+            elif trends_href:
+                lines.append(f"[↗ Run Trends]({trends_href})")
                 lines.append("")
             for msg in group.job_failures:
                 lines.append(f"- ❌ **{msg}**")
@@ -260,6 +289,15 @@ _SEVERITY_COLORS = {
 }
 
 
+def _view_link(href: str, text: str) -> str:
+    """Small inline "↗ ..." link, styled the same wherever a heading links
+    out to the dashboard (detector → Regressions, group → Run Trends)."""
+    return (
+        f' <a href="{href}" style="font-size:11px;font-weight:normal;'
+        f'color:#5b9bd5;text-decoration:none;">↗ {text}</a>'
+    )
+
+
 def to_html(report: NightlyReport, *, dashboard_url: str | None = None,
             actions_url: str | None = None) -> str:
     """Self-contained HTML for the e-group email (inline styles, no CSS/JS)."""
@@ -269,7 +307,7 @@ def to_html(report: NightlyReport, *, dashboard_url: str | None = None,
         f"{report.report_night or 'no data'}</h2>",
         f'<p style="color:#555;margin-top:0;">Generated {report.generated_at}. '
         f"{len(report.by_detector())} detector(s) checked: "
-        f"🟡 {len(report.regressions)} regression(s), "
+        f"🔴 {len(report.regressions)} regression(s), "
         f"❌ {len(report.failures) + len(report.job_failures)} failure(s), "
         f"⚠️ {len(report.watches)} on watch.</p>",
     ]
@@ -283,20 +321,33 @@ def to_html(report: NightlyReport, *, dashboard_url: str | None = None,
         parts.append(f'<p>{" · ".join(links)}</p>')
 
     for detector, groups in report.by_detector().items():
-        detector_link = ""
-        if dashboard_url:
-            href = _dashboard_link(dashboard_url, tab="Regressions", detector=detector)
-            detector_link = (
-                f' <a href="{href}" style="font-size:11px;font-weight:normal;'
-                f'color:#5b9bd5;text-decoration:none;">↗ view in dashboard</a>'
-            )
+        detector_link = (
+            _view_link(_dashboard_link(dashboard_url, tab="Regressions", detector=detector),
+                       "Regressions")
+            if dashboard_url else ""
+        )
         parts.append(
             '<h3 style="border-bottom:2px solid #ddd;padding-bottom:2px;">'
-            f"{detector}{detector_link}</h3>"
+            f"{_detector_badge(groups)} {detector}{detector_link}</h3>"
         )
         for group in groups:
+            # Run Trends needs a (detector, platform, sample) triple, unlike the
+            # detector-wide Regressions link above, so it's scoped per group.
+            trends_link = (
+                _view_link(
+                    _dashboard_link(
+                        dashboard_url, tab="Run Trends", detector=group.detector,
+                        platform=group.platform, sample=group.sample,
+                    ),
+                    "Run Trends",
+                ) if dashboard_url else ""
+            )
             if len(groups) > 1:
-                parts.append(f'<h4 style="margin-bottom:0.3em;">{_group_title(group)}</h4>')
+                parts.append(
+                    f'<h4 style="margin-bottom:0.3em;">{_group_title(group)}{trends_link}</h4>'
+                )
+            elif trends_link:
+                parts.append(f'<p style="margin:0 0 6px;">{trends_link.strip()}</p>')
             for msg in group.job_failures:
                 parts.append(f'<p style="color:#d63c3c;font-weight:bold;">❌ {msg}</p>')
             for msg in group.notes:
@@ -313,10 +364,11 @@ def to_html(report: NightlyReport, *, dashboard_url: str | None = None,
                     )
                     + "</tr>"
                 )
-                for v in rows:
+                for i, v in enumerate(rows):
                     color = _SEVERITY_COLORS.get(v.severity, "#333")
+                    row_bg = "background:#fafafa;" if i % 2 else ""
                     parts.append(
-                        "<tr>"
+                        f'<tr style="{row_bg}">'
                         f'<td style="{_ROW_STYLE}">{_metric_name(v)}</td>'
                         f'<td style="{_ROW_STYLE}">{v.label}</td>'
                         f'<td style="{_ROW_STYLE}">{_fmt(v.value)}</td>'

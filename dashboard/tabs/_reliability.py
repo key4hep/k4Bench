@@ -50,10 +50,9 @@ def render_sidebar_run_quality(
         )
     st.markdown(
         f"""
-        <div class="k4-run-quality-card" title="Open the Machine Info tab"
-             style="cursor:pointer;background:{bg};border:1px solid {accent}45;
+        <div style="background:{bg};border:1px solid {accent}45;
                     border-left:3px solid {accent};border-radius:8px;
-                    padding:0.5rem 0.7rem;margin:0.15rem 0 0.5rem 0;">
+                    padding:0.5rem 0.7rem;margin:0.15rem 0 0.35rem 0;">
           <div style="display:flex;align-items:center;gap:0.5rem;">
             <span style="font-size:1.05rem;line-height:1;">{icon}</span>
             <div style="line-height:1.3;">
@@ -65,36 +64,6 @@ def render_sidebar_run_quality(
         </div>
         """,
         unsafe_allow_html=True,
-    )
-    # Make the card jump to the Machine Info tab on click. Streamlit has no API to
-    # set the active st.tabs panel, so — as in app._force_plotly_relayout_on_tab_switch
-    # — a tiny same-origin iframe script reaches the parent document and clicks the
-    # "Machine Info" tab button. The handler is bound once per card (dataset flag,
-    # idempotent across reruns) and resolves the tab button lazily at click time, so
-    # it works even though the card (sidebar) renders before the tabs (main area).
-    st.iframe(
-        """
-        <script>
-        (function () {
-          const doc = window.parent.document;
-          function bind() {
-            doc.querySelectorAll('.k4-run-quality-card').forEach(function (card) {
-              if (card.dataset.k4TabBound) return;
-              card.dataset.k4TabBound = "1";
-              card.addEventListener("click", function () {
-                const tabs = doc.querySelectorAll('button[data-baseweb="tab"]');
-                for (const t of tabs) {
-                  if ((t.innerText || "").trim() === "Machine Info") { t.click(); break; }
-                }
-              });
-            });
-          }
-          bind();
-          setTimeout(bind, 800);  // rebind if the card mounts after this runs
-        })();
-        </script>
-        """,
-        height=1,
     )
 
 
