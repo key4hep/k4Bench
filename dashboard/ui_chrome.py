@@ -604,16 +604,29 @@ def _drop_stale_selection(key: str, options: list[str]) -> None:
         del st.session_state[key]
 
 
-def query_param_index(param: str, options: list[str]) -> int:
-    """Index into *options* named by ``?param=...`` in the page URL, or ``0``.
+def sync_query_param(key: str, param: str, options: list[str]) -> None:
+    """Make the keyed widget *key* jump to ``?param=...`` in the page URL,
+    e.g. a nightly regression email's "view in dashboard" link (see
+    ``k4bench.regression.render._dashboard_link``).
 
-    Seeds a keyed selectbox's initial value from a deep link (e.g. the nightly
-    regression email's "view in dashboard" links, see
-    ``k4bench.regression.render._dashboard_link``). Harmless once the widget's
-    key already has session_state — Streamlit only consults ``index=`` the
-    first time a keyed widget is created — and harmless when the query param
-    is absent or doesn't match *options*, both of which fall back to ``0``,
-    today's default.
+    A keyed Streamlit widget only consults its ``index=``/``default=``
+    argument the first time that key is ever created — every later rerun
+    uses whatever is already in ``session_state[key]`` instead, constructor
+    argument or not. Since Streamlit reconnects a browser tab to its existing
+    session (and session_state with it) across both a page refresh and a
+    same-tab URL edit, a deep link opened into an already-open session would
+    silently be ignored if it only fed a value through ``index=``.
+
+    So instead this writes *key*'s session_state directly, but only when
+    *param*'s value has changed since the last time this function saw it —
+    tracked in a shadow ``_seen_qp_{param}`` key — so a fresh deep link always
+    wins, while a value the user picked themselves afterward is left alone on
+    every subsequent rerun. Call this immediately before creating the widget
+    with ``key=key``. No-op when *param* is absent from the URL or its value
+    isn't in *options*.
     """
     wanted = st.query_params.get(param)
-    return options.index(wanted) if wanted in options else 0
+    seen_key = f"_seen_qp_{param}"
+    if wanted is not None and wanted != st.session_state.get(seen_key) and wanted in options:
+        st.session_state[key] = wanted
+    st.session_state[seen_key] = wanted
