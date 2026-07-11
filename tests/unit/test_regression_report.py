@@ -11,9 +11,22 @@ import pytest
 
 from k4bench.regression.models import Direction, Severity
 from k4bench.regression.report_builder import (
+    EVENT_METRICS,
+    RUN_METRICS,
     build_nightly_report_local,
     group_report_from_run_dirs,
 )
+
+
+def test_run_and_event_metrics_are_disjoint():
+    """Every evaluated metric must belong to exactly one category. The engine
+    walks both registries per group and the dashboard drill-down dispatches on
+    ``metric in EVENT_METRICS``; an overlap would evaluate a metric twice and
+    make that dispatch ambiguous."""
+    assert not (set(RUN_METRICS) & set(EVENT_METRICS)), (
+        "a metric appears in both RUN_METRICS and EVENT_METRICS: "
+        f"{sorted(set(RUN_METRICS) & set(EVENT_METRICS))}"
+    )
 
 _PLAT = "x86_64-almalinux9-gcc14.2.0-opt"
 _STACK = "key4hep-2026-01-01"

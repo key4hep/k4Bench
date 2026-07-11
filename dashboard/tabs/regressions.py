@@ -14,7 +14,6 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from k4bench.analysis import trend as _trend
 from k4bench.regression.engine import Z_THRESHOLD
 from k4bench.regression.models import (
     MetricVerdict,
@@ -40,6 +39,11 @@ from k4bench.regression.report_builder import (
 )
 from k4bench.results.reliability_evidence import run_reliability_map
 from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
+from data import (
+    cached_load_trend_event_timing,
+    cached_load_trend_machine_info,
+    cached_load_trend_results,
+)
 from remote_cache import (
     _cached_fetch_report,
     _cached_fetch_runs_windowed,
@@ -164,10 +168,6 @@ def _render_banner(report: NightlyReport) -> None:
                  "results, or a whole run missing for the night. These alert "
                  "immediately, no confirmation needed.",
         )
-
-
-def _group_alerts(group: RunGroupReport) -> bool:
-    return bool(group.regressions or group.failures or group.job_failures)
 
 
 def _detector_badge(groups: list[RunGroupReport]) -> str:
@@ -383,6 +383,15 @@ def _drilldown_caption(item: MetricVerdict) -> str:
     return f"**{item.reason}** — {item.label}, {_pretty_sample(item.sample)}"
 
 
+def _series_key(verdict: MetricVerdict) -> str:
+    """Stable per-series suffix identifying one drill-down chart's ``(detector,
+    sample, label, metric)`` — shared by the reliability-filter and chart widget
+    keys so the two can never key off different subsets of the same series."""
+    return "_".join(filter(None, (
+        verdict.detector, verdict.sample, verdict.label, verdict.metric,
+    )))
+
+
 def _metric_history(verdict: MetricVerdict, data_url: str, cache_dir: str):
     """Fetch this group's run window and return ``(df, reliability)`` for the
     verdict's metric series: *df* carries ``run_id``, ``x_date`` and the metric
@@ -407,21 +416,29 @@ def _metric_history(verdict: MetricVerdict, data_url: str, cache_dir: str):
     if not run_dirs:
         return None
 
+    # Reuse the same ``@st.cache_data`` trend shims as the rest of the dashboard
+    # (see ``dashboard/data.py``) rather than rebuilding from CSV: the results
+    # trend feeds both the reliability map and the run-metric series, and every
+    # Streamlit rerun (e.g. toggling the unreliable-runs filter below) would
+    # otherwise re-parse the whole window. The cache keys on ``run_dirs``, so a
+    # second drill-down on the same group hits the cache too.
+    results_df = cached_load_trend_results(run_dirs)
+
     # Per-run reliability for this window — a per-run property (keyed by run_id)
     # independent of which metric is plotted, so it is computed once from the
     # machine-info + results trends and applied to whichever series df we build.
     reliability = run_reliability_map(
-        _trend.build_results_trend(run_dirs),
-        _trend.build_machine_info_trend(run_dirs),
+        results_df,
+        cached_load_trend_machine_info(run_dirs),
     )
 
     if verdict.metric in EVENT_METRICS:
-        df = _trend.build_event_timing_trend(run_dirs)
+        df = cached_load_trend_event_timing(run_dirs)
         if not _is_valid_df(df):
             return None
         df = df[df["label"] == verdict.label]
     else:
-        df = _trend.build_results_trend(run_dirs)
+        df = results_df
         if not _is_valid_df(df):
             return None
         if verdict.metric in RUN_METRICS:
@@ -445,9 +462,7 @@ def _render_drilldown(verdict: MetricVerdict, data_url: str, cache_dir: str) -> 
     # default as the Run Trends tab. The engine already judged the verdict on
     # reliable runs only, so this just keeps the plotted line consistent with
     # the baseline band; the flagged night is reliable and always survives.
-    excl_key = "regr_drill_excl_" + "_".join(filter(None, (
-        verdict.detector, verdict.sample, verdict.label, verdict.metric,
-    )))
+    excl_key = "regr_drill_excl_" + _series_key(verdict)
     df = render_reliability_filter(df, reliability, key=excl_key, date_col="x_date")
     if df.empty:
         return
@@ -510,8 +525,6 @@ def _render_drilldown(verdict: MetricVerdict, data_url: str, cache_dir: str) -> 
         yaxis_title=_yaxis_label(verdict),
         showlegend=False,
     )
-    chart_key = "regr_chart_" + "_".join(filter(None, (
-        verdict.detector, verdict.sample, verdict.label, verdict.metric,
-    )))
+    chart_key = "regr_chart_" + _series_key(verdict)
     st.plotly_chart(fig, width="stretch", key=chart_key)
     st.caption(_drilldown_caption(verdict))
