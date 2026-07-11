@@ -105,10 +105,16 @@ every browse dimension in the path so discovery is just directory listing:
 {detector}/{platform}/key4hep-{release}/{sample}/{YYYY-MM-DD}/
     run_info.json  machine_info.json
     {config}_results.csv  {config}_events.json  {config}_regions.json  {config}.log
+_reports/{YYYY-MM-DD}/
+    report.json
 ```
 
 This is the integration contract between CI and the dashboard
 ([data flow](../architecture/data-flow.md#nightly-eos-dashboard)).
+Underscore-prefixed top-level directories are reserved for non-detector data:
+`_reports/` holds the nightly regression report (written by the
+`regression-report` CI job, rendered by the dashboard's Regressions tab) and is
+skipped by detector discovery.
 
 ## See also
 

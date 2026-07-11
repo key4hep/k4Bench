@@ -1,28 +1,16 @@
-"""Unit tests for the dashboard's remote WebEOS access layer.
+"""Unit tests for the remote WebEOS access layer (:mod:`k4bench.remote`).
 
-``dashboard/remote.py`` is not part of the importable ``k4bench`` package and
-its sibling modules (``data``/``config``) pull in Streamlit, so it is loaded here
-in isolation by file path. ``remote`` itself only depends on stdlib + requests.
+``k4bench.remote`` only depends on stdlib + requests; ``dashboard/remote.py``
+is a thin re-export shim kept for the dashboard's flat imports.
 """
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 import pytest
 
-_REMOTE_PATH = Path(__file__).resolve().parents[2] / "dashboard" / "remote.py"
-
-
-def _load_remote():
-    spec = importlib.util.spec_from_file_location("k4bench_dashboard_remote", _REMOTE_PATH)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-remote = _load_remote()
+from k4bench import remote
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +91,40 @@ def web(monkeypatch):
 # ---------------------------------------------------------------------------
 # Discovery
 # ---------------------------------------------------------------------------
+
+
+def test_list_detectors_skips_underscore_dirs(monkeypatch):
+    # _reports/ (nightly regression reports) and any other _-prefixed dir at the
+    # top level are reserved for non-detector data and must not be listed.
+    fake = FakeWeb({BASE: ["ALLEGRO/", "_reports/", "CLD/"]})
+    monkeypatch.setattr(remote.requests, "get", fake.get)
+    assert remote.list_detectors(BASE) == ["ALLEGRO", "CLD"]
+
+
+def test_list_report_dates_newest_first_and_empty_when_absent(monkeypatch):
+    fake = FakeWeb({f"{BASE}/_reports": ["2026-05-20/", "2026-05-22/", "2026-05-21/"]})
+    monkeypatch.setattr(remote.requests, "get", fake.get)
+    assert remote.list_report_dates(BASE) == ["2026-05-22", "2026-05-21", "2026-05-20"]
+
+    def raise_404(url, timeout=None):
+        raise remote.requests.RequestException("404")
+
+    monkeypatch.setattr(remote.requests, "get", raise_404)
+    assert remote.list_report_dates(BASE) == []  # no _reports tree yet: not an error
+
+
+def test_fetch_report_parses_json(monkeypatch):
+    class _JsonResponse(_FakeResponse):
+        def json(self):
+            import json
+            return json.loads(self.content)
+
+    def get(url, timeout=None):
+        assert url == f"{BASE}/_reports/2026-05-22/report.json"
+        return _JsonResponse(content=b'{"generated_at": "x", "groups": []}')
+
+    monkeypatch.setattr(remote.requests, "get", get)
+    assert remote.fetch_report(BASE, "2026-05-22") == {"generated_at": "x", "groups": []}
 
 
 def test_list_run_dates_all_stacks_lists_without_downloading_files(web):

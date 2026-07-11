@@ -1,0 +1,84 @@
+name: Regression Report
+
+# Builds the regression report from the EOS run history, uploads report.json to
+# EOS (read back by the dashboard's Regressions tab) and emails the CERN e-group
+# when the report is alertable.
+#
+# Two triggers:
+#   • workflow_call    — invoked by the nightly workflow after the benchmarks.
+#   • workflow_dispatch — run it by hand from the Actions tab (no benchmark
+#     rerun; the report is rebuilt from whatever is already on EOS). Tick
+#     "force_send" to email the report even on a clean, non-alertable night.
+
+on:
+  workflow_call:
+    inputs:
+      force_send:
+        description: "Email the report even when it is not alertable"
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      force_send:
+        description: "Email the report even when it is not alertable"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  regression-report:
+    runs-on: [self-hosted, fcc-ironic]
+    env:
+      CONTAINER_IMAGE: ghcr.io/key4hep/key4hep-images/alma9
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up EOS service certificate
+        run: |
+          mkdir -p "$RUNNER_TEMP/eos-auth"
+          echo "${{ secrets.EOS_SERVICE_CERT_BASE64 }}" | base64 -d > "$RUNNER_TEMP/eos-auth/usercert.pem"
+          echo "${{ secrets.EOS_SERVICE_KEY_BASE64 }}"  | base64 -d > "$RUNNER_TEMP/eos-auth/userkey.pem"
+          chmod 400 "$RUNNER_TEMP/eos-auth/userkey.pem"
+
+      - name: Build report, upload to EOS, notify e-group
+        env:
+          K4BENCH_DATA_URL:          ${{ vars.K4BENCH_DATA_URL || 'https://k4bench-data.web.cern.ch' }}
+          K4BENCH_REGRESSION_EGROUP: ${{ vars.K4BENCH_REGRESSION_EGROUP }}
+          K4BENCH_REGRESSION_FROM:   ${{ vars.K4BENCH_REGRESSION_FROM }}
+          K4BENCH_DASHBOARD_URL:     ${{ vars.K4BENCH_DASHBOARD_URL }}
+          GITHUB_RUN_URL:            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          FORCE_SEND:                ${{ inputs.force_send }}
+        run: |
+          docker pull "${{ env.CONTAINER_IMAGE }}"
+          docker run --rm --init \
+            --device /dev/fuse \
+            --cap-add SYS_ADMIN \
+            --volume /cvmfs:/cvmfs:shared \
+            --volume "${{ github.workspace }}":/workspace:Z \
+            --volume "$RUNNER_TEMP/eos-auth":/tmp/eos-auth:ro,Z \
+            --workdir /workspace \
+            -e X509_USER_CERT=/tmp/eos-auth/usercert.pem \
+            -e X509_USER_KEY=/tmp/eos-auth/userkey.pem \
+            -e K4BENCH_DATA_URL -e K4BENCH_REGRESSION_EGROUP \
+            -e K4BENCH_REGRESSION_FROM -e K4BENCH_DASHBOARD_URL \
+            -e GITHUB_RUN_URL -e FORCE_SEND \
+            "${{ env.CONTAINER_IMAGE }}" \
+            bash /workspace/.github/scripts/regression_report.sh
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: regression-report
+          path: |
+            report/report.json
+            report/report.md
+          if-no-files-found: warn
+
+      - name: Clean up EOS certificate
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/eos-auth"

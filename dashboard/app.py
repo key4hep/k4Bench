@@ -27,8 +27,9 @@ from remote_cache import (
     _cached_list_run_dates,
     _cached_scan_stack_samples,
 )
-from tabs import event_memory, event_timing, impact, machine_info, region_timing, trends
-from tabs._reliability import render_sidebar_run_quality, run_reliability_map
+from k4bench.results.reliability_evidence import run_reliability_map
+from tabs import event_memory, event_timing, impact, machine_info, region_timing, regressions, trends
+from tabs._reliability import render_sidebar_run_quality
 from trend_window import WINDOW_PRESETS, resolve_window
 from ui_chrome import (
     DOCS_URL,
@@ -80,6 +81,43 @@ def _force_plotly_relayout_on_tab_switch() -> None:
           }
           bind();
           setTimeout(bind, 800);  // rebind in case tab buttons mount after this runs
+        })();
+        </script>
+        """,
+        height=1,
+    )
+
+
+def _activate_tab_from_query_param() -> None:
+    """Jump straight to the tab named by ``?tab=...`` in the page URL — used by
+    the nightly regression email's "view in dashboard" links (see
+    ``k4bench.regression.render._dashboard_link``) to land directly on
+    Regressions instead of the default first tab.
+
+    Streamlit has no API to set the active ``st.tabs`` panel, so — as in
+    ``tabs._reliability.render_sidebar_run_quality``'s click-through card —
+    a same-origin iframe script reaches the parent document and clicks the
+    tab button whose label matches, once the tab bar has mounted.
+    """
+    st.iframe(
+        """
+        <script>
+        (function () {
+          const doc = window.parent.document;
+          const params = new URLSearchParams(window.parent.location.search);
+          const wanted = (params.get("tab") || "").trim().toLowerCase();
+          if (!wanted) return;
+          function activate() {
+            const tabs = doc.querySelectorAll('button[data-baseweb="tab"]');
+            for (const t of tabs) {
+              if ((t.innerText || "").trim().toLowerCase() === wanted) {
+                if (t.getAttribute("aria-selected") !== "true") t.click();
+                return true;
+              }
+            }
+            return false;
+          }
+          if (!activate()) { setTimeout(activate, 800); }
         })();
         </script>
         """,
@@ -444,19 +482,26 @@ def main() -> None:
     # is preserved when the user only adjusts the window; an empty window shows an
     # in-view "widen the window" message instead of removing the option.
     trends_enabled = bool(config.data_url)
-    tab_names = ["Run Trends", "Config Impact", "Region Timing", "Event Timing", "Event Memory", "Machine Info", "Logs"]
+    tab_names = ["Run Trends", "Regressions", "Config Impact", "Region Timing", "Event Timing", "Event Memory", "Machine Info", "Logs"]
     if not trends_enabled:
-        # Trends / Impact only make sense with multi-run (remote) data
-        tab_names = tab_names[2:]
+        # Trends / Regressions / Impact only make sense with multi-run (remote) data
+        tab_names = tab_names[3:]
 
     tabs = st.tabs(tab_names)
     _force_plotly_relayout_on_tab_switch()
+    _activate_tab_from_query_param()
     tab_idx = 0
 
     # Trends (remote only) — uses all stacks so history is complete
     if trends_enabled:
         with tabs[tab_idx]:
             trends.render(trend_results_df, selected_labels, reliability)
+        tab_idx += 1
+
+        # Regressions (remote only) — cross-detector, reads the precomputed
+        # nightly reports from EOS rather than the sidebar-selected run window
+        with tabs[tab_idx]:
+            regressions.render(config.data_url, config.cache_dir)
         tab_idx += 1
 
         with tabs[tab_idx]:

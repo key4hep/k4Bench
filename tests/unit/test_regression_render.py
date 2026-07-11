@@ -1,0 +1,160 @@
+"""Unit tests for report rendering (:mod:`k4bench.regression.render`)."""
+
+from __future__ import annotations
+
+import json
+import math
+
+from k4bench.regression.models import (
+    Direction,
+    MetricVerdict,
+    NightlyReport,
+    RunGroupReport,
+    Severity,
+)
+from k4bench.regression.render import from_json, to_html, to_json, to_markdown
+
+
+def _verdict(**overrides) -> MetricVerdict:
+    base = dict(
+        detector="DET", platform="PLAT", sample="single_e", label="baseline",
+        metric_family="time", metric="wall_time_s", sub_detector=None,
+        run_id="2026-01-12", run_date="2026-01-12", value=120.0,
+        baseline_median=100.0, baseline_mad=0.6, pct_change=0.20, z_score=33.0,
+        severity=Severity.CONFIRMED, direction=Direction.UP,
+        reason="+20.0% vs baseline median 100 (robust z=33.0)",
+    )
+    base.update(overrides)
+    return MetricVerdict(**base)
+
+
+def _full_report() -> NightlyReport:
+    group = RunGroupReport(
+        detector="DET", platform="PLAT", sample="single_e",
+        k4h_release="key4hep-2026-01-01", run_date="2026-01-12", run_id="2026-01-12",
+        verdicts=[
+            _verdict(),
+            _verdict(metric="mean_time_s", direction=Direction.DOWN, pct_change=-0.10),
+            _verdict(metric="median_time_s", severity=Severity.WATCH),
+            _verdict(metric="returncode", metric_family="status", value=1.0,
+                     severity=Severity.FAILURE, direction=Direction.NONE,
+                     reason="config exited with returncode 1"),
+            _verdict(metric="peak_rss_mb", severity=Severity.OK,
+                     direction=Direction.NONE, z_score=math.inf),
+        ],
+        job_failures=["config 'variant' produced no results tonight"],
+        notes=["tonight's run failed the host reliability check"],
+    )
+    return NightlyReport(generated_at="2026-01-12T06:00:00+00:00", groups=[group])
+
+
+def test_render_empty_report_does_not_crash():
+    report = NightlyReport(generated_at="2026-01-12T06:00:00+00:00")
+    md, html = to_markdown(report), to_html(report)
+    assert "no data" in md and "no data" in html
+    assert to_json(report)["summary"]["has_alertable"] is False
+
+
+def test_markdown_orders_and_summarises():
+    md = to_markdown(_full_report())
+    assert "## DET" in md
+    assert "| wall_time_s | baseline | 120 | 100 | +20.0% | 🔴 Regression |" in md
+    # Both directions get the same badge — no good/bad split by direction.
+    assert md.count("🔴 Regression") == 2
+    assert "❌ Failure" in md
+    # WATCH/OK are summarised, never table rows.
+    assert "⚠️ Watch" not in md.split("|---|")[-1].split("_")[0]
+    assert "1 on watch" in md
+    assert "config 'variant' produced no results tonight" in md
+
+
+def test_html_is_self_contained_and_links():
+    html = to_html(
+        _full_report(),
+        dashboard_url="https://dash.example/",
+        actions_url="https://github.com/x/y/actions/runs/1",
+    )
+    assert "<style" not in html and "<script" not in html  # inline styles only
+    # Top banner deep-links straight to the Regressions tab.
+    assert "https://dash.example/?tab=Regressions" in html
+    # Per-detector heading also links, scoped to that detector.
+    assert "detector=DET" in html
+    assert html.count("🔴 Regression") == 2
+
+
+def test_dashboard_links_merge_into_an_existing_query_string():
+    # A dashboard_url that already carries its own query (e.g. behind a proxy
+    # path) gets "tab"/"detector" merged in, not appended raw.
+    html = to_html(_full_report(), dashboard_url="https://dash.example/app?env=prod")
+    assert "env=prod" in html and "tab=Regressions" in html
+    md = to_markdown(_full_report(), dashboard_url="https://dash.example/app?env=prod")
+    assert "env=prod" in md and "tab=Regressions" in md
+
+
+def test_markdown_links_to_dashboard_only_when_url_given():
+    md_with = to_markdown(_full_report(), dashboard_url="https://dash.example/")
+    assert "view in dashboard](https://dash.example/?tab=Regressions&detector=DET)" in md_with
+    md_without = to_markdown(_full_report())
+    assert "view in dashboard" not in md_without
+
+
+def test_footer_present_in_both_formats():
+    report = _full_report()
+    md, html = to_markdown(report), to_html(report)
+    for text in ("© 2026 CERN", "FCC project", "jbeirer@cern.ch"):
+        assert text in md
+        assert text in html
+
+
+def test_group_title_prettifies_known_sample_and_platform_layouts():
+    from k4bench.regression.render import _group_title
+
+    group = RunGroupReport(
+        detector="IDEA_o1_v03", platform="x86_64-almalinux9-gcc14.2.0-opt",
+        sample="p8_ee_Zbb_ecm91", k4h_release="key4hep-2026-01-01",
+        run_date="2026-01-12", run_id="2026-01-12",
+    )
+    assert _group_title(group) == (
+        "Pythia8: e⁺e⁻ → Z → bb (91 GeV) · AlmaLinux 9 · GCC 14.2.0 (optimized)"
+    )
+
+    group2 = RunGroupReport(
+        detector="IDEA_o1_v03", platform="x86_64-almalinux9-gcc14.2.0-opt",
+        sample="single_e-_10GeV", k4h_release="key4hep-2026-01-01",
+        run_date="2026-01-12", run_id="2026-01-12",
+    )
+    assert _group_title(group2) == "Single e⁻ · 10GeV · AlmaLinux 9 · GCC 14.2.0 (optimized)"
+
+
+def test_group_title_falls_back_to_raw_strings_for_unknown_layouts():
+    from k4bench.regression.render import _group_title
+
+    group = RunGroupReport(
+        detector="DET", platform="some-weird-platform-string",
+        sample="a_totally_unknown_sample_name", k4h_release="key4hep-2026-01-01",
+        run_date="2026-01-12", run_id="2026-01-12",
+    )
+    assert _group_title(group) == "a_totally_unknown_sample_name · some-weird-platform-string"
+
+
+def test_json_roundtrip_and_sanitization():
+    report = _full_report()
+    data = to_json(report)
+    # Strict JSON: the infinite z-score must be serialized as null.
+    text = json.dumps(data)  # would raise on raw inf with allow_nan=False semantics
+    ok_verdict = [v for v in data["groups"][0]["verdicts"] if v["severity"] == "OK"]
+    assert ok_verdict[0]["z_score"] is None
+    assert data["summary"] == {
+        "report_night": "2026-01-12",
+        "n_detectors": 1,
+        "n_regressions": 2,  # both directions confirmed — no good/bad split
+        "n_watches": 1,
+        "n_failures": 2,  # one config FAILURE + one job failure
+        "has_alertable": True,
+    }
+    rebuilt = from_json(json.loads(text))
+    assert rebuilt.report_night == report.report_night
+    assert len(rebuilt.regressions) == 2
+    assert all(v.severity is Severity.CONFIRMED for v in rebuilt.regressions)
+    assert rebuilt.groups[0].job_failures == report.groups[0].job_failures
+    assert rebuilt.has_alertable

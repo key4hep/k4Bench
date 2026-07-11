@@ -54,6 +54,8 @@ sequenceDiagram
     participant Job as benchmark job
     participant K as k4bench
     participant EOS as CERN EOS
+    participant Reg as regression-report job
+    participant Mail as CERN e-group
     participant Dash as dashboard
 
     Cron->>Job: expand .github/benchmarks/*.yml → matrix
@@ -61,8 +63,13 @@ sequenceDiagram
     K-->>Job: logs/<detector>/ (CSV + JSON + log)
     Job->>Job: write run_info.json + machine_info.json
     Job->>EOS: upload to {detector}/{platform}/key4hep-{release}/{sample}/{date}/
+    Reg->>EOS: pull trailing run window per (detector, platform, sample)
+    Reg->>Reg: k4bench.regression: reliability-filtered step detection
+    Reg->>EOS: upload _reports/{date}/report.json
+    Reg-->>Mail: email on confirmed regressions/failures only
     Dash->>EOS: list + download runs over HTTPS (cached on disk)
     Dash->>Dash: load via k4bench.analysis; render tabs
+    Dash->>EOS: fetch _reports/{date}/report.json (Regressions tab)
 ```
 
 The EOS directory layout is the integration contract between CI and the
@@ -70,6 +77,16 @@ dashboard — see [File formats → EOS layout](../reference/file-formats.md#eos
 Because historical runs are immutable, the dashboard downloads each at most once
 and publishes it into its on-disk cache atomically, so concurrent reruns never
 see a half-written run.
+
+The `regression-report` job (`.github/scripts/regression_report.{py,sh}`) runs
+after every benchmark job with `if: always()`, so a crashed detector job still
+surfaces in the report — its missing upload *is* the failure signal. It reuses
+the same pure building blocks as the dashboard (`k4bench.remote` for
+discovery/download, `k4bench.analysis.trend` for aggregation,
+`k4bench.results.reliability_evidence` for the per-run reliability verdict) and
+adds the step detector in `k4bench/regression/engine.py`. The precomputed
+`_reports/{date}/report.json` is what the dashboard's Regressions tab renders —
+it never recomputes verdicts live.
 
 ## Deployment
 

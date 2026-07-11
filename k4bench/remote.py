@@ -63,8 +63,13 @@ def _list_files(url: str) -> list[str]:
 # ── Discovery helpers (one per hierarchy level) ───────────────────────────────
 
 def list_detectors(base_url: str) -> list[str]:
-    """Return available detector names."""
-    return _list_subdirs(base_url)
+    """Return available detector names.
+
+    Underscore-prefixed directories at the top level (e.g. ``_reports/``, where
+    the nightly regression reports live) are reserved for non-detector data and
+    skipped.
+    """
+    return [d for d in _list_subdirs(base_url) if not d.startswith("_")]
 
 
 def list_platforms(base_url: str, detector: str) -> list[str]:
@@ -261,6 +266,32 @@ def fetch_runs_windowed(
                 continue
             results.append({"stack": stack, "date": date, "run_dir": str(run_dir)})
     return results
+
+
+def list_report_dates(base_url: str) -> list[str]:
+    """Return available nightly regression-report dates (newest first).
+
+    Reports live at ``{base_url}/_reports/{YYYY-MM-DD}/report.json``, written
+    by the nightly ``regression-report`` CI job. An absent ``_reports/`` tree
+    (no report generated yet) is not an error — it returns an empty list.
+    """
+    try:
+        return sorted(_list_subdirs(f"{base_url.rstrip('/')}/_reports"), reverse=True)
+    except requests.RequestException as exc:
+        _log.debug("list_report_dates: no _reports tree — %s", exc)
+        return []
+
+
+def fetch_report(base_url: str, date: str) -> dict | None:
+    """Fetch and parse one nightly regression report, or ``None`` on failure."""
+    url = f"{base_url.rstrip('/')}/_reports/{date}/report.json"
+    try:
+        resp = requests.get(url, timeout=_TIMEOUT)
+        resp.raise_for_status()
+        return resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        _log.warning("fetch_report: could not fetch %s — %s", url, exc)
+        return None
 
 
 def ensure_latest_run_cached(

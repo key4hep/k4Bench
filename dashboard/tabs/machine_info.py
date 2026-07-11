@@ -43,7 +43,10 @@ from k4bench.results.reliability import (
     ReliabilityVerdict,
     Status,
 )
-from tabs._reliability import _ctx_switch_baseline, _reliability_verdict
+from k4bench.results.reliability_evidence import (
+    ctx_switch_baseline as _ctx_switch_baseline,
+    reliability_verdict as _reliability_verdict,
+)
 from ui_utils import _is_valid_df, _to_rgba
 
 # CPU flags relevant to simulation / floating-point heavy workloads.

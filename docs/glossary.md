@@ -126,4 +126,4 @@ Sweep
 
 WebEOS
 :   The HTTPS front-end exposing the EOS results directory to the dashboard as an
-    Apache-style listing, discovered/downloaded by `dashboard/remote.py`.
+    Apache-style listing, discovered/downloaded by `k4bench/remote.py`.

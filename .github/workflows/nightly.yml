@@ -41,3 +41,14 @@ jobs:
       detector:     ${{ matrix.group.detector }}
       samples_json: ${{ toJson(matrix.group.samples) }}
     secrets: inherit
+
+  # ── Nightly regression report over the full EOS history ────────────────────
+  # `if: always()` so a crashed detector job still produces a FAILURE verdict
+  # (its missing upload is the signal) instead of the report vanishing. The job
+  # body lives in the reusable regression-report.yml, which is also
+  # workflow_dispatch-able for a manual, on-demand send.
+  regression-report:
+    needs: benchmark
+    if: always()
+    uses: ./.github/workflows/regression-report.yml
+    secrets: inherit
