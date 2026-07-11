@@ -41,7 +41,7 @@ from ui_chrome import (
     render_logs_tab,
     render_run_status,
     resource_link_card,
-    sync_query_param,
+    seed_query_param,
 )
 
 
@@ -169,7 +169,7 @@ def main() -> None:
             if not detectors:
                 st.error("No detectors found at the configured WebEOS URL.")
                 return
-            sync_query_param("sb_detector", "detector", detectors)
+            seed_query_param("sb_detector", "detector", detectors)
             detector = st.selectbox("Detector", detectors, key="sb_detector")
             if not detector:
                 return
@@ -186,7 +186,7 @@ def main() -> None:
                 st.warning(f"No platforms found for detector '{detector}'.")
                 return
             _drop_stale_selection("sb_platform", platforms)
-            sync_query_param("sb_platform", "platform", platforms)
+            seed_query_param("sb_platform", "platform", platforms)
             platform = st.selectbox("Platform", platforms, key="sb_platform")
             if not platform:
                 return
@@ -209,7 +209,7 @@ def main() -> None:
                 st.warning(f"No samples found for '{detector} / {platform}'.")
                 return
             _drop_stale_selection("sb_sample", samples)
-            sync_query_param("sb_sample", "sample", samples)
+            seed_query_param("sb_sample", "sample", samples)
             sample = st.selectbox("Sample", samples, key="sb_sample")
             if not sample:
                 return
@@ -227,7 +227,7 @@ def main() -> None:
                 st.warning(f"No releases contain sample '{sample}' for '{detector} / {platform}'.")
                 return
             _drop_stale_selection("sb_stack", stacks)
-            sync_query_param("sb_stack", "stack", stacks)
+            seed_query_param("sb_stack", "stack", stacks)
             stack = st.selectbox("Stack", stacks, key="sb_stack")
             st.caption(
                 f"Available in {len(stacks)} release(s); defaults to the newest. "
@@ -279,7 +279,7 @@ def main() -> None:
                 hi_date = all_dates[-1].date()
                 st.header("Trend window")
                 window_presets = list(WINDOW_PRESETS)
-                sync_query_param("sb_trend_preset", "range", window_presets)
+                seed_query_param("sb_trend_preset", "range", window_presets)
                 preset = st.selectbox(
                     "Range", window_presets,
                     key="sb_trend_preset",
@@ -366,20 +366,17 @@ def main() -> None:
         else:
             st.header("Filters")
             # `?config=...` deep-links straight to one config's history (e.g. in
-            # Run Trends), narrowing the selection to just that label. Forced into
-            # session_state directly (see sync_query_param's docstring) rather than
-            # through `default=`, so a fresh link wins even in an already-open
-            # session that has this widget's key set to something else.
-            requested_config = st.query_params.get("config")
-            if (
-                requested_config in available_labels
-                and requested_config != st.session_state.get("_seen_qp_config")
-            ):
-                st.session_state["ms_selected_labels"] = [requested_config]
-            st.session_state["_seen_qp_config"] = requested_config
+            # Run Trends), narrowing the selection to just that label — seeded into
+            # session_state the same way as seed_query_param (see its docstring),
+            # since a multiselect's `default=` has the identical constraint.
+            if "ms_selected_labels" not in st.session_state:
+                requested_config = st.query_params.get("config")
+                st.session_state["ms_selected_labels"] = (
+                    [requested_config] if requested_config in available_labels
+                    else available_labels
+                )
             selected_labels = st.multiselect(
-                "Configurations", available_labels, default=available_labels,
-                key="ms_selected_labels",
+                "Configurations", available_labels, key="ms_selected_labels",
             )
             # Reflect the filter in the URL only when it actually narrows something —
             # otherwise every normal view (all configs selected) would grow a
@@ -433,22 +430,17 @@ def main() -> None:
         section_names = section_names[3:]
 
     # ── Section switcher ────────────────────────────────────────────────────────
-    # st.segmented_control is backed by session_state, so a `?tab=...` deep link
-    # (used by the nightly regression email's "view in dashboard" links, see
-    # k4bench.regression.render._dashboard_link) is forced into session_state
-    # directly (see sync_query_param's docstring for why) whenever its value is
-    # new, so it wins even in an already-open session sitting on another section.
-    # Only the active section's content is built below, each behind its own `if`.
-    requested = st.query_params.get("tab")
-    matched = next(
-        (name for name in section_names if name.lower() == (requested or "").strip().lower()),
-        None,
-    )
-    if matched is not None and requested != st.session_state.get("_seen_qp_tab"):
-        st.session_state["active_section"] = matched
-    st.session_state["_seen_qp_tab"] = requested
+    # `?tab=...` (used by the nightly regression email's "view in dashboard" links,
+    # see k4bench.regression.render._dashboard_link) seeds session_state the same
+    # way as seed_query_param (see its docstring) — case-insensitively here since
+    # section names are matched by label. Only the active section's content is
+    # built below, each behind its own `if`.
+    if "active_section" not in st.session_state:
+        requested = (st.query_params.get("tab") or "").strip().lower()
+        matched = next((name for name in section_names if name.lower() == requested), None)
+        st.session_state["active_section"] = matched or section_names[0]
     active_section = st.segmented_control(
-        "Section", section_names, default=section_names[0],
+        "Section", section_names,
         key="active_section", label_visibility="collapsed", width="stretch",
     ) or section_names[0]
     st.query_params["tab"] = active_section
