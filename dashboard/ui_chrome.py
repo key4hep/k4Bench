@@ -604,29 +604,21 @@ def _drop_stale_selection(key: str, options: list[str]) -> None:
         del st.session_state[key]
 
 
-def sync_query_param(key: str, param: str, options: list[str]) -> None:
-    """Make the keyed widget *key* jump to ``?param=...`` in the page URL,
-    e.g. a nightly regression email's "view in dashboard" link (see
+def seed_query_param(key: str, param: str, options: list[str]) -> None:
+    """Seed a keyed widget's initial value from ``?param=...`` in the page
+    URL, e.g. a nightly regression email's "view in dashboard" link (see
     ``k4bench.regression.render._dashboard_link``).
 
-    A keyed Streamlit widget only consults its ``index=``/``default=``
-    argument the first time that key is ever created — every later rerun
-    uses whatever is already in ``session_state[key]`` instead, constructor
-    argument or not. Since Streamlit reconnects a browser tab to its existing
-    session (and session_state with it) across both a page refresh and a
-    same-tab URL edit, a deep link opened into an already-open session would
-    silently be ignored if it only fed a value through ``index=``.
-
-    So instead this writes *key*'s session_state directly, but only when
-    *param*'s value has changed since the last time this function saw it —
-    tracked in a shadow ``_seen_qp_{param}`` key — so a fresh deep link always
-    wins, while a value the user picked themselves afterward is left alone on
-    every subsequent rerun. Call this immediately before creating the widget
-    with ``key=key``. No-op when *param* is absent from the URL or its value
-    isn't in *options*.
+    Streamlit's documented pattern for this: write ``session_state[key]``
+    before the widget is created, and never pass ``index=``/``default=`` for
+    that same key, since Streamlit only honors the constructor argument the
+    first time a key is created anyway and rejects a call that sets
+    session_state *and* passes a default in the same run. A no-op once *key*
+    already has a value (from an earlier rerun or a widget interaction), so
+    it only ever applies on that one first run — call this immediately
+    before creating the widget with ``key=key``.
     """
-    wanted = st.query_params.get(param)
-    seen_key = f"_seen_qp_{param}"
-    if wanted is not None and wanted != st.session_state.get(seen_key) and wanted in options:
-        st.session_state[key] = wanted
-    st.session_state[seen_key] = wanted
+    if key not in st.session_state:
+        wanted = st.query_params.get(param)
+        if wanted in options:
+            st.session_state[key] = wanted

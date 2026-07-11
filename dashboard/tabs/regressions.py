@@ -97,25 +97,16 @@ def render(data_url: str, cache_dir: str) -> None:
     # `&detector=...` deep-links here (see k4bench.regression.render._dashboard_link,
     # used by the nightly regression email's "view in dashboard" links): the named
     # detector is moved to the front of the list and pre-expanded, so the reader
-    # lands on the detector that triggered the alert. "Fresh" (changed since this
-    # function last saw it) is forced into the expander's own session_state below,
-    # same reasoning as sync_query_param — a keyed widget only honors a changed
-    # `expanded=` the run its key is first created, not once already open/closed
-    # by the reader, so an already-open session needs the direct override too.
+    # lands on the detector that triggered the alert.
     wanted_detector = st.query_params.get("detector")
-    fresh_link = wanted_detector is not None and wanted_detector != st.session_state.get(
-        "_seen_qp_regr_detector"
-    )
-    st.session_state["_seen_qp_regr_detector"] = wanted_detector
     by_detector = list(report.by_detector().items())
     if wanted_detector:
         by_detector.sort(key=lambda item: item[0] != wanted_detector)
 
     for detector, groups in by_detector:
-        is_wanted = detector == wanted_detector
         _render_detector(
             detector, groups, data_url, cache_dir,
-            expanded=is_wanted, force_open=(is_wanted and fresh_link),
+            expanded=(detector == wanted_detector),
         )
 
 
@@ -157,18 +148,17 @@ def _render_detector(
     cache_dir: str,
     *,
     expanded: bool = False,
-    force_open: bool = False,
 ) -> None:
     # Detectors always start collapsed — even when alerting — so a noisy sweep
     # night doesn't blow the page open into a wall of expanded charts. The badge
     # already telegraphs which detectors need attention; the reader opens those.
-    # A `?detector=...` deep link (see `render`) overrides this to land pre-opened;
-    # keyed so `force_open` can push it open even if the reader had previously
-    # collapsed/expanded this same detector earlier in the session.
+    # A `?detector=...` deep link (see `render`) overrides this to land pre-opened —
+    # seeded into session_state the same way as seed_query_param (see its
+    # docstring), since an expander's `expanded=` has the identical constraint.
     exp_key = f"regr_exp_{detector}"
-    if force_open:
-        st.session_state[exp_key] = True
-    with st.expander(f"{_detector_badge(groups)} {detector}", expanded=expanded, key=exp_key):
+    if exp_key not in st.session_state:
+        st.session_state[exp_key] = expanded
+    with st.expander(f"{_detector_badge(groups)} {detector}", key=exp_key):
         for i, group in enumerate(groups):
             # Sub-heading only when a detector has several (platform, sample)
             # groups — most have exactly one and a heading would be noise.
