@@ -50,6 +50,7 @@ Key4hep release → physics sample → run date**.
 | **Event memory** | per-event RSS and growth | `*_events.json` |
 | **Region timing** | per-subdetector stepping time, `at_location` vs `by_birth`, step counts, attribution analysis | `*_regions.json` |
 | **Trends** | metrics over time across releases | many runs, windowed |
+| **Regressions** | the nightly cross-detector regression report | `_reports/{date}/report.json` |
 | **Machine info** | the host the benchmark ran on (CPU, RAM, governor, throttling) | `machine_info.json` |
 | **Logs** | the raw `ddsim` log for the selected run | `*.log` |
 
@@ -78,6 +79,54 @@ logic, unit-tested).
 !!! tip "Warmup is excluded"
     Trend and summary statistics drop event 0 (warmup), matching the
     [analysis convention](analysis.md#warmup-events).
+
+### Regressions tab
+
+Where the Trends tab lets you *look for* regressions, this tab shows what the
+nightly detector *found* — across **all** detectors at once, independent of the
+sidebar selection. Every night, CI (the `regression-report` job in
+`nightly.yml`) walks the full EOS history and judges every
+`(detector, platform, sample, config, metric)` series with a conservative
+step-change detector (`k4bench/regression/`):
+
+- **Baseline.** Each night is compared against the median and spread (scaled
+  MAD, not mean/stddev, so one bad night can't skew it) of the trailing **14
+  reliable** runs before it. Nights flagged by the
+  [machine-info reliability check](#the-tabs) are excluded outright and never
+  judged themselves. With fewer than **7** reliable runs to compare against, the
+  metric is left *unknown* rather than flagged.
+- **What trips a flag.** The value has to clear *two* gates at once: a robust
+  **z-score above 3.5** (a statistical outlier) **and** a **practical-effect
+  floor** — at least 5 % for time and memory, 3 percentage points for CPU
+  efficiency, and a wider floor for the noisier region metrics. Requiring both
+  keeps a very steady metric (tiny MAD) from flagging on a change too small to
+  care about.
+- **Watch, then regression.** The first night to clear both gates is a
+  **⚠️ Watch**. It only becomes a confirmed **🔴 Regression** once the *next*
+  reliable night moves the same way again — a two-strike rule that is the main
+  defence against false alarms.
+- **Re-anchoring.** A confirmed regression is treated as a **change-point**: the
+  baseline resets to the new level, so a deliberate step (say, a physics change)
+  is flagged exactly once instead of every night until the window rolls over.
+  A second change right afterwards is still caught.
+- **Direction** (faster/slower, more/less memory) is shown but not treated as
+  good or bad — a regression is simply any confirmed step beyond the baseline in
+  either direction.
+- **Failures.** A config exiting non-zero, or a whole run missing, is a
+  **❌ Failure** and skips the confirmation step (it alerts immediately).
+- **Region timing** (sub-detector) is *not* flagged — it is the noisiest series
+  in the system, dominated by timer-granularity wobble at microsecond scale, so
+  the regression report judges only top-level run and per-event metrics.
+
+The tab shows one report per night (pick earlier nights from the selector): an
+at-a-glance banner, one expander per detector (collapsed by default — the badge
+tells you which need attention), a **change ledger** — a compact, sortable table
+of tonight's flagged metrics (a 🔴/⚠️ severity badge, the config, the metric, an
+↑/↓ direction, and a Δ-vs-baseline magnitude bar), worst first — and a **Show
+trend** drill-down that plots the metric's recent history with the baseline band
+it was judged against (the flagged night marked 🔴, the night it was first
+watched marked ⚠️). Confirmed regressions and failures — and only those — are
+also emailed to the team's e-group by the same CI job.
 
 ## Running the dashboard locally
 

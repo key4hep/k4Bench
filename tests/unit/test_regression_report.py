@@ -1,0 +1,183 @@
+"""Unit tests for the nightly report assembly
+(:mod:`k4bench.regression.report_builder`) over a synthetic local run tree."""
+
+from __future__ import annotations
+
+import json
+from datetime import date, timedelta
+from pathlib import Path
+
+import pytest
+
+from k4bench.regression.models import Direction, Severity
+from k4bench.regression.report_builder import (
+    build_nightly_report_local,
+    group_report_from_run_dirs,
+)
+
+_PLAT = "x86_64-almalinux9-gcc14.2.0-opt"
+_STACK = "key4hep-2026-01-01"
+
+
+def _write_run(
+    run_dir: Path,
+    *,
+    night: str,
+    wall_time_s: float = 100.0,
+    returncode: int = 0,
+    labels: tuple[str, ...] = ("baseline",),
+    contended: bool = False,
+    sample: str = "single_e",
+) -> Path:
+    """One synthetic nightly run dir: run_info + per-config results + machine info.
+
+    CPU efficiency is kept ≈0.98 so a run is *reliable* unless ``contended``
+    (which drives the load-average hard criterion into FAIL).
+    """
+    run_dir.mkdir(parents=True)
+    (run_dir / "run_info.json").write_text(json.dumps({
+        "date": night,
+        "platform": _PLAT,
+        "k4h_release": _STACK,
+        "sample": sample,
+    }))
+    for label in labels:
+        (run_dir / f"{label}_results.csv").write_text(
+            "label,returncode,n_events,wall_time_s,peak_rss_mb,user_cpu_s,events_per_sec\n"
+            f"{label},{returncode},10,{wall_time_s},1024.0,{wall_time_s * 0.98},"
+            f"{10.0 / wall_time_s}\n"
+        )
+    (run_dir / "machine_info.json").write_text(json.dumps({
+        "hostname": "host-a",
+        "cpu_physical_cores": 8,
+        "cpu_logical_cores": 16,
+        "load_avg_1m_start": 64.0 if contended else 0.5,
+        "load_avg_1m_end":   64.0 if contended else 0.5,
+        "ram_total_gb": 64.0,
+        "ram_available_gb_start": 32.0,
+        "ram_available_gb_end": 32.0,
+        "swap_in_pages": 0,
+        "swap_out_pages": 0,
+        "thermal_throttle_events": 0,
+    }))
+    return run_dir
+
+
+def _nights(n: int, start: str = "2026-01-01") -> list[str]:
+    d0 = date.fromisoformat(start)
+    return [(d0 + timedelta(days=i)).isoformat() for i in range(n)]
+
+
+def _make_history(
+    sample_root: Path, walls: list[float], per_night: dict[int, dict] | None = None
+) -> list[Path]:
+    """One run dir per night under *sample_root*; ``per_night[i]`` overrides
+    ``_write_run`` kwargs for night *i*."""
+    per_night = per_night or {}
+    dirs = []
+    for i, (night, wall) in enumerate(zip(_nights(len(walls)), walls)):
+        kwargs = per_night.get(i, {})
+        dirs.append(_write_run(
+            sample_root / night, night=night, wall_time_s=wall, **kwargs
+        ))
+    return dirs
+
+
+def test_persisting_step_confirms_in_group_report(tmp_path):
+    walls = [100.0, 100.4, 99.6, 100.2, 99.8, 100.3, 99.7, 100.1, 99.9, 100.0,
+             120.0, 120.5]
+    run_dirs = _make_history(tmp_path, walls)
+    group = group_report_from_run_dirs(
+        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+    )
+    assert group is not None
+    confirmed = {(v.metric, v.severity, v.direction) for v in group.regressions}
+    assert ("wall_time_s", Severity.CONFIRMED, Direction.UP) in confirmed
+    # The correlated metric (same underlying CPU-bound cost) moves with it.
+    assert any(v.metric == "user_cpu_s" for v in group.regressions)
+
+
+def test_unreliable_night_never_evaluated_nor_in_baseline(tmp_path):
+    # A wildly contended night must neither flag itself nor poison the
+    # baseline for the nights after it.
+    walls = [100.0, 100.4, 99.6, 100.2, 99.8, 100.3, 99.7, 100.1, 99.9,
+             500.0, 100.0, 100.2]
+    run_dirs = _make_history(tmp_path, walls, {9: {"contended": True}})
+    group = group_report_from_run_dirs(
+        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+    )
+    flagged = [v for v in group.verdicts if v.flagged]
+    assert flagged == []
+    wall = [v for v in group.verdicts if v.metric == "wall_time_s"]
+    assert wall and wall[0].severity is Severity.OK
+    assert wall[0].baseline_median == pytest.approx(100.0, abs=0.5)
+
+
+def test_unreliable_tonight_yields_note_and_no_verdicts(tmp_path):
+    walls = [100.0] * 11 + [100.2]
+    run_dirs = _make_history(tmp_path, walls, {11: {"contended": True}})
+    group = group_report_from_run_dirs(
+        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+    )
+    assert group.verdicts == []
+    assert any("reliability" in note for note in group.notes)
+
+
+def test_failed_config_is_failure_verdict(tmp_path):
+    walls = [100.0] * 12
+    run_dirs = _make_history(tmp_path, walls, {11: {"returncode": 1}})
+    group = group_report_from_run_dirs(
+        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+    )
+    failures = group.failures
+    assert len(failures) == 1
+    assert failures[0].label == "baseline"
+    assert "returncode 1" in failures[0].reason
+
+
+def test_config_missing_tonight_is_job_failure(tmp_path):
+    walls = [100.0] * 12
+    per_night = {i: {"labels": ("baseline", "variant")} for i in range(11)}
+    per_night[11] = {"labels": ("baseline",)}  # variant vanished tonight
+    run_dirs = _make_history(tmp_path, walls, per_night)
+    group = group_report_from_run_dirs(
+        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+    )
+    assert any("variant" in msg for msg in group.job_failures)
+
+
+def _local_tree(root: Path, detector: str, sample: str) -> Path:
+    return root / detector / _PLAT / _STACK / sample
+
+
+def test_local_report_flags_missing_run_and_drops_retired(tmp_path):
+    # DET_A ran through 2026-01-12 (report night). DET_B stopped 3 days short
+    # (missing run → failure); DET_C stopped 3 weeks ago (retired → dropped).
+    _make_history(_local_tree(tmp_path, "DET_A", "single_e"), [100.0] * 12)
+    _make_history(_local_tree(tmp_path, "DET_B", "single_e"), [100.0] * 9)
+    old = _nights(2, start="2025-12-01")
+    for night in old:
+        _write_run(
+            _local_tree(tmp_path, "DET_C", "single_e") / night,
+            night=night,
+        )
+    report = build_nightly_report_local(str(tmp_path))
+
+    assert report.report_night == "2026-01-12"
+    by_det = report.by_detector()
+    assert set(by_det) == {"DET_A", "DET_B"}
+    (msg_group, msg), = report.job_failures
+    assert msg_group.detector == "DET_B"
+    assert "no run uploaded for 2026-01-12" in msg
+    assert msg_group.verdicts == []
+    assert report.has_alertable  # a missing run alerts immediately
+
+
+def test_local_report_quiet_night_not_alertable(tmp_path):
+    _make_history(_local_tree(tmp_path, "DET_A", "single_e"), [100.0] * 12)
+    report = build_nightly_report_local(str(tmp_path))
+    assert not report.has_alertable
+    assert report.regressions == []
+    group = report.groups[0]
+    assert group.detector == "DET_A"
+    assert any(v.severity is Severity.OK for v in group.verdicts)

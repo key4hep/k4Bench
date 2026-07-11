@@ -10,6 +10,7 @@ requires-python = ">=3.13"
 dependencies = [
     "pandas",
     "plotly",
+    "requests",
 ]
 
 [project.urls]
