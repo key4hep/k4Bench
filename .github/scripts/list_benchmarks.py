@@ -31,7 +31,7 @@ BENCH_DIR = Path(".github/benchmarks")
 CONFIG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 SAMPLE_RE = re.compile(r"^[A-Za-z0-9_.+-]+$")
 
-SCALAR_KEYS = ("xml", "n_events", "ddsim_args", "verbose", "sweep", "steering_file")
+SCALAR_KEYS = ("xml", "n_events", "ddsim_args", "verbose", "sweep", "steering_file", "timeout")
 LIST_KEYS   = ("input_files", "sweep_detectors", "include_only", "exclude_only")
 
 
@@ -90,6 +90,8 @@ def expand(path: Path) -> list[dict]:
         loc = f"{path}::{name}"
         if not rec["n_events"].isdigit() or int(rec["n_events"]) <= 0:
             _die(f"n_events must be a positive integer ({loc})")
+        if rec["timeout"] and (not rec["timeout"].isdigit() or int(rec["timeout"]) <= 0):
+            _die(f"timeout must be a positive integer of minutes ({loc})")
         if rec["input_files"] and "--enableGun" in shlex.split(rec["ddsim_args"]):
             _die(f"input_files and '--enableGun' in ddsim_args are mutually exclusive ({loc})")
         modes = (
