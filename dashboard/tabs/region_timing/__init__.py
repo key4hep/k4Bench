@@ -32,16 +32,16 @@ def render(
     # Build view options dynamically based on available data
     # Order: current-run analyses first, then historical trends.
     # "Historical Trends" is gated on remote mode (not on the current window's
-    # data) so the selector stays stable when the trend window changes.
+    # data) so the selector stays stable when the trend window changes. Step
+    # Analysis is gated the same way — on *any* config having interval_counts,
+    # not on the currently selected ones — so narrowing the sidebar's config
+    # filter can't silently knock the view back to "Current Run" underneath
+    # the user; the view itself already reports "no step data" gracefully
+    # when the selected configs happen to lack it (see _render_step_analysis).
     view_options: list[str] = ["Current Run"]
     if region_data is not None:
         view_options.append("Attribution Analysis")
-        # Step Analysis requires interval_counts — check any label has it
-        has_steps = any(
-            region_data[lbl].get("steps") is not None
-            for lbl in selected_labels
-            if lbl in region_data
-        )
+        has_steps = any(data.get("steps") is not None for data in region_data.values())
         if has_steps:
             view_options.append("Step Analysis")
     if trends_enabled:
