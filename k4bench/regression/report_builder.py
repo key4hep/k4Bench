@@ -12,6 +12,7 @@ window of runs into the local cache, rebuilds the trend frames with
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -105,6 +106,57 @@ def _with_cpu_efficiency(results_df: pd.DataFrame) -> pd.DataFrame:
     total = df["user_cpu_s"] + df["sys_cpu_s"] if "sys_cpu_s" in cols else df["user_cpu_s"]
     df["cpu_efficiency"] = total / df["wall_time_s"].replace(0, float("nan"))
     return df
+
+
+def unjudged_value_verdicts(
+    *,
+    detector: str,
+    platform: str,
+    sample: str,
+    results_df: pd.DataFrame | None,
+    event_df: pd.DataFrame | None,
+    tonight: str,
+    already: set[tuple[str, str]],
+) -> list[MetricVerdict]:
+    """Raw metric values for *tonight*'s run as unjudged ``UNKNOWN`` verdicts.
+
+    The engine skips unreliable runs (they must not pollute baselines or flags),
+    so their metrics get no verdict and their values would never reach the
+    report the dashboard's Overview tab reads — leaving that tab unable to plot
+    them even with "Exclude unreliable runs" off. This records tonight's raw
+    value for every ``(label, metric)`` not *already* judged, marked ``UNKNOWN``
+    (never a flag), so the value is preserved for display. A normally-judged
+    (reliable) run already has a verdict per metric, so *already* covers it and
+    this adds nothing.
+    """
+    out: list[MetricVerdict] = []
+
+    def _emit(df: pd.DataFrame | None, metrics: dict[str, str]) -> None:
+        if df is None or df.empty:
+            return
+        tonight_rows = df[df["run_id"] == tonight]
+        for label in sorted(tonight_rows["label"].dropna().unique()):
+            row = tonight_rows[tonight_rows["label"] == label]
+            for metric, family in metrics.items():
+                if metric not in row.columns or (str(label), metric) in already:
+                    continue
+                val = row[metric].iloc[0]
+                if pd.isna(val) or not math.isfinite(float(val)):
+                    continue
+                out.append(MetricVerdict(
+                    detector=detector, platform=platform, sample=sample,
+                    label=str(label), metric_family=family, metric=metric,
+                    sub_detector=None, run_id=tonight, run_date=tonight,
+                    value=float(val), baseline_median=None, baseline_mad=None,
+                    pct_change=None, z_score=None,
+                    severity=Severity.UNKNOWN, direction=Direction.NONE,
+                    reason="unreliable host — value recorded but not judged",
+                ))
+
+    results = _with_cpu_efficiency(results_df) if results_df is not None else None
+    _emit(results, RUN_METRICS)
+    _emit(event_df, EVENT_METRICS)
+    return out
 
 
 def evaluate_group_series(
@@ -268,6 +320,7 @@ def _group_report_from_frames(
     group = RunGroupReport(
         detector=detector, platform=platform, sample=sample,
         k4h_release=k4h_release, run_date=tonight, run_id=tonight,
+        reliable=reliability.get(tonight),
     )
 
     series = evaluate_group_series(
@@ -278,6 +331,15 @@ def _group_report_from_frames(
     # Only verdicts issued *for tonight's run* belong in tonight's report; a
     # series whose last verdict is older simply was not judged tonight.
     group.verdicts = [vs[-1] for vs in series.values() if vs[-1].run_id == tonight]
+
+    # Record raw values for metrics the engine didn't judge tonight — an
+    # unreliable run is skipped, so this is the only way its values reach the
+    # report for the dashboard to plot (marked UNKNOWN, never flagged).
+    already = {(v.label, v.metric) for v in group.verdicts}
+    group.verdicts.extend(unjudged_value_verdicts(
+        detector=detector, platform=platform, sample=sample,
+        results_df=results_df, event_df=event_df, tonight=tonight, already=already,
+    ))
 
     if reliability.get(tonight) is False:
         group.notes.append(
@@ -406,9 +468,11 @@ def _finalize_report(groups: list[RunGroupReport]) -> NightlyReport:
                 )
                 continue
             # Stale night's verdicts are not tonight's news — keep only the
-            # hard signal that tonight's run is missing.
+            # hard signal that tonight's run is missing. The reliability flag
+            # describes the group's own (old) night, not the report night.
             g.verdicts = []
             g.notes = []
+            g.reliable = None
             g.job_failures = [
                 f"no run uploaded for {report_night} (latest is {g.run_date})"
             ]

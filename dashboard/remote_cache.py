@@ -7,7 +7,11 @@ cheap.
 """
 from __future__ import annotations
 
+import logging
+
 import streamlit as st
+
+_log = logging.getLogger(__name__)
 
 
 @st.cache_data(show_spinner="Fetching detectors...", ttl=3600)
@@ -48,6 +52,40 @@ def _cached_list_report_dates(base_url: str) -> list[str]:
 def _cached_fetch_report(base_url: str, date: str) -> dict | None:
     from k4bench.remote import fetch_report
     return fetch_report(base_url, date)
+
+
+@st.cache_data(show_spinner="Fetching nightly reports...", ttl=3600)
+def _cached_fetch_reports(base_url: str, dates: tuple[str, ...]) -> dict[str, dict]:
+    """Fetch a whole window of nightly reports in parallel, keyed by date.
+
+    One report per night and each is a small JSON, so a cold window is
+    dominated by request latency — fanning out cuts a 30-night first load
+    from ~30 sequential round-trips to a few. Nights that fail to fetch are
+    simply absent from the result. Cached on the *dates* tuple: growing the
+    window refetches it in one parallel burst rather than serially.
+
+    Worker count is deliberately modest (4): this only ever runs on a cache
+    miss (a Streamlit rerun that hits the cache spawns no threads at all),
+    and keeping concurrent SSL connections low reduces the chance of a rerun
+    landing mid-fetch and racing the pool's shutdown.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from k4bench.remote import fetch_report
+
+    def _one(date: str) -> tuple[str, dict | None]:
+        # fetch_report already handles network/parse failures (logs and returns
+        # None); this guards only unexpected errors so one bad night can't abort
+        # the whole window — logged (dashboard convention) but not surfaced as a
+        # UI warning, since the night is simply absent from the result.
+        try:
+            return date, fetch_report(base_url, date)
+        except Exception:
+            _log.exception("fetch_report: unexpected error for %s", date)
+            return date, None
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        return {date: raw for date, raw in pool.map(_one, dates) if raw}
 
 
 @st.cache_data(show_spinner="Downloading latest run...", ttl=3600)

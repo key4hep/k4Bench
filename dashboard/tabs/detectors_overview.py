@@ -1,0 +1,809 @@
+"""Overview tab — cross-detector comparison of the nightly benchmarks.
+
+Compares every detector's baseline benchmark for the sidebar-selected platform
+and sample, over the sidebar's shared Trend window, in one figure: the two
+metrics' history on top (each with its own legend directly below it), the performance
+landscape across the full width below (with its own legend below that). The
+data comes from the precomputed ``_reports/{date}/report.json`` files on EOS,
+whose verdicts carry the raw nightly value of every run/event metric for
+**all** detectors — one small cached JSON fetch per night, no per-detector
+run downloads.
+"""
+
+from __future__ import annotations
+
+import math
+import re
+from datetime import date
+
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+from plotly.subplots import make_subplots
+
+from k4bench.analysis.plots._theme import _TEMPLATE
+from k4bench.benchmark.ddsim import BASELINE_LABEL
+from k4bench.regression.models import NightlyReport
+from k4bench.regression.render import from_json
+from remote_cache import _cached_fetch_reports, _cached_list_report_dates
+from tabs._regression_flags import SEVERITY_RANK, add_severity_markers, render_flag_pills
+from ui_chrome import seed_query_param
+from ui_utils import (
+    _DASHES,
+    _METRIC_LABELS,
+    _METRIC_UNITS,
+    _PALETTES,
+    _PALETTE_NAMES,
+    _SYMBOLS,
+    _auto_palette_index,
+    _legend_below,
+    _to_rgba,
+)
+
+#: The one config compared across detectors — the unpatched full-detector run
+#: every sweep starts with (``baseline_all``, see ``k4bench.benchmark.ddsim``).
+#: Variant configs measure *within*-detector impact and live in the Config
+#: Impact tab.
+_BASELINE_LABEL = BASELINE_LABEL
+
+#: The two panel families, each with its selectable equivalents (first entry
+#: is the default). All are lower-is-better.
+_TIME_METRICS = ["mean_time_s", "median_time_s", "wall_time_s", "user_cpu_s"]
+_MEMORY_METRICS = ["mean_rss_mb", "peak_rss_mb"]
+_METRIC_ORDER: list[str] = [*_TIME_METRICS, *_MEMORY_METRICS]
+
+#: Cap on report fetches when the sidebar provides no trend window (e.g. a
+#: mid-edit custom range) — keeps the fallback from downloading years of nights.
+_FALLBACK_NIGHTS = 30
+
+_FRAME_COLUMNS = [
+    "detector", "platform", "sample", "label", "metric", "value", "severity",
+    "k4h_release", "reliable",
+]
+
+#: Trailing version tokens of a detector directory name (``_o1_v03``, ``_v02``)
+#: — everything before them is the detector *family* (see
+#: :func:`detector_family`).
+_VERSION_RE = re.compile(r"^(?P<family>.+?)(?P<variant>(?:_o\d+)?(?:_v\d+)?)$")
+
+
+def _metric_unit(metric: str) -> str:
+    """Display unit for *metric* — memory is shown in GB (the raw columns are
+    MB; see :func:`_to_display_units`), everything else keeps its stored unit."""
+    if metric in _MEMORY_METRICS:
+        return "GB"
+    return _METRIC_UNITS.get(metric, "")
+
+
+def _metric_title(metric: str) -> str:
+    """Human-readable panel/axis title with units, e.g. ``Wall time (s)``."""
+    name = _METRIC_LABELS.get(metric, metric)
+    name = name[:1].upper() + name[1:]
+    unit = _metric_unit(metric)
+    return f"{name} ({unit})" if unit else name
+
+
+def _trend_y_title(metric: str, relative: bool) -> str:
+    """Trend-panel y-axis title; in relative view the unit becomes percent of
+    the detector's first plotted night."""
+    if not relative:
+        return _metric_title(metric)
+    name = _METRIC_LABELS.get(metric, metric)
+    return f"{name[:1].upper()}{name[1:]} (% of first night)"
+
+
+# ── Pure data shaping (no Streamlit — the unit-test surface) ──────────────────
+
+#: Matches the date embedded in a ``key4hep-YYYY-MM-DD`` nightly-release string.
+_RELEASE_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _tag_date(k4h_release: str | None, fallback: str) -> str:
+    """Date of the Key4hep nightly tag (``key4hep-2026-07-01`` → ``2026-07-01``).
+
+    Falls back to *fallback* (the report/run night) when the release string
+    carries no date, mirroring Run Trends' ``x_date`` (``k4h_release_date``
+    with a run-date fallback)."""
+    m = _RELEASE_DATE_RE.search(k4h_release or "")
+    return m.group(0) if m else fallback
+
+
+def _collapse_same_tag(frame: pd.DataFrame, subset: list[str]) -> pd.DataFrame:
+    """Collapse same-nightly-tag reruns: within each *subset* group keep the
+    newest CI run (largest ``_report_night``), so a nightly benchmarked twice
+    shows once — the same per-tag dedup Run Trends does. Requires a
+    ``_report_night`` column; it is dropped from the result."""
+    return (
+        frame.sort_values("_report_night")
+        .drop_duplicates(subset=subset, keep="last")
+        .drop(columns="_report_night")
+    )
+
+
+def report_metrics_frame(report: NightlyReport) -> pd.DataFrame:
+    """One tidy row per usable metric verdict in *report*.
+
+    Keeps every severity (OK/UNKNOWN included — their ``value`` is tonight's
+    raw measurement; the severity column feeds the trend-flag markers), and
+    drops what cannot be compared across detectors: region-level rows
+    (``sub_detector`` set), verdicts outside :data:`_METRIC_ORDER`
+    (``returncode`` failures, ``cpu_efficiency``), and missing/non-finite
+    values. ``reliable`` is the group's per-night host-reliability tri-state
+    (``None`` on reports predating the field).
+    """
+    rows = [
+        {
+            "detector":    g.detector,
+            "platform":    g.platform,
+            "sample":      g.sample,
+            "label":       v.label,
+            "metric":      v.metric,
+            "value":       float(v.value),
+            "severity":    v.severity.value,
+            "k4h_release": g.k4h_release,
+            "reliable":    g.reliable,
+        }
+        for g in report.groups
+        for v in g.verdicts
+        if v.sub_detector is None
+        and v.metric in _METRIC_ORDER
+        and v.value is not None
+        and math.isfinite(v.value)
+    ]
+    return pd.DataFrame(rows, columns=_FRAME_COLUMNS)
+
+
+def report_reliability_frame(report: NightlyReport) -> pd.DataFrame:
+    """One row per run group carrying its per-night host-reliability flag.
+
+    Reliability lives on the *group*, not on any metric verdict — and an
+    unreliable night is deliberately *not judged*, so it has **zero** verdict
+    rows and would vanish entirely from :func:`report_metrics_frame`. Extracting
+    it per-group instead is what lets the unreliable-run filter see a failed
+    night at all (columns: ``detector, platform, sample, run_date, reliable``).
+    ``run_date`` lets callers keep only groups whose run actually happened that
+    night, dropping stale carried-forward groups.
+    """
+    rows = [
+        {
+            "detector":    g.detector,
+            "platform":    g.platform,
+            "sample":      g.sample,
+            "run_date":    g.run_date,
+            "k4h_release": g.k4h_release,
+            "reliable":    g.reliable,
+        }
+        for g in report.groups
+    ]
+    return pd.DataFrame(
+        rows,
+        columns=["detector", "platform", "sample", "run_date", "k4h_release", "reliable"],
+    )
+
+
+def scoped_snapshot(
+    df: pd.DataFrame, platform: str, sample: str, label: str
+) -> tuple[pd.DataFrame, list[str]]:
+    """Pivot the scope's rows to one wide row per detector (columns = metrics).
+
+    Second return: detectors present in *df* but not benchmarked with this
+    (platform, sample, label) combo, so the caller can name what's excluded.
+    """
+    sub = df[
+        (df["platform"] == platform)
+        & (df["sample"] == sample)
+        & (df["label"] == label)
+    ]
+    if sub.empty:
+        wide = pd.DataFrame()
+    else:
+        wide = sub.pivot_table(
+            index="detector", columns="metric", values="value", aggfunc="first"
+        )
+    excluded = sorted(set(df["detector"]) - set(wide.index))
+    return wide, excluded
+
+
+def scatter_points(wide: pd.DataFrame, x_metric: str, y_metric: str) -> pd.DataFrame:
+    """Detectors with both landscape coordinates, as a two-column frame."""
+    pts = wide.reindex(columns=[x_metric, y_metric])
+    return pts.dropna()
+
+
+def nights_in_window(dates: list[str], window: tuple[date, date] | None) -> list[str]:
+    """Filter report nights (``YYYY-MM-DD`` strings, any order) to the sidebar
+    trend window, newest first. With no window, fall back to the latest
+    :data:`_FALLBACK_NIGHTS` so an unset range never downloads years of reports."""
+    if window is None:
+        return sorted(dates, reverse=True)[:_FALLBACK_NIGHTS]
+    start, end = window
+    kept = [
+        d for d in dates
+        if pd.notna(ts := pd.to_datetime(d, errors="coerce"))
+        and start <= ts.date() <= end
+    ]
+    return sorted(kept, reverse=True)
+
+
+def history_frame(
+    night_frames: list[tuple[str, pd.DataFrame]],
+    platform: str,
+    sample: str,
+    label: str,
+) -> pd.DataFrame:
+    """Concatenate the scope's rows across nights into a tidy history:
+    columns ``night, detector, metric, value, k4h_release, severity,
+    reliable``. A detector missing the combo on some night simply contributes
+    no row — a gap in its line.
+
+    ``night`` is the **Key4hep nightly tag** date (from ``k4h_release``), not
+    the report/run date — the same x-axis as Run Trends. Two CI runs that
+    benchmarked the *same* nightly (a rerun) therefore collapse to one point:
+    the newest run wins for the plotted value, but ``severity`` keeps the
+    *worst* verdict across the tag's runs, so a regression CONFIRMED on the
+    first run isn't masked when a later rerun re-anchored to OK.
+    """
+    cols = ["detector", "metric", "value", "k4h_release", "severity", "reliable"]
+    parts = []
+    for report_night, frame in night_frames:
+        sub = frame[
+            (frame["platform"] == platform)
+            & (frame["sample"] == sample)
+            & (frame["label"] == label)
+        ]
+        if sub.empty:
+            continue
+        part = sub[cols].copy()
+        part["_report_night"] = report_night
+        parts.append(part)
+    if not parts:
+        return pd.DataFrame(columns=["night", *cols])
+    hist = pd.concat(parts, ignore_index=True)
+    hist["night"] = [
+        _tag_date(rel, rn) for rel, rn in zip(hist["k4h_release"], hist["_report_night"])
+    ]
+    # Worst verdict per (detector, metric, tag) across same-tag reruns, applied
+    # after the newest-run collapse below so the flag survives re-anchoring.
+    worst = (
+        hist.assign(_rank=hist["severity"].map(lambda s: SEVERITY_RANK.get(s, 0)))
+        .sort_values("_rank")
+        .drop_duplicates(["detector", "metric", "night"], keep="last")
+        .set_index(["detector", "metric", "night"])["severity"]
+    )
+    hist = _collapse_same_tag(hist, ["detector", "metric", "night"])
+    hist["severity"] = [
+        worst.get((d, m, n), s)
+        for d, m, n, s in zip(hist["detector"], hist["metric"], hist["night"], hist["severity"])
+    ]
+    return hist[["night", *cols]].reset_index(drop=True)
+
+
+def reliability_history(
+    night_frames: list[tuple[str, pd.DataFrame]],
+    platform: str,
+    sample: str,
+) -> pd.DataFrame:
+    """Per-(nightly-tag, detector) host-reliability for the scope across nights.
+
+    Takes :func:`report_reliability_frame` outputs (one per report night) and
+    keeps only groups whose run actually happened that night
+    (``run_date == report_night``), dropping stale carried-forward groups so the
+    warning counts real runs. Like :func:`history_frame`, ``night`` is the
+    **Key4hep nightly tag** date and same-tag reruns collapse to the newest run
+    — so this counts unreliable runs the same way Run Trends does. Columns:
+    ``night, detector, reliable``.
+    """
+    parts = []
+    for report_night, frame in night_frames:
+        sub = frame[
+            (frame["platform"] == platform)
+            & (frame["sample"] == sample)
+            & (frame["run_date"] == report_night)
+        ]
+        if sub.empty:
+            continue
+        part = sub[["detector", "k4h_release", "reliable"]].copy()
+        part["_report_night"] = report_night
+        parts.append(part)
+    if not parts:
+        return pd.DataFrame(columns=["night", "detector", "reliable"])
+    rel = pd.concat(parts, ignore_index=True)
+    rel["night"] = [
+        _tag_date(k, rn) for k, rn in zip(rel["k4h_release"], rel["_report_night"])
+    ]
+    rel = _collapse_same_tag(rel, ["detector", "night"])
+    return rel[["night", "detector", "reliable"]].reset_index(drop=True)
+
+
+def relative_history(hist: pd.DataFrame) -> pd.DataFrame:
+    """Rescale each (detector, metric) series to its first plotted night
+    = 100 %, so drift is comparable across detectors whose absolute values
+    differ by more than a decade. A zero first value yields NaN (blank line)
+    rather than infinities."""
+    if hist.empty:
+        return hist
+    out = hist.copy()
+    out["_dt"] = pd.to_datetime(out["night"])
+    out = out.sort_values("_dt")
+    base = out.groupby(["detector", "metric"])["value"].transform("first")
+    out["value"] = out["value"] / base.where(base != 0) * 100.0
+    return out.drop(columns="_dt")
+
+
+def detector_family(detector: str) -> tuple[str, str]:
+    """Split a detector directory name into (family, version variant):
+    ``ALLEGRO_o1_v03`` → (``ALLEGRO``, ``o1_v03``), ``ILD_FCCee_v01`` →
+    (``ILD_FCCee``, ``v01``), ``SiD`` → (``SiD``, ``""``)."""
+    m = _VERSION_RE.match(detector)
+    if not m:
+        return detector, ""
+    return m.group("family"), m.group("variant").lstrip("_")
+
+
+def detector_styles(
+    detectors: list[str], palette: list[str]
+) -> dict[str, tuple[str, str, str]]:
+    """``{detector: (colour, dash, symbol)}`` — colour follows the detector
+    *family* (assigned alphabetically over the palette, stable regardless of
+    which detectors have data tonight), while versions within a family cycle
+    the dash pattern and marker symbol. Versions of one experiment therefore
+    read as variations of the same series instead of unrelated colours."""
+    families = sorted({detector_family(d)[0] for d in detectors})
+    family_color = {f: palette[i % len(palette)] for i, f in enumerate(families)}
+    by_family: dict[str, list[str]] = {}
+    for detector in sorted(detectors):
+        by_family.setdefault(detector_family(detector)[0], []).append(detector)
+    styles: dict[str, tuple[str, str, str]] = {}
+    for family, members in by_family.items():
+        for idx, detector in enumerate(members):
+            styles[detector] = (
+                family_color[family],
+                _DASHES[idx % len(_DASHES)],
+                _SYMBOLS[idx % len(_SYMBOLS)],
+            )
+    return styles
+
+
+# ── The combined figure ────────────────────────────────────────────────────────
+
+def _to_display_units(wide: pd.DataFrame, hist: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Copies of the frames with memory converted MB → GB for display; the
+    stored columns stay MB (the reports' native unit) so the pure data helpers
+    and the regression engine's numbers remain directly comparable."""
+    wide = wide.copy()
+    for metric in _MEMORY_METRICS:
+        if metric in wide.columns:
+            wide[metric] = wide[metric] / 1024.0
+    if not hist.empty:
+        hist = hist.copy()
+        mem_rows = hist["metric"].isin(_MEMORY_METRICS)
+        hist.loc[mem_rows, "value"] = hist.loc[mem_rows, "value"] / 1024.0
+    return wide, hist
+
+
+def _value_axis(log: bool) -> dict:
+    """Shared styling for a value (time/memory) axis: trimmed tick numbers
+    with digit grouping, and on log scale a 1-2-5 tick pattern instead of
+    Plotly's default every-digit labels (which crowd a narrow decade span)."""
+    axis = dict(type="log" if log else "linear", tickformat=",~g")
+    if log:
+        axis["dtick"] = "D2"
+    return axis
+
+
+def _log_range(values: pd.Series, lo_frac: float, hi_frac: float) -> list[float] | None:
+    """Range for a log axis, padded around the data in log space (Plotly log
+    ranges are given in log10 units, asymmetric fractions of the decade span).
+    A degenerate span (single detector or identical values) pads a fixed
+    fraction of a decade; non-positive values (impossible for time/memory,
+    guarded anyway) fall back to auto-ranging."""
+    vals = values[values > 0]
+    if vals.empty:
+        return None
+    d0, d1 = math.log10(float(vals.min())), math.log10(float(vals.max()))
+    span = max(d1 - d0, 0.15)
+    return [d0 - span * lo_frac, d1 + span * hi_frac]
+
+
+def _history_figure(
+    hist: pd.DataFrame,
+    time_metric: str,
+    mem_metric: str,
+    styles: dict[str, tuple[str, str, str]],
+    detectors: list[str],
+    alpha: float = 0.75,
+    log: bool = True,
+    relative: bool = False,
+    show_confirmed: bool = True,
+    show_watch: bool = False,
+) -> go.Figure | None:
+    """The two metrics' history side by side (CPU, Memory), one legend below
+    — the house pattern every other trend view in the dashboard uses (see
+    e.g. ``tabs.trends``). On log scale (*log*) the detectors' >1-decade
+    spread stays readable; linear is a toggle away. *relative* rescales each
+    line to its first plotted night = 100 %. *show_confirmed* flags confirmed
+    regressions (a halo + white-bordered badge, see
+    :data:`_regression_flags.FLAG_MARKS`); *show_watch* additionally flags
+    unconfirmed watch points.
+    """
+    metrics = [time_metric, mem_metric]
+    present = [] if hist.empty else [m for m in metrics if (hist["metric"] == m).any()]
+    if not present:
+        return None
+
+    fig = make_subplots(rows=1, cols=2, horizontal_spacing=0.08,
+                         subplot_titles=["CPU", "Memory"])
+
+    hover_y = "%{y:.1f} %" if relative else "%{y:.4g}"
+    hist = hist.copy()
+    hist["night_dt"] = pd.to_datetime(hist["night"])
+    unique_dates = sorted(hist["night_dt"].dropna().unique())
+    tick_labels = [pd.Timestamp(d).strftime("%Y-%m-%d") for d in unique_dates]
+    marker_alpha = max(0.1, alpha - 0.2)
+    shown: set[str] = set()
+    for metric, col in ((time_metric, 1), (mem_metric, 2)):
+        sub_m = hist[hist["metric"] == metric]
+        if sub_m.empty:
+            continue
+        for detector in detectors:
+            sub = sub_m[sub_m["detector"] == detector].sort_values("night_dt")
+            if sub.empty:
+                continue
+            color, dash, symbol = styles[detector]
+            # Deduped across the CPU and Memory panels so a detector with
+            # both metrics only gets one legend entry.
+            first = detector not in shown
+            shown.add(detector)
+            fig.add_trace(
+                go.Scatter(
+                    x=sub["night_dt"],
+                    y=sub["value"],
+                    mode="lines+markers",
+                    name=detector,
+                    legendgroup=detector,
+                    showlegend=first,
+                    line=dict(color=_to_rgba(color, alpha), width=2, dash=dash),
+                    marker=dict(size=7, symbol=symbol,
+                                color=_to_rgba(color, marker_alpha),
+                                line=dict(color=color, width=1.5)),
+                    customdata=sub["k4h_release"].fillna("unknown"),
+                    hovertemplate=(
+                        f"<b>{detector}</b><br>"
+                        "Tag: %{customdata} (%{x|%Y-%m-%d})<br>"
+                        f"{_metric_title(metric)}: {hover_y}<extra></extra>"
+                    ),
+                ),
+                row=1, col=col,
+            )
+        # Verdict flags on top of the lines, each behind its own toggle —
+        # rendered by the shared helper so Overview and Run Trends ring points
+        # identically.
+        flag_severities = (
+            *(("CONFIRMED",) if show_confirmed else ()),
+            *(("WATCH",) if show_watch else ()),
+        )
+        for severity in flag_severities:
+            flagged = sub_m[sub_m["severity"] == severity]
+            if flagged.empty:
+                continue
+            add_severity_markers(
+                fig, flagged, x_col="night_dt", y_col="value",
+                name_col="detector", severity=severity, hover_y=hover_y,
+                row=1, col=col,
+            )
+        fig.update_xaxes(
+            type="date",
+            tickmode="array",
+            tickvals=unique_dates,
+            ticktext=tick_labels,
+            tickangle=-30,
+            title_text="Key4hep Nightly Tag",
+            row=1, col=col,
+        )
+        fig.update_yaxes(title_text=_trend_y_title(metric, relative),
+                         row=1, col=col, **_value_axis(log and not relative))
+
+    t_margin = 50
+    plot_h = 380
+    legend, b_margin = _legend_below(
+        plot_h, len(shown), t_margin=t_margin, tick_clearance=75,
+        entry_width=200, font_size=12,
+    )
+    fig.update_layout(
+        template=_TEMPLATE,
+        height=plot_h + t_margin + b_margin,
+        margin=dict(l=20, r=20, t=t_margin, b=b_margin),
+        legend=legend,
+    )
+    return fig
+
+
+def _landscape_figure(
+    wide: pd.DataFrame,
+    time_metric: str,
+    mem_metric: str,
+    styles: dict[str, tuple[str, str, str]],
+    detectors: list[str],
+    alpha: float = 0.75,
+    log: bool = True,
+) -> go.Figure | None:
+    """The performance landscape: the selected time metric against the
+    selected memory metric, one point per detector — closer to the origin is
+    faster *and* leaner. One legend below, the same house pattern as every
+    other trend view."""
+    pts = scatter_points(wide, time_metric, mem_metric)
+    if pts.empty:
+        return None
+
+    fig = go.Figure()
+    plotted = [d for d in detectors if d in pts.index]
+    for detector in plotted:
+        color, _, symbol = styles[detector]
+        fig.add_trace(
+            go.Scatter(
+                x=[pts.loc[detector, time_metric]],
+                y=[pts.loc[detector, mem_metric]],
+                mode="markers",
+                name=detector,
+                legendgroup=detector,
+                showlegend=True,
+                marker=dict(size=13, symbol=symbol, color=_to_rgba(color, alpha),
+                            line=dict(width=1.5, color=color)),
+                hovertemplate=(
+                    f"<b>{detector}</b><br>"
+                    f"{_metric_title(time_metric)}: %{{x:.4g}}"
+                    f"<br>{_metric_title(mem_metric)}: %{{y:.4g}}<extra></extra>"
+                ),
+            ),
+        )
+
+    x_axis = dict(_value_axis(log), title_text=_metric_title(time_metric))
+    y_axis = dict(_value_axis(log), title_text=_metric_title(mem_metric))
+    if log:
+        x_axis["range"] = _log_range(pts[time_metric], 0.15, 0.15)
+        y_axis["range"] = _log_range(pts[mem_metric], 0.15, 0.15)
+    fig.update_xaxes(**x_axis)
+    fig.update_yaxes(**y_axis)
+
+    t_margin = 50
+    plot_h = 430
+    legend, b_margin = _legend_below(
+        plot_h, len(plotted), t_margin=t_margin, tick_clearance=60,
+        entry_width=200, font_size=12,
+    )
+    fig.update_layout(
+        template=_TEMPLATE,
+        height=plot_h + t_margin + b_margin,
+        margin=dict(l=20, r=20, t=t_margin, b=b_margin),
+        legend=legend,
+    )
+    return fig
+
+
+# ── Streamlit render flow ──────────────────────────────────────────────────────
+
+def _render_reliability_filter(
+    rel_hist: pd.DataFrame, *, key: str
+) -> tuple[set[tuple[str, str]], bool]:
+    """The standard unreliable-run warning + "Exclude unreliable runs" toggle,
+    over the per-(night, detector) ``reliable`` flag from the report *groups*.
+
+    *rel_hist* has columns ``night, detector, reliable`` (see
+    :func:`report_reliability_frame` — built per-group precisely because an
+    unreliable night carries no metric verdict rows). Mirrors
+    ``tabs._reliability.render_reliability_filter`` (same wording, same
+    on-by-default toggle); the shared helper keys on a global
+    ``{run_id: verdict}`` map, which cannot express this tab's cross-detector
+    frame where the same night is reliable for one detector and not another.
+    ``None`` (no evidence) never excludes. Returns the set of unreliable
+    ``(night, detector)`` pairs and whether exclusion is active, so the caller
+    can drop the same runs from the history and the latest-night snapshot.
+    """
+    flagged = rel_hist[rel_hist["reliable"].eq(False)] if not rel_hist.empty else rel_hist
+    if flagged.empty:
+        return set(), False
+
+    unique = flagged[["night", "detector"]].drop_duplicates()
+    pairs = set(map(tuple, unique.itertuples(index=False, name=None)))
+    n = len(pairs)
+    dates = ", ".join(sorted(unique["night"].unique()))
+    warn_col, toggle_col = st.columns([3, 1], vertical_alignment="center")
+    with warn_col:
+        st.warning(
+            f"⚠️ {n} unreliable run{'s' if n != 1 else ''} detected in this "
+            "window — likely affected by host contention (see the Machine "
+            f"Info tab for the per-run verdict): {dates}."
+        )
+    with toggle_col:
+        exclude = st.toggle(
+            "Exclude unreliable runs",
+            value=True,
+            key=key,
+            help="Drop runs that failed the conservative reliability check "
+                 "from the plots below. On by default; disable to include them.",
+        )
+    return pairs, exclude
+
+
+def render(
+    data_url: str, platform: str, sample: str, window: tuple[date, date] | None
+) -> None:
+    """One combined figure: the two metrics' history on top, the landscape
+    below. *platform* and *sample* are the sidebar's selections, the same
+    scoping as Run Trends. *window* is the sidebar's shared Trend window
+    (``None`` when the sidebar hasn't resolved one yet, e.g. a mid-edit
+    custom range or no run dates for the selected detector) — in that case
+    :func:`nights_in_window` falls back to the latest :data:`_FALLBACK_NIGHTS`."""
+    dates = _cached_list_report_dates(data_url)
+    if not dates:
+        st.info(
+            "No regression reports available yet. The nightly benchmark "
+            "workflow uploads the first report after its next run."
+        )
+        return
+
+    # ── Display controls: data-shaping pickers left, overlay toggle right ────
+    # A full-width horizontal row splits into two content-sized groups: the
+    # metric selectors and Scale — all of which shape the chart's axes — pack
+    # left, while the Regressions overlay pills right-align via a stretch group,
+    # so each control keeps its own width and labels never wrap.
+    controls = st.container(
+        horizontal=True, vertical_alignment="bottom", width="stretch"
+    )
+    with controls:
+        shaping = st.container(
+            horizontal=True, vertical_alignment="bottom", width="content"
+        )
+        with shaping:
+            seed_query_param("det_ov_time_metric", "tmetric", _TIME_METRICS)
+            time_metric = st.selectbox(
+                "Time metric", _TIME_METRICS, key="det_ov_time_metric",
+                format_func=_metric_title, width=260,
+                help="Per-event means/medians exclude the warmup event; wall "
+                     "time and user CPU cover the whole run including "
+                     "initialization.",
+            )
+            seed_query_param("det_ov_mem_metric", "mmetric", _MEMORY_METRICS)
+            mem_metric = st.selectbox(
+                "Memory metric", _MEMORY_METRICS, key="det_ov_mem_metric",
+                format_func=_metric_title, width=260,
+                help="Mean event RSS is the per-event average; peak RSS is the "
+                     "run's high-water mark.",
+            )
+            scale = st.segmented_control(
+                "Scale", ["Log", "Linear", "Relative %"],
+                default="Log", key="det_ov_scale",
+                help="Log keeps the detectors' >1-decade spread readable; "
+                     "Linear shows absolute values; Relative % rescales each "
+                     "line to its first plotted night = 100%, so drift is "
+                     "comparable across detectors of very different absolute "
+                     "cost.",
+            ) or "Log"
+        flags = st.container(
+            horizontal=True, vertical_alignment="bottom",
+            width="stretch", horizontal_alignment="right",
+        )
+        with flags:
+            show_confirmed, show_watch = render_flag_pills("det_ov_flags")
+        log = scale == "Log"
+        relative = scale == "Relative %"
+    # Make the selected comparison shareable: ?tmetric=...&mmetric=...
+    st.query_params["tmetric"] = time_metric
+    st.query_params["mmetric"] = mem_metric
+
+    # One parallel fetch for the whole window plus the latest night (the
+    # snapshot night is always the newest report, even outside the window).
+    night = max(dates)
+    hist_nights = nights_in_window(dates, window)
+    fetch_nights = tuple(dict.fromkeys([night, *hist_nights]))
+    raw_reports = _cached_fetch_reports(data_url, fetch_nights)
+    if night not in raw_reports:
+        st.warning(f"Could not load the latest report ({night}) from EOS.")
+        return
+    reports = {n: from_json(r) for n, r in raw_reports.items()}
+    frames = {n: report_metrics_frame(rep) for n, rep in reports.items()}
+    # Per-group reliability, kept separately: an unreliable night is *not
+    # judged*, so it has no metric verdict rows in ``frames`` at all — the only
+    # place its ``reliable=False`` survives is here (see report_reliability_frame).
+    rel_frames = {n: report_reliability_frame(rep) for n, rep in reports.items()}
+
+    df = frames[night]
+    wide, excluded = scoped_snapshot(df, platform, sample, _BASELINE_LABEL)
+    night_frames = [(n, frames[n]) for n in hist_nights if n in frames]
+    hist = history_frame(night_frames, platform, sample, _BASELINE_LABEL)
+
+    if wide.empty and hist.empty:
+        st.info(
+            f"No detector has {_BASELINE_LABEL} results for "
+            f"**{sample}** on **{platform}** — pick another sample or "
+            "platform in the sidebar."
+        )
+        return
+
+    # One colour per detector family, dash/symbol per version — stable across
+    # every panel.
+    detectors_all = sorted(set(wide.index) | set(hist["detector"].unique()))
+
+    # ── Reliability filter (same behaviour as every other historical view) ────
+    # Built from the report *groups*, not the metric frame, so unreliable nights
+    # (which carry no verdict rows) still surface.
+    rel_hist = reliability_history(
+        [(n, rel_frames[n]) for n in hist_nights if n in rel_frames],
+        platform, sample,
+    )
+    unreliable_pairs, exclude_unreliable = _render_reliability_filter(
+        rel_hist, key="det_ov_exclude_unreliable"
+    )
+    if exclude_unreliable and unreliable_pairs and not hist.empty:
+        hist = hist[[
+            (n, d) not in unreliable_pairs
+            for n, d in zip(hist["night"], hist["detector"])
+        ]]
+    # Latest-night snapshot: unreliable detectors on the newest report night
+    # (always the latest report, even outside the trend window).
+    latest_rel = rel_frames[night]
+    latest_rel = latest_rel[
+        (latest_rel["platform"] == platform)
+        & (latest_rel["sample"] == sample)
+        & (latest_rel["run_date"] == night)
+    ]
+    unreliable_latest = sorted(
+        set(latest_rel.loc[latest_rel["reliable"].eq(False), "detector"])
+        & set(wide.index)
+    )
+    if exclude_unreliable and unreliable_latest:
+        wide = wide.drop(index=unreliable_latest, errors="ignore")
+    if wide.empty and hist.empty:
+        st.warning(
+            "Every run in this window was excluded as unreliable — nothing "
+            "left to plot."
+        )
+        return
+
+    # Default styling — one colour per detector family, no user-facing
+    # controls (kept deliberately minimal; the palette auto-sizes to the
+    # number of families so colours stay distinct without cycling).
+    n_families = len({detector_family(d)[0] for d in detectors_all})
+    palette = _PALETTES[_PALETTE_NAMES[_auto_palette_index(n_families)]]
+    styles = detector_styles(detectors_all, palette)
+
+    wide_disp, hist_disp = _to_display_units(wide, hist)
+    if relative:
+        hist_disp = relative_history(hist_disp)
+
+    hist_fig = _history_figure(
+        hist_disp, time_metric, mem_metric, styles, detectors_all,
+        0.75, log, relative, show_confirmed, show_watch,
+    )
+    land_fig = _landscape_figure(
+        wide_disp, time_metric, mem_metric, styles, detectors_all, 0.75, log,
+    )
+    if hist_fig is None and land_fig is None:
+        st.info("No values for the selected metrics in this history window.")
+        return
+    if hist_fig is not None:
+        st.plotly_chart(hist_fig, width="stretch", key="det_ov_hist_chart")
+    if land_fig is not None:
+        st.plotly_chart(land_fig, width="stretch", key="det_ov_land_chart")
+
+    notes = [
+        f"Latest night: **{night}** · trend window: "
+        f"**{night_frames[-1][0]}** → **{night_frames[0][0]}** "
+        f"({len(night_frames)} night{'s' if len(night_frames) != 1 else ''})."
+        if night_frames else f"Latest night: **{night}**."
+    ]
+    dropped = sorted(
+        set(wide.index) - set(scatter_points(wide, time_metric, mem_metric).index)
+    )
+    if dropped:
+        notes.append(f"Missing a landscape coordinate: {', '.join(dropped)}.")
+    if exclude_unreliable and unreliable_latest:
+        notes.append(
+            "Unreliable latest run, excluded from the landscape: "
+            f"{', '.join(unreliable_latest)}."
+        )
+    if excluded:
+        notes.append(
+            f"Not benchmarked with this sample/platform: {', '.join(excluded)}."
+        )
+    st.caption(" ".join(notes))

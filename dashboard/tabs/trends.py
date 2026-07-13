@@ -6,6 +6,9 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from k4bench.analysis.plots._theme import _TEMPLATE
+from k4bench.regression.render import from_json
+from remote_cache import _cached_fetch_reports
+from tabs._regression_flags import SEVERITY_RANK, add_severity_markers, render_flag_pills
 from tabs._reliability import render_reliability_filter
 from ui_utils import _DASHES, _PALETTES, _PALETTE_NAMES, _SYMBOLS, _auto_palette_index, _legend_below, _to_rgba
 
@@ -21,6 +24,57 @@ _METRICS = [
     ("involuntary_ctx_switches",  "Involuntary Context Switches"),
 ]
 
+#: Plotted panels that carry a regression flag, mapped to the metric whose
+#: verdict supplies it. Three borrow their own verdict; throughput has none of
+#: its own — it is exactly ``n_events / wall_time_s`` (see the note on
+#: ``report_builder.RUN_METRICS``), so a throughput regression *is* a wall-time
+#: regression inverted, and it borrows ``wall_time_s``'s verdict. CPU efficiency
+#: and context switches aren't judged nightly, so they never ring a point.
+_FLAG_SOURCE_METRIC = {
+    "wall_time_s":    "wall_time_s",
+    "user_cpu_s":     "user_cpu_s",
+    "peak_rss_mb":    "peak_rss_mb",
+    "events_per_sec": "wall_time_s",
+}
+
+
+def _severity_lookup(
+    data_url: str | None,
+    detector: str | None,
+    platform: str | None,
+    sample: str | None,
+    run_ids: tuple[str, ...],
+) -> dict[tuple[str, str, str], str]:
+    """``{(label, k4h_release, metric): worst severity}`` for the selected detector.
+
+    Reads the precomputed nightly reports for *run_ids* (report dates — a run
+    dir's name is its report date) and keeps the run-level verdicts scoped to
+    this detector/platform/sample. Keyed on the **Key4hep nightly tag**
+    (``k4h_release``, the plot's x-axis), not the run id, and reduced to the
+    *most severe* verdict across all runs of that tag: a nightly benchmarked on
+    consecutive days confirms a regression on the first run and then re-anchors
+    to OK, but Run Trends plots only the newest run of the tag — so joining by
+    run id would drop the CONFIRMED. *run_ids* must therefore cover **every**
+    run in the window, not just the ones the same-tag dedup keeps. Empty when
+    remote data is unavailable, so the caller draws no flags.
+    """
+    if not (data_url and detector and platform and sample and run_ids):
+        return {}
+    reports = _cached_fetch_reports(data_url, run_ids)
+    lookup: dict[tuple[str, str, str], str] = {}
+    for raw in reports.values():
+        report = from_json(raw)
+        for g in report.groups:
+            if (g.detector, g.platform, g.sample) != (detector, platform, sample):
+                continue
+            for v in g.verdicts:
+                if v.sub_detector is not None:
+                    continue
+                key = (v.label, g.k4h_release, v.metric)
+                if SEVERITY_RANK.get(v.severity.value, 0) > SEVERITY_RANK.get(lookup.get(key), 0):
+                    lookup[key] = v.severity.value
+    return lookup
+
 
 def _render_timeseries(
     df: pd.DataFrame,
@@ -30,8 +84,17 @@ def _render_timeseries(
     line_alpha: float,
     use_dash: bool,
     use_marker: bool,
+    severity: dict[tuple[str, str, str], str] | None = None,
+    show_confirmed: bool = False,
+    show_watch: bool = False,
 ) -> None:
-    """Render the main time-series subplot figure."""
+    """Render the main time-series subplot figure.
+
+    *severity* is the ``{(label, k4h_release, metric): severity}`` map from
+    :func:`_severity_lookup`; when *show_confirmed*/*show_watch* are set the
+    matching tags get a regression flag ring on the flagged panels
+    (:data:`_FLAG_SOURCE_METRIC`), identical to the Overview tab.
+    """
     marker_alpha = max(0.1, line_alpha - 0.2)
 
     present_metrics = [(col, label) for col, label in _METRICS if col in df.columns]
@@ -93,6 +156,33 @@ def _render_timeseries(
                 row=row, col=col,
             )
 
+    # Regression flags on top of the judged panels — the same halo+badge
+    # overlay as the Overview tab, matched to each plotted run by nightly tag.
+    # The throughput panel borrows wall_time_s's verdict (see _FLAG_SOURCE_METRIC).
+    flag_severities = (
+        *(("CONFIRMED",) if show_confirmed else ()),
+        *(("WATCH",) if show_watch else ()),
+    )
+    if severity and flag_severities:
+        for plot_idx, (metric_col, _) in enumerate(present_metrics):
+            src_metric = _FLAG_SOURCE_METRIC.get(metric_col)
+            if src_metric is None:
+                continue
+            row = plot_idx // n_cols + 1
+            col = plot_idx %  n_cols + 1
+            panel = df.assign(_severity=[
+                severity.get((lbl, rel, src_metric))
+                for lbl, rel in zip(df["label"], df["k4h_release"])
+            ])
+            for sev in flag_severities:
+                flagged = panel[panel["_severity"] == sev]
+                if not flagged.empty:
+                    add_severity_markers(
+                        fig, flagged, x_col="x_date", y_col=metric_col,
+                        name_col="label", severity=sev, hover_y="%{y:.4g}",
+                        row=row, col=col,
+                    )
+
     # Show tick labels on every row; axis title only on the bottom row.
     fig.update_xaxes(
         type="date",
@@ -132,6 +222,11 @@ def render(
     trend_df: pd.DataFrame | None,
     selected_labels: list[str],
     reliability: dict[str, bool | None] | None = None,
+    *,
+    data_url: str | None = None,
+    detector: str | None = None,
+    platform: str | None = None,
+    sample: str | None = None,
 ) -> None:
     if trend_df is None:
         st.info("No trend data available. Run the nightly benchmark at least once.")
@@ -140,34 +235,49 @@ def render(
         st.info("Select at least one configuration in the sidebar.")
         return
 
-    # ── Display controls ───────────────────────────────────────────────────────
-    ctrl_l, ctrl_m, ctrl_r, ctrl_s = st.columns(4, vertical_alignment="bottom")
-    with ctrl_l:
-        palette_name = st.selectbox(
-            "Colour palette",
-            options=_PALETTE_NAMES,
-            index=_auto_palette_index(len(selected_labels)),
+    # ── Display controls: style controls left, regression toggle right ──────────
+    # A full-width horizontal row splits into two content-sized groups: the style
+    # controls pack left, the regression pills right-align via a stretch group, so
+    # each control keeps its own width and the flag toggle mirrors the Overview tab.
+    controls = st.container(
+        horizontal=True, vertical_alignment="bottom", width="stretch"
+    )
+    with controls:
+        style = st.container(
+            horizontal=True, vertical_alignment="bottom", width="content"
         )
-    with ctrl_m:
-        style_cycling = st.selectbox(
-            "Style cycling",
-            options=["Colour only", "Colour + Dash", "Colour + Marker", "Colour + Dash + Marker"],
-            index=0,
-            help=(
-                "When the number of configurations exceeds the palette size, "
-                "additional visual cues are layered on top of colour — "
-                "dash pattern and/or marker shape — so every line stays "
-                "distinguishable even with 20+ configs."
-            ),
+        with style:
+            palette_name = st.selectbox(
+                "Colour palette",
+                options=_PALETTE_NAMES,
+                index=_auto_palette_index(len(selected_labels)),
+                width=200,
+            )
+            style_cycling = st.selectbox(
+                "Style cycling",
+                options=["Colour only", "Colour + Dash", "Colour + Marker", "Colour + Dash + Marker"],
+                index=0,
+                width=200,
+                help=(
+                    "When the number of configurations exceeds the palette size, "
+                    "additional visual cues are layered on top of colour — "
+                    "dash pattern and/or marker shape — so every line stays "
+                    "distinguishable even with 20+ configs."
+                ),
+            )
+            alpha = st.slider(
+                "Opacity",
+                min_value=0.1, max_value=1.0,
+                value=0.75, step=0.05,
+                width=180,
+            )
+            smooth = st.toggle("Smooth lines", value=False)
+        flags = st.container(
+            horizontal=True, vertical_alignment="bottom",
+            width="stretch", horizontal_alignment="right",
         )
-    with ctrl_r:
-        alpha = st.slider(
-            "Opacity",
-            min_value=0.1, max_value=1.0,
-            value=0.75, step=0.05,
-        )
-    with ctrl_s:
-        smooth = st.toggle("Smooth lines", value=False)
+        with flags:
+            show_confirmed, show_watch = render_flag_pills("trends_flags")
 
     palette    = _PALETTES[palette_name]
     line_shape = "spline" if smooth else "linear"
@@ -180,6 +290,13 @@ def render(
     df["x_date"]   = pd.to_datetime(df["x_date"])
     df["run_date"] = pd.to_datetime(df["run_date"])
     df = df.dropna(subset=["x_date"])
+    # Every run in the window, captured *before* the same-tag dedup below — the
+    # flag lookup must fetch the reports of the runs dedup drops too, since a
+    # regression is often CONFIRMED on the earlier run of a repeated tag (which
+    # dedup discards) before the metric re-anchors. Also stable across the
+    # reliability toggle, so toggling reuses the cached reports rather than
+    # re-issuing a threaded HTTPS fetch (whose shutdown can race a rerun).
+    all_run_ids = tuple(sorted(df["run_id"].dropna().unique())) if "run_id" in df.columns else ()
     # When multiple CI runs share the same nightly tag, keep only the latest run.
     df = df.loc[df.groupby(["label", "x_date"])["run_date"].idxmax()].reset_index(drop=True)
     df["run_date_str"] = df["run_date"].dt.strftime("%Y-%m-%d").fillna("unknown")
@@ -209,5 +326,18 @@ def render(
     if df.empty:
         return
 
+    # ── Regression flags ────────────────────────────────────────────────────────
+    # Sourced from the same nightly reports as the Overview/Regressions tabs and
+    # joined per run, so a flag here means exactly what it means there. Only
+    # fetched when a flag is actually switched on.
+    severity: dict[tuple[str, str, str], str] = {}
+    if (show_confirmed or show_watch) and all_run_ids:
+        severity = _severity_lookup(
+            data_url, detector, platform, sample, all_run_ids,
+        )
+
     # ── Time-series plots ──────────────────────────────────────────────────────
-    _render_timeseries(df, selected_labels, palette, line_shape, alpha, use_dash, use_marker)
+    _render_timeseries(
+        df, selected_labels, palette, line_shape, alpha, use_dash, use_marker,
+        severity, show_confirmed, show_watch,
+    )
