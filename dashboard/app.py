@@ -172,6 +172,7 @@ def main() -> None:
             if not detectors:
                 st.error("No detectors found at the configured WebEOS URL.")
                 return
+            _drop_stale_selection("sb_detector", detectors)
             seed_query_param("sb_detector", "detector", detectors)
             detector = st.selectbox("Detector", detectors, key="sb_detector")
             if not detector:
