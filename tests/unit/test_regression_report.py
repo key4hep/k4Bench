@@ -9,13 +9,33 @@ from pathlib import Path
 
 import pytest
 
+import pandas as pd
+
 from k4bench.regression.models import Direction, Severity
 from k4bench.regression.report_builder import (
     EVENT_METRICS,
     RUN_METRICS,
     build_nightly_report_local,
     group_report_from_run_dirs,
+    unjudged_value_verdicts,
 )
+
+
+def test_unjudged_value_verdicts_fills_only_missing_metrics():
+    results = pd.DataFrame({
+        "run_id": ["2026-01-12"], "label": ["baseline"],
+        "wall_time_s": [100.2], "user_cpu_s": [90.0], "peak_rss_mb": [1500.0],
+    })
+    out = unjudged_value_verdicts(
+        detector="DET", platform=_PLAT, sample="single_e",
+        results_df=results, event_df=None, tonight="2026-01-12",
+        already={("baseline", "wall_time_s")},  # already judged → skipped
+    )
+    by_metric = {v.metric: v for v in out}
+    assert "wall_time_s" not in by_metric
+    assert {"user_cpu_s", "peak_rss_mb"} <= set(by_metric)
+    assert all(v.severity is Severity.UNKNOWN and v.value is not None for v in out)
+    assert by_metric["user_cpu_s"].value == pytest.approx(90.0)
 
 
 def test_run_and_event_metrics_are_disjoint():
@@ -126,14 +146,22 @@ def test_unreliable_night_never_evaluated_nor_in_baseline(tmp_path):
     assert wall[0].baseline_median == pytest.approx(100.0, abs=0.5)
 
 
-def test_unreliable_tonight_yields_note_and_no_verdicts(tmp_path):
+def test_unreliable_tonight_yields_note_and_unjudged_values(tmp_path):
     walls = [100.0] * 11 + [100.2]
     run_dirs = _make_history(tmp_path, walls, {11: {"contended": True}})
     group = group_report_from_run_dirs(
         "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
     )
-    assert group.verdicts == []
     assert any("reliability" in note for note in group.notes)
+    # Nothing is judged (no flag, no baseline verdict) …
+    assert [v for v in group.verdicts if v.flagged] == []
+    assert all(v.severity is Severity.UNKNOWN for v in group.verdicts)
+    # … but tonight's raw values are still recorded so the dashboard can plot
+    # them — with the value present and the comparison fields blank.
+    wall = next(v for v in group.verdicts if v.metric == "wall_time_s")
+    assert wall.value == pytest.approx(100.2)
+    assert wall.baseline_median is None and wall.z_score is None
+    assert "not judged" in wall.reason
 
 
 def test_failed_config_is_failure_verdict(tmp_path):

@@ -52,7 +52,7 @@ from remote_cache import (
     _cached_list_run_dates,
 )
 from tabs._reliability import render_reliability_filter
-from ui_utils import _is_valid_df, _to_rgba
+from ui_utils import _METRIC_LABELS, _METRIC_UNITS, _is_valid_df, _to_rgba
 
 #: Fill for the accepted-baseline band on the drill-down chart — same visual
 #: device as machine_info's threshold shading, in the palette's first hue.
@@ -165,30 +165,6 @@ def _render_detector(
             if len(groups) > 1:
                 st.markdown(f"**{_group_title(group)}**")
             _render_group(group, data_url, cache_dir, key=f"{detector}_{i}")
-
-
-#: Human-readable metric names for the change-ledger row labels; the raw column
-#: name (e.g. ``wall_time_s``) is preserved in the hover tooltip.
-_METRIC_LABELS = {
-    "wall_time_s":    "wall time",
-    "user_cpu_s":     "user CPU",
-    "peak_rss_mb":    "peak RSS",
-    "cpu_efficiency": "CPU efficiency",
-    "mean_time_s":    "mean event time",
-    "median_time_s":  "median event time",
-    "mean_rss_mb":    "mean event RSS",
-}
-
-#: Unit suffix per metric for axis titles (empty for dimensionless ratios).
-_METRIC_UNITS = {
-    "wall_time_s":    "s",
-    "user_cpu_s":     "s",
-    "peak_rss_mb":    "MB",
-    "cpu_efficiency": "",
-    "mean_time_s":    "s",
-    "median_time_s":  "s",
-    "mean_rss_mb":    "MB",
-}
 
 
 def _yaxis_label(item: MetricVerdict) -> str:

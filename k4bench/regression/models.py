@@ -105,6 +105,11 @@ class RunGroupReport:
     series to attach to (e.g. no run uploaded for tonight at all, or a config
     that produced no results). ``notes`` carries non-alertable context (e.g.
     tonight's run failed the reliability check, so metrics were not judged).
+    ``reliable`` is tonight's host-reliability tri-state (the same per-run
+    verdict as :func:`k4bench.results.reliability_evidence.run_reliability_map`;
+    ``None`` = no evidence), persisted so report consumers — e.g. the
+    dashboard's Overview tab — can apply the standard unreliable-run filter
+    without re-downloading run data.
     """
 
     detector: str
@@ -116,6 +121,7 @@ class RunGroupReport:
     verdicts: list[MetricVerdict] = field(default_factory=list)
     job_failures: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    reliable: bool | None = None
 
     def _select(self, severity: Severity) -> list[MetricVerdict]:
         return [v for v in self.verdicts if v.severity is severity]

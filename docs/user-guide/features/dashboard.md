@@ -51,6 +51,7 @@ Key4hep release → physics sample → run date**.
 | **Region timing** | per-subdetector stepping time, `at_location` vs `by_birth`, step counts, attribution analysis | `*_regions.json` |
 | **Trends** | metrics over time across releases | many runs, windowed |
 | **Regressions** | the nightly cross-detector regression report | `_reports/{date}/report.json` |
+| **Overview** | cross-detector metric comparison, snapshot & history | `_reports/{date}/report.json` |
 | **Machine info** | the host the benchmark ran on (CPU, RAM, governor, throttling) | `machine_info.json` |
 | **Logs** | the raw `ddsim` log for the selected run | `*.log` |
 
@@ -75,6 +76,17 @@ anchored on the *latest available* run, not today, so it always shows data even
 if the nightly hasn't run recently (see
 [`trend_window.resolve_window`](../../reference/api/analysis/index.md) — pure
 logic, unit-tested).
+
+Nights the nightly regression detector **confirmed** a step are ringed in red
+on the lines, and nights it flagged but hasn't confirmed are ringed as ⚠️ watch
+points — both on by default, each behind its own toggle. It's the same
+Confirmed/Watch toggle and marker language as the Overview tab, so a flag here
+means exactly what it means there. Flags appear on the metrics the engine judges
+(wall time, user CPU, peak RSS) plus throughput, which borrows the wall-time
+verdict since throughput is exactly `n_events / wall_time_s` (the same
+regression, inverted); CPU efficiency and context switches carry none. Runs that
+failed the host-reliability check are excluded by default with the same
+warning/toggle as every other historical view.
 
 !!! tip "Warmup is excluded"
     Trend and summary statistics drop event 0 (warmup), matching the
@@ -127,6 +139,53 @@ trend** drill-down that plots the metric's recent history with the baseline band
 it was judged against (the flagged night marked 🔴, the night it was first
 watched marked ⚠️). Confirmed regressions and failures — and only those — are
 also emailed to the team's e-group by the same CI job.
+
+### Overview tab
+
+Where every other metric tab compares configs *within* the selected detector,
+this one compares the detectors *against each other* — always on their
+**baseline** config, for the sidebar-selected platform and sample, over the
+sidebar's trend window (the same scoping as Run Trends, minus the detector).
+It reads the same nightly `_reports/{date}/report.json` as the Regressions
+tab — whose verdicts carry the raw nightly value of every run and per-event
+metric for all detectors — so the whole comparison loads from one small JSON
+per night, with no per-detector run downloads.
+
+Two figures, each with its own legend below it (one colour per detector,
+consistent across both):
+
+- **historical trends** — the two selected metrics side by side (CPU,
+  Memory), one line per detector across every nightly tag in the sidebar's
+  trend window (x-axis: the Key4hep nightly tag, like every other trend
+  view; a nightly benchmarked twice collapses to one point, newest run wins),
+  so cross-detector gaps can be tracked over time. Nights the
+  regression detector **confirmed** a step are ringed in red on the lines, and
+  nights it flagged but hasn't confirmed are ringed as ⚠️ watch points — both
+  on by default, each behind its own toggle. A *relative* toggle
+  rescales each line to its first night = 100 %, making drift comparable
+  across detectors of very different absolute cost;
+- **performance landscape** — the selected time metric against the selected
+  memory metric, one point per detector — closer to the origin is faster
+  *and* leaner. The metric selectors offer mean/median event time, wall time
+  or user CPU for time; mean event RSS or peak RSS for memory (shown in GB),
+  and the selection is shareable via `?tmetric=`/`?mmetric=`.
+
+Colours follow the detector *family* (ALLEGRO, CLD, …), with versions of one
+family distinguished by dash pattern and marker symbol, so experiment-level
+comparisons read at a glance. Runs that failed the host-reliability check are
+excluded by default with the same warning/toggle as every other historical
+view (the nightly report carries each night's per-detector verdict); their raw
+values are still recorded — as unjudged points, never flagged — so disabling
+the toggle plots them like Run Trends does. Value
+axes are logarithmic by default (a toggle switches to linear) — the detectors
+span more than a decade in both time and memory, so a linear scale squashes
+the small ones into an unreadable cluster.
+
+Detectors are only compared like-for-like: anything not benchmarked with the
+selected sample/platform is listed as excluded instead of silently plotted
+against a different workload. The values shown are the raw nightly
+measurements the regression engine judged — baselines and Δ-verdicts stay in
+the Regressions tab.
 
 ## Running the dashboard locally
 

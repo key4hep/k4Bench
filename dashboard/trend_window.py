@@ -12,6 +12,7 @@ from datetime import date, timedelta
 # Trend-window presets → look-back length in days; ``None`` means special handling.
 WINDOW_PRESETS: dict[str, int | None] = {
     "Last 7 days":   7,
+    "Last 14 days":  14,
     "Last 30 days":  30,
     "Last 90 days":  90,
     "Last 6 months": 182,

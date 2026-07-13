@@ -102,6 +102,35 @@ def _auto_palette_index(n: int) -> int:
     except ValueError:
         return 0
 
+# ── Metric metadata ────────────────────────────────────────────────────────────
+# Shared by the report-based tabs (Regressions, Detectors Overview), covering
+# exactly the run/event metrics the regression engine evaluates (see
+# ``k4bench.regression.report_builder.RUN_METRICS`` / ``EVENT_METRICS``).
+
+#: Human-readable metric names for row labels and panel titles; the raw column
+#: name (e.g. ``wall_time_s``) is preserved in hover tooltips.
+_METRIC_LABELS = {
+    "wall_time_s":    "wall time",
+    "user_cpu_s":     "user CPU",
+    "peak_rss_mb":    "peak RSS",
+    "cpu_efficiency": "CPU efficiency",
+    "mean_time_s":    "mean event time",
+    "median_time_s":  "median event time",
+    "mean_rss_mb":    "mean event RSS",
+}
+
+#: Unit suffix per metric for axis titles (empty for dimensionless ratios).
+_METRIC_UNITS = {
+    "wall_time_s":    "s",
+    "user_cpu_s":     "s",
+    "peak_rss_mb":    "MB",
+    "cpu_efficiency": "",
+    "mean_time_s":    "s",
+    "median_time_s":  "s",
+    "mean_rss_mb":    "MB",
+}
+
+
 _DASHES  = ["solid", "dash", "dot", "dashdot"]
 _SYMBOLS = ["circle", "square", "diamond", "cross",
             "triangle-up", "star", "pentagon", "hexagon"]

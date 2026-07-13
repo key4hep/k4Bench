@@ -442,5 +442,6 @@ def from_json(data: dict) -> NightlyReport:
             run_id=g.get("run_id", ""), verdicts=verdicts,
             job_failures=list(g.get("job_failures", [])),
             notes=list(g.get("notes", [])),
+            reliable=g.get("reliable"),
         ))
     return NightlyReport(generated_at=data.get("generated_at", ""), groups=groups)

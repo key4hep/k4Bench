@@ -28,7 +28,7 @@ from remote_cache import (
     _cached_scan_stack_samples,
 )
 from k4bench.results.reliability_evidence import run_reliability_map
-from tabs import event_memory, event_timing, impact, machine_info, region_timing, regressions, trends
+from tabs import detectors_overview, event_memory, event_timing, impact, machine_info, region_timing, regressions, trends
 from tabs._reliability import render_sidebar_run_quality
 from trend_window import WINDOW_PRESETS, resolve_window
 from ui_chrome import (
@@ -137,6 +137,7 @@ def main() -> None:
     run_dirs:   tuple[str, ...]    = ()
     data_dir:   str | None         = None
     selected_run_meta: dict | None = None
+    sidebar_window: tuple[date, date] | None = None
 
     with st.sidebar:
         st.header("Data Source")
@@ -280,11 +281,13 @@ def main() -> None:
                 st.header("Trend window")
                 window_presets = list(WINDOW_PRESETS)
                 seed_query_param("sb_trend_preset", "range", window_presets)
+                if "sb_trend_preset" not in st.session_state:
+                    st.session_state["sb_trend_preset"] = "Last 14 days"
                 preset = st.selectbox(
                     "Range", window_presets,
                     key="sb_trend_preset",
-                    help="Limits the date range plotted in the Trends tabs. "
-                         "Smaller windows load faster.",
+                    help="Limits the date range plotted in the Trends and "
+                         "Overview tabs. Smaller windows load faster.",
                 )
                 st.query_params["range"] = preset
                 custom_range: tuple[date, date] | None = None
@@ -307,6 +310,7 @@ def main() -> None:
                     start, end = resolve_window(
                         preset, [d.date() for d in all_dates], custom_range
                     )
+                    sidebar_window = (start, end)
                     windowed = {
                         stk: [
                             dt for dt in dates
@@ -424,10 +428,11 @@ def main() -> None:
     # sub-view is preserved when the user only adjusts the window; an empty window
     # shows an in-view "widen the window" message instead of removing the option.
     trends_enabled = bool(config.data_url)
-    section_names = ["Run Trends", "Regressions", "Config Impact", "Region Timing", "Event Timing", "Event Memory", "Machine Info", "Logs"]
+    section_names = ["Overview", "Run Trends", "Regressions", "Config Impact", "Region Timing", "Event Timing", "Event Memory", "Machine Info", "Logs"]
     if not trends_enabled:
-        # Trends / Regressions / Impact only make sense with multi-run (remote) data
-        section_names = section_names[3:]
+        # Overview / Trends / Regressions / Impact only make sense with
+        # multi-run (remote) data
+        section_names = section_names[4:]
 
     # ── Section switcher ────────────────────────────────────────────────────────
     # `?tab=...` (used by the nightly regression email's "view in dashboard" links,
@@ -447,12 +452,22 @@ def main() -> None:
 
     # Trends (remote only) — uses all stacks so history is complete
     if active_section == "Run Trends":
-        trends.render(trend_results_df, selected_labels, reliability)
+        trends.render(
+            trend_results_df, selected_labels, reliability,
+            data_url=config.data_url, detector=detector,
+            platform=platform, sample=sample,
+        )
 
     # Regressions (remote only) — cross-detector, reads the precomputed
     # nightly reports from EOS rather than the sidebar-selected run window
     if active_section == "Regressions":
         regressions.render(config.data_url, config.cache_dir)
+
+    # Overview (remote only) — cross-detector comparison built from the same
+    # nightly reports as the Regressions tab, scoped by the sidebar's
+    # platform/sample/Trend window like Run Trends (but spanning all detectors).
+    if active_section == "Overview":
+        detectors_overview.render(config.data_url, platform, sample, sidebar_window)
 
     if active_section == "Config Impact":
         impact.render(trend_results_df, selected_labels)

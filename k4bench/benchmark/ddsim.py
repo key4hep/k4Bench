@@ -154,6 +154,12 @@ def run_sweep(config: BenchmarkConfig) -> list[RunResult]:
 # Label helpers
 # ---------------------------------------------------------------------------
 
+#: Label of the unpatched full-detector run every sweep starts with. Part of
+#: the on-disk data contract: results on EOS carry it in their CSV/JSON keys,
+#: and the dashboard's Detectors Overview compares detectors on exactly this
+#: label — renaming it would orphan all existing histories.
+BASELINE_LABEL = "baseline_all"
+
 _MAX_LABEL_DETECTORS = 5
 
 
@@ -180,8 +186,8 @@ def _make_detector_label(prefix: str, names: set[str]) -> str:
 
 def _run_baseline(config: BenchmarkConfig) -> list[RunResult]:
     """Single baseline run with no detector patching."""
-    _print_run_header(1, 1, "baseline_all", config.xml_path)
-    result = _timed_run(xml_path=config.xml_path, label="baseline_all", config=config)
+    _print_run_header(1, 1, BASELINE_LABEL, config.xml_path)
+    result = _timed_run(xml_path=config.xml_path, label=BASELINE_LABEL, config=config)
     return [result]
 
 
@@ -194,9 +200,9 @@ def _run_removal_sweep(config: BenchmarkConfig) -> list[RunResult]:
     results: list[RunResult] = []
 
     total = 1 + len(detectors_to_remove)
-    _print_run_header(1, total, "baseline_all", config.xml_path)
+    _print_run_header(1, total, BASELINE_LABEL, config.xml_path)
     results.append(
-        _timed_run(xml_path=config.xml_path, label="baseline_all", config=config)
+        _timed_run(xml_path=config.xml_path, label=BASELINE_LABEL, config=config)
     )
 
     for i, name in enumerate(detectors_to_remove, start=2):
