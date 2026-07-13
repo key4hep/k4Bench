@@ -22,6 +22,7 @@
 #                            detectors live in https://github.com/HEP-FCC/FCC-config
 #                            and are installed under $FCCCONFIG by Key4hep, e.g.
 #                            $FCCCONFIG/FullSim/IDEA/IDEA_o1_v03/SteeringFile_IDEA_o1_v03.py
+#   timeout       optional   job timeout in minutes             (default: 7200)
 #   samples       required   list of sample entries — see below
 #
 # ── Per-sample keys (under samples:) ───────────────────────────────────────
@@ -37,7 +38,9 @@
 xml: FCCee/IDEA/compact/IDEA_o1_v03/IDEA_o1_v03.xml
 steering_file: $FCCCONFIG/FullSim/IDEA/IDEA_o1_v03/SteeringFile_IDEA_o1_v03.py
 
-verbose: false
+verbose: true
+
+timeout: 180  # 3 hours
 
 # Partial sweep — full sweep is currently too long for nightly CI. 
 sweep_detectors:
@@ -59,7 +62,7 @@ samples:
       --gun.distribution uniform
       --gun.energy 10*GeV
 
-# NOTE: this has been reduced to 10 events for nightly CI, as very long simulation times have been observed for IDEA_o1_v03 with the p8_ee_Zbb_ecm91 sample
+# NOTE: reduced to 1 event for nightly CI, as very long simulation times have been observed for IDEA_o1_v03 with the p8_ee_Zbb_ecm91 sample
   - name: p8_ee_Zbb_ecm91
-    n_events: 10
+    n_events: 1
     input_files: root://eospublic.cern.ch//eos/experiment/fcc/ee/generation/hepmc/p8_ee_Zbb_ecm91/events_noVtxSmear.hepmc
