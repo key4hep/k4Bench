@@ -282,7 +282,7 @@ def main() -> None:
                 window_presets = list(WINDOW_PRESETS)
                 seed_query_param("sb_trend_preset", "range", window_presets)
                 if "sb_trend_preset" not in st.session_state:
-                    st.session_state["sb_trend_preset"] = "Last 14 days"
+                    st.session_state["sb_trend_preset"] = "Last 7 days"
                 preset = st.selectbox(
                     "Range", window_presets,
                     key="sb_trend_preset",
@@ -405,14 +405,16 @@ def main() -> None:
     render_run_status(results, selected_run_meta)
 
     # ── Load trend data (remote only) ─────────────────────────────────────────
+    # Only the two frames every rerun needs are loaded eagerly: results (Trends,
+    # Config Impact, Machine Info) and machine info — both feed the shared
+    # reliability map below. The region- and event-timing trends are built (or,
+    # once cached, deep-copied by st.cache_data) only when their own tab is
+    # active, so switching between the other tabs never pays for the heaviest
+    # frame (per-event timing across the whole window).
     trend_results_df = None
-    trend_region_df  = None
-    trend_event_df   = None
     trend_machine_df = None
     if run_dirs:
         trend_results_df = cached_load_trend_results(run_dirs)
-        trend_region_df  = cached_load_trend_region_timing(run_dirs)
-        trend_event_df   = cached_load_trend_event_timing(run_dirs)
         trend_machine_df = cached_load_trend_machine_info(run_dirs)
 
     # Per-run reliability verdict ({run_id: reliable}), computed once from the full
@@ -472,13 +474,18 @@ def main() -> None:
     if active_section == "Config Impact":
         impact.render(trend_results_df, selected_labels)
 
+    # The region/event trend frames are loaded lazily here (cached, so a repeat
+    # visit is a cache hit) so the other tabs never build or copy them.
     if active_section == "Region Timing":
+        trend_region_df = cached_load_trend_region_timing(run_dirs) if run_dirs else None
         region_timing.render(region_data, trend_region_df, selected_labels, trends_enabled, reliability)
 
     if active_section == "Event Timing":
+        trend_event_df = cached_load_trend_event_timing(run_dirs) if run_dirs else None
         event_timing.render(event_data, trend_event_df, selected_labels, trends_enabled, reliability)
 
     if active_section == "Event Memory":
+        trend_event_df = cached_load_trend_event_timing(run_dirs) if run_dirs else None
         event_memory.render(event_data, trend_event_df, selected_labels, trends_enabled, reliability)
 
     if active_section == "Machine Info":

@@ -35,15 +35,26 @@ spec:
             limits:
               memory: "1Gi"
               cpu: "500m"
+          # /_stcore/health is served by the same interpreter that runs the
+          # (single-threaded, GIL-bound) app rerun, so under a burst of reruns
+          # the health response can be delayed past the 1s Kubernetes default.
+          # Readiness only drops the pod from the router (self-healing) so it is
+          # kept fairly tight; liveness *restarts* the pod — wiping the in-memory
+          # st.cache_data and forcing a cold reload — so it is deliberately far
+          # more tolerant, restarting only on a sustained (~2 min) outage.
           readinessProbe:
             httpGet:
               path: /_stcore/health
               port: 8080
             initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /_stcore/health
               port: 8080
             initialDelaySeconds: 30
             periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 4

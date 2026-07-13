@@ -235,6 +235,30 @@ def render(
         st.info("Select at least one configuration in the sidebar.")
         return
 
+    _trends_body(
+        trend_df, selected_labels, reliability,
+        data_url=data_url, detector=detector, platform=platform, sample=sample,
+    )
+
+
+@st.fragment
+def _trends_body(
+    trend_df: pd.DataFrame,
+    selected_labels: list[str],
+    reliability: dict[str, bool | None] | None,
+    *,
+    data_url: str | None,
+    detector: str | None,
+    platform: str | None,
+    sample: str | None,
+) -> None:
+    """Run Trends' controls, data prep and figures, scoped to a fragment so a
+    style tweak or a Confirmed/Watch pill reruns only this block — not the whole
+    app (sidebar, eager trend loads, reliability map). *trend_df* is loaded once
+    in app.py and replayed on a fragment rerun, which also reuses the cached
+    nightly reports behind the flag lookup rather than re-issuing the threaded
+    HTTPS fetch whose shutdown can race a rerun.
+    """
     # ── Display controls: style controls left, regression toggle right ──────────
     # A full-width horizontal row splits into two content-sized groups: the style
     # controls pack left, the regression pills right-align via a stretch group, so
