@@ -34,6 +34,7 @@ from trend_window import WINDOW_PRESETS, resolve_window
 from ui_chrome import (
     DOCS_URL,
     GITHUB_URL,
+    _drop_stale_multiselect,
     _drop_stale_selection,
     _render_footer,
     _render_sidebar_footer,
@@ -138,6 +139,7 @@ def main() -> None:
     data_dir:   str | None         = None
     selected_run_meta: dict | None = None
     sidebar_window: tuple[date, date] | None = None
+    trend_results_df: pd.DataFrame | None = None
 
     with st.sidebar:
         st.header("Data Source")
@@ -356,6 +358,14 @@ def main() -> None:
             event_data   = cached_load_event_timing(data_dir)
             region_data  = cached_load_region_timing(data_dir)
             available_labels = collect_labels(results, event_data, region_data)
+            # The latest run alone can be missing a config (a failed/timed-out job,
+            # or one retired from the newest release) that still has history
+            # earlier in the trend window — union those labels in too, or they'd
+            # never be selectable even though Run Trends has data for them.
+            if run_dirs:
+                trend_results_df = cached_load_trend_results(run_dirs)
+                if trend_results_df is not None and "label" in trend_results_df.columns:
+                    available_labels = sorted(set(available_labels) | set(trend_results_df["label"]))
             # Local mode has no stack selector, so show the run-quality card here.
             # (Remote mode renders it under the Stack selector above.)
             if not config.data_url:
@@ -373,6 +383,7 @@ def main() -> None:
             # Run Trends), narrowing the selection to just that label — seeded into
             # session_state the same way as seed_query_param (see its docstring),
             # since a multiselect's `default=` has the identical constraint.
+            _drop_stale_multiselect("ms_selected_labels", available_labels)
             if "ms_selected_labels" not in st.session_state:
                 requested_config = st.query_params.get("config")
                 st.session_state["ms_selected_labels"] = (
@@ -411,10 +422,10 @@ def main() -> None:
     # once cached, deep-copied by st.cache_data) only when their own tab is
     # active, so switching between the other tabs never pays for the heaviest
     # frame (per-event timing across the whole window).
-    trend_results_df = None
+    # trend_results_df was already loaded above (in the Filters section) to
+    # compute available_labels; only trend_machine_df is still needed here.
     trend_machine_df = None
     if run_dirs:
-        trend_results_df = cached_load_trend_results(run_dirs)
         trend_machine_df = cached_load_trend_machine_info(run_dirs)
 
     # Per-run reliability verdict ({run_id: reliable}), computed once from the full
