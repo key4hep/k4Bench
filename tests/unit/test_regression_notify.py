@@ -86,30 +86,21 @@ def test_confirmed_regression_sends_regardless_of_direction(fake_smtp):
     assert len(fake_smtp.sent) == 1
 
 
-def test_watch_or_ok_only_never_sends(fake_smtp):
-    assert not _send(_report(
+def test_clean_night_still_sends(fake_smtp):
+    # Every night's report is emailed, regardless of content.
+    assert _send(_report(
         _verdict(Severity.WATCH, Direction.UP),
         _verdict(Severity.OK, Direction.NONE),
     ))
-    assert fake_smtp.sent == []
-
-
-def test_force_sends_clean_night(fake_smtp):
-    # A manual dispatch with --force delivers even a non-alertable report.
-    report = _report(_verdict(Severity.OK, Direction.NONE))
-    assert notify.send_report_email(
-        report, to_addr="egroup@cern.ch", from_addr="noreply@cern.ch", force=True
-    )
     ((_frm, _to, msg),) = fake_smtp.sent
     assert "no regressions" in msg
 
 
-def test_cli_force_flag_sends(fake_smtp, tmp_path):
+def test_cli_sends_without_force_flag(fake_smtp, tmp_path):
     report_path = tmp_path / "report.json"
     report_path.write_text('{"generated_at": "x", "groups": []}')
     assert notify.main([
-        str(report_path), "--to", "egroup@cern.ch",
-        "--from-addr", "noreply@cern.ch", "--force",
+        str(report_path), "--to", "egroup@cern.ch", "--from-addr", "noreply@cern.ch",
     ]) == 0
     assert len(fake_smtp.sent) == 1
 
