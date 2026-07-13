@@ -642,55 +642,6 @@ def render(
         )
         return
 
-    # ── Display controls: data-shaping pickers left, overlay toggle right ────
-    # A full-width horizontal row splits into two content-sized groups: the
-    # metric selectors and Scale — all of which shape the chart's axes — pack
-    # left, while the Regressions overlay pills right-align via a stretch group,
-    # so each control keeps its own width and labels never wrap.
-    controls = st.container(
-        horizontal=True, vertical_alignment="bottom", width="stretch"
-    )
-    with controls:
-        shaping = st.container(
-            horizontal=True, vertical_alignment="bottom", width="content"
-        )
-        with shaping:
-            seed_query_param("det_ov_time_metric", "tmetric", _TIME_METRICS)
-            time_metric = st.selectbox(
-                "Time metric", _TIME_METRICS, key="det_ov_time_metric",
-                format_func=_metric_title, width=260,
-                help="Per-event means/medians exclude the warmup event; wall "
-                     "time and user CPU cover the whole run including "
-                     "initialization.",
-            )
-            seed_query_param("det_ov_mem_metric", "mmetric", _MEMORY_METRICS)
-            mem_metric = st.selectbox(
-                "Memory metric", _MEMORY_METRICS, key="det_ov_mem_metric",
-                format_func=_metric_title, width=260,
-                help="Mean event RSS is the per-event average; peak RSS is the "
-                     "run's high-water mark.",
-            )
-            scale = st.segmented_control(
-                "Scale", ["Log", "Linear", "Relative %"],
-                default="Log", key="det_ov_scale",
-                help="Log keeps the detectors' >1-decade spread readable; "
-                     "Linear shows absolute values; Relative % rescales each "
-                     "line to its first plotted night = 100%, so drift is "
-                     "comparable across detectors of very different absolute "
-                     "cost.",
-            ) or "Log"
-        flags = st.container(
-            horizontal=True, vertical_alignment="bottom",
-            width="stretch", horizontal_alignment="right",
-        )
-        with flags:
-            show_confirmed, show_watch = render_flag_pills("det_ov_flags")
-        log = scale == "Log"
-        relative = scale == "Relative %"
-    # Make the selected comparison shareable: ?tmetric=...&mmetric=...
-    st.query_params["tmetric"] = time_metric
-    st.query_params["mmetric"] = mem_metric
-
     # One parallel fetch for the whole window plus the latest night (the
     # snapshot night is always the newest report, even outside the window).
     night = max(dates)
@@ -724,23 +675,16 @@ def render(
     # every panel.
     detectors_all = sorted(set(wide.index) | set(hist["detector"].unique()))
 
-    # ── Reliability filter (same behaviour as every other historical view) ────
-    # Built from the report *groups*, not the metric frame, so unreliable nights
-    # (which carry no verdict rows) still surface.
+    # ── Reliability inputs (built from the report *groups*, not the metric
+    # frame, so unreliable nights — which carry no verdict rows — still surface).
+    # The window-level frame feeds the exclude toggle inside the fragment below;
+    # the latest-night set marks unreliable detectors on the newest report
+    # (always the latest report, even outside the trend window). Both are derived
+    # from the pre-filter ``wide``/``hist`` so they don't shift with the toggle.
     rel_hist = reliability_history(
         [(n, rel_frames[n]) for n in hist_nights if n in rel_frames],
         platform, sample,
     )
-    unreliable_pairs, exclude_unreliable = _render_reliability_filter(
-        rel_hist, key="det_ov_exclude_unreliable"
-    )
-    if exclude_unreliable and unreliable_pairs and not hist.empty:
-        hist = hist[[
-            (n, d) not in unreliable_pairs
-            for n, d in zip(hist["night"], hist["detector"])
-        ]]
-    # Latest-night snapshot: unreliable detectors on the newest report night
-    # (always the latest report, even outside the trend window).
     latest_rel = rel_frames[night]
     latest_rel = latest_rel[
         (latest_rel["platform"] == platform)
@@ -751,14 +695,6 @@ def render(
         set(latest_rel.loc[latest_rel["reliable"].eq(False), "detector"])
         & set(wide.index)
     )
-    if exclude_unreliable and unreliable_latest:
-        wide = wide.drop(index=unreliable_latest, errors="ignore")
-    if wide.empty and hist.empty:
-        st.warning(
-            "Every run in this window was excluded as unreliable — nothing "
-            "left to plot."
-        )
-        return
 
     # Default styling — one colour per detector family, no user-facing
     # controls (kept deliberately minimal; the palette auto-sizes to the
@@ -767,43 +703,127 @@ def render(
     palette = _PALETTES[_PALETTE_NAMES[_auto_palette_index(n_families)]]
     styles = detector_styles(detectors_all, palette)
 
-    wide_disp, hist_disp = _to_display_units(wide, hist)
-    if relative:
-        hist_disp = relative_history(hist_disp)
-
-    hist_fig = _history_figure(
-        hist_disp, time_metric, mem_metric, styles, detectors_all,
-        0.75, log, relative, show_confirmed, show_watch,
-    )
-    land_fig = _landscape_figure(
-        wide_disp, time_metric, mem_metric, styles, detectors_all, 0.75, log,
-    )
-    if hist_fig is None and land_fig is None:
-        st.info("No values for the selected metrics in this history window.")
-        return
-    if hist_fig is not None:
-        st.plotly_chart(hist_fig, width="stretch", key="det_ov_hist_chart")
-    if land_fig is not None:
-        st.plotly_chart(land_fig, width="stretch", key="det_ov_land_chart")
-
-    notes = [
-        f"Latest night: **{night}** · trend window: "
-        f"**{night_frames[-1][0]}** → **{night_frames[0][0]}** "
-        f"({len(night_frames)} night{'s' if len(night_frames) != 1 else ''})."
-        if night_frames else f"Latest night: **{night}**."
-    ]
-    dropped = sorted(
-        set(wide.index) - set(scatter_points(wide, time_metric, mem_metric).index)
-    )
-    if dropped:
-        notes.append(f"Missing a landscape coordinate: {', '.join(dropped)}.")
-    if exclude_unreliable and unreliable_latest:
-        notes.append(
-            "Unreliable latest run, excluded from the landscape: "
-            f"{', '.join(unreliable_latest)}."
+    # Display controls + figures live in a fragment so toggling a metric, the
+    # scale, the exclude switch or a Confirmed/Watch pill reruns only this block
+    # — not the whole app (sidebar trend downloads, report reparse, every other
+    # tab). The heavy data above is fetched/parsed once per full rerun and passed
+    # in; a fragment rerun replays it. Keeping these clicks cheap matters on the
+    # CPU-capped single-replica deployment, where a burst of full reruns can
+    # starve the /_stcore/health probe and bounce the pod (surfacing as a 503).
+    @st.fragment
+    def _controls_and_figures(
+        wide, hist, rel_hist, unreliable_latest, detectors_all, styles,
+        night, night_frames, excluded,
+    ):
+        # ── Display controls: data-shaping pickers left, overlay toggle right ──
+        # A full-width horizontal row splits into two content-sized groups: the
+        # metric selectors and Scale — all of which shape the chart's axes — pack
+        # left, while the Regressions overlay pills right-align via a stretch
+        # group, so each control keeps its own width and labels never wrap.
+        controls = st.container(
+            horizontal=True, vertical_alignment="bottom", width="stretch"
         )
-    if excluded:
-        notes.append(
-            f"Not benchmarked with this sample/platform: {', '.join(excluded)}."
+        with controls:
+            shaping = st.container(
+                horizontal=True, vertical_alignment="bottom", width="content"
+            )
+            with shaping:
+                seed_query_param("det_ov_time_metric", "tmetric", _TIME_METRICS)
+                time_metric = st.selectbox(
+                    "Time metric", _TIME_METRICS, key="det_ov_time_metric",
+                    format_func=_metric_title, width=260,
+                    help="Per-event means/medians exclude the warmup event; wall "
+                         "time and user CPU cover the whole run including "
+                         "initialization.",
+                )
+                seed_query_param("det_ov_mem_metric", "mmetric", _MEMORY_METRICS)
+                mem_metric = st.selectbox(
+                    "Memory metric", _MEMORY_METRICS, key="det_ov_mem_metric",
+                    format_func=_metric_title, width=260,
+                    help="Mean event RSS is the per-event average; peak RSS is "
+                         "the run's high-water mark.",
+                )
+                scale = st.segmented_control(
+                    "Scale", ["Log", "Linear", "Relative %"],
+                    default="Log", key="det_ov_scale",
+                    help="Log keeps the detectors' >1-decade spread readable; "
+                         "Linear shows absolute values; Relative % rescales each "
+                         "line to its first plotted night = 100%, so drift is "
+                         "comparable across detectors of very different absolute "
+                         "cost.",
+                ) or "Log"
+            flags = st.container(
+                horizontal=True, vertical_alignment="bottom",
+                width="stretch", horizontal_alignment="right",
+            )
+            with flags:
+                show_confirmed, show_watch = render_flag_pills("det_ov_flags")
+            log = scale == "Log"
+            relative = scale == "Relative %"
+        # Make the selected comparison shareable: ?tmetric=...&mmetric=...
+        st.query_params["tmetric"] = time_metric
+        st.query_params["mmetric"] = mem_metric
+
+        # ── Reliability filter (same behaviour as every other historical view) ──
+        unreliable_pairs, exclude_unreliable = _render_reliability_filter(
+            rel_hist, key="det_ov_exclude_unreliable"
         )
-    st.caption(" ".join(notes))
+        if exclude_unreliable and unreliable_pairs and not hist.empty:
+            hist = hist[[
+                (n, d) not in unreliable_pairs
+                for n, d in zip(hist["night"], hist["detector"])
+            ]]
+        if exclude_unreliable and unreliable_latest:
+            wide = wide.drop(index=unreliable_latest, errors="ignore")
+        if wide.empty and hist.empty:
+            st.warning(
+                "Every run in this window was excluded as unreliable — nothing "
+                "left to plot."
+            )
+            return
+
+        wide_disp, hist_disp = _to_display_units(wide, hist)
+        if relative:
+            hist_disp = relative_history(hist_disp)
+
+        hist_fig = _history_figure(
+            hist_disp, time_metric, mem_metric, styles, detectors_all,
+            0.75, log, relative, show_confirmed, show_watch,
+        )
+        land_fig = _landscape_figure(
+            wide_disp, time_metric, mem_metric, styles, detectors_all, 0.75, log,
+        )
+        if hist_fig is None and land_fig is None:
+            st.info("No values for the selected metrics in this history window.")
+            return
+        if hist_fig is not None:
+            st.plotly_chart(hist_fig, width="stretch", key="det_ov_hist_chart")
+        if land_fig is not None:
+            st.plotly_chart(land_fig, width="stretch", key="det_ov_land_chart")
+
+        notes = [
+            f"Latest night: **{night}** · trend window: "
+            f"**{night_frames[-1][0]}** → **{night_frames[0][0]}** "
+            f"({len(night_frames)} night{'s' if len(night_frames) != 1 else ''})."
+            if night_frames else f"Latest night: **{night}**."
+        ]
+        dropped = sorted(
+            set(wide.index) - set(scatter_points(wide, time_metric, mem_metric).index)
+        )
+        if dropped:
+            notes.append(f"Missing a landscape coordinate: {', '.join(dropped)}.")
+        if exclude_unreliable and unreliable_latest:
+            notes.append(
+                "Unreliable latest run, excluded from the landscape: "
+                f"{', '.join(unreliable_latest)}."
+            )
+        if excluded:
+            notes.append(
+                f"Not benchmarked with this sample/platform: {', '.join(excluded)}."
+            )
+        st.caption(" ".join(notes))
+
+    _controls_and_figures(
+        wide, hist, rel_hist, unreliable_latest, detectors_all, styles,
+        night, night_frames, excluded,
+    )
