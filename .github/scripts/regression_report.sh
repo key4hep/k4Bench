@@ -15,8 +15,6 @@
 #   K4BENCH_REGRESSION_EGROUP     — e-group recipient (email skipped when empty)
 #   K4BENCH_REGRESSION_FROM       — sender address    (email skipped when empty)
 #   K4BENCH_DASHBOARD_URL         — dashboard link used in the email body
-#   FORCE_SEND                    — "true" to email even on a clean night
-#                                   (set by the manual workflow_dispatch)
 
 set -euo pipefail
 
@@ -79,15 +77,12 @@ xrdcp --force report/report.json "root://${EOS_FQDN}/${EOS_REPORT_DIR}/report.js
 echo "Uploaded to: ${EOS_REPORT_DIR}/report.json"
 echo "::endgroup::"
 
-# ── 6. E-group email (self-gated: sends only on confirmed regressions or hard
-#       failures; skips quietly when the e-group vars are unset)
+# ── 6. E-group email (sent every night regardless of content; skips quietly
+#       when the e-group vars are unset)
 echo "::group::6. E-group notification"
-FORCE_ARG=()
-[[ "${FORCE_SEND:-}" == "true" ]] && FORCE_ARG=(--force)
 python -m k4bench.regression.notify report/report.json \
     --to "${K4BENCH_REGRESSION_EGROUP:-}" \
     --from-addr "${K4BENCH_REGRESSION_FROM:-}" \
     --dashboard-url "${K4BENCH_DASHBOARD_URL:-https://k4bench-dashboard.app.cern.ch}" \
-    --actions-url "${GITHUB_RUN_URL:-}" \
-    "${FORCE_ARG[@]}"
+    --actions-url "${GITHUB_RUN_URL:-}"
 echo "::endgroup::"

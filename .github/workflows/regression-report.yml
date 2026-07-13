@@ -1,28 +1,17 @@
 name: Regression Report
 
 # Builds the regression report from the EOS run history, uploads report.json to
-# EOS (read back by the dashboard's Regressions tab) and emails the CERN e-group
-# when the report is alertable.
+# EOS (read back by the dashboard's Regressions tab) and emails the CERN
+# e-group with the report — every run, regardless of content.
 #
 # Two triggers:
 #   • workflow_call    — invoked by the nightly workflow after the benchmarks.
 #   • workflow_dispatch — run it by hand from the Actions tab (no benchmark
-#     rerun; the report is rebuilt from whatever is already on EOS). Tick
-#     "force_send" to email the report even on a clean, non-alertable night.
+#     rerun; the report is rebuilt from whatever is already on EOS).
 
 on:
   workflow_call:
-    inputs:
-      force_send:
-        description: "Email the report even when it is not alertable"
-        type: boolean
-        default: false
   workflow_dispatch:
-    inputs:
-      force_send:
-        description: "Email the report even when it is not alertable"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -51,7 +40,6 @@ jobs:
           K4BENCH_REGRESSION_FROM:   ${{ vars.K4BENCH_REGRESSION_FROM }}
           K4BENCH_DASHBOARD_URL:     ${{ vars.K4BENCH_DASHBOARD_URL }}
           GITHUB_RUN_URL:            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          FORCE_SEND:                ${{ inputs.force_send }}
         run: |
           docker pull "${{ env.CONTAINER_IMAGE }}"
           docker run --rm --init \
@@ -65,7 +53,7 @@ jobs:
             -e X509_USER_KEY=/tmp/eos-auth/userkey.pem \
             -e K4BENCH_DATA_URL -e K4BENCH_REGRESSION_EGROUP \
             -e K4BENCH_REGRESSION_FROM -e K4BENCH_DASHBOARD_URL \
-            -e GITHUB_RUN_URL -e FORCE_SEND \
+            -e GITHUB_RUN_URL \
             "${{ env.CONTAINER_IMAGE }}" \
             bash /workspace/.github/scripts/regression_report.sh
 
