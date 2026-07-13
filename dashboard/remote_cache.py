@@ -7,7 +7,11 @@ cheap.
 """
 from __future__ import annotations
 
+import logging
+
 import streamlit as st
+
+_log = logging.getLogger(__name__)
 
 
 @st.cache_data(show_spinner="Fetching detectors...", ttl=3600)
@@ -70,9 +74,14 @@ def _cached_fetch_reports(base_url: str, dates: tuple[str, ...]) -> dict[str, di
     from k4bench.remote import fetch_report
 
     def _one(date: str) -> tuple[str, dict | None]:
+        # fetch_report already handles network/parse failures (logs and returns
+        # None); this guards only unexpected errors so one bad night can't abort
+        # the whole window — logged (dashboard convention) but not surfaced as a
+        # UI warning, since the night is simply absent from the result.
         try:
             return date, fetch_report(base_url, date)
         except Exception:
+            _log.exception("fetch_report: unexpected error for %s", date)
             return date, None
 
     with ThreadPoolExecutor(max_workers=4) as pool:
