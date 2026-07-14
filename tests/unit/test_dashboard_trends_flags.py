@@ -155,6 +155,41 @@ def test_throughput_panel_mirrors_wall_time_flag():
     assert flagged == base + 4
 
 
+def test_flag_markers_share_legendgroup_with_their_curve():
+    # Two configs, only one flagged: the flag markers must carry the flagged
+    # config's legendgroup (so deselecting its curve hides its flags too) and
+    # never the other config's.
+    df = _trend_df()
+    other = df.assign(label="other")
+    df = pd.concat([df, other], ignore_index=True)
+    severity = {("baseline", "key4hep-2026-05-21", "user_cpu_s"): "CONFIRMED"}
+    fig = _capture_fig(df, ["baseline", "other"], severity)
+
+    marker_groups = {
+        t.legendgroup for t in fig.data
+        if t.mode == "markers" and t.showlegend is False
+    }
+    assert marker_groups == {"baseline"}
+    # And the flagged config's line trace shares that group, so plotly toggles
+    # the two together.
+    line_groups = {t.legendgroup for t in fig.data if t.mode == "lines+markers"}
+    assert "baseline" in line_groups
+
+
+def _capture_fig(df, labels, severity):
+    captured = {}
+    orig = tr.st.plotly_chart
+    tr.st.plotly_chart = lambda fig, **kw: captured.__setitem__("fig", fig)
+    try:
+        tr._render_timeseries(
+            df, labels, ["#123456", "#654321"], "linear", 0.75, False, False,
+            severity, True, True,
+        )
+    finally:
+        tr.st.plotly_chart = orig
+    return captured["fig"]
+
+
 def _count_traces(df, severity, *, show: bool) -> int:
     captured = {}
     orig = tr.st.plotly_chart

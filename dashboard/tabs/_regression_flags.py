@@ -78,28 +78,37 @@ def add_severity_markers(
     plotly format string for the value line of the tooltip, matching whatever
     the panel's lines use. Draws a soft halo (no hover) then a crisp badge on
     top (carries the tooltip) — see :data:`FLAG_MARKS`.
+
+    The markers are split per series and tagged with that series' *legendgroup*
+    (``name_col`` is exactly the identity the line traces group on — the config
+    label on Run Trends, the detector on Overview), so deselecting a curve in
+    the legend hides its flags with it: a flag belongs to its curve, not to the
+    panel it sits in.
     """
     mark = FLAG_MARKS[severity]
-    fig.add_trace(
-        go.Scatter(
-            x=flagged[x_col], y=flagged[y_col],
-            mode="markers", showlegend=False, hoverinfo="skip",
-            marker=dict(symbol=mark["symbol"], size=mark["halo_size"],
-                        color=_to_rgba(mark["color"], 0.28), line_width=0),
-        ),
-        row=row, col=col,
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=flagged[x_col], y=flagged[y_col],
-            mode="markers", showlegend=False,
-            marker=dict(symbol=mark["symbol"], size=mark["badge_size"],
-                        color=mark["color"], line=dict(width=1.5, color="#ffffff")),
-            customdata=flagged[name_col],
-            hovertemplate=(
-                f"{mark['label']}<br><b>%{{customdata}}</b> — "
-                f"%{{x|%Y-%m-%d}}<br>{hover_y}<extra></extra>"
+    for name, grp in flagged.groupby(name_col, sort=False):
+        fig.add_trace(
+            go.Scatter(
+                x=grp[x_col], y=grp[y_col],
+                mode="markers", showlegend=False, hoverinfo="skip",
+                legendgroup=str(name),
+                marker=dict(symbol=mark["symbol"], size=mark["halo_size"],
+                            color=_to_rgba(mark["color"], 0.28), line_width=0),
             ),
-        ),
-        row=row, col=col,
-    )
+            row=row, col=col,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=grp[x_col], y=grp[y_col],
+                mode="markers", showlegend=False,
+                legendgroup=str(name),
+                marker=dict(symbol=mark["symbol"], size=mark["badge_size"],
+                            color=mark["color"], line=dict(width=1.5, color="#ffffff")),
+                customdata=grp[name_col],
+                hovertemplate=(
+                    f"{mark['label']}<br><b>%{{customdata}}</b> — "
+                    f"%{{x|%Y-%m-%d}}<br>{hover_y}<extra></extra>"
+                ),
+            ),
+            row=row, col=col,
+        )
