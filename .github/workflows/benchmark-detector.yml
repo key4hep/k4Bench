@@ -27,8 +27,10 @@ jobs:
     name: ${{ matrix.sample }}
     runs-on: [self-hosted, fcc-ironic]
     # Per-config `timeout` (minutes) from the benchmark yml, else GitHub's max
-    # job runtime for self-hosted runners (7200 min = 5 days).
-    timeout-minutes: ${{ matrix.timeout || 7200 }}
+    # job runtime for self-hosted runners (7200 min = 5 days). fromJson coerces
+    # the matrix string to a number — `timeout-minutes` rejects a string value,
+    # which otherwise silently drops every job in the fan-out.
+    timeout-minutes: ${{ fromJson(matrix.timeout || '7200') }}
     strategy:
       matrix:
         include: ${{ fromJson(inputs.samples_json) }}
