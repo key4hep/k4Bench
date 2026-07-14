@@ -51,6 +51,7 @@ from remote_cache import (
     _cached_list_report_dates,
     _cached_list_run_dates,
 )
+from tabs._regression_flags import add_severity_markers
 from tabs._reliability import render_reliability_filter
 from ui_utils import _METRIC_LABELS, _METRIC_UNITS, _is_valid_df, _to_rgba
 
@@ -175,15 +176,6 @@ def _yaxis_label(item: MetricVerdict) -> str:
     unit = _METRIC_UNITS.get(item.metric, "")
     return f"{name} ({unit})" if unit else name
 
-#: Status fills keyed on severity — an *attention level*, not a good/bad verdict.
-#: Confirmed = critical red, watch = warning amber. Only the drill-down trend
-#: markers still use these fills; the ledger table below carries severity as an
-#: explicit 🔴/⚠️ badge column, so the state never reads by color alone.
-_SEVERITY_FILL = {
-    Severity.CONFIRMED: "#d03b3b",
-    Severity.WATCH:     "#fab219",
-}
-
 #: Cap on ledger rows: beyond this, keep the worst by |Δ| so one sweep night
 #: can't produce an unbounded table.
 _MAX_ROWS = 40
@@ -297,18 +289,6 @@ def _render_group(group: RunGroupReport, data_url: str, cache_dir: str, *, key: 
         _render_drilldown(drillable[options.index(choice) - 1], data_url, cache_dir)
 
 
-#: Marker for the flagged night on the drill-down trend, keyed on the verdict's
-#: severity — a warning triangle (amber) while it is only a WATCH, a filled red
-#: circle once it CONFIRMS as a regression. Shape *and* color both carry the
-#: state so it never reads by color alone, matching the ledger's encoding.
-def _flag_marker(item: MetricVerdict) -> dict:
-    if item.severity is Severity.WATCH:
-        return dict(symbol="triangle-up", color=_SEVERITY_FILL[Severity.WATCH],
-                    hover="⚠️ Watch")
-    return dict(symbol="circle", color=_SEVERITY_FILL[Severity.CONFIRMED],
-                hover="🔴 Regression")
-
-
 def _prev_point(df: pd.DataFrame, item: MetricVerdict) -> tuple | None:
     """The plotted point immediately before the flagged night — the run that
     was ``⚠️ Watch``\\ ed before this one confirmed (confirmation is a
@@ -415,7 +395,8 @@ def _render_drilldown(verdict: MetricVerdict, data_url: str, cache_dir: str) -> 
     fig.add_trace(go.Scatter(
         x=x, y=y, mode="lines+markers", name=_metric_name(verdict),
         line=dict(color=PALETTE[0], width=2),
-        marker=dict(size=6, color=_to_rgba(PALETTE[0], 0.75)),
+        marker=dict(size=7, color=_to_rgba(PALETTE[0], 0.55),
+                    line=dict(color=PALETTE[0], width=1.5)),
     ))
     # The accepted-baseline band this verdict was judged against: median ±
     # z-threshold × scaled MAD (the detection gate), same shading device as
@@ -426,30 +407,28 @@ def _render_drilldown(verdict: MetricVerdict, data_url: str, cache_dir: str) -> 
     if mad > 0:
         fig.add_hrect(y0=med - Z_THRESHOLD * mad, y1=med + Z_THRESHOLD * mad,
                       fillcolor=_BASELINE_FILL, line_width=0)
-    # For a confirmed regression, also mark the night it was first *watched*
-    # (the preceding reliable run — confirmation is a two-strike rule) with the
-    # warning triangle, so the trend shows the ⚠️→🔴 progression, not just the
-    # endpoint. Markers are drawn straight onto the plot with no legend row of
-    # their own (the emoji hover names the state).
+    # The flag markers reuse the Run Trends / Overview overlay
+    # (:func:`add_severity_markers`) so all three tabs ring a flagged night with
+    # the identical halo+badge, shape and colour — a single-point frame here
+    # instead of the whole panel there. For a confirmed regression also mark the
+    # night it was first *watched* (the preceding reliable run — confirmation is
+    # a two-strike rule) with the amber triangle, so the trend shows the ⚠️→🔴
+    # progression, not just the endpoint.
     if verdict.severity is Severity.CONFIRMED:
         prev = _prev_point(df, verdict)
         if prev is not None:
-            fig.add_trace(go.Scatter(
-                x=[prev[0]], y=[prev[1]], mode="markers", showlegend=False,
-                marker=dict(size=13, symbol="triangle-up",
-                            color=_SEVERITY_FILL[Severity.WATCH],
-                            line=dict(width=1, color="#ffffff")),
-                hovertemplate="⚠️ Watch (first flagged)<br>%{x|%Y-%m-%d}"
-                              "<br>%{y:.4g}<extra></extra>",
-            ))
-    flag = _flag_marker(verdict)
-    fig.add_trace(go.Scatter(
-        x=[verdict.run_date], y=[verdict.value], mode="markers", showlegend=False,
-        marker=dict(size=13, color=flag["color"], symbol=flag["symbol"],
-                    line=dict(width=1, color="#ffffff")),
-        hovertemplate=f"{flag['hover']}<br>%{{x|%Y-%m-%d}}<br>%{{y:.4g}}"
-                      "<extra></extra>",
-    ))
+            add_severity_markers(
+                fig,
+                pd.DataFrame({"x": [prev[0]], "y": [prev[1]], "name": [verdict.label]}),
+                x_col="x", y_col="y", name_col="name",
+                severity=Severity.WATCH.value, hover_y="%{y:.4g}",
+            )
+    add_severity_markers(
+        fig,
+        pd.DataFrame({"x": [verdict.run_date], "y": [verdict.value], "name": [verdict.label]}),
+        x_col="x", y_col="y", name_col="name",
+        severity=verdict.severity.value, hover_y="%{y:.4g}",
+    )
     # Label the x-axis by nightly tag (one angled tick per Key4hep release), the
     # same way Run Trends does — the underlying x is the release date (x_date).
     unique_dates = sorted(pd.to_datetime(pd.Series(x)).dropna().unique())

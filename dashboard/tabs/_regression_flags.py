@@ -67,8 +67,8 @@ def add_severity_markers(
     name_col: str,
     severity: str,
     hover_y: str,
-    row: int,
-    col: int,
+    row: int | None = None,
+    col: int | None = None,
 ) -> None:
     """Overlay the two-layer flag marker for one *severity* onto *fig*.
 
@@ -78,6 +78,10 @@ def add_severity_markers(
     plotly format string for the value line of the tooltip, matching whatever
     the panel's lines use. Draws a soft halo (no hover) then a crisp badge on
     top (carries the tooltip) — see :data:`FLAG_MARKS`.
+
+    *row*/*col* place the markers in a ``make_subplots`` grid (Overview and Run
+    Trends); leave them unset for a plain single-panel figure — the Regressions
+    tab's drill-down — where plotly ignores the ``None`` subplot reference.
 
     The markers are split per series and tagged with that series' *legendgroup*
     (``name_col`` is exactly the identity the line traces group on — the config
