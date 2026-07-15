@@ -15,6 +15,7 @@ manufacture changes that never happened.
 from __future__ import annotations
 
 import pandas as pd
+import requests
 import streamlit as st
 
 from k4bench.provenance.diff import ADDED, CHANGED, REMOVED, diff_packages, unchanged_packages
@@ -83,7 +84,10 @@ def _stacks_for_platform(data_url: str, platform: str) -> list[str]:
     for detector in _cached_list_detectors(data_url):
         try:
             stacks.update(_cached_list_stacks(data_url, detector, platform))
-        except Exception:  # noqa: BLE001 — a detector with no runs on this platform
+        except requests.RequestException:
+            # A detector never benchmarked on this platform has no such
+            # directory to list. Only that is expected here — a broader catch
+            # would bury a bug in the listing itself as "no releases".
             continue
     return sorted(stacks, reverse=True)
 
@@ -141,7 +145,9 @@ def render(data_url: str, platform: str) -> None:
     if base_release == head_release:
         st.info("Pick two different releases to compare.")
         return
-    if base_release > head_release:
+    # Ordered by position in the newest-first list rather than by comparing the
+    # tags, so this and _span read the release order the same single way.
+    if releases.index(base_release) < releases.index(head_release):
         # Reversing the range would report every change with its sign flipped.
         st.warning(
             f"**{base_release}** is newer than **{head_release}** — swap them to read "
