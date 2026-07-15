@@ -28,7 +28,8 @@ from remote_cache import (
     _cached_scan_stack_samples,
 )
 from k4bench.results.reliability_evidence import run_reliability_map
-from tabs import detectors_overview, event_memory, event_timing, impact, machine_info, region_timing, regressions, trends
+from sections import visible_sections
+from tabs import detectors_overview, event_memory, event_timing, impact, machine_info, region_timing, regressions, stack_changes, trends
 from tabs._reliability import render_sidebar_run_quality
 from trend_window import WINDOW_PRESETS, resolve_window
 from ui_chrome import (
@@ -442,11 +443,7 @@ def main() -> None:
     # sub-view is preserved when the user only adjusts the window; an empty window
     # shows an in-view "widen the window" message instead of removing the option.
     trends_enabled = bool(config.data_url)
-    section_names = ["Overview", "Run Trends", "Regressions", "Config Impact", "Region Timing", "Event Timing", "Event Memory", "Machine Info", "Logs"]
-    if not trends_enabled:
-        # Overview / Trends / Regressions / Impact only make sense with
-        # multi-run (remote) data
-        section_names = section_names[4:]
+    section_names = visible_sections(trends_enabled)
 
     # ── Section switcher ────────────────────────────────────────────────────────
     # `?tab=...` (used by the nightly regression email's "view in dashboard" links,
@@ -482,6 +479,11 @@ def main() -> None:
     # platform/sample/Trend window like Run Trends (but spanning all detectors).
     if active_section == "Overview":
         detectors_overview.render(config.data_url, platform, sample, sidebar_window)
+
+    # Stack Changes (remote only) — cross-detector like Regressions: a Key4hep
+    # release is one stack whatever benchmarked it, so only the platform scopes it.
+    if active_section == "Stack Changes":
+        stack_changes.render(config.data_url, platform)
 
     if active_section == "Config Impact":
         impact.render(trend_results_df, selected_labels)

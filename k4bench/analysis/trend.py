@@ -44,6 +44,7 @@ def parse_run_dir(run_dir: Path) -> dict:
             "platform":         "unknown",
             "k4h_release":      "unknown",
             "k4h_release_date": pd.NaT,
+            "k4h_packages":     {},
             "sample":           "unknown",
             "github_run_url":   None,
             "commit_sha":       None,
@@ -69,6 +70,10 @@ def parse_run_dir(run_dir: Path) -> dict:
                 "platform":         info.get("platform", "unknown") or "unknown",
                 "k4h_release":      k4h_release,
                 "k4h_release_date": pd.to_datetime(k4h_release_date_raw, errors="coerce"),
+                # Per-package upstream commits (see k4bench.provenance). Absent for
+                # runs predating provenance capture, and for any night whose stack
+                # could not be read — an empty map means "unknown", never "unchanged".
+                "k4h_packages":     info.get("k4h_packages") or {},
                 "sample":           info.get("sample", "unknown") or "unknown",
                 "github_run_url":   info.get("github_run_url"),
                 "commit_sha":       info.get("commit_sha"),

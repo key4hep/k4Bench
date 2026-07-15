@@ -67,13 +67,39 @@ parses it into per-run DataFrames keyed by detector. The special bucket
 Written by the nightly CI and read by the dashboard.
 
 - **`run_info.json`** — describes one run directory: date, platform, Key4hep
-  release, detector, sample, the GitHub run link and commit, event count, and
-  the list of run labels (`configs`).
+  release, detector, sample, the GitHub run link and commit, event count, the
+  list of run labels (`configs`), and the stack's git provenance
+  (`k4h_stack_root`, `k4h_packages`; see below).
 - **`machine_info.json`** — the benchmark host and its state *around* the run:
   CPU model/cores, RAM/swap totals, and `_start`/`_end` snapshots of load,
   available memory, CPU frequency, and thermal throttling. The pairs let the
   dashboard show whether the machine was loaded or throttling — context for
   trusting a number.
+
+### Stack provenance (`k4h_packages`)
+
+`run_info.json` records the upstream commit of every package the Key4hep stack
+built from git (~63 per nightly, ~11 KB), read off CVMFS as the benchmark runs:
+
+```json
+"k4h_stack_root": "/cvmfs/sw-nightlies.hsf.org/key4hep/releases/2026-07-10/x86_64-almalinux9-gcc14.2.0-opt",
+"k4h_packages": {
+  "k4geo":      {"commit": "0f226a98…", "version": "develop", "repo_url": "https://github.com/key4hep/k4geo.git"},
+  "fcc-config": {"commit": "21647280…", "version": "develop", "repo_url": "https://github.com/HEP-FCC/FCC-config"}
+}
+```
+
+This is what lets a regression be traced to the commits that could have caused
+it: diffing two nights' maps gives the exact set of upstream changes between
+them. It is captured at run time because it cannot be recovered later — the
+CVMFS nightlies area keeps only about a month of releases, so the stack behind
+an older run no longer exists to be read.
+
+`repo_url` is the Spack recipe's URL verbatim, so it is `None` for the rare
+package whose recipe ships no `git` attribute, and non-GitHub for packages
+hosted elsewhere. Every field is best-effort: `k4h_packages` is absent for runs
+predating provenance capture, and an empty map means *unknown*, never
+*unchanged*.
 
 ## Benchmark YAML
 

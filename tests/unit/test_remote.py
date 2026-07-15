@@ -6,6 +6,7 @@ is a thin re-export shim kept for the dashboard's flat imports.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,14 @@ class _FakeResponse:
 
     def raise_for_status(self) -> None:  # pragma: no cover - always ok here
         pass
+
+    def json(self):
+        """Parse the body, raising ``ValueError`` on malformed JSON.
+
+        ``requests`` raises a ``JSONDecodeError`` that subclasses ``ValueError``
+        for the same case, which is what callers here catch.
+        """
+        return json.loads(self.content or self.text)
 
 
 def _apache_listing(names: list[str]) -> str:
@@ -61,23 +70,33 @@ BASE = "https://eos.example/data"
 
 
 def _build_tree() -> dict[str, object]:
-    """Two stacks; sample present in both. Stack A has 2 dates, B has 1 (older)."""
+    """Two stacks; sample present in both. Stack A has 2 dates, B has 1 (older).
+
+    Stack A's runs carry ``k4h_packages`` (stack provenance); stack B's do not,
+    standing in for a run from before provenance was recorded.
+    """
     det, plat, sample = "DET", "PLAT", "single_e"
     stackA, stackB = "key4hep-2026-05-20", "key4hep-2026-05-10"
     runs = {
         stackA: ["2026-05-20", "2026-05-21"],
         stackB: ["2026-05-10"],
     }
+    provenance = '"k4h_packages": {"k4geo": {"commit": "%s"}}' % ("a" * 40)
     tree: dict[str, object] = {}
     # detector → platform → stacks
     tree[f"{BASE}/{det}/{plat}"] = [f"{stackA}/", f"{stackB}/"]
     for stack, dates in runs.items():
+        # stack → samples → dates
+        tree[f"{BASE}/{det}/{plat}/{stack}"] = [f"{sample}/"]
         tree[f"{BASE}/{det}/{plat}/{stack}/{sample}"] = [f"{d}/" for d in dates]
         for d in dates:
             run_url = f"{BASE}/{det}/{plat}/{stack}/{sample}/{d}"
             tree[run_url] = ["baseline_results.csv", "run_info.json"]
             tree[f"{run_url}/baseline_results.csv"] = b"label\nbaseline\n"
-            tree[f"{run_url}/run_info.json"] = b'{"date": "%s"}' % d.encode()
+            extra = f", {provenance}" if stack == stackA else ""
+            tree[f"{run_url}/run_info.json"] = (
+                '{"date": "%s"%s}' % (d, extra)
+            ).encode()
     return tree
 
 
@@ -125,6 +144,45 @@ def test_fetch_report_parses_json(monkeypatch):
 
     monkeypatch.setattr(remote.requests, "get", get)
     assert remote.fetch_report(BASE, "2026-05-22") == {"generated_at": "x", "groups": []}
+
+
+def test_list_stacks_newest_first(web):
+    assert remote.list_stacks(BASE, "DET", "PLAT") == [
+        "key4hep-2026-05-20", "key4hep-2026-05-10",
+    ]
+
+
+def test_fetch_stack_packages_reads_one_run_info(web):
+    packages = remote.fetch_stack_packages(BASE, "DET", "PLAT", "key4hep-2026-05-20")
+
+    assert packages == {"k4geo": {"commit": "a" * 40}}
+    # Every detector on a release sourced the same stack, so one run answers it:
+    # walk to the first run and read only its run_info.json, never a run dir.
+    assert not any(r.endswith("_results.csv") for r in web.requested)
+
+
+def test_fetch_stack_packages_none_when_the_run_predates_capture(web):
+    # A run with no k4h_packages is not an empty stack — it is a run from
+    # before provenance was recorded, which the caller must not diff.
+    assert remote.fetch_stack_packages(BASE, "DET", "PLAT", "key4hep-2026-05-10") is None
+
+
+def test_fetch_stack_packages_skips_a_run_it_cannot_parse(web):
+    url = f"{BASE}/DET/PLAT/key4hep-2026-05-20/single_e/2026-05-21/run_info.json"
+    web.tree[url] = b"{not json"
+    # 2026-05-21 sorts first (newest); a corrupt run_info must not mask the
+    # provenance an older run of the same release still carries.
+    assert remote.fetch_stack_packages(BASE, "DET", "PLAT", "key4hep-2026-05-20") == {
+        "k4geo": {"commit": "a" * 40}
+    }
+
+
+def test_fetch_stack_packages_none_when_the_release_is_absent(monkeypatch):
+    def _404(url, timeout=None):
+        raise remote.requests.RequestException("404")
+
+    monkeypatch.setattr(remote.requests, "get", _404)
+    assert remote.fetch_stack_packages(BASE, "DET", "PLAT", "key4hep-1999-01-01") is None
 
 
 def test_list_run_dates_all_stacks_lists_without_downloading_files(web):
