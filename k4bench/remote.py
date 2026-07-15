@@ -268,6 +268,57 @@ def fetch_runs_windowed(
     return results
 
 
+def list_stacks(base_url: str, detector: str, platform: str) -> list[str]:
+    """Return the Key4hep releases benchmarked for *(detector, platform)*, newest first.
+
+    Directory names as stored (``key4hep-{YYYY-MM-DD}``). Discovery only — one
+    listing, no downloads.
+    """
+    return sorted(
+        _list_subdirs(f"{base_url.rstrip('/')}/{detector}/{platform}"), reverse=True
+    )
+
+
+def fetch_stack_packages(
+    base_url: str, detector: str, platform: str, stack: str
+) -> dict | None:
+    """Return the ``k4h_packages`` map of a release, or ``None``.
+
+    Every detector benchmarked against a given release sourced the *same*
+    stack, so any one run under it answers the question — this walks to the
+    first run it finds and reads only that ``run_info.json`` (two listings and
+    one small GET), rather than downloading a run directory.
+
+    ``None`` covers both "no run found" and "that run predates provenance
+    capture": in either case the release's packages are unknown, which a caller
+    must not confuse with an empty stack.
+    """
+    root = f"{base_url.rstrip('/')}/{detector}/{platform}/{stack}"
+    try:
+        samples = sorted(_list_subdirs(root))
+    except requests.RequestException as exc:
+        _log.debug("fetch_stack_packages: no samples under %s — %s", root, exc)
+        return None
+
+    for sample in samples:
+        try:
+            dates = sorted(_list_subdirs(f"{root}/{sample}"), reverse=True)
+        except requests.RequestException:
+            continue
+        for date in dates:
+            url = f"{root}/{sample}/{date}/run_info.json"
+            try:
+                resp = requests.get(url, timeout=_TIMEOUT)
+                resp.raise_for_status()
+                packages = resp.json().get("k4h_packages")
+            except (requests.RequestException, ValueError) as exc:
+                _log.debug("fetch_stack_packages: %s — %s", url, exc)
+                continue
+            if packages:
+                return packages
+    return None
+
+
 def list_report_dates(base_url: str) -> list[str]:
     """Return available nightly regression-report dates (newest first).
 

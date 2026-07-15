@@ -57,3 +57,24 @@ def test_parse_run_dir_reads_run_info(tmp_path):
     assert meta["sample"] == "single_e"
     # Release date is inferred from the release name when absent.
     assert str(meta["k4h_release_date"].date()) == "2026-05-20"
+
+
+def test_parse_run_dir_reads_stack_packages(tmp_path):
+    run_dir = _make_run(tmp_path, "2026-07-10", "key4hep-2026-07-10", 5.0)
+    (run_dir / "run_info.json").write_text(json.dumps({
+        "date": "2026-07-10",
+        "k4h_release": "key4hep-2026-07-10",
+        "k4h_packages": {
+            "k4geo": {"commit": "a" * 40, "version": "develop",
+                      "repo_url": "https://github.com/key4hep/k4geo.git"},
+        },
+    }))
+    assert trend.parse_run_dir(run_dir)["k4h_packages"]["k4geo"]["commit"] == "a" * 40
+
+
+def test_parse_run_dir_defaults_stack_packages_to_empty(tmp_path):
+    # Runs predating provenance capture must load cleanly — an empty map reads
+    # as "unknown", and callers must never mistake it for "nothing changed".
+    r1 = _make_run(tmp_path, "2026-05-20", "key4hep-2026-05-20", 5.0)
+    assert trend.parse_run_dir(r1)["k4h_packages"] == {}
+    assert trend.parse_run_dir(tmp_path / "does-not-exist")["k4h_packages"] == {}

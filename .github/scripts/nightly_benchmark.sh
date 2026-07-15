@@ -205,6 +205,25 @@ run_info = {
     "sweep":            sweep,
     "configs":          ${CONFIGS_JSON},
 }
+
+# Upstream commit of every package the stack built from git, so a regression
+# found weeks from now can still be traced to the PRs in its blame window. This
+# is the only moment the answer exists: CVMFS keeps roughly a month of
+# nightlies, after which the stack that produced these numbers is gone. Never
+# fatal — the measurements are the deliverable, provenance is metadata.
+try:
+    from k4bench.provenance.stack import find_release_root, read_stack_packages
+    release_root = find_release_root(os.environ["KEY4HEP_STACK"])
+    if release_root is None:
+        print("WARNING: no Spack release root found; stack provenance not recorded")
+    else:
+        packages = read_stack_packages(release_root)
+        run_info["k4h_stack_root"] = str(release_root)
+        run_info["k4h_packages"] = packages
+        print(f"Stack provenance: {len(packages)} git-built package(s)")
+except Exception as exc:
+    print(f"WARNING: stack provenance not recorded: {exc}")
+
 with open(f"logs/{detector}/run_info.json", "w") as f:
     json.dump(run_info, f, indent=2)
 print(f"Written: logs/{detector}/run_info.json")

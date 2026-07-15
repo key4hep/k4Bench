@@ -51,6 +51,7 @@ Key4hep release → physics sample → run date**.
 | **Region timing** | per-subdetector stepping time, `at_location` vs `by_birth`, step counts, attribution analysis | `*_regions.json` |
 | **Trends** | metrics over time across releases | many runs, windowed |
 | **Regressions** | the nightly cross-detector regression report | `_reports/{date}/report.json` |
+| **Stack Changes** | which Key4hep packages moved between two nightly releases | `run_info.json` (`k4h_packages`) |
 | **Overview** | cross-detector metric comparison, snapshot & history | `_reports/{date}/report.json` |
 | **Machine info** | the host the benchmark ran on (CPU, RAM, governor, throttling) | `machine_info.json` |
 | **Logs** | the raw `ddsim` log for the selected run | `*.log` |
@@ -139,6 +140,37 @@ trend** drill-down that plots the metric's recent history with the baseline band
 it was judged against (the flagged night marked 🔴, the night it was first
 watched marked ⚠️). Confirmed regressions and failures — and only those — are
 also emailed to the team's e-group by the same CI job.
+
+### Stack Changes tab
+
+Answers "what came in last night?" — and, when a metric has stepped, "what
+upstream change could that be?". Pick two nightly tags and it lists the Key4hep
+packages whose commit differs between them, each linking to the range on GitHub.
+
+Like Regressions it is cross-detector: a Key4hep release is one stack, sourced
+identically by every detector benchmarked against it, so only the platform
+scopes the view.
+
+**It compares releases, not run dates.** The nightly build does not publish
+every day; a benchmark then re-uses the newest release available, so several
+consecutive run dates routinely share one identical stack — most run dates on
+EOS are not release dates at all, and only dates that have a release are
+selectable.
+
+Picking two releases that are far apart gives the **cumulative** change across
+every release in between, which the header states explicitly — a month-wide diff
+looks no different from one night's in the table.
+
+An empty diff is a result, not a blank: if two releases sit at the same commit
+for every tracked package, nothing upstream changed between them, so a metric
+that moved did so for another reason — the host, the sample, or noise.
+
+The data comes from `k4h_packages` in each run's `run_info.json`, recorded from
+CVMFS as the benchmark runs (see
+[file formats](../../reference/file-formats.md#stack-provenance-k4h_packages)).
+Releases benchmarked before provenance capture — or whose stack had already aged
+off CVMFS when the history was backfilled — cannot be compared, and the tab says
+so rather than showing an empty diff.
 
 ### Overview tab
 

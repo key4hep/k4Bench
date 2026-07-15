@@ -42,6 +42,25 @@ def _cached_list_run_dates(
     return list_run_dates_all_stacks(base_url, detector, platform, sample)
 
 
+@st.cache_data(show_spinner="Scanning Key4hep releases...", ttl=600)
+def _cached_list_stacks(base_url: str, detector: str, platform: str) -> list[str]:
+    from k4bench.remote import list_stacks
+    return list_stacks(base_url, detector, platform)
+
+
+@st.cache_data(show_spinner="Fetching stack provenance...", ttl=3600)
+def _cached_fetch_stack_packages(
+    base_url: str, detector: str, platform: str, stack: str
+) -> dict | None:
+    """Cached :func:`k4bench.remote.fetch_stack_packages`.
+
+    A release is immutable once published, so this is cached for the full hour
+    — the same stack is re-read every time it is an endpoint of a comparison.
+    """
+    from k4bench.remote import fetch_stack_packages
+    return fetch_stack_packages(base_url, detector, platform, stack)
+
+
 @st.cache_data(show_spinner="Listing regression reports...", ttl=600)
 def _cached_list_report_dates(base_url: str) -> list[str]:
     from k4bench.remote import list_report_dates
