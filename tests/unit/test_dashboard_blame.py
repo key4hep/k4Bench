@@ -92,6 +92,17 @@ def test_classify_covers_the_four_window_shapes():
     assert _blame.classify(_verdict(last_accepted_run_date="2026-06-28")) is K.OPEN
 
 
+def test_classify_treats_blank_dates_as_unknown_not_a_real_release():
+    K = _blame.WindowKind
+    # _fmt_date renders an unparseable date as "". Two blank dates comparing
+    # equal must not be read as "same release".
+    assert _blame.classify(_verdict(onset_run_date="")) is K.NONE
+    assert _blame.classify(
+        _verdict(onset_run_date="", last_accepted_run_date="")
+    ) is K.NONE
+    assert _blame.classify(_verdict(last_accepted_run_date="")) is K.OPEN
+
+
 def test_has_window_only_for_confirmed_with_recorded_onset():
     assert _blame.has_window(_verdict()) is True
     assert _blame.has_window(_verdict(severity=Severity.WATCH)) is False
@@ -112,22 +123,21 @@ def test_onset_point_matches_the_exact_run_not_just_the_release():
     assert pd.Timestamp(x) == pd.Timestamp("2026-06-25")
 
 
-def test_onset_point_falls_back_to_release_when_run_id_absent():
-    df = _history().drop(columns=["run_id"])
-    x, y = _blame.onset_point(df, _verdict())
+def test_onset_point_release_fallback_only_when_no_run_id_was_recorded():
+    # A legacy report carries a release date but no run id: fall back to the
+    # release, taking the newest run on it.
+    legacy = _verdict(onset_run_id=None)
+    x, y = _blame.onset_point(_history(), legacy)
     assert pd.Timestamp(x) == pd.Timestamp("2026-06-25")
-    assert y == 5.1  # last row on that release, run id unavailable to disambiguate
 
 
-def test_onset_point_falls_back_to_a_same_release_run_when_the_exact_run_is_gone():
+def test_onset_point_none_when_the_recorded_run_is_absent():
+    # The onset run id is recorded but its run is not in the window. A sibling
+    # run on the same release is a different measurement, so marking it as the
+    # onset would be wrong — draw nothing instead.
     df = _history()
-    df = df[df["run_id"] != "2026-06-26"]  # the exact onset run is not in the window
-    # The run-id match misses, but another run measured the same onset release,
-    # so the x_date branch lands the marker on the right release (value 5.1)
-    # rather than dropping it.
-    x, y = _blame.onset_point(df, _verdict())
-    assert pd.Timestamp(x) == pd.Timestamp("2026-06-25")
-    assert y == 5.1
+    df = df[df["run_id"] != "2026-06-26"]  # the exact onset run is gone
+    assert _blame.onset_point(df, _verdict()) is None
 
 
 def test_onset_point_none_on_nan_value():
@@ -211,10 +221,13 @@ def test_window_band_ignores_a_corrupt_baseline_newer_than_onset():
 
 # ── render_note ───────────────────────────────────────────────────────────────
 
-def test_note_reports_nothing_changed_when_ends_share_a_release(fake_st):
+def test_note_reports_no_tracked_change_when_ends_share_a_release(fake_st):
     _blame.render_note(_verdict(last_accepted_run_date="2026-06-25"))
     assert len(fake_st["info"]) == 1
-    assert "Nothing upstream changed" in fake_st["info"][0]["body"]
+    body = fake_st["info"][0]["body"]
+    assert "No tracked Key4hep package changed" in body
+    # The claim is scoped to tracked packages, not "nothing at all changed".
+    assert "benchmark code" in body
     assert not fake_st["link"]  # no PR hunt when the stack did not move
 
 
@@ -227,6 +240,9 @@ def test_note_links_to_stack_changes_seeded_with_the_release_range(fake_st):
     assert q["from"] == ["2026-06-24"]   # last_accepted release, the baseline
     assert q["to"] == ["2026-06-25"]     # onset release
     assert q["platform"] == ["PLAT"]
+    # Detector rides along so the app resolves the verdict's platform, not the
+    # sidebar's default detector's platform (Regressions is cross-detector).
+    assert q["detector"] == ["CLD"]
 
 
 def test_note_omits_the_baseline_end_when_the_window_is_open(fake_st):

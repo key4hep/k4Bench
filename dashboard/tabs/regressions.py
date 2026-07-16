@@ -325,8 +325,14 @@ def _metric_history(verdict: MetricVerdict, data_url: str, cache_dir: str):
     stacks_dates = _cached_list_run_dates(
         data_url, verdict.detector, verdict.platform, verdict.sample
     )
+    # End the window at the verdict's own run, not at today's newest run, so an
+    # older report drills down into the history it was judged against — the
+    # flagged night, its onset and the blame band all land on the plotted data
+    # instead of off the right edge. For the latest report this is the newest
+    # run, so the common case is unchanged.
     pairs = sorted(
         (date, stack) for stack, dates in stacks_dates.items() for date in dates
+        if date <= verdict.run_id
     )[-FETCH_WINDOW_RUNS:]
     window: dict[str, list[str]] = {}
     for date, stack in pairs:

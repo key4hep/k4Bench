@@ -60,9 +60,13 @@ def classify(verdict: MetricVerdict) -> WindowKind:
     runs sharing a release measured the same packages. ISO dates order
     chronologically as plain strings, so no parsing is needed to compare them.
     """
-    if verdict.severity is not Severity.CONFIRMED or verdict.onset_run_date is None:
+    # Treat an empty/blank date as unknown, not as a real value: ``_fmt_date``
+    # renders an unparseable date as "", and two unknown dates comparing equal
+    # must not be read as "same release".
+    onset = verdict.onset_run_date or None
+    baseline = verdict.last_accepted_run_date or None
+    if verdict.severity is not Severity.CONFIRMED or onset is None:
         return WindowKind.NONE
-    baseline, onset = verdict.last_accepted_run_date, verdict.onset_run_date
     if baseline is None:
         return WindowKind.OPEN
     if baseline == onset:
@@ -80,33 +84,37 @@ def has_window(verdict: MetricVerdict) -> bool:
 
 
 def onset_point(df: pd.DataFrame, verdict: MetricVerdict) -> tuple | None:
-    """The plotted ``(x_date, value)`` of the recorded onset night, or ``None``.
+    """The plotted ``(x_date, value)`` of the recorded onset run, or ``None``.
 
-    Matches the exact onset *run* first — several runs can share a release, so
-    the release date alone is ambiguous — then falls back to the release date
-    for a run that predates run-id capture. The pick is made by an explicit
-    sort, not by the frame's incoming order, so a caller that sorts differently
-    cannot move the marker. Returns ``None`` when the onset run is not in the
-    fetched window (or its value is missing), so the caller draws no marker
-    rather than a misplaced one.
+    When the onset *run id* is recorded (always, for reports the current engine
+    writes) it must match that exact run: several runs can share a release, and
+    a sibling run is a different measurement that must not be dressed up as the
+    onset. If that run is not in the fetched window, return ``None`` so the
+    caller draws no marker rather than a misplaced one. The release-date match
+    is only a fallback for a legacy report that carries a date but no run id.
+
+    The pick is made by an explicit sort, not the frame's incoming order, so a
+    caller that sorts differently cannot move the marker.
     """
     if verdict.metric not in df.columns:
         return None
-    for col, want in (("run_id", verdict.onset_run_id), ("x_date", verdict.onset_run_date)):
-        if want is None or col not in df.columns:
-            continue
-        key = pd.to_datetime(df[col]) if col == "x_date" else df[col].astype(str)
-        hits = df[key == (pd.to_datetime(want) if col == "x_date" else str(want))]
-        if hits.empty:
-            continue
-        # run_id is unique per run (one row); the x_date fallback can match
-        # several runs sharing a release — order them deterministically and take
-        # the newest so the result never depends on the caller's row order.
-        order = ["x_date"] + (["run_id"] if "run_id" in hits.columns else [])
-        row = hits.sort_values(order).iloc[-1]
-        val = row[verdict.metric]
-        return None if pd.isna(val) else (row["x_date"], val)
-    return None
+    if verdict.onset_run_id is not None:
+        if "run_id" not in df.columns:
+            return None
+        hits = df[df["run_id"].astype(str) == str(verdict.onset_run_id)]
+    elif verdict.onset_run_date:
+        hits = df[pd.to_datetime(df["x_date"]) == pd.to_datetime(verdict.onset_run_date)]
+    else:
+        return None
+    if hits.empty:
+        return None
+    # A run-id match is unique; the legacy release match can hit several runs
+    # sharing a release — order deterministically and take the newest so the
+    # result never depends on the caller's row order.
+    order = ["x_date"] + (["run_id"] if "run_id" in hits.columns else [])
+    row = hits.sort_values(order).iloc[-1]
+    val = row[verdict.metric]
+    return None if pd.isna(val) else (row["x_date"], val)
 
 
 def add_window_band(fig: go.Figure, df: pd.DataFrame, verdict: MetricVerdict) -> None:
@@ -143,15 +151,18 @@ def render_note(verdict: MetricVerdict) -> None:
     onset = verdict.onset_run_date
 
     if kind is WindowKind.SAME_STACK:
-        # Same release on both ends ⇒ the stack did not move across the step, so
-        # an upstream commit is ruled out — a sharper answer than any PR list.
-        # (The nightly build skips days; a run then re-uses the newest release,
-        # so consecutive runs sharing a stack is common, not an error.)
+        # Same release on both ends ⇒ the *tracked* Key4hep packages did not move
+        # across the step. That rules out an upstream package commit but not
+        # everything: the benchmark checkout, geometry/config, inputs, or the
+        # runner environment can still differ. (The nightly build skips days; a
+        # run then re-uses the newest release, so consecutive runs sharing a
+        # stack is common, not an error.)
         st.info(
-            f"**Nothing upstream changed.** The step appeared between two runs that "
-            f"measured the **same** Key4hep release ({onset}), so no package moved "
-            "across it: the cause is the host, the sample, or noise — not an upstream "
-            "commit.",
+            f"**No tracked Key4hep package changed.** The step appeared between two "
+            f"runs that measured the **same** release ({onset}), so no tracked package "
+            "moved across it. Look instead at the benchmark code or configuration, the "
+            "inputs, the runner environment, or measurement noise — not an upstream "
+            "package commit.",
             icon="✅",
         )
         return
@@ -165,7 +176,8 @@ def render_note(verdict: MetricVerdict) -> None:
     )
     st.link_button(
         "🔍 Compare upstream changes in this window →",
-        deep_link(platform=verdict.platform, head_release=onset, base_release=baseline),
+        deep_link(detector=verdict.detector, platform=verdict.platform,
+                  head_release=onset, base_release=baseline),
         help="Open Stack Changes seeded with this release range — every Key4hep "
              "package that moved across the window, with a link to each commit diff."
              + ("" if baseline else " Pick a baseline release there: this step has no "

@@ -198,3 +198,36 @@ def test_from_json_ignores_fields_it_does_not_know():
     for v in data["groups"][0]["verdicts"]:
         v["some_field_from_a_later_release"] = "surprise"
     assert len(from_json(data).regressions) == 2
+
+
+#: The blame window fields added to every verdict.
+_WINDOW_FIELDS = {
+    "onset_run_id", "onset_run_date", "last_accepted_run_id", "last_accepted_run_date",
+}
+#: The verdict schema a reader deployed before this feature knew about. The
+#: compatibility contract is that the new fields are *purely additive* to this
+#: set — anything else (a renamed or dropped field) breaks an old reader in a
+#: way the new reader's unknown-key filter cannot rescue.
+_PRE_WINDOW_FIELDS = {
+    "detector", "platform", "sample", "label", "metric_family", "metric",
+    "sub_detector", "run_id", "run_date", "value", "baseline_median",
+    "baseline_mad", "pct_change", "z_score", "severity", "direction", "reason",
+}
+
+
+def test_new_report_is_additive_over_the_pre_window_schema():
+    # The load-bearing compatibility direction: a report the *current* writer
+    # emits must stay readable by a reader deployed before these fields existed
+    # (once that reader also drops unknowns — the deployed reader must ship
+    # first). That holds iff the window fields are the *only* additions, so a
+    # verdict stripped of them reconstructs exactly the old schema.
+    data = to_json(_full_report())
+    for g in data["groups"]:
+        for v in g["verdicts"]:
+            assert v.keys() == _PRE_WINDOW_FIELDS | _WINDOW_FIELDS
+            old_view = {k: val for k, val in v.items() if k in _PRE_WINDOW_FIELDS}
+            MetricVerdict(**{
+                **old_view,
+                "severity": Severity(old_view["severity"]),
+                "direction": Direction(old_view["direction"]),
+            })
