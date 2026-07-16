@@ -262,18 +262,12 @@ def _window_changes(data_url: str, verdict: MetricVerdict) -> list | None:
     return diff_packages(base, head)
 
 
-def _render_blame_card(data_url: str, verdicts: list[MetricVerdict]) -> None:
-    """One window's forward attribution: the metrics that stepped, and the
-    upstream packages that moved in the window they share — each linking to its
-    commit range, so the reader reaches the candidate PRs without leaving the
-    row or loading the trend."""
-    v = verdicts[0]
+def _render_blame_card(data_url: str, v: MetricVerdict) -> None:
+    """One window's forward attribution: the upstream packages that moved in the
+    blame window, each linking to its commit range, so the reader reaches the
+    candidate PRs without leaving the row or loading the trend."""
     kind = _blame.classify(v)
-    # Label each stepped series by its config too: several configs can share one
-    # window, and metric names alone would hide which of them moved.
-    items = ", ".join(sorted({f"{m.label} · {_pretty_metric(m)}" for m in verdicts}))
     with st.container(border=True):
-        st.markdown(f"**🔴 {items}**")
         if kind is _blame.WindowKind.SAME_STACK:
             st.caption(
                 f"Appeared on **{v.onset_run_date}** — the same release as the baseline, "
@@ -310,17 +304,18 @@ def _render_blame_card(data_url: str, verdicts: list[MetricVerdict]) -> None:
 
 def _render_blame_cards(group: RunGroupReport, data_url: str) -> None:
     """Forward attribution for a group's confirmed regressions, without the
-    drill-down. Grouped by blame window, since a run group's confirmed metrics
-    usually share one — a single card then covers them all."""
-    confirmed = [v for v in group.verdicts if _blame.has_window(v)]
-    if not confirmed:
+    drill-down. One card per distinct blame window — a run group's confirmed
+    metrics usually share one, and the flag table above already lists which
+    metrics stepped, so the card only needs a representative verdict."""
+    by_window: dict[tuple, MetricVerdict] = {}
+    for v in group.verdicts:
+        if _blame.has_window(v):
+            by_window.setdefault((v.last_accepted_run_date, v.onset_run_date), v)
+    if not by_window:
         return
-    by_window: dict[tuple, list[MetricVerdict]] = {}
-    for v in confirmed:
-        by_window.setdefault((v.last_accepted_run_date, v.onset_run_date), []).append(v)
     st.markdown("###### Upstream changes in the blame window")
-    for verdicts in by_window.values():
-        _render_blame_card(data_url, verdicts)
+    for verdict in by_window.values():
+        _render_blame_card(data_url, verdict)
 
 
 def _render_group(group: RunGroupReport, data_url: str, cache_dir: str, *, key: str) -> None:

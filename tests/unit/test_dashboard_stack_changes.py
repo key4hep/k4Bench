@@ -178,6 +178,18 @@ def test_regressions_in_range_orders_by_magnitude_with_unknown_last():
     assert [v.metric for v in hits] == ["wall_time_s", "mean_time_s", "cpu_efficiency"]
 
 
+def test_regressions_in_range_excludes_same_release_windows():
+    # A regression whose onset and baseline are the SAME release had no stack
+    # change, so it is not a candidate effect of a diff and must not appear with
+    # a nonsensical X → X window.
+    reports = [_raw_report([
+        _confirmed(metric="wall_time_s", last_accepted_run_date="2026-06-25"),  # == onset
+        _confirmed(metric="peak_rss_mb"),  # normal bounded window 06-24 → 06-25
+    ])]
+    hits = stack_changes._regressions_in_range(reports, PLAT, "2026-06-24", "2026-06-25")
+    assert [v.metric for v in hits] == ["peak_rss_mb"]
+
+
 def test_regressions_in_range_skips_missing_reports():
     # A night whose report could not be fetched is None and must be tolerated.
     hits = stack_changes._regressions_in_range(
@@ -193,10 +205,10 @@ def test_packages_for_release_prefixes_the_release_tag(monkeypatch):
     assert seen["stack"] == "key4hep-2026-07-10"
 
 
-def test_reverse_view_renders_the_regression_table_with_its_own_windows():
+def test_reverse_view_renders_the_regression_table():
     # A confirmed regression whose onset falls in the diffed range, with a
-    # relative-% metric and an absolute-floor metric (no %). Both should list,
-    # each with its own blame window; the %-less one must not show +0.0%.
+    # relative-% metric and an absolute-floor metric (no %). Both should list;
+    # the %-less one must not show +0.0%.
     report = _raw_report([
         _confirmed(metric="wall_time_s", pct_change=0.10,
                    last_accepted_run_date="2026-07-09", onset_run_date="2026-07-10"),
@@ -210,7 +222,7 @@ def test_reverse_view_renders_the_regression_table_with_its_own_windows():
     assert len(at.dataframe) == 2
     reverse = at.dataframe[1].value
     assert list(reverse["Sample"]) == ["single_e", "single_e"]  # sample surfaced
-    assert set(reverse["Blame window"]) == {"2026-07-09 → 2026-07-10"}
+    assert "Blame window" not in reverse.columns                # column removed
     deltas = list(reverse["Δ vs baseline"])
     assert 10.0 in deltas                     # the relative-% metric
     assert any(pd.isna(d) for d in deltas)    # the %-less metric is blank, not +0.0%
@@ -228,6 +240,37 @@ def test_reverse_view_renders_even_when_stack_provenance_is_missing():
     assert any("cannot be diffed" in w.value for w in at.warning)
     assert len(at.dataframe) == 1  # no diff table, but the reverse table renders
     assert list(at.dataframe[0].value["Detector"]) == ["CLD"]
+
+
+def test_reverse_view_shows_the_window_column_only_for_a_cumulative_range():
+    # A multi-release diff where a regression's window is a sub-range of it: the
+    # Blame window column appears (unlike the consecutive case above, where it
+    # would just repeat the range).
+    report = _raw_report([_confirmed(
+        last_accepted_run_date="2026-07-04", onset_run_date="2026-07-05")])  # inside 07-01..07-10
+    at = _run(
+        stack_names=["key4hep-2026-07-10", "key4hep-2026-07-05", "key4hep-2026-07-01"],
+        packages={}, from_release="2026-07-01", to_release="2026-07-10",
+        report_dates=("2026-07-05",), reports_map={"2026-07-05": report})
+    reverse = at.dataframe[0].value  # provenance missing → only the reverse table
+    assert list(reverse["Blame window"]) == ["2026-07-04 → 2026-07-05"]
+    # …and a prominent warning makes the cumulative range crystal-clear.
+    assert any("multi-release" in w.value for w in at.warning)
+
+
+def test_neighbouring_releases_never_trigger_the_cumulative_warning_or_column():
+    # The bug: a regression whose baseline predates the selected base (its window
+    # is wider than the range) must NOT flip a consecutive comparison to
+    # "cumulative". The trigger is the selected range spanning >1 release, not
+    # any single regression's window.
+    report = _raw_report([_confirmed(
+        last_accepted_run_date="2026-07-05",  # older than the selected base (07-09)
+        onset_run_date="2026-07-10")])
+    at = _run(packages={}, from_release="2026-07-09", to_release="2026-07-10",
+              report_dates=("2026-07-10",), reports_map={"2026-07-10": report})
+    reverse = at.dataframe[0].value
+    assert "Blame window" not in reverse.columns
+    assert not any("multi-release" in w.value for w in at.warning)
 
 
 def test_reverse_view_says_so_when_no_regression_has_onset_in_range():
