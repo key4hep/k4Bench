@@ -113,6 +113,44 @@ def test_has_window_only_for_confirmed_with_recorded_onset():
     ) is False
 
 
+# ── onset_in_range (reverse view) ─────────────────────────────────────────────
+
+def test_onset_in_range_is_half_open_on_confirmed_verdicts():
+    v = _verdict(onset_run_date="2026-06-25")
+    assert _blame.onset_in_range(v, "2026-06-24", "2026-06-25") is True   # upper inclusive
+    assert _blame.onset_in_range(v, "2026-06-25", "2026-06-26") is False  # lower exclusive
+    assert _blame.onset_in_range(v, "2026-06-20", "2026-06-24") is False  # before the range
+    assert _blame.onset_in_range(v, "2026-06-26", "2026-06-28") is False  # after the range
+
+
+def test_onset_in_range_ignores_non_confirmed_and_unknown_onsets():
+    assert _blame.onset_in_range(
+        _verdict(severity=Severity.WATCH), "2026-06-24", "2026-06-26") is False
+    assert _blame.onset_in_range(
+        _verdict(onset_run_date=None), "2026-06-24", "2026-06-26") is False
+    assert _blame.onset_in_range(
+        _verdict(onset_run_date=""), "2026-06-24", "2026-06-26") is False
+
+
+# ── changes_summary (forward view) ────────────────────────────────────────────
+
+class _Change:
+    def __init__(self, name, compare_url=None):
+        self.name = name
+        self.compare_url = compare_url
+
+
+def test_changes_summary_links_only_packages_with_a_known_forge():
+    s = _blame.changes_summary([
+        _Change("k4geo", "https://github.com/key4hep/k4geo/compare/a...b"),
+        _Change("opendatadetector", None),  # forge URL unknown
+    ])
+    assert "[`k4geo` ↗](https://github.com/key4hep/k4geo/compare/a...b)" in s
+    assert "`opendatadetector`" in s
+    assert "opendatadetector` ↗" not in s  # not linked
+    assert " · " in s  # joined
+
+
 # ── onset_point ───────────────────────────────────────────────────────────────
 
 def test_onset_point_matches_the_exact_run_not_just_the_release():

@@ -83,6 +83,31 @@ def has_window(verdict: MetricVerdict) -> bool:
     return classify(verdict) is not WindowKind.NONE
 
 
+def onset_in_range(verdict: MetricVerdict, older_release: str, newer_release: str) -> bool:
+    """True when *verdict* is a confirmed regression whose onset release falls in
+    the half-open range ``(older_release, newer_release]``.
+
+    The reverse of the forward view: the change that caused this regression
+    entered at its onset, so a stack diff spanning that onset is a candidate
+    cause. ISO dates order chronologically as plain strings.
+    """
+    if verdict.severity is not Severity.CONFIRMED:
+        return False
+    onset = verdict.onset_run_date or None
+    return onset is not None and older_release < onset <= newer_release
+
+
+def changes_summary(changes: list) -> str:
+    """A one-line markdown summary of changed packages, each linking to its
+    commit range where the forge URL is known — the fast path from a regression
+    to the PRs in its blame window."""
+    parts = [
+        f"[`{c.name}` ↗]({c.compare_url})" if c.compare_url else f"`{c.name}`"
+        for c in changes
+    ]
+    return " · ".join(parts)
+
+
 def onset_point(df: pd.DataFrame, verdict: MetricVerdict) -> tuple | None:
     """The plotted ``(x_date, value)`` of the recorded onset run, or ``None``.
 

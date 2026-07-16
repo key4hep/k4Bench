@@ -51,9 +51,12 @@ from remote_cache import (
     _cached_list_report_dates,
     _cached_list_run_dates,
 )
+from k4bench.provenance.diff import diff_packages
 from tabs import _blame
 from tabs._regression_flags import add_severity_markers
 from tabs._reliability import render_reliability_filter
+from tabs.stack_changes import _PREFIX, deep_link
+from tabs.stack_changes import _packages as _release_packages
 from ui_utils import _METRIC_LABELS, _METRIC_UNITS, _is_valid_df, _to_rgba
 
 #: Fill for the accepted-baseline band on the drill-down chart — same visual
@@ -249,6 +252,76 @@ def _flag_table(flagged: list[MetricVerdict]) -> None:
     )
 
 
+def _window_changes(data_url: str, verdict: MetricVerdict) -> list | None:
+    """Changed packages across a confirmed regression's bounded blame window,
+    or ``None`` when either release's provenance is missing (aged off CVMFS, or
+    a release benchmarked before capture)."""
+    base = _release_packages(data_url, verdict.platform, _PREFIX + verdict.last_accepted_run_date)
+    head = _release_packages(data_url, verdict.platform, _PREFIX + verdict.onset_run_date)
+    if not base or not head:
+        return None
+    return diff_packages(base, head)
+
+
+def _render_blame_card(data_url: str, verdicts: list[MetricVerdict]) -> None:
+    """One window's forward attribution: the metrics that stepped, and the
+    upstream packages that moved in the window they share — each linking to its
+    commit range, so the reader reaches the candidate PRs without leaving the
+    row or loading the trend."""
+    v = verdicts[0]
+    kind = _blame.classify(v)
+    metrics = ", ".join(sorted({_pretty_metric(m) for m in verdicts}))
+    with st.container(border=True):
+        st.markdown(f"**🔴 {metrics}**")
+        if kind is _blame.WindowKind.SAME_STACK:
+            st.caption(
+                f"Appeared on **{v.onset_run_date}** — the same release as the baseline, "
+                "so no tracked Key4hep package changed. Look at the benchmark "
+                "code/config, inputs, runner environment, or noise."
+            )
+            return
+        onset = v.onset_run_date
+        baseline = v.last_accepted_run_date if kind is _blame.WindowKind.BOUNDED else None
+        span = f"**{baseline} → {onset}**" if baseline else f"up to **{onset}**"
+        st.caption(
+            f"Appeared on **{onset}**, one reliable night before it confirmed — "
+            f"the cause is in {span}."
+        )
+        changes = _window_changes(data_url, v) if baseline else None
+        if changes is None:
+            st.caption(
+                "Stack provenance unavailable for these releases."
+                if baseline else
+                "No settled baseline before this step to bound the window on."
+            )
+        elif not changes:
+            st.success("No tracked Key4hep package moved across this window.", icon="✅")
+        else:
+            st.markdown(
+                f"**{len(changes)} package(s) moved:** " + _blame.changes_summary(changes)
+            )
+        st.link_button(
+            "🔍 Open in Stack Changes →",
+            deep_link(detector=v.detector, platform=v.platform,
+                      head_release=onset, base_release=baseline),
+        )
+
+
+def _render_blame_cards(group: RunGroupReport, data_url: str) -> None:
+    """Forward attribution for a group's confirmed regressions, without the
+    drill-down. Grouped by blame window, since a run group's confirmed metrics
+    usually share one — a single card then covers them all."""
+    confirmed = [v for v in group.verdicts if _blame.has_window(v)]
+    if not confirmed:
+        return
+    by_window: dict[tuple, list[MetricVerdict]] = {}
+    for v in confirmed:
+        by_window.setdefault((v.last_accepted_run_date, v.onset_run_date), []).append(v)
+    st.markdown("###### Upstream changes in the blame window")
+    for verdicts in by_window.values():
+        _render_blame_card(data_url, verdicts)
+
+
 def _render_group(group: RunGroupReport, data_url: str, cache_dir: str, *, key: str) -> None:
     for msg in group.job_failures:
         st.error(f"**{msg}**", icon="❌")
@@ -269,6 +342,8 @@ def _render_group(group: RunGroupReport, data_url: str, cache_dir: str, *, key: 
         _flag_table(flagged)
     if group.verdicts:
         st.caption(_quiet_summary(group))
+
+    _render_blame_cards(group, data_url)
 
     drillable: list[MetricVerdict] = [
         v for v in flagged if v.baseline_median is not None

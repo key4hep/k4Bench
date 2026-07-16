@@ -21,12 +21,17 @@ import requests
 import streamlit as st
 
 from k4bench.provenance.diff import ADDED, CHANGED, REMOVED, diff_packages, unchanged_packages
+from k4bench.regression.render import from_json
 from remote_cache import (
+    _cached_fetch_reports,
     _cached_fetch_stack_packages,
     _cached_list_detectors,
+    _cached_list_report_dates,
     _cached_list_stacks,
 )
+from tabs import _blame
 from ui_chrome import seed_query_param
+from ui_utils import _METRIC_LABELS
 
 #: Releases are stored as ``key4hep-{YYYY-MM-DD}`` directories; the tab talks
 #: in the bare nightly tag the rest of the dashboard shows on its axes.
@@ -222,6 +227,76 @@ def render(data_url: str, platform: str) -> None:
         return
 
     _render_diff(base, head, base_release, head_release, span)
+    _render_regressions_in_range(data_url, platform, base_release, head_release)
+
+
+#: Cap on reverse-view rows so a month-wide range can't produce an unbounded
+#: table; the largest by |Δ| are kept.
+_MAX_REGRESSIONS = 30
+
+
+def _render_regressions_in_range(
+    data_url: str, platform: str, base_release: str, head_release: str
+) -> None:
+    """Reverse attribution: the confirmed regressions whose onset falls in this
+    release range — what a change in this diff may have caused. A regression's
+    onset release is recorded on the verdict that confirmed it, so this reads
+    the nightly reports rather than recomputing anything."""
+    dates = _cached_list_report_dates(data_url)
+    # A regression confirms no earlier than its onset release, so only reports
+    # on/after the older end can carry one whose onset is in range.
+    relevant = tuple(d for d in dates if d >= base_release)
+    reports = _cached_fetch_reports(data_url, relevant) if relevant else {}
+
+    hits: list = []
+    seen: set = set()
+    for raw in reports.values():
+        for v in from_json(raw).regressions:
+            if v.platform != platform or not _blame.onset_in_range(v, base_release, head_release):
+                continue
+            key = (v.detector, v.sample, v.label, v.metric, v.sub_detector, v.onset_run_date)
+            if key not in seen:
+                seen.add(key)
+                hits.append(v)
+
+    st.markdown("##### Regressions with onset in this range")
+    st.caption(
+        "Confirmed regressions whose step first appeared inside this release range — "
+        "the changes above are candidate causes for these."
+    )
+    if not hits:
+        st.info("No confirmed regression has its onset in this release range.", icon="✅")
+        return
+
+    hits.sort(key=lambda v: -abs(v.pct_change or 0.0))
+    df = pd.DataFrame([
+        {
+            "": "🔴",
+            "Detector": v.detector,
+            "Config": v.label,
+            "Metric": _METRIC_LABELS.get(v.metric, v.metric)
+                      + (f" · {v.sub_detector}" if v.sub_detector else ""),
+            "Δ vs baseline": (v.pct_change or 0.0) * 100,
+            "Onset release": v.onset_run_date,
+        }
+        for v in hits[:_MAX_REGRESSIONS]
+    ])
+    st.dataframe(
+        df, hide_index=True, width="stretch",
+        column_config={
+            "": st.column_config.TextColumn("", width="small"),
+            "Δ vs baseline": st.column_config.NumberColumn(
+                "Δ vs baseline", format="%+.1f%%",
+                help="Size and direction of the confirmed step, either way — not "
+                     "judged good or bad.",
+            ),
+            "Onset release": st.column_config.TextColumn(
+                "Onset release", help="The release the step first appeared on.",
+            ),
+        },
+    )
+    if len(hits) > _MAX_REGRESSIONS:
+        st.caption(f"Showing the {_MAX_REGRESSIONS} largest of {len(hits)} by |Δ|.")
 
 
 def _span(releases: list[str], base_release: str, head_release: str) -> str:
