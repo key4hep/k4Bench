@@ -21,12 +21,17 @@ import requests
 import streamlit as st
 
 from k4bench.provenance.diff import ADDED, CHANGED, REMOVED, diff_packages, unchanged_packages
+from k4bench.regression.render import _pretty_sample, from_json
 from remote_cache import (
+    _cached_fetch_report,
     _cached_fetch_stack_packages,
     _cached_list_detectors,
+    _cached_list_report_dates,
     _cached_list_stacks,
 )
+from tabs import _blame
 from ui_chrome import seed_query_param
+from ui_utils import _METRIC_LABELS
 
 #: Releases are stored as ``key4hep-{YYYY-MM-DD}`` directories; the tab talks
 #: in the bare nightly tag the rest of the dashboard shows on its axes.
@@ -151,6 +156,14 @@ def _packages(data_url: str, platform: str, stack: str) -> dict | None:
     return None
 
 
+def packages_for_release(data_url: str, platform: str, release: str) -> dict | None:
+    """The package map for a bare release tag (e.g. ``2026-07-10``) on *platform*,
+    from whichever detector recorded it. The public provenance lookup other tabs
+    use, so they need neither the ``key4hep-`` prefix nor this module's
+    internals."""
+    return _packages(data_url, platform, _PREFIX + release)
+
+
 
 
 def render(data_url: str, platform: str) -> None:
@@ -216,12 +229,137 @@ def render(data_url: str, platform: str) -> None:
         st.warning(
             f"No stack provenance recorded for {', '.join(f'**{m}**' for m in missing)}. "
             "Releases benchmarked before provenance capture, or whose stack had already "
-            "aged off CVMFS when the history was backfilled, cannot be compared.",
+            "aged off CVMFS when the history was backfilled, cannot be diffed — but any "
+            "regressions with onset in this range are still listed below.",
             icon="❔",
         )
+    else:
+        _render_diff(base, head, base_release, head_release, span)
+    # Independent of the package diff: the reverse view is built from the
+    # regression reports, so it renders even when provenance is unavailable. A
+    # non-empty span means the *selected range* spans more than one release
+    # step (see :func:`_span`) — the only case where the diff is cumulative.
+    _render_regressions_in_range(
+        data_url, platform, base_release, head_release, multi_release=bool(span),
+    )
+
+
+#: Cap on reverse-view rows so a month-wide range can't produce an unbounded
+#: table; the largest by |Δ| are kept.
+_MAX_REGRESSIONS = 30
+
+
+def _regressions_in_range(
+    reports, platform: str, older_release: str, newer_release: str
+) -> list:
+    """Confirmed regressions across *reports* (raw report dicts) whose onset
+    falls in ``(older_release, newer_release]``, deduped per distinct onset
+    *run* and sorted worst-first with unknown magnitude last.
+
+    Pure — no Streamlit, no network — so the selection, dedup and ordering are
+    testable on their own. Dedup keys on the onset run, not just its release:
+    several runs share a release, and a re-anchored series can confirm two
+    separate steps whose onset runs differ but whose onset releases match.
+    """
+    hits, seen = [], set()
+    for raw in reports:
+        if not raw:
+            continue
+        for v in from_json(raw).regressions:
+            if v.platform != platform or not _blame.onset_in_range(v, older_release, newer_release):
+                continue
+            # A same-release window (onset == baseline) means the stack did not
+            # move across the step, so it cannot be an effect of any diff — drop
+            # it rather than list it with a nonsensical X → X window.
+            if _blame.classify(v) is _blame.WindowKind.SAME_STACK:
+                continue
+            key = (v.detector, v.sample, v.label, v.metric, v.sub_detector, v.onset_run_id)
+            if key not in seen:
+                seen.add(key)
+                hits.append(v)
+    # Unknown relative magnitude (a zero baseline, or an absolute-floor metric)
+    # sorts last rather than as if it were 0 %.
+    hits.sort(key=lambda v: (v.pct_change is None, -abs(v.pct_change or 0.0)))
+    return hits
+
+
+def _render_regressions_in_range(
+    data_url: str, platform: str, base_release: str, head_release: str,
+    *, multi_release: bool,
+) -> None:
+    """Reverse attribution: the confirmed regressions whose onset falls in this
+    release range — candidate effects of the diff above. Same-release regressions
+    are excluded (no stack moved for them).
+
+    *multi_release* is whether the *selected* range spans more than one release
+    step: only then is the diff cumulative, so only then do the per-regression
+    blame-window column and its warning appear. It is not derived per regression
+    — a regression's baseline can predate the selected base, which would trip a
+    per-window check even for two neighbouring releases.
+    """
+    dates = _cached_list_report_dates(data_url)
+    # A regression confirms no earlier than its onset release, so only reports
+    # on/after the older end can carry one whose onset is in range. Fetch each
+    # night individually so it is cached once and reused as the range changes.
+    reports = [_cached_fetch_report(data_url, d) for d in dates if d >= base_release]
+    hits = _regressions_in_range(reports, platform, base_release, head_release)
+
+    st.markdown("##### Regressions this change may have caused")
+    st.caption(
+        "Confirmed regressions whose step first appeared inside this release range — "
+        "candidate effects of the changes above."
+    )
+    if not hits:
+        st.info("No confirmed regression has its onset in this release range.", icon="✅")
         return
 
-    _render_diff(base, head, base_release, head_release, span)
+    shown = hits[:_MAX_REGRESSIONS]
+    cumulative = multi_release
+    if cumulative:
+        st.warning(
+            "This is a **multi-release** range, so its package diff above is "
+            "**cumulative**. Each regression below was caused by the changes in its own "
+            "**blame window** (shown) — *not* necessarily by every package that differs "
+            "across the whole range. Compare consecutive releases to pin a single step.",
+            icon="⚠️",
+        )
+
+    def _row(v):
+        row = {
+            "": "🔴",
+            "Detector": v.detector,
+            "Sample": _pretty_sample(v.sample),
+            "Config": v.label,
+            "Metric": _METRIC_LABELS.get(v.metric, v.metric)
+                      + (f" · {v.sub_detector}" if v.sub_detector else ""),
+            "Δ vs baseline": None if v.pct_change is None else v.pct_change * 100,
+        }
+        if cumulative:
+            row["Blame window"] = (f"{v.last_accepted_run_date} → {v.onset_run_date}"
+                                   if v.last_accepted_run_date else f"up to {v.onset_run_date}")
+        return row
+
+    column_config = {
+        "": st.column_config.TextColumn("", width="small"),
+        "Δ vs baseline": st.column_config.NumberColumn(
+            "Δ vs baseline", format="%+.1f%%",
+            help="Size and direction of the confirmed step, either way. Blank when the "
+                 "metric has no meaningful relative change — an absolute-floor metric, "
+                 "or a zero baseline.",
+        ),
+    }
+    if cumulative:
+        column_config["Blame window"] = st.column_config.TextColumn(
+            "Blame window",
+            help="The release range this step actually entered in (last accepted → "
+                 "onset) — a sub-range of the wider diff above.",
+        )
+    st.dataframe(
+        pd.DataFrame([_row(v) for v in shown]),
+        hide_index=True, width="stretch", column_config=column_config,
+    )
+    if len(hits) > _MAX_REGRESSIONS:
+        st.caption(f"Showing the {_MAX_REGRESSIONS} largest of {len(hits)} by |Δ|.")
 
 
 def _span(releases: list[str], base_release: str, head_release: str) -> str:

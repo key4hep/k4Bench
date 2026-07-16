@@ -14,6 +14,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 pytest.importorskip("streamlit")
@@ -53,7 +54,8 @@ _STACKS = {
 }
 
 
-def _app(dashboard_dir, stack_names, packages, from_release, to_release):
+def _app(dashboard_dir, stack_names, packages, from_release, to_release,
+         report_dates, reports_map):
     """The tab, rendered standalone with every remote call stubbed.
 
     ``AppTest.from_function`` re-executes this source in its own script
@@ -74,6 +76,10 @@ def _app(dashboard_dir, stack_names, packages, from_release, to_release):
     _tab._cached_fetch_stack_packages = (
         lambda url, detector, platform, stack: packages.get(stack)
     )
+    # The reverse view reads the nightly reports; stub those too so the tab is
+    # hermetic (default: no reports, so the reverse section is empty).
+    _tab._cached_list_report_dates = lambda url: report_dates
+    _tab._cached_fetch_report = lambda url, date: reports_map.get(date)
 
     if from_release:
         _st.query_params["from"] = from_release
@@ -82,7 +88,8 @@ def _app(dashboard_dir, stack_names, packages, from_release, to_release):
     _tab.render("https://example.invalid", "x86_64-almalinux9-gcc14.2.0-opt")
 
 
-def _run(stack_names=None, packages=None, from_release=None, to_release=None) -> AppTest:
+def _run(stack_names=None, packages=None, from_release=None, to_release=None,
+         report_dates=(), reports_map=None) -> AppTest:
     at = AppTest.from_function(
         _app,
         args=(
@@ -91,6 +98,8 @@ def _run(stack_names=None, packages=None, from_release=None, to_release=None) ->
             _STACKS if packages is None else packages,
             from_release,
             to_release,
+            tuple(report_dates),
+            reports_map or {},
         ),
         default_timeout=30,
     )
@@ -110,6 +119,166 @@ def test_release_strips_the_directory_prefix():
 def _query(url: str) -> dict:
     from urllib.parse import parse_qs, urlsplit
     return {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
+
+
+def _confirmed(**kw):
+    from k4bench.regression.models import Direction, MetricVerdict, Severity
+    base = dict(
+        detector="CLD", platform=PLAT, sample="single_e", label="baseline",
+        metric_family="time", metric="wall_time_s", sub_detector=None,
+        run_id="2026-06-27", run_date="2026-06-27", value=6.0, baseline_median=5.0,
+        baseline_mad=0.1, pct_change=0.2, z_score=10.0, severity=Severity.CONFIRMED,
+        direction=Direction.UP, reason="step", onset_run_id="2026-06-26",
+        onset_run_date="2026-06-25", last_accepted_run_id="2026-06-25",
+        last_accepted_run_date="2026-06-24",
+    )
+    base.update(kw)
+    return MetricVerdict(**base)
+
+
+def _raw_report(verdicts):
+    from k4bench.regression.models import NightlyReport, RunGroupReport
+    from k4bench.regression.render import to_json
+    group = RunGroupReport(
+        detector="CLD", platform=PLAT, sample="single_e",
+        k4h_release="key4hep-2026-06-27", run_date="2026-06-27", run_id="2026-06-27",
+        verdicts=verdicts,
+    )
+    return to_json(NightlyReport(generated_at="", groups=[group]))
+
+
+def test_regressions_in_range_filters_by_range_and_platform():
+    reports = [_raw_report([
+        _confirmed(metric="wall_time_s"),                     # in range
+        _confirmed(metric="peak_rss_mb", onset_run_date="2026-07-05"),  # onset after range
+        _confirmed(metric="mean_time_s", platform="other-plat"),        # other platform
+    ])]
+    hits = stack_changes._regressions_in_range(reports, PLAT, "2026-06-24", "2026-06-25")
+    assert [v.metric for v in hits] == ["wall_time_s"]
+
+
+def test_regressions_in_range_dedups_on_the_onset_run_not_its_release():
+    reports = [_raw_report([
+        _confirmed(onset_run_id="run-A"),
+        _confirmed(onset_run_id="run-A"),   # exact duplicate → collapsed
+        _confirmed(onset_run_id="run-B"),   # same onset release, different run → kept
+    ])]
+    hits = stack_changes._regressions_in_range(reports, PLAT, "2026-06-24", "2026-06-25")
+    assert {v.onset_run_id for v in hits} == {"run-A", "run-B"}
+
+
+def test_regressions_in_range_orders_by_magnitude_with_unknown_last():
+    reports = [_raw_report([
+        _confirmed(metric="mean_time_s", pct_change=0.05),
+        _confirmed(metric="cpu_efficiency", pct_change=None),  # absolute-floor: no %
+        _confirmed(metric="wall_time_s", pct_change=-0.30),
+    ])]
+    hits = stack_changes._regressions_in_range(reports, PLAT, "2026-06-24", "2026-06-25")
+    # Largest |Δ| first; the None-magnitude one sorts last, not as if it were 0%.
+    assert [v.metric for v in hits] == ["wall_time_s", "mean_time_s", "cpu_efficiency"]
+
+
+def test_regressions_in_range_excludes_same_release_windows():
+    # A regression whose onset and baseline are the SAME release had no stack
+    # change, so it is not a candidate effect of a diff and must not appear with
+    # a nonsensical X → X window.
+    reports = [_raw_report([
+        _confirmed(metric="wall_time_s", last_accepted_run_date="2026-06-25"),  # == onset
+        _confirmed(metric="peak_rss_mb"),  # normal bounded window 06-24 → 06-25
+    ])]
+    hits = stack_changes._regressions_in_range(reports, PLAT, "2026-06-24", "2026-06-25")
+    assert [v.metric for v in hits] == ["peak_rss_mb"]
+
+
+def test_regressions_in_range_skips_missing_reports():
+    # A night whose report could not be fetched is None and must be tolerated.
+    hits = stack_changes._regressions_in_range(
+        [None, _raw_report([_confirmed()])], PLAT, "2026-06-24", "2026-06-25")
+    assert len(hits) == 1
+
+
+def test_packages_for_release_prefixes_the_release_tag(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(stack_changes, "_packages",
+                        lambda url, plat, stack: seen.setdefault("stack", stack))
+    stack_changes.packages_for_release("url", PLAT, "2026-07-10")
+    assert seen["stack"] == "key4hep-2026-07-10"
+
+
+def test_reverse_view_renders_the_regression_table():
+    # A confirmed regression whose onset falls in the diffed range, with a
+    # relative-% metric and an absolute-floor metric (no %). Both should list;
+    # the %-less one must not show +0.0%.
+    report = _raw_report([
+        _confirmed(metric="wall_time_s", pct_change=0.10,
+                   last_accepted_run_date="2026-07-09", onset_run_date="2026-07-10"),
+        _confirmed(metric="cpu_efficiency", metric_family="cpu_efficiency_pp",
+                   pct_change=None, onset_run_id="run-eff",
+                   last_accepted_run_date="2026-07-09", onset_run_date="2026-07-10"),
+    ])
+    at = _run(from_release="2026-07-09", to_release="2026-07-10",
+              report_dates=("2026-07-10",), reports_map={"2026-07-10": report})
+    # Two dataframes now: [0] the package diff, [1] the reverse regression table.
+    assert len(at.dataframe) == 2
+    reverse = at.dataframe[1].value
+    assert list(reverse["Sample"]) == ["single_e", "single_e"]  # sample surfaced
+    assert "Blame window" not in reverse.columns                # column removed
+    deltas = list(reverse["Δ vs baseline"])
+    assert 10.0 in deltas                     # the relative-% metric
+    assert any(pd.isna(d) for d in deltas)    # the %-less metric is blank, not +0.0%
+
+
+def test_reverse_view_renders_even_when_stack_provenance_is_missing():
+    # Provenance for the two releases has aged off CVMFS (packages empty), so the
+    # package diff cannot be built — but the reverse table comes from the reports
+    # and must still show, alongside the "cannot be diffed" warning.
+    report = _raw_report([_confirmed(
+        last_accepted_run_date="2026-07-09", onset_run_date="2026-07-10")])
+    at = _run(stack_names=["key4hep-2026-07-10", "key4hep-2026-07-09"], packages={},
+              from_release="2026-07-09", to_release="2026-07-10",
+              report_dates=("2026-07-10",), reports_map={"2026-07-10": report})
+    assert any("cannot be diffed" in w.value for w in at.warning)
+    assert len(at.dataframe) == 1  # no diff table, but the reverse table renders
+    assert list(at.dataframe[0].value["Detector"]) == ["CLD"]
+
+
+def test_reverse_view_shows_the_window_column_only_for_a_cumulative_range():
+    # A multi-release diff where a regression's window is a sub-range of it: the
+    # Blame window column appears (unlike the consecutive case above, where it
+    # would just repeat the range).
+    report = _raw_report([_confirmed(
+        last_accepted_run_date="2026-07-04", onset_run_date="2026-07-05")])  # inside 07-01..07-10
+    at = _run(
+        stack_names=["key4hep-2026-07-10", "key4hep-2026-07-05", "key4hep-2026-07-01"],
+        packages={}, from_release="2026-07-01", to_release="2026-07-10",
+        report_dates=("2026-07-05",), reports_map={"2026-07-05": report})
+    reverse = at.dataframe[0].value  # provenance missing → only the reverse table
+    assert list(reverse["Blame window"]) == ["2026-07-04 → 2026-07-05"]
+    # …and a prominent warning makes the cumulative range crystal-clear.
+    assert any("multi-release" in w.value for w in at.warning)
+
+
+def test_neighbouring_releases_never_trigger_the_cumulative_warning_or_column():
+    # The bug: a regression whose baseline predates the selected base (its window
+    # is wider than the range) must NOT flip a consecutive comparison to
+    # "cumulative". The trigger is the selected range spanning >1 release, not
+    # any single regression's window.
+    report = _raw_report([_confirmed(
+        last_accepted_run_date="2026-07-05",  # older than the selected base (07-09)
+        onset_run_date="2026-07-10")])
+    at = _run(packages={}, from_release="2026-07-09", to_release="2026-07-10",
+              report_dates=("2026-07-10",), reports_map={"2026-07-10": report})
+    reverse = at.dataframe[0].value
+    assert "Blame window" not in reverse.columns
+    assert not any("multi-release" in w.value for w in at.warning)
+
+
+def test_reverse_view_says_so_when_no_regression_has_onset_in_range():
+    at = _run(from_release="2026-07-09", to_release="2026-07-10",
+              report_dates=("2026-07-10",),
+              reports_map={"2026-07-10": _raw_report([
+                  _confirmed(onset_run_date="2026-05-01")])})  # onset far before range
+    assert any("No confirmed regression" in m.value for m in at.info)
 
 
 def test_deep_link_carries_detector_so_the_app_can_resolve_the_platform():
