@@ -141,6 +141,16 @@ it was judged against (the flagged night marked 🔴, the night it was first
 watched marked ⚠️). Confirmed regressions and failures — and only those — are
 also emailed to the team's e-group by the same CI job.
 
+For a confirmed regression the drill-down also shades the **release window the
+step entered in**. Because confirmation is a two-strike rule, the reported night
+is one reliable night *after* the step appeared, so the cause is upstream of the
+⚠️ onset, not at the 🔴 report — the amber band spans from the last release seen
+at the accepted level up to the onset release. A **Compare upstream changes**
+link opens the Stack Changes tab seeded with exactly that range. When both ends
+of the window are the *same* release the band and link give way to a "nothing
+upstream changed" note: the stack did not move across the step, so the cause is
+the host, the sample, or noise rather than an upstream commit.
+
 ### Stack Changes tab
 
 Answers "what came in last night?" — and, when a metric has stepped, "what

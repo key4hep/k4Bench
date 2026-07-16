@@ -423,6 +423,13 @@ def to_json(report: NightlyReport) -> dict:
     return data
 
 
+#: Field names :class:`MetricVerdict` accepts. Reports are read back by
+#: whatever dashboard is deployed, which is not necessarily built from the
+#: commit that wrote them, so unknown keys are dropped rather than raising —
+#: a report gaining a field must not break older readers.
+_VERDICT_FIELDS = frozenset(f.name for f in dataclasses.fields(MetricVerdict))
+
+
 def from_json(data: dict) -> NightlyReport:
     """Rebuild a :class:`NightlyReport` from :func:`to_json` output (used by
     the dashboard when reading ``_reports/{date}/report.json`` off EOS)."""
@@ -430,7 +437,7 @@ def from_json(data: dict) -> NightlyReport:
     for g in data.get("groups", []):
         verdicts = [
             MetricVerdict(**{
-                **v,
+                **{k: val for k, val in v.items() if k in _VERDICT_FIELDS},
                 "severity": Severity(v["severity"]),
                 "direction": Direction(v["direction"]),
             })

@@ -204,3 +204,86 @@ def test_nan_values_are_skipped():
     verdicts = evaluate_series(_history(values), series=_TIME)
     assert len(verdicts) == len(values) - 1
     assert verdicts[-1].severity is Severity.OK
+
+
+def _window(verdict) -> tuple:
+    return (verdict.last_accepted_run_id, verdict.onset_run_id)
+
+
+def test_confirmed_verdict_windows_from_last_ok_to_the_watch_night():
+    # Confirmation trails onset by one reliable night, so the cause landed in
+    # (last OK, WATCH] — never on the confirming night itself.
+    verdicts = evaluate_series(_history(_STEADY + [120.0, 120.5]), series=_TIME)
+    confirmed = verdicts[-1]
+    assert confirmed.severity is Severity.CONFIRMED
+    assert confirmed.run_id == "2026-01-12"          # reported here …
+    assert _window(confirmed) == ("2026-01-10", "2026-01-11")  # … caused here
+    assert verdicts[-2].run_id == "2026-01-11"       # the onset is the WATCH night
+    assert verdicts[-2].severity is Severity.WATCH
+
+
+def test_only_confirmed_verdicts_carry_a_window():
+    verdicts = evaluate_series(_history(_STEADY + [120.0, 120.5]), series=_TIME)
+    for v in verdicts:
+        if v.severity is Severity.CONFIRMED:
+            continue
+        assert _window(v) == (None, None), f"{v.severity} carried a window"
+
+
+def test_unreliable_night_inside_the_window_does_not_narrow_it():
+    # The skipped night is spanned by the window, not a bound on it: there is
+    # no evidence the metric was at the accepted level that night.
+    values = _STEADY + [130.0, 120.0, 120.5]
+    reliable = [True] * len(_STEADY) + [False, True, True]
+    verdicts = evaluate_series(_history(values, reliable), series=_TIME)
+    assert "2026-01-11" not in {v.run_id for v in verdicts}  # emitted no verdict
+    assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
+    assert _window(verdicts[-1]) == ("2026-01-10", "2026-01-12")
+
+
+def test_window_is_open_ended_when_the_series_never_settled():
+    # UNKNOWN is "no evidence", not "at the accepted level" — it must not
+    # become a lower bound. Without one the window stays open rather than
+    # inventing a night the metric was never observed good on.
+    verdicts = evaluate_series(_history([100.0] * 7 + [120.0, 120.5]), series=_TIME)
+    assert _severities(verdicts[:7]) == [Severity.UNKNOWN] * 7
+    assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
+    assert _window(verdicts[-1]) == (None, "2026-01-08")
+
+
+def test_second_step_with_no_ok_night_since_a_reanchor_bounds_on_the_reanchor():
+    # A re-anchor redefines the accepted level, so the confirmed night is the
+    # newest night at it. The second episode is bounded there rather than
+    # falling back to an unbounded window.
+    verdicts = evaluate_series(
+        _history(_STEADY + [120.0, 120.5, 160.0, 160.5]), series=_TIME,
+    )
+    assert _severities(verdicts[-4:]) == [
+        Severity.WATCH, Severity.CONFIRMED,   # first episode (~120 s), re-anchors
+        Severity.WATCH, Severity.CONFIRMED,   # second episode (~160 s), no OK between
+    ]
+    first, second = verdicts[-3], verdicts[-1]
+    assert _window(first) == ("2026-01-10", "2026-01-11")
+    # Bounded on the first episode's confirmed night, not on the pre-change
+    # level it already accounted for, and not on nothing at all.
+    assert _window(second) == ("2026-01-12", "2026-01-13")
+
+
+def test_window_reports_release_dates_alongside_run_ids():
+    # run_id is the run directory; run_date is the Key4hep release measured.
+    # The nightly build does not publish daily, so several runs can share one
+    # release — and a window whose ends share a release proves the stack did
+    # not move, whatever the run dates suggest.
+    values = _STEADY + [120.0, 120.5]
+    run_ids = [f"2026-02-{i + 1:02d}" for i in range(len(values))]
+    releases = [f"2026-01-{i + 1:02d}" for i in range(len(values) - 3)] + ["2026-01-20"] * 3
+    history = pd.DataFrame({
+        "run_id":   run_ids,
+        "run_date": pd.to_datetime(releases),
+        "value":    values,
+        "reliable": [True] * len(values),
+    })
+    confirmed = evaluate_series(history, series=_TIME)[-1]
+    assert confirmed.severity is Severity.CONFIRMED
+    assert _window(confirmed) == ("2026-02-10", "2026-02-11")
+    assert confirmed.last_accepted_run_date == confirmed.onset_run_date == "2026-01-20"

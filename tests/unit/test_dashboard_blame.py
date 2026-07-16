@@ -1,0 +1,183 @@
+"""Tests for the Regressions drill-down blame overlay (:mod:`tabs._blame`).
+
+Covers the pure pieces — which verdicts get a window, where the onset marker
+lands, and the shaded release band — plus the below-chart note's branching
+(same-release "nothing changed" vs. a seeded Compare link), with ``st`` stubbed
+so nothing renders or touches the network.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
+
+import pandas as pd
+import plotly.graph_objects as go
+import pytest
+
+pytest.importorskip("streamlit")
+
+_DASHBOARD_DIR = Path(__file__).resolve().parents[2] / "dashboard"
+if str(_DASHBOARD_DIR) not in sys.path:
+    sys.path.insert(0, str(_DASHBOARD_DIR))
+
+from tabs import _blame  # noqa: E402
+
+from k4bench.regression.models import (  # noqa: E402
+    Direction,
+    MetricVerdict,
+    Severity,
+)
+
+
+def _verdict(**kw) -> MetricVerdict:
+    base = dict(
+        detector="CLD", platform="PLAT", sample="single_e", label="baseline",
+        metric_family="time", metric="wall_time_s", sub_detector=None,
+        run_id="2026-06-27", run_date="2026-06-27", value=6.0,
+        baseline_median=5.0, baseline_mad=0.1, pct_change=0.2, z_score=10.0,
+        severity=Severity.CONFIRMED, direction=Direction.UP, reason="step",
+        onset_run_id="2026-06-26", onset_run_date="2026-06-25",
+        last_accepted_run_id="2026-06-25", last_accepted_run_date="2026-06-24",
+    )
+    base.update(kw)
+    return MetricVerdict(**base)
+
+
+def _history() -> pd.DataFrame:
+    # Two runs share the 2026-06-25 release (nightly skipped a day) so the onset
+    # release is ambiguous by date alone. The exact onset run (2026-06-26,
+    # value 5.9) is ordered *before* the decoy run on that same release
+    # (2026-06-26x, value 5.1), so a release-only match would take the wrong
+    # (last) one — only matching the run id lands on the onset.
+    return pd.DataFrame({
+        "run_id":  ["2026-06-24", "2026-06-26", "2026-06-26x", "2026-06-27"],
+        "x_date":  pd.to_datetime(["2026-06-24", "2026-06-25", "2026-06-25", "2026-06-27"]),
+        "wall_time_s": [5.0, 5.9, 5.1, 6.0],
+    })
+
+
+@pytest.fixture
+def fake_st(monkeypatch):
+    """Replace ``_blame.st`` with a recorder so render_note's calls can be
+    inspected without a Streamlit runtime."""
+    calls: dict[str, list] = {"info": [], "caption": [], "link": []}
+
+    class Rec:
+        def info(self, body, *, icon=None):
+            calls["info"].append({"body": body, "icon": icon})
+
+        def caption(self, body):
+            calls["caption"].append(body)
+
+        def link_button(self, label, url, *, help=None):  # noqa: A002
+            calls["link"].append({"label": label, "url": url, "help": help})
+
+    monkeypatch.setattr(_blame, "st", Rec())
+    return calls
+
+
+# ── has_window ────────────────────────────────────────────────────────────────
+
+def test_has_window_only_for_confirmed_with_recorded_onset():
+    assert _blame.has_window(_verdict()) is True
+    assert _blame.has_window(_verdict(severity=Severity.WATCH)) is False
+    # A report written before onset tracking: confirmed but no onset recorded.
+    assert _blame.has_window(
+        _verdict(onset_run_id=None, onset_run_date=None,
+                 last_accepted_run_id=None, last_accepted_run_date=None)
+    ) is False
+
+
+# ── onset_point ───────────────────────────────────────────────────────────────
+
+def test_onset_point_matches_the_exact_run_not_just_the_release():
+    x, y = _blame.onset_point(_history(), _verdict())
+    # The onset run is 2026-06-26 (release 2026-06-25, value 5.9), NOT the other
+    # run that shares that release (2026-06-25, value 5.1).
+    assert y == 5.9
+    assert pd.Timestamp(x) == pd.Timestamp("2026-06-25")
+
+
+def test_onset_point_falls_back_to_release_when_run_id_absent():
+    df = _history().drop(columns=["run_id"])
+    x, y = _blame.onset_point(df, _verdict())
+    assert pd.Timestamp(x) == pd.Timestamp("2026-06-25")
+    assert y == 5.1  # last row on that release, run id unavailable to disambiguate
+
+
+def test_onset_point_falls_back_to_a_same_release_run_when_the_exact_run_is_gone():
+    df = _history()
+    df = df[df["run_id"] != "2026-06-26"]  # the exact onset run is not in the window
+    # The run-id match misses, but another run measured the same onset release,
+    # so the x_date branch lands the marker on the right release (value 5.1)
+    # rather than dropping it.
+    x, y = _blame.onset_point(df, _verdict())
+    assert pd.Timestamp(x) == pd.Timestamp("2026-06-25")
+    assert y == 5.1
+
+
+def test_onset_point_none_on_nan_value():
+    df = _history()
+    df.loc[df["run_id"] == "2026-06-26", "wall_time_s"] = float("nan")
+    assert _blame.onset_point(df, _verdict()) is None
+
+
+# ── add_window_band ───────────────────────────────────────────────────────────
+
+def test_window_band_spans_last_accepted_to_onset():
+    fig = go.Figure()
+    _blame.add_window_band(fig, _history(), _verdict())
+    assert len(fig.layout.shapes) == 1
+    shape = fig.layout.shapes[0]
+    assert pd.Timestamp(shape.x0) == pd.Timestamp("2026-06-24")
+    assert pd.Timestamp(shape.x1) == pd.Timestamp("2026-06-25")
+
+
+def test_window_band_open_ended_starts_at_earliest_release():
+    fig = go.Figure()
+    _blame.add_window_band(
+        fig, _history(),
+        _verdict(last_accepted_run_id=None, last_accepted_run_date=None),
+    )
+    assert len(fig.layout.shapes) == 1
+    assert pd.Timestamp(fig.layout.shapes[0].x0) == pd.Timestamp("2026-06-24")
+
+
+def test_window_band_absent_when_ends_are_the_same_release():
+    fig = go.Figure()
+    _blame.add_window_band(
+        fig, _history(),
+        _verdict(last_accepted_run_date="2026-06-25"),  # == onset release
+    )
+    assert len(fig.layout.shapes) == 0
+
+
+# ── render_note ───────────────────────────────────────────────────────────────
+
+def test_note_reports_nothing_changed_when_ends_share_a_release(fake_st):
+    _blame.render_note(_verdict(last_accepted_run_date="2026-06-25"))
+    assert len(fake_st["info"]) == 1
+    assert "Nothing upstream changed" in fake_st["info"][0]["body"]
+    assert not fake_st["link"]  # no PR hunt when the stack did not move
+
+
+def test_note_links_to_stack_changes_seeded_with_the_release_range(fake_st):
+    _blame.render_note(_verdict())
+    assert not fake_st["info"]
+    assert len(fake_st["link"]) == 1
+    q = parse_qs(urlsplit(fake_st["link"][0]["url"]).query)
+    assert q["tab"] == ["Stack Changes"]
+    assert q["from"] == ["2026-06-24"]   # last_accepted release, the baseline
+    assert q["to"] == ["2026-06-25"]     # onset release
+    assert q["platform"] == ["PLAT"]
+
+
+def test_note_omits_the_baseline_end_when_the_window_is_open(fake_st):
+    _blame.render_note(
+        _verdict(last_accepted_run_id=None, last_accepted_run_date=None)
+    )
+    q = parse_qs(urlsplit(fake_st["link"][0]["url"]).query)
+    assert q["to"] == ["2026-06-25"]
+    assert "from" not in q  # nothing to bound the older end on

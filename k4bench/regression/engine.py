@@ -140,6 +140,12 @@ def _fmt_date(value) -> str:
     return "" if pd.isna(ts) else ts.strftime("%Y-%m-%d")
 
 
+def _identity(row) -> tuple[str, str]:
+    """``(run_id, run_date)`` of *row* — the run directory and the release it
+    measured. Kept as one value so the pair can never drift apart."""
+    return str(row.run_id), _fmt_date(row.run_date)
+
+
 def evaluate_series(
     history: pd.DataFrame,
     *,
@@ -175,6 +181,15 @@ def evaluate_series(
     scaled MAD as the spread proxy (the noise level changes far less than the
     level itself) — so a second change arriving right after a confirmed one
     is still caught rather than falling into a blind window.
+
+    Each ``CONFIRMED`` verdict also carries the window the change entered in:
+    ``onset_*`` (the WATCH night — where it first appeared, one reliable night
+    before it was confirmed) and ``last_accepted_*`` (the newest night before
+    that observed at the then-accepted level). Because confirmation trails
+    onset, the confirmed night is the wrong place to look for a cause; the
+    change landed in ``(last_accepted, onset]``. An unreliable night inside
+    the window is skipped, not judged, so it never narrows the window — it is
+    spanned by it.
     """
     floor = EFFECT_FLOOR[series.metric_family]
     abs_delta_floor = ABS_DELTA_FLOOR.get(series.metric_family, 0.0)
@@ -184,11 +199,14 @@ def evaluate_series(
     baseline: deque[float] = deque(maxlen=BASELINE_WINDOW_RUNS)
     pending: Direction | None = None
     pending_value: float | None = None  # the WATCH night's value (seeds the re-anchor)
+    pending_run: tuple[str, str] | None = None   # the WATCH night's identity (the onset)
+    last_accepted: tuple[str, str] | None = None  # newest night seen at the accepted level
     anchor_date: str | None = None      # date of the last confirmed change-point
     anchor_mad: float = 0.0             # pre-change spread, proxy while re-anchoring
     verdicts: list[MetricVerdict] = []
 
     def _verdict(row, **kw) -> MetricVerdict:
+        run_id, run_date = _identity(row)
         return MetricVerdict(
             detector=series.detector,
             platform=series.platform,
@@ -197,8 +215,8 @@ def evaluate_series(
             metric_family=series.metric_family,
             metric=series.metric,
             sub_detector=series.sub_detector,
-            run_id=str(row.run_id),
-            run_date=_fmt_date(row.run_date),
+            run_id=run_id,
+            run_date=run_date,
             **kw,
         )
 
@@ -241,7 +259,8 @@ def evaluate_series(
         confirmed_now = False
         if not tripped:
             severity, direction = Severity.OK, Direction.NONE
-            pending = pending_value = None  # a clean night clears an unconfirmed WATCH
+            pending = pending_value = pending_run = None  # a clean night clears an unconfirmed WATCH
+            last_accepted = _identity(row)
             reason = "within baseline variation"
             if reanchoring:
                 reason += (f" (re-anchoring after confirmed change on {anchor_date}, "
@@ -253,7 +272,7 @@ def evaluate_series(
                 confirmed_now = True
             else:
                 severity = Severity.WATCH
-                pending, pending_value = direction, x
+                pending, pending_value, pending_run = direction, x, _identity(row)
             change = (
                 f"{delta:+.3f} (abs)" if absolute_floor or pct_change is None
                 else f"{pct_change:+.1%}"
@@ -261,11 +280,27 @@ def evaluate_series(
             z_txt = "inf" if math.isinf(z) else f"{z:.1f}"
             reason = f"{change} vs baseline median {med:.4g} (robust z={z_txt})"
 
+        window: dict[str, str | None] = {}
+        if confirmed_now:
+            # The change appeared on the WATCH night, one reliable night before
+            # this one, and was last absent on `last_accepted` — so it entered
+            # in `(last_accepted, onset]`. Stamp the pair the searchable window
+            # is built from; `last_accepted` stays None if the series never
+            # settled, leaving the window open-ended rather than falsely tight.
+            onset = pending_run if pending_run is not None else _identity(row)
+            window = {
+                "onset_run_id": onset[0],
+                "onset_run_date": onset[1],
+                "last_accepted_run_id": last_accepted[0] if last_accepted else None,
+                "last_accepted_run_date": last_accepted[1] if last_accepted else None,
+            }
+
         verdicts.append(_verdict(
             row,
             value=x, baseline_median=med, baseline_mad=mad,
             pct_change=pct_change, z_score=z,
             severity=severity, direction=direction, reason=reason,
+            **window,
         ))
         if confirmed_now:
             # Change-point: the confirmed level is the new normal. Re-anchor
@@ -278,7 +313,14 @@ def evaluate_series(
             baseline.append(x)
             anchor_date = _fmt_date(row.run_date) or str(row.run_id)
             anchor_mad = mad
-            pending = pending_value = None
+            pending = pending_value = pending_run = None
+            # Re-anchoring redefines the accepted level as the post-change one,
+            # and this night is the newest sitting at it. Carrying the
+            # pre-change night forward would blame an already-accepted change;
+            # clearing it would leave a second step that confirms before any
+            # OK night — the case the re-anchor exists to keep catching — with
+            # no lower bound at all.
+            last_accepted = _identity(row)
         else:
             baseline.append(x)
 

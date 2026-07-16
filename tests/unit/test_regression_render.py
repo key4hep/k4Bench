@@ -166,3 +166,35 @@ def test_json_roundtrip_and_sanitization():
     assert all(v.severity is Severity.CONFIRMED for v in rebuilt.regressions)
     assert rebuilt.groups[0].job_failures == report.groups[0].job_failures
     assert rebuilt.has_alertable
+
+
+def test_blame_window_survives_the_json_roundtrip():
+    report = _full_report()
+    report.groups[0].verdicts = [_verdict(
+        onset_run_id="2026-01-11", onset_run_date="2026-01-09",
+        last_accepted_run_id="2026-01-10", last_accepted_run_date="2026-01-05",
+    )]
+    rebuilt = from_json(json.loads(json.dumps(to_json(report))))
+    v = rebuilt.regressions[0]
+    assert (v.onset_run_id, v.onset_run_date) == ("2026-01-11", "2026-01-09")
+    assert (v.last_accepted_run_id, v.last_accepted_run_date) == ("2026-01-10", "2026-01-05")
+
+
+def test_from_json_reads_reports_written_before_the_window_existed():
+    report = _full_report()
+    data = to_json(report)
+    for v in data["groups"][0]["verdicts"]:
+        for key in ("onset_run_id", "onset_run_date",
+                    "last_accepted_run_id", "last_accepted_run_date"):
+            del v[key]
+    v = from_json(data).regressions[0]
+    assert (v.onset_run_id, v.last_accepted_run_id) == (None, None)
+
+
+def test_from_json_ignores_fields_it_does_not_know():
+    # The deployed dashboard is not necessarily built from the commit that
+    # wrote the report, so a report gaining a field must not break it.
+    data = to_json(_full_report())
+    for v in data["groups"][0]["verdicts"]:
+        v["some_field_from_a_later_release"] = "surprise"
+    assert len(from_json(data).regressions) == 2
