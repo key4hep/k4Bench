@@ -107,6 +107,56 @@ def test_release_strips_the_directory_prefix():
     assert stack_changes._release("2026-07-10") == "2026-07-10"
 
 
+def _query(url: str) -> dict:
+    from urllib.parse import parse_qs, urlsplit
+    return {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
+
+
+def test_deep_link_carries_detector_so_the_app_can_resolve_the_platform():
+    # Regressions is cross-detector; the app resolves the platform list from the
+    # selected detector, so a deep link that seeds a platform without a detector
+    # offering it would be rejected. Detector must ride along.
+    q = _query(stack_changes.deep_link(
+        detector="CLD_o2_v08", platform=PLAT,
+        base_release="2026-06-24", head_release="2026-06-25",
+    ))
+    assert q == {
+        "tab": "Stack Changes", "detector": "CLD_o2_v08", "platform": PLAT,
+        "from": "2026-06-24", "to": "2026-06-25",
+    }
+
+
+def test_deep_link_omits_from_for_an_open_ended_window():
+    q = _query(stack_changes.deep_link(
+        detector="CLD_o2_v08", platform=PLAT, head_release="2026-06-25",
+    ))
+    assert "from" not in q
+    assert q["to"] == "2026-06-25"
+
+
+def test_from_default_avoids_a_reversed_range_when_only_to_is_seeded(monkeypatch):
+    # Newest-first. An open-ended blame link seeds only ?to=; the From default
+    # must be *older* than that To, not the usual second-newest (which would be
+    # newer than an old onset and trip the reversed-range warning).
+    releases = ["2026-07-10", "2026-07-05", "2026-06-25", "2026-06-20"]
+    monkeypatch.setattr(stack_changes.st, "query_params", {"to": "2026-06-25"})
+    assert stack_changes._from_default_for(releases) == "2026-06-20"  # one older than To
+
+
+def test_from_default_is_second_newest_without_a_seed(monkeypatch):
+    releases = ["2026-07-10", "2026-07-05", "2026-06-25"]
+    monkeypatch.setattr(stack_changes.st, "query_params", {})
+    assert stack_changes._from_default_for(releases) == "2026-07-05"
+
+
+def test_from_default_when_to_is_the_oldest_release_does_not_run_off_the_end(monkeypatch):
+    releases = ["2026-07-10", "2026-07-05", "2026-06-25"]
+    monkeypatch.setattr(stack_changes.st, "query_params", {"to": "2026-06-25"})
+    # No release older than the oldest To — fall back to To itself (the tab then
+    # shows "pick two different releases" rather than crashing on an index).
+    assert stack_changes._from_default_for(releases) == "2026-06-25"
+
+
 def test_stacks_are_unioned_across_detectors(monkeypatch):
     # Detectors join and leave the matrix, so no single detector's history is
     # the full set of releases.

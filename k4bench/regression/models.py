@@ -71,7 +71,25 @@ class SeriesId:
 
 @dataclass(frozen=True)
 class MetricVerdict:
-    """The engine's judgement of one metric on one night."""
+    """The engine's judgement of one metric on one night.
+
+    ``run_id`` is the nightly run directory name; ``run_date`` is the *Key4hep
+    release* the run measured, not the date it ran. The two differ often — the
+    nightly build does not publish every day, so consecutive runs frequently
+    re-measure one release. Anything correlating a verdict with the software
+    stack must key on ``run_date``.
+
+    ``onset_*`` and ``last_accepted_*`` bound the window a ``CONFIRMED`` change
+    entered in, and are ``None`` on every other severity. Confirmation is a
+    two-strike rule, so the night a change is *reported* is one reliable night
+    after the night it first *appeared*: ``onset_*`` identifies that first
+    night, and ``last_accepted_*`` the newest night before it observed at the
+    then-accepted level. The change therefore landed in
+    ``(last_accepted, onset]`` — the interval to search for a cause.
+    ``last_accepted_*`` is ``None`` when no such night exists (a change
+    confirmed before the series ever settled), which makes the window
+    open-ended rather than empty.
+    """
 
     detector: str
     platform: str
@@ -90,6 +108,10 @@ class MetricVerdict:
     severity: Severity
     direction: Direction
     reason: str
+    onset_run_id: str | None = None
+    onset_run_date: str | None = None
+    last_accepted_run_id: str | None = None
+    last_accepted_run_date: str | None = None
 
     @property
     def flagged(self) -> bool:

@@ -51,6 +51,7 @@ from remote_cache import (
     _cached_list_report_dates,
     _cached_list_run_dates,
 )
+from tabs import _blame
 from tabs._regression_flags import add_severity_markers
 from tabs._reliability import render_reliability_filter
 from ui_utils import _METRIC_LABELS, _METRIC_UNITS, _is_valid_df, _to_rgba
@@ -290,9 +291,10 @@ def _render_group(group: RunGroupReport, data_url: str, cache_dir: str, *, key: 
 
 
 def _prev_point(df: pd.DataFrame, item: MetricVerdict) -> tuple | None:
-    """The plotted point immediately before the flagged night — the run that
-    was ``⚠️ Watch``\\ ed before this one confirmed (confirmation is a
-    two-strike rule). Returns ``(x_date, value)`` or ``None`` if there is no
+    """The plotted point immediately before the flagged night — the fallback
+    onset approximation for reports written before verdicts carried a recorded
+    ``onset_*`` (see :func:`tabs._blame.onset_point`, which is exact when the
+    field is present). Returns ``(x_date, value)`` or ``None`` if there is no
     prior point on the trend."""
     prior = df[pd.to_datetime(df["x_date"]) < pd.to_datetime(item.run_date)]
     if prior.empty:
@@ -323,8 +325,14 @@ def _metric_history(verdict: MetricVerdict, data_url: str, cache_dir: str):
     stacks_dates = _cached_list_run_dates(
         data_url, verdict.detector, verdict.platform, verdict.sample
     )
+    # End the window at the verdict's own run, not at today's newest run, so an
+    # older report drills down into the history it was judged against — the
+    # flagged night, its onset and the blame band all land on the plotted data
+    # instead of off the right edge. For the latest report this is the newest
+    # run, so the common case is unchanged.
     pairs = sorted(
         (date, stack) for stack, dates in stacks_dates.items() for date in dates
+        if date <= verdict.run_id
     )[-FETCH_WINDOW_RUNS:]
     window: dict[str, list[str]] = {}
     for date, stack in pairs:
@@ -411,18 +419,22 @@ def _render_drilldown(verdict: MetricVerdict, data_url: str, cache_dir: str) -> 
     # (:func:`add_severity_markers`) so all three tabs ring a flagged night with
     # the identical halo+badge, shape and colour — a single-point frame here
     # instead of the whole panel there. For a confirmed regression also mark the
-    # night it was first *watched* (the preceding reliable run — confirmation is
-    # a two-strike rule) with the amber triangle, so the trend shows the ⚠️→🔴
-    # progression, not just the endpoint.
+    # night it was first *watched* (its recorded onset, or the preceding
+    # reliable run for reports predating onset tracking) with the amber
+    # triangle, and shade the release window the change entered in, so the trend
+    # shows the ⚠️→🔴 progression and where upstream to look — not just the
+    # endpoint.
     if verdict.severity is Severity.CONFIRMED:
-        prev = _prev_point(df, verdict)
-        if prev is not None:
+        onset = _blame.onset_point(df, verdict) or _prev_point(df, verdict)
+        if onset is not None:
             add_severity_markers(
                 fig,
-                pd.DataFrame({"x": [prev[0]], "y": [prev[1]], "name": [verdict.label]}),
+                pd.DataFrame({"x": [onset[0]], "y": [onset[1]], "name": [verdict.label]}),
                 x_col="x", y_col="y", name_col="name",
                 severity=Severity.WATCH.value, hover_y="%{y:.4g}",
             )
+        if _blame.has_window(verdict):
+            _blame.add_window_band(fig, df, verdict)
     add_severity_markers(
         fig,
         pd.DataFrame({"x": [verdict.run_date], "y": [verdict.value], "name": [verdict.label]}),
@@ -450,3 +462,5 @@ def _render_drilldown(verdict: MetricVerdict, data_url: str, cache_dir: str) -> 
     chart_key = "regr_chart_" + _series_key(verdict)
     st.plotly_chart(fig, width="stretch", key=chart_key)
     st.caption(_drilldown_caption(verdict))
+    if _blame.has_window(verdict):
+        _blame.render_note(verdict)
