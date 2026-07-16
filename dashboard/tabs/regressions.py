@@ -55,8 +55,7 @@ from k4bench.provenance.diff import diff_packages
 from tabs import _blame
 from tabs._regression_flags import add_severity_markers
 from tabs._reliability import render_reliability_filter
-from tabs.stack_changes import _PREFIX, deep_link
-from tabs.stack_changes import _packages as _release_packages
+from tabs.stack_changes import deep_link, packages_for_release
 from ui_utils import _METRIC_LABELS, _METRIC_UNITS, _is_valid_df, _to_rgba
 
 #: Fill for the accepted-baseline band on the drill-down chart — same visual
@@ -256,8 +255,8 @@ def _window_changes(data_url: str, verdict: MetricVerdict) -> list | None:
     """Changed packages across a confirmed regression's bounded blame window,
     or ``None`` when either release's provenance is missing (aged off CVMFS, or
     a release benchmarked before capture)."""
-    base = _release_packages(data_url, verdict.platform, _PREFIX + verdict.last_accepted_run_date)
-    head = _release_packages(data_url, verdict.platform, _PREFIX + verdict.onset_run_date)
+    base = packages_for_release(data_url, verdict.platform, verdict.last_accepted_run_date)
+    head = packages_for_release(data_url, verdict.platform, verdict.onset_run_date)
     if not base or not head:
         return None
     return diff_packages(base, head)
@@ -270,9 +269,11 @@ def _render_blame_card(data_url: str, verdicts: list[MetricVerdict]) -> None:
     row or loading the trend."""
     v = verdicts[0]
     kind = _blame.classify(v)
-    metrics = ", ".join(sorted({_pretty_metric(m) for m in verdicts}))
+    # Label each stepped series by its config too: several configs can share one
+    # window, and metric names alone would hide which of them moved.
+    items = ", ".join(sorted({f"{m.label} · {_pretty_metric(m)}" for m in verdicts}))
     with st.container(border=True):
-        st.markdown(f"**🔴 {metrics}**")
+        st.markdown(f"**🔴 {items}**")
         if kind is _blame.WindowKind.SAME_STACK:
             st.caption(
                 f"Appeared on **{v.onset_run_date}** — the same release as the baseline, "
