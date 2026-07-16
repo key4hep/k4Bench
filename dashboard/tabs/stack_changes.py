@@ -14,6 +14,8 @@ manufacture changes that never happened.
 
 from __future__ import annotations
 
+from urllib.parse import urlencode
+
 import pandas as pd
 import requests
 import streamlit as st
@@ -29,6 +31,28 @@ from ui_chrome import seed_query_param
 #: Releases are stored as ``key4hep-{YYYY-MM-DD}`` directories; the tab talks
 #: in the bare nightly tag the rest of the dashboard shows on its axes.
 _PREFIX = "key4hep-"
+
+#: This tab's section name and the query-param names its two pickers seed from
+#: (see :func:`_seed`). Kept here, beside the widgets that read them, so a tab
+#: that deep-links *into* this view (the Regressions blame note, via
+#: :func:`deep_link`) shares one source of truth: rename a param and its builder
+#: moves with it, instead of silently breaking a literal in another module.
+_TAB_NAME = "Stack Changes"
+PARAM_FROM = "from"
+PARAM_TO = "to"
+
+
+def deep_link(*, platform: str, head_release: str, base_release: str | None = None) -> str:
+    """A relative query string that opens this tab seeded to a release range.
+
+    ``base_release`` → ``head_release`` become the two pickers. Omitting
+    *base_release* (an open-ended blame window) leaves the older end at the
+    tab's own default for the user to choose.
+    """
+    params = {"tab": _TAB_NAME, "platform": platform, PARAM_TO: head_release}
+    if base_release:
+        params[PARAM_FROM] = base_release
+    return "?" + urlencode(params)
 
 #: Link colour carries meaning here: it marks the one *action* in a row. The
 #: package and its two commits are identifiers, and a grid column has no
@@ -128,19 +152,19 @@ def render(data_url: str, platform: str) -> None:
     # would open the tab on "pick two different releases" instead.
     col_from, col_to = st.columns(2)
     with col_from:
-        _seed("stack_from", "from", releases, releases[1])
+        _seed("stack_from", PARAM_FROM, releases, releases[1])
         base_release = st.selectbox(
             "From release", releases, key="stack_from",
             help=f"The older nightly tag — the accepted baseline. {_TAG_HELP}",
         )
     with col_to:
-        _seed("stack_to", "to", releases, releases[0])
+        _seed("stack_to", PARAM_TO, releases, releases[0])
         head_release = st.selectbox(
             "To release", releases, key="stack_to",
             help=f"The newer nightly tag. {_TAG_HELP}",
         )
-    st.query_params["from"] = base_release
-    st.query_params["to"] = head_release
+    st.query_params[PARAM_FROM] = base_release
+    st.query_params[PARAM_TO] = head_release
 
     if base_release == head_release:
         st.info("Pick two different releases to compare.")

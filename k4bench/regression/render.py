@@ -426,7 +426,10 @@ def to_json(report: NightlyReport) -> dict:
 #: Field names :class:`MetricVerdict` accepts. Reports are read back by
 #: whatever dashboard is deployed, which is not necessarily built from the
 #: commit that wrote them, so unknown keys are dropped rather than raising —
-#: a report gaining a field must not break older readers.
+#: a report gaining a field must not break older readers. Derived from the
+#: dataclass, not hand-listed, on purpose: the accepted set *is* the
+#: constructor's parameters by definition, and a second, hand-maintained list
+#: would silently drift the day a field is added and the list is not.
 _VERDICT_FIELDS = frozenset(f.name for f in dataclasses.fields(MetricVerdict))
 
 

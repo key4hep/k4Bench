@@ -280,27 +280,27 @@ def evaluate_series(
             z_txt = "inf" if math.isinf(z) else f"{z:.1f}"
             reason = f"{change} vs baseline median {med:.4g} (robust z={z_txt})"
 
-        window: dict[str, str | None] = {}
+        # The change appeared on the WATCH night, one reliable night before this
+        # one, and was last absent on `last_accepted` — so it entered in
+        # `(last_accepted, onset]`. Stamp the pair the searchable window is built
+        # from; `last_accepted` stays None if the series never settled, leaving
+        # the window open-ended rather than falsely tight. Non-confirmed nights
+        # carry None for all four.
+        onset_run_id = onset_run_date = last_accepted_run_id = last_accepted_run_date = None
         if confirmed_now:
-            # The change appeared on the WATCH night, one reliable night before
-            # this one, and was last absent on `last_accepted` — so it entered
-            # in `(last_accepted, onset]`. Stamp the pair the searchable window
-            # is built from; `last_accepted` stays None if the series never
-            # settled, leaving the window open-ended rather than falsely tight.
             onset = pending_run if pending_run is not None else _identity(row)
-            window = {
-                "onset_run_id": onset[0],
-                "onset_run_date": onset[1],
-                "last_accepted_run_id": last_accepted[0] if last_accepted else None,
-                "last_accepted_run_date": last_accepted[1] if last_accepted else None,
-            }
+            onset_run_id, onset_run_date = onset
+            if last_accepted is not None:
+                last_accepted_run_id, last_accepted_run_date = last_accepted
 
         verdicts.append(_verdict(
             row,
             value=x, baseline_median=med, baseline_mad=mad,
             pct_change=pct_change, z_score=z,
             severity=severity, direction=direction, reason=reason,
-            **window,
+            onset_run_id=onset_run_id, onset_run_date=onset_run_date,
+            last_accepted_run_id=last_accepted_run_id,
+            last_accepted_run_date=last_accepted_run_date,
         ))
         if confirmed_now:
             # Change-point: the confirmed level is the new normal. Re-anchor

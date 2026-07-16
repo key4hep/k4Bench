@@ -78,7 +78,19 @@ def fake_st(monkeypatch):
     return calls
 
 
-# ── has_window ────────────────────────────────────────────────────────────────
+# ── classify / has_window ─────────────────────────────────────────────────────
+
+def test_classify_covers_the_four_window_shapes():
+    K = _blame.WindowKind
+    assert _blame.classify(_verdict()) is K.BOUNDED
+    assert _blame.classify(_verdict(severity=Severity.WATCH)) is K.NONE
+    assert _blame.classify(_verdict(onset_run_date=None)) is K.NONE  # pre-onset report
+    assert _blame.classify(_verdict(last_accepted_run_date=None)) is K.OPEN
+    assert _blame.classify(_verdict(last_accepted_run_date="2026-06-25")) is K.SAME_STACK
+    # Baseline newer than onset can only be a corrupt report — degrade to OPEN
+    # rather than trust the impossible bound.
+    assert _blame.classify(_verdict(last_accepted_run_date="2026-06-28")) is K.OPEN
+
 
 def test_has_window_only_for_confirmed_with_recorded_onset():
     assert _blame.has_window(_verdict()) is True
@@ -124,6 +136,37 @@ def test_onset_point_none_on_nan_value():
     assert _blame.onset_point(df, _verdict()) is None
 
 
+def test_onset_point_is_independent_of_row_order():
+    shuffled = _history().iloc[[2, 0, 3, 1]].reset_index(drop=True)
+    x, y = _blame.onset_point(shuffled, _verdict())
+    assert (pd.Timestamp(x), y) == (pd.Timestamp("2026-06-25"), 5.9)
+
+
+def test_onset_point_duplicate_run_id_takes_the_newest_deterministically():
+    # Degenerate: two rows carry the onset run id. Whatever the input order, the
+    # newest by x_date wins — the result never depends on row order.
+    df = pd.DataFrame({
+        "run_id": ["2026-06-26", "2026-06-26"],
+        "x_date": pd.to_datetime(["2026-06-20", "2026-06-25"]),
+        "wall_time_s": [4.4, 5.9],
+    })
+    for order in ([0, 1], [1, 0]):
+        x, y = _blame.onset_point(df.iloc[order].reset_index(drop=True), _verdict())
+        assert (pd.Timestamp(x), y) == (pd.Timestamp("2026-06-25"), 5.9)
+
+
+def test_onset_point_none_when_metric_column_absent():
+    df = _history().drop(columns=["wall_time_s"])
+    assert _blame.onset_point(df, _verdict()) is None  # guarded, does not raise
+
+
+def test_onset_point_single_row_frame():
+    one = _history().iloc[[1]].reset_index(drop=True)  # just the onset run
+    assert _blame.onset_point(one, _verdict()) == (pd.Timestamp("2026-06-25"), 5.9)
+    other = _history().iloc[[0]].reset_index(drop=True)  # a run that is not the onset
+    assert _blame.onset_point(other, _verdict()) is None
+
+
 # ── add_window_band ───────────────────────────────────────────────────────────
 
 def test_window_band_spans_last_accepted_to_onset():
@@ -154,6 +197,18 @@ def test_window_band_absent_when_ends_are_the_same_release():
     assert len(fig.layout.shapes) == 0
 
 
+def test_window_band_ignores_a_corrupt_baseline_newer_than_onset():
+    fig = go.Figure()
+    _blame.add_window_band(
+        fig, _history(),
+        _verdict(last_accepted_run_date="2026-06-28"),  # after onset: impossible
+    )
+    # Degrades to open-ended: spans from the earliest plotted release to onset,
+    # never using the corrupt bound.
+    assert len(fig.layout.shapes) == 1
+    assert pd.Timestamp(fig.layout.shapes[0].x0) == pd.Timestamp("2026-06-24")
+
+
 # ── render_note ───────────────────────────────────────────────────────────────
 
 def test_note_reports_nothing_changed_when_ends_share_a_release(fake_st):
@@ -181,3 +236,13 @@ def test_note_omits_the_baseline_end_when_the_window_is_open(fake_st):
     q = parse_qs(urlsplit(fake_st["link"][0]["url"]).query)
     assert q["to"] == ["2026-06-25"]
     assert "from" not in q  # nothing to bound the older end on
+
+
+def test_note_treats_a_corrupt_window_as_open_not_same_stack(fake_st):
+    # A baseline newer than onset must not be read as "nothing changed", nor
+    # emit a from>to link — it degrades to the open-ended form.
+    _blame.render_note(_verdict(last_accepted_run_date="2026-06-28"))
+    assert not fake_st["info"]
+    q = parse_qs(urlsplit(fake_st["link"][0]["url"]).query)
+    assert q["to"] == ["2026-06-25"]
+    assert "from" not in q
