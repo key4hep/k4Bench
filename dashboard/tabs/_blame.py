@@ -202,7 +202,7 @@ def render_note(verdict: MetricVerdict) -> None:
     st.link_button(
         "🔍 Compare upstream changes in this window →",
         deep_link(detector=verdict.detector, platform=verdict.platform,
-                  head_release=onset, base_release=baseline),
+                  sample=verdict.sample, head_release=onset, base_release=baseline),
         help="Open Stack Changes seeded with this release range — every Key4hep "
              "package that moved across the window, with a link to each commit diff."
              + ("" if baseline else " Pick a baseline release there: this step has no "

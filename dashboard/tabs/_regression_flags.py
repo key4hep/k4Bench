@@ -1,10 +1,13 @@
-"""Shared regression-flag widgets for the historical trend views.
+"""Shared regression-flag widgets for the report-backed views.
 
-The Overview and Run Trends tabs both ring the nights the nightly detector
-flagged a step against the baseline. Keeping the marker specs, the pills
-control and the "nothing flagged in this window" notice here means the two
-tabs read identically — same colours, same shapes, same wording — instead of
-drifting apart in two hand-maintained copies.
+The Overview, Run Trends, Regressions and Stack Changes tabs all present the
+nightly detector's verdicts: ringed nights on trend lines, and the flagged
+ledger table. Keeping the marker specs, the pills control, the worst-first
+ordering and the ledger here means every tab reads identically — same
+colours, same shapes, same wording — instead of drifting apart in
+hand-maintained copies. (It is also the dependency-safe home: the tab modules
+import each other in one direction only, so a helper shared *across* them has
+to live below them all.)
 
 The verdict *severities* themselves come from the precomputed nightly reports
 (``_reports/{date}/report.json``); this module only draws them.
@@ -12,10 +15,13 @@ The verdict *severities* themselves come from the precomputed nightly reports
 
 from __future__ import annotations
 
+import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from ui_utils import _to_rgba
+from k4bench.regression.models import MetricVerdict, Severity
+from k4bench.regression.render import _fmt, _pretty_sample
+from ui_utils import _METRIC_LABELS, _to_rgba
 
 #: Trend-flag marker specs keyed on verdict severity, matching the Regressions
 #: tab's colour language (severity = attention level, red = confirmed, amber =
@@ -116,3 +122,115 @@ def add_severity_markers(
             ),
             row=row, col=col,
         )
+
+
+def attention_key(v: MetricVerdict) -> tuple:
+    """Worst-first ordering shared by the ledger tables and the trend
+    previews: confirmed before watch, then the largest |Δ|, unknown magnitude
+    last."""
+    return (
+        v.severity is not Severity.CONFIRMED,
+        v.pct_change is None,
+        -abs(v.pct_change or 0.0),
+    )
+
+
+def pretty_metric(v: MetricVerdict) -> str:
+    """Row-label metric name — the human label plus the sub-detector for
+    region-level rows (``wall time · VertexBarrel``)."""
+    name = _METRIC_LABELS.get(v.metric, v.metric)
+    return f"{name} · {v.sub_detector}" if v.sub_detector else name
+
+
+#: Cap on ledger rows: beyond this, keep the worst so one sweep night can't
+#: produce an unbounded table.
+_MAX_ROWS = 40
+
+#: Direction arrows for the ledger's Dir column — a plain sign, never a
+#: good/bad judgment; "—" for a metric with no meaningful direction.
+_DIR_ARROWS = {"UP": "↑", "DOWN": "↓"}
+
+
+def _blame_window_text(v: MetricVerdict) -> str:
+    if not v.onset_run_date:
+        return "—"
+    if v.last_accepted_run_date:
+        return f"{v.last_accepted_run_date} → {v.onset_run_date}"
+    return f"up to {v.onset_run_date}"
+
+
+def flag_table(
+    flagged: list[MetricVerdict], *, scope: bool = False, blame_window: bool = False
+) -> None:
+    """Flagged metrics as a compact, sortable ledger — one row per (config,
+    metric), worst first.
+
+    A table is the one layout that stays readable from a single flag to a
+    whole sweep night: extra rows scroll instead of crowding, every column
+    re-sorts on a header click, and each row still reads at a glance —
+    severity from the 🔴/⚠️ badge, size from the Δ bar, direction from its own
+    column so the sign is never lost. *scope* adds Detector/Sample columns for
+    the cross-scope callers (Stack Changes' all-detectors view); *blame_window*
+    appends each confirmed row's blame window. A row whose metric has no
+    meaningful relative change keeps its place with an empty bar rather than
+    vanishing.
+    """
+    rows = sorted(flagged, key=attention_key)[:_MAX_ROWS]
+    if not rows:
+        return
+    # The bar encodes *magnitude* (|Δ%|, in whole percents), 0 → empty and the
+    # set's worst → full, so a small flag never looks large.
+    span = max(
+        (abs(v.pct_change) for v in rows if v.pct_change is not None), default=0.05
+    ) * 100 or 5.0
+
+    records = []
+    for v in rows:
+        rec = {"": "🔴" if v.severity is Severity.CONFIRMED else "⚠️"}
+        if scope:
+            rec["Detector"] = v.detector
+            rec["Sample"] = _pretty_sample(v.sample)
+        rec.update({
+            "Config": v.label,
+            "Metric": pretty_metric(v),
+            "Dir": _DIR_ARROWS.get(v.direction.value, "—"),
+            "Δ vs baseline": None if v.pct_change is None else abs(v.pct_change) * 100,
+            "Current / baseline": f"{_fmt(v.value)} / {_fmt(v.baseline_median)}",
+        })
+        if blame_window:
+            rec["Blame window"] = _blame_window_text(v)
+        records.append(rec)
+
+    column_config = {
+        "": st.column_config.TextColumn(
+            "", width="small",
+            help="🔴 confirmed regression · ⚠️ watch (first flag, unconfirmed)",
+        ),
+        "Config": st.column_config.TextColumn("Config", width="medium"),
+        "Dir": st.column_config.TextColumn(
+            "Dir", width="small",
+            help="↑ increase · ↓ decrease vs baseline — a plain direction, "
+                 "not judged good or bad.",
+        ),
+        "Δ vs baseline": st.column_config.ProgressColumn(
+            "Δ vs baseline",
+            help="Size of the step from the baseline median (|Δ%|), scaled to "
+                 "the set's largest flag. Direction is the ↑/↓ column; empty "
+                 "when the metric has no meaningful relative change.",
+            format="%.0f%%",
+            min_value=0,
+            max_value=span,
+        ),
+    }
+    if blame_window:
+        column_config["Blame window"] = st.column_config.TextColumn(
+            "Blame window",
+            help="The release range this step actually entered in (last "
+                 "accepted → onset).",
+        )
+    st.dataframe(
+        pd.DataFrame(records),
+        hide_index=True,
+        width="stretch",
+        column_config=column_config,
+    )

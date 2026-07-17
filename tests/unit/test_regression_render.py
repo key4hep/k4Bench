@@ -77,10 +77,11 @@ def test_html_is_self_contained_and_links():
         actions_url="https://github.com/x/y/actions/runs/1",
     )
     assert "<style" not in html and "<script" not in html  # inline styles only
-    # Top banner deep-links straight to the Regressions tab.
-    assert "https://dash.example/?tab=Regressions" in html
-    # Per-detector heading also links, scoped to that detector.
-    assert "detector=DET" in html
+    # Top banner deep-links to the Overview tab — the cross-detector summary.
+    assert "https://dash.example/?tab=Overview" in html
+    # Per-group links carry the full triple — the Regressions tab is scoped by
+    # the sidebar's (detector, platform, sample), the same way Run Trends is.
+    assert "tab=Regressions&detector=DET&platform=PLAT&sample=single_e" in html
     assert html.count("🔴 Regression") == 2
 
 
@@ -94,9 +95,13 @@ def test_dashboard_links_merge_into_an_existing_query_string():
 
 
 def test_markdown_links_to_dashboard_only_when_url_given():
+    # Both links are scoped to the group's full (detector, platform, sample)
+    # triple — the Regressions tab reads that scope from the sidebar too.
     md_with = to_markdown(_full_report(), dashboard_url="https://dash.example/")
-    assert "↗ Regressions](https://dash.example/?tab=Regressions&detector=DET)" in md_with
-    # Single-group report also gets a Run Trends link, scoped to (detector, platform, sample).
+    assert (
+        "[↗ Regressions](https://dash.example/?tab=Regressions"
+        "&detector=DET&platform=PLAT&sample=single_e)" in md_with
+    )
     assert (
         "[↗ Run Trends](https://dash.example/?tab=Run+Trends"
         "&detector=DET&platform=PLAT&sample=single_e)" in md_with

@@ -31,8 +31,8 @@ SECTION_NAMES = [
 ]
 
 #: Sections that need multi-run (remote) data and cannot work against a single
-#: local run directory: the cross-detector views, the trend views, and Stack
-#: Changes, which compares two Key4hep releases.
+#: local run directory: the trend views, the report-backed views (Overview,
+#: Regressions), and Stack Changes, which compares two Key4hep releases.
 REMOTE_ONLY = frozenset({
     "Overview",
     "Run Trends",

@@ -55,7 +55,7 @@ _STACKS = {
 
 
 def _app(dashboard_dir, stack_names, packages, from_release, to_release,
-         report_dates, reports_map):
+         report_dates, reports_map, detector, sample):
     """The tab, rendered standalone with every remote call stubbed.
 
     ``AppTest.from_function`` re-executes this source in its own script
@@ -85,11 +85,15 @@ def _app(dashboard_dir, stack_names, packages, from_release, to_release,
         _st.query_params["from"] = from_release
     if to_release:
         _st.query_params["to"] = to_release
-    _tab.render("https://example.invalid", "x86_64-almalinux9-gcc14.2.0-opt")
+    _tab.render(
+        "https://example.invalid", "x86_64-almalinux9-gcc14.2.0-opt",
+        detector, sample,
+    )
 
 
 def _run(stack_names=None, packages=None, from_release=None, to_release=None,
-         report_dates=(), reports_map=None) -> AppTest:
+         report_dates=(), reports_map=None, detector="CLD",
+         sample="single_e") -> AppTest:
     at = AppTest.from_function(
         _app,
         args=(
@@ -100,6 +104,8 @@ def _run(stack_names=None, packages=None, from_release=None, to_release=None,
             to_release,
             tuple(report_dates),
             reports_map or {},
+            detector,
+            sample,
         ),
         default_timeout=30,
     )
@@ -136,12 +142,12 @@ def _confirmed(**kw):
     return MetricVerdict(**base)
 
 
-def _raw_report(verdicts):
+def _raw_report(verdicts, night="2026-06-27"):
     from k4bench.regression.models import NightlyReport, RunGroupReport
     from k4bench.regression.render import to_json
     group = RunGroupReport(
         detector="CLD", platform=PLAT, sample="single_e",
-        k4h_release="key4hep-2026-06-27", run_date="2026-06-27", run_id="2026-06-27",
+        k4h_release=f"key4hep-{night}", run_date=night, run_id=night,
         verdicts=verdicts,
     )
     return to_json(NightlyReport(generated_at="", groups=[group]))
@@ -221,10 +227,15 @@ def test_reverse_view_renders_the_regression_table():
     # Two dataframes now: [0] the package diff, [1] the reverse regression table.
     assert len(at.dataframe) == 2
     reverse = at.dataframe[1].value
-    assert list(reverse["Sample"]) == ["single_e", "single_e"]  # sample surfaced
-    assert "Blame window" not in reverse.columns                # column removed
+    # Scoped to the sidebar's detector/sample: the constant columns are gone,
+    # and the ledger is the Regressions tab's plus the blame window.
+    assert list(reverse.columns) == [
+        "", "Config", "Metric", "Dir", "Δ vs baseline",
+        "Current / baseline", "Blame window",
+    ]
+    assert list(reverse["Blame window"]) == ["2026-07-09 → 2026-07-10"] * 2
     deltas = list(reverse["Δ vs baseline"])
-    assert 10.0 in deltas                     # the relative-% metric
+    assert 10.0 in deltas                     # the relative-% metric (|Δ|)
     assert any(pd.isna(d) for d in deltas)    # the %-less metric is blank, not +0.0%
 
 
@@ -239,13 +250,13 @@ def test_reverse_view_renders_even_when_stack_provenance_is_missing():
               report_dates=("2026-07-10",), reports_map={"2026-07-10": report})
     assert any("cannot be diffed" in w.value for w in at.warning)
     assert len(at.dataframe) == 1  # no diff table, but the reverse table renders
-    assert list(at.dataframe[0].value["Detector"]) == ["CLD"]
+    assert list(at.dataframe[0].value["Config"]) == ["baseline"]
 
 
-def test_reverse_view_shows_the_window_column_only_for_a_cumulative_range():
-    # A multi-release diff where a regression's window is a sub-range of it: the
-    # Blame window column appears (unlike the consecutive case above, where it
-    # would just repeat the range).
+def test_multi_release_range_warns_and_shows_each_regressions_own_window():
+    # A multi-release diff where a regression's window is a sub-range of it —
+    # the per-row window is what stops the cumulative diff being misread as
+    # one night's change.
     report = _raw_report([_confirmed(
         last_accepted_run_date="2026-07-04", onset_run_date="2026-07-05")])  # inside 07-01..07-10
     at = _run(
@@ -258,18 +269,19 @@ def test_reverse_view_shows_the_window_column_only_for_a_cumulative_range():
     assert any("multi-release" in w.value for w in at.warning)
 
 
-def test_neighbouring_releases_never_trigger_the_cumulative_warning_or_column():
+def test_neighbouring_releases_never_trigger_the_cumulative_warning():
     # The bug: a regression whose baseline predates the selected base (its window
     # is wider than the range) must NOT flip a consecutive comparison to
     # "cumulative". The trigger is the selected range spanning >1 release, not
-    # any single regression's window.
+    # any single regression's window. (The Blame window column itself is always
+    # shown — it is the per-regression truth either way.)
     report = _raw_report([_confirmed(
         last_accepted_run_date="2026-07-05",  # older than the selected base (07-09)
         onset_run_date="2026-07-10")])
     at = _run(packages={}, from_release="2026-07-09", to_release="2026-07-10",
               report_dates=("2026-07-10",), reports_map={"2026-07-10": report})
     reverse = at.dataframe[0].value
-    assert "Blame window" not in reverse.columns
+    assert list(reverse["Blame window"]) == ["2026-07-05 → 2026-07-10"]
     assert not any("multi-release" in w.value for w in at.warning)
 
 
@@ -545,3 +557,205 @@ def test_section_order_is_independent_of_data_requirements(monkeypatch):
     assert set(sections.visible_sections(trends_enabled=False)) == {
         "Region Timing", "Event Timing", "Event Memory", "Machine Info", "Logs",
     }
+
+
+# ── the scoped reverse view ───────────────────────────────────────────────────
+
+def test_regressions_in_range_scopes_by_detector_and_sample():
+    reports = [_raw_report([
+        _confirmed(metric="wall_time_s"),
+        _confirmed(detector="IDEA", metric="wall_time_s", onset_run_id="run-i"),
+        _confirmed(sample="other", metric="peak_rss_mb", onset_run_id="run-s"),
+    ])]
+    hits = stack_changes._regressions_in_range(
+        reports, PLAT, "2026-06-24", "2026-06-25",
+        detector="CLD", sample="single_e",
+    )
+    assert [(v.detector, v.sample) for v in hits] == [("CLD", "single_e")]
+
+
+def test_reverse_view_scopes_to_the_sidebar_and_widens_on_toggle():
+    report = _raw_report([
+        _confirmed(metric="wall_time_s", pct_change=0.10,
+                   last_accepted_run_date="2026-07-09", onset_run_date="2026-07-10"),
+        _confirmed(detector="IDEA", sample="p8_ee_Zbb_ecm91", metric="peak_rss_mb",
+                   metric_family="memory", pct_change=0.25, onset_run_id="run-idea",
+                   last_accepted_run_date="2026-07-09", onset_run_date="2026-07-10"),
+    ])
+    at = _run(from_release="2026-07-09", to_release="2026-07-10",
+              report_dates=("2026-07-10",), reports_map={"2026-07-10": report})
+    reverse = at.dataframe[1].value
+    assert len(reverse) == 1 and "Detector" not in reverse.columns
+    captions = " ".join(c.value for c in at.caption)
+    assert "1 more in other detectors" in captions
+    # Widen to the whole platform: both rows, with the scope columns back.
+    at.toggle(key="stack_regr_all").set_value(True).run()
+    assert not at.exception, at.exception
+    reverse = at.dataframe[1].value
+    assert list(reverse["Detector"]) == ["IDEA", "CLD"]  # worst |Δ| first
+    assert "Sample" in reverse.columns
+
+
+def test_scoped_miss_with_hits_elsewhere_points_at_the_toggle():
+    report = _raw_report([
+        _confirmed(detector="IDEA", metric="wall_time_s", pct_change=0.10,
+                   last_accepted_run_date="2026-07-09", onset_run_date="2026-07-10"),
+    ])
+    at = _run(from_release="2026-07-09", to_release="2026-07-10",
+              report_dates=("2026-07-10",), reports_map={"2026-07-10": report})
+    body = " ".join(i.value for i in at.info)
+    assert "elsewhere on this platform" in body
+    assert len(at.dataframe) == 1  # only the package diff table
+
+
+def test_reverse_table_matches_the_regressions_ledger():
+    # The reverse view uses the exact same ledger as the Regressions tab (badge,
+    # Dir arrow, |Δ| bar, current/baseline) plus the blame window; no chart of
+    # its own — with no CPU+memory pair the outlier plane stays closed too.
+    report = _raw_report([
+        _confirmed(metric="wall_time_s", pct_change=0.10,
+                   last_accepted_run_date="2026-07-09", onset_run_date="2026-07-10"),
+        _confirmed(metric="cpu_efficiency", metric_family="cpu_efficiency_pp",
+                   pct_change=None, onset_run_id="run-eff",
+                   last_accepted_run_date="2026-07-09", onset_run_date="2026-07-10"),
+    ])
+    at = _run(from_release="2026-07-09", to_release="2026-07-10",
+              report_dates=("2026-07-10",), reports_map={"2026-07-10": report})
+    assert not at.get("plotly_chart")
+    reverse = at.dataframe[1].value
+    assert list(reverse[""]) == ["🔴", "🔴"]
+    assert list(reverse["Dir"]) == ["↑", "↑"]
+    assert list(reverse["Metric"]) == ["wall time", "CPU efficiency"]
+    assert reverse.iloc[0]["Current / baseline"] == "6 / 5"
+
+
+# ── typical vs outlier ────────────────────────────────────────────────────────
+
+def test_scatter_candidates_prefer_the_both_families_config():
+    hits = [
+        _confirmed(label="cfgA", metric="wall_time_s", pct_change=0.30),
+        _confirmed(label="cfgB", metric="wall_time_s", pct_change=0.10,
+                   onset_run_id="b1"),
+        _confirmed(label="cfgB", metric="peak_rss_mb", metric_family="memory",
+                   pct_change=0.05, onset_run_id="b1"),
+    ]
+    cands = stack_changes._scatter_candidates(hits)
+    # cfgB stepped in CPU *and* memory at the *same* onset → first despite the
+    # smaller |Δ|; its axes are its own flagged metrics. cfgA borrows the
+    # default memory axis.
+    assert [c[2] for c in cands] == ["cfgB", "cfgA"]
+    assert cands[0][3:] == ("wall_time_s", "peak_rss_mb", True)
+    assert cands[1][3:] == ("wall_time_s", "peak_rss_mb", False)
+
+
+def test_scatter_candidates_do_not_combine_different_onsets():
+    # cfgC stepped in CPU and memory, but at two different onsets — two
+    # unrelated regressions, not one diagonal step. It must not outrank cfgA
+    # by virtue of "both", nor carry the "both" flag.
+    hits = [
+        _confirmed(label="cfgA", metric="wall_time_s", pct_change=0.30),
+        _confirmed(label="cfgC", metric="wall_time_s", pct_change=0.10,
+                   onset_run_id="b1"),
+        _confirmed(label="cfgC", metric="peak_rss_mb", metric_family="memory",
+                   pct_change=0.05, onset_run_id="b2"),
+    ]
+    cands = stack_changes._scatter_candidates(hits)
+    assert [c[2] for c in cands] == ["cfgA", "cfgC"]  # ranked by |Δ|, not "both"
+    assert cands[1][3:] == ("wall_time_s", "peak_rss_mb", False)
+
+
+def test_series_points_read_both_metrics_per_night_from_reports():
+    reports = [
+        _raw_report([_confirmed(metric="wall_time_s", value=5.0),
+                     _confirmed(metric="peak_rss_mb", value=100.0)],
+                    night="2026-06-24"),
+        # A night missing one of the two axes contributes no point.
+        _raw_report([_confirmed(metric="wall_time_s", value=9.9)],
+                    night="2026-06-25"),
+        _raw_report([_confirmed(metric="wall_time_s", value=6.0),
+                     _confirmed(metric="peak_rss_mb", value=130.0)],
+                    night="2026-06-26"),
+    ]
+    pts = stack_changes._series_points(
+        reports, "CLD", PLAT, "single_e", "baseline", "wall_time_s", "peak_rss_mb")
+    assert list(pts["night"]) == ["2026-06-24", "2026-06-26"]
+    assert list(pts["x"]) == [5.0, 6.0]
+    assert list(pts["y"]) == [100.0, 130.0]
+    # The onset run id *is* a night, so it splits before/after directly…
+    assert stack_changes._onset_night(pts, [_confirmed(onset_run_id="2026-06-26")]) \
+        == "2026-06-26"
+    # …and a legacy verdict (no run id) falls back to the first night that
+    # measured the onset release.
+    legacy = [_confirmed(onset_run_id=None, onset_run_date="2026-06-26")]
+    assert stack_changes._onset_night(pts, legacy) == "2026-06-26"
+
+
+def test_outlier_scatter_opens_for_a_cpu_and_memory_step():
+    report = _raw_report([
+        _confirmed(metric="wall_time_s", pct_change=0.10,
+                   last_accepted_run_date="2026-07-09", onset_run_date="2026-07-10",
+                   onset_run_id="2026-06-27"),
+        _confirmed(metric="peak_rss_mb", metric_family="memory", pct_change=0.20,
+                   onset_run_id="2026-06-27",
+                   last_accepted_run_date="2026-07-09", onset_run_date="2026-07-10"),
+    ])
+    at = _run(from_release="2026-07-09", to_release="2026-07-10",
+              report_dates=("2026-07-10",), reports_map={"2026-07-10": report})
+    # The CPU × memory plane auto-opens (both families stepped) — the range's
+    # only chart.
+    assert len(at.get("plotly_chart")) == 1
+    sel = at.selectbox(key="stack_outlier_cfg")
+    assert "CPU + memory stepped" in sel.value
+    # The Overview-style axis pickers, defaulting to the config's flagged
+    # metrics.
+    assert at.selectbox(key="stack_outlier_tmetric_CLD_single_e_baseline").value \
+        == "wall_time_s"
+    assert at.selectbox(key="stack_outlier_mmetric_CLD_single_e_baseline").value \
+        == "peak_rss_mb"
+    # Changing an axis re-renders from the same cached reports.
+    at.selectbox(key="stack_outlier_tmetric_CLD_single_e_baseline") \
+        .set_value("user_cpu_s").run()
+    assert not at.exception, at.exception
+
+
+def test_scatter_candidates_axes_come_from_the_matched_pair_not_each_worst():
+    # cfgD: wall_time_s (onset A, the config's worst |Δ|) and user_cpu_s
+    # (onset B, smaller |Δ|) are both "time"; peak_rss_mb (onset B) is the
+    # only "memory" flag. Picking each family's own worst independently would
+    # plot wall_time_s (onset A) against peak_rss_mb (onset B) while still
+    # claiming "both stepped" off the user_cpu_s/peak_rss_mb (onset B) pair —
+    # two different pairs. The axes must come from the pair that actually
+    # shares an onset: user_cpu_s × peak_rss_mb, not wall_time_s.
+    hits = [
+        _confirmed(label="cfgD", metric="wall_time_s", pct_change=0.50,
+                   onset_run_id="A"),
+        _confirmed(label="cfgD", metric="user_cpu_s", pct_change=0.10,
+                   onset_run_id="B"),
+        _confirmed(label="cfgD", metric="peak_rss_mb", metric_family="memory",
+                   pct_change=0.20, onset_run_id="B"),
+    ]
+    cands = stack_changes._scatter_candidates(hits)
+    assert cands[0][2:] == ("cfgD", "user_cpu_s", "peak_rss_mb", True)
+
+
+def test_bound_to_release_excludes_points_after_head_release():
+    # Reports are fetched with no upper date bound (a regression can confirm,
+    # and so first appear in a report, after its onset), so the plotted points
+    # must be capped separately — a historical range must not attribute a
+    # later release's values to the diff being viewed.
+    pts = pd.DataFrame({
+        "night": ["2026-07-09", "2026-07-10", "2026-07-15"],
+        "x": [5.0, 6.0, 999.0],
+        "y": [100.0, 120.0, 999.0],
+        "k4h_release": ["key4hep-2026-07-09", "key4hep-2026-07-10", "key4hep-2026-07-15"],
+    })
+    bounded = stack_changes._bound_to_release(pts, "2026-07-10")
+    assert list(bounded["night"]) == ["2026-07-09", "2026-07-10"]
+
+
+def test_deep_link_carries_the_sample_when_given():
+    q = _query(stack_changes.deep_link(
+        detector="CLD", platform=PLAT, sample="single_e",
+        base_release="2026-06-24", head_release="2026-06-25",
+    ))
+    assert q["sample"] == "single_e"

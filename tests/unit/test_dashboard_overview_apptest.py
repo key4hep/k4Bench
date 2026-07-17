@@ -103,12 +103,12 @@ def _run(window: tuple[date, date] | None = _WINDOW) -> AppTest:
     return at
 
 
-def test_page_renders_controls_and_figure():
+def test_default_view_renders_the_trends_figure_and_controls():
     at = _run()
-    assert len(at.get("plotly_chart")) == 2  # history figure + landscape figure
-    # Palette/opacity controls and the tab's own history-window dropdown were
-    # dropped — the window now comes from the sidebar's shared Trend window.
-    # Metric selectors and toggles share a single, evenly-spaced row.
+    # The tab opens on Performance Trends: one figure, the shaping controls,
+    # and the flag pills; the landscape lives in its own view now.
+    assert at.radio(key="det_ov_view_mode").value == "Performance Trends"
+    assert len(at.get("plotly_chart")) == 1
     assert {s.label for s in at.selectbox} == {"Time metric", "Memory metric"}
     assert not at.slider
     assert {t.label for t in at.toggle} == {"Exclude unreliable runs"}
@@ -121,6 +121,19 @@ def test_page_renders_controls_and_figure():
     # as lists).
     assert at.query_params["tmetric"] == ["mean_time_s"]
     assert at.query_params["mmetric"] == ["mean_rss_mb"]
+
+
+def test_landscape_view_renders_its_own_figure():
+    at = _run()
+    at.radio(key="det_ov_view_mode").set_value("Performance Landscape").run()
+    assert not at.exception, at.exception
+    assert len(at.get("plotly_chart")) == 1
+    # Relative % is a time-series notion; the snapshot offers Log/Linear only.
+    scale = at.segmented_control(key="det_ov_scale_land")
+    assert scale.value == "Log"
+    assert not at.pills  # flag pills belong to the trends view
+    captions = "\n".join(str(c.value) for c in at.caption)
+    assert "Latest night: **2026-07-11**" in captions
 
 
 def test_unreliable_night_warned_and_excludable():
@@ -187,7 +200,7 @@ def test_narrower_window_still_renders():
     # now, resolved upstream by the sidebar.
     at = _run(window=(date(2026, 7, 11), date(2026, 7, 11)))
     assert not at.exception, at.exception
-    assert len(at.get("plotly_chart")) == 2
+    assert len(at.get("plotly_chart")) == 1
 
 
 def test_no_window_falls_back_to_latest_nights():
@@ -195,4 +208,93 @@ def test_no_window_falls_back_to_latest_nights():
     # to the latest nights via nights_in_window, not an error.
     at = _run(window=None)
     assert not at.exception, at.exception
-    assert len(at.get("plotly_chart")) == 2
+    assert len(at.get("plotly_chart")) == 1
+
+
+def _status_view(at: AppTest) -> AppTest:
+    at.radio(key="det_ov_view_mode").set_value("Regression Status").run()
+    assert not at.exception, at.exception
+    return at
+
+
+def test_status_view_renders_banner_and_roster():
+    at = _status_view(_run())
+    by_label = {m.label: m.value for m in at.metric}
+    assert by_label["Detectors checked"] == "3"
+    assert by_label["🔴 Regressed"] == "0"
+    assert by_label["⚠️ Watch"] == "0"
+    assert by_label["❌ Failures"] == "0"
+    # The per-detector roster is a plain table now, not an expander.
+    assert not at.expander
+    roster = at.dataframe[0].value
+    assert sorted(roster["Detector"]) == ["CLD_o2_v08", "IDEA_o1_v03", "SiD"]
+    # All quiet → no flagged metric to preview.
+    assert not at.selectbox
+    assert not at.get("plotly_chart")
+
+
+def _with_confirmed_flag(report: dict) -> dict:
+    """The fixture report with CLD's wall_time_s verdict raised to CONFIRMED —
+    the worst (and only) flag of the night."""
+    import copy
+
+    rep = copy.deepcopy(report)
+    v = next(
+        v for g in rep["groups"] for v in g["verdicts"]
+        if g["detector"] == "CLD_o2_v08" and v["metric"] == "wall_time_s"
+    )
+    v.update(severity="CONFIRMED", pct_change=0.2,
+             reason="+20.0% vs baseline median")
+    return rep
+
+
+def test_status_view_previews_the_worst_flags_trend():
+    reports = dict(REPORTS)
+    reports["2026-07-11"] = _with_confirmed_flag(reports["2026-07-11"])
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), DATES, reports, _WINDOW),
+        default_timeout=30,
+    )
+    at.run()
+    assert not at.exception, at.exception
+    at = _status_view(at)
+    by_label = {m.label: m.value for m in at.metric}
+    assert by_label["🔴 Regressed"] == "1"
+    # The roster leads with the flagged detector and its worst flag.
+    roster = at.dataframe[0].value
+    assert roster.iloc[0]["Detector"] == "CLD_o2_v08"
+    assert roster.iloc[0]["Worst flag"] == "wall time · baseline_all"
+    # The trend preview opens on that flag and draws the chart, with no run
+    # downloads (everything comes from the stubbed reports).
+    preview = at.selectbox(key="det_ov_flag_trend")
+    assert "CLD_o2_v08" in preview.value and preview.value.startswith("🔴")
+    assert len(at.get("plotly_chart")) == 1
+
+
+def test_failed_night_status_view_shows_the_failure():
+    # A night whose only scoped group hard-failed has no verdict values, so
+    # neither figure view can plot — the Regression Status view is where the
+    # failure surfaces.
+    night = "2026-07-11"
+    groups = [RunGroupReport(
+        detector="CLD_o2_v08", platform="PLAT", sample="single_e_10GeV",
+        k4h_release=f"key4hep-{night}", run_date=night, run_id=night,
+        verdicts=[], job_failures=["no run uploaded for 2026-07-11"],
+    )]
+    reports = {night: to_json(NightlyReport(generated_at="", groups=groups))}
+    at = AppTest.from_function(
+        _app,
+        args=(str(_DASHBOARD_DIR), [night], reports,
+              (date(2026, 7, 11), date(2026, 7, 11))),
+        default_timeout=30,
+    )
+    at.run()
+    assert not at.exception, at.exception
+    # The default (trends) view has nothing to plot but must not crash…
+    assert not at.get("plotly_chart")
+    assert at.info
+    # …and the status view carries the failure.
+    at = _status_view(at)
+    by_label = {m.label: m.value for m in at.metric}
+    assert by_label["❌ Failures"] == "1"
+    assert by_label["Detectors checked"] == "1"

@@ -1,17 +1,21 @@
-"""Regressions tab — the nightly cross-detector regression report.
+"""Regressions tab — one night's regression report for the sidebar's scope.
 
-Unlike every other tab this view is not scoped by the sidebar's
-detector/platform/sample selection: it renders the precomputed
+Scoped, like the trend views, by the sidebar's detector/platform/sample
+selection: the tab renders the matching run group from the precomputed
 ``_reports/{date}/report.json`` written to EOS by the nightly
-``regression-report`` CI job (see ``k4bench/regression/``), covering **all**
-detectors for one night. Only the per-metric drill-down chart downloads run
-data, and only for the series being inspected.
+``regression-report`` CI job (see ``k4bench/regression/``). The report night
+is keyed on the sidebar's *release* rather than picked from a dropdown — the
+newest release shows the latest report, an older one the report of its last
+run (see :func:`_report_night_for_stack`). The cross-detector at-a-glance
+picture lives in the Overview tab. Only the trend preview downloads run data,
+and only for the series being inspected.
 """
 
 from __future__ import annotations
 
 import pandas as pd
 import plotly.graph_objects as go
+import requests
 import streamlit as st
 
 from k4bench.regression.engine import Z_THRESHOLD
@@ -23,9 +27,6 @@ from k4bench.regression.models import (
 )
 from k4bench.regression.render import (
     _badge,
-    _detector_badge,
-    _fmt,
-    _fmt_pct,
     _group_title,
     _metric_name,
     _pretty_sample,
@@ -53,9 +54,9 @@ from remote_cache import (
 )
 from k4bench.provenance.diff import diff_packages
 from tabs import _blame
-from tabs._regression_flags import add_severity_markers
+from tabs._regression_flags import add_severity_markers, attention_key, flag_table
 from tabs._reliability import render_reliability_filter
-from tabs.stack_changes import deep_link, packages_for_release
+from tabs.stack_changes import _release, deep_link, packages_for_release
 from ui_utils import _METRIC_LABELS, _METRIC_UNITS, _is_valid_df, _to_rgba
 
 #: Fill for the accepted-baseline band on the drill-down chart — same visual
@@ -69,10 +70,14 @@ _ASSESSMENT_DOCS_URL = (
 )
 
 
-def render(data_url: str, cache_dir: str) -> None:
+def render(
+    data_url: str, cache_dir: str, detector: str, platform: str, sample: str,
+    stack: str,
+) -> None:
     st.caption(
-        "Nightly step-change detection across every detector's benchmark history. "
-        f"[Learn how regressions are assessed →]({_ASSESSMENT_DOCS_URL})"
+        "Nightly step-change detection for the sidebar's detector, platform, "
+        "sample and release — the cross-detector picture lives in the Overview "
+        f"tab. [Learn how regressions are assessed →]({_ASSESSMENT_DOCS_URL})"
     )
 
     dates = _cached_list_report_dates(data_url)
@@ -83,92 +88,140 @@ def render(data_url: str, cache_dir: str) -> None:
         )
         return
 
-    night = st.selectbox(
-        "Report night",
-        dates,
-        index=0,
-        help="Nightly reports are kept on EOS; pick an earlier night to see how "
-             "it was judged at the time.",
-    )
+    night = _report_night_for_stack(data_url, detector, platform, sample, stack, dates)
+    if night is None:
+        st.info(
+            f"No nightly report covers release **{_release(stack)}**'s runs — "
+            f"reports begin on {min(dates)}. Pick a newer release in the sidebar."
+        )
+        return
+    if night != max(dates):
+        st.caption(
+            f"Historical view: the report of **{night}**, the last night that "
+            f"benchmarked release **{_release(stack)}** — the newest release "
+            "(the sidebar default) shows the latest report."
+        )
     raw = _cached_fetch_report(data_url, night)
     if not raw:
         st.warning(f"Could not load the report for {night} from EOS.")
         return
     report = from_json(raw)
 
-    _render_banner(report)
+    # A (detector, platform, sample) triple is one run group — the report's
+    # unit of judgement — so the sidebar scope selects at most one.
+    group = next(
+        (
+            g for g in report.groups
+            if (g.detector, g.platform, g.sample) == (detector, platform, sample)
+        ),
+        None,
+    )
+    if group is None:
+        _render_no_group_notice(report, detector, sample, night)
+        return
 
-    # `&detector=...` deep-links here (see k4bench.regression.render._dashboard_link,
-    # used by the nightly regression email's "view in dashboard" links): the named
-    # detector is moved to the front of the list and pre-expanded, so the reader
-    # lands on the detector that triggered the alert.
-    wanted_detector = st.query_params.get("detector")
-    by_detector = list(report.by_detector().items())
-    if wanted_detector:
-        by_detector.sort(key=lambda item: item[0] != wanted_detector)
+    _render_banner(group)
+    _render_group(group, data_url, cache_dir, key=f"{detector}_{platform}_{sample}")
 
-    for detector, groups in by_detector:
-        _render_detector(
-            detector, groups, data_url, cache_dir,
-            expanded=(detector == wanted_detector),
+
+def _report_night_for_stack(
+    data_url: str, detector: str, platform: str, sample: str, stack: str,
+    dates: list[str],
+) -> str | None:
+    """The report night to show for the sidebar's release.
+
+    While a release is the one still being benchmarked (it owns the triple's
+    newest run), show the **latest report** — which may be newer than that run,
+    exactly the night whose "no run uploaded" failure must stay visible. For an
+    older release, show the report of that release's **newest** run: several
+    nights routinely re-benchmark one fixed nightly, and the last one carries
+    the most settled judgement (later runs re-anchor a confirmed step), so this
+    is the least noisy single night to represent the stack. ``None`` when the
+    release's runs all predate the first report.
+    """
+    try:
+        stacks_dates = _cached_list_run_dates(data_url, detector, platform, sample)
+    except requests.RequestException:
+        # Only a listing failure falls back silently-to-the-reader-but-not-to-us:
+        # the sidebar may have an old release selected, so showing the latest
+        # report without saying so would pass off today's data as that
+        # release's. A narrower except than a scan turning up genuinely empty
+        # (below) — that case has no such mismatch risk.
+        st.warning(
+            "Could not check this detector's run history on EOS — showing the "
+            "latest report; it may not match the sidebar's selected release.",
+            icon="⚠️",
+        )
+        return max(dates)
+    run_dates = stacks_dates.get(stack) or ()
+    if not run_dates:
+        # No run listing for this release — the latest report is the only
+        # sensible answer left.
+        return max(dates)
+    newest_of_stack = max(run_dates)
+    newest_any = max(d for ds in stacks_dates.values() for d in ds)
+    if newest_of_stack == newest_any:
+        return max(dates)
+    return newest_of_stack if newest_of_stack in dates else None
+
+
+def _render_no_group_notice(
+    report: NightlyReport, detector: str, sample: str, night: str
+) -> None:
+    """A scope miss names the scopes the report *does* cover, so the reader's
+    next click is a sidebar switch rather than a dead end."""
+    others = [g for g in report.groups if g.detector == detector]
+    if others:
+        scopes = "; ".join(_group_title(g) for g in others)
+        st.info(
+            f"The {night} report has no **{_pretty_sample(sample)}** run group "
+            f"for **{detector}** on the selected platform. Judged that night: "
+            f"{scopes} — switch the sidebar to one of those."
+        )
+    else:
+        covered = ", ".join(sorted(report.by_detector())) or "none"
+        st.info(
+            f"**{detector}** is not in the {night} report. "
+            f"Detectors covered: {covered}."
         )
 
 
-def _render_banner(report: NightlyReport) -> None:
-    """The at-a-glance banner, mirroring machine_info's run-quality card."""
-    n_fail = len(report.failures) + len(report.job_failures)
+def _render_banner(group: RunGroupReport) -> None:
+    """The run group's verdict at a glance, mirroring machine_info's
+    run-quality card. ``run_date`` is shown from the group, not the report
+    night: a stale group (no run uploaded that night) carries its last run's
+    date, and the mismatch with the picker is exactly the signal."""
+    n_fail = len(group.failures) + len(group.job_failures)
+    n_ok = sum(1 for v in group.verdicts if v.severity is Severity.OK)
     with st.container(border=True):
-        st.markdown(f"##### Nightly verdict at a glance — {report.report_night or 'no data'}")
+        st.markdown(
+            f"##### Nightly verdict at a glance — {group.detector} · "
+            f"{_pretty_sample(group.sample)} · {group.run_date or 'no data'}"
+        )
         cols = st.columns(4)
         cols[0].metric(
-            "Detectors checked", len(report.by_detector()),
-            help="Detectors with benchmark history on EOS for this night. A detector "
-                 "can span several (platform, sample) run groups, each judged "
-                 "against its own baseline.",
-        )
-        cols[1].metric(
-            "🔴 Regressed", len(report.regressions),
+            "🔴 Regressed", len(group.regressions),
             help="Metrics that crossed both detection gates on two consecutive "
                  "reliable nights (confirmed), either direction — not judged good "
                  "or bad, only that it moved beyond the baseline twice in a row.",
         )
-        cols[2].metric(
-            "⚠️ Watch", len(report.watches),
+        cols[1].metric(
+            "⚠️ Watch", len(group.watches),
             help="Metrics flagged for the first time this night. Not alerted on: "
                  "they either confirm on the next reliable night or clear.",
         )
-        cols[3].metric(
+        cols[2].metric(
             "❌ Failures", n_fail,
             help="Hard job failures: a config exiting non-zero, producing no "
                  "results, or a whole run missing for the night. These alert "
                  "immediately, no confirmation needed.",
         )
-
-
-def _render_detector(
-    detector: str,
-    groups: list[RunGroupReport],
-    data_url: str,
-    cache_dir: str,
-    *,
-    expanded: bool = False,
-) -> None:
-    # Detectors always start collapsed — even when alerting — so a noisy sweep
-    # night doesn't blow the page open into a wall of expanded charts. The badge
-    # already telegraphs which detectors need attention; the reader opens those.
-    # A `?detector=...` deep link (see `render`) overrides this to land pre-opened —
-    # seeded into session_state the same way as seed_query_param (see its
-    # docstring), since an expander's `expanded=` has the identical constraint.
-    exp_key = f"regr_exp_{detector}"
-    if exp_key not in st.session_state:
-        st.session_state[exp_key] = expanded
-    with st.expander(f"{_detector_badge(groups)} {detector}", key=exp_key):
-        for i, group in enumerate(groups):
-            # Sub-heading only when a detector has several (platform, sample)
-            # groups — most have exactly one and a heading would be noise.
-            if len(groups) > 1:
-                st.markdown(f"**{_group_title(group)}**")
-            _render_group(group, data_url, cache_dir, key=f"{detector}_{i}")
+        cols[3].metric(
+            "✅ Within baseline", n_ok,
+            help="Metrics inside the baseline's normal variation this night. "
+                 "Metrics with too little reliable history to judge are counted "
+                 "in neither column (see the summary line below).",
+        )
 
 
 def _yaxis_label(item: MetricVerdict) -> str:
@@ -178,78 +231,6 @@ def _yaxis_label(item: MetricVerdict) -> str:
     name = name[:1].upper() + name[1:]
     unit = _METRIC_UNITS.get(item.metric, "")
     return f"{name} ({unit})" if unit else name
-
-#: Cap on ledger rows: beyond this, keep the worst by |Δ| so one sweep night
-#: can't produce an unbounded table.
-_MAX_ROWS = 40
-
-
-def _pretty_metric(v: MetricVerdict) -> str:
-    """Row-label metric name — the human label plus the sub-detector for
-    region-level rows (``wall time · VertexBarrel``)."""
-    name = _METRIC_LABELS.get(v.metric, v.metric)
-    return f"{name} · {v.sub_detector}" if v.sub_detector else name
-
-
-def _flag_table(flagged: list[MetricVerdict]) -> None:
-    """Tonight's flagged metrics as a compact, sortable ledger — one row per
-    (config, metric), worst first.
-
-    A table is the one layout that stays readable from a single flag to a whole
-    sweep night: extra rows scroll instead of crowding, every column re-sorts on
-    a header click, and each row still reads at a glance — severity from the
-    🔴/⚠️ badge, size and direction from the Δ bar. The per-series trend below
-    remains the place to actually inspect a metric's history.
-    """
-    rows = [v for v in flagged if v.pct_change is not None]
-    if not rows:
-        return
-    rows.sort(key=lambda v: (v.severity is not Severity.CONFIRMED, -abs(v.pct_change)))
-    rows = rows[:_MAX_ROWS]
-    # The bar encodes *magnitude* (|Δ%|, in whole percents), 0 → empty and the
-    # night's worst → full, so a small flag never looks large. Direction rides
-    # in its own column so the sign is never lost.
-    span = (max(abs(v.pct_change) for v in rows) * 100) or 5.0
-
-    df = pd.DataFrame(
-        [
-            {
-                "": "🔴" if v.severity is Severity.CONFIRMED else "⚠️",
-                "Config": v.label,
-                "Metric": _pretty_metric(v),
-                "Dir": "↑" if v.pct_change > 0 else "↓",
-                "Δ vs baseline": abs(v.pct_change) * 100,
-                "Current / baseline": f"{_fmt(v.value)} / {_fmt(v.baseline_median)}",
-            }
-            for v in rows
-        ]
-    )
-    st.dataframe(
-        df,
-        hide_index=True,
-        width="stretch",
-        column_config={
-            "": st.column_config.TextColumn(
-                "", width="small",
-                help="🔴 confirmed regression · ⚠️ watch (first flag, unconfirmed)",
-            ),
-            "Config": st.column_config.TextColumn("Config", width="medium"),
-            "Dir": st.column_config.TextColumn(
-                "Dir", width="small",
-                help="↑ increase · ↓ decrease vs baseline — a plain direction, "
-                     "not judged good or bad.",
-            ),
-            "Δ vs baseline": st.column_config.ProgressColumn(
-                "Δ vs baseline",
-                help="Size of the step from the baseline median (|Δ%|), scaled to "
-                     "tonight's largest flag. Direction is the ↑/↓ column.",
-                format="%.0f%%",
-                min_value=0,
-                max_value=span,
-            ),
-        },
-    )
-
 
 def _window_changes(data_url: str, verdict: MetricVerdict) -> list | None:
     """Changed packages across a confirmed regression's bounded blame window,
@@ -297,7 +278,7 @@ def _render_blame_card(data_url: str, v: MetricVerdict) -> None:
             )
         st.link_button(
             "🔍 Open in Stack Changes →",
-            deep_link(detector=v.detector, platform=v.platform,
+            deep_link(detector=v.detector, platform=v.platform, sample=v.sample,
                       head_release=onset, base_release=baseline),
         )
 
@@ -335,27 +316,32 @@ def _render_group(group: RunGroupReport, data_url: str, cache_dir: str, *, key: 
         if v.severity in (Severity.WATCH, Severity.CONFIRMED)
     ]
     if flagged:
-        _flag_table(flagged)
+        flag_table(flagged)
     if group.verdicts:
         st.caption(_quiet_summary(group))
 
     _render_blame_cards(group, data_url)
 
-    drillable: list[MetricVerdict] = [
-        v for v in flagged if v.baseline_median is not None
-    ]
+    drillable: list[MetricVerdict] = sorted(
+        (v for v in flagged if v.baseline_median is not None), key=attention_key
+    )
     if not drillable:
         return
+    # Opens on the most severe flag rather than on "—": the first question a
+    # flagged night raises is "what does the trend look like", so the preview
+    # answers it without a click. "—" stays available to collapse the chart.
     options = ["—"] + [
         f"{_badge(v)} · {_metric_name(v)} · {v.label}" for v in drillable
     ]
     choice = st.selectbox(
-        "Show trend",
+        "Trend preview",
         options,
+        index=1,
         key=f"regr_drill_{key}",
-        help="Render this metric's recent history with the baseline band the "
-             "verdict was judged against. Downloads the run window for this "
-             "group on first use.",
+        help="This metric's recent history with the baseline band the verdict "
+             "was judged against — opens on the most severe flag; pick another "
+             "or “—” to hide it. Downloads the run window for this group on "
+             "first use.",
     )
     if choice != "—":
         _render_drilldown(drillable[options.index(choice) - 1], data_url, cache_dir)

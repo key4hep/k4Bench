@@ -469,10 +469,15 @@ def main() -> None:
             platform=platform, sample=sample,
         )
 
-    # Regressions (remote only) — cross-detector, reads the precomputed
-    # nightly reports from EOS rather than the sidebar-selected run window
+    # Regressions (remote only) — scoped to the sidebar triple like Run Trends,
+    # but reads the precomputed nightly reports from EOS rather than the
+    # sidebar-selected run window; the report night is keyed on the sidebar's
+    # release (newest release → latest report, older release → the report of
+    # its last run). The cross-detector picture is the Overview tab.
     if active_section == "Regressions":
-        regressions.render(config.data_url, config.cache_dir)
+        regressions.render(
+            config.data_url, config.cache_dir, detector, platform, sample, stack,
+        )
 
     # Overview (remote only) — cross-detector comparison built from the same
     # nightly reports as the Regressions tab, scoped by the sidebar's
@@ -480,10 +485,12 @@ def main() -> None:
     if active_section == "Overview":
         detectors_overview.render(config.data_url, platform, sample, sidebar_window)
 
-    # Stack Changes (remote only) — cross-detector like Regressions: a Key4hep
-    # release is one stack whatever benchmarked it, so only the platform scopes it.
+    # Stack Changes (remote only) — the package diff is cross-detector (a
+    # Key4hep release is one stack whatever benchmarked it, so only the
+    # platform scopes it); the regressions-in-range view below it is scoped
+    # to the sidebar's detector/sample with an all-detectors toggle.
     if active_section == "Stack Changes":
-        stack_changes.render(config.data_url, platform)
+        stack_changes.render(config.data_url, platform, detector, sample)
 
     if active_section == "Config Impact":
         impact.render(trend_results_df, selected_labels)
