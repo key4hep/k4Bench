@@ -83,17 +83,13 @@ def _cached_fetch_reports(base_url: str, dates: tuple[str, ...]) -> dict[str, di
     simply absent from the result. Cached on the *dates* tuple: growing the
     window refetches it in one parallel burst rather than serially.
 
-    Thread count is Python's own platform-appropriate default (no
-    ``max_workers``; this only ever runs on a cache miss — a Streamlit rerun
-    that hits the cache spawns no threads at all). The real concurrency
-    ceiling lives one level down, in :mod:`k4bench.remote`'s shared,
-    ``pool_block=True`` connection pool (see ``k4bench.remote._get_session``):
-    however many threads are running, only a handful of TLS connections are
-    ever open to the WebEOS host at once — the rest queue for a slot rather
-    than each opening its own. Sharing that pool (instead of each thread, or
-    each overlapping/orphaned script rerun, building and tearing down its own
-    session) is what fixed this fetch's intermittent interpreter segfaults
-    (an OpenSSL/urllib3-level native race, not a Python exception).
+    Thread count is Python's own default (no ``max_workers``; this only ever
+    runs on a cache miss — a Streamlit rerun that hits the cache spawns no
+    threads at all). The concurrency ceiling lives one level down, in
+    :mod:`k4bench.remote`'s shared, ``pool_block=True`` connection pool (see
+    ``k4bench.remote._get_session``) — threads beyond it just queue for a
+    slot instead of each opening its own connection, which is what fixed this
+    fetch's intermittent, native interpreter crashes.
     """
     from concurrent.futures import ThreadPoolExecutor
 

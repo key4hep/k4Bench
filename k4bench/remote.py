@@ -36,62 +36,35 @@ _log = logging.getLogger(__name__)
 _DIR_LINK_RE = re.compile(r'href="([^"/][^"]*/?)"', re.IGNORECASE)
 _TIMEOUT = 15
 
-#: Hard ceiling on concurrent connections to the WebEOS host — a deliberate
-#: stability constant, not a guess derived from CPU count or task size:
-#: neither reflects how many simultaneous TLS sessions are sensible against
-#: one remote server, and a Kubernetes/OpenShift CPU *quota* limit (as this
-#: dashboard runs under) isn't visible to Python at all (``os.cpu_count()``/
-#: ``os.process_cpu_count()`` only see CPU *affinity*, which quota-based
-#: limits don't set). Kept modest: these are small static files, not a
-#: bulk-transfer workload, so there is little throughput to gain past a
-#: handful of concurrent connections — and the real point of the number is
-#: :func:`_get_session`'s ``pool_block=True``, which turns it into an actual
-#: ceiling rather than a suggestion.
+#: Ceiling on concurrent connections to the WebEOS host. A deliberate
+#: stability constant rather than a CPU- or task-count-derived guess (neither
+#: reflects how many simultaneous TLS connections are sensible against one
+#: remote server) — kept modest since these are small static files with
+#: little to gain from more than a handful in flight. Only real with
+#: ``pool_block=True`` below; ``requests``' own default (``block=False``)
+#: would silently open extra unpooled connections past this instead of
+#: enforcing it.
 _POOL_MAXSIZE = 8
 
-#: One adapter, shared by every thread's session (see :func:`_get_session`):
-#: everything funnels through its single connection pool, so
-#: ``pool_maxsize`` is a real, process-wide cap. ``pool_connections=1`` is
-#: enough because every call in this module targets one host (the
-#: configured WebEOS ``base_url``).
-_adapter = requests.adapters.HTTPAdapter(
-    pool_connections=1, pool_maxsize=_POOL_MAXSIZE, pool_block=True,
-)
+#: One adapter, shared by every thread's session (see :func:`_get_session`),
+#: so this is a real, process-wide cap rather than one per thread.
+_adapter = requests.adapters.HTTPAdapter(pool_maxsize=_POOL_MAXSIZE, pool_block=True)
 
 _thread_local = threading.local()
 
 
 def _get_session() -> requests.Session:
-    """One ``requests.Session`` per thread, every one mounting the same
-    shared, connection-pooled :data:`_adapter`.
+    """One ``requests.Session`` per thread, all mounting the shared,
+    connection-pooled :data:`_adapter`.
 
-    Two distinct problems, two distinct fixes:
-
-    - **Building a fresh session per call** used to be the norm (bare
-      ``requests.get()`` opens and tears one down every time), and several
-      threads each doing a cold TLS handshake at once — or a Streamlit rerun
-      abandoning a still-fetching thread's ad-hoc session mid-handshake while
-      a *new* rerun's session starts up alongside it — was a reproducible
-      source of native, non-Python-catchable interpreter crashes. Reusing a
-      session removes the repeated construction/teardown.
-    - **A shared session's *default* adapter doesn't actually cap
-      concurrency**: ``requests``' default ``pool_maxsize`` is 10 with
-      ``pool_block=False``, meaning an 11th simultaneous request doesn't wait
-      for a pooled connection, it silently opens an *extra*, unpooled one —
-      so merely reusing one session, without also configuring the adapter,
-      never bounded how many concurrent TLS handshakes were actually in
-      flight. :data:`_adapter`'s ``pool_block=True`` is what makes
-      :data:`_POOL_MAXSIZE` a real ceiling: anything past it queues for a
-      slot instead of racing to open a new connection.
-
-    A session itself is *not* shared across threads here, even though
-    ``requests`` documents a single session as safe for concurrent use: that
-    guarantee covers the request path, but a session also carries a cookie
-    jar and redirect/auth hooks that every request touches implicitly, not
-    only when application code mutates them directly. A session per thread
-    removes that class of risk outright, at negligible cost — the pooled
-    connections all come from the shared adapter, so this allocates no new
-    sockets, only a lightweight wrapper object.
+    Replaces a fresh ad-hoc session per call (bare ``requests.get()`` opens
+    and tears one down every time) — several threads each doing a cold TLS
+    handshake at once was a reproducible way to crash the interpreter
+    natively. A session per thread, rather than one session shared by all,
+    rules out any race on a session's own mutable state (cookie jar,
+    redirect/auth hooks) at negligible cost: the pooled connections all live
+    on the shared adapter, so this allocates no new sockets, only a
+    lightweight wrapper object per thread.
     """
     session = getattr(_thread_local, "session", None)
     if session is None:
@@ -310,14 +283,10 @@ def fetch_runs_windowed(
     an already date-windowed *stacks_dates* so only in-window runs are downloaded.
     Runs that fail to download are logged and skipped rather than aborting the load.
 
-    Thread count is Python's own platform-appropriate default (no
-    ``max_workers``, and threads are created lazily — one per submitted task
-    up to that default, never more than there is work to do). The real
-    concurrency ceiling lives one level down, in :data:`_POOL_MAXSIZE`'s
-    connection pool (see :func:`_get_session`): however many threads are
-    running, only that many TLS connections are ever open to the host at
-    once, and every thread beyond it queues for a slot rather than opening
-    its own.
+    Thread count is Python's own default (no ``max_workers``; threads are
+    created lazily, never more than there is work to do). The concurrency
+    ceiling lives one level down, in :data:`_POOL_MAXSIZE`'s connection pool
+    (see :func:`_get_session`) — threads beyond it just queue for a slot.
     """
     tasks = [(stack, date) for stack, dates in stacks_dates.items() for date in dates]
     if not tasks:
