@@ -496,3 +496,50 @@ def test_report_roundtrip_preserves_reliable_flag():
     report = _report()
     rebuilt = from_json(to_json(report))
     assert [g.reliable for g in rebuilt.groups] == [True, False, None, None]
+
+# ── detector_status_rows ───────────────────────────────────────────────────────
+
+def test_status_rows_order_worst_first_and_pick_the_worst_flag():
+    groups = [
+        _group("QUIET", [_verdict()]),
+        _group("WATCHING", [
+            _verdict(severity=Severity.WATCH, metric="peak_rss_mb", pct_change=0.50),
+        ]),
+        _group("REGRESSED", [
+            # A confirmed flag outranks a larger-|Δ| watch for "worst".
+            _verdict(severity=Severity.CONFIRMED, metric="wall_time_s",
+                     pct_change=-0.10),
+            _verdict(severity=Severity.WATCH, metric="peak_rss_mb", pct_change=0.90),
+        ]),
+        _group("FAILED", [], job_failures=["no run uploaded"]),
+    ]
+    rows = ov.detector_status_rows(groups, "PLAT", "single_e")
+    assert [r["Detector"] for r in rows] == ["FAILED", "REGRESSED", "WATCHING", "QUIET"]
+    regressed = rows[1]
+    assert regressed[""] == "🔴"
+    assert regressed["Worst flag"] == "wall time · baseline_all"
+    assert regressed["Δ"] == pytest.approx(-10.0)
+    quiet = rows[3]
+    assert quiet[""] == "✅" and quiet["Worst flag"] == "—" and quiet["Δ"] is None
+
+
+def test_status_rows_delta_is_blank_for_a_percentless_flag():
+    # An absolute-floor metric has no meaningful relative change; its Δ must be
+    # None (blank cell), never +0.0 %.
+    rows = ov.detector_status_rows(
+        [_group("CLD", [_verdict(severity=Severity.CONFIRMED, pct_change=None)])],
+        "PLAT", "single_e",
+    )
+    assert rows[0]["Δ"] is None
+    assert rows[0]["Worst flag"] == "wall time · baseline_all"
+
+
+def test_status_rows_link_carries_the_full_triple():
+    # The Regressions tab is scoped by the sidebar triple, so a detector-only
+    # link could land on the wrong sample.
+    from urllib.parse import parse_qsl
+
+    rows = ov.detector_status_rows([_group("CLD", [_verdict()])], "PLAT", "single_e")
+    q = dict(parse_qsl(rows[0]["Inspect"].lstrip("?")))
+    assert q == {"tab": "Regressions", "detector": "CLD",
+                 "platform": "PLAT", "sample": "single_e"}

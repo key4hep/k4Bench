@@ -169,12 +169,25 @@ def _dashboard_link(dashboard_url: str, **params: str) -> str:
     """*dashboard_url* with *params* merged into its query string (overriding
     any of the same name already present), so it works whether the caller
     passed a bare base URL or one that already carries its own query —
-    e.g. a deep link to the Regressions tab, optionally scoped to one
-    detector's expander."""
+    e.g. a deep link to one run group's Regressions view."""
     split = urlsplit(dashboard_url)
     query = dict(parse_qsl(split.query))
     query.update(params)
     return urlunsplit(split._replace(query=urlencode(query)))
+
+
+def _group_links(dashboard_url: str | None, group: RunGroupReport) -> list[tuple[str, str]]:
+    """``(text, href)`` dashboard links for one run group. Both targets are
+    scoped by the full ``(detector, platform, sample)`` triple: the Regressions
+    tab reads exactly that scope from the sidebar, the same way Run Trends
+    does, so a detector-only link could land on the wrong sample."""
+    if not dashboard_url:
+        return []
+    scope = dict(detector=group.detector, platform=group.platform, sample=group.sample)
+    return [
+        ("Regressions", _dashboard_link(dashboard_url, tab="Regressions", **scope)),
+        ("Run Trends", _dashboard_link(dashboard_url, tab="Run Trends", **scope)),
+    ]
 
 
 def _footer_year(report: NightlyReport) -> str:
@@ -229,29 +242,24 @@ def to_markdown(report: NightlyReport, *, dashboard_url: str | None = None) -> s
         "",
     ]
     for detector, groups in report.by_detector().items():
-        heading = f"## {_detector_badge(groups)} {detector}"
-        if dashboard_url:
-            href = _dashboard_link(dashboard_url, tab="Regressions", detector=detector)
-            heading += f" · [↗ Regressions]({href})"
-        lines.append(heading)
+        lines.append(f"## {_detector_badge(groups)} {detector}")
         lines.append("")
         for group in groups:
-            # Run Trends needs a (detector, platform, sample) triple, unlike the
-            # detector-wide Regressions link above, so it's scoped per group.
-            trends_href = (
-                _dashboard_link(
-                    dashboard_url, tab="Run Trends", detector=group.detector,
-                    platform=group.platform, sample=group.sample,
-                ) if dashboard_url else None
+            # Both dashboard views are scoped by the (detector, platform,
+            # sample) triple, so the links ride on the group, never the
+            # detector heading (see _group_links).
+            links = " · ".join(
+                f"[↗ {text}]({href})"
+                for text, href in _group_links(dashboard_url, group)
             )
             if len(groups) > 1:
                 group_heading = f"### {_group_title(group)}"
-                if trends_href:
-                    group_heading += f" · [↗ Run Trends]({trends_href})"
+                if links:
+                    group_heading += f" · {links}"
                 lines.append(group_heading)
                 lines.append("")
-            elif trends_href:
-                lines.append(f"[↗ Run Trends]({trends_href})")
+            elif links:
+                lines.append(links)
                 lines.append("")
             for msg in group.job_failures:
                 lines.append(f"- ❌ **{msg}**")
@@ -313,41 +321,34 @@ def to_html(report: NightlyReport, *, dashboard_url: str | None = None,
     ]
     links = []
     if dashboard_url:
-        overview_href = _dashboard_link(dashboard_url, tab="Regressions")
-        links.append(f'<a href="{overview_href}">Dashboard — Regressions tab</a>')
+        # The cross-detector at-a-glance summary lives in the Overview tab;
+        # the per-group links below land on the scoped Regressions view.
+        overview_href = _dashboard_link(dashboard_url, tab="Overview")
+        links.append(f'<a href="{overview_href}">Dashboard — Overview</a>')
     if actions_url:
         links.append(f'<a href="{actions_url}">GitHub Actions run</a>')
     if links:
         parts.append(f'<p>{" · ".join(links)}</p>')
 
     for detector, groups in report.by_detector().items():
-        detector_link = (
-            _view_link(_dashboard_link(dashboard_url, tab="Regressions", detector=detector),
-                       "Regressions")
-            if dashboard_url else ""
-        )
         parts.append(
             '<h3 style="border-bottom:2px solid #ddd;padding-bottom:2px;">'
-            f"{_detector_badge(groups)} {detector}{detector_link}</h3>"
+            f"{_detector_badge(groups)} {detector}</h3>"
         )
         for group in groups:
-            # Run Trends needs a (detector, platform, sample) triple, unlike the
-            # detector-wide Regressions link above, so it's scoped per group.
-            trends_link = (
-                _view_link(
-                    _dashboard_link(
-                        dashboard_url, tab="Run Trends", detector=group.detector,
-                        platform=group.platform, sample=group.sample,
-                    ),
-                    "Run Trends",
-                ) if dashboard_url else ""
+            # Both dashboard views are scoped by the (detector, platform,
+            # sample) triple, so the links ride on the group, never the
+            # detector heading (see _group_links).
+            links_html = "".join(
+                _view_link(href, text)
+                for text, href in _group_links(dashboard_url, group)
             )
             if len(groups) > 1:
                 parts.append(
-                    f'<h4 style="margin-bottom:0.3em;">{_group_title(group)}{trends_link}</h4>'
+                    f'<h4 style="margin-bottom:0.3em;">{_group_title(group)}{links_html}</h4>'
                 )
-            elif trends_link:
-                parts.append(f'<p style="margin:0 0 6px;">{trends_link.strip()}</p>')
+            elif links_html:
+                parts.append(f'<p style="margin:0 0 6px;">{links_html.strip()}</p>')
             for msg in group.job_failures:
                 parts.append(f'<p style="color:#d63c3c;font-weight:bold;">❌ {msg}</p>')
             for msg in group.notes:

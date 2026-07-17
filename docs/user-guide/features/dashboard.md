@@ -50,9 +50,9 @@ Key4hep release → physics sample → run date**.
 | **Event memory** | per-event RSS and growth | `*_events.json` |
 | **Region timing** | per-subdetector stepping time, `at_location` vs `by_birth`, step counts, attribution analysis | `*_regions.json` |
 | **Trends** | metrics over time across releases | many runs, windowed |
-| **Regressions** | the nightly cross-detector regression report | `_reports/{date}/report.json` |
+| **Regressions** | the nightly regression report for the selected detector/platform/sample | `_reports/{date}/report.json` |
 | **Stack Changes** | which Key4hep packages moved between two nightly releases | `run_info.json` (`k4h_packages`) |
-| **Overview** | cross-detector metric comparison, snapshot & history | `_reports/{date}/report.json` |
+| **Overview** | cross-detector comparison: performance trends, landscape & regression status | `_reports/{date}/report.json` |
 | **Machine info** | the host the benchmark ran on (CPU, RAM, governor, throttling) | `machine_info.json` |
 | **Logs** | the raw `ddsim` log for the selected run | `*.log` |
 
@@ -96,9 +96,10 @@ warning/toggle as every other historical view.
 ### Regressions tab
 
 Where the Trends tab lets you *look for* regressions, this tab shows what the
-nightly detector *found* — across **all** detectors at once, independent of the
-sidebar selection. Every night, CI (the `regression-report` job in
-`nightly.yml`) walks the full EOS history and judges every
+nightly detector *found* — for the sidebar-selected detector, platform and
+sample, the same scoping as every trend view (the cross-detector picture lives
+in the [Overview tab](#overview-tab)). Every night, CI (the `regression-report`
+job in `nightly.yml`) walks the full EOS history and judges every
 `(detector, platform, sample, config, metric)` series with a conservative
 step-change detector (`k4bench/regression/`):
 
@@ -131,15 +132,27 @@ step-change detector (`k4bench/regression/`):
   in the system, dominated by timer-granularity wobble at microsecond scale, so
   the regression report judges only top-level run and per-event metrics.
 
-The tab shows one report per night (pick earlier nights from the selector): an
-at-a-glance banner, one expander per detector (collapsed by default — the badge
-tells you which need attention), a **change ledger** — a compact, sortable table
-of tonight's flagged metrics (a 🔴/⚠️ severity badge, the config, the metric, an
-↑/↓ direction, and a Δ-vs-baseline magnitude bar), worst first — and a **Show
-trend** drill-down that plots the metric's recent history with the baseline band
-it was judged against (the flagged night marked 🔴, the night it was first
-watched marked ⚠️). Confirmed regressions and failures — and only those — are
-also emailed to the team's e-group by the same CI job.
+The report night is keyed on the sidebar's **release**, not a separate
+selector: the newest release (the sidebar default) shows the latest nightly
+report — which can be newer than the release's last run, exactly the night
+whose "no run uploaded" failure must stay visible — while an older release
+shows the report of its **last** run. Several nights routinely re-benchmark
+one fixed nightly, and the last one carries the most settled judgement (a
+confirmed step re-anchors on the following night), so this is the least noisy
+single night to represent a stack; per-night history stays reachable by
+stepping the sidebar's release selector.
+
+The selected run group renders flat: an at-a-glance banner (regressed / watch
+/ failures / within-baseline counts), a **change ledger** — a compact,
+sortable table of the night's flagged metrics (a 🔴/⚠️ severity badge, the
+config, the metric, an ↑/↓ direction, and a Δ-vs-baseline magnitude bar),
+worst first — and a **trend preview** that plots a flagged metric's recent
+history with the baseline band it was judged against (the flagged night
+marked 🔴, the night it was first watched marked ⚠️). The preview opens on the
+most severe flag automatically; switch it to any other flagged metric, or to
+"—" to hide it. Confirmed regressions and failures — and only those — are also
+emailed to the team's e-group by the same CI job, with per-group links landing
+directly on this scoped view.
 
 For a confirmed regression the drill-down also shades the **release window the
 step entered in**. Because confirmation is a two-strike rule, the reported night
@@ -157,9 +170,32 @@ Answers "what came in last night?" — and, when a metric has stepped, "what
 upstream change could that be?". Pick two nightly tags and it lists the Key4hep
 packages whose commit differs between them, each linking to the range on GitHub.
 
-Like Regressions it is cross-detector: a Key4hep release is one stack, sourced
+The package diff is cross-detector: a Key4hep release is one stack, sourced
 identically by every detector benchmarked against it, so only the platform
-scopes the view.
+scopes it.
+
+Below the diff, the **regressions this change may have caused** — the confirmed
+regressions whose onset falls inside the selected range — are scoped to the
+sidebar's detector and sample like every other judged view, with an **All
+detectors** toggle to widen back to the whole platform (a package change can
+regress any detector that sources it). They are shown two ways:
+
+- the exact same **change ledger** as the Regressions tab (severity badge,
+  config, metric, ↑/↓ direction, Δ-vs-baseline bar, current/baseline values)
+  plus each regression's own **blame window** — on a multi-release range the
+  per-row window is what stops the cumulative diff being misread as one
+  night's change;
+- a **typical-vs-outlier plane** — one config's nightly runs plotted as CPU ×
+  memory points, read from the already-fetched nightly reports (no run
+  downloads), with the same time/memory metric choice as the Overview tab
+  (defaulting to the config's flagged metrics). The dashed crosshair and
+  shaded band mark the accepted baseline each judged axis was gated on; runs
+  from the step's onset on are drawn in the confirmed red, with the onset
+  night ringed — so a step in *both* CPU and memory shows as a cluster leaving
+  the baseline box diagonally. The margins histogram each metric's own **1D
+  distribution** (before/after the onset overlaid), so a step in only one of
+  the two still stands out. It opens automatically when a config stepped in
+  both families.
 
 **It compares releases, not run dates.** The nightly build does not publish
 every day; a benchmark then re-uses the newest release available, so several
@@ -193,10 +229,10 @@ tab — whose verdicts carry the raw nightly value of every run and per-event
 metric for all detectors — so the whole comparison loads from one small JSON
 per night, with no per-detector run downloads.
 
-Two figures, each with its own legend below it (one colour per detector,
-consistent across both):
+Three views, dispatched by the same View radio as the other multi-view tabs
+(one colour per detector, consistent across the figures):
 
-- **historical trends** — the two selected metrics side by side (CPU,
+- **Performance Trends** — the two selected metrics side by side (CPU,
   Memory), one line per detector across every nightly tag in the sidebar's
   trend window (x-axis: the Key4hep nightly tag, like every other trend
   view; a nightly benchmarked twice collapses to one point, newest run wins),
@@ -206,11 +242,24 @@ consistent across both):
   on by default, each behind its own toggle. A *relative* toggle
   rescales each line to its first night = 100 %, making drift comparable
   across detectors of very different absolute cost;
-- **performance landscape** — the selected time metric against the selected
-  memory metric, one point per detector — closer to the origin is faster
-  *and* leaner. The metric selectors offer mean/median event time, wall time
-  or user CPU for time; mean event RSS or peak RSS for memory (shown in GB),
-  and the selection is shareable via `?tmetric=`/`?mmetric=`.
+- **Performance Landscape** — the selected time metric against the selected
+  memory metric on the latest night, one point per detector — closer to the
+  origin is faster *and* leaner. The metric selectors offer mean/median event
+  time, wall time or user CPU for time; mean event RSS or peak RSS for memory
+  (shown in GB), are shared with the trends view, and the selection is
+  shareable via `?tmetric=`/`?mmetric=`;
+- **Regression Status** — since the Regressions tab is scoped to one
+  detector, the **cross-detector regression picture lives here**: a banner
+  with the latest night's verdict counts across all scoped detectors
+  (checked / 🔴 regressed / ⚠️ watch / ❌ failures), a per-detector status
+  roster (badge, flag counts, worst flagged metric, and a link that opens the
+  Regressions tab scoped to that detector), and a **flagged-metric trend**
+  that opens on the night's worst flag — the metric's history over the trend
+  window with the baseline band its verdict was judged against and, for a
+  confirmed step, the shaded blame window, all built from the cached reports
+  with no run downloads. The view renders even on a night whose configs all
+  hard-failed (when there are no values to plot), so a failure is never
+  hidden behind an empty chart.
 
 Colours follow the detector *family* (ALLEGRO, CLD, …), with versions of one
 family distinguished by dash pattern and marker symbol, so experiment-level
