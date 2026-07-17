@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 
+from k4bench.blame.models import BlameEntry, BlameReport, CandidatePR, RepoBlame
 from k4bench.regression.models import (
     Direction,
     MetricVerdict,
@@ -218,6 +219,75 @@ _PRE_WINDOW_FIELDS = {
     "sub_detector", "run_id", "run_date", "value", "baseline_median",
     "baseline_mad", "pct_change", "z_score", "severity", "direction", "reason",
 }
+
+
+# ── Blame in the email (the "most likely cause" lead) ─────────────────────────
+
+def _blame_report(*, reason="raises the tracker step count", score=72.0) -> BlameReport:
+    """Blame joining the wall_time_s regression of :func:`_full_report`."""
+    entry = BlameEntry(
+        detector="DET", platform="PLAT", sample="single_e", label="baseline",
+        metric="wall_time_s", sub_detector=None,
+        base_release="2026-01-05", onset_release="2026-01-09",
+        repos=(RepoBlame(
+            package="k4geo", repo="key4hep/k4geo",
+            base_commit="a" * 40, head_commit="c" * 40,
+            compare_url="https://github.com/key4hep/k4geo/compare/aaa...ccc",
+            status="changed",
+            candidates=(
+                CandidatePR(
+                    repo="key4hep/k4geo", number=1234, title="Lower the step limit",
+                    author="alice", url="https://github.com/key4hep/k4geo/pull/1234",
+                    score=score, description=reason,
+                ),
+            ),
+        ),),
+    )
+    return BlameReport(
+        generated_at="2026-01-12T06:00:00", report_night="2026-01-12", entries=(entry,)
+    )
+
+
+def test_markdown_renders_the_suggested_cause_with_blame():
+    md = to_markdown(_full_report(), blame=_blame_report())
+    assert "Suggested causes" in md
+    assert "not evidence" in md  # framed as a lead, never a verdict
+    assert "`key4hep/k4geo#1234`" in md
+    assert "(72%)" in md
+    assert "raises the tracker step count" in md
+    assert "https://github.com/key4hep/k4geo/pull/1234" in md
+
+
+def test_html_renders_the_suggested_cause_and_escapes_the_reason():
+    html = to_html(_full_report(), blame=_blame_report(reason="drops <b>steps</b> & inlines"))
+    assert "Suggested causes" in html
+    assert "key4hep/k4geo#1234" in html
+    assert "(72%)" in html
+    # LLM-derived text is escaped — it must not inject markup into the email.
+    assert "drops &lt;b&gt;steps&lt;/b&gt; &amp; inlines" in html
+    assert "<b>steps</b>" not in html
+
+
+def test_email_unchanged_without_blame():
+    # No sidecar → not a word about candidates, exactly as before the feature.
+    assert "Suggested causes" not in to_markdown(_full_report())
+    assert "Suggested causes" not in to_html(_full_report())
+
+
+def test_unranked_blame_entry_renders_no_lead():
+    # Candidates collected but not yet ranked (score 0, no description) → silence,
+    # mirroring the dashboard's has_ranking gate.
+    blame = _blame_report(reason="", score=0.0)
+    assert "Suggested causes" not in to_markdown(_full_report(), blame=blame)
+    assert "Suggested causes" not in to_html(_full_report(), blame=blame)
+
+
+def test_to_json_stays_free_of_blame():
+    # Blame is a separate sidecar; the report JSON the dashboard reads back must
+    # not gain blame fields (to_json / from_json are untouched by this feature).
+    text = json.dumps(to_json(_full_report())).lower()
+    assert "likelihood" not in text
+    assert "candidate" not in text
 
 
 def test_new_report_is_additive_over_the_pre_window_schema():

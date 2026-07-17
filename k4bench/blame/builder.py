@@ -1,0 +1,273 @@
+"""Assemble a :class:`~k4bench.blame.models.BlameReport` from a nightly report.
+
+For each confirmed regression whose blame window spans two *different* releases,
+diff the two releases' package maps, resolve each changed GitHub repo's commit
+range to its pull requests, and rank them for that regression. The result is the
+sidecar the CLI uploads to ``_reports/{night}/blame.json``.
+
+Two dependencies are injected rather than imported, which is what keeps this
+module offline-testable and lets CI reuse work it has already done:
+
+* ``packages_for_release(platform, release) -> dict | None`` — a release's
+  ``k4h_packages`` map. In CI this reads the run cache the report build already
+  populated; the integration test reads a local tree. ``None`` means the release
+  predates provenance capture or has aged off CVMFS — its regressions get no
+  blame rather than a wrong one.
+* ``github`` — a :class:`~k4bench.blame.github.GitHubClient`, or ``None`` to skip
+  PR resolution entirely (no token available): the diffs are still recorded, the
+  repos just carry no candidates.
+
+Windows that cannot be attributed are dropped, not recorded empty: an open-ended
+window (no settled baseline), a same-release window (nothing upstream moved), and
+a window whose provenance is missing are all handled live by the dashboard from
+``report.json`` alone. ``blame.json`` exists only to carry the one thing the
+dashboard cannot compute itself — the ranked PRs.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import logging
+from collections.abc import Callable
+from datetime import datetime, timezone
+
+from k4bench.blame.github import GitHubClient, RateLimitError, RepoResolution, resolve_repo_prs
+from k4bench.blame.models import BlameEntry, BlameReport, RepoBlame
+from k4bench.blame.rank import RankCandidate, Ranker, RankRequest, Ranking
+from k4bench.provenance.diff import CHANGED, PackageChange, diff_packages, unchanged_packages
+from k4bench.regression.models import MetricVerdict, NightlyReport
+
+_log = logging.getLogger(__name__)
+
+PackagesForRelease = Callable[[str, str], "dict | None"]
+
+
+def _attributable(v: MetricVerdict) -> bool:
+    """True for a confirmed regression with a real ``(base, onset]`` release
+    window — the only kind ``blame.json`` carries. An open window (no baseline)
+    or a same-release window has nothing upstream to diff."""
+    base, onset = v.last_accepted_run_date, v.onset_run_date
+    return bool(onset and base and base < onset)
+
+
+def build_blame_report(
+    report: NightlyReport,
+    *,
+    packages_for_release: PackagesForRelease,
+    github: GitHubClient | None = None,
+    ranker: Ranker | None = None,
+    generated_at: str | None = None,
+) -> BlameReport:
+    """Build the night's blame from *report* and injected provenance/GitHub access.
+
+    ``ranker`` is the optional ranking stage (:mod:`k4bench.blame.rank`): given
+    one, each entry's candidates are scored and described; given ``None`` (the
+    default, and every environment without ``K4BENCH_LLM_*`` configured), they
+    are collected unranked. Ranking is fully isolated — a ranker that fails or
+    raises leaves that window's candidates unranked, never aborting the report.
+    """
+    verdicts = [v for v in report.regressions if _attributable(v)]
+
+    diff_cache: dict[tuple[str, str, str], list[PackageChange] | None] = {}
+    unchanged_cache: dict[tuple[str, str, str], int] = {}
+    resolution_cache: dict[tuple[str, str, str], RepoResolution] = {}
+    #: One rank inference per release-boundary window, shared by every metric
+    #: that stepped across it (they see the same diff and candidate set).
+    rank_cache: dict[tuple[str, str, str], dict[tuple[str, int], Ranking]] = {}
+    #: Set once GitHub throttles: from then on repos keep their diffs but get no
+    #: candidates, rather than each retry re-hitting the same wall.
+    rate_limited = False
+
+    entries: list[BlameEntry] = []
+    for v in verdicts:
+        window = (v.platform, v.last_accepted_run_date, v.onset_run_date)
+        if window not in diff_cache:
+            diff_cache[window], unchanged_cache[window] = _diff_window(
+                packages_for_release, *window
+            )
+        changes = diff_cache[window]
+        if not changes:
+            # None (provenance missing) or [] (releases differ but packages
+            # identical) — nothing to attribute either way.
+            continue
+
+        repos: list[RepoBlame] = []
+        patches: dict[tuple[str, int], str] = {}
+        for change in changes:
+            resolution, rate_limited = _resolve(
+                change, github, resolution_cache, rate_limited
+            )
+            repos.append(_repo_blame(change, resolution))
+            for pr in resolution.candidates:
+                patches[(pr.repo, pr.number)] = resolution.patches.get(pr.number, "")
+
+        if ranker is not None:
+            repos = _ranked_repos(ranker, v, repos, patches, window, rank_cache)
+
+        entries.append(BlameEntry(
+            detector=v.detector, platform=v.platform, sample=v.sample,
+            label=v.label, metric=v.metric, sub_detector=v.sub_detector,
+            base_release=v.last_accepted_run_date, onset_release=v.onset_run_date,
+            repos=tuple(repos), n_unchanged=unchanged_cache[window],
+        ))
+
+    return BlameReport(
+        generated_at=generated_at or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        report_night=report.report_night,
+        entries=tuple(entries),
+    )
+
+
+def _diff_window(
+    packages_for_release: PackagesForRelease, platform: str, base: str, onset: str
+) -> tuple[list[PackageChange] | None, int]:
+    """The changed packages and unchanged count for one window, or ``(None, 0)``
+    when either release's provenance is unavailable."""
+    base_pkgs = packages_for_release(platform, base)
+    head_pkgs = packages_for_release(platform, onset)
+    if not base_pkgs or not head_pkgs:
+        _log.info("blame: no provenance for %s %s..%s", platform, base, onset)
+        return None, 0
+    return diff_packages(base_pkgs, head_pkgs), len(unchanged_packages(base_pkgs, head_pkgs))
+
+
+def _resolve(
+    change: PackageChange,
+    github: GitHubClient | None,
+    cache: dict[tuple[str, str, str], RepoResolution],
+    rate_limited: bool,
+) -> tuple[RepoResolution, bool]:
+    """Resolve one changed repo's PRs, memoized on ``(slug, base, head)``.
+
+    Only a *changed* GitHub package with both endpoints is resolvable — an
+    added/removed package has no range, and a non-GitHub host no resolvable PRs.
+    Returns the (possibly empty) resolution and the updated rate-limit flag."""
+    repo = change.repo
+    if (
+        github is None or rate_limited
+        or change.status != CHANGED
+        or repo is None or repo.forge != "github"
+        or not change.base_commit or not change.head_commit
+    ):
+        return RepoResolution(), rate_limited
+
+    key = (repo.slug, change.base_commit, change.head_commit)
+    if key not in cache:
+        try:
+            cache[key] = resolve_repo_prs(github, repo.slug, change.base_commit, change.head_commit)
+        except RateLimitError:
+            _log.warning("blame: GitHub rate limit — remaining repos get no candidates")
+            return RepoResolution(), True
+        except Exception:
+            _log.exception("blame: resolving %s failed", repo.slug)
+            cache[key] = RepoResolution()
+    return cache[key], rate_limited
+
+
+def _repo_blame(change: PackageChange, resolution: RepoResolution) -> RepoBlame:
+    """Compose a :class:`RepoBlame`: the diff facts from *change* and the
+    candidate PRs GitHub found in its range.
+
+    Candidates are left **unranked** here — a ``score``/``description`` is the
+    ranking stage's job, and it judges every candidate of a regression together
+    (a PR in one repo can only be assessed against the others), so ranking
+    belongs above the per-repo assembly, not inside it.
+    """
+    repo = change.repo
+    return RepoBlame(
+        package=change.name,
+        repo=repo.slug if repo and repo.forge == "github" else None,
+        base_commit=change.base_commit,
+        head_commit=change.head_commit,
+        compare_url=change.compare_url,
+        status=change.status,
+        candidates=tuple(resolution.candidates),
+        commits_unavailable=resolution.commits_unavailable,
+        truncated=resolution.truncated,
+    )
+
+
+def _ranked_repos(
+    ranker: Ranker,
+    verdict: MetricVerdict,
+    repos: list[RepoBlame],
+    patches: dict[tuple[str, int], str],
+    window: tuple[str, str, str],
+    rank_cache: dict[tuple[str, str, str], dict[tuple[str, int], Ranking]],
+) -> list[RepoBlame]:
+    """Return *repos* with the ranker's scores/descriptions folded onto their
+    candidates.
+
+    Memoized on *window*: every confirmed metric that stepped across one release
+    boundary shares one diff and one candidate set, so it needs a single
+    inference rather than one per metric — the metric/direction that triggered
+    the window rides in the prompt. An empty result (the ranker declined, or
+    raised) leaves the candidates unranked.
+    """
+    if window not in rank_cache:
+        rank_cache[window] = _run_ranker(ranker, verdict, repos, patches)
+    rankings = rank_cache[window]
+    if not rankings:
+        return repos
+    return [_apply_rankings(repo, rankings) for repo in repos]
+
+
+def _run_ranker(
+    ranker: Ranker,
+    verdict: MetricVerdict,
+    repos: list[RepoBlame],
+    patches: dict[tuple[str, int], str],
+) -> dict[tuple[str, int], Ranking]:
+    """One guarded rank call. Any exception degrades to ``{}`` and is cached as
+    such, so a broken ranker is asked at most once per window and never aborts
+    the report — blame's best-effort isolation, extended to the model."""
+    try:
+        request = _rank_request(verdict, repos, patches)
+        if not request.candidates:
+            return {}
+        return ranker.rank(request)
+    except Exception:
+        _log.exception("blame: ranker raised — leaving this window's candidates unranked")
+        return {}
+
+
+def _rank_request(
+    verdict: MetricVerdict,
+    repos: list[RepoBlame],
+    patches: dict[tuple[str, int], str],
+) -> RankRequest:
+    """Assemble the ranker's input: the regression summary and every candidate
+    PR across the changed repos, each carried with its transient patch."""
+    candidates = tuple(
+        RankCandidate(
+            repo=pr.repo, number=pr.number, title=pr.title,
+            files=pr.files, patch=patches.get((pr.repo, pr.number), ""),
+        )
+        for repo in repos
+        for pr in repo.candidates
+    )
+    return RankRequest(
+        metric=verdict.metric, metric_family=verdict.metric_family,
+        direction=verdict.direction.value, pct_change=verdict.pct_change,
+        detector=verdict.detector, platform=verdict.platform, sample=verdict.sample,
+        sub_detector=verdict.sub_detector,
+        base_release=verdict.last_accepted_run_date,
+        onset_release=verdict.onset_run_date,
+        candidates=candidates,
+    )
+
+
+def _apply_rankings(
+    repo: RepoBlame, rankings: dict[tuple[str, int], Ranking]
+) -> RepoBlame:
+    """Fold the ranker's verdict onto a repo's candidates, matched on
+    ``(repo, number)``. A candidate with no ranking keeps its unranked
+    ``score``/``description``; a ranking keyed to a PR not in this repo is never
+    looked up — unknown keys drop out here as required."""
+    candidates = tuple(
+        dataclasses.replace(pr, score=ranking.score, description=ranking.description)
+        if (ranking := rankings.get((pr.repo, pr.number))) is not None
+        else pr
+        for pr in repo.candidates
+    )
+    return dataclasses.replace(repo, candidates=candidates)

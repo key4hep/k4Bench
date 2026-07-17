@@ -23,7 +23,9 @@ import smtplib
 import sys
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from pathlib import Path
 
+from k4bench.blame.models import BlameReport
 from k4bench.regression.models import NightlyReport
 from k4bench.regression.render import from_json, to_html, to_markdown
 
@@ -57,8 +59,12 @@ def send_report_email(
     smtp_port: int = DEFAULT_SMTP_PORT,
     dashboard_url: str | None = None,
     actions_url: str | None = None,
+    blame: BlameReport | None = None,
 ) -> bool:
     """Send the report to *to_addr*, every night, regardless of content.
+
+    *blame*, when present, adds a "most likely cause" lead under each confirmed
+    regression it has ranked; it is best-effort and never gates the email.
 
     Returns ``True`` once the mail has been handed to the relay.
     """
@@ -67,9 +73,11 @@ def send_report_email(
     msg["From"] = from_addr
     msg["To"] = to_addr
     # Plain-text fallback first, HTML preferred-last per MIME convention.
-    msg.attach(MIMEText(to_markdown(report, dashboard_url=dashboard_url), "plain", "utf-8"))
     msg.attach(MIMEText(
-        to_html(report, dashboard_url=dashboard_url, actions_url=actions_url),
+        to_markdown(report, dashboard_url=dashboard_url, blame=blame), "plain", "utf-8"
+    ))
+    msg.attach(MIMEText(
+        to_html(report, dashboard_url=dashboard_url, actions_url=actions_url, blame=blame),
         "html", "utf-8",
     ))
 
@@ -108,8 +116,23 @@ def main(argv: list[str] | None = None) -> int:
         to_addr=args.to, from_addr=args.from_addr,
         smtp_host=args.smtp_host, smtp_port=args.smtp_port,
         dashboard_url=args.dashboard_url, actions_url=args.actions_url,
+        blame=_load_blame(args.report),
     )
     return 0
+
+
+def _load_blame(report_path: str) -> BlameReport | None:
+    """The ``blame.json`` sitting beside *report_path*, or ``None``.
+
+    Best-effort by contract: most nights write no sidecar (nothing to
+    attribute), and a missing or malformed one must never block the email — the
+    report's core is complete without it."""
+    path = Path(report_path).with_name("blame.json")
+    try:
+        return BlameReport.from_json(json.loads(path.read_text()))
+    except (OSError, ValueError) as exc:
+        _log.debug("notify: no blame sidecar at %s — %s", path, exc)
+        return None
 
 
 if __name__ == "__main__":

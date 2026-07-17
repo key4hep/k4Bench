@@ -73,6 +73,19 @@ def _cached_fetch_report(base_url: str, date: str) -> dict | None:
     return fetch_report(base_url, date)
 
 
+@st.cache_data(show_spinner="Fetching blame...", ttl=3600)
+def _cached_fetch_blame(base_url: str, date: str) -> dict | None:
+    """Cached :func:`k4bench.remote.fetch_blame`.
+
+    Most nights have no ``blame.json`` (only a confirmed, attributable
+    regression produces one), so this returns ``None`` far more often than not —
+    cached for the full hour like the report it sits beside, since a published
+    night's blame is immutable.
+    """
+    from k4bench.remote import fetch_blame
+    return fetch_blame(base_url, date)
+
+
 @st.cache_data(show_spinner="Fetching nightly reports...", ttl=3600)
 def _cached_fetch_reports(base_url: str, dates: tuple[str, ...]) -> dict[str, dict]:
     """Fetch a whole window of nightly reports in parallel, keyed by date.
