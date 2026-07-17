@@ -24,6 +24,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import unquote
@@ -35,11 +36,49 @@ _log = logging.getLogger(__name__)
 _DIR_LINK_RE = re.compile(r'href="([^"/][^"]*/?)"', re.IGNORECASE)
 _TIMEOUT = 15
 
+#: Ceiling on concurrent connections to the WebEOS host. A deliberate
+#: stability constant rather than a CPU- or task-count-derived guess (neither
+#: reflects how many simultaneous TLS connections are sensible against one
+#: remote server) — kept modest since these are small static files with
+#: little to gain from more than a handful in flight. Only real with
+#: ``pool_block=True`` below; ``requests``' own default (``block=False``)
+#: would silently open extra unpooled connections past this instead of
+#: enforcing it.
+_POOL_MAXSIZE = 8
+
+#: One adapter, shared by every thread's session (see :func:`_get_session`),
+#: so this is a real, process-wide cap rather than one per thread.
+_adapter = requests.adapters.HTTPAdapter(pool_maxsize=_POOL_MAXSIZE, pool_block=True)
+
+_thread_local = threading.local()
+
+
+def _get_session() -> requests.Session:
+    """One ``requests.Session`` per thread, all mounting the shared,
+    connection-pooled :data:`_adapter`.
+
+    Replaces a fresh ad-hoc session per call (bare ``requests.get()`` opens
+    and tears one down every time) — several threads each doing a cold TLS
+    handshake at once was a reproducible way to crash the interpreter
+    natively. A session per thread, rather than one session shared by all,
+    rules out any race on a session's own mutable state (cookie jar,
+    redirect/auth hooks) at negligible cost: the pooled connections all live
+    on the shared adapter, so this allocates no new sockets, only a
+    lightweight wrapper object per thread.
+    """
+    session = getattr(_thread_local, "session", None)
+    if session is None:
+        session = requests.Session()
+        session.mount("https://", _adapter)
+        session.mount("http://", _adapter)
+        _thread_local.session = session
+    return session
+
 
 def _list_subdirs(url: str) -> list[str]:
     """Return directory names (without trailing slash) from an Apache listing."""
     url = url.rstrip("/") + "/"
-    resp = requests.get(url, timeout=_TIMEOUT)
+    resp = _get_session().get(url, timeout=_TIMEOUT)
     resp.raise_for_status()
     return [
         m.group(1).rstrip("/")
@@ -51,7 +90,7 @@ def _list_subdirs(url: str) -> list[str]:
 def _list_files(url: str) -> list[str]:
     """Return file names (no slash) from an Apache directory listing."""
     url = url.rstrip("/") + "/"
-    resp = requests.get(url, timeout=_TIMEOUT)
+    resp = _get_session().get(url, timeout=_TIMEOUT)
     resp.raise_for_status()
     return [
         m.group(1)
@@ -186,6 +225,7 @@ def ensure_run_cached(
     run_dir.parent.mkdir(parents=True, exist_ok=True)
     # Stage in a sibling temp dir (same filesystem, so the publish rename is atomic).
     tmp_dir = Path(tempfile.mkdtemp(prefix=f".{date}.tmp-", dir=run_dir.parent))
+    session = _get_session()
     try:
         for fname in _list_files(run_url):
             # Validate the *decoded* name: a percent-encoded separator (e.g.
@@ -201,7 +241,7 @@ def ensure_run_cached(
                 or Path(decoded).name != decoded
             ):
                 raise ValueError(f"Unsafe filename in listing: {fname!r}")
-            resp = requests.get(f"{run_url}/{fname}", timeout=_TIMEOUT)
+            resp = session.get(f"{run_url}/{fname}", timeout=_TIMEOUT)
             resp.raise_for_status()
             (tmp_dir / decoded).write_bytes(resp.content)
         (tmp_dir / ".complete").write_text("")
@@ -235,7 +275,6 @@ def fetch_runs_windowed(
     sample: str,
     stacks_dates: dict[str, list[str]],
     cache_root: str | None = None,
-    max_workers: int = 16,
 ) -> list[dict]:
     """Fetch every ``(stack, date)`` in *stacks_dates* in parallel, returning a
     list of ``{"stack", "date", "run_dir"}`` for the runs successfully cached.
@@ -243,13 +282,18 @@ def fetch_runs_windowed(
     Each run is fetched at most once (see :func:`ensure_run_cached`); callers pass
     an already date-windowed *stacks_dates* so only in-window runs are downloaded.
     Runs that fail to download are logged and skipped rather than aborting the load.
+
+    Thread count is Python's own default (no ``max_workers``; threads are
+    created lazily, never more than there is work to do). The concurrency
+    ceiling lives one level down, in :data:`_POOL_MAXSIZE`'s connection pool
+    (see :func:`_get_session`) — threads beyond it just queue for a slot.
     """
     tasks = [(stack, date) for stack, dates in stacks_dates.items() for date in dates]
     if not tasks:
         return []
 
     results: list[dict] = []
-    with ThreadPoolExecutor(max_workers=min(max_workers, len(tasks))) as pool:
+    with ThreadPoolExecutor() as pool:
         futures = {
             pool.submit(
                 ensure_run_cached,
@@ -308,7 +352,7 @@ def fetch_stack_packages(
         for date in dates:
             url = f"{root}/{sample}/{date}/run_info.json"
             try:
-                resp = requests.get(url, timeout=_TIMEOUT)
+                resp = _get_session().get(url, timeout=_TIMEOUT)
                 resp.raise_for_status()
                 packages = resp.json().get("k4h_packages")
             except (requests.RequestException, ValueError) as exc:
@@ -337,7 +381,7 @@ def fetch_report(base_url: str, date: str) -> dict | None:
     """Fetch and parse one nightly regression report, or ``None`` on failure."""
     url = f"{base_url.rstrip('/')}/_reports/{date}/report.json"
     try:
-        resp = requests.get(url, timeout=_TIMEOUT)
+        resp = _get_session().get(url, timeout=_TIMEOUT)
         resp.raise_for_status()
         return resp.json()
     except (requests.RequestException, ValueError) as exc:

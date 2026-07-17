@@ -83,10 +83,13 @@ def _cached_fetch_reports(base_url: str, dates: tuple[str, ...]) -> dict[str, di
     simply absent from the result. Cached on the *dates* tuple: growing the
     window refetches it in one parallel burst rather than serially.
 
-    Worker count is deliberately modest (4): this only ever runs on a cache
-    miss (a Streamlit rerun that hits the cache spawns no threads at all),
-    and keeping concurrent SSL connections low reduces the chance of a rerun
-    landing mid-fetch and racing the pool's shutdown.
+    Thread count is Python's own default (no ``max_workers``; this only ever
+    runs on a cache miss — a Streamlit rerun that hits the cache spawns no
+    threads at all). The concurrency ceiling lives one level down, in
+    :mod:`k4bench.remote`'s shared, ``pool_block=True`` connection pool (see
+    ``k4bench.remote._get_session``) — threads beyond it just queue for a
+    slot instead of each opening its own connection, which is what fixed this
+    fetch's intermittent, native interpreter crashes.
     """
     from concurrent.futures import ThreadPoolExecutor
 
@@ -103,7 +106,7 @@ def _cached_fetch_reports(base_url: str, dates: tuple[str, ...]) -> dict[str, di
             _log.exception("fetch_report: unexpected error for %s", date)
             return date, None
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor() as pool:
         return {date: raw for date, raw in pool.map(_one, dates) if raw}
 
 
