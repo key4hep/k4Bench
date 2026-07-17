@@ -19,6 +19,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from k4bench.blame.models import CandidatePR
 from k4bench.regression.models import MetricVerdict, Severity
 from k4bench.regression.render import _fmt, _pretty_sample
 from ui_utils import _METRIC_LABELS, _to_rgba
@@ -233,4 +234,73 @@ def flag_table(
         hide_index=True,
         width="stretch",
         column_config=column_config,
+    )
+
+
+#: Cap on candidate rows: a wide blame window can span many PRs; keep the
+#: worst-first head so the table stays scannable.
+_MAX_CANDIDATES = 10
+
+
+def has_ranking(candidates: list[CandidatePR]) -> bool:
+    """True when the ranking stage has judged any candidate — a non-zero score or
+    a description. Nothing to show (and no "Suggested" heading) until it has."""
+    return any(c.score or c.description for c in candidates)
+
+
+def candidate_table(candidates: list[CandidatePR]) -> None:
+    """Ranked candidate pull requests as a ledger, mirroring :func:`flag_table`'s
+    device: a bar scaled to the top candidate, plain-text identifiers, and one
+    action link per row (open the PR).
+
+    The bar is **plausibility, not proof** — the ranking stage's assessment of
+    how likely each PR is to be the cause, with its one-line reasoning in the
+    *Why* column. It never asserts a cause: this repo's whole culture is *no
+    evidence ⇒ no verdict*, so a candidate is a lead for a human. Renders nothing
+    until a ranking exists (see :func:`has_ranking`).
+    """
+    rows = candidates[:_MAX_CANDIDATES]
+    if not has_ranking(rows):
+        return
+    if len(candidates) > len(rows):
+        st.caption(
+            f"Top {len(rows)} of {len(candidates)} candidate PRs in the window."
+        )
+    records = [
+        {
+            "Likelihood": c.score,
+            "Pull request": f"{c.repo}#{c.number}",
+            "Title": c.title,
+            "Author": c.author or "—",
+            "Merged": (c.merged_at or "")[:10] or "—",
+            "Why": c.description or "—",
+            "Open": c.url,
+        }
+        for c in rows
+    ]
+    st.dataframe(
+        pd.DataFrame(records),
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Likelihood": st.column_config.ProgressColumn(
+                "Likelihood",
+                help="The ranking stage's estimate of how likely this PR is the "
+                     "cause, 0–100% — a suggestion, not evidence. Each PR in a "
+                     "range is judged on its own.",
+                format="%.0f%%",
+                min_value=0.0,
+                max_value=100.0,
+            ),
+            "Pull request": st.column_config.TextColumn("Pull request", width="small"),
+            "Title": st.column_config.TextColumn("Title", width="large"),
+            "Why": st.column_config.TextColumn(
+                "Why", width="large",
+                help="The ranking stage's one-line reasoning for this candidate.",
+            ),
+            "Open": st.column_config.LinkColumn(
+                "Open", display_text="↗ PR", width="small",
+                help="Open this pull request on GitHub.",
+            ),
+        },
     )

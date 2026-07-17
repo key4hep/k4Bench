@@ -38,7 +38,9 @@ testpaths = ["tests"]
 
 # key4hep's CVMFS pytest bundles GaudiTesting, which emits DartMeasurement
 # XML blobs to stdout for every test. Irrelevant here — block all three.
-addopts = "-v --tb=short -p no:collect_for_ctest -p no:ctest_measurements_reporter -p no:gaudi_fixtures"
+# --import-mode=importlib lets tests/unit and tests/integration share a test
+# basename (e.g. test_regression_report.py) without __init__.py files.
+addopts = "-v --tb=short --import-mode=importlib -p no:collect_for_ctest -p no:ctest_measurements_reporter -p no:gaudi_fixtures"
 
 markers = [
     "integration: requires full Key4hep environment with ddsim",

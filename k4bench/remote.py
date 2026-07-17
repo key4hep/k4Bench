@@ -389,6 +389,27 @@ def fetch_report(base_url: str, date: str) -> dict | None:
         return None
 
 
+def fetch_blame(base_url: str, date: str) -> dict | None:
+    """Fetch and parse one night's blame sidecar, or ``None`` when absent.
+
+    Blame lives beside the report at ``_reports/{date}/blame.json``, written
+    best-effort by the nightly ``regression-report`` job only on nights with a
+    confirmed regression it could attribute — so **most nights have none**, and a
+    404 here is the common case, not an error (logged at debug, returns ``None``).
+    Uses the same shared, connection-pooled session as every other WebEOS read
+    (see :func:`_get_session`) rather than a bare ``requests.get``, so it shares
+    the one real concurrency ceiling instead of opening its own connections.
+    """
+    url = f"{base_url.rstrip('/')}/_reports/{date}/blame.json"
+    try:
+        resp = _get_session().get(url, timeout=_TIMEOUT)
+        resp.raise_for_status()
+        return resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        _log.debug("fetch_blame: no blame for %s — %s", date, exc)
+        return None
+
+
 def ensure_latest_run_cached(
     base_url: str,
     detector: str,

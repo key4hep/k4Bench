@@ -5,8 +5,13 @@
 
 from __future__ import annotations
 
+import dataclasses
+import email
+import json
+
 import pytest
 
+from k4bench.blame.models import BlameEntry, BlameReport, CandidatePR, RepoBlame
 from k4bench.regression import notify
 from k4bench.regression.models import (
     Direction,
@@ -15,6 +20,7 @@ from k4bench.regression.models import (
     RunGroupReport,
     Severity,
 )
+from k4bench.regression.render import to_json
 
 
 class _FakeSMTP:
@@ -110,3 +116,114 @@ def test_cli_skips_quietly_without_recipient(fake_smtp, tmp_path):
     report_path.write_text('{"generated_at": "x", "groups": []}')
     assert notify.main([str(report_path)]) == 0
     assert fake_smtp.sent == []
+
+
+# ── Blame sidecar loading ─────────────────────────────────────────────────────
+
+def _decoded_body(msg_str: str) -> str:
+    """The message's text parts, base64/QP-decoded — the body substrings live
+    here, not in the raw MIME string (only the ASCII Subject header does)."""
+    message = email.message_from_string(msg_str)
+    return "".join(
+        part.get_payload(decode=True).decode("utf-8", "replace")
+        for part in message.walk()
+        if part.get_content_type() in ("text/plain", "text/html")
+    )
+
+
+def _blame_sidecar() -> BlameReport:
+    return BlameReport(
+        generated_at="2026-01-12T06:00:00", report_night="2026-01-12",
+        entries=(BlameEntry(
+            detector="DET", platform="PLAT", sample="single_e", label="baseline",
+            metric="wall_time_s", sub_detector=None,
+            base_release="2026-01-05", onset_release="2026-01-09",
+            repos=(RepoBlame(
+                package="k4geo", repo="key4hep/k4geo",
+                base_commit="a" * 40, head_commit="c" * 40,
+                compare_url="https://github.com/key4hep/k4geo/compare/a...c",
+                status="changed",
+                candidates=(CandidatePR(
+                    repo="key4hep/k4geo", number=1234, title="Lower the step limit",
+                    author="alice", url="https://github.com/key4hep/k4geo/pull/1234",
+                    score=72.0, description="raises the step count",
+                ),),
+            ),),
+        ),),
+    )
+
+
+def _confirmed_report_path(tmp_path):
+    """A report whose confirmed verdict carries the window
+    :func:`_blame_sidecar` attributes — the join needs identity *and* window."""
+    verdict = dataclasses.replace(
+        _verdict(Severity.CONFIRMED, Direction.UP),
+        onset_run_id="2026-01-09", onset_run_date="2026-01-09",
+        last_accepted_run_id="2026-01-05", last_accepted_run_date="2026-01-05",
+    )
+    report_path = tmp_path / "report.json"
+    report_path.write_text(json.dumps(to_json(_report(verdict))))
+    return report_path
+
+
+def test_load_blame_reads_sidecar(tmp_path):
+    report_path = _confirmed_report_path(tmp_path)
+    (tmp_path / "blame.json").write_text(json.dumps(_blame_sidecar().to_json()))
+    blame = notify._load_blame(str(report_path))
+    assert blame is not None
+    assert blame.entries[0].candidates[0].number == 1234
+
+
+def test_load_blame_absent_returns_none(tmp_path):
+    assert notify._load_blame(str(tmp_path / "report.json")) is None
+
+
+def test_load_blame_malformed_returns_none(tmp_path):
+    report_path = _confirmed_report_path(tmp_path)
+    (tmp_path / "blame.json").write_text("{ not valid json")
+    assert notify._load_blame(str(report_path)) is None
+
+
+def test_load_blame_wrong_schema_returns_none(tmp_path):
+    # Valid JSON that is not a blame report (entries missing required fields)
+    # must degrade exactly like invalid JSON — never block the email.
+    report_path = _confirmed_report_path(tmp_path)
+    (tmp_path / "blame.json").write_text('{"entries": [{"detector": "DET"}]}')
+    assert notify._load_blame(str(report_path)) is None
+
+
+def test_cli_renders_the_blame_lead_when_present(fake_smtp, tmp_path):
+    report_path = _confirmed_report_path(tmp_path)
+    (tmp_path / "blame.json").write_text(json.dumps(_blame_sidecar().to_json()))
+    assert notify.main([
+        str(report_path), "--to", "egroup@cern.ch", "--from-addr", "noreply@cern.ch",
+    ]) == 0
+    ((_frm, _to, msg),) = fake_smtp.sent
+    body = _decoded_body(msg)
+    assert "key4hep/k4geo#1234" in body
+    assert "72%" in body
+    assert "raises the step count" in body
+
+
+def test_cli_still_sends_when_blame_is_malformed(fake_smtp, tmp_path):
+    report_path = _confirmed_report_path(tmp_path)
+    (tmp_path / "blame.json").write_text("{ not valid json")
+    assert notify.main([
+        str(report_path), "--to", "egroup@cern.ch", "--from-addr", "noreply@cern.ch",
+    ]) == 0
+    assert len(fake_smtp.sent) == 1  # the email is never blocked by a bad sidecar
+
+
+def test_cli_still_sends_when_blame_has_a_non_numeric_score(fake_smtp, tmp_path):
+    # Valid JSON, wrongly typed value: the typed schema boundary rejects the
+    # sidecar and the email goes out without the blame lead — never a crash in
+    # the score sort or the "%.0f" format mid-send.
+    report_path = _confirmed_report_path(tmp_path)
+    data = _blame_sidecar().to_json()
+    data["entries"][0]["repos"][0]["candidates"][0]["score"] = "very likely"
+    (tmp_path / "blame.json").write_text(json.dumps(data))
+    assert notify.main([
+        str(report_path), "--to", "egroup@cern.ch", "--from-addr", "noreply@cern.ch",
+    ]) == 0
+    ((_frm, _to, msg),) = fake_smtp.sent
+    assert "key4hep/k4geo#1234" not in _decoded_body(msg)

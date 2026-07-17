@@ -164,6 +164,24 @@ of the window are the *same* release the band and link give way to a "nothing
 upstream changed" note: the stack did not move across the step, so the cause is
 the host, the sample, or noise rather than an upstream commit.
 
+Above the drill-down, each confirmed regression gets an **upstream-changes card**
+naming the packages that moved in its blame window, each linking to its commit
+range. When the blame [sidecar](../../reference/file-formats.md#blame-sidecar-blamejson)
+carries a **ranking**, the card also lists **suggested candidate pull requests**:
+each PR in the window with a 0–100% **Likelihood** it is the cause and a one-line
+*Why*. The ranking is produced offline by a **language model** that read the
+metric that moved and each PR's actual code diff (configured in CI via
+`K4BENCH_LLM_*`; see the [sidecar format](../../reference/file-formats.md#blame-sidecar-blamejson)) —
+the dashboard only displays the stored result. Several PRs can land in one
+package's range, so each is scored on its own — and each stepped *metric* gets
+its own ranking too (a card whose window confirmed several metrics shows one
+labelled ledger per metric, since which PR plausibly moved wall time is a
+different question from which moved memory). This is a ranked **lead for a
+human, not a verdict** — a suggestion, not proof of cause, in keeping with the
+detector's *no evidence ⇒ no verdict* rule; the nightly email surfaces the same
+top candidates under each regression. Most nights carry no `blame.json` at all,
+and a night whose candidates are not yet ranked shows only the package diff.
+
 ### Stack Changes tab
 
 Answers "what came in last night?" — and, when a metric has stepped, "what

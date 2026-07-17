@@ -11,11 +11,13 @@ WATCH/OK summary — never a row per OK metric.
 from __future__ import annotations
 
 import dataclasses
+import html
 import math
 import re
 from datetime import date
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from k4bench.blame.models import BlameEntry, BlameReport
 from k4bench.regression.models import (
     Direction,
     MetricVerdict,
@@ -228,9 +230,94 @@ def _html_footer(report: NightlyReport) -> str:
     )
 
 
+# ── Blame (model-ranked candidate PRs) ───────────────────────────────────────
+#
+# The regression report and its email never depend on blame: it is a separate,
+# best-effort sidecar (``blame.json``), joined back to a verdict only when the
+# file is present *and* its ranking stage actually judged the candidates. The
+# framing is deliberate — "a lead for a human, not evidence" — mirroring the
+# dashboard's candidate ledger and the repo's "no evidence ⇒ no verdict" culture:
+# a confident wrong culprit is worse than none.
+
+#: Top candidates surfaced under a regression in the email — a short lead; the
+#: full ranked ledger lives on the dashboard's Regressions tab.
+_MAX_EMAIL_CANDIDATES = 2
+
+
+def _ranked_candidates(entry: BlameEntry) -> list:
+    """*entry*'s candidates the ranking stage actually judged (a non-zero score
+    or a description), worst-first, capped — empty when nothing was ranked."""
+    ranked = [c for c in entry.candidates if c.score or c.description]
+    return ranked[:_MAX_EMAIL_CANDIDATES]
+
+
+def _blame_for(blame: BlameReport | None, v: MetricVerdict) -> list:
+    """The ranked candidates attributing verdict *v*, or ``[]`` when blame is
+    absent, has no entry for *v*, or left it unranked."""
+    if blame is None:
+        return []
+    entry = blame.entry_for(v)
+    return _ranked_candidates(entry) if entry is not None else []
+
+
+def _blame_markdown_lines(group: RunGroupReport, blame: BlameReport | None) -> list[str]:
+    """Suggested-cause bullets for a group's confirmed regressions, or ``[]``."""
+    lines: list[str] = []
+    for v in group.regressions:
+        ranked = _blame_for(blame, v)
+        if not ranked:
+            continue
+        lead = ", ".join(
+            f"[`{c.repo}#{c.number}`]({c.url}) ({c.score:.0f}%)"
+            + (f" — {c.description}" if c.description else "")
+            for c in ranked
+        )
+        lines.append(f"- _{_metric_name(v)}_ — most likely: {lead}")
+    if lines:
+        lines.insert(0, "**Suggested causes** — a lead for a human, not evidence:")
+    return lines
+
+
+def _blame_html_block(group: RunGroupReport, blame: BlameReport | None) -> str:
+    """Suggested-cause list for a group's confirmed regressions, or ``""``.
+
+    Everything read from ``blame.json`` is escaped on the way into markup: the
+    reason is model output, and even the PR URL is file content rather than
+    something this process fetched from GitHub itself — neither may inject
+    markup into the email body."""
+    items: list[str] = []
+    for v in group.regressions:
+        ranked = _blame_for(blame, v)
+        if not ranked:
+            continue
+        leads = "; ".join(
+            f'<a href="{html.escape(c.url, quote=True)}" style="color:#5b9bd5;text-decoration:none;">'
+            f"{c.repo}#{c.number}</a> ({c.score:.0f}%)"
+            + (f" — {html.escape(c.description)}" if c.description else "")
+            for c in ranked
+        )
+        items.append(
+            f'<li><strong>{_metric_name(v)}</strong> — most likely: {leads}</li>'
+        )
+    if not items:
+        return ""
+    return (
+        '<p style="color:#555;font-size:13px;margin:8px 0 2px;">'
+        "Suggested causes — a lead for a human, not evidence:</p>"
+        '<ul style="font-size:13px;color:#333;margin:0 0 10px;padding-left:18px;">'
+        + "".join(items)
+        + "</ul>"
+    )
+
+
 # ── Markdown ──────────────────────────────────────────────────────────────────
 
-def to_markdown(report: NightlyReport, *, dashboard_url: str | None = None) -> str:
+def to_markdown(
+    report: NightlyReport,
+    *,
+    dashboard_url: str | None = None,
+    blame: BlameReport | None = None,
+) -> str:
     lines = [
         f"# k4Bench nightly regression report — {report.report_night or 'no data'}",
         "",
@@ -278,6 +365,10 @@ def to_markdown(report: NightlyReport, *, dashboard_url: str | None = None) -> s
                         f"| {_badge(v)} |"
                     )
                 lines.append("")
+            blame_lines = _blame_markdown_lines(group, blame)
+            if blame_lines:
+                lines.extend(blame_lines)
+                lines.append("")
             if group.verdicts:
                 lines.append(f"_{_quiet_summary(group)}_")
                 lines.append("")
@@ -307,7 +398,8 @@ def _view_link(href: str, text: str) -> str:
 
 
 def to_html(report: NightlyReport, *, dashboard_url: str | None = None,
-            actions_url: str | None = None) -> str:
+            actions_url: str | None = None,
+            blame: BlameReport | None = None) -> str:
     """Self-contained HTML for the e-group email (inline styles, no CSS/JS)."""
     parts = [
         '<div style="font-family:Helvetica,Arial,sans-serif;max-width:860px;">',
@@ -380,6 +472,9 @@ def to_html(report: NightlyReport, *, dashboard_url: str | None = None,
                         "</tr>"
                     )
                 parts.append("</table>")
+            blame_block = _blame_html_block(group, blame)
+            if blame_block:
+                parts.append(blame_block)
             if group.verdicts:
                 parts.append(
                     f'<p style="color:#777;font-size:13px;">{_quiet_summary(group)}</p>'

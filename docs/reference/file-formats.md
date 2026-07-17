@@ -133,6 +133,7 @@ every browse dimension in the path so discovery is just directory listing:
     {config}_results.csv  {config}_events.json  {config}_regions.json  {config}.log
 _reports/{YYYY-MM-DD}/
     report.json
+    blame.json   (only on nights with an attributable confirmed regression)
 ```
 
 This is the integration contract between CI and the dashboard
@@ -141,6 +142,92 @@ Underscore-prefixed top-level directories are reserved for non-detector data:
 `_reports/` holds the nightly regression report (written by the
 `regression-report` CI job, rendered by the dashboard's Regressions tab) and is
 skipped by detector discovery.
+
+### Blame sidecar (`blame.json`)
+
+For each confirmed regression whose blame window spans two *different* releases,
+`blame.json` records the repositories that moved across that window and the pull
+requests that could have caused it, ranked by how well each matches the
+regression. It is a **sidecar**, deliberately separate from `report.json`: blame
+needs GitHub, and a GitHub outage, a rate limit, or a force-pushed `develop` must
+never degrade or fail the nightly report and its email. Different failure domain,
+different file — written best-effort by `blame_report.py` *after* `report.json`
+is uploaded, and **absent entirely on most nights** (most nights have no
+confirmed, attributable regression).
+
+```json
+{
+  "generated_at": "2026-07-05T06:10:00+00:00",
+  "report_night": "2026-07-05",
+  "entries": [
+    {
+      "detector": "ALLEGRO_o1_v03", "platform": "…", "sample": "single_e-_10GeV",
+      "label": "baseline", "metric": "wall_time_s", "sub_detector": null,
+      "base_release": "2026-07-03", "onset_release": "2026-07-04",
+      "n_unchanged": 60,
+      "repos": [
+        {
+          "package": "k4geo", "repo": "key4hep/k4geo",
+          "base_commit": "0f226a98…", "head_commit": "21647280…",
+          "compare_url": "https://github.com/key4hep/k4geo/compare/0f226a98…...21647280…",
+          "status": "changed", "commits_unavailable": false, "truncated": false,
+          "candidates": [
+            {
+              "repo": "key4hep/k4geo", "number": 1234,
+              "title": "Lower the tracker step limit", "author": "…",
+              "url": "https://github.com/key4hep/k4geo/pull/1234",
+              "merged_at": "2026-07-04T…", "files": ["FCCee/ALLEGRO/…"],
+              "additions": 20, "deletions": 4,
+              "score": 72, "description": "raises the tracker step count, plausibly slower"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+Each entry's first seven fields are a `report.json` verdict's identity; the
+dashboard joins an entry back to the confirmed regression it explains by that
+identity **and** the `base_release`/`onset_release` window, so a sidecar left
+over from an earlier build of the same night (the CI job also deletes the
+remote sidecar on a rerun that produces none) can never attach to a re-anchored
+regression. The pipeline collects every PR in each changed repo's commit range;
+a separate **ranking stage** then scores each candidate *for that regression* —
+`score` is a 0–100 likelihood it is the cause and `description` a one-line
+reason, judged per metric (two metrics sharing a window get independent
+rankings). `commits_unavailable` marks a repo whose range could not be
+enumerated at all; `truncated` marks a candidate list known to be incomplete
+(compare/PR caps, or a PR that failed to fetch) — a regression touching either
+is left **unranked**, since "most likely" over a partial candidate set would
+overclaim. The ranking is a *lead* for a human, never a claim of cause. Readers
+drop unknown keys, so the schema can gain fields without breaking an older
+dashboard; structurally malformed sidecars are hidden, never fatal.
+
+The ranking stage is a **language model** that reads the metric that moved and
+each candidate PR's actual code diff, and is configured entirely by environment —
+`K4BENCH_LLM_URL`, `K4BENCH_LLM_MODEL`, `K4BENCH_LLM_API_KEY` and optional
+`K4BENCH_LLM_MAX_TOKENS` (any OpenAI-compatible `/chat/completions` endpoint;
+the model is a config value, not pinned in code). Transient connection, timeout,
+HTTP 429 and HTTP 5xx failures retry with bounded backoff; length-truncated
+responses grow the output allowance up to a fixed ceiling. The complete blame
+stage also has a CI wall-clock limit. None of these failures can fail or delay
+the already-uploaded nightly report beyond that bound.
+
+Ranking is **optional**: with endpoint/model unset, candidates are still written
+but left unranked (`score` 0, `description` ""), the dashboard shows the package
+diff without the candidate ledger, and the email omits the "most likely" line.
+When ranking *is* configured, CI publishes `blame.json` only if every candidate
+of every fully-discovered regression has an explanation (a score of zero
+remains valid; a likelihood that is not a number rejects that row rather than
+becoming a fake 0%); an empty or partial model response is logged and the
+sidecar is skipped rather than silently publishing a ranking the dashboard
+would hide. The diffs the model reads are transient input, never
+stored here (they are re-fetchable from GitHub); the sidecar keeps only the file
+*paths* plus the ranker's `score`/`description`. The model may only score the
+candidates it is given — a PR number it did not receive is dropped, so
+`blame.json` can never surface an invented PR.
 
 ## See also
 

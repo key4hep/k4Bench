@@ -15,6 +15,17 @@
 #   K4BENCH_REGRESSION_EGROUP     — e-group recipient (email skipped when empty)
 #   K4BENCH_REGRESSION_FROM       — sender address    (email skipped when empty)
 #   K4BENCH_DASHBOARD_URL         — dashboard link used in the email body
+#   GITHUB_TOKEN                  — enables PR resolution for blame.json (5000/hr)
+#   K4BENCH_LLM_URL               — OpenAI-compatible base URL of an *off-box*
+#                                   endpoint (e.g. https://openrouter.ai/api/v1);
+#                                   enables model-based ranking of blame.json's
+#                                   candidate PRs. Unset ⇒ candidates unranked.
+#   K4BENCH_LLM_MODEL             — model id at that endpoint (both required to rank)
+#   K4BENCH_LLM_API_KEY           — bearer token for the endpoint (kept in secrets)
+#   K4BENCH_LLM_MAX_TOKENS        — optional initial completion-token budget;
+#                                   length truncation grows it up to a safe cap
+#   K4BENCH_BLAME_TIMEOUT         — wall-clock limit for the isolated blame
+#                                   step (default: 15m; GNU timeout syntax)
 
 set -euo pipefail
 
@@ -75,6 +86,43 @@ EOS_REPORT_DIR="${EOS_ROOT}/_reports/${NIGHT}"
 xrdfs "root://${EOS_FQDN}" mkdir -p "${EOS_REPORT_DIR}"
 xrdcp --force report/report.json "root://${EOS_FQDN}/${EOS_REPORT_DIR}/report.json"
 echo "Uploaded to: ${EOS_REPORT_DIR}/report.json"
+echo "::endgroup::"
+
+# ── 5b. Blame sidecar (best-effort; must never affect the report or the email) ─
+# Runs *after* the report is uploaded and is fully isolated: a GitHub outage, a
+# rate limit, or a force-pushed develop must not fail the job. The whole block
+# is `{ ...; } || echo`, so any failure — build, upload, remote cleanup —
+# degrades to a log line instead of tripping `set -e`. When no blame.json is
+# produced (most nights: nothing to attribute; otherwise incomplete ranking,
+# timeout, or another best-effort failure), any sidecar an earlier run of this
+# night left on EOS is removed — report.json was just replaced above, and a
+# stale sidecar must not be joined to a report it never examined. Reuses the
+# report build's run cache for provenance (no re-download); GITHUB_TOKEN
+# enables PR resolution, and K4BENCH_LLM_* (if set) ranks the candidates via an
+# *off-box* hosted endpoint — never local inference on this benchmark runner,
+# which would contend for CPU. blame_report.py reads all of these straight from
+# the environment. A hard wall-clock limit also covers a provider that accepts
+# connections but never makes useful progress.
+echo "::group::5b. Blame sidecar"
+{
+    timeout --signal=TERM --kill-after=30s "${K4BENCH_BLAME_TIMEOUT:-15m}" \
+      python .github/scripts/blame_report.py \
+        --report report/report.json \
+        --output-dir report \
+        --cache-dir "${RUNNER_TEMP:-/tmp}/k4bench_cache" \
+        --data-url "${K4BENCH_DATA_URL}" \
+      || echo "No blame sidecar this night (nothing to attribute, incomplete ranking, timeout, or another best-effort failure)." >&2
+    if [[ -f report/blame.json ]]; then
+        # Remove the previous sidecar before uploading: if the upload then
+        # fails, the night is left with *no* sidecar — absence is the safe
+        # state, a stale sidecar joined to the fresh report above is not.
+        xrdfs "${EOS_FQDN}" rm "${EOS_REPORT_DIR}/blame.json" 2>/dev/null || true
+        xrdcp --force report/blame.json "root://${EOS_FQDN}/${EOS_REPORT_DIR}/blame.json" \
+          && echo "Uploaded to: ${EOS_REPORT_DIR}/blame.json"
+    elif xrdfs "${EOS_FQDN}" rm "${EOS_REPORT_DIR}/blame.json" 2>/dev/null; then
+        echo "Removed a previous run's blame.json for this night."
+    fi
+} || echo "Blame sidecar upload/cleanup failed (best-effort; the report and email are unaffected)." >&2
 echo "::endgroup::"
 
 # ── 6. E-group email (sent every night regardless of content; skips quietly

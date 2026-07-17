@@ -70,7 +70,7 @@ _FLAGGED = [
 ]
 
 
-def _app(dashboard_dir, reports_map, dates, stacks_dates,
+def _app(dashboard_dir, reports_map, blame_map, dates, stacks_dates,
          detector, platform, sample, stack):
     """The tab, rendered standalone with every remote call stubbed.
 
@@ -86,6 +86,9 @@ def _app(dashboard_dir, reports_map, dates, stacks_dates,
 
     _tab._cached_list_report_dates = lambda url: list(dates)
     _tab._cached_fetch_report = lambda url, night: reports_map.get(night)
+    # Absent on most nights; the blame sidecar is best-effort, so the stub
+    # returns None unless a test supplies one.
+    _tab._cached_fetch_blame = lambda url, night: blame_map.get(night)
     # Doubles as both the report-night lookup (which release ran when) and the
     # trend preview's history fetch; the windowed-run fetch below returns
     # nothing so the drill-down warns instead of downloading anything.
@@ -93,6 +96,9 @@ def _app(dashboard_dir, reports_map, dates, stacks_dates,
         lambda url, det, plat, samp: {k: list(v) for k, v in stacks_dates}
     )
     _tab._cached_fetch_runs_windowed = lambda *a, **k: ()
+    # The forward blame card's live provenance lookup; stubbed to avoid the
+    # network so a windowed verdict's card renders without a real EOS fetch.
+    _tab.packages_for_release = lambda data_url, platform, release: None
     _tab.render(
         "https://example.invalid", "/tmp/cache", detector, platform, sample, stack,
     )
@@ -100,13 +106,13 @@ def _app(dashboard_dir, reports_map, dates, stacks_dates,
 
 def _run(report_json=None, detector="CLD", platform=PLAT, sample="single_e",
          stack=STACK, dates=(NIGHT,), stacks_dates=None,
-         reports_map=None) -> AppTest:
+         reports_map=None, blame_map=None) -> AppTest:
     if reports_map is None:
         reports_map = {d: report_json for d in dates}
     at = AppTest.from_function(
         _app,
         args=(
-            str(_DASHBOARD_DIR), reports_map, tuple(dates),
+            str(_DASHBOARD_DIR), reports_map, blame_map or {}, tuple(dates),
             tuple((k, tuple(v)) for k, v in (stacks_dates or {}).items()),
             detector, platform, sample, stack,
         ),
@@ -268,3 +274,104 @@ def test_release_older_than_the_first_report_says_so():
     body = " ".join(i.value for i in at.info)
     assert "No nightly report covers" in body and "2026-06-01" in body
     assert not at.metric
+
+
+# ── candidate PRs from the blame sidecar ─────────────────────────────────────
+
+def _windowed_confirmed() -> MetricVerdict:
+    """A confirmed wall-time regression with a real (baseline, onset] window."""
+    return _verdict(
+        "wall_time_s", Severity.CONFIRMED, 0.20,
+        onset_run_id="2026-07-04", onset_run_date="2026-07-04",
+        last_accepted_run_id="2026-07-01", last_accepted_run_date="2026-07-01",
+    )
+
+
+def _blame_json(candidates) -> dict:
+    from k4bench.blame.models import BlameEntry, BlameReport, RepoBlame
+    entry = BlameEntry(
+        detector="CLD", platform=PLAT, sample="single_e", label="baseline",
+        metric="wall_time_s", sub_detector=None,
+        base_release="2026-07-01", onset_release="2026-07-04",
+        repos=(RepoBlame(
+            package="k4geo", repo="key4hep/k4geo",
+            base_commit="a" * 40, head_commit="c" * 40,
+            compare_url="https://github.com/key4hep/k4geo/compare/a...c",
+            status="changed", candidates=tuple(candidates),
+        ),),
+        n_unchanged=60,
+    )
+    return BlameReport(
+        generated_at=f"{NIGHT}T06:00:00+00:00", report_night=NIGHT, entries=(entry,)
+    ).to_json()
+
+
+def test_ranked_candidate_prs_render_when_a_blame_sidecar_is_present():
+    from k4bench.blame.models import CandidatePR
+    cand = CandidatePR(
+        repo="key4hep/k4geo", number=1234, title="Lower the tracker step limit",
+        author="alice", url="https://github.com/key4hep/k4geo/pull/1234",
+        merged_at="2026-07-04T10:00:00Z", files=("FCCee/CLD/compact/x.xml",),
+        additions=20, deletions=4, score=72.0,
+        description="raises tracker step count, plausibly slower",
+    )
+    at = _run(
+        _report([_group(verdicts=[_windowed_confirmed()])]),
+        blame_map={NIGHT: _blame_json([cand])},
+    )
+    captions = " ".join(c.value for c in at.caption)
+    assert "Suggested cause" in captions
+    pr_frames = [d.value for d in at.dataframe if "Pull request" in d.value.columns]
+    assert len(pr_frames) == 1
+    assert "key4hep/k4geo#1234" in list(pr_frames[0]["Pull request"])
+
+
+def test_unranked_candidates_show_no_table():
+    # The interim: the blame sidecar carries the candidate PRs but the ranking
+    # stage has not scored/described them yet. The forward package-diff card
+    # still renders; the candidate ledger stays hidden until there is a ranking.
+    from k4bench.blame.models import CandidatePR
+    cand = CandidatePR(
+        repo="key4hep/k4geo", number=1234, title="Some PR", author="alice",
+        url="https://github.com/key4hep/k4geo/pull/1234",
+    )
+    at = _run(
+        _report([_group(verdicts=[_windowed_confirmed()])]),
+        blame_map={NIGHT: _blame_json([cand])},
+    )
+    assert not any("Pull request" in d.value.columns for d in at.dataframe)
+
+
+def test_no_candidate_table_without_a_blame_sidecar():
+    # The common case: a confirmed regression whose night has no blame.json.
+    at = _run(_report([_group(verdicts=[_windowed_confirmed()])]))
+    assert not any("Pull request" in d.value.columns for d in at.dataframe)
+
+
+def test_malformed_blame_sidecar_hides_blame_instead_of_crashing():
+    # Valid JSON, wrong shape (entries missing required fields): the page must
+    # render as if the night had no sidecar at all.
+    at = _run(
+        _report([_group(verdicts=[_windowed_confirmed()])]),
+        blame_map={NIGHT: {"entries": [{"detector": "CLD"}]}},
+    )
+    assert not any("Pull request" in d.value.columns for d in at.dataframe)
+
+
+def test_stale_blame_with_a_different_window_is_not_joined():
+    # Same verdict identity, but the sidecar attributes an older window (e.g. a
+    # rerun re-anchored the step): its ranking must not attach.
+    from k4bench.blame.models import CandidatePR
+    cand = CandidatePR(
+        repo="key4hep/k4geo", number=1234, title="Some PR", author="alice",
+        url="https://github.com/key4hep/k4geo/pull/1234",
+        score=90.0, description="from another window",
+    )
+    stale = _blame_json([cand])
+    stale["entries"][0]["base_release"] = "2026-06-20"
+    stale["entries"][0]["onset_release"] = "2026-06-25"
+    at = _run(
+        _report([_group(verdicts=[_windowed_confirmed()])]),
+        blame_map={NIGHT: stale},
+    )
+    assert not any("Pull request" in d.value.columns for d in at.dataframe)

@@ -40,6 +40,25 @@ jobs:
           K4BENCH_REGRESSION_FROM:   ${{ vars.K4BENCH_REGRESSION_FROM }}
           K4BENCH_DASHBOARD_URL:     ${{ vars.K4BENCH_DASHBOARD_URL }}
           GITHUB_RUN_URL:            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # Enables the best-effort blame sidecar's PR resolution. The built-in
+          # token reads the public Key4hep repos at 1000 req/hr — a night touches
+          # only tens of calls — and blame is fully isolated, so an absent or
+          # throttled token degrades to diffs-only, never a failed report.
+          GITHUB_TOKEN:              ${{ secrets.GITHUB_TOKEN }}
+          # Model-based ranking of the blame candidates. "OpenAI-compatible" is
+          # the /chat/completions wire protocol, NOT the vendor — point the URL
+          # at any endpoint that speaks it (OpenRouter, Groq, Gemini's compat
+          # endpoint, a self-hosted server, …); the model is just K4BENCH_LLM_MODEL.
+          # Must be *off-box* (never local inference on this benchmark runner).
+          # Endpoint and model enable ranking; the key is optional for keyless
+          # endpoints. The whole ranking path stays inside the isolated blame step.
+          K4BENCH_LLM_URL:           ${{ vars.K4BENCH_LLM_URL }}
+          K4BENCH_LLM_MODEL:         ${{ vars.K4BENCH_LLM_MODEL }}
+          K4BENCH_LLM_API_KEY:       ${{ secrets.K4BENCH_LLM_API_KEY }}
+          K4BENCH_LLM_MAX_TOKENS:    ${{ vars.K4BENCH_LLM_MAX_TOKENS || '16384' }}
+          # Bounds the entire optional GitHub+LLM attribution stage. A timeout
+          # skips blame.json but cannot affect report.json or notification.
+          K4BENCH_BLAME_TIMEOUT:     ${{ vars.K4BENCH_BLAME_TIMEOUT || '15m' }}
         run: |
           docker pull "${{ env.CONTAINER_IMAGE }}"
           docker run --rm --init \
@@ -53,7 +72,9 @@ jobs:
             -e X509_USER_KEY=/tmp/eos-auth/userkey.pem \
             -e K4BENCH_DATA_URL -e K4BENCH_REGRESSION_EGROUP \
             -e K4BENCH_REGRESSION_FROM -e K4BENCH_DASHBOARD_URL \
-            -e GITHUB_RUN_URL \
+            -e GITHUB_RUN_URL -e GITHUB_TOKEN \
+            -e K4BENCH_LLM_URL -e K4BENCH_LLM_MODEL -e K4BENCH_LLM_API_KEY \
+            -e K4BENCH_LLM_MAX_TOKENS -e K4BENCH_BLAME_TIMEOUT \
             "${{ env.CONTAINER_IMAGE }}" \
             bash /workspace/.github/scripts/regression_report.sh
 
@@ -65,6 +86,7 @@ jobs:
           path: |
             report/report.json
             report/report.md
+            report/blame.json
           if-no-files-found: warn
 
       - name: Clean up EOS certificate
