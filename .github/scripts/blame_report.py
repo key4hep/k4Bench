@@ -11,9 +11,11 @@ asks GitHub which pull requests landed in each changed repo — writing
 
 This is best-effort and runs *after* ``report.json`` is built and uploaded: a
 GitHub outage, a rate limit, or a force-pushed ``develop`` must never degrade the
-nightly report or its email. The caller wraps this in ``|| true``; it also exits
-0 whenever it produced a file, even an empty one (most nights have no confirmed,
-attributable regression at all).
+nightly report or its email. The caller isolates this command from the report
+and email. When ranking is configured, an empty or partial model response exits
+non-zero and writes no sidecar rather than silently publishing data the dashboard
+would hide. A score of zero is valid, but every candidate must still have the
+model's explanation. Most nights have no confirmed, attributable regression at all.
 
 Provenance is read from local run directories the report build already cached
 (``--cache-dir``) or a local tree (``--data-dir``); ``--data-url`` is a remote
@@ -22,7 +24,8 @@ req/hr) enables PR resolution; without it the diffs are still written, just with
 no candidate PRs.
 
 Candidate ranking is configured entirely by environment (``K4BENCH_LLM_URL`` /
-``K4BENCH_LLM_MODEL`` / ``K4BENCH_LLM_API_KEY``, read by
+``K4BENCH_LLM_MODEL`` / ``K4BENCH_LLM_API_KEY`` and optional
+``K4BENCH_LLM_MAX_TOKENS``, read by
 :func:`k4bench.blame.rank.ranker_from_env`): with them set, each regression's
 candidate PRs are scored 0–100 and described by a model reading the real diffs;
 unset, candidates are written unranked. The endpoint must be *off-box* — this
@@ -37,6 +40,16 @@ import logging
 import os
 import sys
 from pathlib import Path
+
+# Executing a file below ``.github/scripts`` otherwise puts that directory—not
+# the checkout root—first on sys.path. Prefer the mounted checkout over a stale
+# k4bench installation in long-lived CI/dev virtual environments.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+try:
+    sys.path.remove(str(_REPO_ROOT))
+except ValueError:
+    pass
+sys.path.insert(0, str(_REPO_ROOT))
 
 
 def _local_packages(roots: list[str], platform: str, release: str) -> dict | None:
@@ -111,10 +124,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)s %(name)s: %(message)s",
+        force=True,
+    )
 
     from k4bench.blame.builder import build_blame_report
     from k4bench.blame.github import GitHubClient
+    from k4bench.blame.models import ranking_coverage
     from k4bench.blame.rank import ranker_from_env
     from k4bench.regression.render import from_json
 
@@ -122,6 +140,12 @@ def main(argv: list[str] | None = None) -> int:
     if not report_path.is_file():
         print(f"ERROR: no report at {report_path}", file=sys.stderr)
         return 1
+    out = Path(args.output_dir)
+    blame_path = out / "blame.json"
+    # A reused workspace must not let yesterday's successful sidecar survive a
+    # no-attribution, timeout or incomplete-ranking run and then reach the email
+    # or artifact upload. This path is the command's explicit generated output.
+    blame_path.unlink(missing_ok=True)
     report = from_json(json.loads(report_path.read_text()))
 
     detectors_by_platform: dict[str, list[str]] = {}
@@ -145,6 +169,12 @@ def main(argv: list[str] | None = None) -> int:
         logging.getLogger(__name__).info(
             "blame_report: no K4BENCH_LLM_* config — candidates written unranked"
         )
+    else:
+        logging.getLogger(__name__).info(
+            "blame_report: ranking with model %s (initial max_tokens=%s)",
+            getattr(ranker, "model", type(ranker).__name__),
+            getattr(ranker, "max_tokens", "provider default"),
+        )
 
     blame = build_blame_report(
         report, packages_for_release=packages_for_release, github=github, ranker=ranker
@@ -158,15 +188,26 @@ def main(argv: list[str] | None = None) -> int:
         print(f"blame for {blame.report_night or 'no data'}: nothing to attribute")
         return 0
 
-    out = Path(args.output_dir)
+    if ranker is not None:
+        n_ranked, n_expected, missing = ranking_coverage(blame)
+        if n_expected and n_ranked != n_expected:
+            shown = ", ".join(missing[:5])
+            suffix = f", … (+{len(missing) - 5} more)" if len(missing) > 5 else ""
+            logging.getLogger(__name__).error(
+                "blame_report: ranking incomplete (%d/%d distinct candidate PRs); "
+                "refusing to write blame.json. Missing: %s%s",
+                n_ranked, n_expected, shown, suffix,
+            )
+            return 1
+
     out.mkdir(parents=True, exist_ok=True)
-    (out / "blame.json").write_text(json.dumps(blame.to_json(), indent=2) + "\n")
+    blame_path.write_text(json.dumps(blame.to_json(), indent=2) + "\n")
 
     n_candidates = sum(len(e.candidates) for e in blame.entries)
     print(
         f"blame for {blame.report_night or 'no data'}: "
         f"{len(blame.entries)} attributed regression(s), "
-        f"{n_candidates} candidate PR(s) -> {out / 'blame.json'}"
+        f"{n_candidates} candidate PR(s) -> {blame_path}"
     )
     return 0
 

@@ -8,6 +8,7 @@ from k4bench.blame.models import (
     BlameReport,
     CandidatePR,
     RepoBlame,
+    ranking_coverage,
 )
 from k4bench.regression.models import Direction, MetricVerdict, Severity
 
@@ -93,3 +94,22 @@ def test_entry_for_joins_on_verdict_identity():
     # A different metric on the same series has no blame entry.
     other = MetricVerdict(**{**matching.__dict__, "metric": "peak_rss_mb"})
     assert report.entry_for(other) is None
+
+
+def test_ranking_coverage_deduplicates_windows_and_accepts_zero_with_reason():
+    ranked_zero = _pr(1, score=0.0)
+    missing = CandidatePR(
+        repo="key4hep/k4geo", number=2, title="PR 2", author="alice", url="u",
+        score=99.0, description="",
+    )
+    repos = (RepoBlame(
+        package="k4geo", repo="key4hep/k4geo", base_commit="a" * 40,
+        head_commit="c" * 40, compare_url=None, status="changed",
+        candidates=(ranked_zero, missing),
+    ),)
+    # Two metric entries share one window and repeat the same candidate rows.
+    report = BlameReport("g", "2026-07-05", entries=(
+        _entry(repos=repos),
+        _entry(metric="user_cpu_s", repos=repos),
+    ))
+    assert ranking_coverage(report) == (1, 2, ["key4hep/k4geo#2"])

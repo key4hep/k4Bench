@@ -27,9 +27,13 @@ from k4bench.blame.rank import (
 # ── Fakes ─────────────────────────────────────────────────────────────────────
 
 class _FakeResp:
-    def __init__(self, body, status=200):
+    def __init__(self, body, status=200, headers=None):
         self._body = body
         self.status_code = status
+        self.headers = headers or {}
+
+    def __bool__(self):
+        return self.status_code < 400  # mirror requests.Response truthiness
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -55,12 +59,15 @@ class _FakeSession:
         return action
 
 
-def _completion(content: str) -> _FakeResp:
+def _completion(content: str, *, finish_reason: str = "stop") -> _FakeResp:
     """A chat-completions response whose assistant message is *content*."""
-    return _FakeResp({"choices": [{"message": {"content": content}}]})
+    return _FakeResp({
+        "choices": [{"message": {"content": content}, "finish_reason": finish_reason}]
+    })
 
 
 def _ranker(actions, **kwargs) -> OpenAICompatRanker:
+    kwargs.setdefault("sleep_fn", lambda _seconds: None)
     return OpenAICompatRanker(
         url="https://llm.example/api/v1", model="some/model",
         api_key="secret", session=_FakeSession(actions), **kwargs,
@@ -130,7 +137,10 @@ def test_parses_a_good_response_scoring_each_pr_independently():
 
 
 def test_sends_model_endpoint_and_auth():
-    ranker = _ranker([_completion(_rankings_json())])
+    ranker = _ranker([_completion(_rankings_json(
+        {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 1, "reason": "x"},
+        {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 1, "reason": "y"},
+    ))])
     ranker.rank(_request())
     call = ranker.session.calls[0]
     assert call.url == "https://llm.example/api/v1/chat/completions"
@@ -139,9 +149,43 @@ def test_sends_model_endpoint_and_auth():
     assert call.headers["Authorization"] == "Bearer secret"
 
 
+def test_output_budget_scales_for_wide_candidate_windows():
+    candidates = tuple(
+        RankCandidate(repo="key4hep/k4geo", number=n, title=f"PR {n}")
+        for n in range(1, 6)
+    )
+    ranker = _ranker([_completion(_rankings_json(*(
+        {"repo": c.repo, "pr": c.number, "likelihood": 1, "reason": "x"}
+        for c in candidates
+    )))])
+    ranker.rank(_request(candidates=candidates))
+    assert ranker.session.calls[0].json["max_tokens"] == 4096
+
+
+def test_length_limited_response_retries_with_twice_the_output_budget():
+    candidates = tuple(
+        RankCandidate(repo="key4hep/k4geo", number=n, title=f"PR {n}")
+        for n in range(1, 6)
+    )
+    body = _rankings_json(*(
+        {"repo": c.repo, "pr": c.number, "likelihood": 0, "reason": "unrelated"}
+        for c in candidates
+    ))
+    ranker = _ranker([
+        _completion('{"rankings":[', finish_reason="length"),
+        _completion(body),
+    ])
+    result = ranker.rank(_request(candidates=candidates))
+    assert len(result) == 5
+    assert all(r.score == 0 and r.description == "unrelated" for r in result.values())
+    assert ranker.session.calls[0].json["max_tokens"] == 4096
+    assert ranker.session.calls[1].json["max_tokens"] == 8192
+
+
 def test_parses_json_wrapped_in_code_fences():
     body = "```json\n" + _rankings_json(
-        {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 50, "reason": "maybe"}
+        {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 50, "reason": "maybe"},
+        {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "low"},
     ) + "\n```"
     result = _ranker([_completion(body)]).rank(_request())
     assert result[("key4hep/k4geo", 10)].score == 50.0
@@ -149,7 +193,8 @@ def test_parses_json_wrapped_in_code_fences():
 
 def test_parses_json_embedded_in_prose():
     body = "Sure! Here is my assessment: " + _rankings_json(
-        {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 42, "reason": "plausible"}
+        {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 42, "reason": "plausible"},
+        {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "low"},
     ) + " Hope this helps."
     result = _ranker([_completion(body)]).rank(_request())
     assert result[("key4hep/k4geo", 10)].score == 42.0
@@ -161,10 +206,11 @@ def test_invented_pr_is_dropped():
     # The model returns a PR that was never in the request → it must not appear.
     body = _rankings_json(
         {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 70, "reason": "real"},
+        {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "low"},
         {"repo": "key4hep/ghost", "pr": 999, "likelihood": 99, "reason": "hallucinated"},
     )
     result = _ranker([_completion(body)]).rank(_request())
-    assert set(result) == {("key4hep/k4geo", 10)}
+    assert set(result) == {("key4hep/k4geo", 10), ("AIDASoft/DD4hep", 20)}
     assert ("key4hep/ghost", 999) not in result
 
 
@@ -181,7 +227,8 @@ def test_scores_are_clamped_to_0_100():
 def test_description_is_collapsed_to_one_line():
     body = _rankings_json(
         {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 60,
-         "reason": "line one\nline two\t  with   spaces"}
+         "reason": "line one\nline two\t  with   spaces"},
+        {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "low"},
     )
     result = _ranker([_completion(body)]).rank(_request())
     assert result[("key4hep/k4geo", 10)].description == "line one line two with spaces"
@@ -189,7 +236,8 @@ def test_description_is_collapsed_to_one_line():
 
 def test_non_numeric_likelihood_becomes_zero_not_an_error():
     body = _rankings_json(
-        {"repo": "key4hep/k4geo", "pr": 10, "likelihood": "very high", "reason": "x"}
+        {"repo": "key4hep/k4geo", "pr": 10, "likelihood": "very high", "reason": "x"},
+        {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "low"},
     )
     result = _ranker([_completion(body)]).rank(_request())
     assert result[("key4hep/k4geo", 10)].score == 0.0
@@ -197,29 +245,73 @@ def test_non_numeric_likelihood_becomes_zero_not_an_error():
 
 # ── Failure modes all collapse to {} ─────────────────────────────────────────
 
-def test_malformed_json_yields_empty():
-    result = _ranker([_completion("I cannot help with that.")]).rank(_request())
+def test_malformed_json_yields_empty_and_warns(caplog):
+    result = _ranker([
+        _completion("I cannot help with that."),
+        _completion("I cannot help with that."),
+    ]).rank(_request())
     assert result == {}
+    assert "no usable ranking (0/2 candidates" in caplog.text
+    assert "response prefix='I cannot help with that.'" in caplog.text
 
 
 def test_missing_rankings_key_yields_empty():
-    result = _ranker([_completion('{"something_else": 1}')]).rank(_request())
+    result = _ranker([
+        _completion('{"something_else": 1}'),
+        _completion('{"something_else": 1}'),
+    ]).rank(_request())
     assert result == {}
 
 
+def test_partial_response_is_completed_by_one_followup_call():
+    first = _rankings_json(
+        {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 70, "reason": "high"}
+    )
+    second = _rankings_json(
+        {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "low"}
+    )
+    ranker = _ranker([_completion(first), _completion(second)])
+    result = ranker.rank(_request())
+    assert set(result) == {("key4hep/k4geo", 10), ("AIDASoft/DD4hep", 20)}
+    assert len(ranker.session.calls) == 2
+
+
 def test_http_error_yields_empty_after_retry():
-    ranker = _ranker([_FakeResp({}, status=500), _FakeResp({}, status=500)])
+    ranker = _ranker([_FakeResp({}, status=500) for _ in range(4)])
     assert ranker.rank(_request()) == {}
-    assert len(ranker.session.calls) == 2  # one try, one retry, then give up
+    assert len(ranker.session.calls) == 4
 
 
 def test_timeout_yields_empty():
-    ranker = _ranker([requests.Timeout("slow"), requests.Timeout("slow")])
+    ranker = _ranker([requests.Timeout("slow") for _ in range(4)])
     assert ranker.rank(_request()) == {}
 
 
+def test_rate_limit_honours_retry_after():
+    delays = []
+    body = _rankings_json(
+        {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 55, "reason": "ok"},
+        {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "low"},
+    )
+    ranker = _ranker([
+        _FakeResp({}, status=429, headers={"Retry-After": "7"}),
+        _completion(body),
+    ], sleep_fn=delays.append)
+    assert len(ranker.rank(_request())) == 2
+    assert delays == [7.0]
+
+
+def test_non_retryable_client_error_fails_immediately():
+    ranker = _ranker([_FakeResp({}, status=400)])
+    assert ranker.rank(_request()) == {}
+    assert len(ranker.session.calls) == 1
+
+
 def test_transient_error_then_success_is_retried():
-    body = _rankings_json({"repo": "key4hep/k4geo", "pr": 10, "likelihood": 55, "reason": "ok"})
+    body = _rankings_json(
+        {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 55, "reason": "ok"},
+        {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "low"},
+    )
     ranker = _ranker([requests.ConnectionError("blip"), _completion(body)])
     result = ranker.rank(_request())
     assert result[("key4hep/k4geo", 10)].score == 55.0
@@ -265,6 +357,25 @@ def test_ranker_from_env_key_optional(monkeypatch):
     ranker = ranker_from_env()
     assert isinstance(ranker, OpenAICompatRanker)
     assert ranker.api_key is None
+
+
+def test_ranker_from_env_accepts_max_tokens_override(monkeypatch):
+    monkeypatch.setenv("K4BENCH_LLM_URL", "https://llm.example/v1")
+    monkeypatch.setenv("K4BENCH_LLM_MODEL", "reasoning-model")
+    monkeypatch.setenv("K4BENCH_LLM_MAX_TOKENS", "16384")
+    ranker = ranker_from_env()
+    assert isinstance(ranker, OpenAICompatRanker)
+    assert ranker.max_tokens == 16384
+
+
+def test_ranker_from_env_ignores_invalid_max_tokens(monkeypatch, caplog):
+    monkeypatch.setenv("K4BENCH_LLM_URL", "https://llm.example/v1")
+    monkeypatch.setenv("K4BENCH_LLM_MODEL", "some-model")
+    monkeypatch.setenv("K4BENCH_LLM_MAX_TOKENS", "many")
+    ranker = ranker_from_env()
+    assert isinstance(ranker, OpenAICompatRanker)
+    assert ranker.max_tokens == 4096
+    assert "ignoring invalid K4BENCH_LLM_MAX_TOKENS" in caplog.text
 
 
 if __name__ == "__main__":

@@ -22,6 +22,10 @@
 #                                   candidate PRs. Unset ⇒ candidates unranked.
 #   K4BENCH_LLM_MODEL             — model id at that endpoint (both required to rank)
 #   K4BENCH_LLM_API_KEY           — bearer token for the endpoint (kept in secrets)
+#   K4BENCH_LLM_MAX_TOKENS         — optional initial completion-token budget;
+#                                   length truncation grows it up to a safe cap
+#   K4BENCH_BLAME_TIMEOUT           — wall-clock limit for the isolated blame
+#                                   step (default: 15m; GNU timeout syntax)
 
 set -euo pipefail
 
@@ -93,10 +97,13 @@ echo "::endgroup::"
 # for provenance (no re-download); GITHUB_TOKEN enables PR resolution, and
 # K4BENCH_LLM_* (if set) ranks the candidates via an *off-box* hosted endpoint —
 # never local inference on this benchmark runner, which would contend for CPU.
-# blame_report.py reads all of these straight from the environment.
+# blame_report.py reads all of these straight from the environment. A hard
+# wall-clock limit also covers a provider that accepts connections but never
+# makes useful progress; timeout is caught by the same best-effort boundary.
 echo "::group::5b. Blame sidecar"
 {
-    python .github/scripts/blame_report.py \
+    timeout --signal=TERM --kill-after=30s "${K4BENCH_BLAME_TIMEOUT:-15m}" \
+      python .github/scripts/blame_report.py \
         --report report/report.json \
         --output-dir report \
         --cache-dir "${RUNNER_TEMP:-/tmp}/k4bench_cache" \
@@ -104,7 +111,7 @@ echo "::group::5b. Blame sidecar"
     && [[ -f report/blame.json ]] \
     && xrdcp --force report/blame.json "root://${EOS_FQDN}/${EOS_REPORT_DIR}/blame.json" \
     && echo "Uploaded to: ${EOS_REPORT_DIR}/blame.json"
-} || echo "No blame sidecar this night (nothing to attribute, or the step failed)." >&2
+} || echo "No blame sidecar this night (nothing to attribute, incomplete ranking, timeout, or another best-effort failure)." >&2
 echo "::endgroup::"
 
 # ── 6. E-group email (sent every night regardless of content; skips quietly

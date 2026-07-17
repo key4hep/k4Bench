@@ -38,6 +38,8 @@ import math
 import os
 import re
 import textwrap
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -123,7 +125,21 @@ _MAX_PROMPT_CHARS = 45000
 _MAX_FILES_LISTED = 12
 _MAX_DESCRIPTION_CHARS = 200
 
+#: A ranking row itself is small, but some OpenAI-compatible reasoning models
+#: charge hidden reasoning against ``max_tokens`` before emitting the JSON. A
+#: 1024-token floor (and even a 2560-token retry) was observed truncating a
+#: five-candidate backfill. Leave enough initial headroom for reasoning, scale
+#: wider windows, and permit bounded doubled retries without allowing an
+#: unbounded response. ``K4BENCH_LLM_MAX_TOKENS`` can raise/lower the initial floor for a
+#: particular provider/model without another code change.
+_DEFAULT_MAX_TOKENS = 4096
+_OUTPUT_TOKENS_PER_CANDIDATE = 512
+_MAX_OUTPUT_TOKENS = 32768
+
 _TIMEOUT = 60
+_MAX_ATTEMPTS = 4
+_MAX_RETRY_DELAY = 30.0
+_MAX_RESPONSE_ATTEMPTS = 2
 
 
 @dataclass
@@ -132,32 +148,67 @@ class OpenAICompatRanker:
 
     ``url`` is the API base (e.g. ``https://openrouter.ai/api/v1``);
     ``/chat/completions`` is appended. ``session`` is injectable so tests
-    substitute a fake with no network. On any HTTP/parse failure — after one
-    retry — :meth:`rank` returns ``{}`` rather than raising: a late report beats
-    a blocked one, and blame is a best-effort sidecar."""
+    substitute a fake with no network. Transient endpoint failures use bounded
+    exponential/``Retry-After`` backoff; length truncation increases the output
+    allowance. On final failure :meth:`rank` returns ``{}`` rather than raising:
+    a late report beats a blocked one, and blame is a best-effort sidecar."""
 
     url: str
     model: str
     api_key: str | None = None
     session: requests.Session = field(default_factory=requests.Session)
     timeout: int = _TIMEOUT
-    max_tokens: int = 1024
+    max_tokens: int = _DEFAULT_MAX_TOKENS
+    max_attempts: int = _MAX_ATTEMPTS
+    sleep_fn: Callable[[float], None] = field(default=time.sleep, repr=False)
 
     def rank(self, request: RankRequest) -> dict[tuple[str, int], Ranking]:
         if not request.candidates:
             return {}
-        try:
-            content = self._complete(request)
-        except Exception as exc:
-            # Timeout, connection error, HTTP status, bad shape — all the same
-            # outcome: no ranking. Never let the LLM path raise into the builder.
-            _log.warning("rank: LLM call failed (%s) — candidates left unranked", exc)
-            return {}
-        return _parse_rankings(content, request)
+        expected = {(c.repo, c.number) for c in request.candidates}
+        combined: dict[tuple[str, int], Ranking] = {}
+        for response_attempt in range(_MAX_RESPONSE_ATTEMPTS):
+            try:
+                content, finish_reason = self._complete(request)
+            except Exception as exc:
+                # Timeout, connection error, HTTP status, bad shape — all the
+                # same final outcome. Preserve any valid rows from a prior
+                # partial response; strict publishers will still reject it.
+                _log.warning(
+                    "rank: LLM call failed (%s) — %d/%d candidates ranked",
+                    exc, len(combined), len(expected),
+                )
+                return combined
 
-    def _complete(self, request: RankRequest) -> str:
-        """POST the prompt and return the assistant message text. One timeout +
-        one retry, then give up (raise, for :meth:`rank` to swallow)."""
+            combined.update(_parse_rankings(content, request))
+            missing = expected - set(combined)
+            if not missing:
+                return combined
+
+            retrying = response_attempt + 1 < _MAX_RESPONSE_ATTEMPTS
+            _log.warning(
+                "rank: LLM returned %s ranking (%d/%d candidates; "
+                "finish_reason=%s); missing: %s; response prefix=%r%s",
+                "no usable" if not combined else "a partial",
+                len(combined), len(expected), finish_reason,
+                ", ".join(f"{repo}#{number}" for repo, number in sorted(missing)),
+                content[:500],
+                "; retrying once" if retrying else "",
+            )
+        return combined
+
+    def _complete(self, request: RankRequest) -> tuple[str, str]:
+        """POST the prompt and return ``(assistant text, finish reason)``.
+
+        Transient connection/timeout, HTTP 429 and HTTP 5xx failures retry with
+        bounded backoff. A response explicitly stopped by the provider's length
+        limit retries with twice the output allowance. HTTP 4xx errors other
+        than 429 are configuration/request errors and fail immediately.
+        """
+        output_tokens = min(
+            _MAX_OUTPUT_TOKENS,
+            max(self.max_tokens, _OUTPUT_TOKENS_PER_CANDIDATE * len(request.candidates)),
+        )
         payload = {
             "model": self.model,
             "messages": [
@@ -165,7 +216,7 @@ class OpenAICompatRanker:
                 {"role": "user", "content": _build_user_prompt(request)},
             ],
             "temperature": 0,
-            "max_tokens": self.max_tokens,
+            "max_tokens": output_tokens,
             # JSON mode when the backend honours it; parsing never depends on it.
             "response_format": {"type": "json_object"},
         }
@@ -175,18 +226,81 @@ class OpenAICompatRanker:
         endpoint = self.url.rstrip("/") + "/chat/completions"
 
         last_exc: Exception | None = None
-        for attempt in range(2):  # one try, one retry
+        for attempt in range(self.max_attempts):
+            resp = None
+            length_limited = False
             try:
+                # A fresh mapping matters for diagnostics/tests as well as for
+                # requests hooks that retain the submitted payload: increasing
+                # the retry budget must not retroactively rewrite attempt one.
+                attempt_payload = dict(payload)
                 resp = self.session.post(
-                    endpoint, json=payload, headers=headers, timeout=self.timeout
+                    endpoint, json=attempt_payload, headers=headers, timeout=self.timeout
                 )
                 resp.raise_for_status()
                 data = resp.json()
-                return str(data["choices"][0]["message"]["content"] or "")
+                choice = data["choices"][0]
+                finish_reason = str(choice.get("finish_reason") or "unknown")
+                if finish_reason == "length":
+                    previous = attempt_payload["max_tokens"]
+                    length_limited = True
+                    payload["max_tokens"] = min(_MAX_OUTPUT_TOKENS, previous * 2)
+                    raise ValueError(
+                        f"LLM response truncated at {previous} output tokens"
+                    )
+                return str(choice["message"]["content"] or ""), finish_reason
             except Exception as exc:
                 last_exc = exc
-                _log.debug("rank: attempt %d/%d failed: %s", attempt + 1, 2, exc)
-        raise last_exc  # both attempts failed; rank() turns this into {}
+                can_retry = _retryable_failure(
+                    exc, resp, length_limited=length_limited,
+                    can_grow=payload["max_tokens"] > attempt_payload["max_tokens"],
+                )
+                if not can_retry or attempt + 1 >= self.max_attempts:
+                    break
+                delay = 0.0 if length_limited else _retry_delay(resp, attempt)
+                _log.warning(
+                    "rank: attempt %d/%d failed (%s); retrying in %.1fs",
+                    attempt + 1, self.max_attempts, exc, delay,
+                )
+                if delay:
+                    self.sleep_fn(delay)
+        raise last_exc  # bounded attempts failed; rank() turns this into {}
+
+
+def _retryable_failure(
+    exc: Exception,
+    response,
+    *,
+    length_limited: bool,
+    can_grow: bool,
+) -> bool:
+    """Whether an endpoint failure is worth another request."""
+    if length_limited:
+        return can_grow
+    if isinstance(exc, (requests.Timeout, requests.ConnectionError)):
+        return True
+    status = getattr(response, "status_code", None)
+    if isinstance(exc, requests.HTTPError):
+        return status == 429 or (status is not None and status >= 500)
+    # A successful HTTP response with an invalid JSON/chat-completion shape can
+    # be a transient provider proxy failure. Retry it within the same bound.
+    return True
+
+
+def _retry_delay(response, attempt: int) -> float:
+    """Provider ``Retry-After`` seconds or bounded exponential backoff."""
+    # ``requests.Response.__bool__`` is false for 4xx/5xx—the exact responses
+    # whose headers matter here—so test identity, never truthiness.
+    raw = (
+        getattr(response, "headers", {}).get("Retry-After")
+        if response is not None else None
+    )
+    if raw is not None:
+        try:
+            return min(_MAX_RETRY_DELAY, max(0.0, float(raw)))
+        except (TypeError, ValueError):
+            pass
+    return min(_MAX_RETRY_DELAY, float(2 ** attempt))
 
 
 def ranker_from_env() -> Ranker | None:
@@ -201,7 +315,22 @@ def ranker_from_env() -> Ranker | None:
     if not url or not model:
         return None
     api_key = os.environ.get("K4BENCH_LLM_API_KEY", "").strip() or None
-    return OpenAICompatRanker(url=url, model=model, api_key=api_key)
+    raw_max_tokens = os.environ.get("K4BENCH_LLM_MAX_TOKENS", "").strip()
+    max_tokens = _DEFAULT_MAX_TOKENS
+    if raw_max_tokens:
+        try:
+            configured = int(raw_max_tokens)
+            if configured <= 0:
+                raise ValueError("must be positive")
+            max_tokens = min(configured, _MAX_OUTPUT_TOKENS)
+        except ValueError:
+            _log.warning(
+                "rank: ignoring invalid K4BENCH_LLM_MAX_TOKENS=%r; using %d",
+                raw_max_tokens, _DEFAULT_MAX_TOKENS,
+            )
+    return OpenAICompatRanker(
+        url=url, model=model, api_key=api_key, max_tokens=max_tokens
+    )
 
 
 # ── Prompt assembly ───────────────────────────────────────────────────────────

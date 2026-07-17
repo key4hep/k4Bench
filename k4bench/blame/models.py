@@ -214,3 +214,28 @@ class BlameReport:
             report_night=str(data.get("report_night", "")),
             entries=tuple(BlameEntry.from_dict(e) for e in data.get("entries") or ()),
         )
+
+
+def ranking_coverage(blame: BlameReport) -> tuple[int, int, list[str]]:
+    """Return ``(ranked, expected, missing)`` for distinct window candidates.
+
+    Candidate rows repeat for every metric sharing one release window, while the
+    builder performs one model inference per window. Count each
+    ``(platform, base, onset, repo, PR)`` once so completeness reflects actual
+    model work rather than serialized duplication.
+
+    A zero score with a non-empty explanation is a valid ranking. An empty
+    description is incomplete regardless of score: the contract asks the model
+    to explain every judgement, including why a PR is unlikely.
+    """
+    expected: set[tuple] = set()
+    ranked: set[tuple] = set()
+    for entry in blame.entries:
+        window = (entry.platform, entry.base_release, entry.onset_release)
+        for candidate in entry.candidates:
+            key = (*window, candidate.repo, candidate.number)
+            expected.add(key)
+            if candidate.description:
+                ranked.add(key)
+    missing = [f"{key[-2]}#{key[-1]}" for key in sorted(expected - ranked)]
+    return len(ranked), len(expected), missing

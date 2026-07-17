@@ -199,16 +199,25 @@ breaking an older dashboard.
 
 The ranking stage is a **language model** that reads the metric that moved and
 each candidate PR's actual code diff, and is configured entirely by environment —
-`K4BENCH_LLM_URL`, `K4BENCH_LLM_MODEL`, `K4BENCH_LLM_API_KEY` (any
-OpenAI-compatible `/chat/completions` endpoint; the model is a config value, not
-pinned in code). It is **optional**: with those unset, candidates are still
-written but left unranked (`score` 0, `description` ""), the dashboard shows the
-package diff without the candidate ledger, and the email omits the "most likely"
-line — "no ranking" is an honest state, not an error. The diffs the model reads
-are transient input, never stored here (they are re-fetchable from GitHub); the
-sidecar keeps only the file *paths* plus the ranker's `score`/`description`. The
-model may only score the candidates it is given — a PR number it did not receive
-is dropped, so `blame.json` can never surface an invented PR.
+`K4BENCH_LLM_URL`, `K4BENCH_LLM_MODEL`, `K4BENCH_LLM_API_KEY` and optional
+`K4BENCH_LLM_MAX_TOKENS` (any OpenAI-compatible `/chat/completions` endpoint;
+the model is a config value, not pinned in code). Transient connection, timeout,
+HTTP 429 and HTTP 5xx failures retry with bounded backoff; length-truncated
+responses grow the output allowance up to a fixed ceiling. The complete blame
+stage also has a CI wall-clock limit. None of these failures can fail or delay
+the already-uploaded nightly report beyond that bound.
+
+Ranking is **optional**: with endpoint/model unset, candidates are still written
+but left unranked (`score` 0, `description` ""), the dashboard shows the package
+diff without the candidate ledger, and the email omits the "most likely" line.
+When ranking *is* configured, CI publishes `blame.json` only if every distinct
+candidate has an explanation (a score of zero remains valid); an empty or partial model response is
+logged and the sidecar is skipped rather than silently publishing a ranking the
+dashboard would hide. The diffs the model reads are transient input, never
+stored here (they are re-fetchable from GitHub); the sidecar keeps only the file
+*paths* plus the ranker's `score`/`description`. The model may only score the
+candidates it is given — a PR number it did not receive is dropped, so
+`blame.json` can never surface an invented PR.
 
 ## See also
 

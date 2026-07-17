@@ -50,11 +50,15 @@ jobs:
           # at any endpoint that speaks it (OpenRouter, Groq, Gemini's compat
           # endpoint, a self-hosted server, …); the model is just K4BENCH_LLM_MODEL.
           # Must be *off-box* (never local inference on this benchmark runner).
-          # All three optional: unset ⇒ candidates unranked, and the whole
-          # ranking path stays inside the isolated blame step.
+          # Endpoint and model enable ranking; the key is optional for keyless
+          # endpoints. The whole ranking path stays inside the isolated blame step.
           K4BENCH_LLM_URL:           ${{ vars.K4BENCH_LLM_URL }}
           K4BENCH_LLM_MODEL:         ${{ vars.K4BENCH_LLM_MODEL }}
           K4BENCH_LLM_API_KEY:       ${{ secrets.K4BENCH_LLM_API_KEY }}
+          K4BENCH_LLM_MAX_TOKENS:    ${{ vars.K4BENCH_LLM_MAX_TOKENS || '16384' }}
+          # Bounds the entire optional GitHub+LLM attribution stage. A timeout
+          # skips blame.json but cannot affect report.json or notification.
+          K4BENCH_BLAME_TIMEOUT:      ${{ vars.K4BENCH_BLAME_TIMEOUT || '15m' }}
         run: |
           docker pull "${{ env.CONTAINER_IMAGE }}"
           docker run --rm --init \
@@ -70,6 +74,7 @@ jobs:
             -e K4BENCH_REGRESSION_FROM -e K4BENCH_DASHBOARD_URL \
             -e GITHUB_RUN_URL -e GITHUB_TOKEN \
             -e K4BENCH_LLM_URL -e K4BENCH_LLM_MODEL -e K4BENCH_LLM_API_KEY \
+            -e K4BENCH_LLM_MAX_TOKENS -e K4BENCH_BLAME_TIMEOUT \
             "${{ env.CONTAINER_IMAGE }}" \
             bash /workspace/.github/scripts/regression_report.sh
 

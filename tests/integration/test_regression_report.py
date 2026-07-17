@@ -162,6 +162,29 @@ def test_blame_report_cli_local_mode(tmp_path):
     assert repos["k4geo"]["candidates"] == []  # no PRs resolved without GitHub
 
 
+def test_blame_report_removes_stale_sidecar_when_nothing_is_attributable(tmp_path):
+    report_path = tmp_path / "report.json"
+    report_path.write_text(json.dumps({"generated_at": "x", "groups": []}))
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    stale = out_dir / "blame.json"
+    stale.write_text('{"stale": true}')
+    env = {
+        k: v for k, v in os.environ.items()
+        if k not in {
+            "GITHUB_TOKEN", "K4BENCH_LLM_URL", "K4BENCH_LLM_MODEL",
+            "K4BENCH_LLM_API_KEY",
+        }
+    }
+    result = subprocess.run(
+        [sys.executable, str(_BLAME_SCRIPT), "--report", str(report_path),
+         "--output-dir", str(out_dir)],
+        capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not stale.exists()
+
+
 def _load_script(path):
     """Import a ``.github/scripts`` CLI by file path. Registering it in
     ``sys.modules`` before exec is required so its module-level ``@dataclass``
@@ -172,6 +195,37 @@ def _load_script(path):
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def test_blame_report_refuses_incomplete_configured_ranking(tmp_path, monkeypatch):
+    from k4bench.blame import builder as builder_mod
+    from k4bench.blame import rank as rank_mod
+    from k4bench.blame.models import BlameEntry, BlameReport, CandidatePR, RepoBlame
+
+    report_path = tmp_path / "report.json"
+    report_path.write_text(json.dumps({"generated_at": "x", "groups": []}))
+    incomplete = BlameReport("g", "2026-01-12", entries=(BlameEntry(
+        detector="DET", platform=_PLAT, sample="single_e", label="baseline",
+        metric="wall_time_s", sub_detector=None, base_release="2026-01-01",
+        onset_release="2026-01-11", repos=(RepoBlame(
+            package="k4geo", repo="key4hep/k4geo", base_commit="a" * 40,
+            head_commit="c" * 40, compare_url=None, status="changed",
+            candidates=(CandidatePR(
+                repo="key4hep/k4geo", number=1, title="PR", author="alice",
+                url="u", score=90.0, description="",
+            ),),
+        ),),
+    ),))
+    monkeypatch.setattr(builder_mod, "build_blame_report", lambda *a, **k: incomplete)
+    monkeypatch.setattr(rank_mod, "ranker_from_env", lambda: object())
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    blame_cli = _load_script(_BLAME_SCRIPT)
+    out_dir = tmp_path / "out"
+    assert blame_cli.main([
+        "--report", str(report_path), "--output-dir", str(out_dir),
+    ]) == 1
+    assert not (out_dir / "blame.json").exists()
 
 
 def test_blame_report_with_ranker_over_local_tree(tmp_path, monkeypatch):
