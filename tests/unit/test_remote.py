@@ -36,6 +36,35 @@ class _FakeResponse:
         return json.loads(self.content or self.text)
 
 
+class _StubSession:
+    """A get-only stand-in for ``requests.Session``.
+
+    Every remote call in :mod:`k4bench.remote` now goes through one
+    process-wide session obtained via ``remote._get_session()`` (see that
+    function's docstring — a shared, pre-warmed session avoids the
+    concurrent-cold-TLS-handshake race that used to segfault the dashboard).
+    Substituting the session itself, via :func:`_use_session`, is the one
+    test seam that reaches every call site regardless of whether it happens
+    to run on the main thread or one of ``fetch_runs_windowed``'s workers.
+
+    *get* is stored as a plain **instance** attribute rather than a method
+    defined on this class: a class-level function attribute is a descriptor
+    and gets auto-bound with ``self`` as its first argument on instance
+    access, which would silently prepend a stray positional argument to every
+    test's ``(url, timeout=None)``-shaped fake. An instance attribute has no
+    such rebinding, so a plain function or an already-bound method (e.g.
+    ``FakeWeb.get``) both work unchanged.
+    """
+
+    def __init__(self, get):
+        self.get = get
+
+
+def _use_session(monkeypatch, get) -> None:
+    """Make every :mod:`k4bench.remote` call see *get* as its GET implementation."""
+    monkeypatch.setattr(remote, "_get_session", lambda: _StubSession(get))
+
+
 def _apache_listing(names: list[str]) -> str:
     """Render an Apache-style directory listing the regex in remote.py parses."""
     rows = ['<a href="?C=N;O=D">Name</a>']  # a sort link, must be ignored
@@ -103,7 +132,7 @@ def _build_tree() -> dict[str, object]:
 @pytest.fixture
 def web(monkeypatch):
     fake = FakeWeb(_build_tree())
-    monkeypatch.setattr(remote.requests, "get", fake.get)
+    _use_session(monkeypatch, fake.get)
     return fake
 
 
@@ -116,19 +145,19 @@ def test_list_detectors_skips_underscore_dirs(monkeypatch):
     # _reports/ (nightly regression reports) and any other _-prefixed dir at the
     # top level are reserved for non-detector data and must not be listed.
     fake = FakeWeb({BASE: ["ALLEGRO/", "_reports/", "CLD/"]})
-    monkeypatch.setattr(remote.requests, "get", fake.get)
+    _use_session(monkeypatch, fake.get)
     assert remote.list_detectors(BASE) == ["ALLEGRO", "CLD"]
 
 
 def test_list_report_dates_newest_first_and_empty_when_absent(monkeypatch):
     fake = FakeWeb({f"{BASE}/_reports": ["2026-05-20/", "2026-05-22/", "2026-05-21/"]})
-    monkeypatch.setattr(remote.requests, "get", fake.get)
+    _use_session(monkeypatch, fake.get)
     assert remote.list_report_dates(BASE) == ["2026-05-22", "2026-05-21", "2026-05-20"]
 
     def raise_404(url, timeout=None):
         raise remote.requests.RequestException("404")
 
-    monkeypatch.setattr(remote.requests, "get", raise_404)
+    _use_session(monkeypatch, raise_404)
     assert remote.list_report_dates(BASE) == []  # no _reports tree yet: not an error
 
 
@@ -142,7 +171,7 @@ def test_fetch_report_parses_json(monkeypatch):
         assert url == f"{BASE}/_reports/2026-05-22/report.json"
         return _JsonResponse(content=b'{"generated_at": "x", "groups": []}')
 
-    monkeypatch.setattr(remote.requests, "get", get)
+    _use_session(monkeypatch, get)
     assert remote.fetch_report(BASE, "2026-05-22") == {"generated_at": "x", "groups": []}
 
 
@@ -181,7 +210,7 @@ def test_fetch_stack_packages_none_when_the_release_is_absent(monkeypatch):
     def _404(url, timeout=None):
         raise remote.requests.RequestException("404")
 
-    monkeypatch.setattr(remote.requests, "get", _404)
+    _use_session(monkeypatch, _404)
     assert remote.fetch_stack_packages(BASE, "DET", "PLAT", "key4hep-1999-01-01") is None
 
 
@@ -205,7 +234,7 @@ def test_list_run_dates_skips_stacks_missing_the_sample(web, monkeypatch):
             raise real_requests.RequestException("404")
         return orig_get(url, timeout=timeout)
 
-    monkeypatch.setattr(remote.requests, "get", get)
+    _use_session(monkeypatch, get)
     out = remote.list_run_dates_all_stacks(BASE, "DET", "PLAT", "single_e")
     assert list(out) == ["key4hep-2026-05-20"]
 
@@ -262,7 +291,7 @@ def test_ensure_run_cached_rejects_unsafe_filename(monkeypatch, tmp_path, payloa
     fake = FakeWeb({
         f"{BASE}/DET/PLAT/S/smp/2026-01-01": [payload],
     })
-    monkeypatch.setattr(remote.requests, "get", fake.get)
+    _use_session(monkeypatch, fake.get)
     with pytest.raises(ValueError, match="Unsafe filename"):
         remote.ensure_run_cached(
             BASE, "DET", "PLAT", "S", "smp", "2026-01-01", cache_root=str(tmp_path)
@@ -301,3 +330,39 @@ def test_ensure_latest_run_cached_picks_newest(web, tmp_path):
         BASE, "DET", "PLAT", "key4hep-2026-05-20", "single_e", cache_root=str(tmp_path)
     )
     assert Path(run_dir).name == "2026-05-21"  # newest of the two dates
+
+
+# ---------------------------------------------------------------------------
+# Shared session and environment-scaled worker count
+# ---------------------------------------------------------------------------
+
+def test_get_session_reuses_the_same_instance():
+    # The whole point: one long-lived session, not a fresh one per call — a
+    # fresh session per call is exactly what caused the intermittent segfaults
+    # (concurrent cold TLS handshakes racing each other).
+    a = remote._get_session()
+    b = remote._get_session()
+    assert a is b
+
+
+def test_get_session_is_a_real_requests_session():
+    assert isinstance(remote._get_session(), remote.requests.Session)
+
+
+def test_default_max_workers_never_exceeds_the_cap(monkeypatch):
+    monkeypatch.setattr(remote.os, "process_cpu_count", lambda: 64)
+    assert remote._default_max_workers(4) == 4
+    assert remote._default_max_workers(16) == 16
+
+
+def test_default_max_workers_scales_down_on_a_cpu_limited_host(monkeypatch):
+    # A CPU-constrained pod (e.g. 1 core) gets fewer threads than the fixed
+    # literals this replaced (4 and 16), not the same count regardless of
+    # environment.
+    monkeypatch.setattr(remote.os, "process_cpu_count", lambda: 1)
+    assert remote._default_max_workers(16) == 5  # 1 + 4 headroom, well under 16
+
+
+def test_default_max_workers_falls_back_when_cpu_count_is_unknown(monkeypatch):
+    monkeypatch.setattr(remote.os, "process_cpu_count", lambda: None)
+    assert remote._default_max_workers(16) == 5  # treated as 1 CPU

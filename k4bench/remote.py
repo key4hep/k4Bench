@@ -24,6 +24,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import unquote
@@ -35,11 +36,55 @@ _log = logging.getLogger(__name__)
 _DIR_LINK_RE = re.compile(r'href="([^"/][^"]*/?)"', re.IGNORECASE)
 _TIMEOUT = 15
 
+#: One ``requests.Session`` for the whole process's lifetime, lazily created
+#: on first use and never closed — every remote call goes through it (see
+#: :func:`_session`). ``requests.Session``/urllib3's connection pools are
+#: documented thread-safe for concurrent use *once built*; building one is
+#: the unsafe part (a fresh ``requests.get()`` builds and tears one down on
+#: every call), and that is exactly what caused this dashboard to segfault
+#: intermittently: several threads each doing a cold TLS handshake at once,
+#: or a Streamlit rerun abandoning a still-fetching thread's ad-hoc session
+#: mid-handshake while a *new* rerun's own ad-hoc session starts up alongside
+#: it. A single long-lived, already-warmed session removes both: there is
+#: only ever one session's connection pools in play, for any thread, across
+#: any number of overlapping or orphaned script reruns.
+_session_lock = threading.Lock()
+_session: requests.Session | None = None
+
+
+def _get_session() -> requests.Session:
+    """The process-wide shared session (see the module-level note above),
+    created on first use. Double-checked locking: the lock is only ever taken
+    on a cold start (or a race for the very first call), never on the
+    steady-state path once ``_session`` is set."""
+    global _session
+    if _session is None:
+        with _session_lock:
+            if _session is None:
+                _session = requests.Session()
+    return _session
+
+
+def _default_max_workers(cap: int) -> int:
+    """A worker-pool size that scales with the environment instead of a fixed
+    literal, capped at *cap* (the widest fan-out a given fetch ever needs).
+
+    Uses :func:`os.process_cpu_count` (Python 3.13+; respects a container's
+    CPU affinity/quota, unlike :func:`os.cpu_count`, which reports the whole
+    host's core count even inside a CPU-limited pod) plus a small constant
+    headroom for the I/O-wait time these threads spend blocked on network
+    calls rather than burning CPU — the same reasoning the standard library's
+    own ``ThreadPoolExecutor`` default uses. Falls back to 1 CPU if the count
+    is unavailable (some platforms/sandboxes report ``None``).
+    """
+    cpus = os.process_cpu_count() or 1
+    return max(1, min(cap, cpus + 4))
+
 
 def _list_subdirs(url: str) -> list[str]:
     """Return directory names (without trailing slash) from an Apache listing."""
     url = url.rstrip("/") + "/"
-    resp = requests.get(url, timeout=_TIMEOUT)
+    resp = _get_session().get(url, timeout=_TIMEOUT)
     resp.raise_for_status()
     return [
         m.group(1).rstrip("/")
@@ -51,7 +96,7 @@ def _list_subdirs(url: str) -> list[str]:
 def _list_files(url: str) -> list[str]:
     """Return file names (no slash) from an Apache directory listing."""
     url = url.rstrip("/") + "/"
-    resp = requests.get(url, timeout=_TIMEOUT)
+    resp = _get_session().get(url, timeout=_TIMEOUT)
     resp.raise_for_status()
     return [
         m.group(1)
@@ -186,6 +231,7 @@ def ensure_run_cached(
     run_dir.parent.mkdir(parents=True, exist_ok=True)
     # Stage in a sibling temp dir (same filesystem, so the publish rename is atomic).
     tmp_dir = Path(tempfile.mkdtemp(prefix=f".{date}.tmp-", dir=run_dir.parent))
+    session = _get_session()
     try:
         for fname in _list_files(run_url):
             # Validate the *decoded* name: a percent-encoded separator (e.g.
@@ -201,7 +247,7 @@ def ensure_run_cached(
                 or Path(decoded).name != decoded
             ):
                 raise ValueError(f"Unsafe filename in listing: {fname!r}")
-            resp = requests.get(f"{run_url}/{fname}", timeout=_TIMEOUT)
+            resp = session.get(f"{run_url}/{fname}", timeout=_TIMEOUT)
             resp.raise_for_status()
             (tmp_dir / decoded).write_bytes(resp.content)
         (tmp_dir / ".complete").write_text("")
@@ -228,6 +274,12 @@ def _publish_run_dir(tmp_dir: Path, run_dir: Path, sentinel: Path) -> None:
         os.replace(tmp_dir, run_dir)
 
 
+#: Widest fan-out any single fetch in this module uses — the cap passed to
+#: :func:`_default_max_workers` by :func:`fetch_runs_windowed` (whose own
+#: default was a flat, unconditional 16 before).
+_MAX_RUN_FETCH_WORKERS = 16
+
+
 def fetch_runs_windowed(
     base_url: str,
     detector: str,
@@ -235,7 +287,7 @@ def fetch_runs_windowed(
     sample: str,
     stacks_dates: dict[str, list[str]],
     cache_root: str | None = None,
-    max_workers: int = 16,
+    max_workers: int | None = None,
 ) -> list[dict]:
     """Fetch every ``(stack, date)`` in *stacks_dates* in parallel, returning a
     list of ``{"stack", "date", "run_dir"}`` for the runs successfully cached.
@@ -243,10 +295,19 @@ def fetch_runs_windowed(
     Each run is fetched at most once (see :func:`ensure_run_cached`); callers pass
     an already date-windowed *stacks_dates* so only in-window runs are downloaded.
     Runs that fail to download are logged and skipped rather than aborting the load.
+
+    *max_workers* defaults to :func:`_default_max_workers` (environment-scaled
+    rather than a flat literal — a CPU-limited pod gets fewer threads than a
+    developer's workstation) capped at :data:`_MAX_RUN_FETCH_WORKERS`, the
+    widest fan-out this module needs. All workers share the module's one
+    process-wide session (:func:`_get_session`), so the actual concurrency
+    limit here is threads-doing-I/O-at-once, not TLS-session churn.
     """
     tasks = [(stack, date) for stack, dates in stacks_dates.items() for date in dates]
     if not tasks:
         return []
+    if max_workers is None:
+        max_workers = _default_max_workers(_MAX_RUN_FETCH_WORKERS)
 
     results: list[dict] = []
     with ThreadPoolExecutor(max_workers=min(max_workers, len(tasks))) as pool:
@@ -308,7 +369,7 @@ def fetch_stack_packages(
         for date in dates:
             url = f"{root}/{sample}/{date}/run_info.json"
             try:
-                resp = requests.get(url, timeout=_TIMEOUT)
+                resp = _get_session().get(url, timeout=_TIMEOUT)
                 resp.raise_for_status()
                 packages = resp.json().get("k4h_packages")
             except (requests.RequestException, ValueError) as exc:
@@ -337,7 +398,7 @@ def fetch_report(base_url: str, date: str) -> dict | None:
     """Fetch and parse one nightly regression report, or ``None`` on failure."""
     url = f"{base_url.rstrip('/')}/_reports/{date}/report.json"
     try:
-        resp = requests.get(url, timeout=_TIMEOUT)
+        resp = _get_session().get(url, timeout=_TIMEOUT)
         resp.raise_for_status()
         return resp.json()
     except (requests.RequestException, ValueError) as exc:

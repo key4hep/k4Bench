@@ -73,6 +73,11 @@ def _cached_fetch_report(base_url: str, date: str) -> dict | None:
     return fetch_report(base_url, date)
 
 
+#: Widest fan-out this fetch ever needs — the cap passed to the environment-
+#: scaled worker count (see :func:`k4bench.remote._default_max_workers`).
+_MAX_REPORT_FETCH_WORKERS = 4
+
+
 @st.cache_data(show_spinner="Fetching nightly reports...", ttl=3600)
 def _cached_fetch_reports(base_url: str, dates: tuple[str, ...]) -> dict[str, dict]:
     """Fetch a whole window of nightly reports in parallel, keyed by date.
@@ -83,14 +88,21 @@ def _cached_fetch_reports(base_url: str, dates: tuple[str, ...]) -> dict[str, di
     simply absent from the result. Cached on the *dates* tuple: growing the
     window refetches it in one parallel burst rather than serially.
 
-    Worker count is deliberately modest (4): this only ever runs on a cache
-    miss (a Streamlit rerun that hits the cache spawns no threads at all),
-    and keeping concurrent SSL connections low reduces the chance of a rerun
-    landing mid-fetch and racing the pool's shutdown.
+    Worker count is environment-scaled (see :func:`k4bench.remote.
+    _default_max_workers`) rather than a flat literal, capped at
+    :data:`_MAX_REPORT_FETCH_WORKERS`: this only ever runs on a cache miss (a
+    Streamlit rerun that hits the cache spawns no threads at all). Every
+    fetch — here and everywhere else in :mod:`k4bench.remote` — goes through
+    that module's one process-wide ``requests.Session``, so concurrent
+    fetches share an already-warmed connection pool instead of each thread
+    (or each overlapping/orphaned script rerun) building and tearing down its
+    own; several of those doing a cold TLS handshake at once has been
+    observed to segfault the interpreter (an OpenSSL/urllib3-level race, not
+    a Python exception).
     """
     from concurrent.futures import ThreadPoolExecutor
 
-    from k4bench.remote import fetch_report
+    from k4bench.remote import _default_max_workers, fetch_report
 
     def _one(date: str) -> tuple[str, dict | None]:
         # fetch_report already handles network/parse failures (logs and returns
@@ -103,7 +115,8 @@ def _cached_fetch_reports(base_url: str, dates: tuple[str, ...]) -> dict[str, di
             _log.exception("fetch_report: unexpected error for %s", date)
             return date, None
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    workers = min(_default_max_workers(_MAX_REPORT_FETCH_WORKERS), len(dates) or 1)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         return {date: raw for date, raw in pool.map(_one, dates) if raw}
 
 
