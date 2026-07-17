@@ -65,20 +65,19 @@ def _get_session() -> requests.Session:
     return _session
 
 
-def _default_max_workers(cap: int) -> int:
-    """A worker-pool size that scales with the environment instead of a fixed
-    literal, capped at *cap* (the widest fan-out a given fetch ever needs).
+def _fetch_worker_count(n_tasks: int) -> int:
+    """Thread-pool size for a bounded, parallel fetch: exactly one worker per
+    item, so concurrency tracks the actual amount of work rather than a
+    guessed-at ceiling.
 
-    Uses :func:`os.process_cpu_count` (Python 3.13+; respects a container's
-    CPU affinity/quota, unlike :func:`os.cpu_count`, which reports the whole
-    host's core count even inside a CPU-limited pod) plus a small constant
-    headroom for the I/O-wait time these threads spend blocked on network
-    calls rather than burning CPU — the same reasoning the standard library's
-    own ``ThreadPoolExecutor`` default uses. Falls back to 1 CPU if the count
-    is unavailable (some platforms/sandboxes report ``None``).
+    No CPU-based heuristic here (deliberately, unlike the standard library's
+    own ``ThreadPoolExecutor`` default of ``min(32, cpu_count()+4)``): every
+    worker spends nearly all its time blocked on network I/O, not holding the
+    GIL, so the host's CPU count has no real bearing on how much of this can
+    usefully run at once — the only bound worth respecting is that there is
+    no point starting a thread with no item to fetch.
     """
-    cpus = os.process_cpu_count() or 1
-    return max(1, min(cap, cpus + 4))
+    return max(1, n_tasks)
 
 
 def _list_subdirs(url: str) -> list[str]:
@@ -274,12 +273,6 @@ def _publish_run_dir(tmp_dir: Path, run_dir: Path, sentinel: Path) -> None:
         os.replace(tmp_dir, run_dir)
 
 
-#: Widest fan-out any single fetch in this module uses — the cap passed to
-#: :func:`_default_max_workers` by :func:`fetch_runs_windowed` (whose own
-#: default was a flat, unconditional 16 before).
-_MAX_RUN_FETCH_WORKERS = 16
-
-
 def fetch_runs_windowed(
     base_url: str,
     detector: str,
@@ -287,7 +280,6 @@ def fetch_runs_windowed(
     sample: str,
     stacks_dates: dict[str, list[str]],
     cache_root: str | None = None,
-    max_workers: int | None = None,
 ) -> list[dict]:
     """Fetch every ``(stack, date)`` in *stacks_dates* in parallel, returning a
     list of ``{"stack", "date", "run_dir"}`` for the runs successfully cached.
@@ -296,21 +288,17 @@ def fetch_runs_windowed(
     an already date-windowed *stacks_dates* so only in-window runs are downloaded.
     Runs that fail to download are logged and skipped rather than aborting the load.
 
-    *max_workers* defaults to :func:`_default_max_workers` (environment-scaled
-    rather than a flat literal — a CPU-limited pod gets fewer threads than a
-    developer's workstation) capped at :data:`_MAX_RUN_FETCH_WORKERS`, the
-    widest fan-out this module needs. All workers share the module's one
-    process-wide session (:func:`_get_session`), so the actual concurrency
-    limit here is threads-doing-I/O-at-once, not TLS-session churn.
+    Worker count is exactly one per ``(stack, date)`` (see
+    :func:`_fetch_worker_count`) — no arbitrary ceiling. All workers share the
+    module's one process-wide session (:func:`_get_session`), so this is
+    bounded by threads-doing-I/O-at-once, not by TLS-session churn.
     """
     tasks = [(stack, date) for stack, dates in stacks_dates.items() for date in dates]
     if not tasks:
         return []
-    if max_workers is None:
-        max_workers = _default_max_workers(_MAX_RUN_FETCH_WORKERS)
 
     results: list[dict] = []
-    with ThreadPoolExecutor(max_workers=min(max_workers, len(tasks))) as pool:
+    with ThreadPoolExecutor(max_workers=_fetch_worker_count(len(tasks))) as pool:
         futures = {
             pool.submit(
                 ensure_run_cached,

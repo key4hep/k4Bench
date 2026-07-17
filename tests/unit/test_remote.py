@@ -333,7 +333,7 @@ def test_ensure_latest_run_cached_picks_newest(web, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Shared session and environment-scaled worker count
+# Shared session and workload-scaled worker count
 # ---------------------------------------------------------------------------
 
 def test_get_session_reuses_the_same_instance():
@@ -349,20 +349,14 @@ def test_get_session_is_a_real_requests_session():
     assert isinstance(remote._get_session(), remote.requests.Session)
 
 
-def test_default_max_workers_never_exceeds_the_cap(monkeypatch):
-    monkeypatch.setattr(remote.os, "process_cpu_count", lambda: 64)
-    assert remote._default_max_workers(4) == 4
-    assert remote._default_max_workers(16) == 16
+def test_fetch_worker_count_matches_the_task_count():
+    # No arbitrary ceiling: concurrency tracks the actual amount of work.
+    assert remote._fetch_worker_count(1) == 1
+    assert remote._fetch_worker_count(7) == 7
+    assert remote._fetch_worker_count(200) == 200
 
 
-def test_default_max_workers_scales_down_on_a_cpu_limited_host(monkeypatch):
-    # A CPU-constrained pod (e.g. 1 core) gets fewer threads than the fixed
-    # literals this replaced (4 and 16), not the same count regardless of
-    # environment.
-    monkeypatch.setattr(remote.os, "process_cpu_count", lambda: 1)
-    assert remote._default_max_workers(16) == 5  # 1 + 4 headroom, well under 16
-
-
-def test_default_max_workers_falls_back_when_cpu_count_is_unknown(monkeypatch):
-    monkeypatch.setattr(remote.os, "process_cpu_count", lambda: None)
-    assert remote._default_max_workers(16) == 5  # treated as 1 CPU
+def test_fetch_worker_count_is_never_zero():
+    # ThreadPoolExecutor rejects max_workers=0; a caller with no tasks must
+    # still get a valid (if unused) pool size.
+    assert remote._fetch_worker_count(0) == 1
