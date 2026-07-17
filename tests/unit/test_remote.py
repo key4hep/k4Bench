@@ -39,13 +39,14 @@ class _FakeResponse:
 class _StubSession:
     """A get-only stand-in for ``requests.Session``.
 
-    Every remote call in :mod:`k4bench.remote` now goes through one
-    process-wide session obtained via ``remote._get_session()`` (see that
-    function's docstring — a shared, pre-warmed session avoids the
-    concurrent-cold-TLS-handshake race that used to segfault the dashboard).
-    Substituting the session itself, via :func:`_use_session`, is the one
-    test seam that reaches every call site regardless of whether it happens
-    to run on the main thread or one of ``fetch_runs_windowed``'s workers.
+    Every remote call in :mod:`k4bench.remote` now goes through a session
+    obtained via ``remote._get_session()`` (see that function's docstring —
+    one session per thread, all mounting the same connection-pooled adapter,
+    which is what avoids the concurrent-cold-TLS-handshake race that used to
+    segfault the dashboard). Substituting the session-getter itself, via
+    :func:`_use_session`, is the one test seam that reaches every call site
+    regardless of whether it happens to run on the main thread or one of
+    ``fetch_runs_windowed``'s workers.
 
     *get* is stored as a plain **instance** attribute rather than a method
     defined on this class: a class-level function attribute is a descriptor
@@ -333,13 +334,10 @@ def test_ensure_latest_run_cached_picks_newest(web, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Shared session and workload-scaled worker count
+# Per-thread session, shared connection-pooled adapter
 # ---------------------------------------------------------------------------
 
-def test_get_session_reuses_the_same_instance():
-    # The whole point: one long-lived session, not a fresh one per call — a
-    # fresh session per call is exactly what caused the intermittent segfaults
-    # (concurrent cold TLS handshakes racing each other).
+def test_get_session_reuses_the_same_instance_within_a_thread():
     a = remote._get_session()
     b = remote._get_session()
     assert a is b
@@ -349,14 +347,38 @@ def test_get_session_is_a_real_requests_session():
     assert isinstance(remote._get_session(), remote.requests.Session)
 
 
-def test_fetch_worker_count_matches_the_task_count():
-    # No arbitrary ceiling: concurrency tracks the actual amount of work.
-    assert remote._fetch_worker_count(1) == 1
-    assert remote._fetch_worker_count(7) == 7
-    assert remote._fetch_worker_count(200) == 200
+def test_get_session_gives_each_thread_its_own_instance():
+    # A session carries a cookie jar and redirect/auth hooks that every
+    # request touches implicitly — sharing one instance across threads risks
+    # a whole class of subtle races beyond the request path itself. Each
+    # thread must get its own.
+    import threading
+
+    other = {}
+    t = threading.Thread(target=lambda: other.setdefault("session", remote._get_session()))
+    t.start()
+    t.join()
+    assert other["session"] is not remote._get_session()
 
 
-def test_fetch_worker_count_is_never_zero():
-    # ThreadPoolExecutor rejects max_workers=0; a caller with no tasks must
-    # still get a valid (if unused) pool size.
-    assert remote._fetch_worker_count(0) == 1
+def test_get_session_instances_share_the_one_pooled_adapter():
+    # The actual concurrency ceiling lives on the adapter, not the session —
+    # every thread's session must mount the identical adapter object for
+    # _POOL_MAXSIZE to be a real, process-wide cap rather than per-thread.
+    import threading
+
+    other = {}
+    t = threading.Thread(target=lambda: other.setdefault("session", remote._get_session()))
+    t.start()
+    t.join()
+    mine = remote._get_session()
+    assert mine.get_adapter("https://x") is other["session"].get_adapter("https://x")
+    assert mine.get_adapter("https://x") is remote._adapter
+
+
+def test_shared_adapter_blocks_rather_than_opening_extra_connections():
+    # pool_block=True is what makes _POOL_MAXSIZE a real ceiling: requests'
+    # own default (block=False) would silently open unpooled extra
+    # connections past pool_maxsize instead of enforcing it.
+    assert remote._adapter._pool_block is True
+    assert remote._adapter._pool_maxsize == remote._POOL_MAXSIZE
