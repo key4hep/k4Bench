@@ -223,8 +223,21 @@ _PRE_WINDOW_FIELDS = {
 
 # ── Blame in the email (the "most likely cause" lead) ─────────────────────────
 
+def _windowed_report() -> NightlyReport:
+    """:func:`_full_report` whose confirmed wall_time_s verdict carries the
+    blame window :func:`_blame_report` attributes — the join requires identity
+    *and* window to match, so a stale sidecar can never attach."""
+    report = _full_report()
+    group = report.groups[0]
+    group.verdicts[0] = _verdict(
+        onset_run_id="2026-01-09", onset_run_date="2026-01-09",
+        last_accepted_run_id="2026-01-05", last_accepted_run_date="2026-01-05",
+    )
+    return report
+
+
 def _blame_report(*, reason="raises the tracker step count", score=72.0) -> BlameReport:
-    """Blame joining the wall_time_s regression of :func:`_full_report`."""
+    """Blame joining the wall_time_s regression of :func:`_windowed_report`."""
     entry = BlameEntry(
         detector="DET", platform="PLAT", sample="single_e", label="baseline",
         metric="wall_time_s", sub_detector=None,
@@ -249,7 +262,7 @@ def _blame_report(*, reason="raises the tracker step count", score=72.0) -> Blam
 
 
 def test_markdown_renders_the_suggested_cause_with_blame():
-    md = to_markdown(_full_report(), blame=_blame_report())
+    md = to_markdown(_windowed_report(), blame=_blame_report())
     assert "Suggested causes" in md
     assert "not evidence" in md  # framed as a lead, never a verdict
     assert "`key4hep/k4geo#1234`" in md
@@ -259,7 +272,7 @@ def test_markdown_renders_the_suggested_cause_with_blame():
 
 
 def test_html_renders_the_suggested_cause_and_escapes_the_reason():
-    html = to_html(_full_report(), blame=_blame_report(reason="drops <b>steps</b> & inlines"))
+    html = to_html(_windowed_report(), blame=_blame_report(reason="drops <b>steps</b> & inlines"))
     assert "Suggested causes" in html
     assert "key4hep/k4geo#1234" in html
     assert "(72%)" in html
@@ -278,8 +291,8 @@ def test_unranked_blame_entry_renders_no_lead():
     # Candidates collected but not yet ranked (score 0, no description) → silence,
     # mirroring the dashboard's has_ranking gate.
     blame = _blame_report(reason="", score=0.0)
-    assert "Suggested causes" not in to_markdown(_full_report(), blame=blame)
-    assert "Suggested causes" not in to_html(_full_report(), blame=blame)
+    assert "Suggested causes" not in to_markdown(_windowed_report(), blame=blame)
+    assert "Suggested causes" not in to_html(_windowed_report(), blame=blame)
 
 
 def test_to_json_stays_free_of_blame():

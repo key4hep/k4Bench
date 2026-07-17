@@ -3,9 +3,12 @@ verdict↔entry join that keeps ``blame.json`` decoupled from ``report.json``.""
 
 from __future__ import annotations
 
+import pytest
+
 from k4bench.blame.models import (
     BlameEntry,
     BlameReport,
+    BlameSchemaError,
     CandidatePR,
     RepoBlame,
     ranking_coverage,
@@ -79,7 +82,7 @@ def test_candidates_are_flattened_worst_first():
     assert [c.number for c in entry.candidates] == [9, 1]
 
 
-def test_entry_for_joins_on_verdict_identity():
+def test_entry_for_joins_on_verdict_identity_and_window():
     report = BlameReport("g", "2026-07-05", entries=(_entry(),))
     matching = MetricVerdict(
         detector="ALLEGRO_o1_v03", platform="x86_64-almalinux9-gcc14.2.0-opt",
@@ -88,6 +91,8 @@ def test_entry_for_joins_on_verdict_identity():
         run_date="2026-07-05", value=1.0, baseline_median=1.0, baseline_mad=0.1,
         pct_change=0.2, z_score=5.0, severity=Severity.CONFIRMED,
         direction=Direction.UP, reason="step",
+        onset_run_id="2026-07-04", onset_run_date="2026-07-04",
+        last_accepted_run_id="2026-07-03", last_accepted_run_date="2026-07-03",
     )
     assert report.entry_for(matching) is report.entries[0]
 
@@ -95,8 +100,13 @@ def test_entry_for_joins_on_verdict_identity():
     other = MetricVerdict(**{**matching.__dict__, "metric": "peak_rss_mb"})
     assert report.entry_for(other) is None
 
+    # Same identity, different window: a sidecar left over from an earlier
+    # build must never attach its ranking to a re-anchored regression.
+    moved = MetricVerdict(**{**matching.__dict__, "onset_run_date": "2026-07-06"})
+    assert report.entry_for(moved) is None
 
-def test_ranking_coverage_deduplicates_windows_and_accepts_zero_with_reason():
+
+def test_ranking_coverage_counts_each_entry_and_accepts_zero_with_reason():
     ranked_zero = _pr(1, score=0.0)
     missing = CandidatePR(
         repo="key4hep/k4geo", number=2, title="PR 2", author="alice", url="u",
@@ -107,9 +117,40 @@ def test_ranking_coverage_deduplicates_windows_and_accepts_zero_with_reason():
         head_commit="c" * 40, compare_url=None, status="changed",
         candidates=(ranked_zero, missing),
     ),)
-    # Two metric entries share one window and repeat the same candidate rows.
+    # Each metric is ranked on its own, so entries sharing a window still each
+    # owe a judgement per candidate — the zero score with a reason counts, the
+    # empty description does not, in both entries.
     report = BlameReport("g", "2026-07-05", entries=(
         _entry(repos=repos),
         _entry(metric="user_cpu_s", repos=repos),
     ))
-    assert ranking_coverage(report) == (1, 2, ["key4hep/k4geo#2"])
+    assert ranking_coverage(report) == (2, 4, ["key4hep/k4geo#2"])
+
+
+def test_ranking_coverage_exempts_incomplete_discovery():
+    # An entry whose candidate list is known to be partial is deliberately left
+    # unranked by the builder — completeness checks must not fail it.
+    unranked = CandidatePR(
+        repo="key4hep/k4geo", number=7, title="PR 7", author="alice", url="u",
+    )
+    incomplete = _entry(repos=(RepoBlame(
+        package="k4geo", repo="key4hep/k4geo", base_commit="a" * 40,
+        head_commit="c" * 40, compare_url=None, status="changed",
+        candidates=(unranked,), truncated=True,
+    ),))
+    assert incomplete.discovery_incomplete is True
+    report = BlameReport("g", "2026-07-05", entries=(incomplete,))
+    assert ranking_coverage(report) == (0, 0, [])
+
+
+def test_from_json_raises_schema_error_on_malformed_shapes():
+    # Valid JSON, wrong structure — each must raise the one dedicated schema
+    # error the dashboard/notifier boundaries catch, never a bare TypeError.
+    for data in (
+        [],                                       # top level is a list
+        {"entries": [{}]},                        # entry missing required fields
+        {"entries": ["not-an-object"]},
+        {"entries": [_entry().to_dict() | {"repos": [{"candidates": ["x"]}]}]},
+    ):
+        with pytest.raises(BlameSchemaError):
+            BlameReport.from_json(data)

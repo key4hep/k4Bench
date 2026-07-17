@@ -142,8 +142,10 @@ def resolve_repo_prs(
     ``/commits/{sha}/pulls`` only for a commit whose subject carries none. Each
     distinct PR is then fetched for its title/author/churn, its changed paths,
     and a bounded diff sample (the transient ranker input, kept in
-    ``result.patches``). A 404 or the 250-commit cap is recorded on the result,
-    not raised.
+    ``result.patches``). Nothing here raises for an incomplete view: a 404
+    marks ``commits_unavailable``, and every way the candidate list can fall
+    short of the range's full population — the compare cap, the local PR and
+    lookup caps, a PR that fails to fetch — marks ``truncated``.
     """
     result = RepoResolution()
     compare = client.get(f"/repos/{slug}/compare/{base}...{head}")
@@ -170,11 +172,17 @@ def resolve_repo_prs(
     lookups_left = _MAX_COMMIT_PR_LOOKUPS
     for commit in commits:
         if len(pr_numbers) >= _MAX_PRS_PER_REPO:
+            # Commits remain past the PR cap — the list may not be the range's
+            # full population, and a partial set must say so.
+            result.truncated = True
             break
         subject = (commit.get("commit") or {}).get("message", "")
         number = parse_pr_number(subject)
         if number is None:
             if lookups_left <= 0:
+                # A commit whose PR is unknowable within the lookup budget: it
+                # may belong to a PR the list misses.
+                result.truncated = True
                 continue
             lookups_left -= 1
             number = _pr_for_commit(client, slug, commit.get("sha", ""))
@@ -182,13 +190,17 @@ def resolve_repo_prs(
             seen.add(number)
             pr_numbers.append(number)
 
-    for number in pr_numbers[:_MAX_PRS_PER_REPO]:
+    for number in pr_numbers:
         fetched = _fetch_pr(client, slug, number)
-        if fetched is not None:
-            pr, patch = fetched
-            result.candidates.append(pr)
-            if patch:
-                result.patches[number] = patch
+        if fetched is None:
+            # A PR known to be in the range but unreadable right now — the
+            # candidate list is incomplete, not merely smaller.
+            result.truncated = True
+            continue
+        pr, patch = fetched
+        result.candidates.append(pr)
+        if patch:
+            result.patches[number] = patch
     return result
 
 

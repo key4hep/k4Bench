@@ -346,3 +346,32 @@ def test_no_candidate_table_without_a_blame_sidecar():
     # The common case: a confirmed regression whose night has no blame.json.
     at = _run(_report([_group(verdicts=[_windowed_confirmed()])]))
     assert not any("Pull request" in d.value.columns for d in at.dataframe)
+
+
+def test_malformed_blame_sidecar_hides_blame_instead_of_crashing():
+    # Valid JSON, wrong shape (entries missing required fields): the page must
+    # render as if the night had no sidecar at all.
+    at = _run(
+        _report([_group(verdicts=[_windowed_confirmed()])]),
+        blame_map={NIGHT: {"entries": [{"detector": "CLD"}]}},
+    )
+    assert not any("Pull request" in d.value.columns for d in at.dataframe)
+
+
+def test_stale_blame_with_a_different_window_is_not_joined():
+    # Same verdict identity, but the sidecar attributes an older window (e.g. a
+    # rerun re-anchored the step): its ranking must not attach.
+    from k4bench.blame.models import CandidatePR
+    cand = CandidatePR(
+        repo="key4hep/k4geo", number=1234, title="Some PR", author="alice",
+        url="https://github.com/key4hep/k4geo/pull/1234",
+        score=90.0, description="from another window",
+    )
+    stale = _blame_json([cand])
+    stale["entries"][0]["base_release"] = "2026-06-20"
+    stale["entries"][0]["onset_release"] = "2026-06-25"
+    at = _run(
+        _report([_group(verdicts=[_windowed_confirmed()])]),
+        blame_map={NIGHT: stale},
+    )
+    assert not any("Pull request" in d.value.columns for d in at.dataframe)

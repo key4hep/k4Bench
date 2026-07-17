@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pytest
 
+from k4bench.blame import github as gh_mod
 from k4bench.blame.github import (
     GitHubClient,
     RateLimitError,
@@ -154,6 +155,62 @@ def test_plain_403_is_not_a_rate_limit():
     routes = {"/compare/": _Resp(403, {"message": "Must have admin rights"})}
     res = resolve_repo_prs(_client(routes), "key4hep/k4geo", "a" * 40, "c" * 40)
     assert res.commits_unavailable is True
+
+
+def test_pr_cap_marks_truncated(monkeypatch):
+    # More PRs in the range than the local cap → the kept head is served, and
+    # the result says the candidate list is not the range's full population.
+    monkeypatch.setattr(gh_mod, "_MAX_PRS_PER_REPO", 1)
+    routes = {
+        "/compare/": _Resp(200, {
+            "total_commits": 2,
+            "commits": [_commit("s1", "One (#10)"), _commit("s2", "Two (#11)")],
+        }),
+        "/pulls/10/files": _Resp(200, []),
+        "/pulls/10": _Resp(200, _pr_body(10)),
+    }
+    res = resolve_repo_prs(_client(routes), "key4hep/k4geo", "a" * 40, "c" * 40)
+    assert [c.number for c in res.candidates] == [10]
+    assert res.truncated is True
+
+
+def test_exhausted_fallback_lookups_mark_truncated(monkeypatch):
+    # Commits whose PR is unknowable within the lookup budget may hide
+    # candidates — the result must not pretend the list is complete.
+    monkeypatch.setattr(gh_mod, "_MAX_COMMIT_PR_LOOKUPS", 1)
+    routes = {
+        "/compare/": _Resp(200, {
+            "total_commits": 2,
+            "commits": [
+                _commit("aaa1", "A plain merge commit"),
+                _commit("bbb2", "Another plain merge commit"),
+            ],
+        }),
+        "/commits/aaa1/pulls": _Resp(200, [{"number": 55}]),
+        "/pulls/55/files": _Resp(200, []),
+        "/pulls/55": _Resp(200, _pr_body(55)),
+    }
+    res = resolve_repo_prs(_client(routes), "key4hep/k4geo", "a" * 40, "c" * 40)
+    assert [c.number for c in res.candidates] == [55]
+    assert res.truncated is True
+
+
+def test_failed_pr_fetch_marks_truncated():
+    # A PR known to be in the range but unreadable right now leaves a hole in
+    # the candidate list — flagged, not silently smaller.
+    routes = {
+        "/compare/": _Resp(200, {
+            "total_commits": 2,
+            "commits": [_commit("s1", "One (#10)"), _commit("s2", "Two (#11)")],
+        }),
+        "/pulls/10/files": _Resp(200, []),
+        "/pulls/10": _Resp(200, _pr_body(10)),
+        "/pulls/11/files": _Resp(200, []),
+        "/pulls/11": _Resp(500),
+    }
+    res = resolve_repo_prs(_client(routes), "key4hep/k4geo", "a" * 40, "c" * 40)
+    assert [c.number for c in res.candidates] == [10]
+    assert res.truncated is True
 
 
 def test_deduplicates_prs_across_commits():

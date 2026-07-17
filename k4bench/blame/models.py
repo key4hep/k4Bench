@@ -6,21 +6,34 @@ moved across that window, and within each repo the ranked candidate pull
 requests. The identity fields on :class:`BlameEntry` (``detector`` … ``metric``,
 ``sub_detector``) are exactly a :class:`~k4bench.regression.models.MetricVerdict`'s
 identity, so the dashboard joins an entry back to the verdict it explains with
-:meth:`BlameReport.entry_for` — the two files stay decoupled, keyed only by that
-tuple.
+:meth:`BlameReport.entry_for` — matched on that tuple *and* the blame window, so
+an entry written for an earlier build of the same night can never attach to a
+verdict whose window has since moved.
 
 Everything here is a plain, frozen dataclass with explicit JSON round-tripping.
 :func:`from_json` drops unknown keys rather than raising: ``blame.json`` is read
 by whatever dashboard is deployed, not necessarily one built from the commit
 that wrote the file, so a schema that gains a field must not break older readers
 (the same forward-compatibility rule :mod:`k4bench.regression.render` follows for
-``report.json``).
+``report.json``). Structurally wrong JSON, on the other hand, raises
+:class:`BlameSchemaError` — one dedicated exception the readers at the
+integration boundaries (dashboard, notifier) catch to hide blame rather than
+crash.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from typing import Any
+
+
+class BlameSchemaError(ValueError):
+    """Parsed as JSON, but not shaped like a :class:`BlameReport`.
+
+    A ``ValueError`` subclass so any boundary already catching bad JSON
+    (``json.loads`` raises ``ValueError`` too) contains a bad schema the same
+    way — a malformed sidecar must never crash the dashboard or block the
+    nightly email."""
 
 
 def _only_known(cls: type, data: dict) -> dict:
@@ -85,9 +98,13 @@ class RepoBlame:
     ``repo`` is the ``owner/repo`` slug when the package lives on GitHub (the
     only forge whose PRs are resolvable), else ``None`` — the package still
     reports its commit range and ``compare_url`` (GitLab compare links resolve),
-    it just has no ``candidates``. ``commits_unavailable`` marks a compare that
-    404'd (``develop`` force-pushed, base commit gone — both SHAs are still
-    shown); ``truncated`` marks a range past GitHub's 250-commit compare cap.
+    it just has no ``candidates``. ``commits_unavailable`` marks a range whose
+    PRs could not be enumerated at all — a compare that 404'd (``develop``
+    force-pushed, base commit gone; both SHAs are still shown), a rate-limited
+    or errored resolution; ``truncated`` marks a candidate list known to be
+    incomplete — the range passed GitHub's 250-commit compare cap or a local
+    resolution bound, or a discovered PR failed to fetch. Either flag means the
+    candidate set must not be presented as the complete population of the range.
     """
 
     package: str  # Key4hep package name, e.g. "k4geo"
@@ -162,6 +179,14 @@ class BlameEntry:
         flat = [c for r in self.repos for c in r.candidates]
         return sorted(flat, key=lambda c: (-c.score, c.repo, c.number))
 
+    @property
+    def discovery_incomplete(self) -> bool:
+        """True when any repo's candidate list is known not to be the full
+        population of its range (unavailable or truncated) — the builder then
+        refuses to rank, and completeness checks exempt this entry: calling one
+        of a partial set "most likely" would be worse than no ranking."""
+        return any(r.commits_unavailable or r.truncated for r in self.repos)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "detector": self.detector,
@@ -192,13 +217,26 @@ class BlameReport:
     entries: tuple[BlameEntry, ...] = field(default_factory=tuple)
 
     def entry_for(self, verdict) -> BlameEntry | None:
-        """The entry attributing *verdict*, matched on the shared identity
-        tuple, or ``None`` when this night has no blame for it."""
+        """The entry attributing *verdict*, or ``None`` when this night has no
+        blame for it.
+
+        Matched on the shared identity tuple **and** the blame window: a rerun
+        can re-anchor a verdict's window, and a sidecar left over from an
+        earlier build must never have its ranking joined to a regression whose
+        window it did not examine."""
         key = (
             verdict.detector, verdict.platform, verdict.sample,
             verdict.label, verdict.metric, verdict.sub_detector,
         )
-        return next((e for e in self.entries if e.key == key), None)
+        return next(
+            (
+                e for e in self.entries
+                if e.key == key
+                and e.base_release == verdict.last_accepted_run_date
+                and e.onset_release == verdict.onset_run_date
+            ),
+            None,
+        )
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -209,20 +247,31 @@ class BlameReport:
 
     @classmethod
     def from_json(cls, data: dict) -> BlameReport:
-        return cls(
-            generated_at=str(data.get("generated_at", "")),
-            report_night=str(data.get("report_night", "")),
-            entries=tuple(BlameEntry.from_dict(e) for e in data.get("entries") or ()),
-        )
+        """Parse *data*, raising :class:`BlameSchemaError` when it is not shaped
+        like a blame report — a top-level list, an entry missing required
+        fields, a candidate that is not an object. Unknown *extra* keys are
+        still dropped silently (forward compatibility); only structure that
+        cannot be read raises."""
+        try:
+            return cls(
+                generated_at=str(data.get("generated_at", "")),
+                report_night=str(data.get("report_night", "")),
+                entries=tuple(
+                    BlameEntry.from_dict(e) for e in data.get("entries") or ()
+                ),
+            )
+        except (AttributeError, KeyError, TypeError) as exc:
+            raise BlameSchemaError(f"not a blame report: {exc}") from exc
 
 
 def ranking_coverage(blame: BlameReport) -> tuple[int, int, list[str]]:
-    """Return ``(ranked, expected, missing)`` for distinct window candidates.
+    """Return ``(ranked, expected, missing)`` over rankable candidate rows.
 
-    Candidate rows repeat for every metric sharing one release window, while the
-    builder performs one model inference per window. Count each
-    ``(platform, base, onset, repo, PR)`` once so completeness reflects actual
-    model work rather than serialized duplication.
+    The builder ranks each regression on its own, so every candidate of every
+    entry is expected to carry the model's judgement — except entries whose
+    :attr:`~BlameEntry.discovery_incomplete` is set: the builder deliberately
+    leaves those unranked (a partial candidate set must not produce a "most
+    likely" claim), so they are exempt rather than counted as failures.
 
     A zero score with a non-empty explanation is a valid ranking. An empty
     description is incomplete regardless of score: the contract asks the model
@@ -231,11 +280,12 @@ def ranking_coverage(blame: BlameReport) -> tuple[int, int, list[str]]:
     expected: set[tuple] = set()
     ranked: set[tuple] = set()
     for entry in blame.entries:
-        window = (entry.platform, entry.base_release, entry.onset_release)
+        if entry.discovery_incomplete:
+            continue
         for candidate in entry.candidates:
-            key = (*window, candidate.repo, candidate.number)
+            key = (*entry.key, candidate.repo, candidate.number)
             expected.add(key)
             if candidate.description:
                 ranked.add(key)
-    missing = [f"{key[-2]}#{key[-1]}" for key in sorted(expected - ranked)]
+    missing = sorted({f"{key[-2]}#{key[-1]}" for key in expected - ranked})
     return len(ranked), len(expected), missing

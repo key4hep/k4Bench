@@ -116,11 +116,12 @@ _SYSTEM_PROMPT = (
     "invent PRs. Output JSON only."
 )
 
-#: Total prompt-body budget (chars). Per-PR patches are already bounded in
-#: :mod:`k4bench.blame.github`; this is the backstop that keeps a wide window
-#: (many PRs) inside a small-context model by dropping the tail's *diffs* — the
-#: file paths and titles always survive, so those PRs are still scored, just
-#: from metadata.
+#: Total *diff* budget (chars) across all candidates. Per-PR patches are
+#: already bounded in :mod:`k4bench.blame.github`; this is the backstop that
+#: keeps a wide window (many PRs) inside a small-context model by waterfilling
+#: the budget — every oversized diff shrinks evenly (see
+#: :func:`_allocate_diff_budget`), and file paths and titles always survive, so
+#: every PR is still scored, at worst from metadata.
 _MAX_PROMPT_CHARS = 45000
 _MAX_FILES_LISTED = 12
 _MAX_DESCRIPTION_CHARS = 200
@@ -150,7 +151,9 @@ class OpenAICompatRanker:
     ``/chat/completions`` is appended. ``session`` is injectable so tests
     substitute a fake with no network. Transient endpoint failures use bounded
     exponential/``Retry-After`` backoff; length truncation increases the output
-    allowance. On final failure :meth:`rank` returns ``{}`` rather than raising:
+    allowance; a 400 rejecting JSON mode retries once without ``response_format``
+    (compatibility varies across "OpenAI-compatible" providers). On final
+    failure :meth:`rank` returns ``{}`` rather than raising:
     a late report beats a blocked one, and blame is a best-effort sidecar."""
 
     url: str
@@ -251,13 +254,27 @@ class OpenAICompatRanker:
                 return str(choice["message"]["content"] or ""), finish_reason
             except Exception as exc:
                 last_exc = exc
-                can_retry = _retryable_failure(
+                stripped_compat = False
+                if (
+                    isinstance(exc, requests.HTTPError)
+                    and getattr(resp, "status_code", None) == 400
+                    and "response_format" in payload
+                ):
+                    # Some "OpenAI-compatible" providers reject JSON mode
+                    # outright. Parsing never depended on it, so drop the field
+                    # and ask once more before treating the 400 as fatal.
+                    payload.pop("response_format")
+                    stripped_compat = True
+                can_retry = stripped_compat or _retryable_failure(
                     exc, resp, length_limited=length_limited,
                     can_grow=payload["max_tokens"] > attempt_payload["max_tokens"],
                 )
                 if not can_retry or attempt + 1 >= self.max_attempts:
                     break
-                delay = 0.0 if length_limited else _retry_delay(resp, attempt)
+                delay = (
+                    0.0 if length_limited or stripped_compat
+                    else _retry_delay(resp, attempt)
+                )
                 _log.warning(
                     "rank: attempt %d/%d failed (%s); retrying in %.1fs",
                     attempt + 1, self.max_attempts, exc, delay,
@@ -371,46 +388,71 @@ def _format_files(files: tuple[str, ...]) -> str:
     return ", ".join(shown) + suffix
 
 
-def _render_candidate(candidate: RankCandidate, budget: int) -> tuple[str, int]:
-    """One PR's prompt block and the diff budget left after it.
+def _allocate_diff_budget(needs: list[int], total: int) -> list[int]:
+    """Chars of diff each candidate may render, waterfilled from *total*.
 
-    The number, title and file paths are always included; the diff is appended
-    only while *budget* remains, so a wide window degrades to titles+paths for
-    its tail rather than overflowing a small-context model."""
+    When everything fits, everyone gets their full patch. Under pressure the
+    budget is shared evenly: small diffs stay whole and the largest ones split
+    the remainder — a candidate's *position* in the prompt never decides whether
+    its diff survives."""
+    alloc = [0] * len(needs)
+    remaining = total
+    active = [i for i, n in enumerate(needs) if n > 0]
+    while active and remaining >= len(active):
+        share = remaining // len(active)
+        satisfied = []
+        for i in active:
+            take = min(needs[i] - alloc[i], share)
+            alloc[i] += take
+            remaining -= take
+            if alloc[i] >= needs[i]:
+                satisfied.append(i)
+        if not satisfied:
+            break  # everyone consumed a full share; nothing left to rebalance
+        active = [i for i in active if i not in satisfied]
+    return alloc
+
+
+def _render_candidate(candidate: RankCandidate, diff_budget: int) -> str:
+    """One PR's prompt block.
+
+    The number, title and file paths are always included; the diff is clipped
+    to this candidate's *diff_budget* share, so a wide window degrades every
+    oversized diff evenly rather than overflowing a small-context model."""
     lines = [f"- #{candidate.number} — {candidate.title}"]
     if candidate.files:
         lines.append(f"  files: {_format_files(candidate.files)}")
-    if candidate.patch and budget > 0:
+    if candidate.patch and diff_budget > 0:
         patch = candidate.patch
-        if len(patch) > budget:
-            patch = patch[:budget] + "\n… (truncated)"
-        budget -= len(patch)
+        if len(patch) > diff_budget:
+            patch = patch[:diff_budget] + "\n… (truncated)"
         lines.append("  diff:")
         lines.append(textwrap.indent(patch, "    "))
-    return "\n".join(lines), budget
+    return "\n".join(lines)
 
 
 def _build_user_prompt(request: RankRequest) -> str:
-    """The user message: the regression, then every candidate grouped by package.
-
-    Candidates keep their input order (worst-first from the builder), so the
-    diff budget, when it runs out, drops the *least* churny PRs' diffs first."""
+    """The user message: the regression, then every candidate grouped by package,
+    each with its fair share of the total diff budget."""
     parts = [
         "Regression: " + _regression_line(request),
         "",
         "Candidate pull requests, grouped by package — score each on its own:",
     ]
+    budgets = _allocate_diff_budget(
+        [len(c.patch) for c in request.candidates], _MAX_PROMPT_CHARS
+    )
+    budget_for = dict(zip(request.candidates, budgets))
+
     by_repo: dict[str, list[RankCandidate]] = {}
     for candidate in request.candidates:
         by_repo.setdefault(candidate.repo, []).append(candidate)
 
-    budget = _MAX_PROMPT_CHARS
     for repo, candidates in by_repo.items():
         parts.append("")
         parts.append(f"## {repo}")
         for candidate in candidates:
-            block, budget = _render_candidate(candidate, budget)
-            parts.append(block)
+            parts.append(_render_candidate(candidate, budget_for[candidate]))
 
     parts.append("")
     parts.append(_RESPONSE_INSTRUCTION)
@@ -455,14 +497,20 @@ def _coerce_int(value: object) -> int | None:
             return None
 
 
-def _clamp_score(value: object) -> float:
-    """A finite 0–100 float, or 0.0 for anything unparseable/non-finite."""
+def _parse_score(value: object) -> float | None:
+    """A finite float clamped to 0–100, or ``None`` when *value* is not a
+    number (missing, prose, NaN, infinity).
+
+    ``None`` rejects the whole row rather than defaulting to 0.0: a zero is a
+    *judgement* ("this PR is not the cause"), and publishing one the model
+    never made — possibly inverting a "likelihood: high" it did make — would be
+    a confident wrong answer, the exact thing this pipeline refuses to emit."""
     try:
         score = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
-        return 0.0
+        return None
     if not math.isfinite(score):
-        return 0.0
+        return None
     return max(0.0, min(100.0, score))
 
 
@@ -481,8 +529,10 @@ def _parse_rankings(
     Enforces the only-reorder rule here as well as in the builder: a
     ``(repo, pr)`` the request did not contain is dropped, so no invented PR can
     reach the caller. Any shape drift — not an object, no ``rankings`` list, a
-    row missing ``repo``/``pr`` — yields ``{}`` or skips that row rather than
-    raising."""
+    row missing ``repo``/``pr``, a ``likelihood`` that is not a number — yields
+    ``{}`` or skips that row rather than raising; a skipped row surfaces as a
+    missing candidate for the retry/coverage machinery, never as a made-up
+    score."""
     known = {(c.repo, c.number) for c in request.candidates}
     data = _extract_json(content)
     if not isinstance(data, dict):
@@ -502,8 +552,8 @@ def _parse_rankings(
         key = (str(repo), number)
         if key not in known:
             continue  # only-reorder: never surface a PR the input didn't hold
-        out[key] = Ranking(
-            score=_clamp_score(row.get("likelihood")),
-            description=_one_line(row.get("reason")),
-        )
+        score = _parse_score(row.get("likelihood"))
+        if score is None:
+            continue  # unreadable likelihood: reject the row, don't publish 0%
+        out[key] = Ranking(score=score, description=_one_line(row.get("reason")))
     return out

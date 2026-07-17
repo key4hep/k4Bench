@@ -71,9 +71,6 @@ def build_blame_report(
     diff_cache: dict[tuple[str, str, str], list[PackageChange] | None] = {}
     unchanged_cache: dict[tuple[str, str, str], int] = {}
     resolution_cache: dict[tuple[str, str, str], RepoResolution] = {}
-    #: One rank inference per release-boundary window, shared by every metric
-    #: that stepped across it (they see the same diff and candidate set).
-    rank_cache: dict[tuple[str, str, str], dict[tuple[str, int], Ranking]] = {}
     #: Set once GitHub throttles: from then on repos keep their diffs but get no
     #: candidates, rather than each retry re-hitting the same wall.
     rate_limited = False
@@ -102,7 +99,7 @@ def build_blame_report(
                 patches[(pr.repo, pr.number)] = resolution.patches.get(pr.number, "")
 
         if ranker is not None:
-            repos = _ranked_repos(ranker, v, repos, patches, window, rank_cache)
+            repos = _ranked_repos(ranker, v, repos, patches)
 
         entries.append(BlameEntry(
             detector=v.detector, platform=v.platform, sample=v.sample,
@@ -140,16 +137,22 @@ def _resolve(
     """Resolve one changed repo's PRs, memoized on ``(slug, base, head)``.
 
     Only a *changed* GitHub package with both endpoints is resolvable — an
-    added/removed package has no range, and a non-GitHub host no resolvable PRs.
-    Returns the (possibly empty) resolution and the updated rate-limit flag."""
+    added/removed package has no range, and a non-GitHub host no resolvable PRs;
+    those return a plain empty resolution. A resolvable repo that could *not* be
+    asked — the night is rate-limited, or the resolution raised — comes back
+    with ``commits_unavailable`` set instead: "no candidates" and "never looked"
+    must stay distinguishable, or a partial candidate set would read as a
+    complete one. Returns the resolution and the updated rate-limit flag."""
     repo = change.repo
     if (
-        github is None or rate_limited
+        github is None
         or change.status != CHANGED
         or repo is None or repo.forge != "github"
         or not change.base_commit or not change.head_commit
     ):
         return RepoResolution(), rate_limited
+    if rate_limited:
+        return RepoResolution(commits_unavailable=True), True
 
     key = (repo.slug, change.base_commit, change.head_commit)
     if key not in cache:
@@ -157,10 +160,10 @@ def _resolve(
             cache[key] = resolve_repo_prs(github, repo.slug, change.base_commit, change.head_commit)
         except RateLimitError:
             _log.warning("blame: GitHub rate limit — remaining repos get no candidates")
-            return RepoResolution(), True
+            return RepoResolution(commits_unavailable=True), True
         except Exception:
             _log.exception("blame: resolving %s failed", repo.slug)
-            cache[key] = RepoResolution()
+            cache[key] = RepoResolution(commits_unavailable=True)
     return cache[key], rate_limited
 
 
@@ -192,21 +195,28 @@ def _ranked_repos(
     verdict: MetricVerdict,
     repos: list[RepoBlame],
     patches: dict[tuple[str, int], str],
-    window: tuple[str, str, str],
-    rank_cache: dict[tuple[str, str, str], dict[tuple[str, int], Ranking]],
 ) -> list[RepoBlame]:
     """Return *repos* with the ranker's scores/descriptions folded onto their
     candidates.
 
-    Memoized on *window*: every confirmed metric that stepped across one release
-    boundary shares one diff and one candidate set, so it needs a single
-    inference rather than one per metric — the metric/direction that triggered
-    the window rides in the prompt. An empty result (the ranker declined, or
-    raised) leaves the candidates unranked.
+    One inference per *verdict*: metrics sharing a release window see the same
+    candidate set, but which PR plausibly moved *this* metric on *this* detector
+    is a different question for each — a wall-time judgement must never be
+    re-published as the explanation of a memory step. The extra calls are
+    bounded by the night's confirmed regressions and the CI wall clock.
+
+    Ranking is skipped entirely when any repo's candidate discovery came back
+    incomplete (unavailable or truncated): the model would judge a partial set,
+    and its "most likely" would overclaim. An empty result (the ranker declined,
+    raised, or was skipped) leaves the candidates unranked.
     """
-    if window not in rank_cache:
-        rank_cache[window] = _run_ranker(ranker, verdict, repos, patches)
-    rankings = rank_cache[window]
+    if any(r.commits_unavailable or r.truncated for r in repos):
+        _log.warning(
+            "blame: %s/%s %s: candidate discovery incomplete — leaving unranked",
+            verdict.detector, verdict.sample, verdict.metric,
+        )
+        return repos
+    rankings = _run_ranker(ranker, verdict, repos, patches)
     if not rankings:
         return repos
     return [_apply_rankings(repo, rankings) for repo in repos]
@@ -218,8 +228,7 @@ def _run_ranker(
     repos: list[RepoBlame],
     patches: dict[tuple[str, int], str],
 ) -> dict[tuple[str, int], Ranking]:
-    """One guarded rank call. Any exception degrades to ``{}`` and is cached as
-    such, so a broken ranker is asked at most once per window and never aborts
+    """One guarded rank call. Any exception degrades to ``{}`` and never aborts
     the report — blame's best-effort isolation, extended to the model."""
     try:
         request = _rank_request(verdict, repos, patches)

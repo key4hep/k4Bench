@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import email
 import json
 
@@ -153,8 +154,15 @@ def _blame_sidecar() -> BlameReport:
 
 
 def _confirmed_report_path(tmp_path):
+    """A report whose confirmed verdict carries the window
+    :func:`_blame_sidecar` attributes — the join needs identity *and* window."""
+    verdict = dataclasses.replace(
+        _verdict(Severity.CONFIRMED, Direction.UP),
+        onset_run_id="2026-01-09", onset_run_date="2026-01-09",
+        last_accepted_run_id="2026-01-05", last_accepted_run_date="2026-01-05",
+    )
     report_path = tmp_path / "report.json"
-    report_path.write_text(json.dumps(to_json(_report(_verdict(Severity.CONFIRMED, Direction.UP)))))
+    report_path.write_text(json.dumps(to_json(_report(verdict))))
     return report_path
 
 
@@ -173,6 +181,14 @@ def test_load_blame_absent_returns_none(tmp_path):
 def test_load_blame_malformed_returns_none(tmp_path):
     report_path = _confirmed_report_path(tmp_path)
     (tmp_path / "blame.json").write_text("{ not valid json")
+    assert notify._load_blame(str(report_path)) is None
+
+
+def test_load_blame_wrong_schema_returns_none(tmp_path):
+    # Valid JSON that is not a blame report (entries missing required fields)
+    # must degrade exactly like invalid JSON — never block the email.
+    report_path = _confirmed_report_path(tmp_path)
+    (tmp_path / "blame.json").write_text('{"entries": [{"detector": "DET"}]}')
     assert notify._load_blame(str(report_path)) is None
 
 

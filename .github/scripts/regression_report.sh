@@ -91,15 +91,18 @@ echo "::endgroup::"
 # ── 5b. Blame sidecar (best-effort; must never affect the report or the email) ─
 # Runs *after* the report is uploaded and is fully isolated: a GitHub outage, a
 # rate limit, or a force-pushed develop must not fail the job. The whole block
-# is `{ ...; } || echo`, so any failure — build, missing file (most nights have
-# no confirmed regression, so no blame.json is written), or upload — degrades to
-# a log line instead of tripping `set -e`. Reuses the report build's run cache
-# for provenance (no re-download); GITHUB_TOKEN enables PR resolution, and
-# K4BENCH_LLM_* (if set) ranks the candidates via an *off-box* hosted endpoint —
-# never local inference on this benchmark runner, which would contend for CPU.
-# blame_report.py reads all of these straight from the environment. A hard
-# wall-clock limit also covers a provider that accepts connections but never
-# makes useful progress; timeout is caught by the same best-effort boundary.
+# is `{ ...; } || echo`, so any failure — build, upload, remote cleanup —
+# degrades to a log line instead of tripping `set -e`. When no blame.json is
+# produced (most nights: nothing to attribute; otherwise incomplete ranking,
+# timeout, or another best-effort failure), any sidecar an earlier run of this
+# night left on EOS is removed — report.json was just replaced above, and a
+# stale sidecar must not be joined to a report it never examined. Reuses the
+# report build's run cache for provenance (no re-download); GITHUB_TOKEN
+# enables PR resolution, and K4BENCH_LLM_* (if set) ranks the candidates via an
+# *off-box* hosted endpoint — never local inference on this benchmark runner,
+# which would contend for CPU. blame_report.py reads all of these straight from
+# the environment. A hard wall-clock limit also covers a provider that accepts
+# connections but never makes useful progress.
 echo "::group::5b. Blame sidecar"
 {
     timeout --signal=TERM --kill-after=30s "${K4BENCH_BLAME_TIMEOUT:-15m}" \
@@ -108,10 +111,14 @@ echo "::group::5b. Blame sidecar"
         --output-dir report \
         --cache-dir "${RUNNER_TEMP:-/tmp}/k4bench_cache" \
         --data-url "${K4BENCH_DATA_URL}" \
-    && [[ -f report/blame.json ]] \
-    && xrdcp --force report/blame.json "root://${EOS_FQDN}/${EOS_REPORT_DIR}/blame.json" \
-    && echo "Uploaded to: ${EOS_REPORT_DIR}/blame.json"
-} || echo "No blame sidecar this night (nothing to attribute, incomplete ranking, timeout, or another best-effort failure)." >&2
+      || echo "No blame sidecar this night (nothing to attribute, incomplete ranking, timeout, or another best-effort failure)." >&2
+    if [[ -f report/blame.json ]]; then
+        xrdcp --force report/blame.json "root://${EOS_FQDN}/${EOS_REPORT_DIR}/blame.json" \
+          && echo "Uploaded to: ${EOS_REPORT_DIR}/blame.json"
+    elif xrdfs "${EOS_FQDN}" rm "${EOS_REPORT_DIR}/blame.json" 2>/dev/null; then
+        echo "Removed a previous run's blame.json for this night."
+    fi
+} || echo "Blame sidecar upload/cleanup failed (best-effort; the report and email are unaffected)." >&2
 echo "::endgroup::"
 
 # ── 6. E-group email (sent every night regardless of content; skips quietly

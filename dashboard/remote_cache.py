@@ -73,14 +73,17 @@ def _cached_fetch_report(base_url: str, date: str) -> dict | None:
     return fetch_report(base_url, date)
 
 
-@st.cache_data(show_spinner="Fetching blame...", ttl=3600)
+@st.cache_data(show_spinner="Fetching blame...", ttl=600)
 def _cached_fetch_blame(base_url: str, date: str) -> dict | None:
     """Cached :func:`k4bench.remote.fetch_blame`.
 
     Most nights have no ``blame.json`` (only a confirmed, attributable
-    regression produces one), so this returns ``None`` far more often than not —
-    cached for the full hour like the report it sits beside, since a published
-    night's blame is immutable.
+    regression produces one), so this returns ``None`` far more often than not.
+    The TTL is deliberately shorter than the report's hour: the sidecar is
+    uploaded up to ~15 minutes *after* its report (the blame stage runs last,
+    behind GitHub and the model), and a ``None`` cached in that gap must not
+    hide the freshly landed ranking for the rest of an hour. One small GET per
+    viewed night per TTL is the whole cost.
     """
     from k4bench.remote import fetch_blame
     return fetch_blame(base_url, date)

@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 import requests
 
+from k4bench.blame import rank as rank_mod
 from k4bench.blame.rank import (
     OpenAICompatRanker,
     RankCandidate,
@@ -122,6 +123,30 @@ def test_prompt_direction_and_subdetector_render():
                                              "pct_change": -0.05, "sub_detector": "VertexBarrel"}))
     assert "down -5.0%" in down
     assert "wall_time_s [VertexBarrel]" in down
+
+
+def test_diff_budget_is_shared_fairly_not_first_come_first_served(monkeypatch):
+    # Under budget pressure a candidate's position must not decide whether its
+    # diff survives: the small diff stays whole, the two large ones shrink
+    # evenly — including the *first* one, which a sequential budget would have
+    # let swallow everything.
+    monkeypatch.setattr(rank_mod, "_MAX_PROMPT_CHARS", 100)
+    candidates = (
+        RankCandidate(repo="key4hep/k4geo", number=1, title="big1", patch="~" * 300),
+        RankCandidate(repo="key4hep/k4geo", number=2, title="small", patch="=" * 30),
+        RankCandidate(repo="key4hep/k4geo", number=3, title="big2", patch="^" * 300),
+    )
+    prompt = _build_user_prompt(_request(candidates=candidates))
+    assert "=" * 30 in prompt                    # the small diff is whole
+    assert prompt.count("~") == prompt.count("^")  # the big ones shrink evenly
+    assert 0 < prompt.count("~") < 300
+
+
+def test_allocate_diff_budget_waterfills():
+    assert rank_mod._allocate_diff_budget([30, 300, 300], 100) == [30, 35, 35]
+    assert rank_mod._allocate_diff_budget([10, 20], 100) == [10, 20]  # all fits
+    assert rank_mod._allocate_diff_budget([], 100) == []
+    assert rank_mod._allocate_diff_budget([50, 50], 0) == [0, 0]
 
 
 # ── Parsing a good response ───────────────────────────────────────────────────
@@ -234,13 +259,26 @@ def test_description_is_collapsed_to_one_line():
     assert result[("key4hep/k4geo", 10)].description == "line one line two with spaces"
 
 
-def test_non_numeric_likelihood_becomes_zero_not_an_error():
+def test_non_numeric_likelihood_rejects_the_row():
+    # "very high" must not be published as 0% — that would invert the model's
+    # meaning. The row is rejected; the candidate stays unranked (and coverage
+    # then blocks publication rather than shipping a made-up zero).
     body = _rankings_json(
         {"repo": "key4hep/k4geo", "pr": 10, "likelihood": "very high", "reason": "x"},
         {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "low"},
     )
-    result = _ranker([_completion(body)]).rank(_request())
-    assert result[("key4hep/k4geo", 10)].score == 0.0
+    result = _ranker([_completion(body), _completion(body)]).rank(_request())
+    assert ("key4hep/k4geo", 10) not in result
+    assert result[("AIDASoft/DD4hep", 20)].score == 5.0
+
+
+def test_missing_and_non_finite_likelihoods_reject_the_row():
+    body = _rankings_json(
+        {"repo": "key4hep/k4geo", "pr": 10, "reason": "no likelihood at all"},
+        {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": float("nan"), "reason": "nan"},
+    )
+    result = _ranker([_completion(body), _completion(body)]).rank(_request())
+    assert result == {}
 
 
 # ── Failure modes all collapse to {} ─────────────────────────────────────────
@@ -301,10 +339,24 @@ def test_rate_limit_honours_retry_after():
     assert delays == [7.0]
 
 
-def test_non_retryable_client_error_fails_immediately():
-    ranker = _ranker([_FakeResp({}, status=400)])
+def test_400_retries_once_without_response_format_then_succeeds():
+    # Not every "OpenAI-compatible" provider implements JSON mode; a 400 gets
+    # one retry with the optional field stripped before counting as fatal.
+    body = _rankings_json(
+        {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 55, "reason": "ok"},
+        {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "low"},
+    )
+    ranker = _ranker([_FakeResp({}, status=400), _completion(body)])
+    assert len(ranker.rank(_request())) == 2
+    assert "response_format" in ranker.session.calls[0].json
+    assert "response_format" not in ranker.session.calls[1].json
+
+
+def test_non_retryable_client_error_fails_after_the_compat_strip():
+    # A 400 that persists without response_format is a real request error.
+    ranker = _ranker([_FakeResp({}, status=400), _FakeResp({}, status=400)])
     assert ranker.rank(_request()) == {}
-    assert len(ranker.session.calls) == 1
+    assert len(ranker.session.calls) == 2
 
 
 def test_transient_error_then_success_is_retried():

@@ -188,14 +188,22 @@ confirmed, attributable regression).
 }
 ```
 
-Each entry's first seven fields are a `report.json` verdict's identity, so the
-dashboard joins an entry back to the confirmed regression it explains. The
-pipeline collects every PR in each changed repo's commit range; a separate
-**ranking stage** then scores each candidate — `score` is a 0–100 likelihood it
-is the cause and `description` a one-line reason. Several PRs can share one
-range, so each is scored on its own. The ranking is a *lead* for a human, never a
-claim of cause. Readers drop unknown keys, so the schema can gain fields without
-breaking an older dashboard.
+Each entry's first seven fields are a `report.json` verdict's identity; the
+dashboard joins an entry back to the confirmed regression it explains by that
+identity **and** the `base_release`/`onset_release` window, so a sidecar left
+over from an earlier build of the same night (the CI job also deletes the
+remote sidecar on a rerun that produces none) can never attach to a re-anchored
+regression. The pipeline collects every PR in each changed repo's commit range;
+a separate **ranking stage** then scores each candidate *for that regression* —
+`score` is a 0–100 likelihood it is the cause and `description` a one-line
+reason, judged per metric (two metrics sharing a window get independent
+rankings). `commits_unavailable` marks a repo whose range could not be
+enumerated at all; `truncated` marks a candidate list known to be incomplete
+(compare/PR caps, or a PR that failed to fetch) — a regression touching either
+is left **unranked**, since "most likely" over a partial candidate set would
+overclaim. The ranking is a *lead* for a human, never a claim of cause. Readers
+drop unknown keys, so the schema can gain fields without breaking an older
+dashboard; structurally malformed sidecars are hidden, never fatal.
 
 The ranking stage is a **language model** that reads the metric that moved and
 each candidate PR's actual code diff, and is configured entirely by environment —
@@ -210,10 +218,12 @@ the already-uploaded nightly report beyond that bound.
 Ranking is **optional**: with endpoint/model unset, candidates are still written
 but left unranked (`score` 0, `description` ""), the dashboard shows the package
 diff without the candidate ledger, and the email omits the "most likely" line.
-When ranking *is* configured, CI publishes `blame.json` only if every distinct
-candidate has an explanation (a score of zero remains valid); an empty or partial model response is
-logged and the sidecar is skipped rather than silently publishing a ranking the
-dashboard would hide. The diffs the model reads are transient input, never
+When ranking *is* configured, CI publishes `blame.json` only if every candidate
+of every fully-discovered regression has an explanation (a score of zero
+remains valid; a likelihood that is not a number rejects that row rather than
+becoming a fake 0%); an empty or partial model response is logged and the
+sidecar is skipped rather than silently publishing a ranking the dashboard
+would hide. The diffs the model reads are transient input, never
 stored here (they are re-fetchable from GitHub); the sidecar keeps only the file
 *paths* plus the ranker's `score`/`description`. The model may only score the
 candidates it is given — a PR number it did not receive is dropped, so

@@ -140,10 +140,59 @@ def test_rate_limit_degrades_to_diffs_only(monkeypatch):
     blame = build_blame_report(
         _report([_verdict()]), packages_for_release=provenance, github=GitHubClient(),
     )
-    # The regression is still recorded with its diff; it just has no candidates.
+    # The regression is still recorded with its diff; it just has no candidates,
+    # and the repo says so — "never asked" must not read as "empty range".
     assert len(blame.entries) == 1
     assert blame.entries[0].candidates == []
     assert blame.entries[0].repos[0].package == "k4geo"
+    assert blame.entries[0].repos[0].commits_unavailable is True
+
+
+def test_rate_limit_midway_marks_remaining_repos_and_suppresses_ranking(monkeypatch):
+    calls = []
+
+    def resolve_then_throttle(client, slug, base, head):
+        calls.append(slug)
+        if len(calls) == 1:
+            return RepoResolution(candidates=[
+                CandidatePR(repo=slug, number=10, title="t", author="a", url="u"),
+            ])
+        raise RateLimitError("throttled")
+    _stub_resolve(monkeypatch, resolve_then_throttle)
+    provenance = _provenance({
+        (_PLAT, "2026-07-03"): {"k4geo": _pkgs("a" * 40),
+                                "dd4hep": _pkgs("d" * 40, _GH)},
+        (_PLAT, "2026-07-04"): {"k4geo": _pkgs("c" * 40),
+                                "dd4hep": _pkgs("e" * 40, _GH)},
+    })
+    ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(90.0, "confident")})
+    blame = build_blame_report(
+        _report([_verdict()]), packages_for_release=provenance,
+        github=GitHubClient(), ranker=ranker,
+    )
+    entry = blame.entries[0]
+    flags = {r.package: r.commits_unavailable for r in entry.repos}
+    assert sum(flags.values()) == 1        # the throttled repo is flagged …
+    assert entry.discovery_incomplete      # … so the entry says it saw a partial set
+    # … and the partial candidate set is never ranked: a "most likely" over
+    # candidates that were never examined would overclaim.
+    assert ranker.requests == []
+    assert all(c.score == 0.0 and c.description == "" for c in entry.candidates)
+
+
+def test_resolution_error_marks_repo_unavailable(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("connection reset")
+    _stub_resolve(monkeypatch, boom)
+    provenance = _provenance({
+        (_PLAT, "2026-07-03"): {"k4geo": _pkgs("a" * 40)},
+        (_PLAT, "2026-07-04"): {"k4geo": _pkgs("c" * 40)},
+    })
+    blame = build_blame_report(
+        _report([_verdict()]), packages_for_release=provenance, github=GitHubClient(),
+    )
+    # A transient network/JSON failure is not an empty range either.
+    assert blame.entries[0].repos[0].commits_unavailable is True
 
 
 def test_non_github_repo_gets_diff_but_no_resolution(monkeypatch):
@@ -259,16 +308,19 @@ def test_ranker_exception_degrades_to_unranked_without_aborting(monkeypatch):
     assert all(c.score == 0.0 for c in blame.entries[0].candidates)  # just unranked
 
 
-def test_ranker_called_once_per_window(monkeypatch):
+def test_each_metric_is_ranked_on_its_own(monkeypatch):
     # Two confirmed metrics that stepped across the same release boundary share
-    # one diff and one candidate set → a single inference, applied to both.
+    # one diff and one candidate set, but which PR plausibly moved *this* metric
+    # is a separate judgement — one inference per verdict, each carrying its own
+    # metric, so a wall-time explanation can never be re-published as a memory
+    # step's cause. (The GitHub resolution itself stays cached per window.)
     _two_candidates(monkeypatch)
     ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
     report = _report([_verdict(metric="wall_time_s"), _verdict(metric="peak_rss_mb")])
     blame = build_blame_report(
         report, packages_for_release=_MOVED, github=GitHubClient(), ranker=ranker,
     )
-    assert len(ranker.requests) == 1  # one call for the shared window
+    assert [r.metric for r in ranker.requests] == ["wall_time_s", "peak_rss_mb"]
     assert len(blame.entries) == 2
     for entry in blame.entries:
         assert next(c for c in entry.candidates if c.number == 10).score == 60.0

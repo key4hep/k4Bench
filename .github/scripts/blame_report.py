@@ -15,7 +15,10 @@ nightly report or its email. The caller isolates this command from the report
 and email. When ranking is configured, an empty or partial model response exits
 non-zero and writes no sidecar rather than silently publishing data the dashboard
 would hide. A score of zero is valid, but every candidate must still have the
-model's explanation. Most nights have no confirmed, attributable regression at all.
+model's explanation — except regressions whose candidate discovery came back
+incomplete (rate limit, force-pushed range, caps): those are deliberately written
+unranked, since a "most likely" over a partial candidate set would overclaim.
+Most nights have no confirmed, attributable regression at all.
 
 Provenance is read from local run directories the report build already cached
 (``--cache-dir``) or a local tree (``--data-dir``); ``--data-url`` is a remote
@@ -196,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
             shown = ", ".join(missing[:5])
             suffix = f", … (+{len(missing) - 5} more)" if len(missing) > 5 else ""
             _log.error(
-                "blame_report: ranking incomplete (%d/%d distinct candidate PRs); "
+                "blame_report: ranking incomplete (%d/%d rankable candidate rows); "
                 "refusing to write blame.json. Missing: %s%s",
                 n_ranked, n_expected, shown, suffix,
             )
