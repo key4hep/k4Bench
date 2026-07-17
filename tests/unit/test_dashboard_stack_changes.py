@@ -718,6 +718,26 @@ def test_outlier_scatter_opens_for_a_cpu_and_memory_step():
     assert not at.exception, at.exception
 
 
+def test_scatter_candidates_axes_come_from_the_matched_pair_not_each_worst():
+    # cfgD: wall_time_s (onset A, the config's worst |Δ|) and user_cpu_s
+    # (onset B, smaller |Δ|) are both "time"; peak_rss_mb (onset B) is the
+    # only "memory" flag. Picking each family's own worst independently would
+    # plot wall_time_s (onset A) against peak_rss_mb (onset B) while still
+    # claiming "both stepped" off the user_cpu_s/peak_rss_mb (onset B) pair —
+    # two different pairs. The axes must come from the pair that actually
+    # shares an onset: user_cpu_s × peak_rss_mb, not wall_time_s.
+    hits = [
+        _confirmed(label="cfgD", metric="wall_time_s", pct_change=0.50,
+                   onset_run_id="A"),
+        _confirmed(label="cfgD", metric="user_cpu_s", pct_change=0.10,
+                   onset_run_id="B"),
+        _confirmed(label="cfgD", metric="peak_rss_mb", metric_family="memory",
+                   pct_change=0.20, onset_run_id="B"),
+    ]
+    cands = stack_changes._scatter_candidates(hits)
+    assert cands[0][2:] == ("cfgD", "user_cpu_s", "peak_rss_mb", True)
+
+
 def test_bound_to_release_excludes_points_after_head_release():
     # Reports are fetched with no upper date bound (a regression can confirm,
     # and so first appear in a report, after its onset), so the plotted points

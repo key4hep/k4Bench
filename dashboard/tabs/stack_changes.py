@@ -420,15 +420,18 @@ def _same_onset(a: MetricVerdict, b: MetricVerdict) -> bool:
 
 def _scatter_candidates(hits: list) -> list[tuple]:
     """One ``(detector, sample, label, x_metric, y_metric, both)`` per config
-    with a confirmed step in range: *x* is its worst flagged time-family
-    metric (``wall_time_s`` when none stepped), *y* its worst flagged
-    memory-family metric (``peak_rss_mb`` when none), *both* whether time AND
-    memory stepped **at the same onset** — the diagonal-step case the scatter
-    exists for. A time flag and a memory flag with different onsets are two
-    unrelated steps, not a joint one, so they do not set *both* even though
-    both families are present. Ordered both-first, then by the config's worst
-    |Δ|. Region-level rows carry no cross-metric story and are skipped. Pure —
-    the unit-test surface.
+    with a confirmed step in range: *both* whether time AND memory stepped
+    **at the same onset** — the diagonal-step case the scatter exists for.
+
+    When such a pair exists, *x*/*y* are drawn from *that same pair* (worst
+    first among ties), not independently from each family's own worst metric
+    — picking axes and the *both* flag from two different pairs would let the
+    label claim a joint step while plotting two unrelated ones. Only without
+    any shared-onset pair do *x*/*y* fall back to each family's worst metric
+    on its own (``wall_time_s``/``peak_rss_mb`` when a family has no flag).
+
+    Ordered both-first, then by the config's worst |Δ|. Region-level rows
+    carry no cross-metric story and are skipped. Pure — the unit-test surface.
     """
     by_cfg: dict[tuple, list] = {}
     for v in hits:
@@ -438,10 +441,18 @@ def _scatter_candidates(hits: list) -> list[tuple]:
     for (det, samp, label), vs in by_cfg.items():
         times = [v for v in vs if v.metric_family == "time"]
         mems = [v for v in vs if v.metric_family == "memory"]
-        x_metric = times[0].metric if times else "wall_time_s"
-        y_metric = mems[0].metric if mems else "peak_rss_mb"
         worst = max((abs(v.pct_change or 0.0) for v in vs), default=0.0)
-        both = any(_same_onset(t, m) for t in times for m in mems)
+        # vs (and so times/mems) preserves hits' worst-|Δ|-first order, so the
+        # first matching pair is also the worst shared-onset pair available.
+        paired = next(
+            ((t, m) for t in times for m in mems if _same_onset(t, m)), None
+        )
+        if paired is not None:
+            x_metric, y_metric, both = paired[0].metric, paired[1].metric, True
+        else:
+            x_metric = times[0].metric if times else "wall_time_s"
+            y_metric = mems[0].metric if mems else "peak_rss_mb"
+            both = False
         ranked.append(
             ((not both, -worst),
              (det, samp, label, x_metric, y_metric, both))
