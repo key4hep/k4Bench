@@ -154,3 +154,30 @@ def test_from_json_raises_schema_error_on_malformed_shapes():
     ):
         with pytest.raises(BlameSchemaError):
             BlameReport.from_json(data)
+
+
+def _with_candidate_field(**patch) -> dict:
+    data = BlameReport("g", "2026-07-05", entries=(_entry(),)).to_json()
+    data["entries"][0]["repos"][0]["candidates"][0] |= patch
+    return data
+
+
+def test_from_json_rejects_wrongly_typed_fields():
+    # Valid JSON whose values can't be coerced to their declared types must
+    # fail *inside* the schema boundary, not later in a sort or email format.
+    for patch in (
+        {"score": "very likely"},
+        {"number": "not-a-number"},
+        {"files": 7},  # not iterable of paths
+    ):
+        with pytest.raises(BlameSchemaError):
+            BlameReport.from_json(_with_candidate_field(**patch))
+
+
+def test_from_json_coerces_lenient_but_renderable_values():
+    # A numeric string score is fine; a non-finite one degrades to the unranked
+    # 0.0 rather than poisoning sorts and formats downstream.
+    report = BlameReport.from_json(_with_candidate_field(score="72"))
+    assert report.entries[0].repos[0].candidates[0].score == 72.0
+    report = BlameReport.from_json(_with_candidate_field(score=float("nan")))
+    assert report.entries[0].repos[0].candidates[0].score == 0.0

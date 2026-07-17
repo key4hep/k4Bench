@@ -113,6 +113,10 @@ echo "::group::5b. Blame sidecar"
         --data-url "${K4BENCH_DATA_URL}" \
       || echo "No blame sidecar this night (nothing to attribute, incomplete ranking, timeout, or another best-effort failure)." >&2
     if [[ -f report/blame.json ]]; then
+        # Remove the previous sidecar before uploading: if the upload then
+        # fails, the night is left with *no* sidecar — absence is the safe
+        # state, a stale sidecar joined to the fresh report above is not.
+        xrdfs "${EOS_FQDN}" rm "${EOS_REPORT_DIR}/blame.json" 2>/dev/null || true
         xrdcp --force report/blame.json "root://${EOS_FQDN}/${EOS_REPORT_DIR}/blame.json" \
           && echo "Uploaded to: ${EOS_REPORT_DIR}/blame.json"
     elif xrdfs "${EOS_FQDN}" rm "${EOS_REPORT_DIR}/blame.json" 2>/dev/null; then

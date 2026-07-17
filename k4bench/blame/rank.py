@@ -555,5 +555,13 @@ def _parse_rankings(
         score = _parse_score(row.get("likelihood"))
         if score is None:
             continue  # unreadable likelihood: reject the row, don't publish 0%
-        out[key] = Ranking(score=score, description=_one_line(row.get("reason")))
+        description = _one_line(row.get("reason"))
+        if not description:
+            # The contract demands a reason for every judgement — a bare score
+            # is indistinguishable from an unranked default downstream.
+            # Rejecting the row leaves the candidate "missing", which triggers
+            # the follow-up attempt instead of dooming the sidecar at the
+            # coverage gate.
+            continue
+        out[key] = Ranking(score=score, description=description)
     return out

@@ -272,6 +272,24 @@ def test_non_numeric_likelihood_rejects_the_row():
     assert result[("AIDASoft/DD4hep", 20)].score == 5.0
 
 
+def test_empty_reason_rejects_the_row_and_is_recovered_by_the_retry():
+    # A bare score without a reason violates the contract and would die at the
+    # coverage gate anyway — rejecting it here makes the candidate "missing",
+    # so the follow-up attempt can recover the sidecar instead of losing it.
+    first = _rankings_json(
+        {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 70, "reason": ""},
+        {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "low"},
+    )
+    second = _rankings_json(
+        {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 70, "reason": "explains it"},
+    )
+    ranker = _ranker([_completion(first), _completion(second)])
+    result = ranker.rank(_request())
+    assert result[("key4hep/k4geo", 10)] == Ranking(70.0, "explains it")
+    assert result[("AIDASoft/DD4hep", 20)].score == 5.0
+    assert len(ranker.session.calls) == 2
+
+
 def test_missing_and_non_finite_likelihoods_reject_the_row():
     body = _rankings_json(
         {"repo": "key4hep/k4geo", "pr": 10, "reason": "no likelihood at all"},

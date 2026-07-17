@@ -212,3 +212,18 @@ def test_cli_still_sends_when_blame_is_malformed(fake_smtp, tmp_path):
         str(report_path), "--to", "egroup@cern.ch", "--from-addr", "noreply@cern.ch",
     ]) == 0
     assert len(fake_smtp.sent) == 1  # the email is never blocked by a bad sidecar
+
+
+def test_cli_still_sends_when_blame_has_a_non_numeric_score(fake_smtp, tmp_path):
+    # Valid JSON, wrongly typed value: the typed schema boundary rejects the
+    # sidecar and the email goes out without the blame lead — never a crash in
+    # the score sort or the "%.0f" format mid-send.
+    report_path = _confirmed_report_path(tmp_path)
+    data = _blame_sidecar().to_json()
+    data["entries"][0]["repos"][0]["candidates"][0]["score"] = "very likely"
+    (tmp_path / "blame.json").write_text(json.dumps(data))
+    assert notify.main([
+        str(report_path), "--to", "egroup@cern.ch", "--from-addr", "noreply@cern.ch",
+    ]) == 0
+    ((_frm, _to, msg),) = fake_smtp.sent
+    assert "key4hep/k4geo#1234" not in _decoded_body(msg)

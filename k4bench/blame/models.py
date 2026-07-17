@@ -23,8 +23,14 @@ crash.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field, fields
 from typing import Any
+
+
+def _opt_str(value: object) -> str | None:
+    """*value* as text, preserving ``None`` — for the nullable string fields."""
+    return None if value is None else str(value)
 
 
 class BlameSchemaError(ValueError):
@@ -86,9 +92,25 @@ class CandidatePR:
 
     @classmethod
     def from_dict(cls, data: dict) -> CandidatePR:
+        """Typed read: every field is coerced to its declared type, so a value
+        that *parses* but cannot be rendered (a prose ``score``, a list where
+        text belongs) fails here — inside :meth:`BlameReport.from_json`'s
+        schema boundary — rather than later in a sort or an email format."""
         d = _only_known(cls, data)
-        d["files"] = tuple(d.get("files") or ())
-        return cls(**d)
+        score = float(d.get("score") or 0.0)
+        return cls(
+            repo=str(d["repo"]),
+            number=int(d["number"]),
+            title=str(d["title"]),
+            author=str(d["author"]),
+            url=str(d["url"]),
+            merged_at=_opt_str(d.get("merged_at")),
+            files=tuple(str(f) for f in d.get("files") or ()),
+            additions=int(d.get("additions") or 0),
+            deletions=int(d.get("deletions") or 0),
+            score=score if math.isfinite(score) else 0.0,
+            description=str(d.get("description") or ""),
+        )
 
 
 @dataclass(frozen=True)
@@ -133,10 +155,19 @@ class RepoBlame:
     @classmethod
     def from_dict(cls, data: dict) -> RepoBlame:
         d = _only_known(cls, data)
-        d["candidates"] = tuple(
-            CandidatePR.from_dict(c) for c in data.get("candidates") or ()
+        return cls(
+            package=str(d["package"]),
+            repo=_opt_str(d["repo"]),
+            base_commit=_opt_str(d["base_commit"]),
+            head_commit=_opt_str(d["head_commit"]),
+            compare_url=_opt_str(d["compare_url"]),
+            status=str(d["status"]),
+            candidates=tuple(
+                CandidatePR.from_dict(c) for c in d.get("candidates") or ()
+            ),
+            commits_unavailable=bool(d.get("commits_unavailable", False)),
+            truncated=bool(d.get("truncated", False)),
         )
-        return cls(**d)
 
 
 @dataclass(frozen=True)
@@ -204,8 +235,18 @@ class BlameEntry:
     @classmethod
     def from_dict(cls, data: dict) -> BlameEntry:
         d = _only_known(cls, data)
-        d["repos"] = tuple(RepoBlame.from_dict(r) for r in data.get("repos") or ())
-        return cls(**d)
+        return cls(
+            detector=str(d["detector"]),
+            platform=str(d["platform"]),
+            sample=str(d["sample"]),
+            label=str(d["label"]),
+            metric=str(d["metric"]),
+            sub_detector=_opt_str(d["sub_detector"]),
+            base_release=_opt_str(d["base_release"]),
+            onset_release=str(d["onset_release"]),
+            repos=tuple(RepoBlame.from_dict(r) for r in d.get("repos") or ()),
+            n_unchanged=int(d.get("n_unchanged") or 0),
+        )
 
 
 @dataclass(frozen=True)
@@ -249,9 +290,10 @@ class BlameReport:
     def from_json(cls, data: dict) -> BlameReport:
         """Parse *data*, raising :class:`BlameSchemaError` when it is not shaped
         like a blame report — a top-level list, an entry missing required
-        fields, a candidate that is not an object. Unknown *extra* keys are
-        still dropped silently (forward compatibility); only structure that
-        cannot be read raises."""
+        fields, a candidate that is not an object, a field whose value cannot
+        be coerced to its declared type (a prose ``score``, a list for a text
+        field). Unknown *extra* keys are still dropped silently (forward
+        compatibility); only structure that cannot be read raises."""
         try:
             return cls(
                 generated_at=str(data.get("generated_at", "")),
@@ -260,7 +302,7 @@ class BlameReport:
                     BlameEntry.from_dict(e) for e in data.get("entries") or ()
                 ),
             )
-        except (AttributeError, KeyError, TypeError) as exc:
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
             raise BlameSchemaError(f"not a blame report: {exc}") from exc
 
 
