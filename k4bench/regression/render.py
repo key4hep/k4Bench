@@ -281,16 +281,17 @@ def _blame_markdown_lines(group: RunGroupReport, blame: BlameReport | None) -> l
 def _blame_html_block(group: RunGroupReport, blame: BlameReport | None) -> str:
     """Suggested-cause list for a group's confirmed regressions, or ``""``.
 
-    LLM-derived text (the reason) is HTML-escaped: unlike the trusted metric
-    names and GitHub URLs around it, it is model output and must not be able to
-    inject markup into the email body."""
+    Everything read from ``blame.json`` is escaped on the way into markup: the
+    reason is model output, and even the PR URL is file content rather than
+    something this process fetched from GitHub itself — neither may inject
+    markup into the email body."""
     items: list[str] = []
     for v in group.regressions:
         ranked = _blame_for(blame, v)
         if not ranked:
             continue
         leads = "; ".join(
-            f'<a href="{c.url}" style="color:#5b9bd5;text-decoration:none;">'
+            f'<a href="{html.escape(c.url, quote=True)}" style="color:#5b9bd5;text-decoration:none;">'
             f"{c.repo}#{c.number}</a> ({c.score:.0f}%)"
             + (f" — {html.escape(c.description)}" if c.description else "")
             for c in ranked

@@ -176,7 +176,7 @@ the dashboard only displays the stored result. Several PRs can land in one
 package's range, so each is scored on its own. This is a ranked **lead for a
 human, not a verdict** — a suggestion, not proof of cause, in keeping with the
 detector's *no evidence ⇒ no verdict* rule; the nightly email surfaces the same
-top candidate under each regression. Most nights carry no `blame.json` at all,
+top candidates under each regression. Most nights carry no `blame.json` at all,
 and a night whose candidates are not yet ranked shows only the package diff.
 
 ### Stack Changes tab

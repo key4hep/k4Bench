@@ -22,9 +22,9 @@
 #                                   candidate PRs. Unset ⇒ candidates unranked.
 #   K4BENCH_LLM_MODEL             — model id at that endpoint (both required to rank)
 #   K4BENCH_LLM_API_KEY           — bearer token for the endpoint (kept in secrets)
-#   K4BENCH_LLM_MAX_TOKENS         — optional initial completion-token budget;
+#   K4BENCH_LLM_MAX_TOKENS        — optional initial completion-token budget;
 #                                   length truncation grows it up to a safe cap
-#   K4BENCH_BLAME_TIMEOUT           — wall-clock limit for the isolated blame
+#   K4BENCH_BLAME_TIMEOUT         — wall-clock limit for the isolated blame
 #                                   step (default: 15m; GNU timeout syntax)
 
 set -euo pipefail

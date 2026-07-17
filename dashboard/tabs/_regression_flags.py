@@ -262,6 +262,10 @@ def candidate_table(candidates: list[CandidatePR]) -> None:
     rows = candidates[:_MAX_CANDIDATES]
     if not has_ranking(rows):
         return
+    if len(candidates) > len(rows):
+        st.caption(
+            f"Top {len(rows)} of {len(candidates)} candidate PRs in the window."
+        )
     records = [
         {
             "Likelihood": c.score,

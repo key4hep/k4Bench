@@ -36,13 +36,20 @@ LINK_SOURCES = [
 _URL_RE = re.compile(r"https?://[^\s<>\"'\)\]]+")
 _TRAILING_PUNCT = ".,;:"
 
+# Fenced code blocks hold illustrative examples (elided SHAs, made-up PR
+# numbers), not links a reader can click — mkdocs renders them as plain text.
+_FENCED_BLOCK_RE = re.compile(r"^(`{3,}).*?^\1", re.M | re.S)
+
 _USER_AGENT = "Mozilla/5.0 (compatible; k4Bench-linkcheck/1.0)"
 _TIMEOUT_S = 15
 
 
 def _extract_urls(path: Path) -> set[str]:
+    text = path.read_text(encoding="utf-8")
+    if path.suffix == ".md":
+        text = _FENCED_BLOCK_RE.sub("", text)
     urls = set()
-    for match in _URL_RE.findall(path.read_text(encoding="utf-8")):
+    for match in _URL_RE.findall(text):
         urls.add(match.rstrip(_TRAILING_PUNCT))
     return urls
 

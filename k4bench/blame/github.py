@@ -39,6 +39,10 @@ _TIMEOUT = 15
 #: file lists stored in ``blame.json``.
 _MAX_PRS_PER_REPO = 40
 _MAX_FILES_PER_PR = 100
+#: Fallback ``/commits/{sha}/pulls`` lookups per range. A non-squash repo whose
+#: subjects carry no ``(#N)`` pays one API call per commit, and a compare can
+#: hold up to 250 — bound that spend the same way the PR fetches are bounded.
+_MAX_COMMIT_PR_LOOKUPS = 40
 
 #: Patch budget handed to the ranker per PR. The assembled diff is *transient*
 #: ranker input — never stored in ``blame.json``, always re-fetchable from GitHub
@@ -163,10 +167,16 @@ def resolve_repo_prs(
 
     pr_numbers: list[int] = []
     seen: set[int] = set()
+    lookups_left = _MAX_COMMIT_PR_LOOKUPS
     for commit in commits:
+        if len(pr_numbers) >= _MAX_PRS_PER_REPO:
+            break
         subject = (commit.get("commit") or {}).get("message", "")
         number = parse_pr_number(subject)
         if number is None:
+            if lookups_left <= 0:
+                continue
+            lookups_left -= 1
             number = _pr_for_commit(client, slug, commit.get("sha", ""))
         if number is not None and number not in seen:
             seen.add(number)

@@ -120,18 +120,18 @@ _SYSTEM_PROMPT = (
 #: :mod:`k4bench.blame.github`; this is the backstop that keeps a wide window
 #: (many PRs) inside a small-context model by dropping the tail's *diffs* — the
 #: file paths and titles always survive, so those PRs are still scored, just
-#: from metadata (§13 of the workplan).
+#: from metadata.
 _MAX_PROMPT_CHARS = 45000
 _MAX_FILES_LISTED = 12
 _MAX_DESCRIPTION_CHARS = 200
 
 #: A ranking row itself is small, but some OpenAI-compatible reasoning models
-#: charge hidden reasoning against ``max_tokens`` before emitting the JSON. A
-#: 1024-token floor (and even a 2560-token retry) was observed truncating a
-#: five-candidate backfill. Leave enough initial headroom for reasoning, scale
-#: wider windows, and permit bounded doubled retries without allowing an
-#: unbounded response. ``K4BENCH_LLM_MAX_TOKENS`` can raise/lower the initial floor for a
-#: particular provider/model without another code change.
+#: charge hidden reasoning against ``max_tokens`` before emitting the JSON, so
+#: a tight budget can truncate even a handful of rows. Leave enough initial
+#: headroom for reasoning, scale wider windows, and permit bounded doubled
+#: retries without allowing an unbounded response. ``K4BENCH_LLM_MAX_TOKENS``
+#: raises/lowers the initial floor for a particular provider/model without a
+#: code change.
 _DEFAULT_MAX_TOKENS = 4096
 _OUTPUT_TOKENS_PER_CANDIDATE = 512
 _MAX_OUTPUT_TOKENS = 32768

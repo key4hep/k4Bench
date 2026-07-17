@@ -51,6 +51,8 @@ except ValueError:
     pass
 sys.path.insert(0, str(_REPO_ROOT))
 
+_log = logging.getLogger(__name__)
+
 
 def _local_packages(roots: list[str], platform: str, release: str) -> dict | None:
     """A release's ``k4h_packages`` from a local run tree, or ``None``.
@@ -160,17 +162,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     github = GitHubClient(token=args.github_token) if args.github_token else None
     if github is None:
-        logging.getLogger(__name__).warning(
+        _log.warning(
             "blame_report: no GITHUB_TOKEN — writing diffs without candidate PRs"
         )
 
     ranker = ranker_from_env()
     if ranker is None:
-        logging.getLogger(__name__).info(
+        _log.info(
             "blame_report: no K4BENCH_LLM_* config — candidates written unranked"
         )
     else:
-        logging.getLogger(__name__).info(
+        _log.info(
             "blame_report: ranking with model %s (initial max_tokens=%s)",
             getattr(ranker, "model", type(ranker).__name__),
             getattr(ranker, "max_tokens", "provider default"),
@@ -193,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
         if n_expected and n_ranked != n_expected:
             shown = ", ".join(missing[:5])
             suffix = f", … (+{len(missing) - 5} more)" if len(missing) > 5 else ""
-            logging.getLogger(__name__).error(
+            _log.error(
                 "blame_report: ranking incomplete (%d/%d distinct candidate PRs); "
                 "refusing to write blame.json. Missing: %s%s",
                 n_ranked, n_expected, shown, suffix,
