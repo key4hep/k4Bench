@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import pandas as pd
 import plotly.graph_objects as go
+import requests
 import streamlit as st
 
 from k4bench.regression.engine import Z_THRESHOLD
@@ -140,12 +141,22 @@ def _report_night_for_stack(
     """
     try:
         stacks_dates = _cached_list_run_dates(data_url, detector, platform, sample)
-    except Exception:
-        stacks_dates = {}
+    except requests.RequestException:
+        # Only a listing failure falls back silently-to-the-reader-but-not-to-us:
+        # the sidebar may have an old release selected, so showing the latest
+        # report without saying so would pass off today's data as that
+        # release's. A narrower except than a scan turning up genuinely empty
+        # (below) — that case has no such mismatch risk.
+        st.warning(
+            "Could not check this detector's run history on EOS — showing the "
+            "latest report; it may not match the sidebar's selected release.",
+            icon="⚠️",
+        )
+        return max(dates)
     run_dates = stacks_dates.get(stack) or ()
     if not run_dates:
-        # No run listing for this release (or the scan failed) — the latest
-        # report is the only sensible answer left.
+        # No run listing for this release — the latest report is the only
+        # sensible answer left.
         return max(dates)
     newest_of_stack = max(run_dates)
     newest_any = max(d for ds in stacks_dates.values() for d in ds)

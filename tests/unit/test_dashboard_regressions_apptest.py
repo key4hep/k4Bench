@@ -216,6 +216,48 @@ def test_older_release_shows_the_report_of_its_last_run():
     assert by_label["✅ Within baseline"] == "1"
 
 
+def test_run_listing_failure_falls_back_with_a_visible_warning():
+    # A network/listing failure must not silently swap in the latest report
+    # under an old-release selection without saying so.
+    def _app(dashboard_dir, report_json, night, platform):
+        import sys as _sys
+        if dashboard_dir not in _sys.path:
+            _sys.path.insert(0, dashboard_dir)
+        import requests as _requests
+        from tabs import regressions as _tab
+
+        _tab._cached_list_report_dates = lambda url: [night]
+        _tab._cached_fetch_report = lambda url, n: report_json
+
+        # Only the report-night resolution (the first call) should fail here;
+        # the trend preview's own (unrelated) history fetch, triggered by the
+        # same auto-opened drilldown, must still be free to run and come up
+        # empty on its own terms.
+        calls = {"n": 0}
+        def _raise_once(url, det, plat, samp):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise _requests.ConnectionError("EOS unreachable")
+            return {}
+        _tab._cached_list_run_dates = _raise_once
+        _tab._cached_fetch_runs_windowed = lambda *a, **k: ()
+        _tab.render(
+            "https://example.invalid", "/tmp/cache", "CLD", platform, "single_e",
+            f"key4hep-{night}",
+        )
+
+    at = AppTest.from_function(
+        _app,
+        args=(str(_DASHBOARD_DIR), _report([_group(verdicts=_FLAGGED)]), NIGHT, PLAT),
+        default_timeout=30,
+    )
+    at.run()
+    assert not at.exception, at.exception
+    assert any("Could not check" in w.value for w in at.warning)
+    by_label = {m.label: m.value for m in at.metric}
+    assert by_label["🔴 Regressed"] == "2"  # still rendered, from the fallback
+
+
 def test_release_older_than_the_first_report_says_so():
     at = _run(
         reports_map={NIGHT: _report([_group(verdicts=_FLAGGED)])},

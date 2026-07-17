@@ -637,13 +637,30 @@ def test_scatter_candidates_prefer_the_both_families_config():
         _confirmed(label="cfgB", metric="wall_time_s", pct_change=0.10,
                    onset_run_id="b1"),
         _confirmed(label="cfgB", metric="peak_rss_mb", metric_family="memory",
+                   pct_change=0.05, onset_run_id="b1"),
+    ]
+    cands = stack_changes._scatter_candidates(hits)
+    # cfgB stepped in CPU *and* memory at the *same* onset → first despite the
+    # smaller |Δ|; its axes are its own flagged metrics. cfgA borrows the
+    # default memory axis.
+    assert [c[2] for c in cands] == ["cfgB", "cfgA"]
+    assert cands[0][3:] == ("wall_time_s", "peak_rss_mb", True)
+    assert cands[1][3:] == ("wall_time_s", "peak_rss_mb", False)
+
+
+def test_scatter_candidates_do_not_combine_different_onsets():
+    # cfgC stepped in CPU and memory, but at two different onsets — two
+    # unrelated regressions, not one diagonal step. It must not outrank cfgA
+    # by virtue of "both", nor carry the "both" flag.
+    hits = [
+        _confirmed(label="cfgA", metric="wall_time_s", pct_change=0.30),
+        _confirmed(label="cfgC", metric="wall_time_s", pct_change=0.10,
+                   onset_run_id="b1"),
+        _confirmed(label="cfgC", metric="peak_rss_mb", metric_family="memory",
                    pct_change=0.05, onset_run_id="b2"),
     ]
     cands = stack_changes._scatter_candidates(hits)
-    # cfgB stepped in CPU *and* memory → first despite the smaller |Δ|; its
-    # axes are its own flagged metrics. cfgA borrows the default memory axis.
-    assert [c[2] for c in cands] == ["cfgB", "cfgA"]
-    assert cands[0][3:] == ("wall_time_s", "peak_rss_mb", True)
+    assert [c[2] for c in cands] == ["cfgA", "cfgC"]  # ranked by |Δ|, not "both"
     assert cands[1][3:] == ("wall_time_s", "peak_rss_mb", False)
 
 
@@ -691,11 +708,29 @@ def test_outlier_scatter_opens_for_a_cpu_and_memory_step():
     assert "CPU + memory stepped" in sel.value
     # The Overview-style axis pickers, defaulting to the config's flagged
     # metrics.
-    assert at.selectbox(key="stack_outlier_tmetric_baseline").value == "wall_time_s"
-    assert at.selectbox(key="stack_outlier_mmetric_baseline").value == "peak_rss_mb"
+    assert at.selectbox(key="stack_outlier_tmetric_CLD_single_e_baseline").value \
+        == "wall_time_s"
+    assert at.selectbox(key="stack_outlier_mmetric_CLD_single_e_baseline").value \
+        == "peak_rss_mb"
     # Changing an axis re-renders from the same cached reports.
-    at.selectbox(key="stack_outlier_tmetric_baseline").set_value("user_cpu_s").run()
+    at.selectbox(key="stack_outlier_tmetric_CLD_single_e_baseline") \
+        .set_value("user_cpu_s").run()
     assert not at.exception, at.exception
+
+
+def test_bound_to_release_excludes_points_after_head_release():
+    # Reports are fetched with no upper date bound (a regression can confirm,
+    # and so first appear in a report, after its onset), so the plotted points
+    # must be capped separately — a historical range must not attribute a
+    # later release's values to the diff being viewed.
+    pts = pd.DataFrame({
+        "night": ["2026-07-09", "2026-07-10", "2026-07-15"],
+        "x": [5.0, 6.0, 999.0],
+        "y": [100.0, 120.0, 999.0],
+        "k4h_release": ["key4hep-2026-07-09", "key4hep-2026-07-10", "key4hep-2026-07-15"],
+    })
+    bounded = stack_changes._bound_to_release(pts, "2026-07-10")
+    assert list(bounded["night"]) == ["2026-07-09", "2026-07-10"]
 
 
 def test_deep_link_carries_the_sample_when_given():

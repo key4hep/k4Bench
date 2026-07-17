@@ -28,6 +28,7 @@ from plotly.subplots import make_subplots
 from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
 from k4bench.provenance.diff import ADDED, CHANGED, REMOVED, diff_packages, unchanged_packages
 from k4bench.regression.engine import Z_THRESHOLD
+from k4bench.regression.models import MetricVerdict
 from k4bench.regression.render import _pretty_sample, from_json
 from k4bench.regression.report_builder import EVENT_METRICS, RUN_METRICS
 from remote_cache import (
@@ -390,7 +391,7 @@ def _render_regressions_in_range(
     if len(hits) > _MAX_REGRESSIONS:
         st.caption(f"Showing the {_MAX_REGRESSIONS} largest of {len(hits)} by |Δ|.")
 
-    _render_outlier_scatter(reports, platform, hits, scoped=not show_all)
+    _render_outlier_scatter(reports, platform, hits, head_release, scoped=not show_all)
 
 
 #: Fill for the accepted-baseline band on the outlier plane and its marginals
@@ -406,14 +407,28 @@ _METRIC_FAMILIES = {**RUN_METRICS, **EVENT_METRICS}
 _TIME_CHOICES = [m for m, fam in _METRIC_FAMILIES.items() if fam == "time"]
 _MEMORY_CHOICES = [m for m, fam in _METRIC_FAMILIES.items() if fam == "memory"]
 
+def _same_onset(a: MetricVerdict, b: MetricVerdict) -> bool:
+    """Whether two verdicts' confirmed steps are the *same event* rather than
+    two unrelated flags that merely fall in the same range: matched on the
+    onset run id (a night can share a release with many others, so the run is
+    the real identity), falling back to the onset release for reports written
+    before run-id tracking."""
+    if a.onset_run_id and b.onset_run_id:
+        return a.onset_run_id == b.onset_run_id
+    return bool(a.onset_run_date) and a.onset_run_date == b.onset_run_date
+
+
 def _scatter_candidates(hits: list) -> list[tuple]:
     """One ``(detector, sample, label, x_metric, y_metric, both)`` per config
     with a confirmed step in range: *x* is its worst flagged time-family
     metric (``wall_time_s`` when none stepped), *y* its worst flagged
     memory-family metric (``peak_rss_mb`` when none), *both* whether time AND
-    memory stepped — the case the scatter exists for. Ordered both-first, then
-    by the config's worst |Δ|. Region-level rows carry no cross-metric story
-    and are skipped. Pure — the unit-test surface.
+    memory stepped **at the same onset** — the diagonal-step case the scatter
+    exists for. A time flag and a memory flag with different onsets are two
+    unrelated steps, not a joint one, so they do not set *both* even though
+    both families are present. Ordered both-first, then by the config's worst
+    |Δ|. Region-level rows carry no cross-metric story and are skipped. Pure —
+    the unit-test surface.
     """
     by_cfg: dict[tuple, list] = {}
     for v in hits:
@@ -426,9 +441,10 @@ def _scatter_candidates(hits: list) -> list[tuple]:
         x_metric = times[0].metric if times else "wall_time_s"
         y_metric = mems[0].metric if mems else "peak_rss_mb"
         worst = max((abs(v.pct_change or 0.0) for v in vs), default=0.0)
+        both = any(_same_onset(t, m) for t in times for m in mems)
         ranked.append(
-            ((not (times and mems), -worst),
-             (det, samp, label, x_metric, y_metric, bool(times and mems)))
+            ((not both, -worst),
+             (det, samp, label, x_metric, y_metric, both))
         )
     ranked.sort(key=lambda t: t[0])
     return [c for _, c in ranked]
@@ -463,6 +479,17 @@ def _series_points(
         [(night, *rows[night]) for night in sorted(rows)],
         columns=["night", "x", "y", "k4h_release"],
     )
+
+
+def _bound_to_release(pts: pd.DataFrame, head_release: str) -> pd.DataFrame:
+    """Points measured at or before *head_release*. A historical range's
+    reports are fetched with no upper date bound (a regression can *confirm*,
+    and so first appear in a report, well after its onset — see
+    :func:`_render_regressions_in_range`), so without this the outlier plane
+    would silently plot runs from releases never part of the comparison, as
+    if they were effects of it. ``k4h_release`` is ``key4hep-YYYY-MM-DD``,
+    which orders chronologically as a plain string. Pure."""
+    return pts[pts["k4h_release"].astype(str) <= _PREFIX + head_release]
 
 
 def _onset_night(pts: pd.DataFrame, cfg_hits: list) -> str | None:
@@ -530,7 +557,11 @@ def _outlier_figure(
     metric separately (shared bins, before/after overlaid), so a step that
     moved only one of the two shows up in its own margin.
     """
-    onset = _onset_night(pts, cfg_hits)
+    # Only the two plotted axes decide the split — an unrelated third flagged
+    # metric on this config (a candidate can carry more than the pair shown)
+    # must not pull its onset into a split neither axis was judged against.
+    axis_hits = [v for v in cfg_hits if v.metric in (x_metric, y_metric)]
+    onset = _onset_night(pts, axis_hits)
     before = pts if onset is None else pts[pts["night"] < onset]
     after = pts.iloc[0:0] if onset is None else pts[pts["night"] >= onset]
 
@@ -610,11 +641,20 @@ def _outlier_figure(
 
 
 def _render_outlier_scatter(
-    reports, platform: str, hits: list, *, scoped: bool
+    reports, platform: str, hits: list, head_release: str, *, scoped: bool
 ) -> None:
     """The "typical values and the outlier" view for one config of the range's
     regressions. Opens automatically when the top candidate stepped in CPU
-    *and* memory — the diagonal-outlier case the plane exists for."""
+    *and* memory — the diagonal-outlier case the plane exists for.
+
+    *reports* is fetched with no upper date bound (a regression's *onset* can
+    be in range while it only *confirms*, and so first appears in a report,
+    later — see :func:`_render_regressions_in_range`), but the plotted points
+    are capped at *head_release*: without that cap, a historical range would
+    silently pull in runs from releases never part of the comparison, and
+    "the runs from the onset on" would misrepresent stack changes that
+    happened after this diff as effects of it.
+    """
     candidates = _scatter_candidates(hits)
     if not candidates:
         return
@@ -623,7 +663,10 @@ def _render_outlier_scatter(
         "One config's nightly runs in the CPU × memory plane, read from the "
         "already-fetched reports (no run downloads). The dashed crosshair is "
         "the accepted baseline each judged axis was gated on; red points are "
-        "the runs from the step's onset on — the cluster the change created. "
+        "the runs from the plotted axes' earliest flagged onset on. "
+        "“CPU + memory stepped” means both moved at the *same* onset — a "
+        "genuine diagonal step; a config with two flagged metrics but "
+        "different onsets is still two separate steps, not one cluster. "
         "The margins show each metric's own 1D distribution, so a step in "
         "only one of the two still stands out."
     )
@@ -654,26 +697,31 @@ def _render_outlier_scatter(
             candidates[options.index(choice) - 1]
         )
         # The same time/memory axis choice as the Overview tab, defaulting to
-        # the config's own flagged metrics. Keys are scoped per config so each
-        # candidate opens on its flagged axes rather than the last one's pick.
+        # the config's own flagged metrics. Keys are scoped per (detector,
+        # sample, config) rather than just the label — "All detectors" can
+        # show several detectors sharing one label (e.g. ``baseline_all``),
+        # and a label-only key would leak one detector's axis pick into
+        # another's on selection.
+        cfg_key = f"{det}_{samp}_{label}"
         x_metric = st.selectbox(
             "Time metric", _TIME_CHOICES,
             index=_TIME_CHOICES.index(x_default) if x_default in _TIME_CHOICES else 0,
-            key=f"stack_outlier_tmetric_{label}",
+            key=f"stack_outlier_tmetric_{cfg_key}",
             format_func=_axis_title, width=220,
         )
         y_metric = st.selectbox(
             "Memory metric", _MEMORY_CHOICES,
             index=(_MEMORY_CHOICES.index(y_default)
                    if y_default in _MEMORY_CHOICES else 0),
-            key=f"stack_outlier_mmetric_{label}",
+            key=f"stack_outlier_mmetric_{cfg_key}",
             format_func=_axis_title, width=220,
         )
     pts = _series_points(reports, det, platform, samp, label, x_metric, y_metric)
+    pts = _bound_to_release(pts, head_release)
     if pts.empty:
         st.info(
             "The fetched reports carry no nightly values for this config on "
-            "the selected metrics."
+            "the selected metrics within the selected release range."
         )
         return
     cfg_hits = [
