@@ -239,12 +239,6 @@ def flag_table(
     )
 
 
-#: Keep the initial AI ranking deliberately short. A wide blame window can
-#: span many PRs; the lower-ranked remainder stays available on demand without
-#: making every regression card start as a large ledger.
-_INITIAL_CANDIDATES = 3
-
-
 def has_ranking(candidates: list[CandidatePR]) -> bool:
     """True when the ranking stage has judged any candidate — a non-zero score or
     a description. Nothing to show (and no "Suggested" heading) until it has."""
@@ -363,12 +357,7 @@ def candidate_table(candidates: list[CandidatePR]) -> None:
     """
     if not has_ranking(candidates):
         return
-    initial = candidates[:_INITIAL_CANDIDATES]
-    _render_candidate_rows(initial)
-    remaining = candidates[_INITIAL_CANDIDATES:]
-    if remaining:
-        with st.expander(f"Show {len(remaining)} more candidate PRs"):
-            _render_candidate_rows(remaining)
+    _render_candidate_rows(candidates)
 
 
 def render_candidate_ranking(

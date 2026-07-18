@@ -164,7 +164,9 @@ def test_trend_preview_defaults_to_the_worst_confirmed_flag():
     (night_pill,) = at.segmented_control
     assert list(night_pill.options) == [NIGHT]
     (preview,) = at.selectbox
-    assert preview.value == "🔴 Regression · peak RSS · baseline — Δ -35.0%"
+    assert preview.value.metric == "peak_rss_mb"
+    assert preview.value.pct_change == -0.35
+    assert preview.options[1] == "🔴 Regression · peak RSS · baseline — Δ -35.0%"
     # The drill-down actually rendered (its history fetch found no runs).
     assert any("No history could be loaded" in w.value for w in at.warning)
 
@@ -326,15 +328,17 @@ def test_switching_report_night_replaces_visible_trend_option():
         stacks_dates={STACK: [NIGHT, "2026-07-11"]},
         query_params={"report": NIGHT},
     )
-    assert "wall time" in at.selectbox[0].value
-    assert "20.0%" in at.selectbox[0].value
+    assert at.selectbox[0].value.metric == "wall_time_s"
+    assert "wall time" in at.selectbox[0].options[1]
+    assert "20.0%" in at.selectbox[0].options[1]
 
     at.segmented_control(key="regr_night").set_value("2026-07-11").run()
     assert not at.exception, at.exception
     assert len(at.selectbox) == 1
-    assert "peak RSS" in at.selectbox[0].value
-    assert "45.0%" in at.selectbox[0].value
-    assert "wall time" not in at.selectbox[0].value
+    assert at.selectbox[0].value.metric == "peak_rss_mb"
+    assert "peak RSS" in at.selectbox[0].options[1]
+    assert "45.0%" in at.selectbox[0].options[1]
+    assert all("wall time" not in option for option in at.selectbox[0].options)
 
 
 def test_invalid_report_query_param_falls_back_to_the_default():
@@ -463,14 +467,14 @@ def test_switching_detector_redefaults_the_picker():
     assert at.segmented_control[0].value == NIGHT              # CLD's confirmed night
     assert {m.label: m.value for m in at.metric}["🔴 Regressed"] == "2"
     at.selectbox[0].set_value("—").run()                       # hide CLD's preview
-    assert at.selectbox[0].value == "—"
+    assert at.selectbox[0].value is None
 
     at.session_state["_i"] = 1                                 # switch to IDEA
     at.run()
     assert not at.exception, at.exception
     assert at.segmented_control[0].value == "2026-07-11"       # re-defaulted, not 07-10
     assert {m.label: m.value for m in at.metric}["🔴 Regressed"] == "2"
-    assert at.selectbox[0].value != "—"                       # IDEA's worst flag reopens
+    assert at.selectbox[0].value is not None                   # IDEA's worst flag reopens
 
 
 def test_multi_single_multi_navigation_does_not_strand_state():
@@ -685,7 +689,7 @@ def test_candidate_ranking_autosizes_columns_without_shrinking_table(monkeypatch
     )
 
 
-def test_candidate_ranking_shows_top_three_then_expandable_remainder():
+def test_candidate_ranking_shows_every_candidate_in_one_table():
     from k4bench.blame.models import CandidatePR
     candidates = [
         CandidatePR(
@@ -700,13 +704,11 @@ def test_candidate_ranking_shows_top_three_then_expandable_remainder():
         blame_map={NIGHT: _blame_json(candidates)},
     )
 
-    assert len(at.expander) == 1
+    assert not at.expander
     pr_frames = [d.value for d in at.dataframe if "Pull request" in d.value.columns]
-    assert len(pr_frames) == 2
+    assert len(pr_frames) == 1
     assert list(pr_frames[0]["Pull request"]) == [
         "key4hep/k4geo#1200", "key4hep/k4geo#1201", "key4hep/k4geo#1202",
-    ]
-    assert list(pr_frames[1]["Pull request"]) == [
         "key4hep/k4geo#1203", "key4hep/k4geo#1204",
     ]
 

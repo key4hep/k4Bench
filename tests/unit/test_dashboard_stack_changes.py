@@ -93,8 +93,13 @@ def _app(dashboard_dir, stack_names, packages, from_release, to_release,
         _st.query_params["from"] = from_release
     if to_release:
         _st.query_params["to"] = to_release
-    for name, value in query_params.items():
-        _st.query_params[name] = value
+    # Seed external deep-link state only once. Later ``AppTest.run()`` calls
+    # can then model browser back/forward by mutating ``at.query_params`` on
+    # this same application session.
+    if not _st.session_state.get("_test_query_seeded"):
+        for name, value in query_params.items():
+            _st.query_params[name] = value
+        _st.session_state["_test_query_seeded"] = True
     _tab.render(
         "https://example.invalid", "/tmp/cache",
         "x86_64-almalinux9-gcc14.2.0-opt",
@@ -343,7 +348,7 @@ def test_reverse_view_renders_even_when_stack_provenance_is_missing():
     assert any("cannot be diffed" in w.value for w in at.warning)
     assert not at.dataframe
     trend = next(s for s in at.selectbox if s.label == "Regression trend")
-    assert "wall time" in trend.value
+    assert trend.value.metric == "wall_time_s"
     assert any(
         "upstream attribution cannot be evaluated" in c.value
         for c in at.caption
@@ -399,7 +404,8 @@ def test_multi_release_range_shows_each_regressions_own_window_without_extra_war
         packages={}, from_release="2026-07-01", to_release="2026-07-10",
         report_dates=("2026-07-05",), reports_map={"2026-07-05": report})
     trend = next(s for s in at.selectbox if s.label == "Regression trend")
-    assert "2026-07-04 → 2026-07-05" in trend.value
+    assert trend.value.last_accepted_run_date == "2026-07-04"
+    assert trend.value.onset_run_date == "2026-07-05"
     # The stack summary already says the range is cumulative; no second warning
     # interrupts the trend flow.
     assert not any("multi-release" in w.value for w in at.warning)
@@ -446,7 +452,8 @@ def test_neighbouring_releases_never_trigger_the_cumulative_warning():
     at = _run(packages={}, from_release="2026-07-09", to_release="2026-07-10",
               report_dates=("2026-07-10",), reports_map={"2026-07-10": report})
     trend = next(s for s in at.selectbox if s.label == "Regression trend")
-    assert "2026-07-05 → 2026-07-10" in trend.value
+    assert trend.value.last_accepted_run_date == "2026-07-05"
+    assert trend.value.onset_run_date == "2026-07-10"
     assert not any("multi-release" in w.value for w in at.warning)
 
 
@@ -812,7 +819,8 @@ def test_reverse_view_scopes_to_the_sidebar_and_widens_on_toggle():
               report_dates=("2026-07-10",), reports_map={"2026-07-10": report})
     trend = next(s for s in at.selectbox if s.label == "Regression trend")
     assert len(trend.options) == 2
-    assert "CLD" not in trend.value  # sidebar scope is already visible
+    assert trend.value.detector == "CLD"
+    assert "CLD" not in trend.options[1]  # sidebar scope is already visible
     captions = " ".join(c.value for c in at.caption)
     assert "1 more metric across the platform" in captions
     assert at.toggle(key="stack_regr_all").label == "Whole platform (+1 metric)"
@@ -846,7 +854,115 @@ def test_reverse_view_scopes_to_the_sidebar_and_widens_on_toggle():
     restored = next(
         s for s in reopened.selectbox if s.label == "Regression trend"
     )
-    assert "IDEA" in restored.value and "peak RSS" in restored.value
+    assert restored.value.detector == "IDEA"
+    assert restored.value.metric == "peak_rss_mb"
+
+
+def test_reg_all_query_navigation_overrides_existing_toggle_session_state():
+    report = _raw_report([
+        _confirmed(metric="wall_time_s", pct_change=0.10,
+                   last_accepted_run_date="2026-07-09",
+                   onset_run_date="2026-07-10"),
+        _confirmed(detector="IDEA", metric="peak_rss_mb", pct_change=0.25,
+                   onset_run_id="run-idea",
+                   last_accepted_run_date="2026-07-09",
+                   onset_run_date="2026-07-10"),
+    ])
+    at = _run(
+        from_release="2026-07-09", to_release="2026-07-10",
+        report_dates=("2026-07-10",), reports_map={"2026-07-10": report},
+        query_params={"reg_all": "0"},
+    )
+    assert at.toggle(key="stack_regr_all").value is False
+
+    # Browser navigation changes the URL without constructing a new Streamlit
+    # session. The incoming parameter must beat the stored widget value.
+    at.query_params["reg_all"] = "1"
+    at.run()
+    assert not at.exception, at.exception
+    assert at.toggle(key="stack_regr_all").value is True
+
+    at.query_params["reg_all"] = "0"
+    at.run()
+    assert not at.exception, at.exception
+    assert at.toggle(key="stack_regr_all").value is False
+
+
+def test_duplicate_picker_labels_restore_the_exact_onset_run():
+    report = _raw_report([
+        _confirmed(onset_run_id="run-A",
+                   last_accepted_run_date="2026-07-09",
+                   onset_run_date="2026-07-10"),
+        _confirmed(onset_run_id="run-B",
+                   last_accepted_run_date="2026-07-09",
+                   onset_run_date="2026-07-10"),
+    ])
+    at = _run(
+        from_release="2026-07-09", to_release="2026-07-10",
+        report_dates=("2026-07-10",), reports_map={"2026-07-10": report},
+        query_params={
+            "reg_all": "0", "reg_detector": "CLD",
+            "reg_sample": "single_e", "reg_config": "baseline",
+            "reg_metric": "wall_time_s", "reg_onset": "run-B",
+        },
+    )
+    trend = next(s for s in at.selectbox if s.label == "Regression trend")
+    assert trend.value.onset_run_id == "run-B"
+    assert any("onset run run-A" in option for option in trend.options)
+    assert any("onset run run-B" in option for option in trend.options)
+    assert _at_query(at, "reg_onset") == "run-B"
+
+
+def test_region_picker_labels_and_deep_link_preserve_region_identity():
+    report = _raw_report([
+        _confirmed(sub_detector="VertexBarrel", onset_run_id="run-vertex",
+                   last_accepted_run_date="2026-07-09",
+                   onset_run_date="2026-07-10"),
+        _confirmed(sub_detector="ECalBarrel", onset_run_id="run-ecal",
+                   last_accepted_run_date="2026-07-09",
+                   onset_run_date="2026-07-10"),
+    ])
+    at = _run(
+        from_release="2026-07-09", to_release="2026-07-10",
+        report_dates=("2026-07-10",), reports_map={"2026-07-10": report},
+        query_params={
+            "reg_all": "0", "reg_detector": "CLD",
+            "reg_sample": "single_e", "reg_config": "baseline",
+            "reg_metric": "wall_time_s", "reg_region": "ECalBarrel",
+            "reg_onset": "run-ecal",
+        },
+    )
+    trend = next(s for s in at.selectbox if s.label == "Regression trend")
+    assert trend.value.sub_detector == "ECalBarrel"
+    assert any("VertexBarrel" in option for option in trend.options)
+    assert any("ECalBarrel" in option for option in trend.options)
+    assert _at_query(at, "reg_region") == "ECalBarrel"
+
+
+def test_requested_regression_below_picker_cap_remains_selectable():
+    verdicts = [
+        _confirmed(
+            metric=f"metric_{i}", pct_change=1.0 - i / 100,
+            onset_run_id=f"run-{i}",
+            last_accepted_run_date="2026-07-09",
+            onset_run_date="2026-07-10",
+        )
+        for i in range(31)
+    ]
+    report = _raw_report(verdicts)
+    at = _run(
+        from_release="2026-07-09", to_release="2026-07-10",
+        report_dates=("2026-07-10",), reports_map={"2026-07-10": report},
+        query_params={
+            "reg_all": "0", "reg_detector": "CLD",
+            "reg_sample": "single_e", "reg_config": "baseline",
+            "reg_metric": "metric_30", "reg_onset": "run-30",
+        },
+    )
+    trend = next(s for s in at.selectbox if s.label == "Regression trend")
+    assert len(trend.options) == 32  # hide + top 30 + requested metric
+    assert trend.value.metric == "metric_30"
+    assert any("plus the linked metric" in c.value for c in at.caption)
 
 
 def test_whole_platform_trend_caption_names_the_detector():

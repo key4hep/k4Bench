@@ -224,8 +224,8 @@ each PR in the window with a 0–100% **Likelihood** it is the cause and a one-l
 metric that moved and each PR's actual code diff (configured in CI via
 `K4BENCH_LLM_*`; see the [sidecar format](../../reference/file-formats.md#blame-sidecar-blamejson)) —
 the dashboard only displays the stored result. Several PRs can land in one
-package's range, so each is scored on its own. The three highest-ranked leads
-are shown initially; expand the remainder only when deeper triage is useful.
+package's range, so each is scored on its own. All ranked leads are shown in
+one sortable table.
 The group is judged once
 per detector/platform/sample/window: when several metrics (or several
 benchmark-config labels, e.g. a removal sweep's `baseline` and
@@ -262,8 +262,10 @@ widening would reveal confirmed metrics in other detector/sample scopes; a
 package change can affect any detector that sources it.
 
 The worst metric opens in a compact selector rather than a ledger. Every option
-shows its severity, metric, config, Δ-vs-baseline and exact **blame window**; in
-the all-detectors view it also names the detector and sample. The selected item
+shows its severity, metric (including its region), config, Δ-vs-baseline and
+exact **blame window**; in the all-detectors view it also names the detector and
+sample. If distinct steps otherwise have the same label, their onset run is
+shown too. The selected item
 uses the same trend component as the Regressions tab: up to **14 releases** of
 history and **7 later releases**, the accepted-baseline band, first-watch and
 confirmation markers, unreliable-run filtering, and the shaded blame window.
@@ -278,16 +280,18 @@ identical endpoints it also warns that an intermediate release may still have
 moved.
 
 When the selected regression has a ranked blame sidecar, its **AI-generated PR
-ranking** appears directly below the trend. The same top-three-plus-expandable
-ledger and "suggestion, not proof" framing are reused from the Regressions tab;
+ranking** appears directly below the trend. The same complete ledger and
+"suggestion, not proof" framing are reused from the Regressions tab;
 Stack Changes does not recompute or reinterpret the model output. When no
 ranking was stored, the tab says so explicitly instead of leaving an ambiguous
 blank.
 
 The selected regression is part of the URL (`reg_*` parameters), including its
-detector/sample identity, config, metric, onset and whether **Whole platform**
-is enabled. Sharing or reopening the URL therefore restores the exact
-investigation rather than the range's default metric. Historical report JSONs
+detector/sample identity, config, metric, region, exact onset run and whether
+**Whole platform** is enabled. Sharing, reopening, or navigating back to the URL
+therefore restores the exact investigation rather than the range's default
+metric. An explicitly linked metric remains selectable even when it falls below
+the normal worst-30 display cap. Historical report JSONs
 for a cold range are fetched as one parallel batch; the selected trend still
 downloads run data only when it is shown.
 

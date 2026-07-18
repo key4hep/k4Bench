@@ -77,6 +77,8 @@ _REGRESSION_PARAMS = (
 _FROM_KEY = "stack_from"
 _TO_KEY = "stack_to"
 _SCOPE_KEY = "stack_change_scope"
+_REG_ALL_KEY = "stack_regr_all"
+_REG_ALL_QUERY_KEY = "stack_regr_all__query"
 
 type _ProvenanceState = Literal["changed", "identical", "unavailable"]
 
@@ -189,6 +191,30 @@ def _sync_regression_query(verdict: MetricVerdict | None, *, show_all: bool) -> 
         st.query_params[param] = value
 
 
+def _reg_all_query_token(scope: tuple[str, ...]) -> tuple[str, ...]:
+    """Incoming whole-platform state, qualified by the reverse-view scope."""
+    return (*scope, _query_value(PARAM_REG_ALL))
+
+
+def _seed_reg_all(scope: tuple[str, ...]) -> None:
+    """Make a changed ``?reg_all=`` authoritative in an existing session.
+
+    The remembered token distinguishes browser navigation from an ordinary
+    toggle interaction. During a widget interaction the URL still carries the
+    previous value and therefore matches the remembered token; after the
+    selection is synchronized, :func:`_remember_reg_all` advances the token.
+    """
+    token = _reg_all_query_token(scope)
+    if st.session_state.get(_REG_ALL_QUERY_KEY) != token:
+        st.session_state[_REG_ALL_KEY] = token[-1] == "1"
+        st.session_state[_REG_ALL_QUERY_KEY] = token
+
+
+def _remember_reg_all(scope: tuple[str, ...]) -> None:
+    """Remember the URL value written for the current whole-platform state."""
+    st.session_state[_REG_ALL_QUERY_KEY] = _reg_all_query_token(scope)
+
+
 def _seed(key: str, param: str, options: list[str], default: str) -> None:
     """Seed a picker from ``?param=`` if present, else from *default*.
 
@@ -246,7 +272,8 @@ def _forget_stale_stack_scope(platform: str, stack: str) -> None:
     if previous is not None and previous != scope:
         st.session_state.pop(_FROM_KEY, None)
         st.session_state.pop(_TO_KEY, None)
-        st.session_state.pop("stack_regr_all", None)
+        st.session_state.pop(_REG_ALL_KEY, None)
+        st.session_state.pop(_REG_ALL_QUERY_KEY, None)
         st.query_params.pop(PARAM_FROM, None)
         st.query_params.pop(PARAM_TO, None)
         for param in _REGRESSION_PARAMS:
@@ -464,6 +491,9 @@ def _render_regressions_in_range(
         v for v in all_hits if v.detector == detector and v.sample == sample
     ]
     n_elsewhere = len(all_hits) - len(scoped_hits)
+    reg_all_scope = (
+        platform, base_release, head_release, detector, sample,
+    )
 
     st.markdown("##### Regressions in this range")
     caption_col = None
@@ -479,13 +509,10 @@ def _render_regressions_in_range(
                 width="stretch",
             )
             with controls:
-                if "stack_regr_all" not in st.session_state:
-                    st.session_state["stack_regr_all"] = (
-                        _query_value(PARAM_REG_ALL) == "1"
-                    )
+                _seed_reg_all(reg_all_scope)
                 show_all = st.toggle(
                     f"Whole platform (+{_plural(n_elsewhere, 'metric')})",
-                    key="stack_regr_all",
+                    key=_REG_ALL_KEY,
                     help="Include confirmed metrics from every detector and sample "
                          "on this platform. Off keeps the sidebar's detector/sample "
                          "scope.",
@@ -493,8 +520,9 @@ def _render_regressions_in_range(
     else:
         # Do not show a control that cannot change the result. Reset stale URL
         # or session state from a previous range where widening was useful.
-        st.session_state["stack_regr_all"] = False
+        st.session_state[_REG_ALL_KEY] = False
         st.query_params[PARAM_REG_ALL] = "0"
+        _remember_reg_all(reg_all_scope)
         show_all = False
 
     hits = all_hits if show_all else scoped_hits
@@ -537,6 +565,7 @@ def _render_regressions_in_range(
         st.caption(caption)
     if not hits:
         _sync_regression_query(None, show_all=show_all)
+        _remember_reg_all(reg_all_scope)
         if n_elsewhere:
             st.info(
                 f"No confirmed regression for **{detector}** · "
@@ -552,13 +581,18 @@ def _render_regressions_in_range(
             )
         return
 
+    requested = _query_verdict(hits)
     shown = sorted(hits, key=attention_key)[:_MAX_REGRESSIONS]
+    requested_below_cap = requested is not None and requested not in shown
+    if requested_below_cap:
+        # A shareable deep link is an explicit request, not a suggestion to
+        # select the current worst metric. Retain it alongside the capped list.
+        shown.append(requested)
     picker_scope = "all" if show_all else f"{detector}_{sample}"
     picker_key = (
         f"stack_regr_trend_{platform}_{base_release}_{head_release}_"
         f"{picker_scope}"
     )
-    requested = _query_verdict(shown)
     query_token = tuple(_query_value(param) for param in _REGRESSION_PARAMS)
     seed_key = picker_key + "__query"
     if requested is not None and st.session_state.get(seed_key) != query_token:
@@ -579,10 +613,13 @@ def _render_regressions_in_range(
         default=requested,
     )
     if len(hits) > _MAX_REGRESSIONS:
+        suffix = " plus the linked metric." if requested_below_cap else "."
         st.caption(
-            f"Showing the {_MAX_REGRESSIONS} largest of {len(hits)} by |Δ|."
+            f"Showing the {_MAX_REGRESSIONS} largest of {len(hits)} by |Δ|"
+            f"{suffix}"
         )
     _sync_regression_query(selected, show_all=show_all)
+    _remember_reg_all(reg_all_scope)
     st.session_state[seed_key] = tuple(
         _query_value(param) for param in _REGRESSION_PARAMS
     )

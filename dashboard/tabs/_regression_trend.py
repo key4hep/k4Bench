@@ -10,6 +10,7 @@ baseline gate, onset/confirmation markers and blame-window shading.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable
 
 import pandas as pd
@@ -77,35 +78,44 @@ def render_metric_picker(
     default: MetricVerdict | None = None,
 ) -> MetricVerdict | None:
     """Render the shared worst-first metric picker and return its selection."""
-    options = ["—"] + [
+    labels = [
         metric_option(
             verdict, include_scope=include_scope,
             include_window=include_window,
         )
         for verdict in verdicts
     ]
-    preferred = (
-        metric_option(
-            default, include_scope=include_scope,
-            include_window=include_window,
-        )
-        if default in verdicts else options[1]
-    )
+    # A release window is not a complete change-point identity: two distinct
+    # onset runs can measure the same release. Keep the compact label normally,
+    # but disambiguate collisions so the reader can tell those steps apart.
+    repeated = Counter(labels)
+    labels = [
+        f"{label} · onset run {verdict.onset_run_id}"
+        if repeated[label] > 1 and verdict.onset_run_id else label
+        for verdict, label in zip(verdicts, labels, strict=True)
+    ]
+    options: list[MetricVerdict | None] = [None, *verdicts]
+    preferred = default if default in verdicts else verdicts[0]
     # Scope-specific keys normally make the option model fresh. This guard also
     # handles a report update inside one scope and lets a deep link supply a
     # non-default verdict without passing both ``index`` and session state to
     # Streamlit (which warns and can leave the browser label stale).
     if key not in st.session_state or st.session_state[key] not in options:
         st.session_state[key] = preferred
-    choice = st.selectbox(
+    label_by_verdict = {
+        verdict: label for verdict, label in zip(verdicts, labels, strict=True)
+    }
+    return st.selectbox(
         label, options, key=key,
+        format_func=lambda verdict: (
+            "—" if verdict is None else label_by_verdict[verdict]
+        ),
         help=help or (
             "Recent history with the accepted-baseline band. Opens on the "
             "largest confirmed change; pick another metric, or “—” to hide "
             "the chart. Downloads data on first use."
         ),
     )
-    return None if choice == "—" else verdicts[options.index(choice) - 1]
 
 
 def _prev_point(df: pd.DataFrame, item: MetricVerdict) -> tuple | None:
