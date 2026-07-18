@@ -51,10 +51,12 @@ def _severity_lookup(
     dir's name is its report date) and keeps the run-level verdicts scoped to
     this detector/platform/sample. Keyed on the **Key4hep nightly tag**
     (``k4h_release``, the plot's x-axis), not the run id, and reduced to the
-    *most severe* verdict across all runs of that tag: a nightly benchmarked on
-    consecutive days confirms a regression on the first run and then re-anchors
-    to OK, but Run Trends plots only the newest run of the tag — so joining by
-    run id would drop the CONFIRMED. *run_ids* must therefore cover **every**
+    *most severe* verdict across all runs of that tag: nights of one tag are
+    judged against a shared baseline but can still differ (the first strike is
+    only a WATCH, a marginal night can come out OK, and reports predating the
+    release-grouped engine confirm on a single night), while Run Trends plots
+    only the newest run of the tag — so joining by run id could drop the
+    CONFIRMED. *run_ids* must therefore cover **every**
     run in the window, not just the ones the same-tag dedup keeps. Empty when
     remote data is unavailable, so the caller draws no flags.
     """
@@ -316,8 +318,9 @@ def _trends_body(
     df = df.dropna(subset=["x_date"])
     # Every run in the window, captured *before* the same-tag dedup below — the
     # flag lookup must fetch the reports of the runs dedup drops too, since a
-    # regression is often CONFIRMED on the earlier run of a repeated tag (which
-    # dedup discards) before the metric re-anchors. Also stable across the
+    # dropped run's report can carry the worse verdict for its tag (a WATCH
+    # night before the confirmation, or a report predating the release-grouped
+    # engine that confirmed on a single night). Also stable across the
     # reliability toggle, so toggling reuses the cached reports rather than
     # re-issuing a threaded HTTPS fetch (whose shutdown can race a rerun).
     all_run_ids = tuple(sorted(df["run_id"].dropna().unique())) if "run_id" in df.columns else ()

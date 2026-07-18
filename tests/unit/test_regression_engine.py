@@ -269,6 +269,209 @@ def test_second_step_with_no_ok_night_since_a_reanchor_bounds_on_the_reanchor():
     assert _window(second) == ("2026-01-12", "2026-01-13")
 
 
+def _release_rows(rows) -> pd.DataFrame:
+    """History from explicit ``(run_id, release_date, value[, reliable])``
+    rows — several rows may share a release, modelling nights that
+    re-benchmark one Key4hep nightly."""
+    rows = [r if len(r) == 4 else (*r, True) for r in rows]
+    return pd.DataFrame({
+        "run_id":   [r[0] for r in rows],
+        "run_date": pd.to_datetime([r[1] for r in rows]),
+        "value":    [r[2] for r in rows],
+        "reliable": [r[3] for r in rows],
+    })
+
+
+def _steady_rows(start_run="2026-02-01", start_release="2026-02-01"):
+    """A warm single-night-per-release baseline from :data:`_STEADY`."""
+    d0r, d0l = date.fromisoformat(start_run), date.fromisoformat(start_release)
+    return [
+        ((d0r + timedelta(days=i)).isoformat(),
+         (d0l + timedelta(days=i)).isoformat(), v)
+        for i, v in enumerate(_STEADY)
+    ]
+
+
+def test_every_night_of_a_stepped_release_reports_the_regression():
+    # A release that introduced a step and was benchmarked on three nights:
+    # the first trip is WATCH, the second night of the same binary confirms
+    # it, and every further re-measurement repeats the confirmed verdict —
+    # then the next release re-anchors and goes quiet.
+    rows = _steady_rows() + [
+        ("2026-02-11", "2026-02-11", 120.0),   # release R, night 1
+        ("2026-02-12", "2026-02-11", 120.5),   # release R, night 2
+        ("2026-02-13", "2026-02-11", 120.2),   # release R, night 3
+        ("2026-02-14", "2026-02-14", 120.3),   # next release, at the new level
+    ]
+    verdicts = evaluate_series(_release_rows(rows), series=_TIME)
+    assert _severities(verdicts[-4:]) == [
+        Severity.WATCH, Severity.CONFIRMED, Severity.CONFIRMED, Severity.OK,
+    ]
+    first, second = verdicts[-3], verdicts[-2]
+    assert _window(first) == ("2026-02-10", "2026-02-11")
+    assert _window(second) == _window(first)          # same window, not re-stamped
+    assert second.onset_run_date == first.onset_run_date
+    assert second.last_accepted_run_date == first.last_accepted_run_date
+    # The first confirmation is fresh news; the re-measurement reads as a
+    # repeat pointing back at it.
+    assert first.first_confirmed_run_id == first.run_id == "2026-02-12"
+    assert "repeat" not in first.reason
+    assert second.first_confirmed_run_id == "2026-02-12"
+    assert "repeat: first confirmed for this release on 2026-02-12" in second.reason
+    assert "re-anchoring" in verdicts[-1].reason      # boundary re-anchor happened
+
+
+def test_watch_from_previous_release_confirms_on_every_night_of_the_next():
+    # WATCH on release R-1's only night, R benchmarked twice: both of R's
+    # nights confirm, with the window (last night of R-2's level, R-1's night].
+    rows = _steady_rows() + [
+        ("2026-02-11", "2026-02-11", 120.0),   # release R-1: first strike
+        ("2026-02-12", "2026-02-12", 120.5),   # release R, night 1
+        ("2026-02-13", "2026-02-12", 120.2),   # release R, night 2
+    ]
+    verdicts = evaluate_series(_release_rows(rows), series=_TIME)
+    assert _severities(verdicts[-3:]) == [
+        Severity.WATCH, Severity.CONFIRMED, Severity.CONFIRMED,
+    ]
+    assert _window(verdicts[-2]) == ("2026-02-10", "2026-02-11")
+    assert _window(verdicts[-1]) == _window(verdicts[-2])
+
+
+def test_all_nights_of_a_release_share_one_baseline_snapshot():
+    # The snapshot is frozen on entering the release: a night's own value
+    # must never shift what a later night of the same release is judged
+    # against.
+    rows = _steady_rows() + [
+        ("2026-02-11", "2026-02-11", 100.1),
+        ("2026-02-12", "2026-02-11", 99.9),
+        ("2026-02-13", "2026-02-11", 100.2),
+    ]
+    verdicts = evaluate_series(_release_rows(rows), series=_TIME)
+    nights = verdicts[-3:]
+    assert _severities(nights) == [Severity.OK] * 3
+    assert len({v.baseline_median for v in nights}) == 1
+    assert len({v.baseline_mad for v in nights}) == 1
+
+
+def test_same_release_onset_yields_a_same_release_window():
+    # First night of R is OK, later nights trip and confirm: both window ends
+    # fall inside R — proof the stack did not move, so the cause is
+    # benchmark-side (code/config, inputs, environment) or noise.
+    rows = _steady_rows() + [
+        ("2026-02-11", "2026-02-11", 100.0),   # release R, night 1: OK
+        ("2026-02-12", "2026-02-11", 120.0),   # night 2: WATCH
+        ("2026-02-13", "2026-02-11", 120.5),   # night 3: CONFIRMED
+    ]
+    verdicts = evaluate_series(_release_rows(rows), series=_TIME)
+    assert _severities(verdicts[-3:]) == [
+        Severity.OK, Severity.WATCH, Severity.CONFIRMED,
+    ]
+    confirmed = verdicts[-1]
+    assert _window(confirmed) == ("2026-02-11", "2026-02-12")
+    assert confirmed.last_accepted_run_date == confirmed.onset_run_date == "2026-02-11"
+
+
+def test_ok_noise_night_does_not_clear_a_confirmed_release():
+    # A single night dipping back into baseline range cannot outvote the two
+    # nights that confirmed: the release median still sits beyond the gates,
+    # so the confirmed state (and its window) is retained — and the dip night
+    # itself says so instead of reading as an all-clear.
+    rows = _steady_rows() + [
+        ("2026-02-11", "2026-02-11", 120.0),   # release R-1: first strike
+        ("2026-02-12", "2026-02-12", 120.5),   # release R, night 1: CONFIRMED
+        ("2026-02-13", "2026-02-12", 100.2),   # night 2: noise back at baseline
+        ("2026-02-14", "2026-02-12", 120.4),   # night 3: the step is still there
+    ]
+    verdicts = evaluate_series(_release_rows(rows), series=_TIME)
+    assert _severities(verdicts[-4:]) == [
+        Severity.WATCH, Severity.CONFIRMED, Severity.OK, Severity.CONFIRMED,
+    ]
+    assert _window(verdicts[-1]) == _window(verdicts[-3])
+    dip = verdicts[-2]
+    assert "release's median is still" in dip.reason
+    assert "looks like noise" in dip.reason
+
+
+def test_majority_of_quiet_nights_revokes_a_confirmed_release():
+    # Two tripping nights confirmed the change, but three quiet nights drag
+    # the release median back inside the band: the better explanation is that
+    # the confirming nights were noise. The confirmation is revoked, the
+    # revoking night says so, later quiet nights read plain, and the release
+    # triggers no boundary re-anchor — the next release is judged against the
+    # original, unpolluted baseline.
+    rows = _steady_rows() + [
+        ("2026-02-11", "2026-02-11", 120.0),   # release R, night 1: WATCH
+        ("2026-02-12", "2026-02-11", 120.5),   # night 2: CONFIRMED
+        ("2026-02-13", "2026-02-11", 100.2),   # night 3: quiet (median still trips)
+        ("2026-02-14", "2026-02-11", 100.1),   # night 4: quiet (median still trips)
+        ("2026-02-15", "2026-02-11", 99.9),    # night 5: quiet — median back in band
+        ("2026-02-16", "2026-02-16", 100.0),   # next release, at the old level
+    ]
+    verdicts = evaluate_series(_release_rows(rows), series=_TIME)
+    assert _severities(verdicts[-6:]) == [
+        Severity.WATCH, Severity.CONFIRMED,
+        Severity.OK, Severity.OK, Severity.OK, Severity.OK,
+    ]
+    assert "confirmation revised" in verdicts[-2].reason
+    # No re-anchor happened: the next release is judged against the original
+    # ~100 s baseline, not re-seated on the fluke level.
+    nxt = verdicts[-1]
+    assert "re-anchoring" not in nxt.reason
+    assert nxt.baseline_median == pytest.approx(100.0, abs=0.5)
+
+
+def test_trip_after_a_revoked_confirmation_starts_a_fresh_watch():
+    # Once the release median revoked the confirmation, a later tripping
+    # night is a new hypothesis, not a repeat: it starts a fresh two-strike
+    # cycle rather than instantly re-confirming.
+    rows = _steady_rows() + [
+        ("2026-02-11", "2026-02-11", 120.0),   # WATCH
+        ("2026-02-12", "2026-02-11", 120.5),   # CONFIRMED
+        ("2026-02-13", "2026-02-11", 100.2),   # quiet
+        ("2026-02-14", "2026-02-11", 100.1),   # quiet
+        ("2026-02-15", "2026-02-11", 99.9),    # quiet — confirmation revoked
+        ("2026-02-16", "2026-02-11", 120.3),   # trips again: fresh first strike
+    ]
+    verdicts = evaluate_series(_release_rows(rows), series=_TIME)
+    assert verdicts[-1].severity is Severity.WATCH
+    assert verdicts[-1].first_confirmed_run_id is None
+
+
+def test_step_in_the_release_after_a_confirmed_one_is_still_caught():
+    # The boundary re-anchor seeds the baseline from the whole confirmed
+    # release, and the interim pre-change-MAD rule keeps judging while the
+    # segment is short — so a second step landing immediately still flags.
+    rows = _steady_rows() + [
+        ("2026-02-11", "2026-02-11", 120.0),   # release R, night 1: WATCH
+        ("2026-02-12", "2026-02-11", 120.5),   # release R, night 2: CONFIRMED
+        ("2026-02-13", "2026-02-13", 160.0),   # release R', night 1
+        ("2026-02-14", "2026-02-13", 160.5),   # release R', night 2
+    ]
+    verdicts = evaluate_series(_release_rows(rows), series=_TIME)
+    assert _severities(verdicts[-4:]) == [
+        Severity.WATCH, Severity.CONFIRMED, Severity.WATCH, Severity.CONFIRMED,
+    ]
+    # R' is judged against R's accepted (~120 s) level, not the pre-change one.
+    assert verdicts[-1].baseline_median == pytest.approx(120.25, abs=0.5)
+    # Bounded on R's last night — the newest night at the accepted level.
+    assert _window(verdicts[-1]) == ("2026-02-12", "2026-02-13")
+
+
+def test_unreliable_night_inside_a_release_is_skipped_entirely():
+    # A contaminated night of a multi-night release emits no verdict and
+    # perturbs neither the frozen snapshot nor the stamped window.
+    rows = _steady_rows() + [
+        ("2026-02-11", "2026-02-11", 120.0),          # release R, night 1: WATCH
+        ("2026-02-12", "2026-02-11", 500.0, False),   # night 2: unreliable
+        ("2026-02-13", "2026-02-11", 120.5),          # night 3: CONFIRMED
+    ]
+    verdicts = evaluate_series(_release_rows(rows), series=_TIME)
+    assert "2026-02-12" not in {v.run_id for v in verdicts}
+    assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
+    assert _window(verdicts[-1]) == ("2026-02-10", "2026-02-11")
+    assert verdicts[-1].baseline_median == verdicts[-2].baseline_median
+
+
 def test_window_reports_release_dates_alongside_run_ids():
     # run_id is the run directory; run_date is the Key4hep release measured.
     # The nightly build does not publish daily, so several runs can share one

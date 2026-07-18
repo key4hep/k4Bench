@@ -22,10 +22,10 @@ _PLAT = "x86_64-almalinux9-gcc14.2.0-opt"
 _STACK = "key4hep-2026-01-01"
 
 
-def _write_run(run_dir: Path, night: str, wall_time_s: float) -> None:
+def _write_run(run_dir: Path, night: str, wall_time_s: float, stack: str = _STACK) -> None:
     run_dir.mkdir(parents=True)
     (run_dir / "run_info.json").write_text(json.dumps({
-        "date": night, "platform": _PLAT, "k4h_release": _STACK, "sample": "single_e",
+        "date": night, "platform": _PLAT, "k4h_release": stack, "sample": "single_e",
     }))
     (run_dir / "baseline_results.csv").write_text(
         "label,returncode,n_events,wall_time_s,peak_rss_mb,user_cpu_s,events_per_sec\n"
@@ -74,6 +74,58 @@ def test_regression_report_cli_local_mode(tmp_path):
     md = (out_dir / "report.md").read_text()
     assert "k4Bench nightly regression report — 2026-01-12" in md
     assert "🔴 Regression" in md
+
+
+def _wall_time_verdict(report: dict) -> dict:
+    """The single ``wall_time_s`` verdict of a one-triple report."""
+    (group,) = report["groups"]
+    (verdict,) = [v for v in group["verdicts"] if v["metric"] == "wall_time_s"]
+    return verdict
+
+
+def test_as_of_reproduces_each_night_of_a_rebenchmarked_release(tmp_path):
+    # Ten steady single-night releases, then release 2026-01-11 benchmarked on
+    # two nights at a +20% level. `as_of` reproduces each night's report from
+    # the same tree, and the release's nights agree: the first strike is a
+    # WATCH, the rerun of the same binary confirms it against the same frozen
+    # baseline — the semantics the historical backfill replays.
+    from k4bench.regression.render import to_json
+    from k4bench.regression.report_builder import build_nightly_report_local
+
+    steady = [100.0, 100.4, 99.6, 100.2, 99.8, 100.3, 99.7, 100.1, 99.9, 100.0]
+    d0 = date.fromisoformat("2026-01-01")
+    root = tmp_path / "data" / "DET" / _PLAT
+    for i, wall in enumerate(steady):
+        night = (d0 + timedelta(days=i)).isoformat()
+        stack = f"key4hep-{night}"
+        _write_run(root / stack / "single_e" / night, night, wall, stack=stack)
+    rerun_stack = "key4hep-2026-01-11"
+    _write_run(root / rerun_stack / "single_e" / "2026-01-11", "2026-01-11",
+               120.0, stack=rerun_stack)
+    _write_run(root / rerun_stack / "single_e" / "2026-01-12", "2026-01-12",
+               120.5, stack=rerun_stack)
+
+    data_dir = str(tmp_path / "data")
+    first = to_json(build_nightly_report_local(data_dir, as_of="2026-01-11"))
+    second = to_json(build_nightly_report_local(data_dir, as_of="2026-01-12"))
+    full = to_json(build_nightly_report_local(data_dir))
+
+    assert first["summary"]["report_night"] == "2026-01-11"
+    watch = _wall_time_verdict(first)
+    assert watch["severity"] == "WATCH"
+
+    assert second["summary"]["report_night"] == "2026-01-12"
+    confirmed = _wall_time_verdict(second)
+    assert confirmed["severity"] == "CONFIRMED"
+    assert confirmed["onset_run_id"] == "2026-01-11"
+    assert confirmed["last_accepted_run_id"] == "2026-01-10"
+    # Both nights of the release were judged against the same frozen baseline.
+    assert confirmed["baseline_median"] == watch["baseline_median"]
+    assert confirmed["baseline_mad"] == watch["baseline_mad"]
+
+    # `as_of` at the newest run is exactly the unfiltered nightly build.
+    full.pop("generated_at"), second.pop("generated_at")
+    assert full == second
 
 
 _K4GEO = "https://github.com/key4hep/k4geo.git"

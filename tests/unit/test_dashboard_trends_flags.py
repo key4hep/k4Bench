@@ -95,9 +95,10 @@ def test_severity_lookup_scopes_and_keys(monkeypatch):
 
 
 def test_severity_lookup_keeps_worst_across_same_tag_reruns(monkeypatch):
-    # Same nightly tag benchmarked twice: CONFIRMED on the first run, re-anchored
-    # to OK on the rerun. The lookup must surface CONFIRMED for the tag — the
-    # exact case Run Trends' dedup was dropping.
+    # Same nightly tag benchmarked twice: CONFIRMED on the first run, OK on the
+    # rerun (a marginal night, or a report predating the release-grouped
+    # engine). The lookup must surface CONFIRMED for the tag — the exact case
+    # Run Trends' dedup was dropping.
     first = _group("2026-06-27", [_verdict("wall_time_s", Severity.CONFIRMED)])
     rerun = _group("2026-06-28", [_verdict("wall_time_s", Severity.OK)],
                    k4h_release="key4hep-2026-06-27")

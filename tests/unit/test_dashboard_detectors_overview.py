@@ -210,7 +210,8 @@ def test_reliability_history_collapses_same_tag_reruns():
 
 
 def test_history_frame_collapses_same_tag_reruns():
-    # First run of the tag CONFIRMED a step; the rerun re-anchored to OK.
+    # First run of the tag CONFIRMED a step; the rerun's report shows OK (a
+    # marginal night, or a report predating the release-grouped engine).
     n1 = ov.report_metrics_frame(NightlyReport(generated_at="", groups=[
         _group("CLD", [_verdict(value=100.0, severity=Severity.CONFIRMED)],
                run_date="2026-07-01", k4h_release="key4hep-2026-07-01"),

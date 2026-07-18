@@ -261,8 +261,10 @@ def history_frame(
     the report/run date — the same x-axis as Run Trends. Two CI runs that
     benchmarked the *same* nightly (a rerun) therefore collapse to one point:
     the newest run wins for the plotted value, but ``severity`` keeps the
-    *worst* verdict across the tag's runs, so a regression CONFIRMED on the
-    first run isn't masked when a later rerun re-anchored to OK.
+    *worst* verdict across the tag's runs — nights of one tag share a
+    baseline yet can still differ (WATCH before the confirmation, a marginal
+    OK night, or a report predating the release-grouped engine), and the flag
+    must not be masked by the quieter night.
     """
     cols = ["detector", "metric", "value", "k4h_release", "severity", "reliable"]
     parts = []
@@ -284,7 +286,8 @@ def history_frame(
         _tag_date(rel, rn) for rel, rn in zip(hist["k4h_release"], hist["_report_night"])
     ]
     # Worst verdict per (detector, metric, tag) across same-tag reruns, applied
-    # after the newest-run collapse below so the flag survives re-anchoring.
+    # after the newest-run collapse below so the flag survives a quieter night
+    # of the same tag winning the collapse.
     worst = (
         hist.assign(_rank=hist["severity"].map(lambda s: SEVERITY_RANK.get(s, 0)))
         .sort_values("_rank")

@@ -261,10 +261,10 @@ class BlameReport:
         """The entry attributing *verdict*, or ``None`` when this night has no
         blame for it.
 
-        Matched on the shared identity tuple **and** the blame window: a rerun
-        can re-anchor a verdict's window, and a sidecar left over from an
-        earlier build must never have its ranking joined to a regression whose
-        window it did not examine."""
+        Matched on the shared identity tuple **and** the blame window: an
+        engine change or a report backfill can shift a verdict's window, and
+        a sidecar left over from an earlier build must never have its ranking
+        joined to a regression whose window it did not examine."""
         key = (
             verdict.detector, verdict.platform, verdict.sample,
             verdict.label, verdict.metric, verdict.sub_detector,

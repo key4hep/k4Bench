@@ -323,8 +323,10 @@ def _regressions_in_range(
 
     Pure — no Streamlit, no network — so the selection, dedup and ordering are
     testable on their own. Dedup keys on the onset run, not just its release:
-    several runs share a release, and a re-anchored series can confirm two
-    separate steps whose onset runs differ but whose onset releases match.
+    several runs share a release, and one series can confirm two separate
+    steps whose onset runs differ while their onset releases match (a
+    same-release onset, or a second step right after a release-boundary
+    re-anchor).
     """
     hits, seen = [], set()
     for raw in reports:

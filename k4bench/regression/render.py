@@ -57,6 +57,17 @@ def _badge(v: MetricVerdict) -> str:
     return _BADGES.get(v.severity, v.severity.value)
 
 
+def _status_cell(v: MetricVerdict) -> str:
+    """The report table's status text: the severity badge, plus a repeat
+    marker when a later night of the release re-confirms a change — so a
+    reader of consecutive nightly emails can tell "still present in this
+    release" from fresh news."""
+    badge = _badge(v)
+    if v.first_confirmed_run_id and v.first_confirmed_run_id != v.run_id:
+        return f"{badge} (repeat — first confirmed {v.first_confirmed_run_id})"
+    return badge
+
+
 def _detector_badge(groups: list[RunGroupReport]) -> str:
     """One glance-able status emoji for a whole detector (which can span
     several (platform, sample) run groups) — worst-first, matching the
@@ -187,10 +198,12 @@ def _group_links(
     does, so a detector-only link could land on the wrong sample.
 
     The Regressions link also pins the release (``stack``) and the exact report
-    night (``report``): a release is routinely re-benchmarked, and a confirmed
-    regression lands on exactly one night before the baseline re-anchors, so a
-    link without ``report`` would rot into a later, quieter rerun. ``stack`` is
-    omitted when the group carries no release (a stale/missing-run group)."""
+    night (``report``): a release is routinely re-benchmarked, and although
+    every night of it is judged against the same baseline, nights can still
+    differ (a WATCH night preceding the confirmation, a marginal OK night, or
+    a report predating the release-grouped engine) — pinning guarantees the
+    link opens the exact report the email described. ``stack`` is omitted when
+    the group carries no release (a stale/missing-run group)."""
     if not dashboard_url:
         return []
     scope = dict(detector=group.detector, platform=group.platform, sample=group.sample)
@@ -375,7 +388,7 @@ def to_markdown(
                     lines.append(
                         f"| {_metric_name(v)} | {v.label} | {_fmt(v.value)} "
                         f"| {_fmt(v.baseline_median)} | {_fmt_pct(v.pct_change)} "
-                        f"| {_badge(v)} |"
+                        f"| {_status_cell(v)} |"
                     )
                 lines.append("")
             blame_lines = _blame_markdown_lines(group, blame)
@@ -481,7 +494,7 @@ def to_html(report: NightlyReport, *, dashboard_url: str | None = None,
                         f'<td style="{_ROW_STYLE}">{_fmt(v.baseline_median)}</td>'
                         f'<td style="{_ROW_STYLE}">{_fmt_pct(v.pct_change)}</td>'
                         f'<td style="{_ROW_STYLE}color:{color};font-weight:bold;">'
-                        f"{_badge(v)}</td>"
+                        f"{_status_cell(v)}</td>"
                         "</tr>"
                     )
                 parts.append("</table>")
