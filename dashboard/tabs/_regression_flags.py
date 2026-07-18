@@ -245,23 +245,8 @@ def has_ranking(candidates: list[CandidatePR]) -> bool:
     return any(c.score or c.description for c in candidates)
 
 
-def _autosize_width(
-    label: str, values: list[str], *, minimum: int, maximum: int,
-) -> int:
-    """Approximate the grid's header-menu Autosize measurement in pixels.
-
-    Streamlit exposes that measurement only as a browser interaction, not as a
-    ``st.dataframe`` argument. Seven pixels per character plus cell padding is
-    close to the grid's default font metrics; per-column bounds keep a long PR
-    title or rationale from swallowing the rest of the ledger.
-    """
-    longest = max((len(str(value)) for value in values), default=0)
-    measured = max(len(label), longest) * 7 + 24
-    return min(max(measured, minimum), maximum)
-
-
 def _render_candidate_rows(candidates: list[CandidatePR]) -> None:
-    """Render one slice of the candidate ledger."""
+    """Render the complete candidate ledger using Streamlit's native sizing."""
     records = [
         {
             "Likelihood": c.score,
@@ -278,18 +263,10 @@ def _render_candidate_rows(candidates: list[CandidatePR]) -> None:
     st.dataframe(
         frame,
         hide_index=True,
-        # Keep the ledger full-width. The fitted starting widths below mimic
-        # the grid's interactive Autosize action; Streamlit distributes any
-        # remaining parent width across them.
         width="stretch",
         column_config={
             "Likelihood": st.column_config.ProgressColumn(
                 "Likelihood",
-                width=_autosize_width(
-                    "Likelihood",
-                    [f"{score:.0f}%" for score in frame["Likelihood"]],
-                    minimum=105, maximum=125,
-                ),
                 help="The ranking stage's estimate of how likely this PR is the "
                      "cause, 0–100% — a suggestion, not evidence. Each PR in a "
                      "range is judged on its own.",
@@ -299,45 +276,22 @@ def _render_candidate_rows(candidates: list[CandidatePR]) -> None:
             ),
             "Pull request": st.column_config.TextColumn(
                 "Pull request",
-                width=_autosize_width(
-                    "Pull request", frame["Pull request"].tolist(),
-                    minimum=140, maximum=240,
-                ),
             ),
             "Open": st.column_config.LinkColumn(
                 "Open", display_text="↗ PR",
-                width=_autosize_width(
-                    "Open", ["↗ PR"], minimum=72, maximum=80,
-                ),
                 help="Open this pull request on GitHub.",
             ),
             "Title": st.column_config.TextColumn(
                 "Title",
-                width=_autosize_width(
-                    "Title", frame["Title"].tolist(),
-                    minimum=160, maximum=360,
-                ),
             ),
             "Author": st.column_config.TextColumn(
                 "Author",
-                width=_autosize_width(
-                    "Author", frame["Author"].tolist(),
-                    minimum=80, maximum=180,
-                ),
             ),
             "Merged": st.column_config.TextColumn(
                 "Merged",
-                width=_autosize_width(
-                    "Merged", frame["Merged"].tolist(),
-                    minimum=100, maximum=110,
-                ),
             ),
             "Why": st.column_config.TextColumn(
                 "Why",
-                width=_autosize_width(
-                    "Why", frame["Why"].tolist(),
-                    minimum=180, maximum=420,
-                ),
                 help="The ranking stage's one-line reasoning for this candidate.",
             ),
         },

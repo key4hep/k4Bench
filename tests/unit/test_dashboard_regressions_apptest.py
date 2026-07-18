@@ -656,7 +656,7 @@ def test_ranked_candidate_prs_render_when_a_blame_sidecar_is_present():
     assert list(pr_frames[0]["Open"]) == ["https://github.com/key4hep/k4geo/pull/1234"]
 
 
-def test_candidate_ranking_autosizes_columns_without_shrinking_table(monkeypatch):
+def test_candidate_ranking_uses_native_column_sizing(monkeypatch):
     """Both tabs call this one renderer, so one layout assertion covers both."""
     import sys
 
@@ -680,12 +680,8 @@ def test_candidate_ranking_autosizes_columns_without_shrinking_table(monkeypatch
 
     assert captured["width"] == "stretch"
     assert all(
-        isinstance(config.get("width"), int)
+        config.get("width") is None
         for config in captured["column_config"].values()
-    )
-    assert (
-        captured["column_config"]["Why"]["width"]
-        > captured["column_config"]["Author"]["width"]
     )
 
 
