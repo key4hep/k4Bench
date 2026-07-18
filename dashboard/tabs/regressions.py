@@ -68,7 +68,6 @@ from tabs._regression_flags import (
     candidate_table,
     flag_table,
     has_ranking as candidate_has_ranking,
-    pretty_metric,
 )
 from tabs._reliability import render_reliability_filter
 from tabs.stack_changes import _release, deep_link, packages_for_release
@@ -445,49 +444,32 @@ def _window_changes(data_url: str, verdict: MetricVerdict) -> list | None:
     return diff_packages(base, head)
 
 
-def _render_candidates(
-    verdicts: list[MetricVerdict], blame: BlameReport | None
-) -> None:
-    """The ranked candidate pull requests for a window's confirmed metrics, from
-    the blame sidecar, or nothing when the night has no blame — or no ranking —
-    for any of them.
+def _render_candidates(v: MetricVerdict, blame: BlameReport | None) -> None:
+    """The ranked candidate pull requests for *v*, from the blame sidecar, or
+    nothing when the night has no blame — or no ranking — for this verdict.
 
-    Each metric is ranked *on its own* (the model judged which PR plausibly
-    moved that metric, not the window in the abstract), so metrics sharing the
-    window get their own labelled ledger rather than one table passed off as
-    everyone's. Deliberately framed as *suggested, not evidence*: the score
-    ranks how likely each PR is the cause, never asserts it — this repo leaves
-    the call to a human."""
+    Deliberately framed as *suggested, not evidence*: the score ranks how likely
+    each PR is the cause, never asserts it — this repo leaves the call to a
+    human. The forward package diff above already reaches the commit ranges; this
+    narrows those to the individual PRs, orders them, and explains why."""
     if blame is None:
         return
-    ranked = [
-        (v, entry) for v in verdicts
-        if (entry := blame.entry_for(v)) is not None
-        and candidate_has_ranking(entry.candidates)
-    ]
-    if not ranked:
+    entry = blame.entry_for(v)
+    if entry is None or not candidate_has_ranking(entry.candidates):
         return
     st.caption(
         "**Suggested cause — ranked candidate pull requests.** Ordered by how "
         "likely each is the cause, with a one-line reason. A lead to verify, not "
         "a verdict."
     )
-    for v, entry in ranked:
-        if len(ranked) > 1:
-            st.markdown(f"**{pretty_metric(v)}**")
-        candidate_table(entry.candidates)
+    candidate_table(entry.candidates)
 
 
-def _render_blame_card(
-    data_url: str, verdicts: list[MetricVerdict], blame: BlameReport | None
-) -> None:
+def _render_blame_card(data_url: str, v: MetricVerdict, blame: BlameReport | None) -> None:
     """One window's forward attribution: the upstream packages that moved in the
-    blame window, each linking to its commit range, plus each windowed metric's
-    ranked candidate PRs from the blame sidecar when present — so the reader
-    reaches the likely pull request without leaving the row or loading the
-    trend. *verdicts* all share the window; the first stands in for the shared
-    facts (span, package diff)."""
-    v = verdicts[0]
+    blame window, each linking to its commit range, plus the ranked candidate
+    PRs from the blame sidecar when present — so the reader reaches the likely
+    pull request without leaving the row or loading the trend."""
     kind = _blame.classify(v)
     with st.container(border=True):
         if kind is _blame.WindowKind.SAME_STACK:
@@ -517,7 +499,7 @@ def _render_blame_card(
             st.markdown(
                 f"**{len(changes)} package(s) moved:** " + _blame.changes_summary(changes)
             )
-        _render_candidates(verdicts, blame)
+        _render_candidates(v, blame)
         st.link_button(
             "🔍 Open in Stack Changes →",
             deep_link(detector=v.detector, platform=v.platform, sample=v.sample,
@@ -530,20 +512,17 @@ def _render_blame_cards(
 ) -> None:
     """Forward attribution for a group's confirmed regressions, without the
     drill-down. One card per distinct blame window — a run group's confirmed
-    metrics usually share one, so the shared facts (span, package diff) render
-    once; the per-metric candidate rankings inside the card each keep their own
-    verdict."""
-    by_window: dict[tuple, list[MetricVerdict]] = {}
+    metrics usually share one, and the flag table above already lists which
+    metrics stepped, so the card only needs a representative verdict."""
+    by_window: dict[tuple, MetricVerdict] = {}
     for v in group.verdicts:
         if _blame.has_window(v):
-            by_window.setdefault(
-                (v.last_accepted_run_date, v.onset_run_date), []
-            ).append(v)
+            by_window.setdefault((v.last_accepted_run_date, v.onset_run_date), v)
     if not by_window:
         return
     st.markdown("###### Upstream changes in the blame window")
-    for verdicts in by_window.values():
-        _render_blame_card(data_url, verdicts, blame)
+    for verdict in by_window.values():
+        _render_blame_card(data_url, verdict, blame)
 
 
 def _render_group(

@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 
 from k4bench.blame.github import GitHubClient, RateLimitError, RepoResolution, resolve_repo_prs
 from k4bench.blame.models import BlameEntry, BlameReport, RepoBlame
-from k4bench.blame.rank import RankCandidate, Ranker, RankRequest, Ranking
+from k4bench.blame.rank import MetricStep, RankCandidate, Ranker, RankRequest, Ranking
 from k4bench.provenance.diff import CHANGED, PackageChange, diff_packages, unchanged_packages
 from k4bench.regression.models import MetricVerdict, NightlyReport
 
@@ -68,9 +68,39 @@ def build_blame_report(
     """
     verdicts = [v for v in report.regressions if _attributable(v)]
 
+    #: Every confirmed metric that stepped across a given (detector, platform,
+    #: sample) run group's release boundary, gathered upfront so the ranker
+    #: sees that group's full picture — not just whichever verdict happens to
+    #: reach it first. Keyed finer than the diff/resolution caches below: two
+    #: *different* detectors or samples can share the same platform and release
+    #: dates — a library regressing several detectors in one release — and must
+    #: never be batched into one prompt under one detector/sample's identity.
+    #: ``label`` (a removal sweep's ``baseline`` vs. ``without_<detector>``
+    #: runs, say) is deliberately *not* part of this key: labels sharing a
+    #: group and window still get one collapsed verdict, not one call each —
+    #: only detector/sample are independent enough to require splitting. Each
+    #: verdict keeps its own label in the prompt (see
+    #: :class:`~k4bench.blame.rank.MetricStep`) so the model can still tell
+    #: configs apart without the batch being fragmented over them.
+    verdicts_by_rank_group: dict[tuple[str, str, str, str, str], list[MetricVerdict]] = {}
+    for v in verdicts:
+        rank_group = (
+            v.detector, v.platform, v.sample,
+            v.last_accepted_run_date, v.onset_run_date,
+        )
+        verdicts_by_rank_group.setdefault(rank_group, []).append(v)
+
     diff_cache: dict[tuple[str, str, str], list[PackageChange] | None] = {}
     unchanged_cache: dict[tuple[str, str, str], int] = {}
     resolution_cache: dict[tuple[str, str, str], RepoResolution] = {}
+    #: One rank inference per rank group, shared by every metric that stepped
+    #: across it (they see the same diff and candidate set) — the dashboard and
+    #: the email show one verdict per group, not one per metric. Keyed like
+    #: *verdicts_by_rank_group* above, not the coarser diff/resolution window:
+    #: the diff/candidate PRs really are platform+release-scoped (every
+    #: detector on a platform shares one package set), but the *prompt text*
+    #: names one detector/sample and must not be shared across them.
+    rank_cache: dict[tuple[str, str, str, str, str], dict[tuple[str, int], Ranking]] = {}
     #: Set once GitHub throttles: from then on repos keep their diffs but get no
     #: candidates, rather than each retry re-hitting the same wall.
     rate_limited = False
@@ -99,7 +129,14 @@ def build_blame_report(
                 patches[(pr.repo, pr.number)] = resolution.patches.get(pr.number, "")
 
         if ranker is not None:
-            repos = _ranked_repos(ranker, v, repos, patches)
+            rank_group = (
+                v.detector, v.platform, v.sample,
+                v.last_accepted_run_date, v.onset_run_date,
+            )
+            repos = _ranked_repos(
+                ranker, verdicts_by_rank_group[rank_group], repos, patches,
+                rank_group, rank_cache,
+            )
 
         entries.append(BlameEntry(
             detector=v.detector, platform=v.platform, sample=v.sample,
@@ -192,18 +229,30 @@ def _repo_blame(change: PackageChange, resolution: RepoResolution) -> RepoBlame:
 
 def _ranked_repos(
     ranker: Ranker,
-    verdict: MetricVerdict,
+    verdicts: list[MetricVerdict],
     repos: list[RepoBlame],
     patches: dict[tuple[str, int], str],
+    rank_group: tuple[str, str, str, str, str],
+    rank_cache: dict[tuple[str, str, str, str, str], dict[tuple[str, int], Ranking]],
 ) -> list[RepoBlame]:
     """Return *repos* with the ranker's scores/descriptions folded onto their
     candidates.
 
-    One inference per *verdict*: metrics sharing a release window see the same
-    candidate set, but which PR plausibly moved *this* metric on *this* detector
-    is a different question for each — a wall-time judgement must never be
-    re-published as the explanation of a memory step. The extra calls are
-    bounded by the night's confirmed regressions and the CI wall clock.
+    Memoized on *rank_group* — (detector, platform, sample, base, onset),
+    never just the release boundary: every confirmed metric of *one run group*
+    that stepped across one release boundary shares one diff and one candidate
+    set, so it needs a single inference rather than one per metric — *every*
+    metric in *verdicts* rides in the one prompt (see
+    :class:`~k4bench.blame.rank.MetricStep`), so the model judges the
+    candidates against that group's full picture, and the dashboard/email show
+    that one verdict for every metric sharing the group, not a table each. A
+    *different* detector or sample can share the same platform and release
+    dates (one library regressing several detectors at once) — grouping on the
+    release boundary alone would silently merge their unrelated metrics into
+    one prompt mislabelled with a single detector/sample. ``label`` (a removal
+    sweep's ``baseline`` vs. ``without_<detector>`` runs) is deliberately
+    *not* part of this key — those still collapse into one verdict, each
+    metric just carries its own label into the prompt.
 
     Ranking is skipped entirely when any repo's candidate discovery came back
     incomplete (unavailable or truncated): the model would judge a partial set,
@@ -213,10 +262,13 @@ def _ranked_repos(
     if any(r.commits_unavailable or r.truncated for r in repos):
         _log.warning(
             "blame: %s/%s %s: candidate discovery incomplete — leaving unranked",
-            verdict.detector, verdict.sample, verdict.metric,
+            verdicts[0].detector, verdicts[0].sample,
+            ", ".join(f"{v.metric} ({v.label})" for v in verdicts),
         )
         return repos
-    rankings = _run_ranker(ranker, verdict, repos, patches)
+    if rank_group not in rank_cache:
+        rank_cache[rank_group] = _run_ranker(ranker, verdicts, repos, patches)
+    rankings = rank_cache[rank_group]
     if not rankings:
         return repos
     return [_apply_rankings(repo, rankings) for repo in repos]
@@ -224,14 +276,16 @@ def _ranked_repos(
 
 def _run_ranker(
     ranker: Ranker,
-    verdict: MetricVerdict,
+    verdicts: list[MetricVerdict],
     repos: list[RepoBlame],
     patches: dict[tuple[str, int], str],
 ) -> dict[tuple[str, int], Ranking]:
-    """One guarded rank call. Any exception degrades to ``{}`` and never aborts
-    the report — blame's best-effort isolation, extended to the model."""
+    """One guarded rank call. Any exception degrades to ``{}`` and is cached as
+    such, so a broken ranker is asked at most once per detector/platform/
+    sample/window and never aborts the report — blame's best-effort isolation,
+    extended to the model."""
     try:
-        request = _rank_request(verdict, repos, patches)
+        request = _rank_request(verdicts, repos, patches)
         if not request.candidates:
             return {}
         return ranker.rank(request)
@@ -241,12 +295,26 @@ def _run_ranker(
 
 
 def _rank_request(
-    verdict: MetricVerdict,
+    verdicts: list[MetricVerdict],
     repos: list[RepoBlame],
     patches: dict[tuple[str, int], str],
 ) -> RankRequest:
-    """Assemble the ranker's input: the regression summary and every candidate
-    PR across the changed repos, each carried with its transient patch."""
+    """Assemble the ranker's input: every metric that stepped across the shared
+    window and every candidate PR across the changed repos, each carried with
+    its transient patch. *verdicts* all share the run group (detector,
+    platform, sample) and window, so the first stands in for those shared
+    facts; each metric keeps its own ``label`` (verdicts sharing a group and
+    window can still come from different benchmark configs, e.g. a removal
+    sweep's ``baseline`` and ``without_<detector>`` runs)."""
+    v = verdicts[0]
+    metrics = tuple(
+        MetricStep(
+            metric=m.metric, metric_family=m.metric_family,
+            direction=m.direction.value, pct_change=m.pct_change,
+            label=m.label, sub_detector=m.sub_detector,
+        )
+        for m in verdicts
+    )
     candidates = tuple(
         RankCandidate(
             repo=pr.repo, number=pr.number, title=pr.title,
@@ -256,12 +324,10 @@ def _rank_request(
         for pr in repo.candidates
     )
     return RankRequest(
-        metric=verdict.metric, metric_family=verdict.metric_family,
-        direction=verdict.direction.value, pct_change=verdict.pct_change,
-        detector=verdict.detector, platform=verdict.platform, sample=verdict.sample,
-        sub_detector=verdict.sub_detector,
-        base_release=verdict.last_accepted_run_date,
-        onset_release=verdict.onset_run_date,
+        metrics=metrics,
+        detector=v.detector, platform=v.platform, sample=v.sample,
+        base_release=v.last_accepted_run_date,
+        onset_release=v.onset_run_date,
         candidates=candidates,
     )
 

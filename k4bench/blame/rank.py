@@ -1,11 +1,11 @@
 """Rank a regression's candidate pull requests with a language model.
 
-The builder collects, for one confirmed regression, every pull request in the
-commit range of every package that moved across the blame window — but *which*
-of them caused the step is a judgement over the real diffs, not a path match.
-This module makes that judgement with a model: it is handed the metric that
-moved and each candidate's code change, and returns a 0–100 likelihood and a
-one-line reason per PR.
+The builder collects, for one release-boundary window, every pull request in
+the commit range of every package that moved across it — but *which* of them
+caused the step is a judgement over the real diffs, not a path match. This
+module makes that judgement with a model: it is handed every metric that
+stepped across the window and each candidate's code change, and returns a
+0–100 likelihood and a one-line reason per PR.
 
 Three properties are load-bearing, and shape the whole module:
 
@@ -66,18 +66,37 @@ class RankCandidate:
 
 
 @dataclass(frozen=True)
-class RankRequest:
-    """Everything the ranker sees for one regression: the metric that moved, and
-    every candidate PR across every package that changed in the window."""
+class MetricStep:
+    """One metric's step across the shared release window — several of these
+    can ride in one :class:`RankRequest` when more than one metric stepped
+    across the same release boundary, so the model judges the candidates
+    against the window's full picture rather than a single arbitrary metric.
+
+    ``label`` is the benchmark config the metric was measured under (e.g. a
+    removal sweep's ``baseline`` vs. ``without_<detector>``) — deliberately
+    *not* a grouping key: labels sharing a window still get one shared
+    ranking, not one call each, but each step keeps its own label so the model
+    can tell "baseline regressed" apart from "only without_HCAL regressed",
+    which is itself a clue."""
 
     metric: str
     metric_family: str
     direction: str
     pct_change: float | None
+    label: str
+    sub_detector: str | None = None
+
+
+@dataclass(frozen=True)
+class RankRequest:
+    """Everything the ranker sees for one release-boundary window: every metric
+    that stepped across it, and every candidate PR across every package that
+    changed in the window."""
+
+    metrics: tuple[MetricStep, ...]
     detector: str
     platform: str
     sample: str
-    sub_detector: str | None
     base_release: str | None
     onset_release: str
     candidates: tuple[RankCandidate, ...] = ()
@@ -109,11 +128,14 @@ class Ranker(Protocol):
 
 _SYSTEM_PROMPT = (
     "You attribute a software performance regression to the pull request most "
-    "likely responsible. You are given the metric that moved and, for each "
-    "package that changed, the pull requests in its commit range with their "
-    "code diffs. Score each PR independently 0-100 for how likely it caused the "
-    "regression, and give a one-sentence reason grounded in the diff. Do not "
-    "invent PRs. Output JSON only."
+    "likely responsible. You are given every metric that moved across the same "
+    "release window — each labelled with the benchmark configuration it was "
+    "measured under, e.g. a detector-removal sweep's baseline vs. "
+    "without_<detector> runs — and, for each package that changed, the pull "
+    "requests in its commit range with their code diffs. Score each PR "
+    "independently 0-100 for how likely it caused the regressions as a whole, "
+    "and give a one-sentence reason grounded in the diff. Do not invent PRs. "
+    "Output JSON only."
 )
 
 #: Total *diff* budget (chars) across all candidates. Per-PR patches are
@@ -359,27 +381,31 @@ _RESPONSE_INSTRUCTION = (
 )
 
 
-def _direction_phrase(request: RankRequest) -> str:
+def _direction_phrase(step: MetricStep) -> str:
     """``"up +20.0%"`` / ``"down -5.0%"`` / ``"changed"`` — the mechanical sign
     of the step, never a good/bad judgement (the report's own convention)."""
-    word = {"UP": "up", "DOWN": "down"}.get((request.direction or "").upper(), "changed")
-    if request.pct_change is not None and math.isfinite(request.pct_change):
-        return f"{word} {request.pct_change * 100:+.1f}%"
+    word = {"UP": "up", "DOWN": "down"}.get((step.direction or "").upper(), "changed")
+    if step.pct_change is not None and math.isfinite(step.pct_change):
+        return f"{word} {step.pct_change * 100:+.1f}%"
     return word
 
 
-def _regression_line(request: RankRequest) -> str:
-    subject = request.metric
-    if request.sub_detector:
-        subject += f" [{request.sub_detector}]"
+def _regression_lines(request: RankRequest) -> str:
+    """The header line (where and when) plus one bullet per metric that
+    stepped across the window — every metric rides in the same block, so the
+    model judges the candidates against the window's full picture rather than
+    a single arbitrary metric sharing it."""
     window = request.onset_release
     if request.base_release:
         window = f"{request.base_release} → {request.onset_release}"
-    return (
-        f"{request.detector} / {request.sample} — {subject} "
-        f"{_direction_phrase(request)} between releases {window} "
-        f"on {request.platform}."
-    )
+    header = f"{request.detector} / {request.sample} on {request.platform}, between releases {window}:"
+    lines = [header]
+    for step in request.metrics:
+        subject = f"{step.metric} ({step.label})"
+        if step.sub_detector:
+            subject += f" [{step.sub_detector}]"
+        lines.append(f"- {subject} {_direction_phrase(step)}")
+    return "\n".join(lines)
 
 
 def _format_files(files: tuple[str, ...]) -> str:
@@ -432,10 +458,11 @@ def _render_candidate(candidate: RankCandidate, diff_budget: int) -> str:
 
 
 def _build_user_prompt(request: RankRequest) -> str:
-    """The user message: the regression, then every candidate grouped by package,
-    each with its fair share of the total diff budget."""
+    """The user message: the window's regressions, then every candidate grouped
+    by package, each with its fair share of the total diff budget."""
     parts = [
-        "Regression: " + _regression_line(request),
+        "Regression window:",
+        _regression_lines(request),
         "",
         "Candidate pull requests, grouped by package — score each on its own:",
     ]

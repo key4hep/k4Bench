@@ -22,10 +22,12 @@ _GL = "https://gitlab.cern.ch/acts/OpenDataDetector.git"
 
 
 def _verdict(*, onset="2026-07-04", base="2026-07-03", metric="wall_time_s",
-             severity=Severity.CONFIRMED, sub=None) -> MetricVerdict:
+             severity=Severity.CONFIRMED, sub=None,
+             detector="ALLEGRO_o1_v03", sample="single_e",
+             label="baseline") -> MetricVerdict:
     return MetricVerdict(
-        detector="ALLEGRO_o1_v03", platform=_PLAT, sample="single_e",
-        label="baseline", metric_family="time", metric=metric, sub_detector=sub,
+        detector=detector, platform=_PLAT, sample=sample,
+        label=label, metric_family="time", metric=metric, sub_detector=sub,
         run_id="2026-07-05", run_date="2026-07-05", value=120.0,
         baseline_median=100.0, baseline_mad=1.0, pct_change=0.2, z_score=6.0,
         severity=severity, direction=Direction.UP, reason="step",
@@ -41,6 +43,20 @@ def _report(verdicts) -> NightlyReport:
         verdicts=list(verdicts),
     )
     return NightlyReport(generated_at="2026-07-05T00:00:00", groups=[group])
+
+
+def _report_groups(*group_verdicts: tuple[str, str, list[MetricVerdict]]) -> NightlyReport:
+    """A report with one group per ``(detector, sample, verdicts)`` triple —
+    for scenarios spanning more than one run group."""
+    groups = [
+        RunGroupReport(
+            detector=detector, platform=_PLAT, sample=sample,
+            k4h_release="key4hep-2026-07-05", run_date="2026-07-05", run_id="2026-07-05",
+            verdicts=verdicts,
+        )
+        for detector, sample, verdicts in group_verdicts
+    ]
+    return NightlyReport(generated_at="2026-07-05T00:00:00", groups=groups)
 
 
 def _pkgs(commit: str, url: str = _GH) -> dict:
@@ -308,19 +324,76 @@ def test_ranker_exception_degrades_to_unranked_without_aborting(monkeypatch):
     assert all(c.score == 0.0 for c in blame.entries[0].candidates)  # just unranked
 
 
-def test_each_metric_is_ranked_on_its_own(monkeypatch):
+def test_ranker_called_once_per_run_group_and_window(monkeypatch):
     # Two confirmed metrics that stepped across the same release boundary share
-    # one diff and one candidate set, but which PR plausibly moved *this* metric
-    # is a separate judgement — one inference per verdict, each carrying its own
-    # metric, so a wall-time explanation can never be re-published as a memory
-    # step's cause. (The GitHub resolution itself stays cached per window.)
+    # one diff and one candidate set → a single inference, applied to both.
     _two_candidates(monkeypatch)
     ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
     report = _report([_verdict(metric="wall_time_s"), _verdict(metric="peak_rss_mb")])
     blame = build_blame_report(
         report, packages_for_release=_MOVED, github=GitHubClient(), ranker=ranker,
     )
-    assert [r.metric for r in ranker.requests] == ["wall_time_s", "peak_rss_mb"]
+    assert len(ranker.requests) == 1  # one call for the shared window
+    assert len(blame.entries) == 2
+    for entry in blame.entries:
+        assert next(c for c in entry.candidates if c.number == 10).score == 60.0
+
+
+def test_rank_request_carries_every_metric_sharing_the_window(monkeypatch):
+    # The model's judgement must be informed by every metric that stepped, not
+    # just whichever verdict happened to reach the ranker first.
+    _two_candidates(monkeypatch)
+    ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
+    report = _report([_verdict(metric="wall_time_s"), _verdict(metric="peak_rss_mb")])
+    build_blame_report(
+        report, packages_for_release=_MOVED, github=GitHubClient(), ranker=ranker,
+    )
+    assert [m.metric for m in ranker.requests[0].metrics] == ["wall_time_s", "peak_rss_mb"]
+
+
+def test_different_detectors_sharing_a_release_boundary_are_not_batched(monkeypatch):
+    # Two different detectors can confirm a regression against the exact same
+    # platform and release dates (one upstream library regressing several
+    # detectors in the same release) — they must never be merged into one
+    # ranking prompt labelled with only one of the two detectors.
+    _two_candidates(monkeypatch)
+    ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
+    report = _report_groups(
+        ("IDEA_o1_v03", "single_mu-", [_verdict(detector="IDEA_o1_v03", sample="single_mu-")]),
+        ("CLD_o2_v07", "ttbar", [_verdict(detector="CLD_o2_v07", sample="ttbar",
+                                           metric="peak_rss_mb")]),
+    )
+    blame = build_blame_report(
+        report, packages_for_release=_MOVED, github=GitHubClient(), ranker=ranker,
+    )
+    assert len(ranker.requests) == 2  # one call per detector, not one shared call
+    detectors = {req.detector for req in ranker.requests}
+    assert detectors == {"IDEA_o1_v03", "CLD_o2_v07"}
+    for req in ranker.requests:
+        assert len(req.metrics) == 1  # each detector's own metric only
+    by_detector = {e.detector: e for e in blame.entries}
+    assert by_detector["IDEA_o1_v03"].metric == "wall_time_s"
+    assert by_detector["CLD_o2_v07"].metric == "peak_rss_mb"
+
+
+def test_different_labels_sharing_a_run_group_and_window_still_collapse(monkeypatch):
+    # A detector-removal sweep's "baseline" and "without_HCAL_Barrel" runs are
+    # different benchmark configs, but the *same* (detector, platform, sample)
+    # run group and the *same* release window — unlike different detectors,
+    # these must collapse into one shared ranking, not split. Every metric
+    # (from every label) still needs to reach the one prompt.
+    _two_candidates(monkeypatch)
+    ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
+    report = _report([
+        _verdict(label="baseline", metric="wall_time_s"),
+        _verdict(label="without_HCAL_Barrel", metric="wall_time_s"),
+    ])
+    blame = build_blame_report(
+        report, packages_for_release=_MOVED, github=GitHubClient(), ranker=ranker,
+    )
+    assert len(ranker.requests) == 1  # one shared call, not one per label
+    labels = {m.label for m in ranker.requests[0].metrics}
+    assert labels == {"baseline", "without_HCAL_Barrel"}
     assert len(blame.entries) == 2
     for entry in blame.entries:
         assert next(c for c in entry.candidates if c.number == 10).score == 60.0
