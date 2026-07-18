@@ -351,12 +351,17 @@ def relative_history(hist: pd.DataFrame) -> pd.DataFrame:
 
 
 def detector_status_rows(
-    groups: list[RunGroupReport], platform: str, sample: str
+    groups: list[RunGroupReport], platform: str, sample: str, night: str
 ) -> list[dict]:
     """One latest-night status row per detector in the sidebar scope, worst
     first: the detector's badge, its flag counts, its worst flagged metric
     (severity then |Δ| — the Regressions ledger's ordering) and a Regressions
     deep link scoped to the group's triple. Pure — the unit-test surface.
+
+    The deep link pins the release (``stack``) and the exact report *night* it
+    describes, so it lands on this row's report even after the release is
+    re-benchmarked — the same pinning the nightly email links use. ``stack`` is
+    omitted for a stale group with no release.
     """
     rows = []
     for g in groups:
@@ -379,6 +384,8 @@ def detector_status_rows(
             "Inspect": "?" + urlencode({
                 "tab": "Regressions", "detector": g.detector,
                 "platform": platform, "sample": sample,
+                **({"stack": g.k4h_release} if g.k4h_release else {}),
+                "report": night,
             }),
         })
     rows.sort(key=lambda r: (-r["❌"], -r["🔴"], -r["⚠️"], r["Detector"]))
@@ -673,11 +680,11 @@ def _render_regression_banner(groups: list[RunGroupReport], night: str) -> None:
 
 
 def _render_detector_status(
-    groups: list[RunGroupReport], platform: str, sample: str
+    groups: list[RunGroupReport], night: str, platform: str, sample: str
 ) -> None:
     """Per-detector roster for the latest night — each row deep-links into
-    the Regressions tab scoped to that detector."""
-    rows = detector_status_rows(groups, platform, sample)
+    the Regressions tab scoped to that detector and pinned to *night*."""
+    rows = detector_status_rows(groups, platform, sample, night)
     if rows:
         st.dataframe(
             pd.DataFrame(rows),
@@ -861,7 +868,7 @@ def _render_status_view(
         )
         return
     _render_regression_banner(latest_groups, night)
-    _render_detector_status(latest_groups, platform, sample)
+    _render_detector_status(latest_groups, night, platform, sample)
     _render_flag_trend(latest_groups, status_frames, platform, sample)
 
 

@@ -81,8 +81,13 @@ def test_html_is_self_contained_and_links():
     # Top banner deep-links to the Overview tab — the cross-detector summary.
     assert "https://dash.example/?tab=Overview" in html
     # Per-group links carry the full triple — the Regressions tab is scoped by
-    # the sidebar's (detector, platform, sample), the same way Run Trends is.
-    assert "tab=Regressions&detector=DET&platform=PLAT&sample=single_e" in html
+    # the sidebar's (detector, platform, sample), the same way Run Trends is —
+    # plus the release (stack) and the exact report night, so an emailed link
+    # keeps pointing at its confirmation night after later reruns.
+    assert (
+        "tab=Regressions&detector=DET&platform=PLAT&sample=single_e"
+        "&stack=key4hep-2026-01-01&report=2026-01-12" in html
+    )
     assert html.count("🔴 Regression") == 2
 
 
@@ -99,9 +104,12 @@ def test_markdown_links_to_dashboard_only_when_url_given():
     # Both links are scoped to the group's full (detector, platform, sample)
     # triple — the Regressions tab reads that scope from the sidebar too.
     md_with = to_markdown(_full_report(), dashboard_url="https://dash.example/")
+    # The Regressions link is pinned to the release and its report night; Run
+    # Trends stays scoped to the triple only (it has no report night).
     assert (
         "[↗ Regressions](https://dash.example/?tab=Regressions"
-        "&detector=DET&platform=PLAT&sample=single_e)" in md_with
+        "&detector=DET&platform=PLAT&sample=single_e"
+        "&stack=key4hep-2026-01-01&report=2026-01-12)" in md_with
     )
     assert (
         "[↗ Run Trends](https://dash.example/?tab=Run+Trends"
@@ -110,6 +118,23 @@ def test_markdown_links_to_dashboard_only_when_url_given():
     md_without = to_markdown(_full_report())
     assert "↗ Regressions" not in md_without
     assert "↗ Run Trends" not in md_without
+
+
+def test_regressions_link_omits_stack_for_a_release_less_group():
+    # A stale/missing-run group carries no k4h_release — the link must still
+    # point at the report night, just without a stack= to seed the sidebar.
+    group = RunGroupReport(
+        detector="DET", platform="PLAT", sample="single_e",
+        k4h_release="", run_date="2026-01-12", run_id="2026-01-12",
+        job_failures=["no run uploaded for 2026-01-12"],
+    )
+    report = NightlyReport(generated_at="2026-01-12T06:00:00+00:00", groups=[group])
+    md = to_markdown(report, dashboard_url="https://dash.example/")
+    assert (
+        "[↗ Regressions](https://dash.example/?tab=Regressions"
+        "&detector=DET&platform=PLAT&sample=single_e&report=2026-01-12)" in md
+    )
+    assert "stack=" not in md
 
 
 def test_footer_present_in_both_formats():

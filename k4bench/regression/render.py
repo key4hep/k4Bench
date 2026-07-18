@@ -178,16 +178,29 @@ def _dashboard_link(dashboard_url: str, **params: str) -> str:
     return urlunsplit(split._replace(query=urlencode(query)))
 
 
-def _group_links(dashboard_url: str | None, group: RunGroupReport) -> list[tuple[str, str]]:
+def _group_links(
+    dashboard_url: str | None, group: RunGroupReport, report_night: str
+) -> list[tuple[str, str]]:
     """``(text, href)`` dashboard links for one run group. Both targets are
     scoped by the full ``(detector, platform, sample)`` triple: the Regressions
     tab reads exactly that scope from the sidebar, the same way Run Trends
-    does, so a detector-only link could land on the wrong sample."""
+    does, so a detector-only link could land on the wrong sample.
+
+    The Regressions link also pins the release (``stack``) and the exact report
+    night (``report``): a release is routinely re-benchmarked, and a confirmed
+    regression lands on exactly one night before the baseline re-anchors, so a
+    link without ``report`` would rot into a later, quieter rerun. ``stack`` is
+    omitted when the group carries no release (a stale/missing-run group)."""
     if not dashboard_url:
         return []
     scope = dict(detector=group.detector, platform=group.platform, sample=group.sample)
+    regr = dict(scope)
+    if group.k4h_release:
+        regr["stack"] = group.k4h_release
+    if report_night:
+        regr["report"] = report_night
     return [
-        ("Regressions", _dashboard_link(dashboard_url, tab="Regressions", **scope)),
+        ("Regressions", _dashboard_link(dashboard_url, tab="Regressions", **regr)),
         ("Run Trends", _dashboard_link(dashboard_url, tab="Run Trends", **scope)),
     ]
 
@@ -337,7 +350,7 @@ def to_markdown(
             # detector heading (see _group_links).
             links = " · ".join(
                 f"[↗ {text}]({href})"
-                for text, href in _group_links(dashboard_url, group)
+                for text, href in _group_links(dashboard_url, group, report.report_night)
             )
             if len(groups) > 1:
                 group_heading = f"### {_group_title(group)}"
@@ -433,7 +446,7 @@ def to_html(report: NightlyReport, *, dashboard_url: str | None = None,
             # detector heading (see _group_links).
             links_html = "".join(
                 _view_link(href, text)
-                for text, href in _group_links(dashboard_url, group)
+                for text, href in _group_links(dashboard_url, group, report.report_night)
             )
             if len(groups) > 1:
                 parts.append(
