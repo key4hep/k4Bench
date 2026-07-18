@@ -340,32 +340,40 @@ def evaluate_series(
             effect = abs(delta) if absolute_floor else (abs(pct_change) if pct_change is not None else 0.0)
             tripped = abs(z) > Z_THRESHOLD and effect > floor and abs(delta) >= abs_delta_floor
 
-            # Balance-of-evidence retention: a confirmation holds only while
-            # the median of the release's judged nights (tonight included)
-            # still clears the gates in its direction. Confirmation took two
-            # agreeing nights, so one quiet night cannot outvote it — but once
-            # quiet nights drag the release median back inside the band, the
-            # better explanation is that the confirming nights were noise: the
-            # confirmed state is revoked for the rest of the release, a later
-            # trip starts a fresh two-strike cycle, and no boundary re-anchor
-            # happens (the baseline is never re-seated on a fluke level).
+            # Balance-of-evidence gate: both *retaining* an existing
+            # confirmation and *creating* a new one require the median of the
+            # release's judged nights (tonight included) to clear the gates in
+            # that direction. Confirmation took two agreeing nights, so one
+            # quiet night cannot outvote it — but once quiet nights hold the
+            # release median inside the band, the better explanation for the
+            # tripping nights is noise: an existing confirmation is revoked
+            # for the rest of the release (a later trip starts a fresh
+            # two-strike cycle, and no boundary re-anchor happens — the
+            # baseline is never re-seated on a fluke level), and a would-be
+            # new confirmation stays a WATCH until the median supports it.
             revised_first: tuple[str, str] | None = None
             release_median = None
-            if release_windows:
+            median_delta = 0.0
+            median_trips = False
+            if release_windows or tripped:
                 release_median = float(np.median(np.asarray(release_values + [x])))
-                delta_m = release_median - med
+                median_delta = release_median - med
                 pct_m, z_m = robust_change(release_median, med, mad)
-                effect_m = abs(delta_m) if absolute_floor else (
+                effect_m = abs(median_delta) if absolute_floor else (
                     abs(pct_m) if pct_m is not None else 0.0
                 )
                 median_trips = (
                     abs(z_m) > Z_THRESHOLD and effect_m > floor
-                    and abs(delta_m) >= abs_delta_floor
+                    and abs(median_delta) >= abs_delta_floor
                 )
-                for d in list(release_windows):
-                    right_way = delta_m > 0 if d is Direction.UP else delta_m < 0
-                    if not (median_trips and right_way):
-                        _, revised_first = release_windows.pop(d)
+
+            def _median_supports(d: Direction) -> bool:
+                right_way = median_delta > 0 if d is Direction.UP else median_delta < 0
+                return median_trips and right_way
+
+            for d in list(release_windows):
+                if not _median_supports(d):
+                    _, revised_first = release_windows.pop(d)
 
             window: tuple | None = None
             first_confirmed: tuple[str, str] | None = None
@@ -405,18 +413,30 @@ def evaluate_series(
                     window, first_confirmed = release_windows[direction]
                     pending = pending_run = None
                 elif pending is direction:
-                    severity = Severity.CONFIRMED
-                    # The change appeared on the WATCH night, one reliable
-                    # night before this one, and was last absent on
-                    # `last_accepted` — so it entered in `(last_accepted,
-                    # onset]`. `last_accepted` stays None if the series never
-                    # settled, leaving the window open-ended rather than
-                    # falsely tight.
-                    onset = pending_run if pending_run is not None else _identity(row)
-                    window = (onset, last_accepted)
-                    first_confirmed = _identity(row)
-                    release_windows[direction] = (window, first_confirmed)
-                    pending = pending_run = None
+                    if _median_supports(direction):
+                        severity = Severity.CONFIRMED
+                        # The change appeared on the WATCH night, one reliable
+                        # night before this one, and was last absent on
+                        # `last_accepted` — so it entered in `(last_accepted,
+                        # onset]`. `last_accepted` stays None if the series
+                        # never settled, leaving the window open-ended rather
+                        # than falsely tight.
+                        onset = (
+                            pending_run
+                            if pending_run is not None
+                            else _identity(row)
+                        )
+                        window = (onset, last_accepted)
+                        first_confirmed = _identity(row)
+                        release_windows[direction] = (window, first_confirmed)
+                        pending = pending_run = None
+                    else:
+                        # Two consecutive measurements trip, but the release
+                        # as a whole does not yet support the step. Keep the
+                        # original WATCH pending so another agreeing night can
+                        # confirm it with the correct onset once the release
+                        # median also clears the gates.
+                        severity = Severity.WATCH
                 else:
                     severity = Severity.WATCH
                     pending, pending_run = direction, _identity(row)

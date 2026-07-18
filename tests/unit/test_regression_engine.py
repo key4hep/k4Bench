@@ -420,6 +420,52 @@ def test_majority_of_quiet_nights_revokes_a_confirmed_release():
     assert nxt.baseline_median == pytest.approx(100.0, abs=0.5)
 
 
+def test_quiet_release_with_two_trailing_trips_does_not_confirm():
+    # Two consecutive trips are not enough when most measurements of the
+    # release remain at the accepted level. Its median never clears the gates,
+    # so both trips stay WATCH and the release cannot trigger a re-anchor.
+    rows = _steady_rows() + [
+        ("2026-02-11", "2026-02-11", 100.0),
+        ("2026-02-12", "2026-02-11", 100.1),
+        ("2026-02-13", "2026-02-11", 99.9),
+        ("2026-02-14", "2026-02-11", 100.2),
+        ("2026-02-15", "2026-02-11", 100.0),
+        ("2026-02-16", "2026-02-11", 120.0),   # first strike
+        ("2026-02-17", "2026-02-11", 120.5),   # second trip, median still quiet
+        ("2026-02-18", "2026-02-18", 100.1),   # next release, old level
+    ]
+    verdicts = evaluate_series(_release_rows(rows), series=_TIME)
+    assert _severities(verdicts[-3:]) == [
+        Severity.WATCH, Severity.WATCH, Severity.OK,
+    ]
+    assert verdicts[-2].first_confirmed_run_id is None
+    assert "re-anchoring" not in verdicts[-1].reason
+    assert verdicts[-1].baseline_median == pytest.approx(100.0, abs=0.5)
+
+
+def test_opposite_trips_do_not_confirm_without_release_median_support():
+    # An UP change initially confirms, then two consecutive DOWN trips balance
+    # the release around its accepted level. The second dip must remain WATCH:
+    # the combined release median supports neither direction, so the earlier
+    # UP confirmation is revoked and no DOWN confirmation replaces it.
+    rows = _steady_rows() + [
+        ("2026-02-11", "2026-02-11", 120.0),   # WATCH UP
+        ("2026-02-12", "2026-02-11", 120.5),   # CONFIRMED UP
+        ("2026-02-13", "2026-02-11", 80.0),    # WATCH DOWN
+        ("2026-02-14", "2026-02-11", 80.5),    # still WATCH; median ~= 100
+        ("2026-02-15", "2026-02-15", 100.1),   # no boundary re-anchor
+    ]
+    verdicts = evaluate_series(_release_rows(rows), series=_TIME)
+    assert _severities(verdicts[-5:]) == [
+        Severity.WATCH, Severity.CONFIRMED,
+        Severity.WATCH, Severity.WATCH, Severity.OK,
+    ]
+    assert verdicts[-2].direction is Direction.DOWN
+    assert verdicts[-2].first_confirmed_run_id is None
+    assert "re-anchoring" not in verdicts[-1].reason
+    assert verdicts[-1].baseline_median == pytest.approx(100.0, abs=0.5)
+
+
 def test_warm_up_covers_a_whole_release_that_straddles_the_threshold():
     # 5 single-night releases, then a 3-night release: the release's own
     # early nights must not become the baseline its later nights are judged
