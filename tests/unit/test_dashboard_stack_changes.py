@@ -55,7 +55,7 @@ _STACKS = {
 
 
 def _app(dashboard_dir, stack_names, packages, from_release, to_release,
-         report_dates, reports_map, detector, sample):
+         report_dates, reports_map, detector, sample, selected_stack):
     """The tab, rendered standalone with every remote call stubbed.
 
     ``AppTest.from_function`` re-executes this source in its own script
@@ -87,18 +87,43 @@ def _app(dashboard_dir, stack_names, packages, from_release, to_release,
         _st.query_params["to"] = to_release
     _tab.render(
         "https://example.invalid", "x86_64-almalinux9-gcc14.2.0-opt",
-        detector, sample,
+        detector, sample, selected_stack,
+    )
+
+
+def _outlier_scope_app(dashboard_dir, stack_names, packages, report, scopes):
+    """Render Stack Changes under a sidebar scope selected in session state."""
+    import sys as _sys
+    if dashboard_dir not in _sys.path:
+        _sys.path.insert(0, dashboard_dir)
+    import streamlit as _st
+
+    from tabs import stack_changes as _tab
+
+    _tab._cached_list_detectors = lambda url: ["CLD", "IDEA"]
+    _tab._cached_list_stacks = lambda url, detector, platform: stack_names
+    _tab._cached_fetch_stack_packages = (
+        lambda url, detector, platform, stack: packages.get(stack)
+    )
+    _tab._cached_list_report_dates = lambda url: ["2026-07-10"]
+    _tab._cached_fetch_report = lambda url, date: report
+
+    detector, sample = scopes[_st.session_state.get("_scope_i", 0)]
+    _tab.render(
+        "https://example.invalid", "x86_64-almalinux9-gcc14.2.0-opt",
+        detector, sample, stack_names[0],
     )
 
 
 def _run(stack_names=None, packages=None, from_release=None, to_release=None,
          report_dates=(), reports_map=None, detector="CLD",
-         sample="single_e") -> AppTest:
+         sample="single_e", selected_stack=None) -> AppTest:
+    names = sorted(_STACKS, reverse=True) if stack_names is None else stack_names
     at = AppTest.from_function(
         _app,
         args=(
             str(_DASHBOARD_DIR),
-            sorted(_STACKS, reverse=True) if stack_names is None else stack_names,
+            names,
             _STACKS if packages is None else packages,
             from_release,
             to_release,
@@ -106,6 +131,7 @@ def _run(stack_names=None, packages=None, from_release=None, to_release=None,
             reports_map or {},
             detector,
             sample,
+            selected_stack or names[0],
         ),
         default_timeout=30,
     )
@@ -324,10 +350,10 @@ def test_from_default_avoids_a_reversed_range_when_only_to_is_seeded(monkeypatch
     assert stack_changes._from_default_for(releases) == "2026-06-20"  # one older than To
 
 
-def test_from_default_is_second_newest_without_a_seed(monkeypatch):
+def test_from_default_uses_the_supplied_sidebar_baseline_without_a_seed(monkeypatch):
     releases = ["2026-07-10", "2026-07-05", "2026-06-25"]
     monkeypatch.setattr(stack_changes.st, "query_params", {})
-    assert stack_changes._from_default_for(releases) == "2026-07-05"
+    assert stack_changes._from_default_for(releases, "2026-06-25") == "2026-06-25"
 
 
 def test_from_default_when_to_is_the_oldest_release_does_not_run_off_the_end(monkeypatch):
@@ -336,6 +362,56 @@ def test_from_default_when_to_is_the_oldest_release_does_not_run_off_the_end(mon
     # No release older than the oldest To — fall back to To itself (the tab then
     # shows "pick two different releases" rather than crashing on an index).
     assert stack_changes._from_default_for(releases) == "2026-06-25"
+
+
+def test_sidebar_stack_defaults_to_itself_and_the_release_before_it():
+    releases = ["2026-07-10", "2026-07-05", "2026-06-25"]
+    assert stack_changes._defaults_for_stack(
+        releases, "key4hep-2026-07-05",
+    ) == ("2026-06-25", "2026-07-05")
+
+
+def test_oldest_sidebar_stack_is_not_silently_replaced_by_another_release():
+    releases = ["2026-07-10", "2026-07-05", "2026-06-25"]
+    assert stack_changes._defaults_for_stack(
+        releases, "key4hep-2026-06-25",
+    ) == ("2026-06-25", "2026-06-25")
+
+
+def test_unknown_sidebar_stack_falls_back_to_the_newest_pair():
+    releases = ["2026-07-10", "2026-07-05", "2026-06-25"]
+    assert stack_changes._defaults_for_stack(
+        releases, "key4hep-2025-01-01",
+    ) == ("2026-07-05", "2026-07-10")
+
+
+def test_sidebar_stack_change_clears_the_previous_comparison(monkeypatch):
+    state = {
+        "stack_change_scope": (PLAT, "key4hep-2026-07-10"),
+        "stack_from": "2026-07-09",
+        "stack_to": "2026-07-10",
+    }
+    query = {"from": "2026-07-09", "to": "2026-07-10"}
+    monkeypatch.setattr(stack_changes.st, "session_state", state)
+    monkeypatch.setattr(stack_changes.st, "query_params", query)
+
+    stack_changes._forget_stale_stack_scope(PLAT, "key4hep-2026-07-05")
+
+    assert state == {
+        "stack_change_scope": (PLAT, "key4hep-2026-07-05"),
+    }
+    assert query == {}
+
+
+def test_first_stack_changes_render_preserves_deep_link_dates(monkeypatch):
+    state = {}
+    query = {"from": "2026-06-20", "to": "2026-06-25"}
+    monkeypatch.setattr(stack_changes.st, "session_state", state)
+    monkeypatch.setattr(stack_changes.st, "query_params", query)
+
+    stack_changes._forget_stale_stack_scope(PLAT, "key4hep-2026-07-05")
+
+    assert query == {"from": "2026-06-20", "to": "2026-06-25"}
 
 
 def test_stacks_are_unioned_across_detectors(monkeypatch):
@@ -416,9 +492,14 @@ def test_a_wide_range_warns_that_the_diff_is_cumulative():
 
 # ── render ───────────────────────────────────────────────────────────────────
 
-def test_defaults_to_the_two_newest_releases():
-    # "What came in last night?" — defaulting both pickers to the newest would
-    # open the tab on "pick two different releases" instead of an answer.
+def test_defaults_to_the_selected_sidebar_stack_and_its_predecessor():
+    # The tab should open on the release the user was inspecting in the sidebar,
+    # not jump back to the platform's newest release.
+    at = _run(selected_stack="key4hep-2026-07-09")
+    assert [s.value for s in at.selectbox] == ["2026-07-08", "2026-07-09"]
+
+
+def test_newest_sidebar_stack_still_defaults_to_the_two_newest_releases():
     at = _run()
     assert [s.value for s in at.selectbox] == ["2026-07-09", "2026-07-10"]
     assert at.dataframe, "the default view should show the diff, not a prompt"
@@ -536,7 +617,8 @@ def test_every_remote_only_section_is_a_real_section():
 def test_local_mode_keeps_exactly_the_sections_that_work_without_a_data_url():
     sections = _sections()
     assert sections.visible_sections(trends_enabled=False) == [
-        "Region Timing", "Event Timing", "Event Memory", "Machine Info", "Logs",
+        "Config Impact", "Region Timing", "Event Timing", "Event Memory",
+        "Machine Info", "Logs",
     ]
 
 
@@ -555,7 +637,8 @@ def test_section_order_is_independent_of_data_requirements(monkeypatch):
     sections = _sections()
     monkeypatch.setattr(sections, "SECTION_NAMES", list(reversed(sections.SECTION_NAMES)))
     assert set(sections.visible_sections(trends_enabled=False)) == {
-        "Region Timing", "Event Timing", "Event Memory", "Machine Info", "Logs",
+        "Config Impact", "Region Timing", "Event Timing", "Event Memory",
+        "Machine Info", "Logs",
     }
 
 
@@ -716,6 +799,72 @@ def test_outlier_scatter_opens_for_a_cpu_and_memory_step():
     at.selectbox(key="stack_outlier_tmetric_CLD_single_e_baseline") \
         .set_value("user_cpu_s").run()
     assert not at.exception, at.exception
+
+
+def test_outlier_scatter_redefaults_when_the_release_range_changes():
+    report = _raw_report([
+        _confirmed(metric="wall_time_s", pct_change=0.10,
+                   last_accepted_run_date="2026-07-09", onset_run_date="2026-07-10",
+                   onset_run_id="2026-06-27"),
+        _confirmed(metric="peak_rss_mb", metric_family="memory", pct_change=0.20,
+                   onset_run_id="2026-06-27",
+                   last_accepted_run_date="2026-07-09", onset_run_date="2026-07-10"),
+    ])
+    at = _run(from_release="2026-07-09", to_release="2026-07-10",
+              report_dates=("2026-07-10",), reports_map={"2026-07-10": report})
+    at.selectbox(key="stack_outlier_cfg").set_value("—").run()
+    assert at.selectbox(key="stack_outlier_cfg").value == "—"
+
+    at.selectbox(key="stack_from").set_value("2026-07-08").run()
+
+    assert not at.exception, at.exception
+    assert "CPU + memory stepped" in at.selectbox(key="stack_outlier_cfg").value
+
+
+def test_outlier_scatter_redefaults_when_detector_and_sample_change():
+    from k4bench.regression.models import NightlyReport, RunGroupReport
+    from k4bench.regression.render import to_json
+
+    groups = []
+    for detector, sample, onset in (
+        ("CLD", "single_e", "cld-onset"),
+        ("IDEA", "other_sample", "idea-onset"),
+    ):
+        verdicts = [
+            _confirmed(
+                detector=detector, sample=sample, metric="wall_time_s",
+                pct_change=0.10, onset_run_id=onset,
+                last_accepted_run_date="2026-07-09", onset_run_date="2026-07-10",
+            ),
+            _confirmed(
+                detector=detector, sample=sample, metric="peak_rss_mb",
+                metric_family="memory", pct_change=0.20, onset_run_id=onset,
+                last_accepted_run_date="2026-07-09", onset_run_date="2026-07-10",
+            ),
+        ]
+        groups.append(RunGroupReport(
+            detector=detector, platform=PLAT, sample=sample,
+            k4h_release="key4hep-2026-07-10", run_date="2026-07-10",
+            run_id="2026-07-10", verdicts=verdicts,
+        ))
+    report = to_json(NightlyReport(generated_at="", groups=groups))
+    at = AppTest.from_function(
+        _outlier_scope_app,
+        args=(
+            str(_DASHBOARD_DIR), sorted(_STACKS, reverse=True), _STACKS, report,
+            [("CLD", "single_e"), ("IDEA", "other_sample")],
+        ),
+        default_timeout=30,
+    ).run()
+    assert not at.exception, at.exception
+    assert "CPU + memory stepped" in at.selectbox(key="stack_outlier_cfg").value
+    at.selectbox(key="stack_outlier_cfg").set_value("—").run()
+
+    at.session_state["_scope_i"] = 1
+    at.run()
+
+    assert not at.exception, at.exception
+    assert "CPU + memory stepped" in at.selectbox(key="stack_outlier_cfg").value
 
 
 def test_scatter_candidates_axes_come_from_the_matched_pair_not_each_worst():

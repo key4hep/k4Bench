@@ -418,8 +418,8 @@ def main() -> None:
     render_run_status(results, selected_run_meta)
 
     # ── Load trend data (remote only) ─────────────────────────────────────────
-    # Only the two frames every rerun needs are loaded eagerly: results (Trends,
-    # Config Impact, Machine Info) and machine info — both feed the shared
+    # Only the two trend frames every rerun needs are loaded eagerly: results
+    # (Run Trends and Machine Info) and machine info — both feed the shared
     # reliability map below. The region- and event-timing trends are built (or,
     # once cached, deep-copied by st.cache_data) only when their own tab is
     # active, so switching between the other tabs never pays for the heaviest
@@ -490,12 +490,13 @@ def main() -> None:
     # Stack Changes (remote only) — the package diff is cross-detector (a
     # Key4hep release is one stack whatever benchmarked it, so only the
     # platform scopes it); the regressions-in-range view below it is scoped
-    # to the sidebar's detector/sample with an all-detectors toggle.
+    # to the sidebar's detector/sample with an all-detectors toggle. The
+    # sidebar stack seeds the comparison's newer end when the tab is opened.
     if active_section == "Stack Changes":
-        stack_changes.render(config.data_url, platform, detector, sample)
+        stack_changes.render(config.data_url, platform, detector, sample, stack)
 
     if active_section == "Config Impact":
-        impact.render(trend_results_df, selected_labels)
+        impact.render(results, selected_labels)
 
     # The region/event trend frames are loaded lazily here (cached, so a repeat
     # visit is a cache hit) so the other tabs never build or copy them.

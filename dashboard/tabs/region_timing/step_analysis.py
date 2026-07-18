@@ -7,7 +7,15 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from k4bench.analysis.plots._theme import _TEMPLATE
-from ui_utils import _PALETTES, _PALETTE_NAMES, _SYMBOLS, _auto_palette_index, _legend_below, _to_rgba
+from ui_utils import (
+    _auto_palette_index,
+    _legend_below,
+    _PALETTE_NAMES,
+    _PALETTES,
+    _reset_widget_on_scope,
+    _SYMBOLS,
+    _to_rgba,
+)
 
 from ._common import _palette_placeholder
 
@@ -70,9 +78,13 @@ def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None
     n = len(det_list)
 
     with col_pal:
+        palette_default = _auto_palette_index(n)
+        _reset_widget_on_scope(
+            "sa_palette", palette_default, reset_unscoped=True,
+        )
         palette_name = st.selectbox(
             "Colour palette", options=_PALETTE_NAMES,
-            index=_auto_palette_index(n), key="sa_palette",
+            index=palette_default, key="sa_palette",
         )
     palette    = _PALETTES[palette_name]
     total_time    = np.array([float(al_means[d])             for d in det_list])  # s

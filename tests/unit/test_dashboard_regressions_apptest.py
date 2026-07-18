@@ -429,12 +429,15 @@ def test_switching_detector_redefaults_the_picker():
     assert not at.exception, at.exception
     assert at.segmented_control[0].value == NIGHT              # CLD's confirmed night
     assert {m.label: m.value for m in at.metric}["🔴 Regressed"] == "2"
+    at.selectbox[0].set_value("—").run()                       # hide CLD's preview
+    assert at.selectbox[0].value == "—"
 
     at.session_state["_i"] = 1                                 # switch to IDEA
     at.run()
     assert not at.exception, at.exception
     assert at.segmented_control[0].value == "2026-07-11"       # re-defaulted, not 07-10
     assert {m.label: m.value for m in at.metric}["🔴 Regressed"] == "2"
+    assert at.selectbox[0].value != "—"                       # IDEA's worst flag reopens
 
 
 def test_multi_single_multi_navigation_does_not_strand_state():

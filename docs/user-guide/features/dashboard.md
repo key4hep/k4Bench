@@ -31,7 +31,8 @@ reads them over HTTPS from a WebEOS endpoint. The EOS layout is hierarchical:
 ```
 
 The sidebar lets you drill down through that hierarchy: **detector → platform →
-Key4hep release → physics sample → run date**.
+physics sample → Key4hep release**. Single-run tabs use the newest uploaded
+run for that selection; the trend window controls the multi-run views.
 
 !!! note "Example detectors"
     A couple of detectors (currently: `SiD`) come from a simulation toolkit's
@@ -45,7 +46,7 @@ Key4hep release → physics sample → run date**.
 
 | Tab | What it shows | Backed by |
 | --- | --- | --- |
-| **Overview / Impact** | run-level metrics for the selected run; per-detector impact vs baseline | `*_results.csv` |
+| **Config Impact** | run-level impact vs baseline within the selected run | `*_results.csv` |
 | **Event timing** | per-event wall time distributions | `*_events.json` |
 | **Event memory** | per-event RSS and growth | `*_events.json` |
 | **Region timing** | per-subdetector stepping time, `at_location` vs `by_birth`, step counts, attribution analysis | `*_regions.json` |
@@ -206,6 +207,9 @@ and a night whose candidates are not yet ranked shows only the package diff.
 Answers "what came in last night?" — and, when a metric has stepped, "what
 upstream change could that be?". Pick two nightly tags and it lists the Key4hep
 packages whose commit differs between them, each linking to the range on GitHub.
+When you open the tab, **To release** defaults to the stack selected in the
+sidebar and **From release** to the release immediately before it, when one is
+available.
 
 The package diff is cross-detector: a Key4hep release is one stack, sourced
 identically by every detector benchmarked against it, so only the platform

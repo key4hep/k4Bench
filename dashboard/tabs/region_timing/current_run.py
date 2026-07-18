@@ -4,7 +4,12 @@ from __future__ import annotations
 import streamlit as st
 
 from k4bench.analysis.plots import plot_region_timing
-from ui_utils import _PALETTES, _PALETTE_NAMES, _auto_palette_index
+from ui_utils import (
+    _auto_palette_index,
+    _PALETTE_NAMES,
+    _PALETTES,
+    _reset_widget_on_scope,
+)
 
 from ._common import _ATTRIBUTION_HELP
 
@@ -32,10 +37,14 @@ def _render_current_run(region_data: dict, selected_labels: list[str]) -> None:
     with col_topn:
         top_n = st.slider("Top N detectors", min_value=3, max_value=15, value=8, key="region_topn")
     with col_pal:
+        palette_default = _auto_palette_index(top_n)
+        _reset_widget_on_scope(
+            "region_cur_palette", palette_default, reset_unscoped=True,
+        )
         palette_name = st.selectbox(
             "Colour palette",
             options=_PALETTE_NAMES,
-            index=_auto_palette_index(top_n),
+            index=palette_default,
             key="region_cur_palette",
         )
 

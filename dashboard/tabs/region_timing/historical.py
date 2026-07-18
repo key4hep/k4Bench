@@ -9,7 +9,17 @@ from plotly.subplots import make_subplots
 
 from k4bench.analysis.plots._theme import _TEMPLATE
 from tabs._reliability import render_reliability_filter
-from ui_utils import _DASHES, _PALETTES, _PALETTE_NAMES, _SYMBOLS, _auto_palette_index, _is_valid_df, _legend_below, _to_rgba
+from ui_utils import (
+    _auto_palette_index,
+    _DASHES,
+    _is_valid_df,
+    _legend_below,
+    _PALETTE_NAMES,
+    _PALETTES,
+    _reset_widget_on_scope,
+    _SYMBOLS,
+    _to_rgba,
+)
 
 from ._common import _ATTRIBUTION_HELP, _palette_placeholder
 
@@ -100,9 +110,13 @@ def _render_historical(
     top_detectors = detector_rank.index.tolist()
 
     with ctrl_l:
+        palette_default = _auto_palette_index(len(top_detectors))
+        _reset_widget_on_scope(
+            "region_hist_palette", palette_default, reset_unscoped=True,
+        )
         palette_name = st.selectbox(
             "Colour palette", options=_PALETTE_NAMES,
-            index=_auto_palette_index(len(top_detectors)), key="region_hist_palette",
+            index=palette_default, key="region_hist_palette",
         )
     palette = _PALETTES[palette_name]
 

@@ -49,6 +49,7 @@ from ui_utils import (
     _SYMBOLS,
     _auto_palette_index,
     _legend_below,
+    _reset_widget_on_scope,
     _to_rgba,
 )
 
@@ -829,6 +830,9 @@ def _render_flag_trend(
         f"{pretty_metric(v)} · {v.label}"
         for v in choices
     ]
+    _reset_widget_on_scope(
+        "det_ov_flag_trend", (platform, sample, tuple(options)),
+    )
     _drop_stale_selection("det_ov_flag_trend", options)
     choice = st.selectbox(
         "Trend preview", options, index=1, key="det_ov_flag_trend",

@@ -9,6 +9,7 @@ control changes.
 
 from __future__ import annotations
 
+import copy
 from datetime import date
 from pathlib import Path
 
@@ -217,6 +218,23 @@ def _status_view(at: AppTest) -> AppTest:
     return at
 
 
+def _status_scope_app(dashboard_dir, dates, scenarios, window) -> None:
+    """Render a report scenario selected through persistent session state."""
+    import sys as _sys
+    if dashboard_dir not in _sys.path:
+        _sys.path.insert(0, dashboard_dir)
+
+    import streamlit as _st
+    from tabs import detectors_overview as ov
+
+    reports = scenarios[_st.session_state.get("_scenario", 0)]
+    ov._cached_list_report_dates = lambda url: dates
+    ov._cached_fetch_reports = lambda url, nights: {
+        n: reports[n] for n in nights if n in reports
+    }
+    ov.render("https://example.invalid", "PLAT", "single_e_10GeV", window)
+
+
 def test_status_view_renders_banner_and_roster():
     at = _status_view(_run())
     by_label = {m.label: m.value for m in at.metric}
@@ -269,6 +287,35 @@ def test_status_view_previews_the_worst_flags_trend():
     preview = at.selectbox(key="det_ov_flag_trend")
     assert "CLD_o2_v08" in preview.value and preview.value.startswith("🔴")
     assert len(at.get("plotly_chart")) == 1
+
+
+def test_status_preview_redefaults_when_the_worst_flag_context_changes():
+    first = dict(REPORTS)
+    first["2026-07-11"] = _with_confirmed_flag(first["2026-07-11"])
+    second = dict(first)
+    second["2026-07-11"] = copy.deepcopy(second["2026-07-11"])
+    worse = next(
+        v for g in second["2026-07-11"]["groups"] for v in g["verdicts"]
+        if g["detector"] == "IDEA_o1_v03" and v["metric"] == "peak_rss_mb"
+    )
+    worse.update(
+        severity="CONFIRMED", pct_change=0.5,
+        reason="+50.0% vs baseline median",
+    )
+    at = AppTest.from_function(
+        _status_scope_app,
+        args=(str(_DASHBOARD_DIR), DATES, [first, second], _WINDOW),
+        default_timeout=30,
+    ).run()
+    at = _status_view(at)
+    assert "CLD_o2_v08" in at.selectbox(key="det_ov_flag_trend").value
+    at.selectbox(key="det_ov_flag_trend").set_value("—").run()
+
+    at.session_state["_scenario"] = 1
+    at.run()
+
+    assert not at.exception, at.exception
+    assert "IDEA_o1_v03" in at.selectbox(key="det_ov_flag_trend").value
 
 
 def test_failed_night_status_view_shows_the_failure():

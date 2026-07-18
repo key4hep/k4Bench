@@ -8,7 +8,14 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from k4bench.analysis.plots._theme import _TEMPLATE
-from ui_utils import _PALETTES, _PALETTE_NAMES, _auto_palette_index, _legend_below, _to_rgba
+from ui_utils import (
+    _auto_palette_index,
+    _legend_below,
+    _PALETTE_NAMES,
+    _PALETTES,
+    _reset_widget_on_scope,
+    _to_rgba,
+)
 
 from ._common import _palette_placeholder
 
@@ -93,9 +100,13 @@ def _render_attribution_analysis(region_data: dict, selected_labels: list[str]) 
 
     n = len(det_list)
     with col_pal:
+        palette_default = _auto_palette_index(n)
+        _reset_widget_on_scope(
+            "ss_palette", palette_default, reset_unscoped=True,
+        )
         palette_name = st.selectbox(
             "Colour palette", options=_PALETTE_NAMES,
-            index=_auto_palette_index(n), key="ss_palette",
+            index=palette_default, key="ss_palette",
         )
     palette = _PALETTES[palette_name]
 
