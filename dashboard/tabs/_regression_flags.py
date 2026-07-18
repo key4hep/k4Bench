@@ -19,7 +19,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from k4bench.blame.models import CandidatePR
+from k4bench.blame.models import BlameReport, CandidatePR
 from k4bench.regression.models import MetricVerdict, Severity
 from k4bench.regression.render import _fmt, _pretty_sample
 from ui_utils import _METRIC_LABELS, _to_rgba
@@ -239,15 +239,63 @@ def flag_table(
     )
 
 
-#: Cap on candidate rows: a wide blame window can span many PRs; keep the
-#: worst-first head so the table stays scannable.
-_MAX_CANDIDATES = 10
-
-
 def has_ranking(candidates: list[CandidatePR]) -> bool:
     """True when the ranking stage has judged any candidate — a non-zero score or
     a description. Nothing to show (and no "Suggested" heading) until it has."""
     return any(c.score or c.description for c in candidates)
+
+
+def _render_candidate_rows(candidates: list[CandidatePR]) -> None:
+    """Render the complete candidate ledger using Streamlit's native sizing."""
+    records = [
+        {
+            "Likelihood": c.score,
+            "Pull request": f"{c.repo}#{c.number}",
+            "Open": c.url,
+            "Title": c.title,
+            "Author": c.author or "—",
+            "Merged": (c.merged_at or "")[:10] or "—",
+            "Why": c.description or "—",
+        }
+        for c in candidates
+    ]
+    frame = pd.DataFrame(records)
+    st.dataframe(
+        frame,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Likelihood": st.column_config.ProgressColumn(
+                "Likelihood",
+                help="The ranking stage's estimate of how likely this PR is the "
+                     "cause, 0–100% — a suggestion, not evidence. Each PR in a "
+                     "range is judged on its own.",
+                format="%.0f%%",
+                min_value=0.0,
+                max_value=100.0,
+            ),
+            "Pull request": st.column_config.TextColumn(
+                "Pull request",
+            ),
+            "Open": st.column_config.LinkColumn(
+                "Open", display_text="↗ PR",
+                help="Open this pull request on GitHub.",
+            ),
+            "Title": st.column_config.TextColumn(
+                "Title",
+            ),
+            "Author": st.column_config.TextColumn(
+                "Author",
+            ),
+            "Merged": st.column_config.TextColumn(
+                "Merged",
+            ),
+            "Why": st.column_config.TextColumn(
+                "Why",
+                help="The ranking stage's one-line reasoning for this candidate.",
+            ),
+        },
+    )
 
 
 def candidate_table(candidates: list[CandidatePR]) -> None:
@@ -261,50 +309,29 @@ def candidate_table(candidates: list[CandidatePR]) -> None:
     evidence ⇒ no verdict*, so a candidate is a lead for a human. Renders nothing
     until a ranking exists (see :func:`has_ranking`).
     """
-    rows = candidates[:_MAX_CANDIDATES]
-    if not has_ranking(rows):
+    if not has_ranking(candidates):
         return
-    if len(candidates) > len(rows):
-        st.caption(
-            f"Top {len(rows)} of {len(candidates)} candidate PRs in the window."
-        )
-    records = [
-        {
-            "Likelihood": c.score,
-            "Pull request": f"{c.repo}#{c.number}",
-            "Open": c.url,
-            "Title": c.title,
-            "Author": c.author or "—",
-            "Merged": (c.merged_at or "")[:10] or "—",
-            "Why": c.description or "—",
-        }
-        for c in rows
-    ]
-    st.dataframe(
-        pd.DataFrame(records),
-        hide_index=True,
-        width="stretch",
-        column_config={
-            "Likelihood": st.column_config.ProgressColumn(
-                "Likelihood",
-                help="The ranking stage's estimate of how likely this PR is the "
-                     "cause, 0–100% — a suggestion, not evidence. Each PR in a "
-                     "range is judged on its own.",
-                format="%.0f%%",
-                min_value=0.0,
-                max_value=100.0,
-            ),
-            "Pull request": st.column_config.TextColumn("Pull request"),
-            "Open": st.column_config.LinkColumn(
-                "Open", display_text="↗ PR",
-                help="Open this pull request on GitHub.",
-            ),
-            "Title": st.column_config.TextColumn("Title"),
-            "Author": st.column_config.TextColumn("Author"),
-            "Merged": st.column_config.TextColumn("Merged"),
-            "Why": st.column_config.TextColumn(
-                "Why",
-                help="The ranking stage's one-line reasoning for this candidate.",
-            ),
-        },
+    _render_candidate_rows(candidates)
+
+
+def render_candidate_ranking(
+    verdict: MetricVerdict, blame: BlameReport | None, *,
+    show_empty: bool = False,
+) -> bool:
+    """Render the stored AI ranking for *verdict*, when one exists.
+
+    This framing and ledger are shared by Regressions and Stack Changes so the
+    same sidecar never looks more authoritative in one tab than the other.
+    With *show_empty*, both callers also get the same explicit missing-ranking
+    state. Returns whether a ranking was rendered.
+    """
+    entry = blame.entry_for(verdict) if blame is not None else None
+    if entry is None or not has_ranking(entry.candidates):
+        if show_empty:
+            st.caption("🤖 No AI PR ranking is stored for this regression.")
+        return False
+    st.caption(
+        "🤖 **AI-generated PR ranking** — suggested leads to verify, not proof."
     )
+    candidate_table(entry.candidates)
+    return True

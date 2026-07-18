@@ -169,7 +169,11 @@ above the report — one option carrying that night's glance badge
 per night to step through the rest when it was benchmarked several times. The
 newest release (the sidebar default) still surfaces the latest report even
 when it is newer than the release's last run, so a "no run uploaded" failure
-stays visible.
+stays visible. The banner, flagged metrics, and trend preview follow the
+selected night's historical evidence. Package and pull-request attribution is
+instead **release-level**: it is fixed from the first report night that
+confirmed a change window for the release and reused on every rerun, because
+no upstream package changes between repeat measurements of the same binary.
 
 A `?report=YYYY-MM-DD` query parameter pins one report night directly and is
 authoritative when valid — this is the stable deep link the nightly email and
@@ -181,7 +185,10 @@ The selected run group renders flat: an at-a-glance banner (regressed / watch
 / failures / within-baseline counts) and a **trend preview** that plots a
 flagged metric's recent history with the baseline band it was judged against
 (the flagged night marked 🔴, the night it was first watched marked ⚠️), a few
-runs further out when the release has since moved on. Its dropdown lists every
+releases further out when the release has since moved on. The window contains
+up to **14 distinct Key4hep releases** through the flagged release plus up to
+**7 later releases** when available; repeat measurements of one release stay
+visible without consuming another release slot. Its dropdown lists every
 flagged metric worst first, each option carrying its own severity badge and
 Δ-vs-baseline — so scanning the list alone shows the size of every flag,
 without a separate ledger table. The preview opens on the most severe flag
@@ -202,17 +209,24 @@ gives way to a "nothing upstream changed" note on that card: the stack did not
 move across the step, so the cause is the host, the sample, or noise rather
 than an upstream commit.
 
-Below the drill-down, each confirmed regression gets an **upstream-changes card**
-naming the packages that moved in its blame window, each linking to its commit
-range, plus an **Open in Stack Changes →** link that seeds that tab with the
-exact release range. When the blame [sidecar](../../reference/file-formats.md#blame-sidecar-blamejson)
+Below the drill-down, the release gets an **upstream-changes card** naming the
+packages that moved in the blame window established by its first confirmed
+report, each linking to its commit range, plus an **Open in Stack Changes →**
+link that seeds that tab with the exact release range. That same card is shown
+on every report-night view of a re-benchmarked release: a later run may provide
+the second strike for another metric, but it cannot create a new package-change
+story for unchanged software. When the canonical report contains several
+distinct windows, each retains its own card. When the blame
+[sidecar](../../reference/file-formats.md#blame-sidecar-blamejson)
 carries a **ranking**, the card also lists **suggested candidate pull requests**:
 each PR in the window with a 0–100% **Likelihood** it is the cause and a one-line
 *Why*. The ranking is produced offline by a **language model** that read the
 metric that moved and each PR's actual code diff (configured in CI via
 `K4BENCH_LLM_*`; see the [sidecar format](../../reference/file-formats.md#blame-sidecar-blamejson)) —
 the dashboard only displays the stored result. Several PRs can land in one
-package's range, so each is scored on its own — but the group is judged once
+package's range, so each is scored on its own. All ranked leads are shown in
+one sortable table.
+The group is judged once
 per detector/platform/sample/window: when several metrics (or several
 benchmark-config labels, e.g. a removal sweep's `baseline` and
 `without_<detector>` runs) stepped across the same release boundary in the
@@ -223,7 +237,8 @@ sharing the same release dates never shares a verdict. This is a ranked
 keeping with the
 detector's *no evidence ⇒ no verdict* rule; the nightly email surfaces the same
 top candidates under each regression. Most nights carry no `blame.json` at all,
-and a night whose candidates are not yet ranked shows only the package diff.
+and a night whose candidates are not yet ranked says that no AI ranking is
+stored rather than leaving an ambiguous blank below the package diff.
 
 ### Stack Changes tab
 
@@ -232,34 +247,53 @@ upstream change could that be?". Pick two nightly tags and it lists the Key4hep
 packages whose commit differs between them, each linking to the range on GitHub.
 When you open the tab, **To release** defaults to the stack selected in the
 sidebar and **From release** to the release immediately before it, when one is
-available.
+available. A compact line below the range reports how many tracked packages
+changed and remained unchanged without turning those counts into a second
+dashboard banner.
 
 The package diff is cross-detector: a Key4hep release is one stack, sourced
 identically by every detector benchmarked against it, so only the platform
 scopes it.
 
-Below the diff, the **regressions this change may have caused** — the confirmed
-regressions whose onset falls inside the selected range — are scoped to the
-sidebar's detector and sample like every other judged view, with an **All
-detectors** toggle to widen back to the whole platform (a package change can
-regress any detector that sources it). They are shown two ways:
+Below the diff, **Regressions in this range** lists the confirmed metrics whose
+onset falls inside the selected release interval. It is scoped to the sidebar's
+detector and sample. A **Whole platform (+N metrics)** toggle appears only when
+widening would reveal confirmed metrics in other detector/sample scopes; a
+package change can affect any detector that sources it.
 
-- the exact same **change ledger** as the Regressions tab (severity badge,
-  config, metric, ↑/↓ direction, Δ-vs-baseline bar, current/baseline values)
-  plus each regression's own **blame window** — on a multi-release range the
-  per-row window is what stops the cumulative diff being misread as one
-  night's change;
-- a **typical-vs-outlier plane** — one config's nightly runs plotted as CPU ×
-  memory points, read from the already-fetched nightly reports (no run
-  downloads), with the same time/memory metric choice as the Overview tab
-  (defaulting to the config's flagged metrics). The dashed crosshair and
-  shaded band mark the accepted baseline each judged axis was gated on; runs
-  from the step's onset on are drawn in the confirmed red, with the onset
-  night ringed — so a step in *both* CPU and memory shows as a cluster leaving
-  the baseline box diagonally. The margins histogram each metric's own **1D
-  distribution** (before/after the onset overlaid), so a step in only one of
-  the two still stands out. It opens automatically when a config stepped in
-  both families.
+The worst metric opens in a compact selector rather than a ledger. Every option
+shows its severity, metric (including its region), config, Δ-vs-baseline and
+exact **blame window**; in the all-detectors view it also names the detector and
+sample. If distinct steps otherwise have the same label, their onset run is
+shown too. The selected item
+uses the same trend component as the Regressions tab: up to **14 releases** of
+history and **7 later releases**, the accepted-baseline band, first-watch and
+confirmation markers, unreliable-run filtering, and the shaded blame window.
+This makes a multi-release cumulative diff safe to inspect without implying
+that every package above belongs to every metric below. When that selected
+metric's blame window is narrower than the package comparison, **Focus package
+diff on …** resets From/To to the exact interval in one click.
+If package provenance is unavailable, or the selected endpoint stacks are
+identical, the section says so instead of describing the metric changes as
+effects of a package diff that was not observed. For a cumulative range with
+identical endpoints it also warns that an intermediate release may still have
+moved.
+
+When the selected regression has a ranked blame sidecar, its **AI-generated PR
+ranking** appears directly below the trend. The same complete ledger and
+"suggestion, not proof" framing are reused from the Regressions tab;
+Stack Changes does not recompute or reinterpret the model output. When no
+ranking was stored, the tab says so explicitly instead of leaving an ambiguous
+blank.
+
+The selected regression is part of the URL (`reg_*` parameters), including its
+detector/sample identity, config, metric, region, exact onset run and whether
+**Whole platform** is enabled. Sharing, reopening, or navigating back to the URL
+therefore restores the exact investigation rather than the range's default
+metric. An explicitly linked metric remains selectable even when it falls below
+the normal worst-30 display cap. Historical report JSONs
+for a cold range are fetched as one parallel batch; the selected trend still
+downloads run data only when it is shown.
 
 **It compares releases, not run dates.** The nightly build does not publish
 every day; a benchmark then re-uses the newest release available, so several

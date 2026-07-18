@@ -11,6 +11,7 @@ one directly. All remote calls are stubbed; nothing touches the network.
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -163,7 +164,9 @@ def test_trend_preview_defaults_to_the_worst_confirmed_flag():
     (night_pill,) = at.segmented_control
     assert list(night_pill.options) == [NIGHT]
     (preview,) = at.selectbox
-    assert preview.value == "🔴 Regression · peak_rss_mb · baseline — Δ -35.0%"
+    assert preview.value.metric == "peak_rss_mb"
+    assert preview.value.pct_change == -0.35
+    assert preview.options[1] == "🔴 Regression · peak RSS · baseline — Δ -35.0%"
     # The drill-down actually rendered (its history fetch found no runs).
     assert any("No history could be loaded" in w.value for w in at.warning)
 
@@ -307,6 +310,37 @@ def test_report_query_param_overrides_the_default():
     assert _report_param(at) == "2026-07-11"
 
 
+def test_switching_report_night_replaces_visible_trend_option():
+    # The trend selectbox used to reuse one frontend identity across report
+    # nights: its plot switched to the new verdict while the selected option's
+    # displayed text could remain from the old report. Both must change.
+    first = _verdict("wall_time_s", Severity.CONFIRMED, 0.20)
+    second = _verdict(
+        "peak_rss_mb", Severity.CONFIRMED, 0.45,
+        run_id="2026-07-11",
+    )
+    at = _run(
+        reports_map={
+            NIGHT: _report([_group(verdicts=[first])]),
+            "2026-07-11": _report([_group(verdicts=[second])]),
+        },
+        dates=("2026-07-11", NIGHT),
+        stacks_dates={STACK: [NIGHT, "2026-07-11"]},
+        query_params={"report": NIGHT},
+    )
+    assert at.selectbox[0].value.metric == "wall_time_s"
+    assert "wall time" in at.selectbox[0].options[1]
+    assert "20.0%" in at.selectbox[0].options[1]
+
+    at.segmented_control(key="regr_night").set_value("2026-07-11").run()
+    assert not at.exception, at.exception
+    assert len(at.selectbox) == 1
+    assert at.selectbox[0].value.metric == "peak_rss_mb"
+    assert "peak RSS" in at.selectbox[0].options[1]
+    assert "45.0%" in at.selectbox[0].options[1]
+    assert all("wall time" not in option for option in at.selectbox[0].options)
+
+
 def test_invalid_report_query_param_falls_back_to_the_default():
     at = _run(
         reports_map={NIGHT: _confirmed_report(), "2026-07-11": _quiet_report()},
@@ -319,10 +353,11 @@ def test_invalid_report_query_param_falls_back_to_the_default():
     assert _report_param(at) == NIGHT
 
 
-def test_switching_the_picker_loads_that_nights_report_and_blame():
+def test_switching_picker_keeps_release_attribution_but_changes_verdicts():
     # Default lands on the confirmed night whose blame sidecar ranks a
-    # candidate PR; switching to the quiet rerun re-renders that night's report,
-    # which has no confirmed metric and therefore no candidate ledger.
+    # candidate PR. Switching to the quiet rerun re-renders that night's
+    # verdicts, but package/PR attribution remains fixed at the release's first
+    # confirmed report because the software did not change between reruns.
     from k4bench.blame.models import CandidatePR
     cand = CandidatePR(
         repo="key4hep/k4geo", number=1234, title="Lower the tracker step limit",
@@ -340,11 +375,12 @@ def test_switching_the_picker_loads_that_nights_report_and_blame():
         dates=("2026-07-11", NIGHT),
         stacks_dates={STACK: [NIGHT, "2026-07-11"]},
     )
-    assert "Suggested cause" in " ".join(c.value for c in at.caption)
+    assert "AI-generated PR ranking" in " ".join(c.value for c in at.caption)
 
     at.segmented_control(key="regr_night").set_value("2026-07-11").run()
     assert not at.exception, at.exception
-    assert "Suggested cause" not in " ".join(c.value for c in at.caption)
+    assert {m.label: m.value for m in at.metric}["🔴 Regressed"] == "0"
+    assert "AI-generated PR ranking" in " ".join(c.value for c in at.caption)
     assert _report_param(at) == "2026-07-11"
 
 
@@ -431,14 +467,14 @@ def test_switching_detector_redefaults_the_picker():
     assert at.segmented_control[0].value == NIGHT              # CLD's confirmed night
     assert {m.label: m.value for m in at.metric}["🔴 Regressed"] == "2"
     at.selectbox[0].set_value("—").run()                       # hide CLD's preview
-    assert at.selectbox[0].value == "—"
+    assert at.selectbox[0].value is None
 
     at.session_state["_i"] = 1                                 # switch to IDEA
     at.run()
     assert not at.exception, at.exception
     assert at.segmented_control[0].value == "2026-07-11"       # re-defaulted, not 07-10
     assert {m.label: m.value for m in at.metric}["🔴 Regressed"] == "2"
-    assert at.selectbox[0].value != "—"                       # IDEA's worst flag reopens
+    assert at.selectbox[0].value is not None                   # IDEA's worst flag reopens
 
 
 def test_multi_single_multi_navigation_does_not_strand_state():
@@ -613,11 +649,64 @@ def test_ranked_candidate_prs_render_when_a_blame_sidecar_is_present():
         blame_map={NIGHT: _blame_json([cand])},
     )
     captions = " ".join(c.value for c in at.caption)
-    assert "Suggested cause" in captions
+    assert "AI-generated PR ranking" in captions
     pr_frames = [d.value for d in at.dataframe if "Pull request" in d.value.columns]
     assert len(pr_frames) == 1
     assert list(pr_frames[0]["Pull request"]) == ["key4hep/k4geo#1234"]
     assert list(pr_frames[0]["Open"]) == ["https://github.com/key4hep/k4geo/pull/1234"]
+
+
+def test_candidate_ranking_uses_native_column_sizing(monkeypatch):
+    """Both tabs call this one renderer, so one layout assertion covers both."""
+    import sys
+
+    from k4bench.blame.models import CandidatePR
+
+    if str(_DASHBOARD_DIR) not in sys.path:
+        sys.path.insert(0, str(_DASHBOARD_DIR))
+    from tabs import _regression_flags as flags
+
+    captured = {}
+
+    def _capture(data, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(flags.st, "dataframe", _capture)
+    flags._render_candidate_rows([CandidatePR(
+        repo="key4hep/k4geo", number=1234, title="Candidate title",
+        author="alice", url="https://github.com/key4hep/k4geo/pull/1234",
+        score=72.0, description="candidate rationale",
+    )])
+
+    assert captured["width"] == "stretch"
+    assert all(
+        config.get("width") is None
+        for config in captured["column_config"].values()
+    )
+
+
+def test_candidate_ranking_shows_every_candidate_in_one_table():
+    from k4bench.blame.models import CandidatePR
+    candidates = [
+        CandidatePR(
+            repo="key4hep/k4geo", number=1200 + i, title=f"Candidate {i}",
+            author="alice", url=f"https://github.com/key4hep/k4geo/pull/{1200 + i}",
+            score=float(100 - i * 10), description=f"ranked reason {i}",
+        )
+        for i in range(5)
+    ]
+    at = _run(
+        _report([_group(verdicts=[_windowed_confirmed()])]),
+        blame_map={NIGHT: _blame_json(candidates)},
+    )
+
+    assert not at.expander
+    pr_frames = [d.value for d in at.dataframe if "Pull request" in d.value.columns]
+    assert len(pr_frames) == 1
+    assert list(pr_frames[0]["Pull request"]) == [
+        "key4hep/k4geo#1200", "key4hep/k4geo#1201", "key4hep/k4geo#1202",
+        "key4hep/k4geo#1203", "key4hep/k4geo#1204",
+    ]
 
 
 def test_unranked_candidates_show_no_table():
@@ -640,6 +729,7 @@ def test_no_candidate_table_without_a_blame_sidecar():
     # The common case: a confirmed regression whose night has no blame.json.
     at = _run(_report([_group(verdicts=[_windowed_confirmed()])]))
     assert not any("Pull request" in d.value.columns for d in at.dataframe)
+    assert any("No AI PR ranking is stored" in c.value for c in at.caption)
 
 
 def test_malformed_blame_sidecar_hides_blame_instead_of_crashing():
@@ -669,3 +759,88 @@ def test_stale_blame_with_a_different_window_is_not_joined():
         blame_map={NIGHT: stale},
     )
     assert not any("Pull request" in d.value.columns for d in at.dataframe)
+
+
+def test_reruns_share_first_confirmed_release_attribution():
+    """A later rerun can confirm another metric, but it measured the same
+    software and must not add a second package window to the release view.
+    The first confirmed night's sidecar supplies the stable PR ranking too."""
+    from k4bench.blame.models import CandidatePR
+
+    canonical = _windowed_confirmed()
+    later_window = _verdict(
+        "median_time_s", Severity.CONFIRMED, 0.15,
+        run_id="2026-07-11",
+        onset_run_id=NIGHT, onset_run_date=NIGHT,
+        last_accepted_run_id="2026-07-04",
+        last_accepted_run_date="2026-07-04",
+    )
+    cand = CandidatePR(
+        repo="key4hep/k4geo", number=1234, title="Canonical release cause",
+        author="alice", url="https://github.com/key4hep/k4geo/pull/1234",
+        score=90.0, description="ranked on the first confirmed report",
+    )
+    at = _run(
+        reports_map={
+            NIGHT: _report([_group(verdicts=[canonical])]),
+            "2026-07-11": _report([_group(
+                verdicts=[canonical, later_window],
+            )]),
+        },
+        blame_map={NIGHT: _blame_json([cand])},
+        dates=("2026-07-11", NIGHT),
+        stacks_dates={STACK: [NIGHT, "2026-07-11"]},
+        query_params={"report": "2026-07-11"},
+    )
+
+    captions = [c.value for c in at.caption]
+    windows = [c for c in captions if "Change window:" in c]
+    assert len(windows) == 1
+    assert "2026-07-04" in windows[0]
+    assert NIGHT not in windows[0]
+    assert any("first confirmed report night" in c and NIGHT in c for c in captions)
+    # The selected later night has no sidecar; the ranking must come from the
+    # release's canonical first-confirmed night.
+    assert "AI-generated PR ranking" in " ".join(captions)
+    pr_frames = [d.value for d in at.dataframe if "Pull request" in d.value.columns]
+    assert len(pr_frames) == 1
+    assert list(pr_frames[0]["Pull request"]) == ["key4hep/k4geo#1234"]
+
+
+def test_trend_window_has_14_history_releases_and_7_future_releases():
+    import sys
+
+    if str(_DASHBOARD_DIR) not in sys.path:
+        sys.path.insert(0, str(_DASHBOARD_DIR))
+    from tabs._regression_trend import _release_window_pairs
+
+    d0 = date(2026, 1, 1)
+    pairs = [
+        ((d0 + timedelta(days=i - 1)).isoformat(), f"key4hep-r{i:02d}")
+        for i in range(1, 21)
+    ]
+    anchor = pairs[-1][0]
+    # Reruns on either side of a release boundary are measurements, not extra
+    # releases, and therefore consume neither budget.
+    pairs.extend([
+        ((d0 + timedelta(days=20)).isoformat(), "key4hep-r20"),
+        ((d0 + timedelta(days=21)).isoformat(), "key4hep-r21"),
+        ((d0 + timedelta(days=22)).isoformat(), "key4hep-r21"),
+    ])
+    pairs.extend([
+        ((d0 + timedelta(days=22 + i)).isoformat(), f"key4hep-r{21 + i:02d}")
+        for i in range(1, 9)
+    ])
+
+    selected = _release_window_pairs(pairs, anchor)
+    through_anchor = {tag for run, tag in selected if run <= anchor}
+    after_anchor = {
+        tag for run, tag in selected
+        if run > anchor and tag not in through_anchor
+    }
+    assert len(through_anchor) == 14
+    assert through_anchor == {f"key4hep-r{i:02d}" for i in range(7, 21)}
+    assert len(after_anchor) == 7
+    assert after_anchor == {f"key4hep-r{i:02d}" for i in range(21, 28)}
+    assert "key4hep-r28" not in {tag for _, tag in selected}
+    assert selected.count(((d0 + timedelta(days=22)).isoformat(), "key4hep-r21")) == 1

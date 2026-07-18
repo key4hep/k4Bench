@@ -17,37 +17,34 @@ manufacture changes that never happened.
 
 from __future__ import annotations
 
+from typing import Literal
 from urllib.parse import urlencode
 
 import pandas as pd
-import plotly.graph_objects as go
 import requests
 import streamlit as st
-from plotly.subplots import make_subplots
 
-from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
+from k4bench.blame.models import BlameReport, BlameSchemaError
 from k4bench.provenance.diff import ADDED, CHANGED, REMOVED, diff_packages, unchanged_packages
-from k4bench.regression.engine import Z_THRESHOLD
 from k4bench.regression.models import MetricVerdict
 from k4bench.regression.render import _pretty_sample, from_json
-from k4bench.regression.report_builder import EVENT_METRICS, RUN_METRICS
 from remote_cache import (
-    _cached_fetch_report,
+    _cached_fetch_blame,
+    _cached_fetch_reports,
+    _cached_fetch_runs_windowed,
     _cached_fetch_stack_packages,
     _cached_list_detectors,
     _cached_list_report_dates,
+    _cached_list_run_dates,
     _cached_list_stacks,
 )
 from tabs import _blame
-from tabs._regression_flags import FLAG_MARKS, add_severity_markers, flag_table
-from ui_chrome import _drop_stale_selection, seed_query_param
-from ui_utils import (
-    _legend_below,
-    _METRIC_LABELS,
-    _METRIC_UNITS,
-    _reset_widget_on_scope,
-    _to_rgba,
+from tabs._regression_flags import attention_key, render_candidate_ranking
+from tabs._regression_trend import (
+    render_metric_picker,
+    render_metric_trend,
 )
+from ui_chrome import seed_query_param
 
 #: Releases are stored as ``key4hep-{YYYY-MM-DD}`` directories; the tab talks
 #: in the bare nightly tag the rest of the dashboard shows on its axes.
@@ -62,9 +59,28 @@ _TAB_NAME = "Stack Changes"
 PARAM_FROM = "from"
 PARAM_TO = "to"
 
+#: Stack-local deep-link state for the selected regression. These deliberately
+#: do not reuse the sidebar's detector/sample parameters: an all-detector view
+#: can inspect a metric outside the current sidebar scope without moving it.
+PARAM_REG_DETECTOR = "reg_detector"
+PARAM_REG_SAMPLE = "reg_sample"
+PARAM_REG_CONFIG = "reg_config"
+PARAM_REG_METRIC = "reg_metric"
+PARAM_REG_REGION = "reg_region"
+PARAM_REG_ONSET = "reg_onset"
+PARAM_REG_ALL = "reg_all"
+_REGRESSION_PARAMS = (
+    PARAM_REG_DETECTOR, PARAM_REG_SAMPLE, PARAM_REG_CONFIG,
+    PARAM_REG_METRIC, PARAM_REG_REGION, PARAM_REG_ONSET, PARAM_REG_ALL,
+)
+
 _FROM_KEY = "stack_from"
 _TO_KEY = "stack_to"
 _SCOPE_KEY = "stack_change_scope"
+_REG_ALL_KEY = "stack_regr_all"
+_REG_ALL_QUERY_KEY = "stack_regr_all__query"
+
+type _ProvenanceState = Literal["changed", "identical", "unavailable"]
 
 
 def deep_link(
@@ -110,17 +126,93 @@ _TAG_HELP = (
     "available."
 )
 
-_DOCS_URL = (
-    "https://key4hep.github.io/k4Bench/user-guide/features/dashboard/#stack-changes-tab"
-)
-
-
 def _release(stack: str) -> str:
     return stack.removeprefix(_PREFIX)
 
 
 def _plural(n: int, noun: str) -> str:
     return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
+
+
+def _query_value(name: str) -> str:
+    """One query value as text (AppTest can expose it as a one-item list)."""
+    value = st.query_params.get(name, "")
+    if isinstance(value, list):
+        value = value[0] if value else ""
+    return str(value)
+
+
+def _onset_identity(verdict: MetricVerdict) -> str:
+    return verdict.onset_run_id or verdict.onset_run_date or ""
+
+
+def _query_verdict(verdicts: list[MetricVerdict]) -> MetricVerdict | None:
+    """The exact verdict requested by stack-local deep-link parameters."""
+    required = {
+        PARAM_REG_DETECTOR: _query_value(PARAM_REG_DETECTOR),
+        PARAM_REG_SAMPLE: _query_value(PARAM_REG_SAMPLE),
+        PARAM_REG_CONFIG: _query_value(PARAM_REG_CONFIG),
+        PARAM_REG_METRIC: _query_value(PARAM_REG_METRIC),
+        PARAM_REG_ONSET: _query_value(PARAM_REG_ONSET),
+    }
+    if not all(required.values()):
+        return None
+    region = _query_value(PARAM_REG_REGION)
+    return next((
+        verdict for verdict in verdicts
+        if verdict.detector == required[PARAM_REG_DETECTOR]
+        and verdict.sample == required[PARAM_REG_SAMPLE]
+        and verdict.label == required[PARAM_REG_CONFIG]
+        and verdict.metric == required[PARAM_REG_METRIC]
+        and (verdict.sub_detector or "") == region
+        and _onset_identity(verdict) == required[PARAM_REG_ONSET]
+    ), None)
+
+
+def _sync_regression_query(verdict: MetricVerdict | None, *, show_all: bool) -> None:
+    """Persist the selected regression and scope in the shareable URL."""
+    st.query_params[PARAM_REG_ALL] = "1" if show_all else "0"
+    if verdict is None:
+        for param in _REGRESSION_PARAMS[:-1]:
+            st.query_params.pop(param, None)
+        return
+    values = {
+        PARAM_REG_DETECTOR: verdict.detector,
+        PARAM_REG_SAMPLE: verdict.sample,
+        PARAM_REG_CONFIG: verdict.label,
+        PARAM_REG_METRIC: verdict.metric,
+        PARAM_REG_ONSET: _onset_identity(verdict),
+    }
+    if verdict.sub_detector:
+        values[PARAM_REG_REGION] = verdict.sub_detector
+    else:
+        st.query_params.pop(PARAM_REG_REGION, None)
+    for param, value in values.items():
+        st.query_params[param] = value
+
+
+def _reg_all_query_token(scope: tuple[str, ...]) -> tuple[str, ...]:
+    """Incoming whole-platform state, qualified by the reverse-view scope."""
+    return (*scope, _query_value(PARAM_REG_ALL))
+
+
+def _seed_reg_all(scope: tuple[str, ...]) -> None:
+    """Make a changed ``?reg_all=`` authoritative in an existing session.
+
+    The remembered token distinguishes browser navigation from an ordinary
+    toggle interaction. During a widget interaction the URL still carries the
+    previous value and therefore matches the remembered token; after the
+    selection is synchronized, :func:`_remember_reg_all` advances the token.
+    """
+    token = _reg_all_query_token(scope)
+    if st.session_state.get(_REG_ALL_QUERY_KEY) != token:
+        st.session_state[_REG_ALL_KEY] = token[-1] == "1"
+        st.session_state[_REG_ALL_QUERY_KEY] = token
+
+
+def _remember_reg_all(scope: tuple[str, ...]) -> None:
+    """Remember the URL value written for the current whole-platform state."""
+    st.session_state[_REG_ALL_QUERY_KEY] = _reg_all_query_token(scope)
 
 
 def _seed(key: str, param: str, options: list[str], default: str) -> None:
@@ -180,8 +272,12 @@ def _forget_stale_stack_scope(platform: str, stack: str) -> None:
     if previous is not None and previous != scope:
         st.session_state.pop(_FROM_KEY, None)
         st.session_state.pop(_TO_KEY, None)
+        st.session_state.pop(_REG_ALL_KEY, None)
+        st.session_state.pop(_REG_ALL_QUERY_KEY, None)
         st.query_params.pop(PARAM_FROM, None)
         st.query_params.pop(PARAM_TO, None)
+        for param in _REGRESSION_PARAMS:
+            st.query_params.pop(param, None)
 
 
 def _stacks_for_platform(data_url: str, platform: str) -> list[str]:
@@ -227,14 +323,9 @@ def packages_for_release(data_url: str, platform: str, release: str) -> dict | N
 
 
 def render(
-    data_url: str, platform: str, detector: str, sample: str, stack: str,
+    data_url: str, cache_dir: str, platform: str, detector: str, sample: str,
+    stack: str,
 ) -> None:
-    st.caption(
-        "Which Key4hep packages moved between two nightly releases — the upstream "
-        f"changes a regression between them could be attributed to. "
-        f"[Learn more →]({_DOCS_URL})"
-    )
-
     stacks = _stacks_for_platform(data_url, platform)
     if len(stacks) < 2:
         st.info(
@@ -286,7 +377,9 @@ def render(
     base = _packages(data_url, platform, _PREFIX + base_release)
     head = _packages(data_url, platform, _PREFIX + head_release)
     missing = [r for r, p in ((base_release, base), (head_release, head)) if not p]
+    provenance_state: _ProvenanceState
     if missing:
+        provenance_state = "unavailable"
         st.warning(
             f"No stack provenance recorded for {', '.join(f'**{m}**' for m in missing)}. "
             "Releases benchmarked before provenance capture, or whose stack had already "
@@ -295,19 +388,22 @@ def render(
             icon="❔",
         )
     else:
-        _render_diff(base, head, base_release, head_release, span)
+        provenance_state = _render_diff(
+            base, head, base_release, head_release, span,
+        )
     # Independent of the package diff: the reverse view is built from the
     # regression reports, so it renders even when provenance is unavailable. A
     # non-empty span means the *selected range* spans more than one release
     # step (see :func:`_span`) — the only case where the diff is cumulative.
     _render_regressions_in_range(
-        data_url, platform, base_release, head_release,
-        multi_release=bool(span), detector=detector, sample=sample,
+        data_url, cache_dir, platform, base_release, head_release,
+        releases=releases, detector=detector, sample=sample,
+        provenance_state=provenance_state, cumulative=bool(span),
     )
 
 
-#: Cap on reverse-view rows so a month-wide range can't produce an unbounded
-#: table; the largest by |Δ| are kept.
+#: Cap on reverse-view options so a month-wide range cannot produce an
+#: unbounded selector; the largest by |Δ| are kept.
 _MAX_REGRESSIONS = 30
 
 
@@ -354,68 +450,129 @@ def _regressions_in_range(
     return hits
 
 
+def _reports_since(
+    data_url: str, dates: list[str], base_release: str,
+) -> list[dict]:
+    """Batch-fetch parseable report payloads at/after *base_release*."""
+    report_dates = tuple(date for date in dates if date >= base_release)
+    report_map = _cached_fetch_reports(data_url, report_dates)
+    return [report_map[date] for date in report_dates if date in report_map]
+
+
 def _render_regressions_in_range(
-    data_url: str, platform: str, base_release: str, head_release: str,
-    *, multi_release: bool, detector: str, sample: str,
+    data_url: str, cache_dir: str, platform: str,
+    base_release: str, head_release: str,
+    *, releases: list[str], detector: str, sample: str,
+    provenance_state: _ProvenanceState,
+    cumulative: bool,
 ) -> None:
-    """Reverse attribution: the confirmed regressions whose onset falls in this
-    release range — candidate effects of the diff above. Same-release regressions
-    are excluded (no stack moved for them).
+    """Trend-first reverse attribution for confirmed changes in this range.
 
-    Scoped to the sidebar's *detector* and *sample* by default; an
-    "All detectors" toggle widens it to the whole platform, since a package
-    change can regress any detector that sources it.
+    Same-release regressions are excluded because no stack moved for them. The
+    selected metric uses the exact shared drill-down from the Regressions tab,
+    then shows its stored AI PR ranking when its canonical blame sidecar is
+    available.
 
-    *multi_release* is whether the *selected* range spans more than one release
-    step: only then is the diff cumulative, so only then do the per-regression
-    blame-window column and its warning appear. It is not derived per regression
-    — a regression's baseline can predate the selected base, which would trip a
-    per-window check even for two neighbouring releases.
+    Scoped to the sidebar's *detector* and *sample* by default; a contextual
+    "Whole platform" toggle widens across every detector/sample scope only
+    when that would reveal additional metrics.
+
+    Each selector option carries the metric's own blame window so that a wide
+    package range is never mistaken for that metric's attribution interval.
     """
     dates = _cached_list_report_dates(data_url)
     # A regression confirms no earlier than its onset release, so only reports
-    # on/after the older end can carry one whose onset is in range. Fetch each
-    # night individually so it is cached once and reused as the range changes.
-    reports = [_cached_fetch_report(data_url, d) for d in dates if d >= base_release]
+    # on/after the older end can carry one whose onset is in range. Fetch the
+    # cold window in parallel; one serial HTTP round-trip per historical night
+    # made old cumulative comparisons needlessly slow.
+    reports = _reports_since(data_url, dates, base_release)
     all_hits = _regressions_in_range(reports, platform, base_release, head_release)
     scoped_hits = [
         v for v in all_hits if v.detector == detector and v.sample == sample
     ]
-
-    st.markdown("##### Regressions this change may have caused")
-    caption_col, toggle_col = st.columns([3, 1], vertical_alignment="center")
-    with toggle_col:
-        show_all = st.toggle(
-            "All detectors",
-            value=False,
-            key="stack_regr_all",
-            help="The list is scoped to the sidebar's detector and sample. A "
-                 "package change can regress any detector that sources it — "
-                 "switch on to see the whole platform.",
-        )
-    hits = all_hits if show_all else scoped_hits
     n_elsewhere = len(all_hits) - len(scoped_hits)
-    with caption_col:
-        scope = (
-            "across **all detectors** on this platform" if show_all
-            else f"for **{detector}** · **{_pretty_sample(sample)}**"
+    reg_all_scope = (
+        platform, base_release, head_release, detector, sample,
+    )
+
+    st.markdown("##### Regressions in this range")
+    caption_col = None
+    if n_elsewhere:
+        caption_col, toggle_col = st.columns(
+            [3, 2], vertical_alignment="center"
         )
-        extra = (
-            f" {n_elsewhere} more in other detectors/samples."
-            if not show_all and hits and n_elsewhere else ""
+        with toggle_col:
+            controls = st.container(
+                horizontal=True,
+                horizontal_alignment="right",
+                vertical_alignment="center",
+                width="stretch",
+            )
+            with controls:
+                _seed_reg_all(reg_all_scope)
+                show_all = st.toggle(
+                    f"Whole platform (+{_plural(n_elsewhere, 'metric')})",
+                    key=_REG_ALL_KEY,
+                    help="Include confirmed metrics from every detector and sample "
+                         "on this platform. Off keeps the sidebar's detector/sample "
+                         "scope.",
+                )
+    else:
+        # Do not show a control that cannot change the result. Reset stale URL
+        # or session state from a previous range where widening was useful.
+        st.session_state[_REG_ALL_KEY] = False
+        st.query_params[PARAM_REG_ALL] = "0"
+        _remember_reg_all(reg_all_scope)
+        show_all = False
+
+    hits = all_hits if show_all else scoped_hits
+    scope = (
+        "across **all detectors and samples** on this platform" if show_all
+        else f"for **{detector}** · **{_pretty_sample(sample)}**"
+    )
+    extra = (
+        f" {n_elsewhere} more {_plural(n_elsewhere, 'metric').split(' ', 1)[1]} "
+        "across the platform."
+        if not show_all and hits and n_elsewhere else ""
+    )
+    if provenance_state == "changed":
+        attribution = "possible effects of the package changes above."
+    elif provenance_state == "identical":
+        if cumulative:
+            attribution = (
+                "the selected endpoint stacks are identical, but intermediate "
+                "releases may still have moved; use each metric's blame window "
+                "before ruling out an upstream change."
+            )
+        else:
+            attribution = (
+                "the identical stacks above rule out a tracked upstream package "
+                "change at this boundary."
+            )
+    else:
+        attribution = (
+            "stack provenance is unavailable, so upstream attribution cannot "
+            "be evaluated."
         )
-        st.caption(
-            f"Confirmed regressions {scope} whose step first appeared inside "
-            f"this release range — candidate effects of the changes above.{extra}"
-        )
+    caption = (
+        f"Confirmed metric changes {scope} whose step first appeared inside "
+        f"this release range — {attribution}{extra}"
+    )
+    if caption_col is not None:
+        with caption_col:
+            st.caption(caption)
+    else:
+        st.caption(caption)
     if not hits:
+        _sync_regression_query(None, show_all=show_all)
+        _remember_reg_all(reg_all_scope)
         if n_elsewhere:
             st.info(
                 f"No confirmed regression for **{detector}** · "
                 f"**{_pretty_sample(sample)}** has its onset in this release range "
-                f"— but {n_elsewhere} elsewhere on this platform do (switch on "
-                "*All detectors*).",
-                icon="✅",
+                f"— but this platform has {_plural(n_elsewhere, 'metric')} "
+                "elsewhere (switch on *Whole platform*).",
+                icon="ℹ️",
             )
         else:
             st.info(
@@ -424,382 +581,121 @@ def _render_regressions_in_range(
             )
         return
 
-    shown = hits[:_MAX_REGRESSIONS]
-    if multi_release:
-        st.warning(
-            "This is a **multi-release** range, so its package diff above is "
-            "**cumulative**. Each regression below was caused by the changes in its own "
-            "**blame window** (shown) — *not* necessarily by every package that differs "
-            "across the whole range. Compare consecutive releases to pin a single step.",
-            icon="⚠️",
-        )
-
-    # The same ledger the Regressions tab shows, plus each row's blame window —
-    # the sub-range of this diff the step actually entered in.
-    flag_table(shown, scope=show_all, blame_window=True)
+    requested = _query_verdict(hits)
+    shown = sorted(hits, key=attention_key)[:_MAX_REGRESSIONS]
+    requested_below_cap = requested is not None and requested not in shown
+    if requested_below_cap:
+        # A shareable deep link is an explicit request, not a suggestion to
+        # select the current worst metric. Retain it alongside the capped list.
+        shown.append(requested)
+    picker_scope = "all" if show_all else f"{detector}_{sample}"
+    picker_key = (
+        f"stack_regr_trend_{platform}_{base_release}_{head_release}_"
+        f"{picker_scope}"
+    )
+    query_token = tuple(_query_value(param) for param in _REGRESSION_PARAMS)
+    seed_key = picker_key + "__query"
+    if requested is not None and st.session_state.get(seed_key) != query_token:
+        # An externally opened deep link must outrank a selection left in this
+        # browser session. Ordinary picker changes keep their widget state;
+        # their URL is synchronized immediately below.
+        st.session_state.pop(picker_key, None)
+        st.session_state[seed_key] = query_token
+    selected = render_metric_picker(
+        shown,
+        key=picker_key,
+        include_scope=show_all,
+        include_window=True,
+        label="Regression trend",
+        help="Confirmed metrics whose onset lies in the selected release "
+             "range, worst first. Each option includes its own blame window. "
+             "Pick “—” to hide the trend.",
+        default=requested,
+    )
     if len(hits) > _MAX_REGRESSIONS:
-        st.caption(f"Showing the {_MAX_REGRESSIONS} largest of {len(hits)} by |Δ|.")
+        suffix = " plus the linked metric." if requested_below_cap else "."
+        st.caption(
+            f"Showing the {_MAX_REGRESSIONS} largest of {len(hits)} by |Δ|"
+            f"{suffix}"
+        )
+    _sync_regression_query(selected, show_all=show_all)
+    _remember_reg_all(reg_all_scope)
+    st.session_state[seed_key] = tuple(
+        _query_value(param) for param in _REGRESSION_PARAMS
+    )
+    if selected is None:
+        return
 
-    _render_outlier_scatter(
-        reports, platform, hits, base_release, head_release, scoped=not show_all,
+    render_metric_trend(
+        selected, data_url, cache_dir,
+        list_run_dates=_cached_list_run_dates,
+        fetch_runs_windowed=_cached_fetch_runs_windowed,
+        widget_namespace=f"stack_regr_{base_release}_{head_release}",
+        include_scope=show_all,
+    )
+    _render_focus_action(
+        selected, releases, base_release=base_release,
+        head_release=head_release,
+    )
+    render_candidate_ranking(
+        selected, _blame_for_verdict(data_url, selected), show_empty=True,
     )
 
 
-#: Fill for the accepted-baseline band on the outlier plane and its marginals
-#: — the same visual device as the Regressions drill-down's band.
-_BASELINE_FILL = "rgba(31,119,180,0.08)"
+def _render_focus_action(
+    verdict: MetricVerdict, releases: list[str], *,
+    base_release: str, head_release: str,
+) -> None:
+    """Offer to narrow a cumulative diff to this verdict's blame window."""
+    target_base = verdict.last_accepted_run_date
+    target_head = verdict.onset_run_date
+    if (
+        not target_base or not target_head
+        or target_base not in releases or target_head not in releases
+        or (target_base, target_head) == (base_release, head_release)
+    ):
+        return
+    def _focus() -> None:
+        # Button callbacks run before the next script body, which is the only
+        # safe time to change values owned by already-instantiated widgets.
+        st.session_state[_FROM_KEY] = target_base
+        st.session_state[_TO_KEY] = target_head
+
+    st.button(
+        f"Focus package diff on {target_base} → {target_head}",
+        key=(
+            f"stack_focus_{verdict.detector}_{verdict.sample}_{verdict.label}_"
+            f"{verdict.metric}_{_onset_identity(verdict)}"
+        ),
+        help="Reset From/To to this metric's exact blame window.",
+        on_click=_focus,
+    )
 
 
-# ── typical vs outlier: one config's runs in the CPU × memory plane ──────────
+def _blame_for_verdict(
+    data_url: str, verdict: MetricVerdict,
+) -> BlameReport | None:
+    """Load the sidecar that ranked *verdict*, if one is still available.
 
-#: Selectable axes for the outlier plane, derived from the engine's own
-#: metric→family map so the choices always track what the reports record.
-_METRIC_FAMILIES = {**RUN_METRICS, **EVENT_METRICS}
-_TIME_CHOICES = [m for m, fam in _METRIC_FAMILIES.items() if fam == "time"]
-_MEMORY_CHOICES = [m for m, fam in _METRIC_FAMILIES.items() if fam == "memory"]
-
-def _same_onset(a: MetricVerdict, b: MetricVerdict) -> bool:
-    """Whether two verdicts' confirmed steps are the *same event* rather than
-    two unrelated flags that merely fall in the same range: matched on the
-    onset run id (a night can share a release with many others, so the run is
-    the real identity), falling back to the onset release for reports written
-    before run-id tracking."""
-    if a.onset_run_id and b.onset_run_id:
-        return a.onset_run_id == b.onset_run_id
-    return bool(a.onset_run_date) and a.onset_run_date == b.onset_run_date
-
-
-def _scatter_candidates(hits: list) -> list[tuple]:
-    """One ``(detector, sample, label, x_metric, y_metric, both)`` per config
-    with a confirmed step in range: *both* whether time AND memory stepped
-    **at the same onset** — the diagonal-step case the scatter exists for.
-
-    When such a pair exists, *x*/*y* are drawn from *that same pair* (worst
-    first among ties), not independently from each family's own worst metric
-    — picking axes and the *both* flag from two different pairs would let the
-    label claim a joint step while plotting two unrelated ones. Only without
-    any shared-onset pair do *x*/*y* fall back to each family's worst metric
-    on its own (``wall_time_s``/``peak_rss_mb`` when a family has no flag).
-
-    Ordered both-first, then by the config's worst |Δ|. Region-level rows
-    carry no cross-metric story and are skipped. Pure — the unit-test surface.
+    ``first_confirmed_run_id`` is the canonical report night for a repeated
+    release-level confirmation. Legacy reports lack it, so their own run night
+    remains a safe fallback. A sidecar is accepted only when ``entry_for``
+    matches both the series identity and exact blame window.
     """
-    by_cfg: dict[tuple, list] = {}
-    for v in hits:
-        if v.sub_detector is None:
-            by_cfg.setdefault((v.detector, v.sample, v.label), []).append(v)
-    ranked = []
-    for (det, samp, label), vs in by_cfg.items():
-        times = [v for v in vs if v.metric_family == "time"]
-        mems = [v for v in vs if v.metric_family == "memory"]
-        worst = max((abs(v.pct_change or 0.0) for v in vs), default=0.0)
-        # vs (and so times/mems) preserves hits' worst-|Δ|-first order, so the
-        # first matching pair is also the worst shared-onset pair available.
-        paired = next(
-            ((t, m) for t in times for m in mems if _same_onset(t, m)), None
-        )
-        if paired is not None:
-            x_metric, y_metric, both = paired[0].metric, paired[1].metric, True
-        else:
-            x_metric = times[0].metric if times else "wall_time_s"
-            y_metric = mems[0].metric if mems else "peak_rss_mb"
-            both = False
-        ranked.append(
-            ((not both, -worst),
-             (det, samp, label, x_metric, y_metric, both))
-        )
-    ranked.sort(key=lambda t: t[0])
-    return [c for _, c in ranked]
-
-
-def _series_points(
-    reports, detector: str, platform: str, sample: str, label: str,
-    x_metric: str, y_metric: str,
-) -> pd.DataFrame:
-    """One row per run night with both metrics' raw values for one config,
-    read from the already-fetched nightly reports — a verdict of *any*
-    severity carries the night's measured value, so the scatter costs no run
-    downloads. Columns ``night, x, y, k4h_release``, sorted by night; a stale
-    carried-forward group collapses onto its real run night. Pure.
-    """
-    rows: dict[str, tuple] = {}
-    for raw in reports:
+    nights = dict.fromkeys(filter(None, (
+        verdict.first_confirmed_run_id, verdict.run_id,
+    )))
+    for night in nights:
+        raw = _cached_fetch_blame(data_url, night)
         if not raw:
             continue
-        for g in from_json(raw).groups:
-            if (g.detector, g.platform, g.sample) != (detector, platform, sample):
-                continue
-            vals = {
-                v.metric: float(v.value)
-                for v in g.verdicts
-                if v.label == label and v.sub_detector is None
-                and v.metric in (x_metric, y_metric) and v.value is not None
-            }
-            if x_metric in vals and y_metric in vals:
-                rows[g.run_date] = (vals[x_metric], vals[y_metric], g.k4h_release)
-    return pd.DataFrame(
-        [(night, *rows[night]) for night in sorted(rows)],
-        columns=["night", "x", "y", "k4h_release"],
-    )
-
-
-def _bound_to_release(pts: pd.DataFrame, head_release: str) -> pd.DataFrame:
-    """Points measured at or before *head_release*. A historical range's
-    reports are fetched with no upper date bound (a regression can *confirm*,
-    and so first appear in a report, well after its onset — see
-    :func:`_render_regressions_in_range`), so without this the outlier plane
-    would silently plot runs from releases never part of the comparison, as
-    if they were effects of it. ``k4h_release`` is ``key4hep-YYYY-MM-DD``,
-    which orders chronologically as a plain string. Pure."""
-    return pts[pts["k4h_release"].astype(str) <= _PREFIX + head_release]
-
-
-def _onset_night(pts: pd.DataFrame, cfg_hits: list) -> str | None:
-    """The run night the config's earliest in-range step appeared on. The
-    onset run id *is* a night (run directories are named by date); reports
-    written before onset-run tracking fall back to the first plotted night
-    that measured the onset release. Never compares a run date to a release
-    date — the nightly lags, so the two routinely differ."""
-    ids = [v.onset_run_id for v in cfg_hits if v.onset_run_id]
-    if ids:
-        return min(ids)
-    rels = [v.onset_run_date for v in cfg_hits if v.onset_run_date]
-    if not rels:
-        return None
-    hit = pts[pts["k4h_release"].astype(str).str.endswith(min(rels))]
-    return hit["night"].min() if not hit.empty else None
-
-
-def _axis_title(metric: str) -> str:
-    """Human-readable axis title with units, e.g. ``Wall time (s)``."""
-    name = _METRIC_LABELS.get(metric, metric)
-    name = name[:1].upper() + name[1:]
-    unit = _METRIC_UNITS.get(metric, "")
-    return f"{name} ({unit})" if unit else name
-
-
-def _add_baseline_bands(
-    fig: go.Figure, cfg_hits: list, x_metric: str, y_metric: str,
-    *, row: int, col: int,
-) -> None:
-    """The judged baseline crosshair for one subplot cell: for each of the two
-    axes that has a flagged verdict, the median (dashed) and the detection
-    gate (median ± z·MAD) — the same band the Regressions drill-down draws."""
-    for v in cfg_hits:
-        med, mad = v.baseline_median, v.baseline_mad or 0.0
-        if med is None:
+        try:
+            blame = BlameReport.from_json(raw)
+        except BlameSchemaError:
             continue
-        if v.metric == x_metric:
-            fig.add_vline(x=med, line_dash="dash", line_color=PALETTE[0],
-                          line_width=1, row=row, col=col)
-            if mad > 0:
-                fig.add_vrect(x0=med - Z_THRESHOLD * mad, x1=med + Z_THRESHOLD * mad,
-                              fillcolor=_BASELINE_FILL, line_width=0,
-                              row=row, col=col)
-        elif v.metric == y_metric:
-            fig.add_hline(y=med, line_dash="dash", line_color=PALETTE[0],
-                          line_width=1, row=row, col=col)
-            if mad > 0:
-                fig.add_hrect(y0=med - Z_THRESHOLD * mad, y1=med + Z_THRESHOLD * mad,
-                              fillcolor=_BASELINE_FILL, line_width=0,
-                              row=row, col=col)
-
-
-def _outlier_figure(
-    pts: pd.DataFrame, cfg_hits: list, x_metric: str, y_metric: str, label: str
-) -> go.Figure:
-    """The config's nightly runs in the (time, memory) plane, with each
-    metric's 1D distribution in a margin.
-
-    Main cell: the accepted baseline crosshair per judged axis (median ± the
-    detection gate, the same band the drill-down draws), the nights before the
-    step in the palette hue, the nights from the onset on in the confirmed red
-    — the "outlier" cluster the step created — and the onset night ringed with
-    the standard confirmed halo. The margins histogram the same nights per
-    metric separately (shared bins, before/after overlaid), so a step that
-    moved only one of the two shows up in its own margin.
-    """
-    # Only the two plotted axes decide the split — an unrelated third flagged
-    # metric on this config (a candidate can carry more than the pair shown)
-    # must not pull its onset into a split neither axis was judged against.
-    axis_hits = [v for v in cfg_hits if v.metric in (x_metric, y_metric)]
-    onset = _onset_night(pts, axis_hits)
-    before = pts if onset is None else pts[pts["night"] < onset]
-    after = pts.iloc[0:0] if onset is None else pts[pts["night"] >= onset]
-
-    fig = make_subplots(
-        rows=2, cols=2,
-        column_widths=[0.78, 0.22], row_heights=[0.78, 0.22],
-        shared_xaxes=True, shared_yaxes=True,
-        horizontal_spacing=0.03, vertical_spacing=0.04,
-    )
-
-    _add_baseline_bands(fig, cfg_hits, x_metric, y_metric, row=1, col=1)
-    # Repeat only the relevant half of the crosshair in each margin, so the
-    # 1D distributions read against the same gate as the plane.
-    _add_baseline_bands(fig, cfg_hits, x_metric, "", row=2, col=1)
-    _add_baseline_bands(fig, cfg_hits, "", y_metric, row=1, col=2)
-
-    hover = (
-        "<b>%{customdata[0]}</b> (tag %{customdata[1]})<br>"
-        f"{_axis_title(x_metric)}: %{{x:.4g}}<br>"
-        f"{_axis_title(y_metric)}: %{{y:.4g}}<extra></extra>"
-    )
-    splits = (
-        ("before the step", before, PALETTE[0]),
-        ("from the onset on", after, FLAG_MARKS["CONFIRMED"]["color"]),
-    )
-    for name, frame, color in splits:
-        if frame.empty:
-            continue
-        fig.add_trace(go.Scatter(
-            x=frame["x"], y=frame["y"], mode="markers", name=name,
-            legendgroup=name,
-            marker=dict(size=9, color=_to_rgba(color, 0.55),
-                        line=dict(color=color, width=1.5)),
-            customdata=frame[["night", "k4h_release"]].values,
-            hovertemplate=hover,
-        ), row=1, col=1)
-        # Marginal 1D distributions of the same nights. ``bingroup`` keys the
-        # per-axis bin layout, so the before/after histograms stay comparable.
-        fig.add_trace(go.Histogram(
-            x=frame["x"], name=name, legendgroup=name, showlegend=False,
-            bingroup="x", marker=dict(color=_to_rgba(color, 0.55)),
-        ), row=2, col=1)
-        fig.add_trace(go.Histogram(
-            y=frame["y"], name=name, legendgroup=name, showlegend=False,
-            bingroup="y", marker=dict(color=_to_rgba(color, 0.55)),
-        ), row=1, col=2)
-    if onset is not None:
-        on = pts[pts["night"] == onset]
-        if not on.empty:
-            add_severity_markers(
-                fig, on.assign(name=label), x_col="x", y_col="y", name_col="name",
-                severity="CONFIRMED", hover_y="%{y:.4g}",
-                row=1, col=1,
-            )
-
-    t_margin = 30
-    plot_h = 430
-    legend, b_margin = _legend_below(
-        plot_h, 2, t_margin=t_margin, tick_clearance=40,
-        entry_width=180, font_size=12,
-    )
-    fig.update_layout(
-        template=_TEMPLATE,
-        barmode="overlay",
-        height=plot_h + t_margin + b_margin,
-        margin=dict(l=10, r=10, t=t_margin, b=b_margin),
-        legend=legend,
-    )
-    # Shared axes put the value labels on the bottom row / left column; the
-    # count axes of the margins stay unlabelled (their magnitude is not the
-    # point — the split and the position against the band are).
-    fig.update_xaxes(title_text=_axis_title(x_metric), row=2, col=1)
-    fig.update_yaxes(title_text=_axis_title(y_metric), row=1, col=1)
-    fig.update_yaxes(showticklabels=False, row=2, col=1)
-    fig.update_xaxes(showticklabels=False, row=1, col=2)
-    return fig
-
-
-def _render_outlier_scatter(
-    reports, platform: str, hits: list, base_release: str, head_release: str, *, scoped: bool
-) -> None:
-    """The "typical values and the outlier" view for one config of the range's
-    regressions. Opens automatically when the top candidate stepped in CPU
-    *and* memory — the diagonal-outlier case the plane exists for.
-
-    *reports* is fetched with no upper date bound (a regression's *onset* can
-    be in range while it only *confirms*, and so first appears in a report,
-    later — see :func:`_render_regressions_in_range`), but the plotted points
-    are capped at *head_release*: without that cap, a historical range would
-    silently pull in runs from releases never part of the comparison, and
-    "the runs from the onset on" would misrepresent stack changes that
-    happened after this diff as effects of it.
-    """
-    candidates = _scatter_candidates(hits)
-    if not candidates:
-        return
-    st.markdown("###### Typical vs outlier")
-    st.caption(
-        "One config's nightly runs in the CPU × memory plane, read from the "
-        "already-fetched reports (no run downloads). The dashed crosshair is "
-        "the accepted baseline each judged axis was gated on; red points are "
-        "the runs from the plotted axes' earliest flagged onset on. "
-        "“CPU + memory stepped” means both moved at the *same* onset — a "
-        "genuine diagonal step; a config with two flagged metrics but "
-        "different onsets is still two separate steps, not one cluster. "
-        "The margins show each metric's own 1D distribution, so a step in "
-        "only one of the two still stands out."
-    )
-
-    def _name(c) -> str:
-        det, samp, label, _x, _y, both = c
-        name = label if scoped else f"{label} — {det}, {_pretty_sample(samp)}"
-        return f"{name} (CPU + memory stepped)" if both else name
-
-    options = ["—"] + [_name(c) for c in candidates]
-    candidate_scope = tuple(candidates)
-    _reset_widget_on_scope(
-        "stack_outlier_cfg",
-        (platform, base_release, head_release, scoped, candidate_scope),
-    )
-    picker_row = st.container(
-        horizontal=True, vertical_alignment="bottom", width="content"
-    )
-    with picker_row:
-        _drop_stale_selection("stack_outlier_cfg", options)
-        choice = st.selectbox(
-            "Config", options,
-            index=1 if candidates[0][5] else 0,
-            key="stack_outlier_cfg",
-            width=320,
-            help="Configs with a confirmed step in this range — one where CPU "
-                 "and memory both stepped opens by default; pick “—” to hide "
-                 "the plane.",
-        )
-        if choice == "—":
-            return
-        det, samp, label, x_default, y_default, _both = (
-            candidates[options.index(choice) - 1]
-        )
-        # The same time/memory axis choice as the Overview tab, defaulting to
-        # the config's own flagged metrics. Keys are scoped per (detector,
-        # sample, config) rather than just the label — "All detectors" can
-        # show several detectors sharing one label (e.g. ``baseline_all``),
-        # and a label-only key would leak one detector's axis pick into
-        # another's on selection.
-        cfg_key = f"{det}_{samp}_{label}"
-        x_metric = st.selectbox(
-            "Time metric", _TIME_CHOICES,
-            index=_TIME_CHOICES.index(x_default) if x_default in _TIME_CHOICES else 0,
-            key=f"stack_outlier_tmetric_{cfg_key}",
-            format_func=_axis_title, width=220,
-        )
-        y_metric = st.selectbox(
-            "Memory metric", _MEMORY_CHOICES,
-            index=(_MEMORY_CHOICES.index(y_default)
-                   if y_default in _MEMORY_CHOICES else 0),
-            key=f"stack_outlier_mmetric_{cfg_key}",
-            format_func=_axis_title, width=220,
-        )
-    pts = _series_points(reports, det, platform, samp, label, x_metric, y_metric)
-    pts = _bound_to_release(pts, head_release)
-    if pts.empty:
-        st.info(
-            "The fetched reports carry no nightly values for this config on "
-            "the selected metrics within the selected release range."
-        )
-        return
-    cfg_hits = [
-        v for v in hits
-        if (v.detector, v.sample, v.label) == (det, samp, label)
-        and v.sub_detector is None
-    ]
-    st.plotly_chart(
-        _outlier_figure(pts, cfg_hits, x_metric, y_metric, label),
-        width="stretch", key="stack_outlier_chart",
-    )
+        if blame.entry_for(verdict) is not None:
+            return blame
+    return None
 
 
 def _span(releases: list[str], base_release: str, head_release: str) -> str:
@@ -822,47 +718,44 @@ def _span(releases: list[str], base_release: str, head_release: str) -> str:
 def _render_summary(
     n_changed: int, n_same: int, base_release: str, head_release: str, span: str
 ) -> None:
-    """At-a-glance header, mirroring the Regressions tab's verdict banner."""
-    with st.container(border=True):
-        st.markdown(f"##### Stack diff — {base_release} → {head_release}")
-        if span:
-            st.caption(span)
-        cols = st.columns(3)
-        cols[0].metric(
-            "Packages changed", n_changed,
-            help="Packages whose upstream commit differs between the two releases. "
-                 "These are the only places an upstream cause could come from.",
-        )
-        cols[1].metric(
-            "Unchanged", n_same,
-            help="Built from the identical commit in both releases.",
-        )
-        cols[2].metric(
-            "Tracked", n_changed + n_same,
-            help="Packages Key4hep builds from git, and whose commit is therefore "
-                 "recorded. Release-tarball dependencies have no upstream commit "
-                 "and are not tracked.",
-        )
+    """Compact release-diff heading and one-line package counts."""
+    st.markdown(f"##### Stack diff · {base_release} → {head_release}")
+    if span:
+        st.caption(span)
+    st.markdown(
+        f"**{_plural(n_changed, 'package')} changed** · "
+        f"{n_same} unchanged · {n_changed + n_same} tracked"
+    )
 
 
 def _render_diff(
     base: dict, head: dict, base_release: str, head_release: str, span: str
-) -> None:
+) -> Literal["changed", "identical"]:
     changes = diff_packages(base, head)
     same = unchanged_packages(base, head)
     _render_summary(len(changes), len(same), base_release, head_release, span)
 
     if not changes:
-        # Not "nothing found" but "these are the same stack" — which rules an
-        # upstream commit out entirely, and is an answer rather than a blank.
-        st.success(
-            f"**These two releases are the identical stack.** All {len(same)} tracked "
-            "packages sit at the same commit, so nothing upstream changed between them: "
-            "a metric that moved between these releases moved for another reason — the "
-            "host, the sample, or noise.",
-            icon="✅",
-        )
-        return
+        # Not "nothing found" but identical endpoint commits — an answer rather
+        # than a blank. Across a cumulative range, do not overclaim: a package
+        # may have moved in an intermediate release and then returned.
+        if span:
+            st.success(
+                f"**The selected endpoint stacks are identical.** All {len(same)} "
+                "tracked packages end at the same commit. An intermediate release "
+                "may still have moved and later returned; inspect a metric's exact "
+                "blame window before ruling that out.",
+                icon="✅",
+            )
+        else:
+            st.success(
+                f"**These two releases are the identical stack.** All {len(same)} "
+                "tracked packages sit at the same commit, so a metric that moved at "
+                "this boundary moved for another reason — the host, the sample, or "
+                "noise.",
+                icon="✅",
+            )
+        return "identical"
 
     df = pd.DataFrame([
         {
@@ -902,3 +795,4 @@ def _render_diff(
         st.caption(
             f"{_plural(len(same), 'tracked package')} unchanged between these releases."
         )
+    return "changed"
