@@ -41,7 +41,13 @@ from remote_cache import (
 from tabs import _blame
 from tabs._regression_flags import FLAG_MARKS, add_severity_markers, flag_table
 from ui_chrome import _drop_stale_selection, seed_query_param
-from ui_utils import _METRIC_LABELS, _METRIC_UNITS, _legend_below, _to_rgba
+from ui_utils import (
+    _legend_below,
+    _METRIC_LABELS,
+    _METRIC_UNITS,
+    _reset_widget_on_scope,
+    _to_rgba,
+)
 
 #: Releases are stored as ``key4hep-{YYYY-MM-DD}`` directories; the tab talks
 #: in the bare nightly tag the rest of the dashboard shows on its axes.
@@ -55,6 +61,10 @@ _PREFIX = "key4hep-"
 _TAB_NAME = "Stack Changes"
 PARAM_FROM = "from"
 PARAM_TO = "to"
+
+_FROM_KEY = "stack_from"
+_TO_KEY = "stack_to"
+_SCOPE_KEY = "stack_change_scope"
 
 
 def deep_link(
@@ -126,16 +136,52 @@ def _seed(key: str, param: str, options: list[str], default: str) -> None:
         st.session_state[key] = default
 
 
-def _from_default_for(releases: list[str]) -> str:
+def _defaults_for_stack(releases: list[str], stack: str) -> tuple[str, str]:
+    """Return the default older→newer range for the sidebar's *stack*.
+
+    The selected stack is the release the user is investigating, so it belongs
+    at the newer end of the comparison. If it is unavailable in the platform
+    union, retain the historical newest-pair fallback. For the oldest release
+    there is no earlier baseline; returning it at both ends makes that explicit
+    through the existing "pick two different releases" notice instead of
+    silently comparing a different stack.
+    """
+    selected = _release(stack)
+    if selected not in releases:
+        return releases[1], releases[0]
+    i = releases.index(selected)
+    older = releases[i + 1] if i + 1 < len(releases) else selected
+    return older, selected
+
+
+def _from_default_for(releases: list[str], default: str | None = None) -> str:
     """The "From release" default: normally the second-newest, but when a deep
     link seeds only ``?to=`` (an open-ended blame window), the release one older
     than that ``to`` — so the pickers open on an older→newer range rather than
-    tripping the reversed-range warning. *releases* is newest-first."""
+    tripping the reversed-range warning. *default* lets the sidebar-selected
+    stack supply the ordinary baseline. *releases* is newest-first."""
     to_seed = st.query_params.get(PARAM_TO)
     if PARAM_FROM not in st.query_params and to_seed in releases:
         i = releases.index(to_seed)
         return releases[i + 1] if i + 1 < len(releases) else releases[i]
-    return releases[1]
+    return default if default in releases else releases[1]
+
+
+def _forget_stale_stack_scope(platform: str, stack: str) -> None:
+    """Re-default the comparison when the sidebar platform/stack changes.
+
+    The widget keys and the query parameters written by this tab otherwise
+    outlive a trip to another section. On the first render, query parameters
+    are preserved because they may be an intentional deep link.
+    """
+    scope = (platform, stack)
+    previous = st.session_state.get(_SCOPE_KEY)
+    st.session_state[_SCOPE_KEY] = scope
+    if previous is not None and previous != scope:
+        st.session_state.pop(_FROM_KEY, None)
+        st.session_state.pop(_TO_KEY, None)
+        st.query_params.pop(PARAM_FROM, None)
+        st.query_params.pop(PARAM_TO, None)
 
 
 def _stacks_for_platform(data_url: str, platform: str) -> list[str]:
@@ -180,7 +226,9 @@ def packages_for_release(data_url: str, platform: str, release: str) -> dict | N
 
 
 
-def render(data_url: str, platform: str, detector: str, sample: str) -> None:
+def render(
+    data_url: str, platform: str, detector: str, sample: str, stack: str,
+) -> None:
     st.caption(
         "Which Key4hep packages moved between two nightly releases — the upstream "
         f"changes a regression between them could be attributed to. "
@@ -196,26 +244,25 @@ def render(data_url: str, platform: str, detector: str, sample: str) -> None:
         return
 
     releases = [_release(s) for s in stacks]
-    # Default to the two most recent releases: "what came in last night?" is the
-    # question this tab exists to answer. Defaulting both pickers to the newest
-    # would open the tab on "pick two different releases" instead.
+    _forget_stale_stack_scope(platform, stack)
+    from_default, to_default = _defaults_for_stack(releases, stack)
+    # Default to the selected sidebar stack and the release immediately before
+    # it. This keeps the tab anchored to the release the user was inspecting;
+    # an explicit ?from=/?to= deep link still wins on the first render.
     col_from, col_to = st.columns(2)
     with col_from:
-        # Default the baseline to the second-newest release ("what came in last
-        # night?"), except when a deep link seeds only `to`: then default `from`
-        # to the release just older than it, so an open-ended blame link
-        # (onset far in the past) opens on a valid older→newer range instead of
-        # a reversed one.
-        from_default = _from_default_for(releases)
-        _seed("stack_from", PARAM_FROM, releases, from_default)
+        # A deep link that seeds only `to` still defaults `from` to the release
+        # immediately before that target.
+        from_default = _from_default_for(releases, from_default)
+        _seed(_FROM_KEY, PARAM_FROM, releases, from_default)
         base_release = st.selectbox(
-            "From release", releases, key="stack_from",
+            "From release", releases, key=_FROM_KEY,
             help=f"The older nightly tag — the accepted baseline. {_TAG_HELP}",
         )
     with col_to:
-        _seed("stack_to", PARAM_TO, releases, releases[0])
+        _seed(_TO_KEY, PARAM_TO, releases, to_default)
         head_release = st.selectbox(
-            "To release", releases, key="stack_to",
+            "To release", releases, key=_TO_KEY,
             help=f"The newer nightly tag. {_TAG_HELP}",
         )
     st.query_params[PARAM_FROM] = base_release
@@ -391,7 +438,9 @@ def _render_regressions_in_range(
     if len(hits) > _MAX_REGRESSIONS:
         st.caption(f"Showing the {_MAX_REGRESSIONS} largest of {len(hits)} by |Δ|.")
 
-    _render_outlier_scatter(reports, platform, hits, head_release, scoped=not show_all)
+    _render_outlier_scatter(
+        reports, platform, hits, base_release, head_release, scoped=not show_all,
+    )
 
 
 #: Fill for the accepted-baseline band on the outlier plane and its marginals
@@ -652,7 +701,7 @@ def _outlier_figure(
 
 
 def _render_outlier_scatter(
-    reports, platform: str, hits: list, head_release: str, *, scoped: bool
+    reports, platform: str, hits: list, base_release: str, head_release: str, *, scoped: bool
 ) -> None:
     """The "typical values and the outlier" view for one config of the range's
     regressions. Opens automatically when the top candidate stepped in CPU
@@ -688,6 +737,10 @@ def _render_outlier_scatter(
         return f"{name} (CPU + memory stepped)" if both else name
 
     options = ["—"] + [_name(c) for c in candidates]
+    _reset_widget_on_scope(
+        "stack_outlier_cfg",
+        (platform, base_release, head_release, scoped, tuple(options)),
+    )
     picker_row = st.container(
         horizontal=True, vertical_alignment="bottom", width="content"
     )

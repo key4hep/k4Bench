@@ -6,7 +6,15 @@ import streamlit as st
 from k4bench.analysis.plots import plot_event_memory
 from stats import build_event_stats_table, select_top_n_by_ratio, style_stats_table
 from tabs._reliability import render_reliability_filter
-from ui_utils import _is_valid_df, _PALETTES, _PALETTE_NAMES, _auto_palette_index, _render_historical_trends
+from ui_chrome import _drop_stale_selection
+from ui_utils import (
+    _auto_palette_index,
+    _is_valid_df,
+    _PALETTE_NAMES,
+    _PALETTES,
+    _render_historical_trends,
+    _reset_widget_on_scope,
+)
 
 
 _STAT_COLS = {
@@ -28,12 +36,18 @@ def _render_current_run(
     selected_labels: list[str],
 ) -> None:
     """Render the current-run per-event memory view."""
+    current_labels = [label for label in selected_labels if label in event_data]
+    if not current_labels:
+        st.info("No event memory data available for the selected configurations in this run.")
+        return
+
     col_bl, col_topn, col_pal = st.columns([2, 2, 2])
     with col_bl:
+        _drop_stale_selection("evt_memory_baseline", current_labels)
         baseline_label = (
             st.selectbox(
                 "Baseline",
-                options=selected_labels,
+                options=current_labels,
                 index=0,
                 key="evt_memory_baseline",
                 help=(
@@ -47,7 +61,7 @@ def _render_current_run(
             else None
         )
     with col_topn:
-        max_n = len(selected_labels)
+        max_n = len(current_labels)
         if max_n > 2:
             if st.session_state.get("_evt_memory_max_n") != max_n:
                 st.session_state["evt_memory_topn"] = min(5, max_n)
@@ -67,15 +81,19 @@ def _render_current_run(
             top_n = max_n
             st.session_state["_evt_memory_max_n"] = max_n
     with col_pal:
+        palette_default = _auto_palette_index(top_n)
+        _reset_widget_on_scope(
+            "evt_memory_palette", palette_default, reset_unscoped=True,
+        )
         palette_name = st.selectbox(
             "Colour palette",
             options=_PALETTE_NAMES,
-            index=_auto_palette_index(top_n),
+            index=palette_default,
             key="evt_memory_palette",
         )
 
     display_labels = select_top_n_by_ratio(
-        event_data, selected_labels, "rss_end_mb", "MB", baseline_label, True, top_n
+        event_data, current_labels, "rss_end_mb", "MB", baseline_label, True, top_n
     )
 
     fig = plot_event_memory(

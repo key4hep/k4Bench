@@ -25,6 +25,28 @@ def _is_valid_df(df: "pd.DataFrame | None") -> bool:
     return df is not None and not df.empty
 
 
+def _reset_widget_on_scope(
+    key: str, scope: object, *, reset_unscoped: bool = False,
+) -> None:
+    """Drop a keyed widget's value when its context-dependent default changes.
+
+    Streamlit handles values that disappear from a widget's options, but it
+    retains a value that is still valid even when it came from another report,
+    release range, or automatic palette size. Call this before creating the
+    widget. The first render preserves existing state by default so query-
+    seeded/deep-linked values remain authoritative; ``reset_unscoped`` is for
+    purely automatic controls such as palette sizing.
+    """
+    scope_key = f"_{key}_scope"
+    previous = st.session_state.get(scope_key)
+    st.session_state[scope_key] = scope
+    if (
+        (previous is not None and previous != scope)
+        or (previous is None and reset_unscoped and key in st.session_state)
+    ):
+        st.session_state.pop(key, None)
+
+
 # ── Colour helper ──────────────────────────────────────────────────────────────
 
 def _to_rgba(color: str, alpha: float) -> str:
@@ -264,11 +286,16 @@ def _render_historical_trends(
     # ── Style controls ────────────────────────────────────────────────────────
     ctrl_l, ctrl_m, ctrl_r = st.columns(3, vertical_alignment="bottom")
     with ctrl_l:
+        palette_default = _auto_palette_index(len(filtered_labels))
+        palette_key = f"{key_prefix}_palette"
+        _reset_widget_on_scope(
+            palette_key, palette_default, reset_unscoped=True,
+        )
         palette_name = st.selectbox(
             "Colour palette",
             options=_PALETTE_NAMES,
-            index=_auto_palette_index(len(filtered_labels)),
-            key=f"{key_prefix}_palette",
+            index=palette_default,
+            key=palette_key,
         )
     with ctrl_m:
         style_cycling = st.selectbox(

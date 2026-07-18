@@ -66,37 +66,36 @@ def _score_to_css(score: float, bad: str, mid: str, good: str) -> str:
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
 
-def _prep_data(trend_df: pd.DataFrame, selected_labels: list[str]) -> pd.DataFrame:
-    # Dates and x_date are already normalised by cached_load_trend_results.
-    df = trend_df[trend_df["label"].isin(selected_labels)].copy()
-    df["x_date"]   = pd.to_datetime(df["x_date"])
-    df["run_date"] = pd.to_datetime(df["run_date"])
-    df = df.dropna(subset=["x_date"])
-    df = df.loc[df.groupby(["label", "x_date"])["run_date"].idxmax()]
-    return df.loc[df.groupby("label")["x_date"].idxmax()].copy()
+def _prep_data(results_df: pd.DataFrame, selected_labels: list[str]) -> pd.DataFrame:
+    """The selected run's result rows, restricted to the sidebar filter.
+
+    Config impact is a within-run comparison. Pulling each label's latest row
+    independently from trend history can mix releases and silently ignore the
+    sidebar stack.
+    """
+    return results_df[results_df["label"].isin(selected_labels)].copy()
 
 
 # ── Main render ───────────────────────────────────────────────────────────────
 
-def render(trend_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
-    # Config Impact is a per-run snapshot (latest run per config), not a historical
-    # time series, so it carries no window-level "unreliable runs" warning/toggle —
-    # the selected run's quality is surfaced by the sidebar run-quality card instead.
-    if trend_df is None:
-        st.info("No trend data available. Run the nightly benchmark at least once.")
+def render(results_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
+    # Config Impact is a snapshot of the selected stack's latest run, not a
+    # historical time series. Its reliability is surfaced by the sidebar card.
+    if results_df is None:
+        st.info("No result data available for the selected run.")
         return
     if not selected_labels:
         st.info("Select at least one configuration in the sidebar.")
         return
 
-    snapshot = _prep_data(trend_df, selected_labels)
+    snapshot = _prep_data(results_df, selected_labels)
     snap_labels = [lbl for lbl in selected_labels if lbl in snapshot["label"].values]
     if not snap_labels:
         st.warning("No snapshot data for the selected configurations.")
         return
     missing_snap = sorted(set(selected_labels) - set(snap_labels))
     if missing_snap:
-        st.warning(f"No recent snapshot data for: {', '.join(missing_snap)}")
+        st.warning(f"No result data in the selected run for: {', '.join(missing_snap)}")
 
     present = [(col, lbl) for col, lbl in _METRICS if col in snapshot.columns]
     if not present:

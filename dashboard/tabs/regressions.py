@@ -72,7 +72,13 @@ from tabs._regression_flags import (
 from tabs._reliability import render_reliability_filter
 from tabs.stack_changes import _release, deep_link, packages_for_release
 from ui_chrome import _drop_stale_selection, seed_query_param
-from ui_utils import _METRIC_LABELS, _METRIC_UNITS, _is_valid_df, _to_rgba
+from ui_utils import (
+    _is_valid_df,
+    _METRIC_LABELS,
+    _METRIC_UNITS,
+    _reset_widget_on_scope,
+    _to_rgba,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -168,6 +174,7 @@ def render(
     _render_group(
         group, data_url, cache_dir, blame=blame,
         key=f"{detector}_{platform}_{sample}",
+        scope=(stack, night),
     )
 
 
@@ -520,7 +527,7 @@ def _render_blame_cards(
 
 def _render_group(
     group: RunGroupReport, data_url: str, cache_dir: str, *,
-    blame: BlameReport | None, key: str,
+    blame: BlameReport | None, key: str, scope: tuple[str, str],
 ) -> None:
     for msg in group.job_failures:
         st.error(f"**{msg}**", icon="❌")
@@ -558,11 +565,13 @@ def _render_group(
                 f"{_badge(v)} · {_metric_name(v)} · {v.label} — Δ {_fmt_pct(v.pct_change)}"
                 for v in drillable
             ]
+            drill_key = f"regr_drill_{key}"
+            _reset_widget_on_scope(drill_key, (*scope, tuple(options)))
             choice = st.selectbox(
                 "Trend preview",
                 options,
                 index=1,
-                key=f"regr_drill_{key}",
+                key=drill_key,
                 help="Recent history with the baseline band this verdict was "
                      "judged against. Opens on the most severe flag — pick "
                      "another, or “—” to hide the chart. Downloads data on "
