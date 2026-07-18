@@ -308,19 +308,28 @@ def test_ranker_exception_degrades_to_unranked_without_aborting(monkeypatch):
     assert all(c.score == 0.0 for c in blame.entries[0].candidates)  # just unranked
 
 
-def test_each_metric_is_ranked_on_its_own(monkeypatch):
+def test_ranker_called_once_per_window(monkeypatch):
     # Two confirmed metrics that stepped across the same release boundary share
-    # one diff and one candidate set, but which PR plausibly moved *this* metric
-    # is a separate judgement — one inference per verdict, each carrying its own
-    # metric, so a wall-time explanation can never be re-published as a memory
-    # step's cause. (The GitHub resolution itself stays cached per window.)
+    # one diff and one candidate set → a single inference, applied to both.
     _two_candidates(monkeypatch)
     ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
     report = _report([_verdict(metric="wall_time_s"), _verdict(metric="peak_rss_mb")])
     blame = build_blame_report(
         report, packages_for_release=_MOVED, github=GitHubClient(), ranker=ranker,
     )
-    assert [r.metric for r in ranker.requests] == ["wall_time_s", "peak_rss_mb"]
+    assert len(ranker.requests) == 1  # one call for the shared window
     assert len(blame.entries) == 2
     for entry in blame.entries:
         assert next(c for c in entry.candidates if c.number == 10).score == 60.0
+
+
+def test_rank_request_carries_every_metric_sharing_the_window(monkeypatch):
+    # The model's judgement must be informed by every metric that stepped, not
+    # just whichever verdict happened to reach the ranker first.
+    _two_candidates(monkeypatch)
+    ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
+    report = _report([_verdict(metric="wall_time_s"), _verdict(metric="peak_rss_mb")])
+    build_blame_report(
+        report, packages_for_release=_MOVED, github=GitHubClient(), ranker=ranker,
+    )
+    assert [m.metric for m in ranker.requests[0].metrics] == ["wall_time_s", "peak_rss_mb"]

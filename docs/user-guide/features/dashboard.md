@@ -184,11 +184,11 @@ each PR in the window with a 0–100% **Likelihood** it is the cause and a one-l
 metric that moved and each PR's actual code diff (configured in CI via
 `K4BENCH_LLM_*`; see the [sidecar format](../../reference/file-formats.md#blame-sidecar-blamejson)) —
 the dashboard only displays the stored result. Several PRs can land in one
-package's range, so each is scored on its own — and each stepped *metric* gets
-its own ranking too (a card whose window confirmed several metrics shows one
-labelled ledger per metric, since which PR plausibly moved wall time is a
-different question from which moved memory). This is a ranked **lead for a
-human, not a verdict** — a suggestion, not proof of cause, in keeping with the
+package's range, so each is scored on its own — but the window is judged once:
+when several metrics stepped across the same release boundary, they share one
+diff and one candidate set, so the card shows a single verdict rather than a
+table per metric. This is a ranked **lead for a human, not a verdict** — a
+suggestion, not proof of cause, in keeping with the
 detector's *no evidence ⇒ no verdict* rule; the nightly email surfaces the same
 top candidates under each regression. Most nights carry no `blame.json` at all,
 and a night whose candidates are not yet ranked shows only the package diff.

@@ -194,14 +194,15 @@ identity **and** the `base_release`/`onset_release` window, so a sidecar left
 over from an earlier build of the same night (the CI job also deletes the
 remote sidecar on a rerun that produces none) can never attach to a re-anchored
 regression. The pipeline collects every PR in each changed repo's commit range;
-a separate **ranking stage** then scores each candidate *for that regression* —
+a separate **ranking stage** then scores each candidate *for that window* —
 `score` is a 0–100 likelihood it is the cause and `description` a one-line
-reason, judged per metric (two metrics sharing a window get independent
-rankings). `commits_unavailable` marks a repo whose range could not be
-enumerated at all; `truncated` marks a candidate list known to be incomplete
-(compare/PR caps, or a PR that failed to fetch) — a regression touching either
-is left **unranked**, since "most likely" over a partial candidate set would
-overclaim. The ranking is a *lead* for a human, never a claim of cause. Readers
+reason, judged once per release-boundary window (two metrics sharing a window
+share one ranking, applied to both). `commits_unavailable` marks a repo whose
+range could not be enumerated at all; `truncated` marks a candidate list known
+to be incomplete (compare/PR caps, or a PR that failed to fetch) — a regression
+touching either is left **unranked**, since "most likely" over a partial
+candidate set would overclaim. The ranking is a *lead* for a human, never a
+claim of cause. Readers
 drop unknown keys, so the schema can gain fields without breaking an older
 dashboard; structurally malformed sidecars are hidden, never fatal.
 
