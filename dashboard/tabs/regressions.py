@@ -16,10 +16,14 @@ preview downloads run data, and only for the series being inspected.
 
 from __future__ import annotations
 
+import logging
+
 import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+
+_log = logging.getLogger(__name__)
 
 from k4bench.regression.engine import Z_THRESHOLD
 from k4bench.regression.models import (
@@ -109,15 +113,30 @@ def render(
             f"reports begin on {min(dates)}. Pick a newer release in the sidebar."
         )
         return
-    raws = _cached_fetch_reports(data_url, tuple(nights))
-    reports = {n: from_json(raws[n]) for n in nights if raws.get(n)}
+    reports, unavailable = _load_reports(data_url, nights)
     if not reports:
         st.warning(
             f"Could not load release **{_release(stack)}**'s report(s) from EOS."
         )
         return
+    # A ?report= deep link pointing at a night that could not be loaded must say
+    # so, rather than silently defaulting to another night and rewriting the URL
+    # under the reader (who followed a link to a specific report).
+    pinned = st.query_params.get("report")
+    if pinned in unavailable:
+        st.warning(
+            f"The pinned **{pinned}** report could not be loaded — showing "
+            "another night for this release instead.",
+            icon="⚠️",
+        )
+    elif unavailable:
+        st.caption(
+            f"❔ {len(unavailable)} of {len(nights)} report night(s) for this "
+            "release could not be loaded (a transient EOS error or a malformed "
+            "report)."
+        )
     default_night = _pick_night(reports, detector, platform, sample)
-    night = _select_night(reports, default_night, detector, platform, sample)
+    night = _select_night(reports, default_night, detector, platform, sample, stack)
     st.query_params["report"] = night
     if night != max(dates):
         st.caption(
@@ -152,6 +171,32 @@ def render(
         group, data_url, cache_dir, blame=blame,
         key=f"{detector}_{platform}_{sample}",
     )
+
+
+def _load_reports(
+    data_url: str, nights: list[str]
+) -> tuple[dict[str, NightlyReport], list[str]]:
+    """Fetch and parse each candidate night **independently**, returning the
+    parseable reports and the nights that could not be loaded.
+
+    The tab now loads the release's whole report history, not just the one night
+    it shows, so a single half-uploaded or schema-drifted historical report must
+    not blank every other night's — parsing per night (rather than in one
+    comprehension) contains that blast radius to the offending night."""
+    raws = _cached_fetch_reports(data_url, tuple(nights))
+    reports: dict[str, NightlyReport] = {}
+    unavailable: list[str] = []
+    for n in nights:
+        raw = raws.get(n)
+        if not raw:
+            unavailable.append(n)
+            continue
+        try:
+            reports[n] = from_json(raw)
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            _log.warning("regressions: skipping malformed report for %s — %s", n, exc)
+            unavailable.append(n)
+    return reports, unavailable
 
 
 def _candidate_nights(
@@ -260,20 +305,46 @@ def _night_badge(
     return _detector_badge([g]) if g is not None else "❔"
 
 
+_NIGHT_KEY = "regr_night"
+
+
+def _forget_stale_scope(scope: tuple[str, ...]) -> None:
+    """Reset the night picker when the sidebar scope changes.
+
+    The picker uses one session key across every detector/platform/sample/
+    release, but two scopes can share the same night *dates* while flagging
+    their regression on *different* ones — so a night carried over from the
+    previous scope could open a new one on a quiet report and hide exactly the
+    regression this view exists to surface. On a scope change we drop both the
+    stored night and the ``?report=`` we wrote for the old scope, so the new
+    scope re-defaults. The incoming ``?report=`` on the first load (no prior
+    scope recorded) is preserved, keeping deep links intact."""
+    scope_key = "regr_night_scope"
+    prev = st.session_state.get(scope_key)
+    st.session_state[scope_key] = scope
+    if prev is not None and prev != scope:
+        st.session_state.pop(_NIGHT_KEY, None)
+        st.query_params.pop("report", None)
+
+
 def _select_night(
     reports: dict[str, NightlyReport], default_night: str,
-    detector: str, platform: str, sample: str,
+    detector: str, platform: str, sample: str, stack: str,
 ) -> str:
     """Return the report night to render, exposing a picker when the release was
     benchmarked on more than one night. The picker defaults to *default_night*
     (the most attention-worthy), is authoritative via ``?report=`` for deep
-    links, and re-defaults cleanly when the sidebar release changes. A
+    links, and re-defaults cleanly when the sidebar scope changes. A
     single-night release needs no widget."""
+    _forget_stale_scope((detector, platform, sample, stack))
     nights = sorted(reports, reverse=True)
+    key = _NIGHT_KEY
     if len(nights) == 1:
+        # No picker on this scope — don't strand the previous scope's night in
+        # session_state, where a later multi-night scope could read it back.
+        st.session_state.pop(key, None)
         return nights[0]
-    key = "regr_night"
-    _drop_stale_selection(key, nights)          # release switch → re-default
+    _drop_stale_selection(key, nights)          # stale night → re-default
     seed_query_param(key, "report", nights)     # ?report= wins when it's valid
     if key not in st.session_state:
         st.session_state[key] = default_night
