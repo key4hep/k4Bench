@@ -471,9 +471,11 @@ def main() -> None:
 
     # Regressions (remote only) — scoped to the sidebar triple like Run Trends,
     # but reads the precomputed nightly reports from EOS rather than the
-    # sidebar-selected run window; the report night is keyed on the sidebar's
-    # release (newest release → latest report, older release → the report of
-    # its last run). The cross-detector picture is the Overview tab.
+    # sidebar-selected run window. The sidebar's release selects which report
+    # nights are on offer; the default is the most attention-worthy night (a
+    # re-benchmarked release confirms a regression on exactly one), a picker
+    # exposes the rest, and ?report= pins one for deep links. The cross-detector
+    # picture is the Overview tab.
     if active_section == "Regressions":
         regressions.render(
             config.data_url, config.cache_dir, detector, platform, sample, stack,

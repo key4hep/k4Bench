@@ -2,10 +2,11 @@
 
 The tab shows exactly the run group matching the sidebar's (detector,
 platform, sample) — the cross-detector picture lives in the Overview tab —
-opens the trend preview on the most severe flag, and keys the report night on
-the sidebar's release: the newest release shows the latest report, an older
-one the report of its last run. All remote calls are stubbed; nothing touches
-the network.
+opens the trend preview on the most severe flag, and offers the sidebar
+release's report nights: the default is the most attention-worthy night (a
+confirmed regression outranks a watch outranks a quiet rerun), a picker exposes
+the rest, and ``?report=`` pins one directly. All remote calls are stubbed;
+nothing touches the network.
 """
 
 from __future__ import annotations
@@ -85,7 +86,11 @@ def _app(dashboard_dir, reports_map, blame_map, dates, stacks_dates,
     from tabs import regressions as _tab
 
     _tab._cached_list_report_dates = lambda url: list(dates)
-    _tab._cached_fetch_report = lambda url, night: reports_map.get(night)
+    # The tab batch-fetches the release's candidate nights; a night absent from
+    # reports_map models a report that could not be loaded (dropped silently).
+    _tab._cached_fetch_reports = lambda url, nights: {
+        n: reports_map[n] for n in nights if reports_map.get(n) is not None
+    }
     # Absent on most nights; the blame sidecar is best-effort, so the stub
     # returns None unless a test supplies one.
     _tab._cached_fetch_blame = lambda url, night: blame_map.get(night)
@@ -106,7 +111,7 @@ def _app(dashboard_dir, reports_map, blame_map, dates, stacks_dates,
 
 def _run(report_json=None, detector="CLD", platform=PLAT, sample="single_e",
          stack=STACK, dates=(NIGHT,), stacks_dates=None,
-         reports_map=None, blame_map=None) -> AppTest:
+         reports_map=None, blame_map=None, query_params=None) -> AppTest:
     if reports_map is None:
         reports_map = {d: report_json for d in dates}
     at = AppTest.from_function(
@@ -118,6 +123,8 @@ def _run(report_json=None, detector="CLD", platform=PLAT, sample="single_e",
         ),
         default_timeout=30,
     )
+    for k, v in (query_params or {}).items():
+        at.query_params[k] = v
     at.run()
     assert not at.exception, at.exception
     return at
@@ -149,9 +156,10 @@ def test_banner_counts_the_groups_verdicts():
 
 def test_trend_preview_defaults_to_the_worst_confirmed_flag():
     at = _run(_report([_group(verdicts=_FLAGGED)]))
-    # The night dropdown is gone (the report is keyed on the sidebar's
-    # release), so the trend preview is the tab's only selectbox. It opens on
+    # A single-night release shows no night picker (a segmented_control, not a
+    # selectbox), so the trend preview is the tab's only selectbox. It opens on
     # the largest-|Δ| CONFIRMED metric — not "—", and not the larger-|Δ| WATCH.
+    assert not at.segmented_control
     (preview,) = at.selectbox
     assert "peak_rss_mb" in preview.value
     assert preview.value.startswith("🔴")
@@ -176,12 +184,30 @@ def test_missing_detector_names_the_covered_ones():
     assert "CLD" in body and "IDEA" in body
 
 
-# ── the report night is keyed on the sidebar's release ───────────────────────
+# ── the sidebar's release offers its report nights, ranked by severity ────────
+
+def _report_param(at: AppTest) -> str:
+    """The ``?report=`` value, normalising AppTest's list-or-scalar return."""
+    v = at.query_params["report"]
+    return v[0] if isinstance(v, list) else v
+
+
+def _quiet_report() -> dict:
+    return _report([_group(verdicts=[_verdict("wall_time_s", Severity.OK, 0.01)])])
+
+
+def _watch_report() -> dict:
+    return _report([_group(verdicts=[_verdict("wall_time_s", Severity.WATCH, 0.20)])])
+
+
+def _confirmed_report() -> dict:
+    return _report([_group(verdicts=_FLAGGED)])
+
 
 def test_newest_release_shows_the_latest_report():
     # The selected release owns the triple's newest run → the latest report,
     # even when it is newer than that run (a missing-run night's failure must
-    # stay visible).
+    # stay visible). Only the latest night has a report, so no picker appears.
     at = _run(
         reports_map={"2026-07-11": _report([_group(
             verdicts=[], job_failures=["no run uploaded for 2026-07-11"],
@@ -191,24 +217,142 @@ def test_newest_release_shows_the_latest_report():
     )
     by_label = {m.label: m.value for m in at.metric}
     assert by_label["❌ Failures"] == "1"
+    assert not at.segmented_control
     assert not any("Historical view" in c.value for c in at.caption)
 
 
-def test_older_release_shows_the_report_of_its_last_run():
-    # Two nights re-benchmarked the older release; its *last* run's report is
-    # the most settled judgement of that fixed stack, so that is the night
-    # shown — flagged as a historical view.
-    old_stack = "key4hep-2026-07-05"
-    old_group = RunGroupReport(
-        detector="CLD", platform=PLAT, sample="single_e",
-        k4h_release=old_stack, run_date="2026-07-07", run_id="2026-07-07",
-        verdicts=[_verdict("wall_time_s", Severity.OK, 0.0,
-                           run_id="2026-07-07", run_date="2026-07-05")],
+def test_confirmed_rerun_defaults_over_a_later_quiet_night():
+    # The release was benchmarked on two nights: the first CONFIRMED a
+    # regression, the second re-anchored and fell quiet. The default must be the
+    # confirmed night — never masked by the later quiet rerun — with a picker
+    # exposing both.
+    at = _run(
+        reports_map={NIGHT: _confirmed_report(), "2026-07-11": _quiet_report()},
+        dates=("2026-07-11", NIGHT),
+        stacks_dates={STACK: [NIGHT, "2026-07-11"]},
+    )
+    (picker,) = at.segmented_control
+    assert picker.key == "regr_night"
+    assert set(picker.options) == {"2026-07-11", NIGHT}
+    assert picker.value == NIGHT                       # the confirmed night wins
+    assert _report_param(at) == NIGHT
+    by_label = {m.label: m.value for m in at.metric}
+    assert by_label["🔴 Regressed"] == "2"
+
+
+def test_later_confirmation_defaults_over_an_earlier_watch():
+    # First night only WATCHed; the next reliable night CONFIRMED. The default
+    # must be the newer, confirmed night — the opposite tie-break from taking
+    # the earliest night blindly.
+    at = _run(
+        reports_map={NIGHT: _watch_report(), "2026-07-11": _confirmed_report()},
+        dates=("2026-07-11", NIGHT),
+        stacks_dates={STACK: [NIGHT, "2026-07-11"]},
+    )
+    (picker,) = at.segmented_control
+    assert picker.value == "2026-07-11"
+    by_label = {m.label: m.value for m in at.metric}
+    assert by_label["🔴 Regressed"] == "2"
+
+
+def test_multiple_quiet_reruns_default_to_the_newest():
+    # Nothing was flagged on any night — the newest report wins the tie.
+    at = _run(
+        reports_map={NIGHT: _quiet_report(), "2026-07-11": _quiet_report()},
+        dates=("2026-07-11", NIGHT),
+        stacks_dates={STACK: [NIGHT, "2026-07-11"]},
+    )
+    (picker,) = at.segmented_control
+    assert picker.value == "2026-07-11"
+    assert _report_param(at) == "2026-07-11"
+
+
+def test_latest_report_missing_run_failure_stays_the_default():
+    # The active release ran quietly on its own night, but the newer latest
+    # report has a missing-run failure for it — that failure must win the
+    # default over the quiet own-night report.
+    at = _run(
+        reports_map={
+            NIGHT: _quiet_report(),
+            "2026-07-11": _report([_group(
+                verdicts=[], job_failures=["no run uploaded for 2026-07-11"],
+            )]),
+        },
+        dates=("2026-07-11", NIGHT),
+        stacks_dates={STACK: [NIGHT]},
+    )
+    (picker,) = at.segmented_control
+    assert picker.value == "2026-07-11"
+    by_label = {m.label: m.value for m in at.metric}
+    assert by_label["❌ Failures"] == "1"
+
+
+def test_report_query_param_overrides_the_default():
+    # A deep link to the quiet rerun is authoritative even though the confirmed
+    # night would otherwise be the default.
+    at = _run(
+        reports_map={NIGHT: _confirmed_report(), "2026-07-11": _quiet_report()},
+        dates=("2026-07-11", NIGHT),
+        stacks_dates={STACK: [NIGHT, "2026-07-11"]},
+        query_params={"report": "2026-07-11"},
+    )
+    (picker,) = at.segmented_control
+    assert picker.value == "2026-07-11"
+    by_label = {m.label: m.value for m in at.metric}
+    assert by_label["🔴 Regressed"] == "0"
+    assert _report_param(at) == "2026-07-11"
+
+
+def test_invalid_report_query_param_falls_back_to_the_default():
+    at = _run(
+        reports_map={NIGHT: _confirmed_report(), "2026-07-11": _quiet_report()},
+        dates=("2026-07-11", NIGHT),
+        stacks_dates={STACK: [NIGHT, "2026-07-11"]},
+        query_params={"report": "2099-01-01"},
+    )
+    (picker,) = at.segmented_control
+    assert picker.value == NIGHT
+    assert _report_param(at) == NIGHT
+
+
+def test_switching_the_picker_loads_that_nights_report_and_blame():
+    # Default lands on the confirmed night whose blame sidecar ranks a
+    # candidate PR; switching to the quiet rerun re-renders that night's report,
+    # which has no confirmed metric and therefore no candidate ledger.
+    from k4bench.blame.models import CandidatePR
+    cand = CandidatePR(
+        repo="key4hep/k4geo", number=1234, title="Lower the tracker step limit",
+        author="alice", url="https://github.com/key4hep/k4geo/pull/1234",
+        merged_at="2026-07-04T10:00:00Z", files=("FCCee/CLD/compact/x.xml",),
+        additions=20, deletions=4, score=72.0,
+        description="raises tracker step count, plausibly slower",
     )
     at = _run(
         reports_map={
-            NIGHT: _report([_group(verdicts=_FLAGGED)]),
-            "2026-07-07": to_json(NightlyReport(generated_at="", groups=[old_group])),
+            NIGHT: _report([_group(verdicts=[_windowed_confirmed()])]),
+            "2026-07-11": _quiet_report(),
+        },
+        blame_map={NIGHT: _blame_json([cand])},
+        dates=("2026-07-11", NIGHT),
+        stacks_dates={STACK: [NIGHT, "2026-07-11"]},
+    )
+    assert "Suggested cause" in " ".join(c.value for c in at.caption)
+
+    at.segmented_control(key="regr_night").set_value("2026-07-11").run()
+    assert not at.exception, at.exception
+    assert "Suggested cause" not in " ".join(c.value for c in at.caption)
+    assert _report_param(at) == "2026-07-11"
+
+
+def test_historical_view_caption_when_not_the_latest_report():
+    # An older release whose runs all predate the latest report: its confirmed
+    # night renders, flagged as a historical view.
+    old_stack = "key4hep-2026-07-05"
+    at = _run(
+        reports_map={
+            NIGHT: _confirmed_report(),
+            "2026-07-06": _quiet_report(),
+            "2026-07-07": _confirmed_report(),
         },
         dates=(NIGHT, "2026-07-07", "2026-07-06"),
         stacks_dates={old_stack: ["2026-07-06", "2026-07-07"], STACK: [NIGHT]},
@@ -216,10 +360,147 @@ def test_older_release_shows_the_report_of_its_last_run():
     )
     captions = " ".join(c.value for c in at.caption)
     assert "Historical view" in captions and "2026-07-07" in captions
-    # The older night's (quiet) report rendered, not the latest one's flags.
-    by_label = {m.label: m.value for m in at.metric}
-    assert by_label["🔴 Regressed"] == "0"
-    assert by_label["✅ Within baseline"] == "1"
+    # The confirmed night (07-07) is the default over the earlier quiet 07-06.
+    (picker,) = at.segmented_control
+    assert picker.value == "2026-07-07"
+    assert set(picker.options) == {"2026-07-07", "2026-07-06"}
+
+
+# ── report-night state must not leak across sidebar scopes ────────────────────
+
+def _scope_app(dashboard_dir, platform, scenarios, reports_map, dates):
+    """Render the tab for ``scenarios[st.session_state['_i']]``.
+
+    Unlike ``_app``, the scope (detector, stack, run-date listing) is read from
+    session_state at render time, so a single AppTest can re-render under a
+    *changed* sidebar scope — session_state (and the picker's stored night)
+    persists across ``at.run()`` calls, exactly as it does in the live app when
+    the user switches detector. Closes over nothing (the script re-executes in
+    its own context), so every value arrives as an argument."""
+    import sys as _sys
+    if dashboard_dir not in _sys.path:
+        _sys.path.insert(0, dashboard_dir)
+    import streamlit as st
+    from tabs import regressions as _tab
+
+    _tab._cached_list_report_dates = lambda url: list(dates)
+    _tab._cached_fetch_reports = lambda url, nights: {
+        n: reports_map[n] for n in nights if reports_map.get(n) is not None
+    }
+    _tab._cached_fetch_blame = lambda url, night: None
+    _tab._cached_fetch_runs_windowed = lambda *a, **k: ()
+    _tab.packages_for_release = lambda *a, **k: None
+
+    detector, stack, run_dates = scenarios[st.session_state.get("_i", 0)]
+    _tab._cached_list_run_dates = lambda url, det, plat, samp: {
+        k: list(v) for k, v in run_dates.items()
+    }
+    _tab.render("https://example.invalid", "/tmp/cache", detector, platform, "single_e", stack)
+
+
+def _quiet_verdict():
+    return _verdict("wall_time_s", Severity.OK, 0.01)
+
+
+def test_switching_detector_redefaults_the_picker():
+    # Two detectors share the same night dates but flag on different ones: CLD
+    # on 07-10, IDEA on 07-11. After switching CLD→IDEA the picker must
+    # re-default to IDEA's confirmed night, not linger on CLD's (still-valid)
+    # night and hide IDEA's regression.
+    n10 = _report([_group(detector="CLD", verdicts=_FLAGGED),
+                   _group(detector="IDEA", verdicts=[_quiet_verdict()])])
+    n11 = _report([_group(detector="CLD", verdicts=[_quiet_verdict()]),
+                   _group(detector="IDEA", verdicts=_FLAGGED)])
+    run_dates = {STACK: [NIGHT, "2026-07-11"]}
+    at = AppTest.from_function(
+        _scope_app,
+        args=(
+            str(_DASHBOARD_DIR), PLAT,
+            [("CLD", STACK, run_dates), ("IDEA", STACK, run_dates)],
+            {NIGHT: n10, "2026-07-11": n11},
+            ("2026-07-11", NIGHT),
+        ),
+        default_timeout=30,
+    )
+    at.run()
+    assert not at.exception, at.exception
+    assert at.segmented_control[0].value == NIGHT              # CLD's confirmed night
+    assert {m.label: m.value for m in at.metric}["🔴 Regressed"] == "2"
+
+    at.session_state["_i"] = 1                                 # switch to IDEA
+    at.run()
+    assert not at.exception, at.exception
+    assert at.segmented_control[0].value == "2026-07-11"       # re-defaulted, not 07-10
+    assert {m.label: m.value for m in at.metric}["🔴 Regressed"] == "2"
+
+
+def test_multi_single_multi_navigation_does_not_strand_state():
+    # Navigating multi-night → single-night → multi-night must leave no stale
+    # picker night behind: the single-night scope clears it, and returning to a
+    # multi-night scope re-defaults cleanly.
+    cld = _report([_group(detector="CLD", verdicts=_FLAGGED)])
+    sid = _report([_group(detector="SiD", verdicts=_FLAGGED)])
+    multi = ("CLD", STACK, {STACK: [NIGHT, "2026-07-11"]})
+    old_stack = "key4hep-2026-07-08"
+    single = ("SiD", old_stack,
+              {old_stack: ["2026-07-08"], STACK: [NIGHT, "2026-07-11"]})
+    at = AppTest.from_function(
+        _scope_app,
+        args=(
+            str(_DASHBOARD_DIR), PLAT, [multi, single],
+            {NIGHT: cld, "2026-07-11": _quiet_report(), "2026-07-08": sid},
+            ("2026-07-11", NIGHT, "2026-07-08"),
+        ),
+        default_timeout=30,
+    )
+    at.run()                                                   # multi (CLD)
+    assert at.segmented_control[0].value == NIGHT
+    assert "regr_night" in at.session_state
+
+    at.session_state["_i"] = 1                                 # single (SiD, older release)
+    at.run()
+    assert not at.exception, at.exception
+    assert not at.segmented_control                            # no picker on a single night
+    assert "regr_night" not in at.session_state                # and its state was cleared
+
+    at.session_state["_i"] = 0                                 # back to multi (CLD)
+    at.run()
+    assert not at.exception, at.exception
+    assert at.segmented_control[0].value == NIGHT              # re-defaults cleanly
+
+
+# ── one malformed historical report must not blank the tab ────────────────────
+
+def test_malformed_historical_report_does_not_blank_the_tab():
+    # The default night's report is valid and confirmed; a second candidate
+    # night is malformed (valid JSON, wrong shape). The valid night must still
+    # render, with a note that a night could not be loaded.
+    at = _run(
+        reports_map={NIGHT: _confirmed_report(),
+                     "2026-07-11": {"groups": [{"detector": "CLD"}]}},
+        dates=("2026-07-11", NIGHT),
+        stacks_dates={STACK: [NIGHT, "2026-07-11"]},
+    )
+    # Only the valid night parsed, so no picker (a single loadable report) and
+    # its confirmed banner shows.
+    assert not at.segmented_control
+    assert {m.label: m.value for m in at.metric}["🔴 Regressed"] == "2"
+    assert any("could not be loaded" in c.value for c in at.caption)
+
+
+def test_pinned_report_that_cannot_be_loaded_warns():
+    # A ?report= deep link to a night that fails to load must warn, not silently
+    # fall through to another night as if the link had pointed there.
+    at = _run(
+        reports_map={NIGHT: _confirmed_report(),
+                     "2026-07-11": {"groups": [{"detector": "CLD"}]}},
+        dates=("2026-07-11", NIGHT),
+        stacks_dates={STACK: [NIGHT, "2026-07-11"]},
+        query_params={"report": "2026-07-11"},
+    )
+    assert any("pinned" in w.value.lower() for w in at.warning)
+    # The still-valid night rendered underneath the warning.
+    assert {m.label: m.value for m in at.metric}["🔴 Regressed"] == "2"
 
 
 def test_run_listing_failure_falls_back_with_a_visible_warning():
@@ -233,7 +514,10 @@ def test_run_listing_failure_falls_back_with_a_visible_warning():
         from tabs import regressions as _tab
 
         _tab._cached_list_report_dates = lambda url: [night]
-        _tab._cached_fetch_report = lambda url, n: report_json
+        # Production batch-fetches candidate nights; patch that path, not the
+        # removed singular fetch, so this test is hermetic (independent of what
+        # a prior test left on the shared module).
+        _tab._cached_fetch_reports = lambda url, nights: {n: report_json for n in nights}
 
         # Only the report-night resolution (the first call) should fail here;
         # the trend preview's own (unrelated) history fetch, triggered by the

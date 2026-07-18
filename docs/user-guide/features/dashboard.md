@@ -132,15 +132,25 @@ step-change detector (`k4bench/regression/`):
   in the system, dominated by timer-granularity wobble at microsecond scale, so
   the regression report judges only top-level run and per-event metrics.
 
-The report night is keyed on the sidebar's **release**, not a separate
-selector: the newest release (the sidebar default) shows the latest nightly
-report — which can be newer than the release's last run, exactly the night
-whose "no run uploaded" failure must stay visible — while an older release
-shows the report of its **last** run. Several nights routinely re-benchmark
-one fixed nightly, and the last one carries the most settled judgement (a
-confirmed step re-anchors on the following night), so this is the least noisy
-single night to represent a stack; per-night history stays reachable by
-stepping the sidebar's release selector.
+A report is written per *run*, so several nights routinely re-benchmark one
+fixed release — and because a confirmed step **re-anchors** the baseline the
+following night, a confirmed regression appears on exactly **one** report night
+and the reruns after it fall quiet. The sidebar's **release** selects which of
+that release's report nights are on offer; the tab defaults to the most
+**attention-worthy** one (a confirmed regression or failure outranks a watch
+outranks a quiet night, newest breaking ties), so the confirmation night is
+never hidden behind a later quiet rerun. When a release was benchmarked on more
+than one night, a **Report night** picker appears above the report — each
+option carrying that night's glance badge (❌ / 🔴 / ⚠️ / ✅) — to step through
+the release's other nights. The newest release (the sidebar default) still
+surfaces the latest report even when it is newer than the release's last run,
+so a "no run uploaded" failure stays visible.
+
+A `?report=YYYY-MM-DD` query parameter pins one report night directly and is
+authoritative when valid — this is the stable deep link the nightly email and
+the Overview roster generate, so a link to a confirmed regression keeps
+pointing at its confirmation night after later reruns. (The Run Trends
+`range=` window is unrelated and does not select a regression report.)
 
 The selected run group renders flat: an at-a-glance banner (regressed / watch
 / failures / within-baseline counts), a **change ledger** — a compact,
@@ -152,7 +162,8 @@ marked 🔴, the night it was first watched marked ⚠️). The preview opens on
 most severe flag automatically; switch it to any other flagged metric, or to
 "—" to hide it. Confirmed regressions and failures — and only those — are also
 emailed to the team's e-group by the same CI job, with per-group links landing
-directly on this scoped view.
+directly on this scoped view, pinned (via `stack=` and `report=`) to the exact
+report night they describe.
 
 For a confirmed regression the drill-down also shades the **release window the
 step entered in**. Because confirmation is a two-strike rule, the reported night

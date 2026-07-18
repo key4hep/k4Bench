@@ -3,15 +3,20 @@
 Scoped, like the trend views, by the sidebar's detector/platform/sample
 selection: the tab renders the matching run group from the precomputed
 ``_reports/{date}/report.json`` written to EOS by the nightly
-``regression-report`` CI job (see ``k4bench/regression/``). The report night
-is keyed on the sidebar's *release* rather than picked from a dropdown — the
-newest release shows the latest report, an older one the report of its last
-run (see :func:`_report_night_for_stack`). The cross-detector at-a-glance
-picture lives in the Overview tab. Only the trend preview downloads run data,
-and only for the series being inspected.
+``regression-report`` CI job (see ``k4bench/regression/``). The sidebar's
+*release* selects which report nights are on offer (see
+:func:`_candidate_nights`): several nights routinely re-benchmark one fixed
+nightly, and a confirmed regression appears on exactly one of them — the
+baseline re-anchors afterwards — so the default night is the most
+attention-worthy one, a picker exposes the release's other nights, and
+``?report=`` pins one directly (the deep link emitted in alert emails). The
+cross-detector at-a-glance picture lives in the Overview tab. Only the trend
+preview downloads run data, and only for the series being inspected.
 """
 
 from __future__ import annotations
+
+import logging
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -27,6 +32,7 @@ from k4bench.regression.models import (
 )
 from k4bench.regression.render import (
     _badge,
+    _detector_badge,
     _group_title,
     _metric_name,
     _pretty_sample,
@@ -48,7 +54,7 @@ from data import (
 )
 from remote_cache import (
     _cached_fetch_blame,
-    _cached_fetch_report,
+    _cached_fetch_reports,
     _cached_fetch_runs_windowed,
     _cached_list_report_dates,
     _cached_list_run_dates,
@@ -66,7 +72,10 @@ from tabs._regression_flags import (
 )
 from tabs._reliability import render_reliability_filter
 from tabs.stack_changes import _release, deep_link, packages_for_release
+from ui_chrome import _drop_stale_selection, seed_query_param
 from ui_utils import _METRIC_LABELS, _METRIC_UNITS, _is_valid_df, _to_rgba
+
+_log = logging.getLogger(__name__)
 
 #: Fill for the accepted-baseline band on the drill-down chart — same visual
 #: device as machine_info's threshold shading, in the palette's first hue.
@@ -97,24 +106,45 @@ def render(
         )
         return
 
-    night = _report_night_for_stack(data_url, detector, platform, sample, stack, dates)
-    if night is None:
+    nights = _candidate_nights(data_url, detector, platform, sample, stack, dates)
+    if nights is None:
         st.info(
             f"No nightly report covers release **{_release(stack)}**'s runs — "
             f"reports begin on {min(dates)}. Pick a newer release in the sidebar."
         )
         return
+    reports, unavailable = _load_reports(data_url, nights)
+    if not reports:
+        st.warning(
+            f"Could not load release **{_release(stack)}**'s report(s) from EOS."
+        )
+        return
+    # A ?report= deep link pointing at a night that could not be loaded must say
+    # so, rather than silently defaulting to another night and rewriting the URL
+    # under the reader (who followed a link to a specific report).
+    pinned = st.query_params.get("report")
+    if pinned in unavailable:
+        st.warning(
+            f"The pinned **{pinned}** report could not be loaded — showing "
+            "another night for this release instead.",
+            icon="⚠️",
+        )
+    elif unavailable:
+        st.caption(
+            f"❔ {len(unavailable)} of {len(nights)} report night(s) for this "
+            "release could not be loaded (a transient EOS error or a malformed "
+            "report)."
+        )
+    default_night = _pick_night(reports, detector, platform, sample)
+    night = _select_night(reports, default_night, detector, platform, sample, stack)
+    st.query_params["report"] = night
     if night != max(dates):
         st.caption(
-            f"Historical view: the report of **{night}**, the last night that "
-            f"benchmarked release **{_release(stack)}** — the newest release "
-            "(the sidebar default) shows the latest report."
+            f"Historical view: the **{night}** report for release "
+            f"**{_release(stack)}** — the newest release (the sidebar default) "
+            "shows the latest report."
         )
-    raw = _cached_fetch_report(data_url, night)
-    if not raw:
-        st.warning(f"Could not load the report for {night} from EOS.")
-        return
-    report = from_json(raw)
+    report = reports[night]
 
     # The blame sidecar is best-effort and absent on most nights (only a
     # confirmed, attributable regression produces one) — a missing blame.json is
@@ -131,13 +161,7 @@ def render(
 
     # A (detector, platform, sample) triple is one run group — the report's
     # unit of judgement — so the sidebar scope selects at most one.
-    group = next(
-        (
-            g for g in report.groups
-            if (g.detector, g.platform, g.sample) == (detector, platform, sample)
-        ),
-        None,
-    )
+    group = _night_group(report, detector, platform, sample)
     if group is None:
         _render_no_group_notice(report, detector, sample, night)
         return
@@ -149,20 +173,51 @@ def render(
     )
 
 
-def _report_night_for_stack(
+def _load_reports(
+    data_url: str, nights: list[str]
+) -> tuple[dict[str, NightlyReport], list[str]]:
+    """Fetch and parse each candidate night **independently**, returning the
+    parseable reports and the nights that could not be loaded.
+
+    The tab now loads the release's whole report history, not just the one night
+    it shows, so a single half-uploaded or schema-drifted historical report must
+    not blank every other night's — parsing per night (rather than in one
+    comprehension) contains that blast radius to the offending night."""
+    raws = _cached_fetch_reports(data_url, tuple(nights))
+    reports: dict[str, NightlyReport] = {}
+    unavailable: list[str] = []
+    for n in nights:
+        raw = raws.get(n)
+        if not raw:
+            unavailable.append(n)
+            continue
+        try:
+            reports[n] = from_json(raw)
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            _log.warning("regressions: skipping malformed report for %s — %s", n, exc)
+            unavailable.append(n)
+    return reports, unavailable
+
+
+def _candidate_nights(
     data_url: str, detector: str, platform: str, sample: str, stack: str,
     dates: list[str],
-) -> str | None:
-    """The report night to show for the sidebar's release.
+) -> list[str] | None:
+    """Report nights on offer for the sidebar's release, newest first.
 
-    While a release is the one still being benchmarked (it owns the triple's
-    newest run), show the **latest report** — which may be newer than that run,
-    exactly the night whose "no run uploaded" failure must stay visible. For an
-    older release, show the report of that release's **newest** run: several
-    nights routinely re-benchmark one fixed nightly, and the last one carries
-    the most settled judgement (later runs re-anchor a confirmed step), so this
-    is the least noisy single night to represent the stack. ``None`` when the
-    release's runs all predate the first report.
+    A report is written per *run*, under ``_reports/{run_date}`` — so several
+    nights routinely re-benchmark one fixed release, and a confirmed regression
+    lands on exactly one of them (the baseline re-anchors afterwards). Every
+    night that benchmarked this release and has a report is therefore offered,
+    so that confirmation night stays reachable even after a later rerun quiets
+    down. While a release is the one still being benchmarked (it owns the
+    triple's newest run), the latest report is included too — it may be newer
+    than the release's last run, the night whose "no run uploaded" failure must
+    stay visible.
+
+    ``None`` when the release's runs all predate the first report;
+    ``[max(dates)]`` (the latest report) on a run-history listing failure or an
+    empty listing — the only sensible fallback left.
     """
     try:
         stacks_dates = _cached_list_run_dates(data_url, detector, platform, sample)
@@ -177,17 +232,139 @@ def _report_night_for_stack(
             "latest report; it may not match the sidebar's selected release.",
             icon="⚠️",
         )
-        return max(dates)
+        return [max(dates)]
     run_dates = stacks_dates.get(stack) or ()
     if not run_dates:
         # No run listing for this release — the latest report is the only
         # sensible answer left.
-        return max(dates)
-    newest_of_stack = max(run_dates)
+        return [max(dates)]
+    dateset = set(dates)
+    nights = {d for d in run_dates if d in dateset}
     newest_any = max(d for ds in stacks_dates.values() for d in ds)
-    if newest_of_stack == newest_any:
-        return max(dates)
-    return newest_of_stack if newest_of_stack in dates else None
+    if max(run_dates) == newest_any:
+        # Active release: also offer the latest report, so a night that
+        # benchmarked nothing for this release (a missing-run failure) stays
+        # visible even though it isn't one of the release's own run dates.
+        nights.add(max(dates))
+    if not nights:
+        return None
+    return sorted(nights, reverse=True)
+
+
+def _night_group(
+    report: NightlyReport, detector: str, platform: str, sample: str
+) -> RunGroupReport | None:
+    """The one run group in *report* matching the sidebar triple, or ``None``
+    when the night has no group for it (a scope miss on that night)."""
+    return next(
+        (
+            g for g in report.groups
+            if (g.detector, g.platform, g.sample) == (detector, platform, sample)
+        ),
+        None,
+    )
+
+
+def _night_priority(
+    report: NightlyReport, detector: str, platform: str, sample: str
+) -> int:
+    """How much attention a night's report warrants for the sidebar triple,
+    used to default the picker to the most alarming night: ``2`` for a
+    confirmed regression or any failure (matches :attr:`has_alertable`), ``1``
+    for a watch, ``0`` for a quiet night or one with no group for the triple."""
+    g = _night_group(report, detector, platform, sample)
+    if g is None:
+        return 0
+    if g.regressions or g.failures or g.job_failures:
+        return 2
+    if g.watches:
+        return 1
+    return 0
+
+
+def _pick_night(
+    reports: dict[str, NightlyReport], detector: str, platform: str, sample: str,
+) -> str:
+    """The default report night for a re-benchmarked release: the most
+    attention-worthy night, newest breaking ties. A confirmed night therefore
+    wins over a quiet rerun, and a later confirmation wins over an earlier
+    watch — the opposite failure mode from always taking the last run."""
+    return max(
+        reports,
+        key=lambda n: (_night_priority(reports[n], detector, platform, sample), n),
+    )
+
+
+def _night_badge(
+    report: NightlyReport, detector: str, platform: str, sample: str
+) -> str:
+    """The glance emoji (❌/🔴/⚠️/❔/✅) for a night's report, reusing the
+    report's own detector badge so the picker speaks the same vocabulary as the
+    Overview roster. ``❔`` when the night has no group for the triple."""
+    g = _night_group(report, detector, platform, sample)
+    return _detector_badge([g]) if g is not None else "❔"
+
+
+_NIGHT_KEY = "regr_night"
+
+
+def _forget_stale_scope(scope: tuple[str, ...]) -> None:
+    """Reset the night picker when the sidebar scope changes.
+
+    The picker uses one session key across every detector/platform/sample/
+    release, but two scopes can share the same night *dates* while flagging
+    their regression on *different* ones — so a night carried over from the
+    previous scope could open a new one on a quiet report and hide exactly the
+    regression this view exists to surface. On a scope change we drop both the
+    stored night and the ``?report=`` we wrote for the old scope, so the new
+    scope re-defaults. The incoming ``?report=`` on the first load (no prior
+    scope recorded) is preserved, keeping deep links intact."""
+    scope_key = "regr_night_scope"
+    prev = st.session_state.get(scope_key)
+    st.session_state[scope_key] = scope
+    if prev is not None and prev != scope:
+        st.session_state.pop(_NIGHT_KEY, None)
+        st.query_params.pop("report", None)
+
+
+def _select_night(
+    reports: dict[str, NightlyReport], default_night: str,
+    detector: str, platform: str, sample: str, stack: str,
+) -> str:
+    """Return the report night to render, exposing a picker when the release was
+    benchmarked on more than one night. The picker defaults to *default_night*
+    (the most attention-worthy), is authoritative via ``?report=`` for deep
+    links, and re-defaults cleanly when the sidebar scope changes. A
+    single-night release needs no widget."""
+    _forget_stale_scope((detector, platform, sample, stack))
+    nights = sorted(reports, reverse=True)
+    key = _NIGHT_KEY
+    if len(nights) == 1:
+        # No picker on this scope — don't strand the previous scope's night in
+        # session_state, where a later multi-night scope could read it back.
+        st.session_state.pop(key, None)
+        return nights[0]
+    _drop_stale_selection(key, nights)          # stale night → re-default
+    seed_query_param(key, "report", nights)     # ?report= wins when it's valid
+    if key not in st.session_state:
+        st.session_state[key] = default_night
+    night = st.segmented_control(
+        "Report night",
+        nights,
+        format_func=lambda n: f"{_night_badge(reports[n], detector, platform, sample)} {n}",
+        key=key,
+        help="This release was benchmarked on several nights; a confirmed "
+             "regression appears on exactly one of them (later reruns re-anchor "
+             "the baseline). Defaults to the most attention-worthy night; pick "
+             "another to see that night's report and blame.",
+    )
+    if night is None:  # segmented_control lets the active pill be deselected
+        night = default_night
+    st.caption(
+        f"This release was benchmarked on {len(nights)} nights — showing "
+        f"**{night}**. The default is the most attention-worthy night."
+    )
+    return night
 
 
 def _render_no_group_notice(
