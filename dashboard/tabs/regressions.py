@@ -23,8 +23,6 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-_log = logging.getLogger(__name__)
-
 from k4bench.regression.engine import Z_THRESHOLD
 from k4bench.regression.models import (
     MetricVerdict,
@@ -76,6 +74,8 @@ from tabs._reliability import render_reliability_filter
 from tabs.stack_changes import _release, deep_link, packages_for_release
 from ui_chrome import _drop_stale_selection, seed_query_param
 from ui_utils import _METRIC_LABELS, _METRIC_UNITS, _is_valid_df, _to_rgba
+
+_log = logging.getLogger(__name__)
 
 #: Fill for the accepted-baseline band on the drill-down chart — same visual
 #: device as machine_info's threshold shading, in the palette's first hue.
