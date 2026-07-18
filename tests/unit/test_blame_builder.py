@@ -22,9 +22,10 @@ _GL = "https://gitlab.cern.ch/acts/OpenDataDetector.git"
 
 
 def _verdict(*, onset="2026-07-04", base="2026-07-03", metric="wall_time_s",
-             severity=Severity.CONFIRMED, sub=None) -> MetricVerdict:
+             severity=Severity.CONFIRMED, sub=None,
+             detector="ALLEGRO_o1_v03", sample="single_e") -> MetricVerdict:
     return MetricVerdict(
-        detector="ALLEGRO_o1_v03", platform=_PLAT, sample="single_e",
+        detector=detector, platform=_PLAT, sample=sample,
         label="baseline", metric_family="time", metric=metric, sub_detector=sub,
         run_id="2026-07-05", run_date="2026-07-05", value=120.0,
         baseline_median=100.0, baseline_mad=1.0, pct_change=0.2, z_score=6.0,
@@ -41,6 +42,20 @@ def _report(verdicts) -> NightlyReport:
         verdicts=list(verdicts),
     )
     return NightlyReport(generated_at="2026-07-05T00:00:00", groups=[group])
+
+
+def _report_groups(*group_verdicts: tuple[str, str, list[MetricVerdict]]) -> NightlyReport:
+    """A report with one group per ``(detector, sample, verdicts)`` triple —
+    for scenarios spanning more than one run group."""
+    groups = [
+        RunGroupReport(
+            detector=detector, platform=_PLAT, sample=sample,
+            k4h_release="key4hep-2026-07-05", run_date="2026-07-05", run_id="2026-07-05",
+            verdicts=verdicts,
+        )
+        for detector, sample, verdicts in group_verdicts
+    ]
+    return NightlyReport(generated_at="2026-07-05T00:00:00", groups=groups)
 
 
 def _pkgs(commit: str, url: str = _GH) -> dict:
@@ -333,3 +348,28 @@ def test_rank_request_carries_every_metric_sharing_the_window(monkeypatch):
         report, packages_for_release=_MOVED, github=GitHubClient(), ranker=ranker,
     )
     assert [m.metric for m in ranker.requests[0].metrics] == ["wall_time_s", "peak_rss_mb"]
+
+
+def test_different_detectors_sharing_a_release_boundary_are_not_batched(monkeypatch):
+    # Two different detectors can confirm a regression against the exact same
+    # platform and release dates (one upstream library regressing several
+    # detectors in the same release) — they must never be merged into one
+    # ranking prompt labelled with only one of the two detectors.
+    _two_candidates(monkeypatch)
+    ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
+    report = _report_groups(
+        ("IDEA_o1_v03", "single_mu-", [_verdict(detector="IDEA_o1_v03", sample="single_mu-")]),
+        ("CLD_o2_v07", "ttbar", [_verdict(detector="CLD_o2_v07", sample="ttbar",
+                                           metric="peak_rss_mb")]),
+    )
+    blame = build_blame_report(
+        report, packages_for_release=_MOVED, github=GitHubClient(), ranker=ranker,
+    )
+    assert len(ranker.requests) == 2  # one call per detector, not one shared call
+    detectors = {req.detector for req in ranker.requests}
+    assert detectors == {"IDEA_o1_v03", "CLD_o2_v07"}
+    for req in ranker.requests:
+        assert len(req.metrics) == 1  # each detector's own metric only
+    by_detector = {e.detector: e for e in blame.entries}
+    assert by_detector["IDEA_o1_v03"].metric == "wall_time_s"
+    assert by_detector["CLD_o2_v07"].metric == "peak_rss_mb"
