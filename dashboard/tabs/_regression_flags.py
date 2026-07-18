@@ -281,18 +281,10 @@ def candidate_table(candidates: list[CandidatePR]) -> None:
     st.dataframe(
         pd.DataFrame(records),
         hide_index=True,
-        # "stretch" fills the container, but the grid spreads any leftover
-        # space evenly across *every* column that doesn't pin its own width —
-        # left alone, that pads Likelihood/Pull request/Author/Merged/Open
-        # (none of them ever more than a few characters) by the same amount
-        # as Why (a whole sentence, and the one column that actually needs
-        # it). Pinning every short column to its real content size leaves
-        # Title and Why as the only flexible ones, so leftover stretch space
-        # concentrates there instead of padding the short columns.
         width="stretch",
         column_config={
             "Likelihood": st.column_config.ProgressColumn(
-                "Likelihood", width="small",
+                "Likelihood",
                 help="The ranking stage's estimate of how likely this PR is the "
                      "cause, 0–100% — a suggestion, not evidence. Each PR in a "
                      "range is judged on its own.",
@@ -300,22 +292,14 @@ def candidate_table(candidates: list[CandidatePR]) -> None:
                 min_value=0.0,
                 max_value=100.0,
             ),
-            # "medium", not "small": "owner/repo#1234" routinely runs past
-            # small's 75px — pinned wide enough to fit that comfortably
-            # without joining Title/Why in absorbing the leftover stretch.
-            "Pull request": st.column_config.TextColumn("Pull request", width="medium"),
+            "Pull request": st.column_config.TextColumn("Pull request"),
             "Open": st.column_config.LinkColumn(
-                "Open", display_text="↗ PR", width="small",
+                "Open", display_text="↗ PR",
                 help="Open this pull request on GitHub.",
             ),
             "Title": st.column_config.TextColumn("Title"),
-            "Author": st.column_config.TextColumn("Author", width="small"),
-            "Merged": st.column_config.TextColumn("Merged", width="small"),
-            # No fixed width: Title and Why are the only two columns left
-            # unpinned, so the stretch fill concentrates on them instead of
-            # padding every short column evenly (see the width= comment
-            # above) — and neither one is forced wider than its own content
-            # needs when there's nothing left to distribute.
+            "Author": st.column_config.TextColumn("Author"),
+            "Merged": st.column_config.TextColumn("Merged"),
             "Why": st.column_config.TextColumn(
                 "Why",
                 help="The ranking stage's one-line reasoning for this candidate.",
