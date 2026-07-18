@@ -194,10 +194,13 @@ identity **and** the `base_release`/`onset_release` window, so a sidecar left
 over from an earlier build of the same night (the CI job also deletes the
 remote sidecar on a rerun that produces none) can never attach to a re-anchored
 regression. The pipeline collects every PR in each changed repo's commit range;
-a separate **ranking stage** then scores each candidate *for that window* —
+a separate **ranking stage** then scores each candidate *for that group* —
 `score` is a 0–100 likelihood it is the cause and `description` a one-line
-reason, judged once per release-boundary window (two metrics sharing a window
-share one ranking, applied to both). `commits_unavailable` marks a repo whose
+reason, judged once per detector/platform/sample/window (every metric — and
+every benchmark-config label, e.g. a removal sweep's `baseline` vs.
+`without_<detector>` — sharing that group and window shares one ranking,
+applied to all of them). A *different* detector or sample sharing the same
+release dates never shares a ranking. `commits_unavailable` marks a repo whose
 range could not be enumerated at all; `truncated` marks a candidate list known
 to be incomplete (compare/PR caps, or a PR that failed to fetch) — a regression
 touching either is left **unranked**, since "most likely" over a partial

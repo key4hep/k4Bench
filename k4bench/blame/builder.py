@@ -281,8 +281,9 @@ def _run_ranker(
     patches: dict[tuple[str, int], str],
 ) -> dict[tuple[str, int], Ranking]:
     """One guarded rank call. Any exception degrades to ``{}`` and is cached as
-    such, so a broken ranker is asked at most once per window and never aborts
-    the report — blame's best-effort isolation, extended to the model."""
+    such, so a broken ranker is asked at most once per detector/platform/
+    sample/window and never aborts the report — blame's best-effort isolation,
+    extended to the model."""
     try:
         request = _rank_request(verdicts, repos, patches)
         if not request.candidates:

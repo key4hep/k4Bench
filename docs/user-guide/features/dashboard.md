@@ -184,11 +184,15 @@ each PR in the window with a 0–100% **Likelihood** it is the cause and a one-l
 metric that moved and each PR's actual code diff (configured in CI via
 `K4BENCH_LLM_*`; see the [sidecar format](../../reference/file-formats.md#blame-sidecar-blamejson)) —
 the dashboard only displays the stored result. Several PRs can land in one
-package's range, so each is scored on its own — but the window is judged once:
-when several metrics stepped across the same release boundary, they share one
-diff and one candidate set, so the card shows a single verdict rather than a
-table per metric. This is a ranked **lead for a human, not a verdict** — a
-suggestion, not proof of cause, in keeping with the
+package's range, so each is scored on its own — but the group is judged once
+per detector/platform/sample/window: when several metrics (or several
+benchmark-config labels, e.g. a removal sweep's `baseline` and
+`without_<detector>` runs) stepped across the same release boundary in the
+same run group, they share one diff and one candidate set, so the card shows a
+single verdict rather than a table per metric. A different detector or sample
+sharing the same release dates never shares a verdict. This is a ranked
+**lead for a human, not a verdict** — a suggestion, not proof of cause, in
+keeping with the
 detector's *no evidence ⇒ no verdict* rule; the nightly email surfaces the same
 top candidates under each regression. Most nights carry no `blame.json` at all,
 and a night whose candidates are not yet ranked shows only the package diff.

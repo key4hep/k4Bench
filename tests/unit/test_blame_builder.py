@@ -324,7 +324,7 @@ def test_ranker_exception_degrades_to_unranked_without_aborting(monkeypatch):
     assert all(c.score == 0.0 for c in blame.entries[0].candidates)  # just unranked
 
 
-def test_ranker_called_once_per_window(monkeypatch):
+def test_ranker_called_once_per_run_group_and_window(monkeypatch):
     # Two confirmed metrics that stepped across the same release boundary share
     # one diff and one candidate set → a single inference, applied to both.
     _two_candidates(monkeypatch)
