@@ -3,12 +3,12 @@
 A ``CONFIRMED`` verdict carries the release window the step entered in —
 ``onset_*`` and ``last_accepted_*``, written by :mod:`k4bench.regression.engine`
 and documented on :class:`~k4bench.regression.models.MetricVerdict`. This module
-turns that pair into what the reader sees: a shaded band on the drill-down and a
-link into the release diff that spans it.
+turns that pair into what the reader sees: a shaded band on the drill-down
+spanning the window.
 
 Every "does this verdict have a window, and of what shape?" question routes
-through :func:`classify`, so the band, the note and the caller's gate all read
-one interpretation rather than re-deriving it. Reports written before onset
+through :func:`classify`, so the band and the caller's gate both read one
+interpretation rather than re-deriving it. Reports written before onset
 tracking carry ``None`` and classify as :attr:`WindowKind.NONE`; the caller then
 keeps its pre-existing behaviour.
 """
@@ -19,7 +19,6 @@ from enum import Enum
 
 import pandas as pd
 import plotly.graph_objects as go
-import streamlit as st
 
 from k4bench.regression.models import MetricVerdict, Severity
 from tabs._regression_flags import FLAG_MARKS
@@ -162,49 +161,4 @@ def add_window_band(fig: go.Figure, df: pd.DataFrame, verdict: MetricVerdict) ->
         x0=x0, x1=onset, fillcolor=_WINDOW_FILL, line_width=0, layer="below",
         annotation_text=_WINDOW_LABEL, annotation_position="top left",
         annotation_font_size=_WINDOW_LABEL_SIZE,
-    )
-
-
-def render_note(verdict: MetricVerdict) -> None:
-    """The below-chart blame note: "nothing upstream changed" when the window's
-    ends are the same release, otherwise a link into the Stack Changes tab
-    seeded with the exact release range to inspect.
-    """
-    from tabs.stack_changes import deep_link  # local: keep this module's import light
-
-    kind = classify(verdict)
-    onset = verdict.onset_run_date
-
-    if kind is WindowKind.SAME_STACK:
-        # Same release on both ends ⇒ the *tracked* Key4hep packages did not move
-        # across the step. That rules out an upstream package commit but not
-        # everything: the benchmark checkout, geometry/config, inputs, or the
-        # runner environment can still differ. (The nightly build skips days; a
-        # run then re-uses the newest release, so consecutive runs sharing a
-        # stack is common, not an error.)
-        st.info(
-            f"**No tracked Key4hep package changed.** The step appeared between two "
-            f"runs that measured the **same** release ({onset}), so no tracked package "
-            "moved across it. Look instead at the benchmark code or configuration, the "
-            "inputs, the runner environment, or measurement noise — not an upstream "
-            "package commit.",
-            icon="✅",
-        )
-        return
-
-    baseline = verdict.last_accepted_run_date if kind is WindowKind.BOUNDED else None
-    span = f"**{baseline} → {onset}**" if baseline else f"up to **{onset}**"
-    st.caption(
-        f"The step first appeared on **{onset}**, one reliable night before it "
-        f"confirmed — so the cause landed in the shaded window ({span}), "
-        "not on the reported night."
-    )
-    st.link_button(
-        "🔍 Compare upstream changes in this window →",
-        deep_link(detector=verdict.detector, platform=verdict.platform,
-                  sample=verdict.sample, head_release=onset, base_release=baseline),
-        help="Open Stack Changes seeded with this release range — every Key4hep "
-             "package that moved across the window, with a link to each commit diff."
-             + ("" if baseline else " Pick a baseline release there: this step has no "
-                "settled level before it to bound the window on."),
     )

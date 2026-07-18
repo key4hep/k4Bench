@@ -139,12 +139,13 @@ and the reruns after it fall quiet. The sidebar's **release** selects which of
 that release's report nights are on offer; the tab defaults to the most
 **attention-worthy** one (a confirmed regression or failure outranks a watch
 outranks a quiet night, newest breaking ties), so the confirmation night is
-never hidden behind a later quiet rerun. When a release was benchmarked on more
-than one night, a **Report night** picker appears above the report — each
-option carrying that night's glance badge (❌ / 🔴 / ⚠️ / ✅) — to step through
-the release's other nights. The newest release (the sidebar default) still
-surfaces the latest report even when it is newer than the release's last run,
-so a "no run uploaded" failure stays visible.
+never hidden behind a later quiet rerun. A **Report night** pill always appears
+above the report — one option carrying that night's glance badge
+(❌ / 🔴 / ⚠️ / ✅) even when the release was only benchmarked once, and one pill
+per night to step through the rest when it was benchmarked several times. The
+newest release (the sidebar default) still surfaces the latest report even
+when it is newer than the release's last run, so a "no run uploaded" failure
+stays visible.
 
 A `?report=YYYY-MM-DD` query parameter pins one report night directly and is
 authoritative when valid — this is the stable deep link the nightly email and
@@ -153,31 +154,34 @@ pointing at its confirmation night after later reruns. (The Run Trends
 `range=` window is unrelated and does not select a regression report.)
 
 The selected run group renders flat: an at-a-glance banner (regressed / watch
-/ failures / within-baseline counts), a **change ledger** — a compact,
-sortable table of the night's flagged metrics (a 🔴/⚠️ severity badge, the
-config, the metric, an ↑/↓ direction, and a Δ-vs-baseline magnitude bar),
-worst first — and a **trend preview** that plots a flagged metric's recent
-history with the baseline band it was judged against (the flagged night
-marked 🔴, the night it was first watched marked ⚠️). The preview opens on the
-most severe flag automatically; switch it to any other flagged metric, or to
-"—" to hide it. Confirmed regressions and failures — and only those — are also
-emailed to the team's e-group by the same CI job, with per-group links landing
-directly on this scoped view, pinned (via `stack=` and `report=`) to the exact
-report night they describe.
+/ failures / within-baseline counts) and a **trend preview** that plots a
+flagged metric's recent history with the baseline band it was judged against
+(the flagged night marked 🔴, the night it was first watched marked ⚠️), a few
+runs further out when the release has since moved on. Its dropdown lists every
+flagged metric worst first, each option carrying its own severity badge and
+Δ-vs-baseline — so scanning the list alone shows the size of every flag,
+without a separate ledger table. The preview opens on the most severe flag
+automatically; switch it to any other flagged metric, or to "—" to hide it.
+Confirmed regressions and failures — and only those — are also emailed to the
+team's e-group by the same CI job, with per-group links landing directly on
+this scoped view, pinned (via `stack=` and `report=`) to the exact report
+night they describe.
 
 For a confirmed regression the drill-down also shades the **release window the
 step entered in**. Because confirmation is a two-strike rule, the reported night
 is one reliable night *after* the step appeared, so the cause is upstream of the
 ⚠️ onset, not at the 🔴 report — the amber band spans from the last release seen
-at the accepted level up to the onset release. A **Compare upstream changes**
-link opens the Stack Changes tab seeded with exactly that range. When both ends
-of the window are the *same* release the band and link give way to a "nothing
-upstream changed" note: the stack did not move across the step, so the cause is
-the host, the sample, or noise rather than an upstream commit.
+at the accepted level up to the onset release. The **upstream-changes card**
+below the preview (see below) is where to follow that window into the Stack
+Changes tab. When both ends of the window are the *same* release the band
+gives way to a "nothing upstream changed" note on that card: the stack did not
+move across the step, so the cause is the host, the sample, or noise rather
+than an upstream commit.
 
-Above the drill-down, each confirmed regression gets an **upstream-changes card**
+Below the drill-down, each confirmed regression gets an **upstream-changes card**
 naming the packages that moved in its blame window, each linking to its commit
-range. When the blame [sidecar](../../reference/file-formats.md#blame-sidecar-blamejson)
+range, plus an **Open in Stack Changes →** link that seeds that tab with the
+exact release range. When the blame [sidecar](../../reference/file-formats.md#blame-sidecar-blamejson)
 carries a **ranking**, the card also lists **suggested candidate pull requests**:
 each PR in the window with a 0–100% **Likelihood** it is the cause and a one-line
 *Why*. The ranking is produced offline by a **language model** that read the

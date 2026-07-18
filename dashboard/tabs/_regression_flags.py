@@ -270,11 +270,11 @@ def candidate_table(candidates: list[CandidatePR]) -> None:
         {
             "Likelihood": c.score,
             "Pull request": f"{c.repo}#{c.number}",
+            "Open": c.url,
             "Title": c.title,
             "Author": c.author or "—",
             "Merged": (c.merged_at or "")[:10] or "—",
             "Why": c.description or "—",
-            "Open": c.url,
         }
         for c in rows
     ]
@@ -292,15 +292,17 @@ def candidate_table(candidates: list[CandidatePR]) -> None:
                 min_value=0.0,
                 max_value=100.0,
             ),
-            "Pull request": st.column_config.TextColumn("Pull request", width="small"),
-            "Title": st.column_config.TextColumn("Title", width="large"),
-            "Why": st.column_config.TextColumn(
-                "Why", width="large",
-                help="The ranking stage's one-line reasoning for this candidate.",
-            ),
+            "Pull request": st.column_config.TextColumn("Pull request"),
             "Open": st.column_config.LinkColumn(
-                "Open", display_text="↗ PR", width="small",
+                "Open", display_text="↗ PR",
                 help="Open this pull request on GitHub.",
+            ),
+            "Title": st.column_config.TextColumn("Title"),
+            "Author": st.column_config.TextColumn("Author"),
+            "Merged": st.column_config.TextColumn("Merged"),
+            "Why": st.column_config.TextColumn(
+                "Why",
+                help="The ranking stage's one-line reasoning for this candidate.",
             ),
         },
     )

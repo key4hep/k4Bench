@@ -4,9 +4,9 @@ The tab shows exactly the run group matching the sidebar's (detector,
 platform, sample) — the cross-detector picture lives in the Overview tab —
 opens the trend preview on the most severe flag, and offers the sidebar
 release's report nights: the default is the most attention-worthy night (a
-confirmed regression outranks a watch outranks a quiet rerun), a picker exposes
-the rest, and ``?report=`` pins one directly. All remote calls are stubbed;
-nothing touches the network.
+confirmed regression outranks a watch outranks a quiet rerun), a pill picker
+always shows every night on offer (even a single one), and ``?report=`` pins
+one directly. All remote calls are stubbed; nothing touches the network.
 """
 
 from __future__ import annotations
@@ -135,12 +135,12 @@ def _run(report_json=None, detector="CLD", platform=PLAT, sample="single_e",
 def test_scoped_group_renders_flat_without_expanders():
     at = _run(_report([_group(verdicts=_FLAGGED),
                        _group(detector="IDEA", verdicts=[])]))
-    # One group, rendered flat: the flag table shows, nothing hides in an
-    # expander, and the other detector's group leaves no trace.
+    # One group, rendered flat: nothing hides in an expander, the trend
+    # preview lists one option per flagged metric, and the other detector's
+    # group leaves no trace.
     assert not at.expander
-    assert len(at.dataframe) == 1
-    flags = at.dataframe[0].value
-    assert len(flags) == 3  # the OK verdict earns no row
+    (preview,) = at.selectbox
+    assert len(preview.options) == 4  # "—" + 3 flagged metrics (OK earns none)
     assert "IDEA" not in at.markdown[0].value if at.markdown else True
 
 
@@ -156,13 +156,14 @@ def test_banner_counts_the_groups_verdicts():
 
 def test_trend_preview_defaults_to_the_worst_confirmed_flag():
     at = _run(_report([_group(verdicts=_FLAGGED)]))
-    # A single-night release shows no night picker (a segmented_control, not a
-    # selectbox), so the trend preview is the tab's only selectbox. It opens on
-    # the largest-|Δ| CONFIRMED metric — not "—", and not the larger-|Δ| WATCH.
-    assert not at.segmented_control
+    # A single-night release still shows the report-night pill (one option),
+    # separate from the trend-preview selectbox. The preview opens on the
+    # largest-|Δ| CONFIRMED metric — not "—", and not the larger-|Δ| WATCH —
+    # with its Δ vs baseline right in the option text.
+    (night_pill,) = at.segmented_control
+    assert list(night_pill.options) == [NIGHT]
     (preview,) = at.selectbox
-    assert "peak_rss_mb" in preview.value
-    assert preview.value.startswith("🔴")
+    assert preview.value == "🔴 Regression · peak_rss_mb · baseline — Δ -35.0%"
     # The drill-down actually rendered (its history fetch found no runs).
     assert any("No history could be loaded" in w.value for w in at.warning)
 
@@ -207,7 +208,8 @@ def _confirmed_report() -> dict:
 def test_newest_release_shows_the_latest_report():
     # The selected release owns the triple's newest run → the latest report,
     # even when it is newer than that run (a missing-run night's failure must
-    # stay visible). Only the latest night has a report, so no picker appears.
+    # stay visible). Only the latest night has a report, so the picker shows
+    # just that one pill.
     at = _run(
         reports_map={"2026-07-11": _report([_group(
             verdicts=[], job_failures=["no run uploaded for 2026-07-11"],
@@ -217,7 +219,8 @@ def test_newest_release_shows_the_latest_report():
     )
     by_label = {m.label: m.value for m in at.metric}
     assert by_label["❌ Failures"] == "1"
-    assert not at.segmented_control
+    (picker,) = at.segmented_control
+    assert list(picker.options) == ["2026-07-11"]
     assert not any("Historical view" in c.value for c in at.caption)
 
 
@@ -436,7 +439,8 @@ def test_switching_detector_redefaults_the_picker():
 
 def test_multi_single_multi_navigation_does_not_strand_state():
     # Navigating multi-night → single-night → multi-night must leave no stale
-    # picker night behind: the single-night scope clears it, and returning to a
+    # picker night behind: the single-night scope still shows its own (one-pill)
+    # picker rather than reusing the previous scope's night, and returning to a
     # multi-night scope re-defaults cleanly.
     cld = _report([_group(detector="CLD", verdicts=_FLAGGED)])
     sid = _report([_group(detector="SiD", verdicts=_FLAGGED)])
@@ -455,13 +459,13 @@ def test_multi_single_multi_navigation_does_not_strand_state():
     )
     at.run()                                                   # multi (CLD)
     assert at.segmented_control[0].value == NIGHT
-    assert "regr_night" in at.session_state
+    assert at.session_state["regr_night"] == NIGHT
 
     at.session_state["_i"] = 1                                 # single (SiD, older release)
     at.run()
     assert not at.exception, at.exception
-    assert not at.segmented_control                            # no picker on a single night
-    assert "regr_night" not in at.session_state                # and its state was cleared
+    assert at.segmented_control[0].value == "2026-07-08"       # the one pill on offer
+    assert at.session_state["regr_night"] == "2026-07-08"      # not stranded from CLD's scope
 
     at.session_state["_i"] = 0                                 # back to multi (CLD)
     at.run()
@@ -481,9 +485,10 @@ def test_malformed_historical_report_does_not_blank_the_tab():
         dates=("2026-07-11", NIGHT),
         stacks_dates={STACK: [NIGHT, "2026-07-11"]},
     )
-    # Only the valid night parsed, so no picker (a single loadable report) and
+    # Only the valid night parsed, so the picker shows just that one pill, and
     # its confirmed banner shows.
-    assert not at.segmented_control
+    (picker,) = at.segmented_control
+    assert list(picker.options) == [NIGHT]
     assert {m.label: m.value for m in at.metric}["🔴 Regressed"] == "2"
     assert any("could not be loaded" in c.value for c in at.caption)
 
@@ -607,7 +612,8 @@ def test_ranked_candidate_prs_render_when_a_blame_sidecar_is_present():
     assert "Suggested cause" in captions
     pr_frames = [d.value for d in at.dataframe if "Pull request" in d.value.columns]
     assert len(pr_frames) == 1
-    assert "key4hep/k4geo#1234" in list(pr_frames[0]["Pull request"])
+    assert list(pr_frames[0]["Pull request"]) == ["key4hep/k4geo#1234"]
+    assert list(pr_frames[0]["Open"]) == ["https://github.com/key4hep/k4geo/pull/1234"]
 
 
 def test_unranked_candidates_show_no_table():
