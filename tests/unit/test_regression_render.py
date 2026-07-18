@@ -71,6 +71,23 @@ def test_markdown_orders_and_summarises():
     assert "config 'variant' produced no results tonight" in md
 
 
+def test_repeat_confirmation_is_marked_in_markdown_and_html():
+    # A later night of a release re-confirming a change must read as a repeat
+    # in both email bodies, not as fresh news; the first confirmation itself
+    # carries no marker.
+    repeat = _verdict(run_id="2026-01-13", first_confirmed_run_id="2026-01-12")
+    fresh = _verdict(metric="mean_time_s", first_confirmed_run_id="2026-01-12")
+    group = RunGroupReport(
+        detector="DET", platform="PLAT", sample="single_e",
+        k4h_release="key4hep-2026-01-01", run_date="2026-01-13", run_id="2026-01-13",
+        verdicts=[repeat, fresh],
+    )
+    report = NightlyReport(generated_at="2026-01-13T05:00:00", groups=[group])
+    for rendered in (to_markdown(report), to_html(report)):
+        assert "🔴 Regression (repeat — first confirmed 2026-01-12)" in rendered
+        assert rendered.count("repeat — first confirmed") == 1
+
+
 def test_html_is_self_contained_and_links():
     html = to_html(
         _full_report(),
@@ -235,6 +252,9 @@ def test_from_json_ignores_fields_it_does_not_know():
 _WINDOW_FIELDS = {
     "onset_run_id", "onset_run_date", "last_accepted_run_id", "last_accepted_run_date",
 }
+#: The repeat marker added with release-grouped verdicts (the night a change
+#: was first confirmed for its release, letting reruns render as repeats).
+_REPEAT_FIELDS = {"first_confirmed_run_id"}
 #: The verdict schema a reader deployed before this feature knew about. The
 #: compatibility contract is that the new fields are *purely additive* to this
 #: set — anything else (a renamed or dropped field) breaks an old reader in a
@@ -332,12 +352,13 @@ def test_new_report_is_additive_over_the_pre_window_schema():
     # The load-bearing compatibility direction: a report the *current* writer
     # emits must stay readable by a reader deployed before these fields existed
     # (once that reader also drops unknowns — the deployed reader must ship
-    # first). That holds iff the window fields are the *only* additions, so a
-    # verdict stripped of them reconstructs exactly the old schema.
+    # first). That holds iff the window and repeat fields are the *only*
+    # additions, so a verdict stripped of them reconstructs exactly the old
+    # schema.
     data = to_json(_full_report())
     for g in data["groups"]:
         for v in g["verdicts"]:
-            assert v.keys() == _PRE_WINDOW_FIELDS | _WINDOW_FIELDS
+            assert v.keys() == _PRE_WINDOW_FIELDS | _WINDOW_FIELDS | _REPEAT_FIELDS
             old_view = {k: val for k, val in v.items() if k in _PRE_WINDOW_FIELDS}
             MetricVerdict(**{
                 **old_view,

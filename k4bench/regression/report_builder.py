@@ -172,8 +172,9 @@ def evaluate_group_series(
     group. Region timings are not walked.
 
     Returns the **full verdict series** per :class:`SeriesId` — the nightly
-    report takes each series' last element, while the dashboard drill-down and
-    the retrospective threshold validation consume the whole walk.
+    report takes each series' verdict for the report night, while the
+    dashboard drill-down and the retrospective threshold validation consume
+    the whole walk.
     """
     out: dict[SeriesId, list[MetricVerdict]] = {}
 
@@ -267,12 +268,20 @@ def build_group_report(
     sample: str,
     *,
     fetch_window_runs: int = FETCH_WINDOW_RUNS,
+    as_of: str | None = None,
 ) -> RunGroupReport | None:
     """Build one triple's report from its trailing run window, or ``None``
-    when the triple has no fetchable runs at all."""
+    when the triple has no fetchable runs at all.
+
+    *as_of* (a ``YYYY-MM-DD`` night) truncates the run history to runs on or
+    before that night before the trailing window is taken, reproducing the
+    report that night's runs would have produced — the seam the historical
+    backfill drives. ``None`` judges the full history (the nightly CI case).
+    """
     stacks_dates = list_run_dates_all_stacks(data_url, detector, platform, sample)
     pairs = sorted(
         (date, stack) for stack, dates in stacks_dates.items() for date in dates
+        if as_of is None or date <= as_of
     )[-fetch_window_runs:]
     if not pairs:
         return None
@@ -329,8 +338,16 @@ def _group_report_from_frames(
         reliability=reliability,
     )
     # Only verdicts issued *for tonight's run* belong in tonight's report; a
-    # series whose last verdict is older simply was not judged tonight.
-    group.verdicts = [vs[-1] for vs in series.values() if vs[-1].run_id == tonight]
+    # series with no verdict for tonight simply was not judged tonight.
+    # Tonight's verdict is selected by run id, not position: the engine orders
+    # by release, so a re-benchmark of an *older* release sorts into that
+    # release's group, before newer releases' verdicts.
+    group.verdicts = [
+        v
+        for vs in series.values()
+        for v in (next((v for v in reversed(vs) if v.run_id == tonight), None),)
+        if v is not None
+    ]
 
     # Record raw values for metrics the engine didn't judge tonight — an
     # unreliable run is skipped, so this is the only way its values reach the
@@ -384,6 +401,7 @@ def build_nightly_report(
     cache_dir: str | None = None,
     *,
     fetch_window_runs: int = FETCH_WINDOW_RUNS,
+    as_of: str | None = None,
 ) -> NightlyReport:
     """Build the cross-detector report for the most recent nightly.
 
@@ -392,6 +410,10 @@ def build_nightly_report(
     hard crash uploads nothing, so absence is itself the failure signal) —
     unless it is stale by more than :data:`MISSING_RUN_GRACE_DAYS`, in which
     case it is treated as retired and dropped.
+
+    *as_of* truncates every triple's history to runs on or before that night
+    (see :func:`build_group_report`), making the report night the newest run
+    ≤ *as_of* — the historical-backfill seam.
     """
     groups: list[RunGroupReport] = []
     for detector in list_detectors(data_url):
@@ -402,7 +424,7 @@ def build_nightly_report(
                 try:
                     group = build_group_report(
                         data_url, cache_dir, detector, platform, sample,
-                        fetch_window_runs=fetch_window_runs,
+                        fetch_window_runs=fetch_window_runs, as_of=as_of,
                     )
                 except Exception:
                     _log.exception(
@@ -420,10 +442,12 @@ def build_nightly_report_local(
     data_dir: str,
     *,
     fetch_window_runs: int = FETCH_WINDOW_RUNS,
+    as_of: str | None = None,
 ) -> NightlyReport:
     """Like :func:`build_nightly_report`, but over a local directory tree with
     the same ``{detector}/{platform}/{stack}/{sample}/{date}`` layout as EOS
-    (used by the integration test and for offline dry-runs; no network)."""
+    (used by the integration test and for offline dry-runs; no network).
+    *as_of* truncates each sample's runs the same way."""
     root = Path(data_dir)
     groups: list[RunGroupReport] = []
     for det_dir in sorted(p for p in root.iterdir() if p.is_dir()):
@@ -440,6 +464,7 @@ def build_nightly_report_local(
             for sample, run_paths in sorted(per_sample.items()):
                 run_dirs = tuple(
                     str(p) for p in sorted(run_paths, key=lambda p: p.name)
+                    if as_of is None or p.name <= as_of
                 )[-fetch_window_runs:]
                 group = group_report_from_run_dirs(
                     det_dir.name, plat_dir.name, sample, run_dirs

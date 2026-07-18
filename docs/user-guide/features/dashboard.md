@@ -119,11 +119,33 @@ step-change detector (`k4bench/regression/`):
 - **Watch, then regression.** The first night to clear both gates is a
   **⚠️ Watch**. It only becomes a confirmed **🔴 Regression** once the *next*
   reliable night moves the same way again — a two-strike rule that is the main
-  defence against false alarms.
-- **Re-anchoring.** A confirmed regression is treated as a **change-point**: the
-  baseline resets to the new level, so a deliberate step (say, a physics change)
-  is flagged exactly once instead of every night until the window rolls over.
-  A second change right afterwards is still caught.
+  defence against false alarms. The confirming night may re-benchmark the same
+  release as the watch night: a second run of the same binary tripping the same
+  way is exactly the independent evidence the rule wants.
+- **Releases, not nights.** The unit of change is the **Key4hep release**;
+  nights that re-benchmark one release are repeat measurements of the same
+  binary. Every night of a release is judged against the same frozen baseline,
+  and once a step is confirmed for a release, every later night of that release
+  that trips the same way is confirmed too, carrying the same onset window — so
+  all of a release's reports agree on its regressions, modulo each night's own
+  measured value. A repeat confirmation is labelled as such in the report and
+  email ("repeat — first confirmed {night}"), so consecutive alerts read as
+  "still present", not fresh news.
+- **Confirmations follow the balance of evidence.** A single quiet night inside
+  a confirmed release cannot outvote the two nights that confirmed — it is
+  reported OK with a note that the release's median still sits beyond the
+  baseline ("tonight's value looks like noise"). But when quiet nights drag the
+  **median of the release's nights** back inside the gates, the confirmation is
+  revoked ("confirmation revised") — the confirming nights were more likely
+  noise — and the baseline is never re-anchored onto a fluke level.
+- **Re-anchoring.** A confirmed regression that still stands at the next
+  *release boundary* is treated as a **change-point**: the baseline resets to
+  the new level when the next release arrives, so a deliberate step (say, a
+  physics change) is flagged
+  on the release that introduced it — on every night that measured that
+  release — and falls quiet from the next release on, instead of alerting every
+  night until the window rolls over. A second change right afterwards is still
+  caught.
 - **Direction** (faster/slower, more/less memory) is shown but not treated as
   good or bad — a regression is simply any confirmed step beyond the baseline in
   either direction.
@@ -134,13 +156,14 @@ step-change detector (`k4bench/regression/`):
   the regression report judges only top-level run and per-event metrics.
 
 A report is written per *run*, so several nights routinely re-benchmark one
-fixed release — and because a confirmed step **re-anchors** the baseline the
-following night, a confirmed regression appears on exactly **one** report night
-and the reruns after it fall quiet. The sidebar's **release** selects which of
-that release's report nights are on offer; the tab defaults to the most
-**attention-worthy** one (a confirmed regression or failure outranks a watch
-outranks a quiet night, newest breaking ties), so the confirmation night is
-never hidden behind a later quiet rerun. A **Report night** pill always appears
+fixed release. Their reports mostly agree — every night of a release is judged
+against the same baseline — but can still differ: the first strike is only a
+watch, a marginal night can come out OK, and reports built before the
+release-grouped engine confirmed on a single night. The sidebar's **release**
+selects which of that release's report nights are on offer; the tab defaults to
+the most **attention-worthy** one (a confirmed regression or failure outranks a
+watch outranks a quiet night, newest breaking ties), so the most alarming night
+is never hidden behind a quieter one. A **Report night** pill always appears
 above the report — one option carrying that night's glance badge
 (❌ / 🔴 / ⚠️ / ✅) even when the release was only benchmarked once, and one pill
 per night to step through the rest when it was benchmarked several times. The
@@ -151,7 +174,7 @@ stays visible.
 A `?report=YYYY-MM-DD` query parameter pins one report night directly and is
 authoritative when valid — this is the stable deep link the nightly email and
 the Overview roster generate, so a link to a confirmed regression keeps
-pointing at its confirmation night after later reruns. (The Run Trends
+pointing at the exact report the email described. (The Run Trends
 `range=` window is unrelated and does not select a regression report.)
 
 The selected run group renders flat: an at-a-glance banner (regressed / watch

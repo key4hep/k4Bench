@@ -101,7 +101,8 @@ def test_entry_for_joins_on_verdict_identity_and_window():
     assert report.entry_for(other) is None
 
     # Same identity, different window: a sidecar left over from an earlier
-    # build must never attach its ranking to a re-anchored regression.
+    # build must never attach its ranking to a regression whose window it did
+    # not examine.
     moved = MetricVerdict(**{**matching.__dict__, "onset_run_date": "2026-07-06"})
     assert report.entry_for(moved) is None
 

@@ -71,7 +71,9 @@ def _write_run(
     (run_dir / "run_info.json").write_text(json.dumps({
         "date": night,
         "platform": _PLAT,
-        "k4h_release": _STACK,
+        # One release per night — the production norm; nights sharing a
+        # release are covered by the engine's own multi-night tests.
+        "k4h_release": f"key4hep-{night}",
         "sample": sample,
     }))
     for label in labels:

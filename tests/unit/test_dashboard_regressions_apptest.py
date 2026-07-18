@@ -226,9 +226,10 @@ def test_newest_release_shows_the_latest_report():
 
 def test_confirmed_rerun_defaults_over_a_later_quiet_night():
     # The release was benchmarked on two nights: the first CONFIRMED a
-    # regression, the second re-anchored and fell quiet. The default must be the
-    # confirmed night — never masked by the later quiet rerun — with a picker
-    # exposing both.
+    # regression, the second's report is quiet (a marginal night, or a report
+    # predating the release-grouped engine). The default must be the confirmed
+    # night — never masked by the later quiet rerun — with a picker exposing
+    # both.
     at = _run(
         reports_map={NIGHT: _confirmed_report(), "2026-07-11": _quiet_report()},
         dates=("2026-07-11", NIGHT),
@@ -652,8 +653,8 @@ def test_malformed_blame_sidecar_hides_blame_instead_of_crashing():
 
 
 def test_stale_blame_with_a_different_window_is_not_joined():
-    # Same verdict identity, but the sidecar attributes an older window (e.g. a
-    # rerun re-anchored the step): its ranking must not attach.
+    # Same verdict identity, but the sidecar attributes a different window
+    # (e.g. one an earlier engine build stamped): its ranking must not attach.
     from k4bench.blame.models import CandidatePR
     cand = CandidatePR(
         repo="key4hep/k4geo", number=1234, title="Some PR", author="alice",

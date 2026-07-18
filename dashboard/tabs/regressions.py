@@ -6,8 +6,10 @@ selection: the tab renders the matching run group from the precomputed
 ``regression-report`` CI job (see ``k4bench/regression/``). The sidebar's
 *release* selects which report nights are on offer (see
 :func:`_candidate_nights`): several nights routinely re-benchmark one fixed
-nightly, and a confirmed regression appears on exactly one of them — the
-baseline re-anchors afterwards — so the default night is the most
+nightly, and the engine judges them all against the same frozen baseline, so
+a confirmed regression repeats on every night of the release that trips —
+though nights can still differ (WATCH → CONFIRMED progression, marginal OK
+nights, pre-backfill reports). The default night is therefore the most
 attention-worthy one, a picker exposes the release's other nights, and
 ``?report=`` pins one directly (the deep link emitted in alert emails). The
 cross-detector at-a-glance picture lives in the Overview tab. Only the trend
@@ -211,11 +213,13 @@ def _candidate_nights(
     """Report nights on offer for the sidebar's release, newest first.
 
     A report is written per *run*, under ``_reports/{run_date}`` — so several
-    nights routinely re-benchmark one fixed release, and a confirmed regression
-    lands on exactly one of them (the baseline re-anchors afterwards). Every
-    night that benchmarked this release and has a report is therefore offered,
-    so that confirmation night stays reachable even after a later rerun quiets
-    down. While a release is the one still being benchmarked (it owns the
+    nights routinely re-benchmark one fixed release, and while the engine
+    judges them all against the same frozen baseline, their reports can still
+    differ (a WATCH night preceding the confirming one, a marginal OK night,
+    or a report predating the release-grouped engine). Every night that
+    benchmarked this release and has a report is therefore offered, so the
+    most alarming night stays reachable whichever night is open. While a
+    release is the one still being benchmarked (it owns the
     triple's newest run), the latest report is included too — it may be newer
     than the release's last run, the night whose "no run uploaded" failure must
     stay visible.
@@ -354,8 +358,10 @@ def _select_night(
         nights,
         format_func=lambda n: f"{_night_badge(reports[n], detector, platform, sample)} {n}",
         key=key,
-        help="A confirmed regression appears on exactly one reliable night "
-             "(later reruns re-anchor the baseline). Defaults to the most "
+        help="Every night of a release is judged against the same baseline, "
+             "so a confirmed regression repeats on each night that trips — "
+             "but nights can still differ (the first strike is only a WATCH, "
+             "and a marginal night can come out OK). Defaults to the most "
              "attention-worthy night; pick another to see that night's report "
              "and blame.",
     )

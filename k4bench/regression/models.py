@@ -89,6 +89,12 @@ class MetricVerdict:
     ``last_accepted_*`` is ``None`` when no such night exists (a change
     confirmed before the series ever settled), which makes the window
     open-ended rather than empty.
+
+    ``first_confirmed_run_id`` names the night a ``CONFIRMED`` change was
+    first confirmed for its release (``None`` on every other severity). It
+    equals ``run_id`` on that first night; on a later night of the same
+    release re-confirming the change it points back — letting the report and
+    email render a repeat as a repeat rather than fresh news.
     """
 
     detector: str
@@ -112,6 +118,7 @@ class MetricVerdict:
     onset_run_date: str | None = None
     last_accepted_run_id: str | None = None
     last_accepted_run_date: str | None = None
+    first_confirmed_run_id: str | None = None
 
     @property
     def flagged(self) -> bool:

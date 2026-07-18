@@ -48,7 +48,9 @@ _FLAG_HELP = (
 
 #: Attention ranking used to reduce same-nightly-tag reruns to their worst
 #: verdict: a regression CONFIRMED on one run of a tag must not be masked by a
-#: later rerun that re-anchored to OK. OK/UNKNOWN (rank 0) never outrank a flag.
+#: quieter run of the same tag (a WATCH night before the confirmation, a
+#: marginal OK night, or a report predating the release-grouped engine).
+#: OK/UNKNOWN (rank 0) never outrank a flag.
 SEVERITY_RANK = {"CONFIRMED": 3, "WATCH": 2, "FAILURE": 1}
 
 

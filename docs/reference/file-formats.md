@@ -192,8 +192,9 @@ Each entry's first seven fields are a `report.json` verdict's identity; the
 dashboard joins an entry back to the confirmed regression it explains by that
 identity **and** the `base_release`/`onset_release` window, so a sidecar left
 over from an earlier build of the same night (the CI job also deletes the
-remote sidecar on a rerun that produces none) can never attach to a re-anchored
-regression. The pipeline collects every PR in each changed repo's commit range;
+remote sidecar on a rerun that produces none) can never attach to a regression
+whose window it did not examine. The pipeline collects every PR in each
+changed repo's commit range;
 a separate **ranking stage** then scores each candidate *for that group* —
 `score` is a 0–100 likelihood it is the cause and `description` a one-line
 reason, judged once per detector/platform/sample/window (every metric — and
