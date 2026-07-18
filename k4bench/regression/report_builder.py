@@ -172,8 +172,9 @@ def evaluate_group_series(
     group. Region timings are not walked.
 
     Returns the **full verdict series** per :class:`SeriesId` — the nightly
-    report takes each series' last element, while the dashboard drill-down and
-    the retrospective threshold validation consume the whole walk.
+    report takes each series' verdict for the report night, while the
+    dashboard drill-down and the retrospective threshold validation consume
+    the whole walk.
     """
     out: dict[SeriesId, list[MetricVerdict]] = {}
 
@@ -337,8 +338,16 @@ def _group_report_from_frames(
         reliability=reliability,
     )
     # Only verdicts issued *for tonight's run* belong in tonight's report; a
-    # series whose last verdict is older simply was not judged tonight.
-    group.verdicts = [vs[-1] for vs in series.values() if vs[-1].run_id == tonight]
+    # series with no verdict for tonight simply was not judged tonight.
+    # Tonight's verdict is selected by run id, not position: the engine orders
+    # by release, so a re-benchmark of an *older* release sorts into that
+    # release's group, before newer releases' verdicts.
+    group.verdicts = [
+        v
+        for vs in series.values()
+        for v in (next((v for v in reversed(vs) if v.run_id == tonight), None),)
+        if v is not None
+    ]
 
     # Record raw values for metrics the engine didn't judge tonight — an
     # unreliable run is skipped, so this is the only way its values reach the

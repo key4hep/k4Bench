@@ -283,6 +283,7 @@ def evaluate_series(
     for release_date, group in groupby(df.itertuples(index=False), key=_release_key):
         # Per-release state, reset at every boundary.
         snapshot: tuple[float, float, bool, int] | None = None  # (med, mad, reanchoring, n_base)
+        warming: bool | None = None       # decided once, at the first reliable night
         release_windows: dict[Direction, tuple] = {}  # direction -> (window, first-confirmed night)
         release_values: list[float] = []  # reliable judged values, night order
         release_last_reliable: tuple[str, str] | None = None
@@ -295,20 +296,27 @@ def evaluate_series(
                 continue
             x = float(x)
 
+            if warming is None:
+                warming = len(baseline) < MIN_BASELINE_RUNS and anchor_date is None
+            if warming:
+                # Warm-up covers the whole release: judging a later night of
+                # this release against a window already containing its earlier
+                # nights would break the frozen-snapshot invariant (and with a
+                # short history, same-release values could dominate the median
+                # and mask a step). The values enter the baseline only at the
+                # boundary; judging starts with the next release.
+                verdicts.append(_verdict(
+                    row,
+                    value=x, baseline_median=None, baseline_mad=None,
+                    pct_change=None, z_score=None,
+                    severity=Severity.UNKNOWN, direction=Direction.NONE,
+                    reason=f"only {len(baseline)} reliable baseline runs "
+                           f"(<{MIN_BASELINE_RUNS}) — not judged",
+                ))
+                release_values.append(x)
+                continue
+
             if snapshot is None:
-                if len(baseline) < MIN_BASELINE_RUNS and anchor_date is None:
-                    # Warm-up: no judging happens, so the per-release freeze
-                    # does not apply — the value enters the baseline at once.
-                    verdicts.append(_verdict(
-                        row,
-                        value=x, baseline_median=None, baseline_mad=None,
-                        pct_change=None, z_score=None,
-                        severity=Severity.UNKNOWN, direction=Direction.NONE,
-                        reason=f"only {len(baseline)} reliable baseline runs "
-                               f"(<{MIN_BASELINE_RUNS}) — not judged",
-                    ))
-                    baseline.append(x)
-                    continue
                 # First judged night of the release: freeze the snapshot every
                 # night of this release is judged against, built from state
                 # accumulated under earlier releases only.
@@ -389,9 +397,13 @@ def evaluate_series(
                     # The release already confirmed a change this way: every
                     # further night re-measuring it reports the same verdict
                     # with the same window (the regression belongs to the
-                    # release, not to the night that confirmed it first).
+                    # release, not to the night that confirmed it first). This
+                    # night also invalidates any opposite-direction pending
+                    # WATCH — two strikes must be consecutive reliable nights,
+                    # and this night sits between them.
                     severity = Severity.CONFIRMED
                     window, first_confirmed = release_windows[direction]
+                    pending = pending_run = None
                 elif pending is direction:
                     severity = Severity.CONFIRMED
                     # The change appeared on the WATCH night, one reliable

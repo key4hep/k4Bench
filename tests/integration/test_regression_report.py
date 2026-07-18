@@ -45,11 +45,12 @@ def test_regression_report_cli_local_mode(tmp_path):
     # confirmed wall-time regression in tonight's report.
     walls = [100.0, 100.4, 99.6, 100.2, 99.8, 100.3, 99.7, 100.1, 99.9, 100.0,
              120.0, 120.5]
-    sample_root = tmp_path / "data" / "DET" / _PLAT / _STACK / "single_e"
     d0 = date.fromisoformat("2026-01-01")
     for i, wall in enumerate(walls):
         night = (d0 + timedelta(days=i)).isoformat()
-        _write_run(sample_root / night, night, wall)
+        stack = f"key4hep-{night}"
+        _write_run(tmp_path / "data" / "DET" / _PLAT / stack / "single_e" / night,
+                   night, wall, stack=stack)
 
     out_dir = tmp_path / "out"
     result = subprocess.run(
@@ -128,6 +129,35 @@ def test_as_of_reproduces_each_night_of_a_rebenchmarked_release(tmp_path):
     assert full == second
 
 
+def test_rerun_of_an_older_release_still_gets_tonights_verdict(tmp_path):
+    # An older release re-benchmarked *after* a newer one exists sorts into
+    # its own release's group, before the newer releases' verdicts — so
+    # tonight's verdict is not the series' last element. It must still land
+    # in tonight's report as a judged verdict, not fall through to the
+    # unjudged-value fallback.
+    from k4bench.regression.render import to_json
+    from k4bench.regression.report_builder import build_nightly_report_local
+
+    steady = [100.0, 100.4, 99.6, 100.2, 99.8, 100.3, 99.7, 100.1, 99.9,
+              100.0, 100.2, 99.8]
+    d0 = date.fromisoformat("2026-01-01")
+    root = tmp_path / "data" / "DET" / _PLAT
+    for i, wall in enumerate(steady):
+        night = (d0 + timedelta(days=i)).isoformat()
+        stack = f"key4hep-{night}"
+        _write_run(root / stack / "single_e" / night, night, wall, stack=stack)
+    # Re-benchmark the day-8 release four days after the day-12 one ran.
+    _write_run(root / "key4hep-2026-01-08" / "single_e" / "2026-01-16",
+               "2026-01-16", 100.1, stack="key4hep-2026-01-08")
+
+    report = to_json(build_nightly_report_local(str(tmp_path / "data")))
+    assert report["summary"]["report_night"] == "2026-01-16"
+    verdict = _wall_time_verdict(report)
+    assert verdict["run_id"] == "2026-01-16"
+    assert verdict["severity"] == "OK"
+    assert "not judged" not in verdict["reason"]
+
+
 _K4GEO = "https://github.com/key4hep/k4geo.git"
 _DD4HEP = "https://github.com/AIDASoft/DD4hep.git"
 
@@ -160,18 +190,19 @@ def _write_run_with_provenance(
 
 
 def test_blame_report_cli_local_mode(tmp_path):
-    # 10 steady nights on release 2026-01-01 (k4geo commit A), then a persisting
-    # +20% step on two nights that measured a *new* release, 2026-01-11 (k4geo
-    # commit C). The confirmed wall-time regression's window is therefore
-    # (2026-01-01, 2026-01-11], across which only k4geo moved.
+    # 10 steady nights, one release per night (k4geo commit A throughout), then
+    # a persisting +20% step on two nights that measured a *new* release,
+    # 2026-01-11 (k4geo commit C). The confirmed wall-time regression's window
+    # is therefore (2026-01-10, 2026-01-11], across which only k4geo moved.
     data_dir = tmp_path / "data"
     d0 = date.fromisoformat("2026-01-01")
     for i in range(10):
         night = (d0 + timedelta(days=i)).isoformat()
         wall = 100.0 + (0.4 if i % 2 else -0.4)
+        stack = f"key4hep-{night}"
         _write_run_with_provenance(
-            data_dir / "DET" / _PLAT / "key4hep-2026-01-01" / "single_e" / night,
-            night, "key4hep-2026-01-01", wall, "a" * 40,
+            data_dir / "DET" / _PLAT / stack / "single_e" / night,
+            night, stack, wall, "a" * 40,
         )
     for i, night in enumerate(("2026-01-11", "2026-01-12")):
         _write_run_with_provenance(
@@ -203,7 +234,7 @@ def test_blame_report_cli_local_mode(tmp_path):
     entries = [e for e in blame["entries"] if e["metric"] == "wall_time_s"]
     assert len(entries) == 1
     entry = entries[0]
-    assert entry["base_release"] == "2026-01-01"
+    assert entry["base_release"] == "2026-01-10"
     assert entry["onset_release"] == "2026-01-11"
     assert entry["n_unchanged"] == 1  # dd4hep held still
     repos = {r["package"]: r for r in entry["repos"]}
@@ -290,9 +321,10 @@ def test_blame_report_with_ranker_over_local_tree(tmp_path, monkeypatch):
     for i in range(10):
         night = (d0 + timedelta(days=i)).isoformat()
         wall = 100.0 + (0.4 if i % 2 else -0.4)
+        stack = f"key4hep-{night}"
         _write_run_with_provenance(
-            data_dir / "DET" / _PLAT / "key4hep-2026-01-01" / "single_e" / night,
-            night, "key4hep-2026-01-01", wall, "a" * 40,
+            data_dir / "DET" / _PLAT / stack / "single_e" / night,
+            night, stack, wall, "a" * 40,
         )
     for i, night in enumerate(("2026-01-11", "2026-01-12")):
         _write_run_with_provenance(

@@ -420,6 +420,53 @@ def test_majority_of_quiet_nights_revokes_a_confirmed_release():
     assert nxt.baseline_median == pytest.approx(100.0, abs=0.5)
 
 
+def test_warm_up_covers_a_whole_release_that_straddles_the_threshold():
+    # 5 single-night releases, then a 3-night release: the release's own
+    # early nights must not become the baseline its later nights are judged
+    # against (with a short history they could dominate the median and mask a
+    # step). The whole release stays UNKNOWN; judging starts with the next
+    # release, whose snapshot still shows the pre-step level in the majority.
+    steady = [100.0, 100.4, 99.6, 100.2, 99.8]
+    rows = [
+        (f"2026-02-{i + 1:02d}", f"2026-02-{i + 1:02d}", v)
+        for i, v in enumerate(steady)
+    ] + [
+        ("2026-02-06", "2026-02-06", 120.0),   # release R, night 1
+        ("2026-02-07", "2026-02-06", 120.5),   # night 2 (crosses MIN mid-release)
+        ("2026-02-08", "2026-02-06", 120.2),   # night 3
+        ("2026-02-09", "2026-02-09", 120.4),   # next release: judged
+    ]
+    verdicts = evaluate_series(_release_rows(rows), series=_TIME)
+    assert _severities(verdicts[:8]) == [Severity.UNKNOWN] * 8
+    judged = verdicts[-1]
+    assert judged.severity is Severity.WATCH
+    assert judged.baseline_median == pytest.approx(100.0, abs=0.5)
+
+
+def test_confirmed_repeat_invalidates_an_opposite_pending_watch():
+    # Two-strike confirmation requires *consecutive* reliable strikes. A night
+    # re-confirming the release's UP change sits between two DOWN strikes, so
+    # the second DOWN must be a fresh WATCH, not a CONFIRMED — otherwise a
+    # flapping series would fabricate a DOWN regression (and window) from two
+    # non-consecutive dips.
+    rows = _steady_rows() + [
+        ("2026-02-11", "2026-02-11", 120.0),   # release R: WATCH UP
+        ("2026-02-12", "2026-02-11", 120.5),   # CONFIRMED UP
+        ("2026-02-13", "2026-02-11", 80.0),    # WATCH DOWN
+        ("2026-02-14", "2026-02-11", 120.2),   # repeat CONFIRMED UP (between the dips)
+        ("2026-02-15", "2026-02-11", 80.2),    # dip again: fresh WATCH, no confirm
+    ]
+    verdicts = evaluate_series(_release_rows(rows), series=_TIME)
+    assert _severities(verdicts[-5:]) == [
+        Severity.WATCH, Severity.CONFIRMED, Severity.WATCH,
+        Severity.CONFIRMED, Severity.WATCH,
+    ]
+    assert verdicts[-1].direction is Direction.DOWN
+    assert Severity.CONFIRMED not in {
+        v.severity for v in verdicts if v.direction is Direction.DOWN
+    }
+
+
 def test_trip_after_a_revoked_confirmation_starts_a_fresh_watch():
     # Once the release median revoked the confirmation, a later tripping
     # night is a new hypothesis, not a repeat: it starts a fresh two-strike
