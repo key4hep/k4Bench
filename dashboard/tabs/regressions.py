@@ -33,6 +33,7 @@ from k4bench.regression.models import (
 from k4bench.regression.render import (
     _badge,
     _detector_badge,
+    _fmt_pct,
     _group_title,
     _metric_name,
     _pretty_sample,
@@ -66,7 +67,6 @@ from tabs._regression_flags import (
     add_severity_markers,
     attention_key,
     candidate_table,
-    flag_table,
     has_ranking as candidate_has_ranking,
 )
 from tabs._reliability import render_reliability_filter
@@ -139,9 +139,8 @@ def render(
     st.query_params["report"] = night
     if night != max(dates):
         st.caption(
-            f"Historical view: the **{night}** report for release "
-            f"**{_release(stack)}** — the newest release (the sidebar default) "
-            "shows the latest report."
+            f"Historical view — release **{_release(stack)}**'s **{night}** "
+            "report. The sidebar default (newest release) shows the latest one."
         )
     report = reports[night]
 
@@ -330,19 +329,15 @@ def _select_night(
     reports: dict[str, NightlyReport], default_night: str,
     detector: str, platform: str, sample: str, stack: str,
 ) -> str:
-    """Return the report night to render, exposing a picker when the release was
-    benchmarked on more than one night. The picker defaults to *default_night*
-    (the most attention-worthy), is authoritative via ``?report=`` for deep
-    links, and re-defaults cleanly when the sidebar scope changes. A
-    single-night release needs no widget."""
+    """Return the report night to render, always as a pill so the exact night
+    on screen is never implicit — one pill and no caption for a release
+    benchmarked on a single night, several pills otherwise. The picker
+    defaults to *default_night* (the most attention-worthy), is authoritative
+    via ``?report=`` for deep links, and re-defaults cleanly when the sidebar
+    scope changes."""
     _forget_stale_scope((detector, platform, sample, stack))
     nights = sorted(reports, reverse=True)
     key = _NIGHT_KEY
-    if len(nights) == 1:
-        # No picker on this scope — don't strand the previous scope's night in
-        # session_state, where a later multi-night scope could read it back.
-        st.session_state.pop(key, None)
-        return nights[0]
     _drop_stale_selection(key, nights)          # stale night → re-default
     seed_query_param(key, "report", nights)     # ?report= wins when it's valid
     if key not in st.session_state:
@@ -352,17 +347,15 @@ def _select_night(
         nights,
         format_func=lambda n: f"{_night_badge(reports[n], detector, platform, sample)} {n}",
         key=key,
-        help="This release was benchmarked on several nights; a confirmed "
-             "regression appears on exactly one of them (later reruns re-anchor "
-             "the baseline). Defaults to the most attention-worthy night; pick "
-             "another to see that night's report and blame.",
+        help="A confirmed regression appears on exactly one reliable night "
+             "(later reruns re-anchor the baseline). Defaults to the most "
+             "attention-worthy night; pick another to see that night's report "
+             "and blame.",
     )
     if night is None:  # segmented_control lets the active pill be deselected
         night = default_night
-    st.caption(
-        f"This release was benchmarked on {len(nights)} nights — showing "
-        f"**{night}**. The default is the most attention-worthy night."
-    )
+    if len(nights) > 1:
+        st.caption(f"Benchmarked on {len(nights)} nights — showing **{night}**.")
     return night
 
 
@@ -512,8 +505,8 @@ def _render_blame_cards(
 ) -> None:
     """Forward attribution for a group's confirmed regressions, without the
     drill-down. One card per distinct blame window — a run group's confirmed
-    metrics usually share one, and the flag table above already lists which
-    metrics stepped, so the card only needs a representative verdict."""
+    metrics usually share one, so the card only needs a representative
+    verdict."""
     by_window: dict[tuple, MetricVerdict] = {}
     for v in group.verdicts:
         if _blame.has_window(v):
@@ -544,36 +537,41 @@ def _render_group(
         v for v in group.verdicts
         if v.severity in (Severity.WATCH, Severity.CONFIRMED)
     ]
-    if flagged:
-        flag_table(flagged)
     if group.verdicts:
         st.caption(_quiet_summary(group))
 
-    _render_blame_cards(group, data_url, blame)
-
+    # The trend comes first — it's the first question a flagged night raises
+    # ("what does this look like?") — the upstream-changes cards follow with
+    # the "why", once there's a window to explain.
     drillable: list[MetricVerdict] = sorted(
         (v for v in flagged if v.baseline_median is not None), key=attention_key
     )
-    if not drillable:
-        return
-    # Opens on the most severe flag rather than on "—": the first question a
-    # flagged night raises is "what does the trend look like", so the preview
-    # answers it without a click. "—" stays available to collapse the chart.
-    options = ["—"] + [
-        f"{_badge(v)} · {_metric_name(v)} · {v.label}" for v in drillable
-    ]
-    choice = st.selectbox(
-        "Trend preview",
-        options,
-        index=1,
-        key=f"regr_drill_{key}",
-        help="This metric's recent history with the baseline band the verdict "
-             "was judged against — opens on the most severe flag; pick another "
-             "or “—” to hide it. Downloads the run window for this group on "
-             "first use.",
-    )
-    if choice != "—":
-        _render_drilldown(drillable[options.index(choice) - 1], data_url, cache_dir)
+    if drillable:
+        st.markdown("###### Flagged metric trend")
+        with st.container(border=True):
+            # Opens on the most severe flag rather than on "—", so the trend
+            # answers that first question without a click. "—" stays
+            # available to collapse the chart. Each option carries its own Δ
+            # vs baseline, worst flag first, so scanning the list alone shows
+            # the size of every flag — no separate ledger table needed.
+            options = ["—"] + [
+                f"{_badge(v)} · {_metric_name(v)} · {v.label} — Δ {_fmt_pct(v.pct_change)}"
+                for v in drillable
+            ]
+            choice = st.selectbox(
+                "Trend preview",
+                options,
+                index=1,
+                key=f"regr_drill_{key}",
+                help="Recent history with the baseline band this verdict was "
+                     "judged against. Opens on the most severe flag — pick "
+                     "another, or “—” to hide the chart. Downloads data on "
+                     "first use.",
+            )
+            if choice != "—":
+                _render_drilldown(drillable[options.index(choice) - 1], data_url, cache_dir)
+
+    _render_blame_cards(group, data_url, blame)
 
 
 def _prev_point(df: pd.DataFrame, item: MetricVerdict) -> tuple | None:
@@ -603,6 +601,15 @@ def _series_key(verdict: MetricVerdict) -> str:
     )))
 
 
+#: Extra Key4hep release tags plotted past the flagged night's own tag, when
+#: available, so the chart shows whether a confirmed step held or the metric
+#: moved again — not just the history it was judged against. Counted in
+#: distinct tags (``stack``), not run dates: a rerun of the same tag must not
+#: eat into the budget, or a tag re-benchmarked on several consecutive nights
+#: would cap the window at zero *new* tags.
+_FUTURE_TAGS = 3
+
+
 def _metric_history(verdict: MetricVerdict, data_url: str, cache_dir: str):
     """Fetch this group's run window and return ``(df, reliability)`` for the
     verdict's metric series: *df* carries ``run_id``, ``x_date`` and the metric
@@ -611,15 +618,34 @@ def _metric_history(verdict: MetricVerdict, data_url: str, cache_dir: str):
     stacks_dates = _cached_list_run_dates(
         data_url, verdict.detector, verdict.platform, verdict.sample
     )
-    # End the window at the verdict's own run, not at today's newest run, so an
+    # Anchor the window on the verdict's own run, not today's newest, so an
     # older report drills down into the history it was judged against — the
     # flagged night, its onset and the blame band all land on the plotted data
-    # instead of off the right edge. For the latest report this is the newest
-    # run, so the common case is unchanged.
-    pairs = sorted(
+    # instead of off the right edge — then extend a few Key4hep tags past it
+    # (see _FUTURE_TAGS) when the release has since moved on. For the latest
+    # report there is nothing past the anchor, so the common case is unchanged.
+    all_pairs = sorted(
         (date, stack) for stack, dates in stacks_dates.items() for date in dates
-        if date <= verdict.run_id
-    )[-FETCH_WINDOW_RUNS:]
+    )
+    anchor = next(
+        (i for i in range(len(all_pairs) - 1, -1, -1) if all_pairs[i][0] <= verdict.run_id),
+        None,
+    )
+    if anchor is None:
+        pairs = []
+    else:
+        start = max(0, anchor - FETCH_WINDOW_RUNS + 1)
+        seen_tags = {all_pairs[anchor][1]}
+        new_tags = 0
+        end = anchor + 1
+        while end < len(all_pairs):
+            if all_pairs[end][1] not in seen_tags:
+                if new_tags >= _FUTURE_TAGS:
+                    break
+                seen_tags.add(all_pairs[end][1])
+                new_tags += 1
+            end += 1
+        pairs = all_pairs[start:end]
     window: dict[str, list[str]] = {}
     for date, stack in pairs:
         window.setdefault(stack, []).append(date)
@@ -748,5 +774,3 @@ def _render_drilldown(verdict: MetricVerdict, data_url: str, cache_dir: str) -> 
     chart_key = "regr_chart_" + _series_key(verdict)
     st.plotly_chart(fig, width="stretch", key=chart_key)
     st.caption(_drilldown_caption(verdict))
-    if _blame.has_window(verdict):
-        _blame.render_note(verdict)

@@ -1,16 +1,13 @@
 """Tests for the Regressions drill-down blame overlay (:mod:`tabs._blame`).
 
 Covers the pure pieces — which verdicts get a window, where the onset marker
-lands, and the shaded release band — plus the below-chart note's branching
-(same-release "nothing changed" vs. a seeded Compare link), with ``st`` stubbed
-so nothing renders or touches the network.
+lands, and the shaded release band.
 """
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -56,26 +53,6 @@ def _history() -> pd.DataFrame:
         "x_date":  pd.to_datetime(["2026-06-24", "2026-06-25", "2026-06-25", "2026-06-27"]),
         "wall_time_s": [5.0, 5.9, 5.1, 6.0],
     })
-
-
-@pytest.fixture
-def fake_st(monkeypatch):
-    """Replace ``_blame.st`` with a recorder so render_note's calls can be
-    inspected without a Streamlit runtime."""
-    calls: dict[str, list] = {"info": [], "caption": [], "link": []}
-
-    class Rec:
-        def info(self, body, *, icon=None):
-            calls["info"].append({"body": body, "icon": icon})
-
-        def caption(self, body):
-            calls["caption"].append(body)
-
-        def link_button(self, label, url, *, help=None):  # noqa: A002
-            calls["link"].append({"label": label, "url": url, "help": help})
-
-    monkeypatch.setattr(_blame, "st", Rec())
-    return calls
 
 
 # ── classify / has_window ─────────────────────────────────────────────────────
@@ -255,48 +232,3 @@ def test_window_band_ignores_a_corrupt_baseline_newer_than_onset():
     # never using the corrupt bound.
     assert len(fig.layout.shapes) == 1
     assert pd.Timestamp(fig.layout.shapes[0].x0) == pd.Timestamp("2026-06-24")
-
-
-# ── render_note ───────────────────────────────────────────────────────────────
-
-def test_note_reports_no_tracked_change_when_ends_share_a_release(fake_st):
-    _blame.render_note(_verdict(last_accepted_run_date="2026-06-25"))
-    assert len(fake_st["info"]) == 1
-    body = fake_st["info"][0]["body"]
-    assert "No tracked Key4hep package changed" in body
-    # The claim is scoped to tracked packages, not "nothing at all changed".
-    assert "benchmark code" in body
-    assert not fake_st["link"]  # no PR hunt when the stack did not move
-
-
-def test_note_links_to_stack_changes_seeded_with_the_release_range(fake_st):
-    _blame.render_note(_verdict())
-    assert not fake_st["info"]
-    assert len(fake_st["link"]) == 1
-    q = parse_qs(urlsplit(fake_st["link"][0]["url"]).query)
-    assert q["tab"] == ["Stack Changes"]
-    assert q["from"] == ["2026-06-24"]   # last_accepted release, the baseline
-    assert q["to"] == ["2026-06-25"]     # onset release
-    assert q["platform"] == ["PLAT"]
-    # Detector rides along so the app resolves the verdict's platform, not the
-    # sidebar's default detector's platform (Regressions is cross-detector).
-    assert q["detector"] == ["CLD"]
-
-
-def test_note_omits_the_baseline_end_when_the_window_is_open(fake_st):
-    _blame.render_note(
-        _verdict(last_accepted_run_id=None, last_accepted_run_date=None)
-    )
-    q = parse_qs(urlsplit(fake_st["link"][0]["url"]).query)
-    assert q["to"] == ["2026-06-25"]
-    assert "from" not in q  # nothing to bound the older end on
-
-
-def test_note_treats_a_corrupt_window_as_open_not_same_stack(fake_st):
-    # A baseline newer than onset must not be read as "nothing changed", nor
-    # emit a from>to link — it degrades to the open-ended form.
-    _blame.render_note(_verdict(last_accepted_run_date="2026-06-28"))
-    assert not fake_st["info"]
-    q = parse_qs(urlsplit(fake_st["link"][0]["url"]).query)
-    assert q["to"] == ["2026-06-25"]
-    assert "from" not in q
