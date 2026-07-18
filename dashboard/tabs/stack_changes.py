@@ -737,9 +737,10 @@ def _render_outlier_scatter(
         return f"{name} (CPU + memory stepped)" if both else name
 
     options = ["—"] + [_name(c) for c in candidates]
+    candidate_scope = tuple(candidates)
     _reset_widget_on_scope(
         "stack_outlier_cfg",
-        (platform, base_release, head_release, scoped, tuple(options)),
+        (platform, base_release, head_release, scoped, candidate_scope),
     )
     picker_row = st.container(
         horizontal=True, vertical_alignment="bottom", width="content"

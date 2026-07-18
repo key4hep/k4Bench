@@ -91,6 +91,30 @@ def _app(dashboard_dir, stack_names, packages, from_release, to_release,
     )
 
 
+def _outlier_scope_app(dashboard_dir, stack_names, packages, report, scopes):
+    """Render Stack Changes under a sidebar scope selected in session state."""
+    import sys as _sys
+    if dashboard_dir not in _sys.path:
+        _sys.path.insert(0, dashboard_dir)
+    import streamlit as _st
+
+    from tabs import stack_changes as _tab
+
+    _tab._cached_list_detectors = lambda url: ["CLD", "IDEA"]
+    _tab._cached_list_stacks = lambda url, detector, platform: stack_names
+    _tab._cached_fetch_stack_packages = (
+        lambda url, detector, platform, stack: packages.get(stack)
+    )
+    _tab._cached_list_report_dates = lambda url: ["2026-07-10"]
+    _tab._cached_fetch_report = lambda url, date: report
+
+    detector, sample = scopes[_st.session_state.get("_scope_i", 0)]
+    _tab.render(
+        "https://example.invalid", "x86_64-almalinux9-gcc14.2.0-opt",
+        detector, sample, stack_names[0],
+    )
+
+
 def _run(stack_names=None, packages=None, from_release=None, to_release=None,
          report_dates=(), reports_map=None, detector="CLD",
          sample="single_e", selected_stack=None) -> AppTest:
@@ -792,6 +816,52 @@ def test_outlier_scatter_redefaults_when_the_release_range_changes():
     assert at.selectbox(key="stack_outlier_cfg").value == "—"
 
     at.selectbox(key="stack_from").set_value("2026-07-08").run()
+
+    assert not at.exception, at.exception
+    assert "CPU + memory stepped" in at.selectbox(key="stack_outlier_cfg").value
+
+
+def test_outlier_scatter_redefaults_when_detector_and_sample_change():
+    from k4bench.regression.models import NightlyReport, RunGroupReport
+    from k4bench.regression.render import to_json
+
+    groups = []
+    for detector, sample, onset in (
+        ("CLD", "single_e", "cld-onset"),
+        ("IDEA", "other_sample", "idea-onset"),
+    ):
+        verdicts = [
+            _confirmed(
+                detector=detector, sample=sample, metric="wall_time_s",
+                pct_change=0.10, onset_run_id=onset,
+                last_accepted_run_date="2026-07-09", onset_run_date="2026-07-10",
+            ),
+            _confirmed(
+                detector=detector, sample=sample, metric="peak_rss_mb",
+                metric_family="memory", pct_change=0.20, onset_run_id=onset,
+                last_accepted_run_date="2026-07-09", onset_run_date="2026-07-10",
+            ),
+        ]
+        groups.append(RunGroupReport(
+            detector=detector, platform=PLAT, sample=sample,
+            k4h_release="key4hep-2026-07-10", run_date="2026-07-10",
+            run_id="2026-07-10", verdicts=verdicts,
+        ))
+    report = to_json(NightlyReport(generated_at="", groups=groups))
+    at = AppTest.from_function(
+        _outlier_scope_app,
+        args=(
+            str(_DASHBOARD_DIR), sorted(_STACKS, reverse=True), _STACKS, report,
+            [("CLD", "single_e"), ("IDEA", "other_sample")],
+        ),
+        default_timeout=30,
+    ).run()
+    assert not at.exception, at.exception
+    assert "CPU + memory stepped" in at.selectbox(key="stack_outlier_cfg").value
+    at.selectbox(key="stack_outlier_cfg").set_value("—").run()
+
+    at.session_state["_scope_i"] = 1
+    at.run()
 
     assert not at.exception, at.exception
     assert "CPU + memory stepped" in at.selectbox(key="stack_outlier_cfg").value

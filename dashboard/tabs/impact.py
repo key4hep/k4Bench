@@ -11,6 +11,7 @@ import pandas as pd
 import streamlit as st
 
 from k4bench.analysis.plots._theme import _TEMPLATE  # noqa: F401 (kept for consistency)
+from ui_chrome import _drop_stale_selection
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 _METRICS = [
@@ -76,6 +77,22 @@ def _prep_data(results_df: pd.DataFrame, selected_labels: list[str]) -> pd.DataF
     return results_df[results_df["label"].isin(selected_labels)].copy()
 
 
+def _successful_rows(snapshot: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """Exclude failed/incomplete jobs from an impact comparison.
+
+    ``/usr/bin/time`` can leave plausible-looking partial metrics behind when a
+    process fails early. Such rows must not compete as unusually fast or lean.
+    Old result files without a ``returncode`` column remain usable because
+    their success state is unknowable rather than known-bad.
+    """
+    if "returncode" not in snapshot.columns:
+        return snapshot, []
+    returncodes = pd.to_numeric(snapshot["returncode"], errors="coerce")
+    successful = returncodes.fillna(-1).eq(0)
+    excluded = sorted(snapshot.loc[~successful, "label"].astype(str).unique())
+    return snapshot.loc[successful].copy(), excluded
+
+
 # ── Main render ───────────────────────────────────────────────────────────────
 
 def render(results_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
@@ -96,6 +113,16 @@ def render(results_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
     missing_snap = sorted(set(selected_labels) - set(snap_labels))
     if missing_snap:
         st.warning(f"No result data in the selected run for: {', '.join(missing_snap)}")
+    snapshot, failed_snap = _successful_rows(snapshot)
+    if failed_snap:
+        st.warning(
+            "Excluded failed or incomplete configurations from impact scoring: "
+            + ", ".join(failed_snap)
+        )
+    snap_labels = [lbl for lbl in snap_labels if lbl in snapshot["label"].values]
+    if not snap_labels:
+        st.warning("No successful configurations are available for impact scoring.")
+        return
 
     present = [(col, lbl) for col, lbl in _METRICS if col in snapshot.columns]
     if not present:
@@ -116,6 +143,7 @@ def render(results_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
 
     ctrl_bl, ctrl_sort, ctrl_pal, _ = st.columns([2, 2, 2, 3])
     with ctrl_bl:
+        _drop_stale_selection("impact_baseline", snap_labels)
         baseline_label = st.selectbox(
             "Baseline config",
             options=snap_labels,
@@ -167,7 +195,8 @@ def render(results_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
     for col, lbl in present:
         vals     = pct_df[lbl].values.astype(float)
         diffs    = vals - 100.0
-        max_abs  = np.nanmax(np.abs(diffs))
+        finite_diffs = np.abs(diffs[np.isfinite(diffs)])
+        max_abs = float(finite_diffs.max()) if finite_diffs.size else 0.0
         if max_abs > 0:
             if col in _LOWER_IS_BETTER:
                 scores = 0.5 + (-diffs) / (2.0 * max_abs)
@@ -178,7 +207,9 @@ def render(results_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
         # Best alternative per metric (excluding baseline)
         others_mask = pct_df.index != baseline_label
         if others_mask.any():
-            other_vals = pct_df.loc[others_mask, lbl]
+            other_vals = pct_df.loc[others_mask, lbl].dropna()
+            if other_vals.empty:
+                continue
             if col in _LOWER_IS_BETTER:
                 winner_lbl = other_vals.idxmin()
                 delta_d    = float(other_vals.min()) - 100.0
