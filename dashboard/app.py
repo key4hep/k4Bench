@@ -490,11 +490,14 @@ def main() -> None:
 
     # Stack Changes (remote only) — the package diff is cross-detector (a
     # Key4hep release is one stack whatever benchmarked it, so only the
-    # platform scopes it); the regressions-in-range view below it is scoped
-    # to the sidebar's detector/sample with an all-detectors toggle. The
-    # sidebar stack seeds the comparison's newer end when the tab is opened.
+    # platform scopes it); the regressions-in-range trend below it is scoped
+    # to the sidebar's detector/sample with an all-detectors toggle and reuses
+    # the Regressions tab's evidence window. The sidebar stack seeds the
+    # comparison's newer end when the tab is opened.
     if active_section == "Stack Changes":
-        stack_changes.render(config.data_url, platform, detector, sample, stack)
+        stack_changes.render(
+            config.data_url, config.cache_dir, platform, detector, sample, stack,
+        )
 
     if active_section == "Config Impact":
         impact.render(results, selected_labels)
