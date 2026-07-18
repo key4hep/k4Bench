@@ -70,12 +70,20 @@ class MetricStep:
     """One metric's step across the shared release window — several of these
     can ride in one :class:`RankRequest` when more than one metric stepped
     across the same release boundary, so the model judges the candidates
-    against the window's full picture rather than a single arbitrary metric."""
+    against the window's full picture rather than a single arbitrary metric.
+
+    ``label`` is the benchmark config the metric was measured under (e.g. a
+    removal sweep's ``baseline`` vs. ``without_<detector>``) — deliberately
+    *not* a grouping key: labels sharing a window still get one shared
+    ranking, not one call each, but each step keeps its own label so the model
+    can tell "baseline regressed" apart from "only without_HCAL regressed",
+    which is itself a clue."""
 
     metric: str
     metric_family: str
     direction: str
     pct_change: float | None
+    label: str
     sub_detector: str | None = None
 
 
@@ -121,11 +129,13 @@ class Ranker(Protocol):
 _SYSTEM_PROMPT = (
     "You attribute a software performance regression to the pull request most "
     "likely responsible. You are given every metric that moved across the same "
-    "release window and, for each package that changed, the pull requests in "
-    "its commit range with their code diffs. Score each PR independently 0-100 "
-    "for how likely it caused the regressions as a whole, and give a "
-    "one-sentence reason grounded in the diff. Do not invent PRs. Output JSON "
-    "only."
+    "release window — each labelled with the benchmark configuration it was "
+    "measured under, e.g. a detector-removal sweep's baseline vs. "
+    "without_<detector> runs — and, for each package that changed, the pull "
+    "requests in its commit range with their code diffs. Score each PR "
+    "independently 0-100 for how likely it caused the regressions as a whole, "
+    "and give a one-sentence reason grounded in the diff. Do not invent PRs. "
+    "Output JSON only."
 )
 
 #: Total *diff* budget (chars) across all candidates. Per-PR patches are
@@ -391,7 +401,7 @@ def _regression_lines(request: RankRequest) -> str:
     header = f"{request.detector} / {request.sample} on {request.platform}, between releases {window}:"
     lines = [header]
     for step in request.metrics:
-        subject = step.metric
+        subject = f"{step.metric} ({step.label})"
         if step.sub_detector:
             subject += f" [{step.sub_detector}]"
         lines.append(f"- {subject} {_direction_phrase(step)}")

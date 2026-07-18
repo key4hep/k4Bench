@@ -23,10 +23,11 @@ _GL = "https://gitlab.cern.ch/acts/OpenDataDetector.git"
 
 def _verdict(*, onset="2026-07-04", base="2026-07-03", metric="wall_time_s",
              severity=Severity.CONFIRMED, sub=None,
-             detector="ALLEGRO_o1_v03", sample="single_e") -> MetricVerdict:
+             detector="ALLEGRO_o1_v03", sample="single_e",
+             label="baseline") -> MetricVerdict:
     return MetricVerdict(
         detector=detector, platform=_PLAT, sample=sample,
-        label="baseline", metric_family="time", metric=metric, sub_detector=sub,
+        label=label, metric_family="time", metric=metric, sub_detector=sub,
         run_id="2026-07-05", run_date="2026-07-05", value=120.0,
         baseline_median=100.0, baseline_mad=1.0, pct_change=0.2, z_score=6.0,
         severity=severity, direction=Direction.UP, reason="step",
@@ -373,3 +374,26 @@ def test_different_detectors_sharing_a_release_boundary_are_not_batched(monkeypa
     by_detector = {e.detector: e for e in blame.entries}
     assert by_detector["IDEA_o1_v03"].metric == "wall_time_s"
     assert by_detector["CLD_o2_v07"].metric == "peak_rss_mb"
+
+
+def test_different_labels_sharing_a_run_group_and_window_still_collapse(monkeypatch):
+    # A detector-removal sweep's "baseline" and "without_HCAL_Barrel" runs are
+    # different benchmark configs, but the *same* (detector, platform, sample)
+    # run group and the *same* release window — unlike different detectors,
+    # these must collapse into one shared ranking, not split. Every metric
+    # (from every label) still needs to reach the one prompt.
+    _two_candidates(monkeypatch)
+    ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
+    report = _report([
+        _verdict(label="baseline", metric="wall_time_s"),
+        _verdict(label="without_HCAL_Barrel", metric="wall_time_s"),
+    ])
+    blame = build_blame_report(
+        report, packages_for_release=_MOVED, github=GitHubClient(), ranker=ranker,
+    )
+    assert len(ranker.requests) == 1  # one shared call, not one per label
+    labels = {m.label for m in ranker.requests[0].metrics}
+    assert labels == {"baseline", "without_HCAL_Barrel"}
+    assert len(blame.entries) == 2
+    for entry in blame.entries:
+        assert next(c for c in entry.candidates if c.number == 10).score == 60.0

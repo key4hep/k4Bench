@@ -86,7 +86,8 @@ def _request(candidates=None, metrics=None) -> RankRequest:
         )
     if metrics is None:
         metrics = (
-            MetricStep(metric="wall_time_s", metric_family="time", direction="UP", pct_change=0.2),
+            MetricStep(metric="wall_time_s", metric_family="time", direction="UP",
+                       pct_change=0.2, label="baseline"),
         )
     return RankRequest(
         metrics=metrics,
@@ -124,22 +125,39 @@ def test_prompt_direction_and_subdetector_render():
     down = _build_user_prompt(_request(
         candidates=(RankCandidate(repo="key4hep/k4geo", number=1, title="t"),),
         metrics=(MetricStep(metric="wall_time_s", metric_family="time",
-                             direction="DOWN", pct_change=-0.05,
+                             direction="DOWN", pct_change=-0.05, label="baseline",
                              sub_detector="VertexBarrel"),),
     ))
     assert "down -5.0%" in down
-    assert "wall_time_s [VertexBarrel]" in down
+    assert "wall_time_s (baseline) [VertexBarrel]" in down
 
 
 def test_prompt_carries_every_metric_sharing_the_window():
     # Two metrics stepped across the same release boundary — the model must see
     # both, not just one arbitrary metric standing in for the window.
     prompt = _build_user_prompt(_request(metrics=(
-        MetricStep(metric="wall_time_s", metric_family="time", direction="UP", pct_change=0.2),
-        MetricStep(metric="peak_rss_mb", metric_family="memory", direction="UP", pct_change=0.15),
+        MetricStep(metric="wall_time_s", metric_family="time", direction="UP",
+                   pct_change=0.2, label="baseline"),
+        MetricStep(metric="peak_rss_mb", metric_family="memory", direction="UP",
+                   pct_change=0.15, label="baseline"),
     )))
     assert "wall_time_s" in prompt and "up +20.0%" in prompt
     assert "peak_rss_mb" in prompt and "up +15.0%" in prompt
+
+
+def test_prompt_carries_every_labels_metrics_in_one_shared_block():
+    # A detector-removal sweep's baseline and without_<detector> runs are
+    # different benchmark configs sharing one run group and window — both
+    # must reach the model, each tagged with its own label, in the *same*
+    # prompt (not a separate call per label).
+    prompt = _build_user_prompt(_request(metrics=(
+        MetricStep(metric="wall_time_s", metric_family="time", direction="UP",
+                   pct_change=0.2, label="baseline"),
+        MetricStep(metric="wall_time_s", metric_family="time", direction="UP",
+                   pct_change=0.35, label="without_HCAL_Barrel"),
+    )))
+    assert "wall_time_s (baseline) up +20.0%" in prompt
+    assert "wall_time_s (without_HCAL_Barrel) up +35.0%" in prompt
 
 
 def test_diff_budget_is_shared_fairly_not_first_come_first_served(monkeypatch):

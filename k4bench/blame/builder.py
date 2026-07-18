@@ -72,9 +72,16 @@ def build_blame_report(
     #: sample) run group's release boundary, gathered upfront so the ranker
     #: sees that group's full picture — not just whichever verdict happens to
     #: reach it first. Keyed finer than the diff/resolution caches below: two
-    #: *different* detectors (or samples) can share the same platform and
-    #: release dates — a library regressing several detectors in one release —
-    #: and must never be batched into one prompt under one detector's label.
+    #: *different* detectors or samples can share the same platform and release
+    #: dates — a library regressing several detectors in one release — and must
+    #: never be batched into one prompt under one detector/sample's identity.
+    #: ``label`` (a removal sweep's ``baseline`` vs. ``without_<detector>``
+    #: runs, say) is deliberately *not* part of this key: labels sharing a
+    #: group and window still get one collapsed verdict, not one call each —
+    #: only detector/sample are independent enough to require splitting. Each
+    #: verdict keeps its own label in the prompt (see
+    #: :class:`~k4bench.blame.rank.MetricStep`) so the model can still tell
+    #: configs apart without the batch being fragmented over them.
     verdicts_by_rank_group: dict[tuple[str, str, str, str, str], list[MetricVerdict]] = {}
     for v in verdicts:
         rank_group = (
@@ -231,18 +238,21 @@ def _ranked_repos(
     """Return *repos* with the ranker's scores/descriptions folded onto their
     candidates.
 
-    Memoized on *rank_group* — (detector, platform, sample, base, onset), never
-    just the release boundary: every confirmed metric of *one run group* that
-    stepped across one release boundary shares one diff and one candidate set,
-    so it needs a single inference rather than one per metric — *every* metric
-    in *verdicts* rides in the one prompt (see
+    Memoized on *rank_group* — (detector, platform, sample, base, onset),
+    never just the release boundary: every confirmed metric of *one run group*
+    that stepped across one release boundary shares one diff and one candidate
+    set, so it needs a single inference rather than one per metric — *every*
+    metric in *verdicts* rides in the one prompt (see
     :class:`~k4bench.blame.rank.MetricStep`), so the model judges the
     candidates against that group's full picture, and the dashboard/email show
     that one verdict for every metric sharing the group, not a table each. A
     *different* detector or sample can share the same platform and release
     dates (one library regressing several detectors at once) — grouping on the
     release boundary alone would silently merge their unrelated metrics into
-    one prompt mislabelled with a single detector/sample.
+    one prompt mislabelled with a single detector/sample. ``label`` (a removal
+    sweep's ``baseline`` vs. ``without_<detector>`` runs) is deliberately
+    *not* part of this key — those still collapse into one verdict, each
+    metric just carries its own label into the prompt.
 
     Ranking is skipped entirely when any repo's candidate discovery came back
     incomplete (unavailable or truncated): the model would judge a partial set,
@@ -253,7 +263,7 @@ def _ranked_repos(
         _log.warning(
             "blame: %s/%s %s: candidate discovery incomplete — leaving unranked",
             verdicts[0].detector, verdicts[0].sample,
-            ", ".join(v.metric for v in verdicts),
+            ", ".join(f"{v.metric} ({v.label})" for v in verdicts),
         )
         return repos
     if rank_group not in rank_cache:
@@ -290,15 +300,17 @@ def _rank_request(
 ) -> RankRequest:
     """Assemble the ranker's input: every metric that stepped across the shared
     window and every candidate PR across the changed repos, each carried with
-    its transient patch. *verdicts* all share the window, so the first stands
-    in for the facts common to the whole group (detector, platform, sample,
-    release boundary)."""
+    its transient patch. *verdicts* all share the run group (detector,
+    platform, sample) and window, so the first stands in for those shared
+    facts; each metric keeps its own ``label`` (verdicts sharing a group and
+    window can still come from different benchmark configs, e.g. a removal
+    sweep's ``baseline`` and ``without_<detector>`` runs)."""
     v = verdicts[0]
     metrics = tuple(
         MetricStep(
             metric=m.metric, metric_family=m.metric_family,
             direction=m.direction.value, pct_change=m.pct_change,
-            sub_detector=m.sub_detector,
+            label=m.label, sub_detector=m.sub_detector,
         )
         for m in verdicts
     )
