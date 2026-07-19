@@ -59,6 +59,16 @@ jobs:
           # Bounds the entire optional GitHub+LLM attribution stage. A timeout
           # skips blame.json but cannot affect report.json or notification.
           K4BENCH_BLAME_TIMEOUT:     ${{ vars.K4BENCH_BLAME_TIMEOUT || '15m' }}
+          # Comments on the pull requests the blame ranker holds responsible.
+          # The built-in GITHUB_TOKEN above cannot do this: it is read-only and
+          # scoped to k4Bench, while these comments land in the Key4hep package
+          # repositories. This is a separate token carrying pull-requests:write
+          # on exactly the repos listed in .github/blame-comments.yml — with an
+          # empty allowlist there (the default) the step is a no-op, and with no
+          # token at all it only logs what it would have posted.
+          K4BENCH_PR_COMMENT_TOKEN:   ${{ secrets.K4BENCH_PR_COMMENT_TOKEN }}
+          K4BENCH_PR_COMMENT_DRY_RUN: ${{ vars.K4BENCH_PR_COMMENT_DRY_RUN }}
+          K4BENCH_PR_COMMENT_TIMEOUT: ${{ vars.K4BENCH_PR_COMMENT_TIMEOUT || '5m' }}
         run: |
           docker pull "${{ env.CONTAINER_IMAGE }}"
           docker run --rm --init \
@@ -75,6 +85,8 @@ jobs:
             -e GITHUB_RUN_URL -e GITHUB_TOKEN \
             -e K4BENCH_LLM_URL -e K4BENCH_LLM_MODEL -e K4BENCH_LLM_API_KEY \
             -e K4BENCH_LLM_MAX_TOKENS -e K4BENCH_BLAME_TIMEOUT \
+            -e K4BENCH_PR_COMMENT_TOKEN -e K4BENCH_PR_COMMENT_DRY_RUN \
+            -e K4BENCH_PR_COMMENT_TIMEOUT \
             "${{ env.CONTAINER_IMAGE }}" \
             bash /workspace/.github/scripts/regression_report.sh
 

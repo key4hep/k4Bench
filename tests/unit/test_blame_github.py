@@ -29,16 +29,24 @@ class _Resp:
 
 
 class _FakeSession:
-    """Routes GET by URL suffix to a queued response. ``routes`` maps a path
-    fragment to a :class:`_Resp` (or a list consumed in order)."""
+    """Routes a request by URL suffix to a queued response. ``routes`` maps a
+    path fragment to a :class:`_Resp` (or a list consumed in order); a route key
+    may be prefixed with a method (``"POST /issues"``) to distinguish reads from
+    writes on the same path."""
 
     def __init__(self, routes: dict):
         self.routes = routes
         self.calls: list[str] = []
+        self.writes: list[tuple[str, str, dict | None]] = []
 
-    def get(self, url, headers=None, params=None, timeout=None):
+    def request(self, method, url, headers=None, params=None, json=None, timeout=None):
         self.calls.append(url)
-        for fragment, resp in self.routes.items():
+        if method != "GET":
+            self.writes.append((method, url, json))
+        for key, resp in self.routes.items():
+            route_method, _, fragment = key.rpartition(" ")
+            if route_method and route_method != method:
+                continue
             if fragment in url:
                 if isinstance(resp, list):
                     return resp.pop(0)
@@ -276,3 +284,68 @@ def test_total_patch_bounded_across_many_files():
     patch = res.patches[10]
     assert "… (truncated)" in patch
     assert len(patch) < 7000  # per-PR cap holds even when each file is sizeable
+
+
+# ── Pull-request comments ─────────────────────────────────────────────────────
+
+def _comment(cid: int, body: str) -> dict:
+    return {"id": cid, "body": body}
+
+
+def test_list_issue_comments_reads_every_page():
+    first = [_comment(i, f"c{i}") for i in range(gh_mod._COMMENTS_PER_PAGE)]
+    routes = {"/issues/7/comments": [_Resp(200, first), _Resp(200, [_comment(999, "last")])]}
+    got = gh_mod.list_issue_comments(_client(routes), "key4hep/k4geo", 7)
+    assert [c.id for c in got][-1] == 999
+    assert len(got) == gh_mod._COMMENTS_PER_PAGE + 1
+
+
+def test_list_issue_comments_none_when_thread_unreadable():
+    # None ≠ []: "did not see the thread" must not be read as "we have not
+    # commented", which would post a duplicate.
+    routes = {"/issues/7/comments": _Resp(500, {"message": "boom"})}
+    assert gh_mod.list_issue_comments(_client(routes), "key4hep/k4geo", 7) is None
+
+
+def test_list_issue_comments_none_past_the_page_budget():
+    full = [_comment(i, "x") for i in range(gh_mod._COMMENTS_PER_PAGE)]
+    routes = {"/issues/7/comments": _Resp(200, full)}  # every page comes back full
+    assert gh_mod.list_issue_comments(_client(routes), "key4hep/k4geo", 7) is None
+
+
+def test_create_issue_comment_posts_the_body():
+    session = _FakeSession({
+        "POST /issues/7/comments": _Resp(201, {"html_url": "https://x/comment-1"}),
+    })
+    client = GitHubClient(token="t", session=session)
+    url = gh_mod.create_issue_comment(client, "key4hep/k4geo", 7, "hello")
+    assert url == "https://x/comment-1"
+    assert session.writes == [
+        ("POST", "https://api.github.com/repos/key4hep/k4geo/issues/7/comments",
+         {"body": "hello"}),
+    ]
+
+
+def test_create_issue_comment_none_without_write_scope():
+    # A plain 403 (no write scope on this repo) is one repo's problem, not a
+    # rate limit — it must not raise.
+    routes = {"POST /issues/7/comments": _Resp(403, {"message": "Resource not accessible"})}
+    assert gh_mod.create_issue_comment(_client(routes), "key4hep/k4geo", 7, "hi") is None
+
+
+def test_update_issue_comment_patches_by_id():
+    session = _FakeSession({
+        "PATCH /issues/comments/42": _Resp(200, {"html_url": "https://x/comment-42"}),
+    })
+    client = GitHubClient(token="t", session=session)
+    url = gh_mod.update_issue_comment(client, "key4hep/k4geo", 42, "edited")
+    assert url == "https://x/comment-42"
+    assert session.writes[0][0] == "PATCH"
+    assert session.writes[0][2] == {"body": "edited"}
+
+
+def test_comment_write_raises_on_rate_limit():
+    routes = {"POST /issues/7/comments": _Resp(403, {"message": "API rate limit exceeded"},
+                                               {"X-RateLimit-Remaining": "0"})}
+    with pytest.raises(RateLimitError):
+        gh_mod.create_issue_comment(_client(routes), "key4hep/k4geo", 7, "hi")

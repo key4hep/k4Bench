@@ -1,0 +1,20 @@
+# Which repositories the nightly regression bot may comment in.
+#
+# When a confirmed regression's change window is attributed to a merged pull
+# request with a high enough likelihood, k4Bench posts one comment on that pull
+# request (and edits it in place on later nights). See
+# docs/user-guide/features/pr-comments.md.
+#
+# Commenting writes into a repository k4Bench does not own, so it is opt-in per
+# repository and reviewed here rather than flipped in a CI setting: an empty
+# `repos` list means the bot is inert, which is the shipped default.
+
+# Ranker likelihood (0-100) a pull request must reach before it is commented on.
+min_score: 80
+
+# Hard cap on comments per night. More than this means something is wrong with
+# the attribution, not that a night really implicated that many pull requests.
+max_comments: 10
+
+# Repositories that receive comments, as `owner/repo`. Add one per line.
+repos: []

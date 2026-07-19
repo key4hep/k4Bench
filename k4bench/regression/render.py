@@ -114,6 +114,69 @@ def window_token(base_release: str | None, onset_release: str | None) -> str:
     return f"{base_release or ''}..{onset_release or ''}"
 
 
+def window_href(
+    dashboard_url: str | None,
+    *,
+    detector: str,
+    platform: str,
+    sample: str,
+    base_release: str | None,
+    onset_release: str | None,
+    stack: str | None = None,
+    report_night: str = "",
+) -> str | None:
+    """The Regressions view scoped to one change window — the link that lands
+    the reader on exactly the metrics and candidate PRs that window is about,
+    rather than on whichever window the tab would open by default.
+
+    Shared by every renderer that points at a window (the nightly email, the
+    pull-request comments in :mod:`k4bench.blame.comment`), so one link shape is
+    defined once beside the ``?window=`` vocabulary it uses.
+    """
+    if not dashboard_url or not onset_release:
+        return None
+    params = dict(
+        detector=detector, platform=platform, sample=sample,
+        window=window_token(base_release, onset_release),
+    )
+    if stack:
+        params["stack"] = stack
+    if report_night:
+        params["report"] = report_night
+    return _dashboard_link(dashboard_url, tab="Regressions", **params)
+
+
+def stack_changes_href(
+    dashboard_url: str | None,
+    *,
+    detector: str,
+    platform: str,
+    sample: str,
+    base_release: str | None,
+    onset_release: str | None,
+) -> str | None:
+    """The Stack Changes view for one exact release window — the package diff
+    behind a change window, where a reader goes to see what actually moved.
+
+    The param names ``to``/``from`` must match what the dashboard's Stack
+    Changes tab reads back (``PARAM_TO``/``PARAM_FROM`` in
+    dashboard/tabs/stack_changes.py) — a literal mismatch here silently
+    breaks the deep link instead of raising.
+    """
+    if not dashboard_url or not onset_release:
+        return None
+    params = {
+        "tab": "Stack Changes",
+        "detector": detector,
+        "platform": platform,
+        "sample": sample,
+        "to": onset_release,
+    }
+    if base_release:
+        params["from"] = base_release
+    return _dashboard_link(dashboard_url, **params)
+
+
 # ── JSON (EOS artifact) ───────────────────────────────────────────────────────
 
 def _sanitize(obj):

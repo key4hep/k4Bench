@@ -26,6 +26,12 @@
 #                                   length truncation grows it up to a safe cap
 #   K4BENCH_BLAME_TIMEOUT         — wall-clock limit for the isolated blame
 #                                   step (default: 15m; GNU timeout syntax)
+#   K4BENCH_PR_COMMENT_TOKEN      — token with pull-requests:write on the repos
+#                                   listed in .github/blame-comments.yml; enables
+#                                   the PR comments. Unset ⇒ they are only logged
+#   K4BENCH_PR_COMMENT_DRY_RUN    — non-empty ⇒ log the comments, post nothing
+#   K4BENCH_PR_COMMENT_TIMEOUT    — wall-clock limit for the comment step
+#                                   (default: 5m)
 
 set -euo pipefail
 
@@ -123,6 +129,29 @@ echo "::group::5b. Blame sidecar"
         echo "Removed a previous run's blame.json for this night."
     fi
 } || echo "Blame sidecar upload/cleanup failed (best-effort; the report and email are unaffected)." >&2
+echo "::endgroup::"
+
+# ── 5c. Pull-request comments (best-effort; the only step that writes off-repo) ─
+# Posts one comment on each pull request tonight's sidecar holds responsible with
+# a high enough likelihood, and edits it in place on later nights. Gated on
+# .github/blame-comments.yml — an empty allowlist there (the shipped state) makes
+# this a no-op — and on a write-scoped K4BENCH_PR_COMMENT_TOKEN; without one the
+# script logs the comments it would post and writes nothing. Isolated exactly
+# like 5b: writing into someone else's repository must never be able to fail the
+# report or hold up the e-group email below.
+echo "::group::5c. Pull-request comments"
+if [[ -f report/blame.json ]]; then
+    timeout --signal=TERM --kill-after=30s "${K4BENCH_PR_COMMENT_TIMEOUT:-5m}" \
+      python .github/scripts/blame_comment.py \
+        --report report/report.json \
+        --blame report/blame.json \
+        --config .github/blame-comments.yml \
+        --dashboard-url "${K4BENCH_DASHBOARD_URL:-https://k4bench-dashboard.app.cern.ch}" \
+        --actions-url "${GITHUB_RUN_URL:-}" \
+      || echo "No pull-request comments this night (nothing attributed confidently, no enabled repo, timeout, or a failed write)." >&2
+else
+    echo "No blame sidecar this night — no pull request to comment on."
+fi
 echo "::endgroup::"
 
 # ── 6. E-group email (sent every night regardless of content; skips quietly

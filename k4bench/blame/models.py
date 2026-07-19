@@ -28,6 +28,13 @@ from dataclasses import dataclass, field, fields
 from typing import Any
 
 
+#: The mandatory qualifier on every rendered ranking — a lead to verify, never
+#: proof. Lives here, beside the data it qualifies, so every surface that shows
+#: a :attr:`CandidatePR.score` (the nightly email, the dashboard, the
+#: pull-request comments) states the same thing in the same words.
+RANKING_DISCLOSURE = "AI-generated PR ranking — candidates for review, not confirmed causes."
+
+
 def _opt_str(value: object) -> str | None:
     """*value* as text, preserving ``None`` — for the nullable string fields."""
     return None if value is None else str(value)

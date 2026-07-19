@@ -1,4 +1,6 @@
-"""Resolve a repo's commit range to the pull requests that landed in it.
+"""Talk to GitHub: resolve a repo's commit range to the pull requests that
+landed in it, and read/write the comments :mod:`k4bench.blame.publish` posts on
+those pull requests.
 
 The one network-touching module in :mod:`k4bench.blame`. It runs in CI, in the
 nightly ``regression-report`` job, *after* the report is built and uploaded — so
@@ -14,7 +16,8 @@ recorded on the result, not errors.
 Auth is a ``GITHUB_TOKEN`` (5000 req/hr; a regression touches ~15 repos, so a
 night is tens of calls). Without one the public limit is 60/hr and will throttle
 almost immediately — the builder treats the token as effectively required and
-simply produces diffs without candidates when it is missing.
+simply produces diffs without candidates when it is missing. The comment
+endpoints need a *different*, write-scoped token — see :class:`GitHubClient`.
 """
 
 from __future__ import annotations
@@ -61,10 +64,17 @@ class RateLimitError(RuntimeError):
 
 @dataclass
 class GitHubClient:
-    """Thin authenticated GET wrapper over the GitHub REST API.
+    """Thin authenticated wrapper over the GitHub REST API.
 
     ``session`` is injectable so tests substitute a fake with no network and so
     a real run reuses one pooled connection across the night's tens of calls.
+
+    Reads (:meth:`get`) and writes (:meth:`post`, :meth:`patch`) share one
+    request path, so the auth header and the rate-limit rule are defined once —
+    but they are *not* interchangeable in practice: resolution runs on a
+    read-only token, while the pull-request comments of
+    :mod:`k4bench.blame.publish` need a token carrying ``pull-requests: write``
+    on the target repo. Which token a client holds is the caller's choice.
     """
 
     token: str | None = None
@@ -75,11 +85,33 @@ class GitHubClient:
     def get(self, path: str, params: dict | None = None) -> requests.Response:
         """GET ``{api_url}{path}``. Raises :class:`RateLimitError` on a throttled
         response; every other status is returned for the caller to interpret."""
+        return self._request("GET", path, params=params)
+
+    def post(self, path: str, json: dict) -> requests.Response:
+        """POST *json* to ``{api_url}{path}`` — a write; see :meth:`_request`."""
+        return self._request("POST", path, json=json)
+
+    def patch(self, path: str, json: dict) -> requests.Response:
+        """PATCH *json* onto ``{api_url}{path}`` — a write; see :meth:`_request`."""
+        return self._request("PATCH", path, json=json)
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict | None = None,
+        json: dict | None = None,
+    ) -> requests.Response:
+        """One authenticated request. Raises :class:`RateLimitError` on a
+        throttled response; every other status is returned for the caller to
+        interpret."""
         headers = {"Accept": "application/vnd.github+json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
-        resp = self.session.get(
-            f"{self.api_url}{path}", headers=headers, params=params, timeout=self.timeout
+        resp = self.session.request(
+            method, f"{self.api_url}{path}",
+            headers=headers, params=params, json=json, timeout=self.timeout,
         )
         if resp.status_code in (403, 429) and _is_rate_limited(resp):
             raise RateLimitError(f"GitHub rate limit hit on {path}")
@@ -301,3 +333,106 @@ def _fetch_pr_files(
     if truncated and patch_text:
         patch_text += _PATCH_TRUNCATION_MARK
     return tuple(paths), patch_text
+
+
+# ── Pull-request comments ─────────────────────────────────────────────────────
+
+#: Comment pages read per pull request when looking for our own marker. A PR
+#: with more than this many comments is vanishingly rare, and reading past it
+#: would cost more calls than the answer is worth — the bounded read is treated
+#: as unreadable rather than as "our comment is not there" (see
+#: :func:`list_issue_comments`).
+_MAX_COMMENT_PAGES = 5
+_COMMENTS_PER_PAGE = 100
+
+
+@dataclass(frozen=True)
+class IssueComment:
+    """One existing comment on a pull request — just enough to recognise our
+    own marker and decide whether its body still needs updating."""
+
+    id: int
+    body: str
+
+
+def list_issue_comments(
+    client: GitHubClient, slug: str, number: int
+) -> list[IssueComment] | None:
+    """Every comment on ``{slug}#{number}``, or ``None`` when the thread could
+    not be read in full.
+
+    The ``None``/``[]`` distinction is load-bearing: an empty list means "read
+    the thread, we have not commented", which permits posting; ``None`` means
+    "did not see the thread", which must *not* — posting blind would duplicate a
+    comment already there. A thread longer than the page budget is reported as
+    unreadable for the same reason.
+    """
+    out: list[IssueComment] = []
+    for page in range(1, _MAX_COMMENT_PAGES + 1):
+        resp = client.get(
+            f"/repos/{slug}/issues/{number}/comments",
+            params={"per_page": _COMMENTS_PER_PAGE, "page": page},
+        )
+        if resp.status_code != 200:
+            _log.warning(
+                "list_issue_comments: %s#%s page %s -> HTTP %s",
+                slug, number, page, resp.status_code,
+            )
+            return None
+        try:
+            batch = resp.json()
+        except ValueError:
+            return None
+        if not isinstance(batch, list):
+            return None
+        out.extend(
+            IssueComment(id=int(c["id"]), body=str(c.get("body") or ""))
+            for c in batch
+            if isinstance(c, dict) and c.get("id") is not None
+        )
+        if len(batch) < _COMMENTS_PER_PAGE:
+            return out
+    _log.warning(
+        "list_issue_comments: %s#%s has more than %d comment pages — treating "
+        "the thread as unread rather than risking a duplicate comment",
+        slug, number, _MAX_COMMENT_PAGES,
+    )
+    return None
+
+
+def create_issue_comment(
+    client: GitHubClient, slug: str, number: int, body: str
+) -> str | None:
+    """Post *body* on ``{slug}#{number}``; the new comment's URL, or ``None``
+    when the write failed (no write scope on this repo, PR locked, …)."""
+    resp = client.post(f"/repos/{slug}/issues/{number}/comments", json={"body": body})
+    if resp.status_code not in (200, 201):
+        _log.warning(
+            "create_issue_comment: %s#%s -> HTTP %s", slug, number, resp.status_code
+        )
+        return None
+    return _comment_url(resp, f"https://github.com/{slug}/pull/{number}")
+
+
+def update_issue_comment(
+    client: GitHubClient, slug: str, comment_id: int, body: str
+) -> str | None:
+    """Replace an existing comment's *body*; its URL, or ``None`` on failure."""
+    resp = client.patch(f"/repos/{slug}/issues/comments/{comment_id}", json={"body": body})
+    if resp.status_code != 200:
+        _log.warning(
+            "update_issue_comment: %s comment %s -> HTTP %s",
+            slug, comment_id, resp.status_code,
+        )
+        return None
+    return _comment_url(resp, f"https://github.com/{slug}")
+
+
+def _comment_url(resp: requests.Response, fallback: str) -> str:
+    """The ``html_url`` of a comment write, falling back to *fallback* when the
+    response body is not readable — the write itself already succeeded, so a
+    missing link must not read as a failure."""
+    try:
+        return str((resp.json() or {}).get("html_url") or fallback)
+    except ValueError:
+        return fallback
