@@ -166,6 +166,18 @@ def test_summary_shows_separate_counts_and_coverage():
     assert "2/2" in html  # coverage: both groups reliable
 
 
+def test_generated_timestamp_is_iso_ordered_geneva_local_time():
+    # ISO-ordered date, 24-hour clock, real zone designator — unambiguous
+    # without a prose label, and it tracks the CET/CEST switch.
+    assert email._human_datetime("2026-07-18T19:13:04+00:00") == "2026-07-18 21:13 CEST"
+    assert email._human_datetime("2026-01-15T12:00:00+00:00") == "2026-01-15 13:00 CET"
+    # A naive stamp is read as UTC, not as local time.
+    assert email._human_datetime("2026-06-27T06:00:00") == "2026-06-27 08:00 CEST"
+    # Unparseable and empty values degrade rather than raise.
+    assert email._human_datetime("not-a-date") == "not-a-date"
+    assert email._human_datetime("") == "—"
+
+
 def test_header_names_the_benchmarked_release():
     r = _report(_group(_v(first_confirmed_run_id="2026-06-27")))
     for body in (to_html(r), to_markdown(r)):
@@ -216,7 +228,7 @@ def test_representative_rows_selected_by_absolute_percentage():
         _v(metric="wall_time_s", first_confirmed_run_id="2026-06-27", pct_change=0.20),
         _v(metric="user_cpu_s", first_confirmed_run_id="2026-06-27", pct_change=0.01),
     ]
-    rows = email._representative_rows(_group(*verdicts))
+    rows = email._representative_rows(_group(*verdicts).regressions)
     assert [v.metric for v in rows] == ["mean_time_s", "wall_time_s", "median_time_s"]
 
 
@@ -256,9 +268,9 @@ def test_same_release_rerun_explains_new_versus_reconfirmed():
     )
     r = _report(_group(new, recon, run="2026-06-28"))
     for body in (to_html(r), to_markdown(r)):
-        assert "Same-release rerun" in body
-        assert "stack did not change between benchmark nights" in body
-        assert "NEW rows reached confirmation tonight" in body
+        assert "Same release, benchmarked again" in body
+        assert "the stack did not change since the last run" in body
+        assert "NEW reached confirmation tonight" in body
 
 
 def test_modern_palette_and_atom_branding_are_present():
@@ -412,10 +424,136 @@ def test_identical_ranking_shared_by_many_metrics_renders_once():
         ),
     )
     html = to_html(_report(_group(v1, v2)), blame=blame)
-    assert html.count("ranking for 2 confirmations") == 1
+    assert html.count("2 metrics · ranking") == 1
     # One deduplicated candidate row: the repo#number appears once (in its title
     # link), not once per metric that shares the window.
     assert html.count("key4hep/k4geo#607 —") == 1
+
+
+def test_two_change_windows_are_announced_as_separate_changes():
+    # The 28 June shape: a reconfirmed cluster keeps the window its change
+    # entered in, while metrics confirming tonight carry a later one. Both
+    # cards must render, and a lead-in must say they are separate changes so
+    # they cannot read as competing explanations of one regression.
+    recon = _windowed(
+        metric="median_time_s", run_id="2026-06-28",
+        first_confirmed_run_id="2026-06-27",
+    )
+    new = _v(
+        metric="mean_time_s", run_id="2026-06-28",
+        first_confirmed_run_id="2026-06-28",
+        onset_run_id="2026-06-28", onset_run_date="2026-06-28",
+        last_accepted_run_id="2026-06-27", last_accepted_run_date="2026-06-27",
+    )
+    blame = BlameReport(
+        generated_at="x", report_night="2026-06-28",
+        entries=(
+            _blame(_candidate(607, 95.0), metric="median_time_s").entries[0],
+            _blame(_candidate(608, 80.0), metric="mean_time_s",
+                   base="2026-06-27", onset="2026-06-28").entries[0],
+        ),
+    )
+    for body in (
+        to_html(_report(_group(recon, new, run="2026-06-28")), blame=blame),
+        to_markdown(_report(_group(recon, new, run="2026-06-28")), blame=blame),
+    ):
+        assert "2 separate changes are confirmed here" in body
+        assert "each metric belongs to exactly one" in body
+        assert "2026-06-05 → 2026-06-27" in body
+        assert "2026-06-27 → 2026-06-28" in body
+        assert "change entered" in body
+
+
+def test_each_window_section_lists_its_own_metrics_and_prs():
+    # The metrics split between the two windows: each section names only its
+    # own metrics and only the PRs of its own change window.
+    recon = _windowed(
+        metric="median_time_s", run_id="2026-06-28",
+        first_confirmed_run_id="2026-06-27",
+    )
+    new = _v(
+        metric="mean_time_s", run_id="2026-06-28",
+        first_confirmed_run_id="2026-06-28",
+        onset_run_id="2026-06-28", onset_run_date="2026-06-28",
+        last_accepted_run_id="2026-06-27", last_accepted_run_date="2026-06-27",
+    )
+    blame = BlameReport(
+        generated_at="x", report_night="2026-06-28",
+        entries=(
+            _blame(_candidate(607, 95.0), metric="median_time_s").entries[0],
+            _blame(_candidate(608, 80.0), metric="mean_time_s",
+                   base="2026-06-27", onset="2026-06-28").entries[0],
+        ),
+    )
+    html = to_html(_report(_group(recon, new, run="2026-06-28")), blame=blame)
+    new_section = html.index("2026-06-27 → 2026-06-28")
+    recon_section = html.index("2026-06-05 → 2026-06-27")
+    assert new_section < recon_section          # new confirmations lead
+    # Each metric and each PR sits under its own window, not the other's.
+    assert new_section < html.index("Mean event time") < recon_section
+    assert new_section < html.index("#608") < recon_section
+    assert recon_section < html.index("Median event time")
+    assert recon_section < html.index("#607")
+    # Each section counts only its own metrics.
+    assert html.count("1 metric · ranking") == 2
+
+
+def test_window_section_without_a_ranking_still_lists_its_metrics():
+    # A window the sidecar never attributed must not vanish — its metrics are
+    # the actionable part, the ranking only helps.
+    v = _windowed(metric="median_time_s", first_confirmed_run_id="2026-06-27")
+    for body in (
+        to_html(_report(_group(v))), to_markdown(_report(_group(v))),
+    ):
+        assert "2026-06-05 → 2026-06-27" in body
+        assert "1 metric · no PR ranking" in body
+        assert "Median event time" in body
+
+
+def test_window_links_to_the_stack_diff_and_review_links_to_the_metrics():
+    # The window is a release interval, so it opens the stack diff between
+    # those releases; the metrics behind it are one scoped click away, carrying
+    # the ?window= token the Regressions tab reads back
+    # (k4bench.regression.render.window_token).
+    import re
+    v = _windowed(first_confirmed_run_id="2026-06-27")
+    html = to_html(_report(_group(v)), dashboard_url="https://dash.example/")
+    hrefs = dict(
+        (text, href)
+        for href, text in re.findall(r'<a href="([^"]*)"[^>]*>([^<]*)</a>', html)
+    )
+    window_href = hrefs["2026-06-05 → 2026-06-27"]
+    assert "tab=Stack+Changes" in window_href
+    assert "stack_from=2026-06-05" in window_href and "stack_to=2026-06-27" in window_href
+    assert "window=" not in window_href
+
+    review_href = hrefs["Review these 1 regression"]
+    assert "tab=Regressions" in review_href
+    assert "window=2026-06-05..2026-06-27" in review_href
+    assert f"stack={RELEASE}" in review_href
+    assert "report=2026-06-27" in review_href
+    assert f"detector={DET}" in review_href
+
+    md = to_markdown(_report(_group(v)), dashboard_url="https://dash.example/")
+    md_links = dict(re.findall(r'\[([^\]]+)\]\(([^)]+)\)', md))
+    assert "tab=Stack+Changes" in md_links["2026-06-05 → 2026-06-27"]
+    assert "window=2026-06-05..2026-06-27" in md_links["Review these 1 regression"]
+
+
+def test_window_token_matches_the_dashboards_query_value():
+    from k4bench.regression.render import window_token
+    assert window_token("2026-06-25", "2026-06-27") == "2026-06-25..2026-06-27"
+    # An open window (no settled baseline) still names its onset.
+    assert window_token(None, "2026-06-27") == "..2026-06-27"
+
+
+def test_single_change_window_gets_no_separate_changes_lead_in():
+    v = _windowed(first_confirmed_run_id="2026-06-27")
+    for body in (
+        to_html(_report(_group(v)), blame=_blame(_candidate(607, 95.0))),
+        to_markdown(_report(_group(v)), blame=_blame(_candidate(607, 95.0))),
+    ):
+        assert "separate changes are confirmed" not in body
 
 
 def test_ranking_window_is_named_by_release_dates_without_prefix():
@@ -469,7 +607,7 @@ def test_ranking_coverage_names_new_confirmations_and_missing_attribution():
         blame=_blame(_candidate(607, 95.0), metric="median_time_s"),
     )
     assert "NEW TONIGHT" in html
-    assert "ranking available for 1 of 2 confirmations" in html
+    assert "2 metrics · ranking for 1 of 2" in html
 
 
 def test_ranking_card_links_package_diff_and_exact_change_window():

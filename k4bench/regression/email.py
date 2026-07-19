@@ -52,6 +52,7 @@ from k4bench.regression.render import (
     _group_title,
     _pretty_platform,
     _pretty_sample,
+    window_token,
 )
 
 # ── Friendly metric names, units and value formatting ─────────────────────────
@@ -158,10 +159,11 @@ _CERN_TZ = "Europe/Zurich"
 
 
 def _human_datetime(iso: str | None) -> str:
-    """A generated timestamp as ``27 Jun 2026, 08:00 CERN time`` — converted to
-    Geneva local time (a naive stamp is taken as UTC), a human-readable lead
-    rather than a raw ISO string. Falls back to a UTC label if the timezone
-    database is unavailable, and to the raw value if unparseable."""
+    """A generated timestamp as ``2026-06-27 08:00 CEST`` — Geneva local time
+    (a naive stamp is taken as UTC) in ISO-ordered date, 24-hour clock, and the
+    real zone designator, so it is unambiguous without a prose label. Falls
+    back to ``UTC`` when the timezone database is unavailable, and to the raw
+    value if unparseable."""
     if not iso:
         return "—"
     try:
@@ -172,11 +174,9 @@ def _human_datetime(iso: str | None) -> str:
         dt = dt.replace(tzinfo=timezone.utc)
     try:
         dt = dt.astimezone(ZoneInfo(_CERN_TZ))
-        label = "CERN time"
     except ZoneInfoNotFoundError:
         dt = dt.astimezone(timezone.utc)
-        label = "UTC"
-    return f"{dt.day} {dt:%b %Y}, {dt:%H:%M} {label}"
+    return f"{dt:%Y-%m-%d %H:%M %Z}"
 
 
 # ── Wording helpers ───────────────────────────────────────────────────────────
@@ -384,21 +384,45 @@ def _first_confirmation_href(
     return _dashboard_link(dashboard_url, tab="Regressions", **params)
 
 
-def _stack_changes_href(
-    dashboard_url: str | None, card: RankingCard
+def _review_text(section) -> str:
+    """The scoped review link's label — it names how many metrics it opens, so
+    it is never confused with the group-level "Review regressions"."""
+    return f"Review these {_plural(len(section.verdicts), 'regression')}"
+
+
+def _window_href(
+    dashboard_url: str | None, section, report_night: str
 ) -> str | None:
-    """The Stack Changes view for a ranking card's exact release window."""
-    if not dashboard_url:
+    """The Regressions view scoped to one change window — the link that lands
+    the reader on exactly the metrics and candidate PRs this section is about,
+    rather than on whichever window the tab would open by default."""
+    if not dashboard_url or not section.onset_release:
+        return None
+    params = dict(
+        detector=section.detector, platform=section.platform,
+        sample=section.sample,
+        window=window_token(section.base_release, section.onset_release),
+    )
+    if section.k4h_release:
+        params["stack"] = section.k4h_release
+    if report_night:
+        params["report"] = report_night
+    return _dashboard_link(dashboard_url, tab="Regressions", **params)
+
+
+def _stack_changes_href(dashboard_url: str | None, section) -> str | None:
+    """The Stack Changes view for a window section's exact release window."""
+    if not dashboard_url or not section.onset_release:
         return None
     params = {
         "tab": "Stack Changes",
-        "detector": card.detector,
-        "platform": card.platform,
-        "sample": card.sample,
-        "stack_to": card.onset_release,
+        "detector": section.detector,
+        "platform": section.platform,
+        "sample": section.sample,
+        "stack_to": section.onset_release,
     }
-    if card.base_release:
-        params["stack_from"] = card.base_release
+    if section.base_release:
+        params["stack_from"] = section.base_release
     return _dashboard_link(dashboard_url, **params)
 
 
@@ -456,9 +480,11 @@ def _rep_sort_key(v: MetricVerdict) -> tuple:
 _MAX_REP_ROWS = 3
 
 
-def _representative_rows(group: RunGroupReport) -> list[MetricVerdict]:
-    rows = sorted(group.failures + group.regressions, key=_rep_sort_key)
-    return rows[:_MAX_REP_ROWS]
+def _representative_rows(verdicts: list[MetricVerdict]) -> list[MetricVerdict]:
+    """The few rows standing in for *verdicts* in the compact section — a
+    decision summary, not the full evidence (the detailed report carries
+    that)."""
+    return sorted(verdicts, key=_rep_sort_key)[:_MAX_REP_ROWS]
 
 
 # ── Bounded detailed report ───────────────────────────────────────────────────
@@ -915,61 +941,172 @@ def _html_candidate_row(rank: int, c: CandidatePR) -> str:
     )
 
 
-def _ranking_scope(card: RankingCard) -> tuple[str, str, str]:
-    """``(status, coverage, window-label)`` for an attribution card.
+@dataclass
+class WindowSection:
+    """One change window: the confirmed metrics whose change entered in it, and
+    the ranked PRs for that window when the sidecar has them.
 
-    The old generic "Covers N confirmed signals" obscured the important
-    distinction between a ranking reused for reconfirmations and one produced
-    for metrics that reached confirmation tonight.
+    Sections come from the *verdicts*, not from the blame sidecar, so a window
+    with no ranking still lists its metrics instead of vanishing — the window
+    is what the reader has to act on, the ranking only helps.
     """
-    if card.n_new and not card.n_reconfirmed:
-        coverage = (
-            f"ranking for {_plural(card.n_new, 'confirmation')}"
-            if card.n_new == card.total_window_new
-            else f"ranking available for {card.n_new} of "
-                 f"{card.total_window_new} confirmations"
+
+    detector: str
+    platform: str
+    sample: str
+    k4h_release: str
+    base_release: str | None
+    onset_release: str | None
+    verdicts: list[MetricVerdict]
+    card: RankingCard | None
+
+    @property
+    def n_new(self) -> int:
+        return sum(1 for v in self.verdicts if v.is_new_confirmation)
+
+    @property
+    def n_reconfirmed(self) -> int:
+        return sum(1 for v in self.verdicts if v.is_reconfirmed)
+
+    @property
+    def same_release(self) -> bool:
+        """Both ends in one release: nothing upstream moved, so the cause is
+        benchmark-side or noise."""
+        return bool(self.onset_release) and self.base_release == self.onset_release
+
+
+def _window_sections(group: RunGroupReport, index: _BlameIndex) -> list[WindowSection]:
+    """*group*'s confirmed regressions split by the window their change entered
+    in, worst first (windows carrying tonight's new confirmations lead).
+
+    Each metric appears in exactly one section — that is what makes two windows
+    read as two changes rather than two theories about one.
+    """
+    cards = {
+        (c.base_release, c.onset_release): c
+        for c in _ranking_cards(group, index)
+    }
+    buckets: dict[tuple, list[MetricVerdict]] = {}
+    for v in group.regressions:
+        buckets.setdefault((v.last_accepted_run_date, v.onset_run_date), []).append(v)
+
+    sections = [
+        WindowSection(
+            detector=group.detector, platform=group.platform, sample=group.sample,
+            k4h_release=group.k4h_release,
+            base_release=base, onset_release=onset,
+            verdicts=sorted(verdicts, key=_rep_sort_key),
+            card=cards.get((base, onset)),
         )
-        return "NEW TONIGHT", coverage, "stack change window"
-    if card.n_reconfirmed and not card.n_new:
-        coverage = (
-            f"ranking reused for {_plural(card.n_reconfirmed, 'signal')}"
-            if card.n_reconfirmed == card.total_window_reconfirmed
-            else f"ranking reused for {card.n_reconfirmed} of "
-                 f"{card.total_window_reconfirmed} signals"
-        )
-        return "RECONFIRMED", coverage, "original stack change window"
-    coverage = (
-        f"ranking for {_plural(card.n_signals, 'confirmation')}"
-        if card.n_signals == card.total_window_signals
-        else f"ranking available for {card.n_signals} of "
-             f"{card.total_window_signals} confirmations"
+        for (base, onset), verdicts in buckets.items()
+    ]
+    sections.sort(key=lambda s: (
+        not bool(s.n_new), -s.n_new, -s.n_reconfirmed,
+        s.onset_release or "", s.base_release or "",
+    ))
+    return sections
+
+
+def _section_window_text(section: WindowSection) -> str:
+    """The section's window, named by its Key4hep releases."""
+    if section.same_release:
+        return f"within release {section.onset_release}"
+    return _window_text(section.base_release, section.onset_release)
+
+
+def _section_scope(section: WindowSection) -> tuple[str, str]:
+    """``(status, coverage)`` for a window section.
+
+    The status word is decided by the metrics in the section — the reader's
+    question is "is this new tonight?", not "where did the ranking come
+    from" — and the coverage phrase says how much of the section the ranking
+    actually covers, so a partial or reused ranking can never read as a
+    complete, fresh one.
+    """
+    n_metrics = len(section.verdicts)
+    if section.n_new and not section.n_reconfirmed:
+        status = "NEW TONIGHT"
+    elif section.n_reconfirmed and not section.n_new:
+        status = "RECONFIRMED"
+    else:
+        status = "CONFIRMED"
+
+    card = section.card
+    if card is None or not card.complete:
+        return status, f"{_plural(n_metrics, 'metric')} · no PR ranking"
+    verb = "ranking reused" if card.reused_from else "ranking"
+    covered = card.n_signals
+    if covered >= n_metrics:
+        return status, f"{_plural(n_metrics, 'metric')} · {verb}"
+    return status, (
+        f"{_plural(n_metrics, 'metric')} · {verb} for {covered} of {n_metrics}"
     )
-    return "CONFIRMED", coverage, "stack change window"
 
 
-def _html_ranking_card(card: RankingCard, dashboard_url: str | None) -> str:
-    scope_status, scope_coverage, window_label = _ranking_scope(card)
+def _html_window_section(
+    section: WindowSection, report_night: str, dashboard_url: str | None
+) -> str:
+    """One window's block: what entered, which metrics carry it, and its PRs."""
+    scope_status, scope_coverage = _section_scope(section)
     scope_color = _C_RED if scope_status == "NEW TONIGHT" else _C_AMBER
-    coverage = (
+    # The window is a *release interval*, so it links where that reads: the
+    # stack diff between those two releases. The metrics behind it are one
+    # scoped click away, below.
+    stack_url = _stack_changes_href(dashboard_url, section)
+    window_text = _section_window_text(section)
+    window_html = (
+        _link(stack_url, window_text, bold=True) if stack_url
+        else f"<strong>{_esc(window_text)}</strong>"
+    )
+    header = (
         f'<p style="margin:0 0 6px;font-size:12px;color:{_C_MUTED};">'
         f'<strong style="color:{scope_color};">{scope_status}</strong> · '
-        f"{_esc(scope_coverage)} · {window_label} "
-        f"<strong>{_esc(_window_text(card.base_release, card.onset_release))}</strong></p>"
+        f"{_esc(scope_coverage)} · change entered {window_html}</p>"
     )
+    card = section.card
     reuse = ""
-    if card.reused_from:
+    if card is not None and card.reused_from:
         reuse = (
             f'<p style="margin:0 0 6px;font-size:11px;color:{_C_AMBER};'
             f'white-space:nowrap;">Reused from first confirmation · '
             f"{_esc(_human_date(card.reused_from))}</p>"
         )
-    stack_url = _stack_changes_href(dashboard_url, card)
+
+    shown = _representative_rows(section.verdicts)
+    metric_rows = "".join(_html_rep_row(v, report_night) for v in shown)
+    omitted = len(section.verdicts) - len(shown)
+    more_metrics = (
+        f'<p style="margin:2px 0 0;font-size:12px;color:{_C_FAINT};">'
+        f"and {omitted} more in this window</p>"
+        if omitted > 0 else ""
+    )
+    review_url = _window_href(dashboard_url, section, report_night)
+    review_html = (
+        f'<p style="margin:4px 0 6px;font-size:13px;">'
+        f"{_link(review_url, _review_text(section), bold=True)}</p>"
+        if review_url else ""
+    )
+    metrics_html = (
+        '<table role="presentation" cellpadding="0" cellspacing="0" '
+        'style="border-collapse:collapse;width:100%;margin:2px 0 6px;'
+        f'font-size:14px;">{metric_rows}</table>{more_metrics}{review_html}'
+    )
+
+    return (
+        f'<div style="border:1px solid {_C_BORDER};border-radius:6px;'
+        f'background:#ffffff;padding:10px 12px;margin:8px 0;">'
+        f"{header}{reuse}{metrics_html}"
+        f"{_html_ranking_body(section, dashboard_url)}</div>"
+    )
+
+
+def _html_ranking_body(section: WindowSection, dashboard_url: str | None) -> str:
+    """The PR-ranking part of a window section (or the honest absence of one)."""
+    card = section.card
+    stack_url = _stack_changes_href(dashboard_url, section)
     compares = ""
-    if card.compare_links:
-        compare_items = [
-            _link(url, package)
-            for package, url in card.compare_links
-        ]
+    if card is not None and card.compare_links:
+        compare_items = [_link(url, package) for package, url in card.compare_links]
         if card.total_compares > len(card.compare_links):
             compare_items.append(
                 f"+{card.total_compares - len(card.compare_links)} more"
@@ -978,36 +1115,37 @@ def _html_ranking_card(card: RankingCard, dashboard_url: str | None) -> str:
             f'<p style="margin:6px 0 0;font-size:12px;color:{_C_FAINT};">'
             f"Package changes: {' · '.join(compare_items)}</p>"
         )
-    if not card.complete:
-        body = (
+    if card is None or not card.complete:
+        if section.same_release:
+            return (
+                f'<p style="margin:0;font-size:13px;color:{_C_MUTED};">'
+                "No tracked Key4hep package changed within this release — check "
+                "benchmark code/config, inputs, runner environment, or noise.</p>"
+            )
+        return (
             f'<p style="margin:0;font-size:13px;color:{_C_MUTED};">'
             "No complete PR ranking is available for this change window. "
             f"{_link(stack_url, 'Review the package changes in the dashboard')}.</p>"
             f"{compares}"
         )
-    else:
-        rows = "".join(
-            _html_candidate_row(i + 1, c) for i, c in enumerate(card.candidates)
-        )
-        more = ""
-        if card.total_ranked > len(card.candidates):
-            label = f"View all {card.total_ranked} candidates in the dashboard"
-            more = (
-                f'<p style="margin:6px 0 0;font-size:12px;color:{_C_FAINT};">'
-                f"{_link(stack_url, label)}.</p>"
-            )
-        body = (
-            f'<p style="margin:0 0 3px;font-size:13px;font-weight:700;">'
-            "Likely contributing pull requests</p>"
-            f'<p style="margin:0 0 6px;font-size:11px;color:{_C_FAINT};font-style:italic;">'
-            f"{_esc(_RANKING_DISCLOSURE)}</p>"
-            '<table role="presentation" cellpadding="0" cellspacing="0" '
-            'style="border-collapse:collapse;width:100%;table-layout:fixed;">'
-            f"{rows}</table>{more}{compares}"
+    rows = "".join(
+        _html_candidate_row(i + 1, c) for i, c in enumerate(card.candidates)
+    )
+    more = ""
+    if card.total_ranked > len(card.candidates):
+        label = f"View all {card.total_ranked} candidates in the dashboard"
+        more = (
+            f'<p style="margin:6px 0 0;font-size:12px;color:{_C_FAINT};">'
+            f"{_link(stack_url, label)}.</p>"
         )
     return (
-        f'<div style="border:1px solid {_C_BORDER};border-radius:6px;'
-        f"background:#ffffff;padding:10px 12px;margin:8px 0;\">{coverage}{reuse}{body}</div>"
+        f'<p style="margin:0 0 3px;font-size:13px;font-weight:700;">'
+        "Likely contributing pull requests</p>"
+        f'<p style="margin:0 0 6px;font-size:11px;color:{_C_FAINT};font-style:italic;">'
+        f"{_esc(_RANKING_DISCLOSURE)}</p>"
+        '<table role="presentation" cellpadding="0" cellspacing="0" '
+        'style="border-collapse:collapse;width:100%;table-layout:fixed;">'
+        f"{rows}</table>{more}{compares}"
     )
 
 
@@ -1017,13 +1155,24 @@ def _same_release_context(group: RunGroupReport) -> str:
         return ""
     if group.new_regressions:
         return (
-            "Same-release rerun: the stack did not change between benchmark nights. "
-            "RECONFIRMED rows repeat an existing confirmation; NEW rows reached "
-            "confirmation tonight after another measurement of this release."
+            "Same release, benchmarked again — the stack did not change since the "
+            "last run. NEW reached confirmation tonight; RECONFIRMED was already "
+            "confirmed on an earlier night of this release."
         )
     return (
-        "Same-release rerun: the stack did not change between benchmark nights. "
-        "All confirmed rows below repeat an existing confirmation for this release."
+        "Same release, benchmarked again — the stack did not change since the "
+        "last run. Every confirmed row repeats an earlier confirmation."
+    )
+
+
+def _windows_lead_in(n_cards: int) -> str:
+    """One line above several attribution cards, so two change windows read as
+    two separate changes rather than competing explanations of one."""
+    if n_cards < 2:
+        return ""
+    return (
+        f"{n_cards} separate changes are confirmed here — each metric belongs "
+        "to exactly one."
     )
 
 
@@ -1055,7 +1204,12 @@ def _html_attention_card(
         f'<p style="margin:4px 0;color:{_C_RED};font-weight:600;">❌ {_esc(m)}</p>'
         for m in group.job_failures
     )
-    rows = "".join(_html_rep_row(v, report.report_night) for v in _representative_rows(group))
+    # Failures head the card on their own: they have no change window, so they
+    # belong to none of the per-window sections below.
+    rows = "".join(
+        _html_rep_row(v, report.report_night)
+        for v in _representative_rows(group.failures)
+    )
     rows_html = (
         '<table role="presentation" cellpadding="0" cellspacing="0" '
         'style="border-collapse:collapse;width:100%;margin:6px 0;font-size:14px;">'
@@ -1085,8 +1239,16 @@ def _html_attention_card(
         if context else ""
     )
 
-    ranking = "".join(
-        _html_ranking_card(card, dashboard_url) for card in _ranking_cards(group, index)
+    sections = _window_sections(group, index)
+    lead_in = _windows_lead_in(len(sections))
+    lead_in_html = (
+        f'<p style="margin:8px 0 0;font-size:12px;font-weight:700;'
+        f'color:{_C_MUTED};">{_esc(lead_in)}</p>'
+        if lead_in else ""
+    )
+    ranking = lead_in_html + "".join(
+        _html_window_section(section, report.report_night, dashboard_url)
+        for section in sections
     )
 
     return (
@@ -1294,24 +1456,45 @@ def _md_candidate(rank: int, c: CandidatePR) -> str:
     )
 
 
-def _md_ranking_card(card: RankingCard, dashboard_url: str | None) -> list[str]:
-    scope_status, scope_coverage, window_label = _ranking_scope(card)
+def _md_window_section(
+    section: WindowSection, report_night: str, dashboard_url: str | None
+) -> list[str]:
+    """One window's block: what entered, its metrics, then its PRs."""
+    scope_status, scope_coverage = _section_scope(section)
+    card = section.card
+    stack_url = _stack_changes_href(dashboard_url, section)
+    window_text = _section_window_text(section)
     lines = [
-        f"  **{scope_status}** · {scope_coverage} · {window_label} "
-        f"{_window_text(card.base_release, card.onset_release)}"
+        f"  **{scope_status}** · {scope_coverage} · change entered "
+        + (f"[{window_text}]({stack_url})" if stack_url else window_text)
     ]
-    if card.reused_from:
+    if card is not None and card.reused_from:
         lines.append(
             f"  Reused from first confirmation · {_human_date(card.reused_from)}"
         )
+    shown = _representative_rows(section.verdicts)
+    lines.extend(f"  {_md_rep_row(v)}" for v in shown)
+    omitted = len(section.verdicts) - len(shown)
+    if omitted > 0:
+        lines.append(f"  _and {omitted} more in this window_")
+    review_url = _window_href(dashboard_url, section, report_night)
+    if review_url:
+        lines.append(f"  [{_review_text(section)}]({review_url})")
+
     compare_line = ""
-    if card.compare_links:
+    if card is not None and card.compare_links:
         items = [f"[{package}]({url})" for package, url in card.compare_links]
         if card.total_compares > len(card.compare_links):
             items.append(f"+{card.total_compares - len(card.compare_links)} more")
         compare_line = f"  Package changes: {' · '.join(items)}"
-    if not card.complete:
-        stack_url = _stack_changes_href(dashboard_url, card)
+    if card is None or not card.complete:
+        if section.same_release:
+            lines.append(
+                "  No tracked Key4hep package changed within this release — "
+                "check benchmark code/config, inputs, runner environment, or noise."
+            )
+            return lines
+        stack_url = _stack_changes_href(dashboard_url, section)
         review = (
             f"[Review the package changes in the dashboard]({stack_url})"
             if stack_url else "Review the package changes in the dashboard"
@@ -1330,7 +1513,7 @@ def _md_ranking_card(card: RankingCard, dashboard_url: str | None) -> list[str]:
     )
     if card.total_ranked > len(card.candidates):
         label = f"View all {card.total_ranked} candidates in the dashboard"
-        stack_url = _stack_changes_href(dashboard_url, card)
+        stack_url = _stack_changes_href(dashboard_url, section)
         lines.append(f"  [{label}]({stack_url})." if stack_url else f"  {label}.")
     if compare_line:
         lines.append(compare_line)
@@ -1361,7 +1544,9 @@ def _md_attention_card(
     ]
     for m in group.job_failures:
         lines.append(f"- ❌ **{m}**")
-    lines.extend(_md_rep_row(v) for v in _representative_rows(group))
+    # Failures have no change window, so they lead the card rather than sitting
+    # in one of the per-window sections below.
+    lines.extend(_md_rep_row(v) for v in _representative_rows(group.failures))
     actions = []
     regr = _regressions_href(dashboard_url, group, report.report_night)
     if regr:
@@ -1378,9 +1563,14 @@ def _md_attention_card(
     if context:
         lines.append("")
         lines.append(f"> {context}")
-    for card in _ranking_cards(group, index):
+    sections = _window_sections(group, index)
+    lead_in = _windows_lead_in(len(sections))
+    if lead_in:
         lines.append("")
-        lines.extend(_md_ranking_card(card, dashboard_url))
+        lines.append(f"**{lead_in}**")
+    for section in sections:
+        lines.append("")
+        lines.extend(_md_window_section(section, report.report_night, dashboard_url))
     lines.append("")
     return lines
 

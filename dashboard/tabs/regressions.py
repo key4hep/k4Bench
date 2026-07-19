@@ -19,6 +19,7 @@ preview downloads run data, and only for the series being inspected.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 import requests
 import streamlit as st
@@ -30,10 +31,12 @@ from k4bench.regression.models import (
     Severity,
 )
 from k4bench.regression.render import (
+    WINDOW_WATCH_TOKEN,
     _detector_badge,
     _group_title,
     _pretty_sample,
     from_json,
+    window_token,
 )
 from remote_cache import (
     _cached_fetch_blame,
@@ -109,34 +112,6 @@ def render(
         )
     report = reports[night]
 
-    # Package/PR attribution belongs to the release, not to whichever repeat
-    # measurement is open in the night picker. Freeze it at the release's
-    # first report that produced a confirmed change window: later reruns may
-    # advance an individual metric from WATCH to CONFIRMED, but no packages
-    # changed between measurements of the same software. The chosen night's
-    # banner and verdict details remain an honest historical snapshot.
-    attribution = _release_attribution(
-        reports, detector, platform, sample, stack,
-    )
-    attribution_night, attribution_group = (
-        attribution if attribution is not None else (None, None)
-    )
-
-    # The blame sidecar is best-effort and absent on most nights (only a
-    # confirmed, attributable regression produces one) — a missing blame.json
-    # is normal, not an error. Read the canonical attribution night's sidecar,
-    # not the selected rerun's, so ranked candidates stay stable too.
-    raw_blame = (
-        _cached_fetch_blame(data_url, attribution_night)
-        if attribution_night is not None else None
-    )
-    blame: BlameReport | None = None
-    if raw_blame:
-        try:
-            blame = BlameReport.from_json(raw_blame)
-        except BlameSchemaError:
-            blame = None
-
     # A (detector, platform, sample) triple is one run group — the report's
     # unit of judgement — so the sidebar scope selects at most one.
     group = _night_group(report, detector, platform, sample)
@@ -144,11 +119,17 @@ def render(
         _render_no_group_notice(report, detector, sample, night)
         return
 
+    # Package/PR attribution belongs to the change window, not to whichever
+    # repeat measurement is open in the night picker: each window is pinned to
+    # the release's first report that recorded it, so no packages appear to
+    # move between measurements of one release.
+    attributions = _window_attributions(
+        reports, detector, platform, sample, stack, group, data_url,
+    )
+
     _render_banner(group)
     _render_group(
-        group, data_url, cache_dir, blame=blame,
-        attribution_group=attribution_group,
-        attribution_night=attribution_night,
+        group, data_url, cache_dir, attributions=attributions,
         key=f"{detector}_{platform}_{sample}",
         scope=(stack, night),
     )
@@ -248,28 +229,106 @@ def _night_group(
     )
 
 
-def _release_attribution(
-    reports: dict[str, NightlyReport], detector: str, platform: str,
-    sample: str, stack: str,
-) -> tuple[str, RunGroupReport] | None:
-    """The release's canonical ``(report night, group)`` for attribution.
+def _window_key(verdict: MetricVerdict) -> tuple[str | None, str | None]:
+    """A verdict's change window as a hashable key."""
+    return (verdict.last_accepted_run_date, verdict.onset_run_date)
 
-    Reports remain chronological evidence snapshots, so a repeat measurement
-    can turn a metric from WATCH into CONFIRMED without any software change.
-    Package and PR attribution must not acquire a new comparison window merely
-    because that evidence arrived later. Use the earliest report of *stack*
-    containing a recorded confirmed window and reuse it for every rerun shown
-    in this tab. If the first measurement was only WATCH, the first later
-    confirmation becomes canonical and is also used when the earlier snapshot
-    is selected.
+
+@dataclass(frozen=True)
+class _WindowAttribution:
+    """One change window confirmed on the selected night, with the attribution
+    frozen at the release's first report night that recorded *that window*.
+
+    ``verdict`` represents the window (they all share its packages and PRs);
+    ``night`` is the report night the ranking is read from; ``n_metrics``
+    counts the metrics carrying the window on the selected night.
     """
+
+    verdict: MetricVerdict
+    night: str
+    verdicts: tuple[MetricVerdict, ...]
+    blame: BlameReport | None
+
+    @property
+    def n_metrics(self) -> int:
+        return len(self.verdicts)
+
+
+def _blame_for_night(data_url: str, night: str) -> BlameReport | None:
+    """The night's sidecar, or ``None`` — absent and malformed are both normal
+    (blame is best-effort and most nights have none)."""
+    raw = _cached_fetch_blame(data_url, night)
+    if not raw:
+        return None
+    try:
+        return BlameReport.from_json(raw)
+    except BlameSchemaError:
+        return None
+
+
+def _window_attributions(
+    reports: dict[str, NightlyReport], detector: str, platform: str,
+    sample: str, stack: str, group: RunGroupReport, data_url: str,
+) -> list[_WindowAttribution]:
+    """One attribution per distinct change window on the selected night.
+
+    A release can confirm more than one change: metrics already elevated when
+    the release was first measured carry the window their change entered in,
+    while metrics that only reach their second strike on a later rerun carry a
+    later window. Those are separate changes with separate causes, so each gets
+    its own card rather than the release showing only whichever came first.
+
+    What must *not* move between reruns is a window's attribution: no package
+    changed between measurements of one release, so each window is pinned to
+    the earliest report night of *stack* that recorded it, and that night's
+    sidecar supplies its ranking. The set of windows is release-level for the
+    same reason — a rerun where every metric happened to fall back inside the
+    band still belongs to a release that confirmed these changes, so its cards
+    stay put rather than blinking out for one quiet night.
+    """
+    first_night: dict[tuple, str] = {}
+    by_window: dict[tuple, list[MetricVerdict]] = {}
     for night in sorted(reports):
-        group = _night_group(reports[night], detector, platform, sample)
-        if group is None or group.k4h_release != stack:
+        night_group = _night_group(reports[night], detector, platform, sample)
+        if night_group is None or night_group.k4h_release != stack:
             continue
-        if any(_blame.has_window(v) for v in group.verdicts):
-            return night, group
-    return None
+        for v in night_group.verdicts:
+            if _blame.has_window(v):
+                first_night.setdefault(_window_key(v), night)
+                by_window.setdefault(_window_key(v), []).append(v)
+
+    tonight: dict[tuple, list[MetricVerdict]] = {}
+    for v in group.verdicts:
+        if _blame.has_window(v):
+            tonight.setdefault(_window_key(v), []).append(v)
+
+    attributions: list[_WindowAttribution] = []
+    for key, seen in by_window.items():
+        night = first_night[key]
+        blame = _blame_for_night(data_url, night)
+        # Prefer the selected night's metrics for the count and representative;
+        # a window the selected rerun did not confirm still describes this
+        # release, and falls back to the night that did.
+        verdicts = tonight.get(key) or seen
+        ranked = sorted(verdicts, key=attention_key)
+        # Represent the window by a metric the sidecar actually ranked, when
+        # there is one: a partially covered window still has one ranking, and
+        # picking an unranked metric would hide it behind "no ranking stored".
+        representative = next(
+            (v for v in ranked if blame is not None and blame.entry_for(v) is not None),
+            ranked[0],
+        )
+        attributions.append(_WindowAttribution(
+            verdict=representative, night=night, verdicts=tuple(ranked),
+            blame=blame,
+        ))
+    # Most recent change first: the newest onset is the one tonight's reader is
+    # most likely acting on.
+    return sorted(
+        attributions,
+        key=lambda a: (a.verdict.onset_run_date or "", a.verdict.last_accepted_run_date or ""),
+        reverse=True,
+    )
 
 
 def _night_priority(
@@ -432,24 +491,29 @@ def _window_changes(data_url: str, verdict: MetricVerdict) -> list | None:
     return diff_packages(base, head)
 
 
-def _render_blame_card(data_url: str, v: MetricVerdict, blame: BlameReport | None) -> None:
+def _render_blame_card(data_url: str, attribution: _WindowAttribution) -> None:
     """One window's forward attribution: the upstream packages that moved in the
     blame window, each linking to its commit range, plus the ranked candidate
     PRs from the blame sidecar when present — so the reader reaches the likely
     pull request without leaving the row or loading the trend."""
+    v = attribution.verdict
     kind = _blame.classify(v)
+    scope = f"{attribution.n_metrics} metric(s)"
     with st.container(border=True):
         if kind is _blame.WindowKind.SAME_STACK:
             st.caption(
-                f"Change detected within release **{v.onset_run_date}** · no tracked "
-                "Key4hep package changed. Check benchmark code/config, inputs, "
-                "runner environment, or noise."
+                f"Change entered within release **{v.onset_run_date}** · {scope} · "
+                "no tracked Key4hep package changed. Check benchmark "
+                "code/config, inputs, runner environment, or noise."
             )
             return
         onset = v.onset_run_date
         baseline = v.last_accepted_run_date if kind is _blame.WindowKind.BOUNDED else None
         span = f"**{baseline} → {onset}**" if baseline else f"up to **{onset}**"
-        st.caption(f"Change window: {span} · first detected **{onset}**")
+        st.caption(
+            f"Change entered: {span} · {scope} · first confirmed on report "
+            f"night **{attribution.night}**"
+        )
         changes = _window_changes(data_url, v) if baseline else None
         if changes is None:
             st.caption(
@@ -463,7 +527,7 @@ def _render_blame_card(data_url: str, v: MetricVerdict, blame: BlameReport | Non
             st.markdown(
                 f"**{len(changes)} package(s) moved:** " + _blame.changes_summary(changes)
             )
-        render_candidate_ranking(v, blame, show_empty=True)
+        render_candidate_ranking(v, attribution.blame, show_empty=True)
         st.link_button(
             "🔍 Open in Stack Changes →",
             deep_link(detector=v.detector, platform=v.platform, sample=v.sample,
@@ -471,38 +535,125 @@ def _render_blame_card(data_url: str, v: MetricVerdict, blame: BlameReport | Non
         )
 
 
-def _render_blame_cards(
-    group: RunGroupReport, data_url: str, blame: BlameReport | None,
-    attribution_night: str,
-) -> None:
-    """Release-level forward attribution, frozen at *attribution_night*.
+def _window_label(attribution: _WindowAttribution) -> str:
+    """A change window as a picker pill: the release interval it entered in."""
+    v = attribution.verdict
+    kind = _blame.classify(v)
+    if kind is _blame.WindowKind.SAME_STACK:
+        return f"within {v.onset_run_date}"
+    if kind is _blame.WindowKind.OPEN:
+        return f"up to {v.onset_run_date}"
+    return f"{v.last_accepted_run_date} → {v.onset_run_date}"
 
-    One card is rendered per distinct window already present when the release
-    first produced a confirmed blame window. Later repeat measurements use the
-    same representatives and sidecar, so unchanged software cannot appear to
-    acquire another package-change story merely because an additional metric
-    reached its second strike.
+
+def _window_token(attribution: _WindowAttribution) -> str:
+    """A change window's ``?window=`` value — the pill's stored identity, and
+    what an emailed deep link carries (see
+    :func:`k4bench.regression.render.window_token`)."""
+    v = attribution.verdict
+    base = v.last_accepted_run_date if _blame.classify(v) is _blame.WindowKind.BOUNDED else None
+    return window_token(base, v.onset_run_date)
+
+
+#: Pill for flagged metrics that belong to no change window — watches (not yet
+#: confirmed) and confirmations with no bounded onset. Without it, selecting a
+#: window would put them out of reach of the trend preview entirely.
+_NO_WINDOW_LABEL = "Watch"
+
+
+def _window_pill(label: str, n_metrics: int, noun: str = "regression") -> str:
+    """A pill's *display*: the window, then its size in bold so the split
+    between windows is legible before clicking either —
+    ``🔴 2026-06-25 → 2026-06-27 · **14 regressions**``.
+
+    Only the display carries the count; the pill's stored value stays the plain
+    window label, so a night with different counts re-labels the pills without
+    resetting the reader's selection.
     """
-    by_window: dict[tuple, MetricVerdict] = {}
-    for v in group.verdicts:
-        if _blame.has_window(v):
-            by_window.setdefault((v.last_accepted_run_date, v.onset_run_date), v)
-    if not by_window:
-        return
-    st.markdown("###### Upstream changes in the blame window")
-    st.caption(
-        f"Shared across release reruns · first confirmed report night: "
-        f"**{attribution_night}**"
+    badge = "⚠️" if label == _NO_WINDOW_LABEL else "🔴"
+    plural = noun if n_metrics == 1 else f"{noun}s"
+    return f"{badge} {label} · **{n_metrics} {plural}**"
+
+
+def _select_window(
+    attributions: list[_WindowAttribution], flagged: list[MetricVerdict], *, key: str,
+) -> tuple[_WindowAttribution | None, list[MetricVerdict]]:
+    """Scope the group to one change window, returning it and its metrics.
+
+    More than one window means the release confirms more than one *change* —
+    the metrics split between them, they are not competing explanations of one
+    regression. One picker drives everything downstream: the trend preview
+    lists only the selected window's metrics, and the attribution below shows
+    only the pull requests merged in that window's range.
+    """
+    keys = {_window_key(a.verdict) for a in attributions}
+    unwindowed = [
+        v for v in flagged
+        if not (_blame.has_window(v) and _window_key(v) in keys)
+    ]
+    in_window = {
+        _window_key(a.verdict): [
+            v for v in flagged
+            if _blame.has_window(v) and _window_key(v) == _window_key(a.verdict)
+        ]
+        for a in attributions
+    }
+    # Biggest change first: the window carrying the most regressions is the one
+    # the reader most likely came for, whatever order the releases fall in.
+    ranked = sorted(
+        attributions,
+        key=lambda a: (
+            len(in_window[_window_key(a.verdict)]),
+            a.verdict.onset_run_date or "",
+            a.verdict.last_accepted_run_date or "",
+        ),
+        reverse=True,   # most regressions first, then the most recent change
     )
-    for verdict in by_window.values():
-        _render_blame_card(data_url, verdict, blame)
+    options: dict[str, _WindowAttribution | None] = {}
+    pills: dict[str, str] = {}
+    for a in ranked:
+        token = _window_token(a)
+        options[token] = a
+        pills[token] = _window_pill(
+            _window_label(a), len(in_window[_window_key(a.verdict)])
+        )
+    if unwindowed:
+        options[WINDOW_WATCH_TOKEN] = None
+        pills[WINDOW_WATCH_TOKEN] = _window_pill(
+            _NO_WINDOW_LABEL, len(unwindowed), "metric"
+        )
+    if len(options) < 2:
+        return (ranked[0] if ranked else None), flagged
+
+    picker_key = f"regr_window_{key}"
+    _drop_stale_selection(picker_key, list(options))
+    seed_query_param(picker_key, "window", list(options))  # ?window= from an email
+    if picker_key not in st.session_state:
+        st.session_state[picker_key] = next(iter(options))
+    chosen = st.segmented_control(
+        "Change window", list(options), format_func=lambda o: pills[o],
+        key=picker_key,
+        help="Metrics are grouped by the release interval their change entered "
+             "in — a release can confirm more than one change, and each metric "
+             "belongs to exactly one. Picking a window scopes the trend "
+             "preview and the candidate pull requests to that change.",
+    )
+    st.caption(
+        f"{len(attributions)} separate changes are confirmed for this release "
+        "— each metric belongs to exactly one."
+    )
+    if chosen is None or chosen not in options:
+        chosen = next(iter(options))
+    st.query_params["window"] = chosen   # keep the URL shareable/deep-linkable
+    selected = options[chosen]
+    if selected is None:
+        return None, unwindowed
+    return selected, in_window[_window_key(selected.verdict)]
 
 
 def _render_group(
     group: RunGroupReport, data_url: str, cache_dir: str, *,
-    blame: BlameReport | None,
-    attribution_group: RunGroupReport | None,
-    attribution_night: str | None,
+    attributions: list[_WindowAttribution],
     key: str, scope: tuple[str, str],
 ) -> None:
     for msg in group.job_failures:
@@ -527,35 +678,46 @@ def _render_group(
         st.caption(f"❔ {n_unknown} metric(s) not judged — insufficient history.")
 
     # The trend comes first — it's the first question a flagged night raises
-    # ("what does this look like?") — the upstream-changes cards follow with
-    # the "why", once there's a window to explain.
-    drillable: list[MetricVerdict] = sorted(
-        (v for v in flagged if v.baseline_median is not None), key=attention_key
-    )
-    if drillable:
+    # ("what does this look like?") — the upstream-changes card follows with
+    # the "why", once there's a window to explain. The change-window picker
+    # sits above both because it scopes both.
+    if flagged:
         st.markdown("###### Flagged metric trend")
-        # A report night (and a stack) supplies a different option model.
-        # Reusing one Streamlit widget key and only clearing session state
-        # updates the selected verdict/plot but can leave the browser's
-        # displayed option text from the previous model. Give each scope a
-        # distinct widget identity so label and value always move together.
-        drill_key = f"regr_drill_{key}_{scope[0]}_{scope[1]}"
-        selected = render_metric_picker(
-            drillable,
-            key=drill_key,
-            help="Recent history with the baseline band this verdict was "
-                 "judged against. Opens on the most severe flag — pick "
-                 "another, or “—” to hide the chart. Downloads data on "
-                 "first use.",
+    # Rendered here whether or not there is a trend above it: on a rerun where
+    # every metric fell back inside the band the release still has its windows,
+    # and the picker simply leads the attribution instead.
+    window, in_window = _select_window(
+        attributions, flagged, key=f"{key}_{scope[0]}_{scope[1]}",
+    )
+    if flagged:
+        drillable: list[MetricVerdict] = sorted(
+            (v for v in in_window if v.baseline_median is not None),
+            key=attention_key,
         )
-        if selected is not None:
-            render_metric_trend(
-                selected, data_url, cache_dir,
-                list_run_dates=_cached_list_run_dates,
-                fetch_runs_windowed=_cached_fetch_runs_windowed,
-                widget_namespace="regr",
+        if drillable:
+            # A report night (and a stack) supplies a different option model,
+            # and so does a change window. Reusing one Streamlit widget key and
+            # only clearing session state updates the selected verdict/plot but
+            # can leave the browser's displayed option text from the previous
+            # model. Give each scope a distinct widget identity so label and
+            # value always move together.
+            window_id = _window_label(window) if window is not None else "none"
+            drill_key = f"regr_drill_{key}_{scope[0]}_{scope[1]}_{window_id}"
+            selected = render_metric_picker(
+                drillable,
+                key=drill_key,
+                help="Recent history with the baseline band this verdict was "
+                     "judged against. Opens on the most severe flag — pick "
+                     "another, or “—” to hide the chart. Downloads data on "
+                     "first use.",
             )
-    if attribution_group is not None and attribution_night is not None:
-        _render_blame_cards(
-            attribution_group, data_url, blame, attribution_night,
-        )
+            if selected is not None:
+                render_metric_trend(
+                    selected, data_url, cache_dir,
+                    list_run_dates=_cached_list_run_dates,
+                    fetch_runs_windowed=_cached_fetch_runs_windowed,
+                    widget_namespace="regr",
+                )
+    if window is not None:
+        st.markdown("###### What changed upstream")
+        _render_blame_card(data_url, window)
