@@ -410,7 +410,13 @@ def _window_href(
 
 
 def _stack_changes_href(dashboard_url: str | None, section) -> str | None:
-    """The Stack Changes view for a window section's exact release window."""
+    """The Stack Changes view for a window section's exact release window.
+
+    The param names ``to``/``from`` must match what the dashboard's Stack
+    Changes tab reads back (``PARAM_TO``/``PARAM_FROM`` in
+    dashboard/tabs/stack_changes.py) — a literal mismatch here silently
+    breaks the deep link instead of raising.
+    """
     if not dashboard_url or not section.onset_release:
         return None
     params = {
@@ -418,10 +424,10 @@ def _stack_changes_href(dashboard_url: str | None, section) -> str | None:
         "detector": section.detector,
         "platform": section.platform,
         "sample": section.sample,
-        "stack_to": section.onset_release,
+        "to": section.onset_release,
     }
     if section.base_release:
-        params["stack_from"] = section.base_release
+        params["from"] = section.base_release
     return _dashboard_link(dashboard_url, **params)
 
 

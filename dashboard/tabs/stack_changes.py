@@ -56,6 +56,8 @@ _PREFIX = "key4hep-"
 #: that deep-links *into* this view (the Regressions blame note, via
 #: :func:`deep_link`) shares one source of truth: rename a param and its builder
 #: moves with it, instead of silently breaking a literal in another module.
+#: The email's ``_stack_changes_href`` (:mod:`k4bench.regression.email`) is a
+#: separate builder that must match these same literal values.
 _TAB_NAME = "Stack Changes"
 PARAM_FROM = "from"
 PARAM_TO = "to"
