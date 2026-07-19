@@ -525,7 +525,7 @@ def test_window_links_to_the_stack_diff_and_review_links_to_the_metrics():
     )
     window_href = hrefs["2026-06-05 → 2026-06-27"]
     assert "tab=Stack+Changes" in window_href
-    assert "stack_from=2026-06-05" in window_href and "stack_to=2026-06-27" in window_href
+    assert "from=2026-06-05" in window_href and "to=2026-06-27" in window_href
     assert "window=" not in window_href
 
     review_href = hrefs["Review these 1 regression"]
@@ -621,7 +621,7 @@ def test_ranking_card_links_package_diff_and_exact_change_window():
     assert "k4geo diff" not in html
     assert "github.com/key4hep/k4geo/compare/a...c" in html
     assert "tab=Stack+Changes" in html
-    assert "stack_from=2026-06-05" in html and "stack_to=2026-06-27" in html
+    assert "from=2026-06-05" in html and "to=2026-06-27" in html
 
 
 def test_candidate_order_follows_score():
