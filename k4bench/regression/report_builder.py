@@ -321,15 +321,18 @@ def _group_report_from_frames(
         return None
 
     k4h_release = ""
+    github_run_url = None
     if not no_results:
         tonight_rows = results_df[results_df["run_id"] == tonight]
         if not tonight_rows.empty:
             k4h_release = str(tonight_rows["k4h_release"].iloc[0])
+            url = tonight_rows["github_run_url"].iloc[0]
+            github_run_url = url if pd.notna(url) else None
 
     group = RunGroupReport(
         detector=detector, platform=platform, sample=sample,
         k4h_release=k4h_release, run_date=tonight, run_id=tonight,
-        reliable=reliability.get(tonight),
+        reliable=reliability.get(tonight), github_run_url=github_run_url,
     )
 
     series = evaluate_group_series(

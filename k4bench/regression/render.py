@@ -181,6 +181,7 @@ def from_json(data: dict) -> NightlyReport:
             job_failures=list(g.get("job_failures", [])),
             notes=list(g.get("notes", [])),
             reliable=g.get("reliable"),
+            github_run_url=g.get("github_run_url"),
         ))
     return NightlyReport(generated_at=data.get("generated_at", ""), groups=groups)
 

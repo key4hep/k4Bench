@@ -50,6 +50,7 @@ def _group(*verdicts, release=RELEASE, run="2026-06-27", reliable=True, **o) -> 
         sample=o.get("sample", SAMPLE), k4h_release=release, run_date=run,
         run_id=run, verdicts=list(verdicts), reliable=reliable,
         job_failures=o.get("job_failures", []),
+        github_run_url=o.get("github_run_url"),
     )
 
 
@@ -715,3 +716,36 @@ def test_dashboard_query_string_merges():
     r = _report(_group(_v(first_confirmed_run_id="2026-06-27")))
     html = to_html(r, dashboard_url="https://dash.example/app?env=prod")
     assert "env=prod" in html and "tab=Overview" in html
+
+
+def test_attention_card_ci_link_prefers_group_over_report_run():
+    # The per-detector card's "Open CI run" link is only shown when the group
+    # has a job failure; it should point at that detector's own benchmarking
+    # run, not the regression-report pipeline's run.
+    group = _group(
+        job_failures=["boom"], github_run_url="https://ci/detector-run",
+    )
+    r = _report(group)
+    html = to_html(r, actions_url="https://ci/report-run")
+    assert "Open CI run" in html
+    assert 'href="https://ci/detector-run"' in html
+    # Report-level header still links to the report pipeline's own run, but
+    # the per-detector card no longer does.
+    assert html.count('href="https://ci/report-run"') == 1
+    assert html.count('href="https://ci/detector-run"') == 1
+
+    md = to_markdown(r, actions_url="https://ci/report-run")
+    assert "[Open CI run](https://ci/detector-run)" in md
+    assert "[CI run](https://ci/report-run)" in md
+
+
+def test_attention_card_ci_link_falls_back_to_report_run():
+    # A group with no github_run_url of its own (e.g. an older report.json
+    # written before this field existed) falls back to the report-level URL.
+    group = _group(job_failures=["boom"])
+    r = _report(group)
+    html = to_html(r, actions_url="https://ci/report-run")
+    assert html.count("https://ci/report-run") >= 2  # header/footer and the card
+
+    md = to_markdown(r, actions_url="https://ci/report-run")
+    assert "[Open CI run](https://ci/report-run)" in md

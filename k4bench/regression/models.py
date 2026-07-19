@@ -162,7 +162,9 @@ class RunGroupReport:
     verdict as :func:`k4bench.results.reliability_evidence.run_reliability_map`;
     ``None`` = no evidence), persisted so report consumers — e.g. the
     dashboard's Overview tab — can apply the standard unreliable-run filter
-    without re-downloading run data.
+    without re-downloading run data. ``github_run_url`` is tonight's
+    benchmarking job's own CI run (from ``run_info.json``), distinct from
+    whatever CI run generated the report itself.
     """
 
     detector: str
@@ -175,6 +177,7 @@ class RunGroupReport:
     job_failures: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     reliable: bool | None = None
+    github_run_url: str | None = None
 
     def _select(self, severity: Severity) -> list[MetricVerdict]:
         return [v for v in self.verdicts if v.severity is severity]

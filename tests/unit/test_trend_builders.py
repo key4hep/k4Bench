@@ -29,6 +29,7 @@ def _make_run(parent: Path, date: str, k4h_release: str, wall_time_s: float) -> 
         "platform": "PLAT",
         "k4h_release": k4h_release,
         "sample": "single_e",
+        "github_run_url": f"https://ci.example/runs/{date}",
     }))
     (run_dir / "baseline_results.csv").write_text(
         "label,returncode,n_events,wall_time_s,peak_rss_mb,user_cpu_s,events_per_sec\n"
@@ -42,8 +43,11 @@ def test_build_results_trend(tmp_path):
     r2 = _make_run(tmp_path / "b", "2026-05-21", "key4hep-2026-05-21", 6.0)
     df = trend.build_results_trend((str(r1), str(r2)))
     assert df is not None and len(df) == 2
-    for col in ("run_id", "run_date", "k4h_release", "x_date", "wall_time_s"):
+    for col in ("run_id", "run_date", "k4h_release", "x_date", "wall_time_s", "github_run_url"):
         assert col in df.columns
+    assert set(df["github_run_url"]) == {
+        "https://ci.example/runs/2026-05-20", "https://ci.example/runs/2026-05-21",
+    }
 
 
 def test_build_results_trend_empty():
