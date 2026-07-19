@@ -121,7 +121,7 @@ def build_results_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
     """Load per-config results across *run_dirs* into one combined DataFrame.
 
     Each row gets ``run_id``, ``run_date``, ``platform``, ``k4h_release``,
-    ``k4h_release_date`` and ``x_date`` columns.
+    ``k4h_release_date``, ``github_run_url`` and ``x_date`` columns.
     """
     if not run_dirs:
         return None
@@ -144,6 +144,7 @@ def build_results_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
         df["platform"]         = meta["platform"]
         df["k4h_release"]      = meta["k4h_release"]
         df["k4h_release_date"] = meta["k4h_release_date"]
+        df["github_run_url"]   = meta["github_run_url"]
         frames.append(df)
     if not frames:
         return None

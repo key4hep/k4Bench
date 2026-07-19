@@ -1223,8 +1223,9 @@ def _html_attention_card(
     trends = _trends_href(dashboard_url, group)
     if trends:
         actions.append(_link(trends, "Run trends"))
-    if n_fail and actions_url:
-        actions.append(_link(actions_url, "Open CI run"))
+    group_run_url = group.github_run_url or actions_url
+    if n_fail and group_run_url:
+        actions.append(_link(group_run_url, "Open CI run"))
     actions_html = (
         f'<p style="margin:6px 0 0;font-size:14px;">{" · ".join(actions)}</p>'
         if actions else ""
@@ -1553,8 +1554,9 @@ def _md_attention_card(
     trends = _trends_href(dashboard_url, group)
     if trends:
         actions.append(f"[Run trends]({trends})")
-    if n_fail and actions_url:
-        actions.append(f"[Open CI run]({actions_url})")
+    group_run_url = group.github_run_url or actions_url
+    if n_fail and group_run_url:
+        actions.append(f"[Open CI run]({group_run_url})")
     if actions:
         lines.append("")
         lines.append(" · ".join(actions))

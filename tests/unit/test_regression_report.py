@@ -61,6 +61,7 @@ def _write_run(
     labels: tuple[str, ...] = ("baseline",),
     contended: bool = False,
     sample: str = "single_e",
+    github_run_url: str | None = None,
 ) -> Path:
     """One synthetic nightly run dir: run_info + per-config results + machine info.
 
@@ -75,6 +76,7 @@ def _write_run(
         # release are covered by the engine's own multi-night tests.
         "k4h_release": f"key4hep-{night}",
         "sample": sample,
+        "github_run_url": github_run_url,
     }))
     for label in labels:
         (run_dir / f"{label}_results.csv").write_text(
@@ -130,6 +132,33 @@ def test_persisting_step_confirms_in_group_report(tmp_path):
     assert ("wall_time_s", Severity.CONFIRMED, Direction.UP) in confirmed
     # The correlated metric (same underlying CPU-bound cost) moves with it.
     assert any(v.metric == "user_cpu_s" for v in group.regressions)
+
+
+def test_group_report_carries_tonights_github_run_url(tmp_path):
+    # The group's CI link must be tonight's own benchmarking run, not an
+    # older night's — even though every night in the window has one.
+    walls = [100.0, 100.4, 99.6]
+    nights = _nights(len(walls))
+    run_dirs = [
+        _write_run(tmp_path / n, night=n, wall_time_s=w,
+                   github_run_url=f"https://ci.example/runs/{n}")
+        for n, w in zip(nights, walls)
+    ]
+    group = group_report_from_run_dirs(
+        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+    )
+    assert group is not None
+    assert group.github_run_url == f"https://ci.example/runs/{nights[-1]}"
+
+
+def test_group_report_github_run_url_none_when_absent(tmp_path):
+    walls = [100.0, 100.4, 99.6]
+    run_dirs = _make_history(tmp_path, walls)
+    group = group_report_from_run_dirs(
+        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+    )
+    assert group is not None
+    assert group.github_run_url is None
 
 
 def test_unreliable_night_never_evaluated_nor_in_baseline(tmp_path):
