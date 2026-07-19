@@ -24,9 +24,9 @@ from __future__ import annotations
 
 import dataclasses
 import math
-import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from k4bench.labels import pretty_platform, pretty_sample
 from k4bench.regression.models import (
     Direction,
     MetricVerdict,
@@ -81,81 +81,8 @@ def _detector_badge(groups: list[RunGroupReport]) -> str:
     return "✅"
 
 
-#: Recognized generator/beam/particle tokens for :func:`_pretty_sample`. Any
-#: sample name that doesn't match one of the two known layouts below (or that
-#: uses a token not listed here) falls back to the raw directory name
-#: unchanged, so an unrecognized future sample degrades gracefully instead of
-#: producing garbled physics notation.
-_GENERATOR_LABELS = {"p8": "Pythia8", "p6": "Pythia6"}
-_BEAM_LABELS = {"ee": "e⁺e⁻", "pp": "pp", "ep": "ep"}
-_PARTICLE_LABELS = {
-    "e-": "e⁻", "e+": "e⁺", "mu-": "μ⁻", "mu+": "μ⁺", "gamma": "γ",
-    "pi+": "π⁺", "pi-": "π⁻", "pi0": "π⁰", "proton": "p", "kaon+": "K⁺", "kaon-": "K⁻",
-}
-#: A two-letter-plus final state after a capitalized boson reads as a decay,
-#: e.g. "Zbb" -> "Z → bb"; anything else (e.g. "WW", "ZH", "qq") is left as-is
-#: rather than guessed at.
-_PROCESS_SPLIT_RE = re.compile(r"^([A-Z])([a-z]{2,})$")
-
-
-def _pretty_sample(sample: str) -> str:
-    """Human-readable label for an EOS sample directory name.
-
-    Covers the two naming layouts currently produced by the benchmark:
-    single-particle guns (``single_{particle}_{energy}``) and generator
-    samples (``{gen}_{beams}_{process}_ecm{energy}``, e.g.
-    ``p8_ee_Zbb_ecm91``). Anything else is returned unchanged.
-    """
-    tokens = sample.split("_")
-    if (
-        len(tokens) == 3 and tokens[0] == "single"
-        and re.fullmatch(r"\d+(\.\d+)?(GeV|MeV|TeV)", tokens[2])
-    ):
-        particle = _PARTICLE_LABELS.get(tokens[1], tokens[1])
-        return f"Single {particle} · {tokens[2]}"
-
-    if len(tokens) == 4 and re.fullmatch(r"ecm\d+(\.\d+)?", tokens[3]):
-        gen = _GENERATOR_LABELS.get(tokens[0], tokens[0])
-        beams = _BEAM_LABELS.get(tokens[1], tokens[1])
-        process = tokens[2]
-        if m := _PROCESS_SPLIT_RE.match(process):
-            process = f"{m.group(1)} → {m.group(2)}"
-        ecm = tokens[3].removeprefix("ecm")
-        if ecm.endswith(".0"):
-            ecm = ecm[:-2]
-        return f"{gen}: {beams} → {process} ({ecm} GeV)"
-
-    return sample
-
-
-#: LCG/Spack-style platform triplet vocabulary for :func:`_pretty_platform`.
-_OS_LABELS = {"almalinux": "AlmaLinux", "centos": "CentOS", "ubuntu": "Ubuntu"}
-_COMPILER_LABELS = {"gcc": "GCC", "clang": "Clang", "icc": "ICC"}
-_BUILD_TYPE_LABELS = {"opt": "optimized", "dbg": "debug", "reldbg": "release+debug"}
-_VERSIONED_TOKEN_RE = re.compile(r"^([a-zA-Z]+)(\d.*)$")
-
-
-def _pretty_platform(platform: str) -> str:
-    """Human-readable label for an ``{arch}-{os}{ver}-{compiler}{ver}-{type}``
-    platform string, e.g. ``x86_64-almalinux9-gcc14.2.0-opt`` ->
-    ``AlmaLinux 9 · GCC 14.2.0 (optimized)``. Falls back to the raw string for
-    anything that doesn't match this exact 4-part layout."""
-    parts = platform.split("-")
-    if len(parts) != 4:
-        return platform
-    _arch, os_part, compiler_part, build = parts
-    os_m = _VERSIONED_TOKEN_RE.match(os_part)
-    compiler_m = _VERSIONED_TOKEN_RE.match(compiler_part)
-    if not os_m or not compiler_m:
-        return platform
-    os_name = _OS_LABELS.get(os_m.group(1).lower(), os_m.group(1).capitalize())
-    compiler_name = _COMPILER_LABELS.get(compiler_m.group(1).lower(), compiler_m.group(1).upper())
-    build_name = _BUILD_TYPE_LABELS.get(build, build)
-    return f"{os_name} {os_m.group(2)} · {compiler_name} {compiler_m.group(2)} ({build_name})"
-
-
 def _group_title(group: RunGroupReport) -> str:
-    return f"{_pretty_sample(group.sample)} · {_pretty_platform(group.platform)}"
+    return f"{pretty_sample(group.sample)} · {pretty_platform(group.platform)}"
 
 
 def _dashboard_link(dashboard_url: str, **params: str) -> str:

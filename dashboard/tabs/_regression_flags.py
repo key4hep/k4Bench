@@ -21,7 +21,8 @@ import streamlit as st
 
 from k4bench.blame.models import BlameReport, CandidatePR
 from k4bench.regression.models import MetricVerdict, Severity
-from k4bench.regression.render import _fmt, _pretty_sample
+from k4bench.labels import pretty_sample
+from k4bench.regression.render import _fmt
 from ui_utils import _METRIC_LABELS, _to_rgba
 
 #: Trend-flag marker specs keyed on verdict severity, matching the Regressions
@@ -192,7 +193,7 @@ def flag_table(
         rec = {"": "🔴" if v.severity is Severity.CONFIRMED else "⚠️"}
         if scope:
             rec["Detector"] = v.detector
-            rec["Sample"] = _pretty_sample(v.sample)
+            rec["Sample"] = pretty_sample(v.sample)
         rec.update({
             "Config": v.label,
             "Metric": pretty_metric(v),

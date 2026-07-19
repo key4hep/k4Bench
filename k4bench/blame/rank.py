@@ -45,7 +45,7 @@ from typing import Protocol
 
 import requests
 
-from k4bench.regression.render import _pretty_platform, _pretty_sample
+from k4bench.labels import describe_platform, pretty_sample
 
 _log = logging.getLogger(__name__)
 
@@ -139,9 +139,11 @@ _SYSTEM_PROMPT = (
     "Score each PR independently 0-100 for how likely it caused the regressions "
     "as a whole, and give a one-sentence reason grounded in the diff. "
     "For every candidate, ask whether it makes sense that this change affected "
-    "the simulation metrics of the detector in the run context, simulating that "
-    "sample under that compiler and build type — and let the answer decide both "
-    "the score and the reason. "
+    "the metrics of the run in the context — its detector, its sample, its "
+    "build, or the shared infrastructure that run goes through (framework, "
+    "allocation, I/O, logging, build flags). A shared-infrastructure cause is a "
+    "perfectly good answer: say so at that level rather than inventing a "
+    "detector- or sample-specific mechanism the diff does not show. "
     "Do not invent PRs. Output JSON only."
 )
 
@@ -384,8 +386,9 @@ def ranker_from_env() -> Ranker | None:
 _RESPONSE_INSTRUCTION = (
     'Respond with JSON only, no prose: {"rankings": [{"repo": "<owner/repo>", '
     '"pr": <number>, "likelihood": <0-100>, "reason": "<one sentence grounded '
-    'in the diff, explaining its effect on the detector and sample in the run '
-    'context>"}]}. Score every candidate listed above and invent none.'
+    'in the diff, at whatever level the diff supports — this detector and '
+    'sample, or the shared code the run goes through>"}]}. '
+    'Score every candidate listed above and invent none.'
 )
 
 
@@ -404,7 +407,7 @@ def _sample_line(sample: str) -> str:
     The raw directory name is the identity the rest of the report uses; the
     readable form tells the model what physics is actually being simulated,
     which is what decides whether a diff can plausibly touch it."""
-    pretty = _pretty_sample(sample)
+    pretty = pretty_sample(sample)
     return f"- Sample: {sample}" + (f" — {pretty}" if pretty != sample else "")
 
 
@@ -413,13 +416,16 @@ def _platform_line(platform: str) -> str:
 
     The slug alone under-reads: a codegen- or build-flag-sensitive change lands
     differently under ``opt`` than ``dbg`` and across compiler versions, so the
-    architecture, OS, compiler and build type are spelled out. An unrecognized
-    platform layout degrades to the raw slug (:func:`_pretty_platform`)."""
-    pretty = _pretty_platform(platform)
-    if pretty == platform:
+    architecture, OS, compiler and build type are spelled out — all four from
+    :func:`~k4bench.labels.describe_platform`, which owns the layout. An
+    unrecognized platform degrades to the raw slug."""
+    label = describe_platform(platform)
+    if label is None:
         return f"- Platform: {platform}"
-    arch = platform.split("-")[0]
-    return f"- Platform: {platform} — {arch} · {pretty}"
+    return (
+        f"- Platform: {platform} — {label.architecture} · {label.os} · "
+        f"{label.compiler} ({label.build_type})"
+    )
 
 
 def _run_context_lines(request: RankRequest) -> str:
@@ -528,9 +534,10 @@ def _build_user_prompt(request: RankRequest) -> str:
     parts.append("")
     parts.append(
         f"For each pull request above, ask whether it makes sense that this "
-        f"change affected the simulation metrics measured on {request.detector} "
-        f"with {request.sample}, and let that answer decide the score and the "
-        f"reason."
+        f"change affected the metrics measured on {request.detector} with "
+        f"{request.sample} — through that detector and sample specifically, or "
+        f"through shared code the run goes through — and let that answer decide "
+        f"the score and the reason."
     )
     parts.append(_RESPONSE_INSTRUCTION)
     return "\n".join(parts)

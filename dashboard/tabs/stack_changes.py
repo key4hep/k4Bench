@@ -27,7 +27,8 @@ import streamlit as st
 from k4bench.blame.models import BlameReport, BlameSchemaError
 from k4bench.provenance.diff import ADDED, CHANGED, REMOVED, diff_packages, unchanged_packages
 from k4bench.regression.models import MetricVerdict
-from k4bench.regression.render import _pretty_sample, from_json
+from k4bench.labels import pretty_sample
+from k4bench.regression.render import from_json
 from remote_cache import (
     _cached_fetch_blame,
     _cached_fetch_reports,
@@ -528,7 +529,7 @@ def _render_regressions_in_range(
     hits = all_hits if show_all else scoped_hits
     scope = (
         "across **all detectors and samples** on this platform" if show_all
-        else f"for **{detector}** · **{_pretty_sample(sample)}**"
+        else f"for **{detector}** · **{pretty_sample(sample)}**"
     )
     extra = (
         f" {n_elsewhere} more {_plural(n_elsewhere, 'metric').split(' ', 1)[1]} "
@@ -569,7 +570,7 @@ def _render_regressions_in_range(
         if n_elsewhere:
             st.info(
                 f"No confirmed regression for **{detector}** · "
-                f"**{_pretty_sample(sample)}** has its onset in this release range "
+                f"**{pretty_sample(sample)}** has its onset in this release range "
                 f"— but this platform has {_plural(n_elsewhere, 'metric')} "
                 "elsewhere (switch on *Whole platform*).",
                 icon="ℹ️",

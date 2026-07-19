@@ -15,6 +15,7 @@ import pytest
 import requests
 
 from k4bench.blame import rank as rank_mod
+from k4bench.labels import pretty_sample
 from k4bench.blame.rank import (
     MetricStep,
     OpenAICompatRanker,
@@ -137,29 +138,67 @@ def test_prompt_states_the_full_run_context():
     assert "- Release window: 2026-07-03 → 2026-07-04" in prompt
 
 
-def test_prompt_names_only_its_own_detector():
-    # Two windows differing only in detector must each carry their own — the
-    # published symptom was an IDEA ranking explained in terms of ALLEGRO.
-    neutral = (RankCandidate(repo="AIDASoft/DD4hep", number=20,
-                             title="Refactor the field", files=("core/field.cpp",)),)
-    idea = _build_user_prompt(_request(candidates=neutral, detector="IDEA_o2_v01"))
-    allegro = _build_user_prompt(_request(candidates=neutral, detector="ALLEGRO_o1_v03"))
-    assert "IDEA_o2_v01" in idea and "ALLEGRO" not in idea
-    assert "ALLEGRO_o1_v03" in allegro and "IDEA" not in allegro
-
-
-def test_prompt_asks_whether_the_change_makes_sense_for_this_detector():
+def test_prompt_asks_the_plausibility_question_about_this_run():
     # The instruction is a question about *this* run, not a list of
-    # prohibitions: the context is what steers the answer. The question is
-    # repeated at the end, naming the detector and sample again, so it is the
-    # last thing read before the model answers.
+    # prohibitions: the context is what steers the answer. It is asked again
+    # after the candidates, naming this run's identifiers, so it is the last
+    # thing read before the model answers.
     prompt = _build_user_prompt(_request(sample="p8_ee_Zbb_ecm91"))
-    assert "makes sense that this change affected" in rank_mod._SYSTEM_PROMPT
-    assert (
-        "ask whether it makes sense that this change affected the simulation "
-        "metrics measured on IDEA_o1_v03 with p8_ee_Zbb_ecm91" in prompt
+    question = prompt.rsplit("\n\n", 1)[-1]
+    assert "makes sense that this change affected" in question
+    assert "IDEA_o1_v03" in question and "p8_ee_Zbb_ecm91" in question
+
+
+def test_prompt_allows_a_shared_infrastructure_answer():
+    # Not every regression has a detector- or sample-specific mechanism: a
+    # framework, allocation or build-flag change moves the metrics without one.
+    # Demanding a context-specific story would make the model invent it.
+    prompt = _build_user_prompt(_request())
+    assert "shared infrastructure" in rank_mod._SYSTEM_PROMPT
+    assert "shared code the run goes through" in prompt
+
+
+def test_prompt_carries_no_context_from_another_detectors_request():
+    # Two windows differing only in detector: neither prompt may carry any
+    # identifier derived from the other request.
+    idea = _request(detector="IDEA_o2_v01", sample="p8_ee_Zbb_ecm91")
+    allegro = _request(detector="ALLEGRO_o1_v03", sample="single_mu-")
+    idea_prompt = _build_user_prompt(idea)
+    allegro_prompt = _build_user_prompt(allegro)
+    for prompt, mine, theirs in (
+        (idea_prompt, idea, allegro), (allegro_prompt, allegro, idea),
+    ):
+        # Every identifier of this run is present…
+        assert mine.detector in prompt and mine.sample in prompt
+        # …and every identifier unique to the other run is absent, including
+        # the readable sample label derived from it.
+        assert theirs.detector not in prompt
+        assert theirs.sample not in prompt
+        assert pretty_sample(theirs.sample) not in prompt
+
+
+def test_prompt_preserves_every_metric_and_candidate_exactly_once():
+    # The context block is assembled, not filtered: nothing may be dropped,
+    # duplicated or reordered on the way into the prompt.
+    metrics = (
+        MetricStep(metric="wall_time_s", metric_family="time", direction="UP",
+                   pct_change=0.2, label="baseline"),
+        MetricStep(metric="peak_rss_mb", metric_family="memory", direction="UP",
+                   pct_change=0.15, label="baseline"),
+        MetricStep(metric="wall_time_s", metric_family="time", direction="UP",
+                   pct_change=0.35, label="without_HCAL"),
     )
-    assert prompt.count("IDEA_o1_v03") >= 3  # framing, context block, question
+    request = _request(metrics=metrics)
+    prompt = _build_user_prompt(request)
+    bullets = [ln for ln in prompt.splitlines() if ln.startswith("  - ")]
+    assert bullets == [
+        "  - wall_time_s (baseline) up +20.0%",
+        "  - peak_rss_mb (baseline) up +15.0%",
+        "  - wall_time_s (without_HCAL) up +35.0%",
+    ]
+    numbers = [int(ln.split("#")[1].split(" ")[0])
+               for ln in prompt.splitlines() if ln.startswith("- #")]
+    assert numbers == [c.number for c in request.candidates]
 
 
 def test_unrecognized_sample_and_platform_degrade_to_the_raw_names():
