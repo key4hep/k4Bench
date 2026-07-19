@@ -49,7 +49,8 @@ def main(argv: list[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
-    from k4bench.regression.render import to_json, to_markdown
+    from k4bench.regression.email import to_markdown
+    from k4bench.regression.render import to_json
     from k4bench.regression.report_builder import (
         build_nightly_report,
         build_nightly_report_local,

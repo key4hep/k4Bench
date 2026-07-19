@@ -1,0 +1,1488 @@
+"""Render the nightly regression report as the e-group email — subject, hidden
+preheader, and the two MIME bodies (HTML and plain-text/Markdown).
+
+The email reads at two levels, top to bottom:
+
+1. Header + compact primary actions (Open dashboard / CI run).
+2. A status summary — separate Failure / New / Reconfirmed / Watch / coverage
+   counts, never colour alone.
+3. **Needs attention** — one compact card per ``(detector, platform, sample)``
+   run group that has a failure, a new confirmation, or a same-release
+   reconfirmation, worst category first, with only the largest few changes and
+   the ranked candidate PRs for that change window.
+4. **Detailed report — reference** — the full detector → run-group hierarchy,
+   bounded so a pathological night can't produce a multi-hundred-kilobyte mail
+   (every failure always shown; confirmed rows capped per group and globally
+   with honest "Showing X of Y" omitted counts).
+5. Coverage / data-quality summary and footer.
+
+Vocabulary is release-scoped and mandatory (see
+:class:`~k4bench.regression.models.MetricVerdict`): **New** is the first
+confirmation for the release being measured; **Reconfirmed** is a *later* night
+of the **same** release re-confirming it. The engine has already made that
+call — this renderer only reads ``is_new_confirmation`` / ``is_reconfirmed`` and
+never re-infers persistence across releases.
+
+Blame (model-ranked candidate PRs) is best-effort: a missing, malformed, or
+mismatched sidecar silently degrades to no ranking and never blocks the mail.
+Everything read from ``blame.json`` — including URLs — is escaped on the way
+into markup; it is file content and model output, not something this process
+fetched itself.
+"""
+
+from __future__ import annotations
+
+import html
+from dataclasses import dataclass
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from k4bench.blame.models import BlameEntry, BlameReport, CandidatePR
+from k4bench.regression.models import (
+    MetricVerdict,
+    NightlyReport,
+    RunGroupReport,
+    Severity,
+)
+from k4bench.regression.render import (
+    _dashboard_link,
+    _detector_badge,
+    _fmt,
+    _fmt_pct,
+    _group_title,
+    _pretty_platform,
+    _pretty_sample,
+)
+
+# ── Friendly metric names, units and value formatting ─────────────────────────
+
+#: ``metric -> (label, unit-kind)``. The unit-kind drives :func:`_fmt_value`.
+#: Covers every metric ``report_builder`` currently evaluates; an unknown future
+#: metric falls back to its raw name and the plain numeric formatter rather than
+#: failing (see :func:`_metric_label` / :func:`_fmt_value`).
+_METRIC_META: dict[str, tuple[str, str]] = {
+    "wall_time_s":    ("Wall time", "seconds"),
+    "user_cpu_s":     ("User CPU time", "seconds"),
+    "peak_rss_mb":    ("Peak memory", "memory_mb"),
+    "cpu_efficiency": ("CPU efficiency", "percent"),
+    "mean_time_s":    ("Mean event time", "seconds"),
+    "median_time_s":  ("Median event time", "seconds"),
+    "mean_rss_mb":    ("Mean event memory", "memory_mb"),
+    "returncode":     ("Return code", "int"),
+}
+
+
+def _metric_label(v: MetricVerdict) -> str:
+    """Friendly metric name plus the sub-detector for region-level rows
+    (``Mean event memory · without_EMEC_turbine``). Unknown metrics keep their
+    raw column name."""
+    name = _METRIC_META.get(v.metric, (v.metric, "raw"))[0]
+    return f"{name} · {v.sub_detector}" if v.sub_detector else name
+
+
+def _html_metric_and_config(v: MetricVerdict) -> str:
+    """HTML metric/config label with machine identifiers kept intact.
+
+    Mail clients may wrap around the separator, but names such as
+    ``without_VertexBarrel_assembly`` stay on one line instead of breaking at
+    an arbitrary character and becoming hard to copy or compare.
+    """
+    name = _METRIC_META.get(v.metric, (v.metric, "raw"))[0]
+    parts = [_esc(name)]
+    if v.sub_detector:
+        parts.append(
+            f'<span style="white-space:nowrap;">{_esc(v.sub_detector)}</span>'
+        )
+    parts.append(f'<span style="white-space:nowrap;">{_esc(v.label)}</span>')
+    return " · ".join(parts)
+
+
+def _fmt_value(metric: str, value: float | None) -> str:
+    """A metric's current/baseline value with a labelled unit. Unknown metrics
+    use the plain 4-significant-figure formatter."""
+    if value is None:
+        return "—"
+    try:
+        if value != value or value in (float("inf"), float("-inf")):  # NaN/inf
+            return "—"
+    except TypeError:
+        return "—"
+    kind = _METRIC_META.get(metric, ("", "raw"))[1]
+    if kind == "seconds":
+        return f"{_fmt(value)} s"
+    if kind == "percent":
+        return f"{value * 100:.1f}%"
+    if kind == "memory_mb":
+        return f"{value / 1024:.2f} GB" if abs(value) >= 1024 else f"{_fmt(value)} MB"
+    if kind == "int":
+        return f"{int(round(value))}"
+    return _fmt(value)
+
+
+# ── Dates ─────────────────────────────────────────────────────────────────────
+
+def _human_date(iso: str | None) -> str:
+    """``2026-06-27`` -> ``27 Jun 2026``; the raw string on anything
+    unparseable, ``—`` when empty."""
+    if not iso:
+        return "—"
+    try:
+        d = date.fromisoformat(iso[:10])
+    except ValueError:
+        return iso
+    return f"{d.day} {d:%b %Y}"
+
+
+def _releases(report: NightlyReport) -> list[str]:
+    """The distinct Key4hep releases this night benchmarked, sorted. Usually one
+    (a night re-benchmarks a single nightly), but a stale/missing-run group can
+    leave the set mixed — so the header names them rather than assuming one."""
+    return sorted({g.k4h_release for g in report.groups if g.k4h_release})
+
+
+def _release_line(report: NightlyReport) -> str:
+    """Plain-text ``Key4hep release: …`` summary for the header, or ``""`` when no
+    group carries a release. The ``key4hep-`` prefix is dropped — a release is its
+    date here — so it reads ``Key4hep release: 2026-06-27``."""
+    releases = [r.removeprefix("key4hep-") for r in _releases(report)]
+    if not releases:
+        return ""
+    if len(releases) == 1:
+        return f"Key4hep release: {releases[0]}"
+    return "Key4hep releases: " + ", ".join(releases)
+
+
+#: CERN sits in Geneva; timestamps are shown in local CERN time (CET/CEST)
+#: rather than UTC, since that is the wall-clock the recipients keep.
+_CERN_TZ = "Europe/Zurich"
+
+
+def _human_datetime(iso: str | None) -> str:
+    """A generated timestamp as ``27 Jun 2026, 08:00 CERN time`` — converted to
+    Geneva local time (a naive stamp is taken as UTC), a human-readable lead
+    rather than a raw ISO string. Falls back to a UTC label if the timezone
+    database is unavailable, and to the raw value if unparseable."""
+    if not iso:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(iso)
+    except ValueError:
+        return iso
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    try:
+        dt = dt.astimezone(ZoneInfo(_CERN_TZ))
+        label = "CERN time"
+    except ZoneInfoNotFoundError:
+        dt = dt.astimezone(timezone.utc)
+        label = "UTC"
+    return f"{dt.day} {dt:%b %Y}, {dt:%H:%M} {label}"
+
+
+# ── Wording helpers ───────────────────────────────────────────────────────────
+
+def _plural(n: int, word: str) -> str:
+    """``1 failure`` / ``2 failures`` — a small helper so subjects and summaries
+    never say ``1 failure(s)``."""
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+def _status_tag(v: MetricVerdict) -> str:
+    """The release-scoped status word for a verdict: FAILURE, NEW (first
+    confirmation for this release), RECONFIRMED (same release, later night), or
+    WATCH."""
+    if v.severity is Severity.FAILURE:
+        return "FAILURE"
+    if v.is_reconfirmed:
+        return "RECONFIRMED"
+    if v.severity is Severity.CONFIRMED:
+        return "NEW"
+    if v.severity is Severity.WATCH:
+        return "WATCH"
+    return v.severity.value
+
+
+def _window_text(base_release: str | None, onset_release: str | None) -> str:
+    """A change window named by its Key4hep releases — the release dates
+    (``2026-06-05 → 2026-06-27``), or ``up to 2026-06-27`` when the older end is
+    open. A release *is* its date here, so no ``key4hep-`` prefix is added."""
+    onset = onset_release or "—"
+    return f"{base_release} → {onset}" if base_release else f"up to {onset}"
+
+
+def _reconfirmed_note(v: MetricVerdict) -> str:
+    """``First confirmed 27 Jun 2026`` for a reconfirmed row, else ``""``."""
+    if v.is_reconfirmed:
+        return f"First confirmed {_human_date(v.first_confirmed_run_id)}"
+    return ""
+
+
+def _no_attention_message(report: NightlyReport) -> str:
+    """Truthful empty-state copy for the Needs-attention section.
+
+    Watch signals and incomplete coverage are intentionally not promoted to an
+    attention card, but the empty state must still acknowledge them instead of
+    contradicting the WATCH/INCOMPLETE subject immediately above it.
+    """
+    s = EmailSummary.of(report)
+    if s.n_watch:
+        return (
+            "No immediate action required — no failures or confirmed regressions. "
+            f"{_plural(s.n_watch, 'signal')} on watch awaiting another reliable "
+            "measurement."
+        )
+    if not s.groups_total:
+        return "No run groups were reported for this night."
+    if s.groups_judged < s.groups_total:
+        return (
+            "No immediate action required — no failures or confirmed regressions. "
+            f"Coverage is incomplete: {s.coverage_text}."
+        )
+    return (
+        "Nothing needs attention tonight — no failures, no new confirmations, "
+        "and no reconfirmed regressions."
+    )
+
+
+# ── Status summary ────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class EmailSummary:
+    """The night's headline counts, shared by the subject, the summary cells and
+    the coverage roster so all three agree."""
+
+    night: str
+    n_failures: int
+    n_new: int
+    n_reconfirmed: int
+    n_watch: int
+    groups_total: int
+    groups_judged: int
+    groups_reliable: int
+    groups_unreliable: int
+    groups_unknown: int
+
+    @classmethod
+    def of(cls, report: NightlyReport) -> EmailSummary:
+        return cls(
+            night=report.report_night or "no data",
+            n_failures=len(report.failures) + len(report.job_failures),
+            n_new=len(report.new_regressions),
+            n_reconfirmed=len(report.reconfirmed_regressions),
+            n_watch=len(report.watches),
+            groups_total=len(report.groups),
+            groups_judged=sum(
+                1 for g in report.groups
+                if any(v.severity is not Severity.UNKNOWN for v in g.verdicts)
+            ),
+            groups_reliable=sum(1 for g in report.groups if g.reliable is True),
+            groups_unreliable=sum(1 for g in report.groups if g.reliable is False),
+            groups_unknown=sum(1 for g in report.groups if g.reliable is None),
+        )
+
+    @property
+    def coverage_text(self) -> str:
+        """``7/7 groups judged`` — groups with at least one non-UNKNOWN metric.
+
+        This is intentionally derived from verdicts, not the host-reliability
+        tri-state: a reliable first run may still lack enough history to judge,
+        while legacy reports can carry judged metrics without a reliability
+        field.
+        """
+        return f"{self.groups_judged}/{self.groups_total} groups judged"
+
+
+# ── Subject and preheader ─────────────────────────────────────────────────────
+
+def subject(report: NightlyReport) -> str:
+    """State-aware, grammatically correct subject.
+
+    Priority: any failure or New confirmation → ``[ACTION]``; else any
+    Reconfirmed → ``[RECONFIRMED]``; else any Watch → ``[WATCH]``; then missing
+    or unreliable coverage → ``[NO DATA]`` / ``[INCOMPLETE]``; else ``[OK]``.
+    Failure counts lead the regression counts when present.
+    """
+    s = EmailSummary.of(report)
+    if s.n_failures or s.n_new:
+        tag, parts = "ACTION", []
+        if s.n_failures:
+            parts.append(_plural(s.n_failures, "failure"))
+        if s.n_new:
+            parts.append(
+                f"{s.n_new} new" if s.n_reconfirmed
+                else f"{s.n_new} new {'regression' if s.n_new == 1 else 'regressions'}"
+            )
+        if s.n_reconfirmed:
+            parts.append(f"{s.n_reconfirmed} reconfirmed")
+        desc = ", ".join(parts)
+    elif s.n_reconfirmed:
+        tag = "RECONFIRMED"
+        desc = f"{s.n_reconfirmed} reconfirmed on the same release"
+    elif s.n_watch:
+        tag = "WATCH"
+        desc = f"{_plural(s.n_watch, 'signal')} awaiting confirmation"
+    elif not s.groups_total:
+        tag = "NO DATA"
+        desc = "no run groups reported"
+    elif s.groups_judged < s.groups_total:
+        tag = "INCOMPLETE"
+        desc = f"{s.groups_judged}/{s.groups_total} run groups judged"
+    else:
+        tag = "OK"
+        desc = "all judged metrics within baseline"
+    return f"[k4Bench][{tag}] {s.night} — {desc}"
+
+
+def preheader(report: NightlyReport) -> str:
+    """Short inbox-preview text expanding the subject with coverage and watch —
+    kept compact enough for common preview panes."""
+    s = EmailSummary.of(report)
+    return (
+        f"{s.n_failures} failures · {s.n_new} new · {s.n_reconfirmed} reconfirmed"
+        f" · {s.n_watch} watch · {s.coverage_text}"
+    )
+
+
+# ── Deep links ────────────────────────────────────────────────────────────────
+
+def _regressions_href(
+    dashboard_url: str | None, group: RunGroupReport, report_night: str
+) -> str | None:
+    """The scoped Regressions view for a run group, pinned to the release and
+    the exact report night so an emailed link keeps pointing at its confirmation
+    night after later reruns. ``stack`` is omitted for a release-less group."""
+    if not dashboard_url:
+        return None
+    params = dict(detector=group.detector, platform=group.platform, sample=group.sample)
+    if group.k4h_release:
+        params["stack"] = group.k4h_release
+    if report_night:
+        params["report"] = report_night
+    return _dashboard_link(dashboard_url, tab="Regressions", **params)
+
+
+def _trends_href(dashboard_url: str | None, group: RunGroupReport) -> str | None:
+    if not dashboard_url:
+        return None
+    return _dashboard_link(
+        dashboard_url, tab="Run Trends",
+        detector=group.detector, platform=group.platform, sample=group.sample,
+    )
+
+
+def _first_confirmation_href(
+    dashboard_url: str | None, group: RunGroupReport, first_night: str
+) -> str | None:
+    """A link to the report night a reconfirmed cluster was first confirmed on,
+    when one unambiguous night applies."""
+    if not dashboard_url or not first_night:
+        return None
+    params = dict(detector=group.detector, platform=group.platform, sample=group.sample)
+    if group.k4h_release:
+        params["stack"] = group.k4h_release
+    params["report"] = first_night
+    return _dashboard_link(dashboard_url, tab="Regressions", **params)
+
+
+def _stack_changes_href(
+    dashboard_url: str | None, card: RankingCard
+) -> str | None:
+    """The Stack Changes view for a ranking card's exact release window."""
+    if not dashboard_url:
+        return None
+    params = {
+        "tab": "Stack Changes",
+        "detector": card.detector,
+        "platform": card.platform,
+        "sample": card.sample,
+        "stack_to": card.onset_release,
+    }
+    if card.base_release:
+        params["stack_from"] = card.base_release
+    return _dashboard_link(dashboard_url, **params)
+
+
+# ── Attention ordering ────────────────────────────────────────────────────────
+
+def _group_category(group: RunGroupReport) -> int:
+    """Which Needs-attention band a group belongs to: 0 = has failures,
+    1 = has new confirmations, 2 = same-release reconfirmations only."""
+    if group.failures or group.job_failures:
+        return 0
+    if group.new_regressions:
+        return 1
+    return 2
+
+
+def _needs_attention(report: NightlyReport) -> list[RunGroupReport]:
+    """Run groups with a failure, a new confirmation, or a reconfirmation, in
+    Needs-attention order: failures, then new confirmations, then reconfirmed;
+    within a band more failures/new first, then largest |Δ|, then stable scope
+    order. Watch-only and clean groups are summarised elsewhere, not here."""
+    attention = [
+        g for g in report.groups
+        if g.failures or g.job_failures or g.regressions
+    ]
+    return sorted(attention, key=_attention_key)
+
+
+def _attention_key(group: RunGroupReport) -> tuple:
+    category = _group_category(group)
+    n_fail = len(group.failures) + len(group.job_failures)
+    n_new = len(group.new_regressions)
+    n_recon = len(group.reconfirmed_regressions)
+    primary = (n_fail, n_new, n_recon)[category]
+    max_abs_pct = max(
+        (abs(v.pct_change) for v in group.regressions if v.pct_change is not None),
+        default=0.0,
+    )
+    return (category, -primary, -max_abs_pct, group.detector, group.platform, group.sample)
+
+
+def _rep_sort_key(v: MetricVerdict) -> tuple:
+    """Representative-row order within a card: failures first, then New before
+    Reconfirmed, then descending |Δ| (no-percentage last), then identity."""
+    return (
+        v.severity is not Severity.FAILURE,
+        not v.is_new_confirmation,
+        v.pct_change is None,
+        -abs(v.pct_change or 0.0),
+        v.label, v.metric, v.sub_detector or "",
+    )
+
+
+#: At most this many representative metric changes per card in the compact
+#: Needs-attention section — a decision summary, not the full evidence.
+_MAX_REP_ROWS = 3
+
+
+def _representative_rows(group: RunGroupReport) -> list[MetricVerdict]:
+    rows = sorted(group.failures + group.regressions, key=_rep_sort_key)
+    return rows[:_MAX_REP_ROWS]
+
+
+# ── Bounded detailed report ───────────────────────────────────────────────────
+
+#: Confirmed-row bounds for the detailed section: show everything up to the
+#: global cap, else at most this many per group and this many overall. Failures
+#: are never subject to either cap.
+_GLOBAL_CONFIRMED_CAP = 50
+_PER_GROUP_CONFIRMED_CAP = 10
+
+
+def _detail_sort_key(v: MetricVerdict) -> tuple:
+    """Detailed-row order: New before Reconfirmed, then descending |Δ|, then
+    stable identity tie-breakers — deterministic regardless of input order."""
+    return (
+        not v.is_new_confirmation,
+        v.pct_change is None,
+        -abs(v.pct_change or 0.0),
+        v.label, v.metric, v.sub_detector or "",
+    )
+
+
+@dataclass
+class _DetailPlan:
+    """The bounded confirmed rows to show for one group, plus its true total."""
+
+    shown: list[MetricVerdict]
+    total: int
+
+    @property
+    def omitted(self) -> int:
+        return self.total - len(self.shown)
+
+
+def _detail_plan(report: NightlyReport) -> dict[int, _DetailPlan]:
+    """Per-group confirmed-row selection, keyed by ``id(group)``.
+
+    Under the global cap every confirmed row is shown. Over it, rows are handed
+    out round-robin in attention order, up to the per-group cap. That preserves
+    the priority order without letting the first five large groups consume all
+    50 slots and leave later affected groups with no evidence at all. Failures
+    are handled separately and never capped."""
+    ordered = sorted(report.groups, key=_attention_key)
+    confirmed = {
+        id(group): sorted(group.regressions, key=_detail_sort_key)
+        for group in ordered
+    }
+    if len(report.regressions) <= _GLOBAL_CONFIRMED_CAP:
+        return {
+            id(group): _DetailPlan(
+                shown=confirmed[id(group)], total=len(confirmed[id(group)])
+            )
+            for group in ordered
+        }
+
+    counts = {id(group): 0 for group in ordered}
+    remaining = _GLOBAL_CONFIRMED_CAP
+    active = [
+        group for group in ordered
+        if confirmed[id(group)]
+    ]
+    while remaining and active:
+        next_round: list[RunGroupReport] = []
+        for group in active:
+            if not remaining:
+                break
+            key = id(group)
+            limit = min(_PER_GROUP_CONFIRMED_CAP, len(confirmed[key]))
+            counts[key] += 1
+            remaining -= 1
+            if counts[key] < limit:
+                next_round.append(group)
+        active = next_round
+
+    return {
+        id(group): _DetailPlan(
+            shown=confirmed[id(group)][:counts[id(group)]],
+            total=len(confirmed[id(group)]),
+        )
+        for group in ordered
+    }
+
+
+# ── Ranked candidate PRs ──────────────────────────────────────────────────────
+
+class _BlameIndex:
+    """Best-effort lookup of a verdict's ranked candidates, reusing a
+    first-confirmation sidecar for same-release reconfirmations.
+
+    *current* is tonight's local ``blame.json``; *historical* maps a
+    ``first_confirmed_run_id`` to that night's fetched sidecar. A new
+    confirmation is attributed from *current*; a reconfirmation falls back to the
+    night it was first confirmed on. The current local sidecar wins an exact
+    identity/window collision.
+    """
+
+    def __init__(
+        self,
+        current: BlameReport | None,
+        historical: dict[str, BlameReport] | None = None,
+    ) -> None:
+        self._current = current
+        self._historical = historical or {}
+
+    def lookup(self, v: MetricVerdict) -> tuple[BlameEntry | None, str | None]:
+        """``(entry, reused_from)`` — *reused_from* is the historical night the
+        ranking came from, or ``None`` when it came from tonight's sidecar (or
+        when there is no entry at all)."""
+        if self._current is not None:
+            entry = self._current.entry_for(v)
+            if entry is not None:
+                return entry, None
+        if v.is_reconfirmed and v.first_confirmed_run_id:
+            report = self._historical.get(v.first_confirmed_run_id)
+            if report is not None:
+                entry = report.entry_for(v)
+                if entry is not None:
+                    return entry, v.first_confirmed_run_id
+        return None, None
+
+
+#: Top candidates shown per ranking card; the full ledger lives on the dashboard.
+_MAX_CARD_CANDIDATES = 3
+
+#: A few direct package compare links make the ranking actionable without
+#: turning a compact email card into the full Stack Changes ledger.
+_MAX_CARD_COMPARE_LINKS = 3
+
+#: The mandatory qualifier on every ranking — a lead to verify, never proof.
+_RANKING_DISCLOSURE = "AI-generated PR ranking — suggested leads to verify, not proof."
+
+
+@dataclass
+class RankingCard:
+    """One deduplicated ranking for a rank group
+    ``(detector, platform, sample, base_release, onset_release)`` — rendered
+    once no matter how many metrics share it."""
+
+    detector: str
+    platform: str
+    sample: str
+    base_release: str | None
+    onset_release: str
+    n_signals: int
+    total_window_signals: int
+    n_new: int
+    total_window_new: int
+    n_reconfirmed: int
+    total_window_reconfirmed: int
+    candidates: list[CandidatePR]
+    total_ranked: int
+    compare_links: list[tuple[str, str]]
+    total_compares: int
+    reused_from: str | None
+
+    @property
+    def complete(self) -> bool:
+        return bool(self.candidates)
+
+
+def _ranking_cards(group: RunGroupReport, index: _BlameIndex) -> list[RankingCard]:
+    """Ranking cards for a group's confirmed regressions, one per rank group.
+
+    Blame entries are intersected with the confirmed verdicts actually present,
+    candidates deduplicated by ``repo#number`` (the current sidecar preferred on
+    a collision), and each card records how many current signals it covers and
+    whether its ranking was reused from a first-confirmation night."""
+    buckets: dict[tuple, list[tuple[MetricVerdict, BlameEntry, str | None]]] = {}
+    for v in group.regressions:
+        entry, reused_from = index.lookup(v)
+        if entry is None:
+            continue
+        key = (v.detector, v.platform, v.sample, entry.base_release, entry.onset_release)
+        buckets.setdefault(key, []).append((v, entry, reused_from))
+
+    cards: list[RankingCard] = []
+    for key, items in buckets.items():
+        # Deduplicate candidates across every metric sharing the window; a
+        # current-sidecar candidate (reused_from is None) wins a collision.
+        chosen: dict[tuple, tuple[CandidatePR, str | None]] = {}
+        compares: dict[tuple[str, str], None] = {}
+        reused_nights: set[str] = set()
+        any_current = False
+        for _v, entry, reused_from in items:
+            if reused_from is None:
+                any_current = True
+            else:
+                reused_nights.add(reused_from)
+            for repo in entry.repos:
+                if repo.compare_url:
+                    compares[(repo.package, repo.compare_url)] = None
+            for c in entry.candidates:
+                ck = (c.repo, c.number)
+                prev = chosen.get(ck)
+                if prev is None or (prev[1] is not None and reused_from is None):
+                    chosen[ck] = (c, reused_from)
+        ranked = [c for c, _src in chosen.values() if c.score or c.description]
+        ranked.sort(key=lambda c: (-c.score, c.repo, c.number))
+        compare_links = sorted(compares)
+        window_verdicts = [
+            v for v in group.regressions
+            if v.last_accepted_run_date == key[3] and v.onset_run_date == key[4]
+        ]
+        # A card's attribution is "reused" only when every signal came from one
+        # historical night (a pure same-release reconfirmation cluster).
+        reused_from = (
+            next(iter(reused_nights))
+            if not any_current and len(reused_nights) == 1 else None
+        )
+        cards.append(RankingCard(
+            detector=key[0], platform=key[1], sample=key[2],
+            base_release=key[3], onset_release=key[4],
+            n_signals=len(items),
+            total_window_signals=len(window_verdicts),
+            n_new=sum(1 for v, _entry, _reused in items if v.is_new_confirmation),
+            total_window_new=sum(1 for v in window_verdicts if v.is_new_confirmation),
+            n_reconfirmed=sum(1 for v, _entry, _reused in items if v.is_reconfirmed),
+            total_window_reconfirmed=sum(1 for v in window_verdicts if v.is_reconfirmed),
+            candidates=ranked[:_MAX_CARD_CANDIDATES],
+            total_ranked=len(ranked),
+            compare_links=compare_links[:_MAX_CARD_COMPARE_LINKS],
+            total_compares=len(compare_links),
+            reused_from=reused_from,
+        ))
+    # New confirmations are the night's decision; reused attribution is
+    # supporting context and follows it even when it covers many more rows.
+    cards.sort(key=lambda c: (
+        not bool(c.n_new), -c.n_new, -c.n_reconfirmed,
+        c.onset_release, c.base_release or "",
+    ))
+    return cards
+
+
+# ── HTML primitives (inline styles, escaping systematic) ──────────────────────
+
+def _esc(text: object) -> str:
+    return html.escape("" if text is None else str(text))
+
+
+def _esc_attr(text: object) -> str:
+    return html.escape("" if text is None else str(text), quote=True)
+
+
+#: Palette and shared inline styles. No colour is ever the *only* signal — every
+#: status also carries its word (NEW/RECONFIRMED/FAILURE/WATCH).
+_C_TEXT = "#111827"
+_C_MUTED = "#475569"
+_C_FAINT = "#64748b"
+# Status palette: one value per status, used for pills and status copy alike.
+_C_RED = "#ea0000"
+_C_AMBER = "#d5b60a"
+_C_LINK = "#0077b6"
+_C_BORDER = "#e2e8f0"
+_C_CARD_BG = "#f8fafc"
+_C_INFO_BG = "#eff6ff"
+_C_INFO_BORDER = "#bfdbfe"
+
+_TAG_COLORS = {
+    "FAILURE": _C_RED,
+    "NEW": _C_RED,
+    "RECONFIRMED": _C_AMBER,
+    "WATCH": _C_AMBER,
+}
+
+_CONTAINER_STYLE = (
+    "padding:0 16px;"
+    "font-family:Helvetica,Arial,sans-serif;color:" + _C_TEXT + ";font-size:15px;"
+    "line-height:1.5;"
+)
+
+
+def _link(href: str | None, text: str, *, bold: bool = False) -> str:
+    """An escaped, described text link — never an icon as the only label. Plain
+    escaped text when there is no href."""
+    if not href:
+        return _esc(text)
+    weight = "600" if bold else "normal"
+    return (
+        f'<a href="{_esc_attr(href)}" '
+        f'style="color:{_C_LINK};text-decoration:none;font-weight:{weight};'
+        'overflow-wrap:anywhere;word-break:break-word;">'
+        f"{_esc(text)}</a>"
+    )
+
+
+def _action_button(href: str, text: str) -> str:
+    """A large, email-safe tappable action (bordered pill, not an image)."""
+    return (
+        f'<a href="{_esc_attr(href)}" style="display:inline-block;'
+        f"padding:9px 16px;margin:4px 8px 4px 0;border:1px solid {_C_LINK};"
+        f"border-radius:6px;color:{_C_LINK};text-decoration:none;font-size:14px;"
+        f'font-weight:600;">{_esc(text)}</a>'
+    )
+
+
+def _tag_pill(tag: str) -> str:
+    color = _TAG_COLORS.get(tag, _C_MUTED)
+    # Bright yellow needs dark text to stay legible; the red/grey pills keep
+    # white text.
+    text = _C_TEXT if color == _C_AMBER else "#ffffff"
+    return (
+        f'<span style="display:inline-block;font-size:11px;font-weight:700;'
+        f"letter-spacing:0.03em;color:{text};background:{color};"
+        f'border-radius:3px;padding:1px 6px;">{_esc(tag)}</span>'
+    )
+
+
+def _score_bar(score: float) -> str:
+    """A compact email-safe likelihood bar (a nested presentation table, so it
+    renders in clients that drop CSS widths on divs)."""
+    pct = max(0, min(100, int(round(score))))
+    width = 68
+    filled = round(width * pct / 100)
+    empty = width - filled
+    segments = ""
+    if filled:
+        segments += (
+            f'<td width="{filled}" style="background:{_C_LINK};height:8px;'
+            'font-size:0;line-height:0;">&nbsp;</td>'
+        )
+    if empty:
+        segments += (
+            f'<td width="{empty}" style="background:#e6e6e6;height:8px;'
+            'font-size:0;line-height:0;">&nbsp;</td>'
+        )
+    return (
+        f'<table role="presentation" width="{width}" cellpadding="0" cellspacing="0" '
+        f'style="border-collapse:collapse;width:{width}px;display:inline-block;'
+        'vertical-align:middle;">'
+        f"<tr>{segments}</tr></table>"
+    )
+
+
+# ── HTML sections ─────────────────────────────────────────────────────────────
+
+def _html_preheader(report: NightlyReport) -> str:
+    return (
+        '<div style="display:none;max-height:0;overflow:hidden;opacity:0;'
+        'color:transparent;height:0;width:0;">'
+        f"{_esc(preheader(report))}</div>"
+    )
+
+
+def _html_header(
+    report: NightlyReport, dashboard_url: str | None, actions_url: str | None
+) -> str:
+    s = EmailSummary.of(report)
+    actions = []
+    if dashboard_url:
+        actions.append(_action_button(_dashboard_link(dashboard_url, tab="Overview"),
+                                       "Open dashboard"))
+    if actions_url:
+        actions.append(_action_button(actions_url, "CI run"))
+    actions_html = f'<p style="margin:12px 0 0;">{"".join(actions)}</p>' if actions else ""
+    night = _human_date(s.night) if s.night != "no data" else s.night
+    release_line = _release_line(report)
+    release_suffix = (
+        f' · {_esc(release_line)}' if release_line else ""
+    )
+    return (
+        f'<h1 style="font-size:22px;margin:20px 0 2px;color:{_C_TEXT};">'
+        "k4Bench nightly report</h1>"
+        f'<p style="margin:0;font-size:16px;color:{_C_MUTED};">Report night '
+        f"<strong>{_esc(night)}</strong>{release_suffix}</p>"
+        f'<p style="margin:2px 0 0;font-size:13px;color:{_C_FAINT};">Generated '
+        f"{_esc(_human_datetime(report.generated_at))}</p>"
+        f"{actions_html}"
+    )
+
+
+def _html_summary(report: NightlyReport) -> str:
+    s = EmailSummary.of(report)
+    cells = [
+        ("FAILURES", s.n_failures, _C_RED if s.n_failures else _C_FAINT),
+        ("NEW", s.n_new, _C_RED if s.n_new else _C_FAINT),
+        ("RECONFIRMED", s.n_reconfirmed, _C_AMBER if s.n_reconfirmed else _C_FAINT),
+        ("WATCH", s.n_watch, _C_AMBER if s.n_watch else _C_FAINT),
+    ]
+    tds = "".join(
+        f'<td style="padding:8px 4px;text-align:center;'
+        f'border:1px solid {_C_BORDER};">'
+        f'<div style="font-size:20px;font-weight:700;color:{color};">{value}</div>'
+        f'<div style="font-size:11px;color:{_C_MUTED};letter-spacing:0.04em;">{label}</div>'
+        "</td>"
+        for label, value, color in cells
+    )
+    coverage = (
+        f'<td colspan="4" style="padding:7px 10px;text-align:center;'
+        f'border:1px solid {_C_BORDER};">'
+        f'<span style="font-size:15px;font-weight:700;color:{_C_TEXT};">'
+        f"{s.groups_judged}/{s.groups_total}</span> "
+        f'<span style="font-size:12px;color:{_C_MUTED};letter-spacing:0.04em;">'
+        "GROUPS JUDGED</span></td>"
+    )
+    return (
+        '<table role="presentation" cellpadding="0" cellspacing="0" '
+        'style="border-collapse:collapse;width:100%;table-layout:fixed;'
+        'margin:16px 0 8px;">'
+        f"<tr>{tds}</tr><tr>{coverage}</tr></table>"
+    )
+
+
+def _html_rep_row(v: MetricVerdict, report_night: str) -> str:
+    tag = _status_tag(v)
+    note = v.reason if v.severity is Severity.FAILURE else _reconfirmed_note(v)
+    pct = _fmt_pct(v.pct_change) if v.pct_change is not None else "—"
+    note_html = (
+        f'<span style="color:{_C_FAINT};font-size:12px;"> · {_esc(note)}</span>'
+        if note else ""
+    )
+    return (
+        f'<tr><td style="padding:3px 8px 3px 0;white-space:nowrap;vertical-align:top;">'
+        f"{_tag_pill(tag)}</td>"
+        f'<td style="padding:3px 8px;vertical-align:top;overflow-wrap:anywhere;'
+        'word-break:break-word;">'
+        f"{_html_metric_and_config(v)}{note_html}</td>"
+        f'<td style="padding:3px 0;text-align:right;white-space:nowrap;'
+        f'vertical-align:top;font-weight:600;color:'
+        f"{_TAG_COLORS.get(tag, _C_TEXT)};\">"
+        f"{_esc(pct)}</td></tr>"
+    )
+
+
+def _html_candidate_row(rank: int, c: CandidatePR) -> str:
+    meta = []
+    if c.author:
+        meta.append(f"by {_esc(c.author)}")
+    if c.merged_at:
+        meta.append(f"merged {_esc(_human_date(c.merged_at))}")
+    meta_html = (
+        f'<div style="font-size:12px;color:{_C_FAINT};">{" · ".join(meta)}</div>'
+        if meta else ""
+    )
+    reason_html = (
+        f'<div style="font-size:13px;color:{_C_MUTED};margin-top:1px;">'
+        f"{_esc(c.description)}</div>"
+        if c.description else ""
+    )
+    title = f"{c.repo}#{c.number} — {c.title}"
+    return (
+        "<tr>"
+        f'<td width="16" style="width:16px;padding:6px 8px 6px 0;'
+        f'vertical-align:top;color:{_C_FAINT};'
+        f'font-size:13px;">{rank}</td>'
+        f'<td width="104" style="width:104px;padding:6px 8px 6px 0;'
+        'vertical-align:top;white-space:nowrap;">'
+        f"{_score_bar(c.score)}"
+        f'<span style="font-size:13px;font-weight:700;color:{_C_TEXT};'
+        f' padding-left:6px;">{int(round(c.score))}%</span></td>'
+        f'<td style="padding:6px 0;vertical-align:top;overflow-wrap:anywhere;'
+        'word-break:break-word;">'
+        f"{_link(c.url, title, bold=True)}{meta_html}{reason_html}</td>"
+        "</tr>"
+    )
+
+
+def _ranking_scope(card: RankingCard) -> tuple[str, str, str]:
+    """``(status, coverage, window-label)`` for an attribution card.
+
+    The old generic "Covers N confirmed signals" obscured the important
+    distinction between a ranking reused for reconfirmations and one produced
+    for metrics that reached confirmation tonight.
+    """
+    if card.n_new and not card.n_reconfirmed:
+        coverage = (
+            f"ranking for {_plural(card.n_new, 'confirmation')}"
+            if card.n_new == card.total_window_new
+            else f"ranking available for {card.n_new} of "
+                 f"{card.total_window_new} confirmations"
+        )
+        return "NEW TONIGHT", coverage, "stack change window"
+    if card.n_reconfirmed and not card.n_new:
+        coverage = (
+            f"ranking reused for {_plural(card.n_reconfirmed, 'signal')}"
+            if card.n_reconfirmed == card.total_window_reconfirmed
+            else f"ranking reused for {card.n_reconfirmed} of "
+                 f"{card.total_window_reconfirmed} signals"
+        )
+        return "RECONFIRMED", coverage, "original stack change window"
+    coverage = (
+        f"ranking for {_plural(card.n_signals, 'confirmation')}"
+        if card.n_signals == card.total_window_signals
+        else f"ranking available for {card.n_signals} of "
+             f"{card.total_window_signals} confirmations"
+    )
+    return "CONFIRMED", coverage, "stack change window"
+
+
+def _html_ranking_card(card: RankingCard, dashboard_url: str | None) -> str:
+    scope_status, scope_coverage, window_label = _ranking_scope(card)
+    scope_color = _C_RED if scope_status == "NEW TONIGHT" else _C_AMBER
+    coverage = (
+        f'<p style="margin:0 0 6px;font-size:12px;color:{_C_MUTED};">'
+        f'<strong style="color:{scope_color};">{scope_status}</strong> · '
+        f"{_esc(scope_coverage)} · {window_label} "
+        f"<strong>{_esc(_window_text(card.base_release, card.onset_release))}</strong></p>"
+    )
+    reuse = ""
+    if card.reused_from:
+        reuse = (
+            f'<p style="margin:0 0 6px;font-size:11px;color:{_C_AMBER};'
+            f'white-space:nowrap;">Reused from first confirmation · '
+            f"{_esc(_human_date(card.reused_from))}</p>"
+        )
+    stack_url = _stack_changes_href(dashboard_url, card)
+    compares = ""
+    if card.compare_links:
+        compare_items = [
+            _link(url, package)
+            for package, url in card.compare_links
+        ]
+        if card.total_compares > len(card.compare_links):
+            compare_items.append(
+                f"+{card.total_compares - len(card.compare_links)} more"
+            )
+        compares = (
+            f'<p style="margin:6px 0 0;font-size:12px;color:{_C_FAINT};">'
+            f"Package changes: {' · '.join(compare_items)}</p>"
+        )
+    if not card.complete:
+        body = (
+            f'<p style="margin:0;font-size:13px;color:{_C_MUTED};">'
+            "No complete PR ranking is available for this change window. "
+            f"{_link(stack_url, 'Review the package changes in the dashboard')}.</p>"
+            f"{compares}"
+        )
+    else:
+        rows = "".join(
+            _html_candidate_row(i + 1, c) for i, c in enumerate(card.candidates)
+        )
+        more = ""
+        if card.total_ranked > len(card.candidates):
+            label = f"View all {card.total_ranked} candidates in the dashboard"
+            more = (
+                f'<p style="margin:6px 0 0;font-size:12px;color:{_C_FAINT};">'
+                f"{_link(stack_url, label)}.</p>"
+            )
+        body = (
+            f'<p style="margin:0 0 3px;font-size:13px;font-weight:700;">'
+            "Likely contributing pull requests</p>"
+            f'<p style="margin:0 0 6px;font-size:11px;color:{_C_FAINT};font-style:italic;">'
+            f"{_esc(_RANKING_DISCLOSURE)}</p>"
+            '<table role="presentation" cellpadding="0" cellspacing="0" '
+            'style="border-collapse:collapse;width:100%;table-layout:fixed;">'
+            f"{rows}</table>{more}{compares}"
+        )
+    return (
+        f'<div style="border:1px solid {_C_BORDER};border-radius:6px;'
+        f"background:#ffffff;padding:10px 12px;margin:8px 0;\">{coverage}{reuse}{body}</div>"
+    )
+
+
+def _same_release_context(group: RunGroupReport) -> str:
+    """Explain why New and Reconfirmed can coexist on a same-release rerun."""
+    if not group.reconfirmed_regressions:
+        return ""
+    if group.new_regressions:
+        return (
+            "Same-release rerun: the stack did not change between benchmark nights. "
+            "RECONFIRMED rows repeat an existing confirmation; NEW rows reached "
+            "confirmation tonight after another measurement of this release."
+        )
+    return (
+        "Same-release rerun: the stack did not change between benchmark nights. "
+        "All confirmed rows below repeat an existing confirmation for this release."
+    )
+
+
+def _html_attention_card(
+    group: RunGroupReport,
+    report: NightlyReport,
+    dashboard_url: str | None,
+    actions_url: str | None,
+    index: _BlameIndex,
+) -> str:
+    n_fail = len(group.failures) + len(group.job_failures)
+    n_new = len(group.new_regressions)
+    n_recon = len(group.reconfirmed_regressions)
+    n_watch = len(group.watches)
+    counts = []
+    if n_fail:
+        counts.append(f'<span style="color:{_C_RED};font-weight:700;">'
+                      f'{_plural(n_fail, "failure")}</span>')
+    if n_new:
+        counts.append(f'<span style="color:{_C_RED};font-weight:700;">{n_new} NEW</span>')
+    if n_recon:
+        counts.append(f'<span style="color:{_C_AMBER};font-weight:700;">'
+                      f"{n_recon} RECONFIRMED</span>")
+    if n_watch:
+        counts.append(f'<span style="color:{_C_AMBER};">{n_watch} WATCH</span>')
+    counts_html = " · ".join(counts)
+
+    failure_msgs = "".join(
+        f'<p style="margin:4px 0;color:{_C_RED};font-weight:600;">❌ {_esc(m)}</p>'
+        for m in group.job_failures
+    )
+    rows = "".join(_html_rep_row(v, report.report_night) for v in _representative_rows(group))
+    rows_html = (
+        '<table role="presentation" cellpadding="0" cellspacing="0" '
+        'style="border-collapse:collapse;width:100%;margin:6px 0;font-size:14px;">'
+        f"{rows}</table>"
+        if rows else ""
+    )
+
+    actions = []
+    regr = _regressions_href(dashboard_url, group, report.report_night)
+    if regr:
+        actions.append(_link(regr, "Review regressions", bold=True))
+    trends = _trends_href(dashboard_url, group)
+    if trends:
+        actions.append(_link(trends, "Run trends"))
+    if n_fail and actions_url:
+        actions.append(_link(actions_url, "Open CI run"))
+    actions_html = (
+        f'<p style="margin:6px 0 0;font-size:14px;">{" · ".join(actions)}</p>'
+        if actions else ""
+    )
+
+    context = _same_release_context(group)
+    context_html = (
+        f'<p style="margin:8px 0 6px;padding:7px 9px;border:1px solid '
+        f'{_C_INFO_BORDER};background:{_C_INFO_BG};border-radius:5px;'
+        f'font-size:12px;color:{_C_MUTED};">{_esc(context)}</p>'
+        if context else ""
+    )
+
+    ranking = "".join(
+        _html_ranking_card(card, dashboard_url) for card in _ranking_cards(group, index)
+    )
+
+    return (
+        f'<div style="border:1px solid {_C_BORDER};border-left:4px solid '
+        f"{(_C_RED if n_fail or n_new else _C_AMBER)};border-radius:6px;"
+        f"background:{_C_CARD_BG};padding:12px 14px;margin:12px 0;\">"
+        f'<div style="font-size:16px;font-weight:700;">{_esc(group.detector)}</div>'
+        f'<div style="font-size:13px;color:{_C_MUTED};">'
+        f"{_esc(_pretty_sample(group.sample))} · {_esc(_pretty_platform(group.platform))}</div>"
+        f'<div style="font-size:12px;color:{_C_FAINT};margin:2px 0 4px;">'
+        f"{_esc(group.k4h_release or 'no release')} · {counts_html}</div>"
+        f"{failure_msgs}{rows_html}{actions_html}{context_html}{ranking}</div>"
+    )
+
+
+def _html_detail(report: NightlyReport, dashboard_url: str | None) -> str:
+    plan = _detail_plan(report)
+    parts = [
+        '<h2 style="font-size:18px;margin:24px 0 4px;border-bottom:2px solid '
+        f'{_C_BORDER};padding-bottom:4px;">Detailed report — reference</h2>'
+    ]
+    for detector, groups in report.by_detector().items():
+        parts.append(
+            f'<h3 style="font-size:15px;margin:16px 0 2px;">'
+            f"{_detector_badge(groups)} {_esc(detector)}</h3>"
+        )
+        for group in groups:
+            parts.append(_html_detail_group(group, plan[id(group)], report, dashboard_url))
+    return "".join(parts)
+
+
+def _html_detail_group(
+    group: RunGroupReport, plan: _DetailPlan, report: NightlyReport,
+    dashboard_url: str | None,
+) -> str:
+    parts = [
+        f'<p style="margin:8px 0 2px;font-size:13px;color:{_C_MUTED};">'
+        f"{_esc(_group_title(group))} · <strong>{_esc(group.k4h_release or 'no release')}</strong></p>"
+    ]
+    for m in group.job_failures:
+        parts.append(f'<p style="margin:2px 0;color:{_C_RED};font-weight:600;">❌ {_esc(m)}</p>')
+    for v in group.failures:
+        parts.append(f'<p style="margin:2px 0;color:{_C_RED};font-weight:600;">❌ '
+                     f"{_esc(v.label)} — {_esc(v.reason)}</p>")
+    for m in group.notes:
+        parts.append(f'<p style="margin:2px 0;color:{_C_FAINT};">❔ {_esc(m)}</p>')
+
+    if plan.shown:
+        header_cells = "".join(
+            f'<th width="{width}" style="box-sizing:border-box;text-align:left;'
+            f'padding:4px;border-bottom:1px solid {_C_BORDER};font-size:12px;'
+            f'color:{_C_MUTED};overflow-wrap:anywhere;">{heading}</th>'
+            for heading, width in (
+                ("Status", "20%"), ("Metric · config", "38%"),
+                ("Baseline", "14%"), ("Current", "14%"), ("Δ", "14%"),
+            )
+        )
+        body_rows = "".join(_html_detail_row(v) for v in plan.shown)
+        parts.append(
+            '<table role="presentation" cellpadding="0" cellspacing="0" '
+            'style="border-collapse:collapse;width:100%;table-layout:fixed;'
+            'font-size:13px;">'
+            f"<tr>{header_cells}</tr>{body_rows}</table>"
+        )
+    if plan.omitted:
+        regr = _regressions_href(dashboard_url, group, report.report_night)
+        link = _link(regr, "View all in dashboard") if regr else "View all in the dashboard"
+        parts.append(
+            f'<p style="margin:4px 0;font-size:12px;color:{_C_FAINT};">'
+            f"Showing {len(plan.shown)} of {plan.total} confirmed changes · {link}</p>"
+        )
+    parts.append(
+        f'<p style="margin:2px 0 6px;font-size:12px;color:{_C_FAINT};">'
+        f"{_esc(_quiet_summary(group))}</p>"
+    )
+    return "".join(parts)
+
+
+def _html_detail_row(v: MetricVerdict) -> str:
+    tag = _status_tag(v)
+    note = _reconfirmed_note(v)
+    note_html = f'<br><span style="color:{_C_FAINT};font-size:11px;">{_esc(note)}</span>' if note else ""
+    return (
+        "<tr>"
+        f'<td style="padding:4px;vertical-align:top;overflow-wrap:anywhere;">'
+        f'{_tag_pill(tag)}{note_html}</td>'
+        f'<td style="padding:4px;vertical-align:top;">'
+        f'{_html_metric_and_config(v)}</td>'
+        f'<td style="padding:4px;vertical-align:top;overflow-wrap:anywhere;">'
+        f"{_esc(_fmt_value(v.metric, v.baseline_median))}</td>"
+        f'<td style="padding:4px;vertical-align:top;overflow-wrap:anywhere;">'
+        f"{_esc(_fmt_value(v.metric, v.value))}</td>"
+        f'<td style="padding:4px;vertical-align:top;overflow-wrap:anywhere;'
+        f'font-weight:600;">{_esc(_fmt_pct(v.pct_change))}</td>'
+        "</tr>"
+    )
+
+
+def _quiet_summary(group: RunGroupReport) -> str:
+    """One-line OK/Watch/insufficient-history summary for a group — never a row
+    per quiet metric."""
+    n_ok = sum(1 for v in group.verdicts if v.severity is Severity.OK)
+    n_watch = len(group.watches)
+    n_unknown = sum(1 for v in group.verdicts if v.severity is Severity.UNKNOWN)
+    parts = [f"{n_ok} within baseline"]
+    if n_watch:
+        parts.append(f"{n_watch} on watch (unconfirmed)")
+    if n_unknown:
+        parts.append(f"{n_unknown} with insufficient history")
+    reliability = {True: "reliable", False: "unreliable", None: "reliability unknown"}[group.reliable]
+    return f"{', '.join(parts)} · {reliability}"
+
+
+# ── Footer (mirrors the dashboard's CERN/FCC banner) ──────────────────────────
+
+_FCC_URL = "https://fcc.web.cern.ch/"
+_CONTACT_EMAIL = "jbeirer@cern.ch"
+_CONTACT_NAME = "Joshua Falco Beirer"
+
+
+def _footer_year(report: NightlyReport) -> str:
+    year = report.generated_at[:4]
+    return year if year.isdigit() else str(date.today().year)
+
+
+def _html_footer(report: NightlyReport) -> str:
+    return (
+        f'<hr style="border:none;border-top:1px solid {_C_BORDER};margin:24px 0 12px;">'
+        f'<p style="text-align:center;color:{_C_FAINT};font-size:12px;line-height:1.7;">'
+        '<span style="font-size:1.3em;">⚛️</span><br>'
+        f"<strong>© {_footer_year(report)} CERN</strong> · For the benefit of the "
+        f'<a href="{_FCC_URL}" style="color:{_C_LINK};text-decoration:none;">'
+        "FCC project</a><br>"
+        f"Created by <strong>{_CONTACT_NAME}</strong> (CERN) — questions to "
+        f'<a href="mailto:{_CONTACT_EMAIL}" style="color:{_C_LINK};'
+        f'text-decoration:none;">{_CONTACT_EMAIL}</a></p>'
+    )
+
+
+# ── HTML entry point ──────────────────────────────────────────────────────────
+
+def to_html(
+    report: NightlyReport, *,
+    dashboard_url: str | None = None,
+    actions_url: str | None = None,
+    blame: BlameReport | None = None,
+    historical_blame: dict[str, BlameReport] | None = None,
+) -> str:
+    """Self-contained HTML email body (inline styles only, no CSS/JS)."""
+    index = _BlameIndex(blame, historical_blame)
+    attention = _needs_attention(report)
+    if attention:
+        attention_html = (
+            '<h2 style="font-size:18px;margin:20px 0 2px;">Needs attention</h2>'
+            + "".join(
+                _html_attention_card(g, report, dashboard_url, actions_url, index)
+                for g in attention
+            )
+        )
+    else:
+        attention_html = (
+            '<h2 style="font-size:18px;margin:20px 0 2px;">Needs attention</h2>'
+            f'<p style="color:{_C_MUTED};font-size:14px;margin:4px 0;">'
+            f"{_esc(_no_attention_message(report))}</p>"
+        )
+    parts = [
+        _html_preheader(report),
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+        'style="border-collapse:collapse;width:100%;"><tr><td align="center">',
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+        'style="border-collapse:collapse;width:100%;max-width:660px;"><tr>'
+        f'<td style="{_CONTAINER_STYLE}">',
+        _html_header(report, dashboard_url, actions_url),
+        _html_summary(report),
+        attention_html,
+        _html_detail(report, dashboard_url),
+        _html_footer(report),
+        "</td></tr></table>",
+        "</td></tr></table>",
+    ]
+    return "\n".join(parts)
+
+
+# ── Markdown / plain text ─────────────────────────────────────────────────────
+
+def _md_rep_row(v: MetricVerdict) -> str:
+    tag = _status_tag(v)
+    pct = _fmt_pct(v.pct_change) if v.pct_change is not None else "—"
+    note = v.reason if v.severity is Severity.FAILURE else _reconfirmed_note(v)
+    suffix = f" ({note})" if note else ""
+    return f"- **{tag}** {_metric_label(v)} · {v.label} — {pct}{suffix}"
+
+
+def _md_candidate(rank: int, c: CandidatePR) -> str:
+    meta = []
+    if c.author:
+        meta.append(f"by {c.author}")
+    if c.merged_at:
+        meta.append(f"merged {_human_date(c.merged_at)}")
+    meta_str = f" ({', '.join(meta)})" if meta else ""
+    reason = f" — {c.description}" if c.description else ""
+    return (
+        f"  {rank}. {int(round(c.score))}% [{c.repo}#{c.number} — {c.title}]({c.url})"
+        f"{meta_str}{reason}"
+    )
+
+
+def _md_ranking_card(card: RankingCard, dashboard_url: str | None) -> list[str]:
+    scope_status, scope_coverage, window_label = _ranking_scope(card)
+    lines = [
+        f"  **{scope_status}** · {scope_coverage} · {window_label} "
+        f"{_window_text(card.base_release, card.onset_release)}"
+    ]
+    if card.reused_from:
+        lines.append(
+            f"  Reused from first confirmation · {_human_date(card.reused_from)}"
+        )
+    compare_line = ""
+    if card.compare_links:
+        items = [f"[{package}]({url})" for package, url in card.compare_links]
+        if card.total_compares > len(card.compare_links):
+            items.append(f"+{card.total_compares - len(card.compare_links)} more")
+        compare_line = f"  Package changes: {' · '.join(items)}"
+    if not card.complete:
+        stack_url = _stack_changes_href(dashboard_url, card)
+        review = (
+            f"[Review the package changes in the dashboard]({stack_url})"
+            if stack_url else "Review the package changes in the dashboard"
+        )
+        lines.append(
+            "  No complete PR ranking is available for this change window. "
+            f"{review}."
+        )
+        if compare_line:
+            lines.append(compare_line)
+        return lines
+    lines.append("  **Likely contributing pull requests**")
+    lines.append(f"  _{_RANKING_DISCLOSURE}_")
+    lines.extend(
+        _md_candidate(i + 1, c) for i, c in enumerate(card.candidates)
+    )
+    if card.total_ranked > len(card.candidates):
+        label = f"View all {card.total_ranked} candidates in the dashboard"
+        stack_url = _stack_changes_href(dashboard_url, card)
+        lines.append(f"  [{label}]({stack_url})." if stack_url else f"  {label}.")
+    if compare_line:
+        lines.append(compare_line)
+    return lines
+
+
+def _md_attention_card(
+    group: RunGroupReport, report: NightlyReport,
+    dashboard_url: str | None, actions_url: str | None, index: _BlameIndex,
+) -> list[str]:
+    n_fail = len(group.failures) + len(group.job_failures)
+    n_new = len(group.new_regressions)
+    n_recon = len(group.reconfirmed_regressions)
+    n_watch = len(group.watches)
+    counts = []
+    if n_fail:
+        counts.append(_plural(n_fail, "failure").upper())
+    if n_new:
+        counts.append(f"{n_new} NEW")
+    if n_recon:
+        counts.append(f"{n_recon} RECONFIRMED")
+    if n_watch:
+        counts.append(f"{n_watch} WATCH")
+    lines = [
+        f"### {group.detector} · {_pretty_sample(group.sample)}",
+        f"{group.k4h_release or 'no release'} · {' · '.join(counts)}",
+        "",
+    ]
+    for m in group.job_failures:
+        lines.append(f"- ❌ **{m}**")
+    lines.extend(_md_rep_row(v) for v in _representative_rows(group))
+    actions = []
+    regr = _regressions_href(dashboard_url, group, report.report_night)
+    if regr:
+        actions.append(f"[Review regressions]({regr})")
+    trends = _trends_href(dashboard_url, group)
+    if trends:
+        actions.append(f"[Run trends]({trends})")
+    if n_fail and actions_url:
+        actions.append(f"[Open CI run]({actions_url})")
+    if actions:
+        lines.append("")
+        lines.append(" · ".join(actions))
+    context = _same_release_context(group)
+    if context:
+        lines.append("")
+        lines.append(f"> {context}")
+    for card in _ranking_cards(group, index):
+        lines.append("")
+        lines.extend(_md_ranking_card(card, dashboard_url))
+    lines.append("")
+    return lines
+
+
+def _md_detail_group(
+    group: RunGroupReport, plan: _DetailPlan, report: NightlyReport,
+    dashboard_url: str | None,
+) -> list[str]:
+    lines = [f"#### {_group_title(group)} · {group.k4h_release or 'no release'}", ""]
+    for m in group.job_failures:
+        lines.append(f"- ❌ **{m}**")
+    for v in group.failures:
+        lines.append(f"- ❌ **{v.label}** — {v.reason}")
+    for m in group.notes:
+        lines.append(f"- ❔ {m}")
+    if plan.shown:
+        lines.append("")
+        lines.append("| Status | Metric · config | Baseline | Current | Δ |")
+        lines.append("|---|---|---|---|---|")
+        for v in plan.shown:
+            note = _reconfirmed_note(v)
+            status = f"{_status_tag(v)}" + (f" ({note})" if note else "")
+            lines.append(
+                f"| {status} | {_metric_label(v)} · {v.label} "
+                f"| {_fmt_value(v.metric, v.baseline_median)} | {_fmt_value(v.metric, v.value)} "
+                f"| {_fmt_pct(v.pct_change)} |"
+            )
+    if plan.omitted:
+        regr = _regressions_href(dashboard_url, group, report.report_night)
+        link = f"[View all in dashboard]({regr})" if regr else "View all in the dashboard"
+        lines.append("")
+        lines.append(f"_Showing {len(plan.shown)} of {plan.total} confirmed changes · {link}_")
+    lines.append("")
+    lines.append(f"_{_quiet_summary(group)}_")
+    lines.append("")
+    return lines
+
+
+def _md_footer(report: NightlyReport) -> str:
+    return (
+        "---\n\n"
+        f"⚛️ **© {_footer_year(report)} CERN** · For the benefit of the "
+        f"[FCC project]({_FCC_URL})  \n"
+        f"Created by {_CONTACT_NAME} (CERN) — questions to {_CONTACT_EMAIL}"
+    )
+
+
+def to_markdown(
+    report: NightlyReport, *,
+    dashboard_url: str | None = None,
+    actions_url: str | None = None,
+    blame: BlameReport | None = None,
+    historical_blame: dict[str, BlameReport] | None = None,
+) -> str:
+    """Plain-text/Markdown MIME alternative — the same important content as the
+    HTML body, useful on its own in a text-only client."""
+    index = _BlameIndex(blame, historical_blame)
+    s = EmailSummary.of(report)
+    lines = [
+        f"# k4Bench nightly report — {_human_date(s.night) if s.night != 'no data' else s.night}",
+        "",
+    ]
+    release_line = _release_line(report)
+    if release_line:
+        lines.append(f"**{release_line}**")
+        lines.append("")
+    lines += [
+        f"Generated {_human_datetime(report.generated_at)}.",
+        "",
+        f"**Status:** {s.n_failures} failures · {s.n_new} new · "
+        f"{s.n_reconfirmed} reconfirmed · {s.n_watch} watch · {s.coverage_text}.",
+        "",
+    ]
+    actions = []
+    if dashboard_url:
+        actions.append(f"[Open dashboard]({_dashboard_link(dashboard_url, tab='Overview')})")
+    if actions_url:
+        actions.append(f"[CI run]({actions_url})")
+    if actions:
+        lines.append(" · ".join(actions))
+        lines.append("")
+
+    lines.append("## Needs attention")
+    lines.append("")
+    attention = _needs_attention(report)
+    if attention:
+        for group in attention:
+            lines.extend(
+                _md_attention_card(group, report, dashboard_url, actions_url, index)
+            )
+    else:
+        lines.append(_no_attention_message(report))
+        lines.append("")
+
+    lines.append("## Detailed report — reference")
+    lines.append("")
+    plan = _detail_plan(report)
+    for detector, groups in report.by_detector().items():
+        lines.append(f"### {_detector_badge(groups)} {detector}")
+        lines.append("")
+        for group in groups:
+            lines.extend(_md_detail_group(group, plan[id(group)], report, dashboard_url))
+
+    lines.append(_md_footer(report))
+    return "\n".join(lines)
