@@ -234,6 +234,15 @@ def _window_key(verdict: MetricVerdict) -> tuple[str | None, str | None]:
     return (verdict.last_accepted_run_date, verdict.onset_run_date)
 
 
+def _metric_key(verdict: MetricVerdict) -> tuple:
+    """A verdict's *metric* identity, stable across the nights that judged it —
+    so a metric reconfirmed on several nights of one release counts once."""
+    return (
+        verdict.detector, verdict.platform, verdict.sample, verdict.label,
+        verdict.metric_family, verdict.metric, verdict.sub_detector,
+    )
+
+
 @dataclass(frozen=True)
 class _WindowAttribution:
     """One change window confirmed on the selected night, with the attribution
@@ -287,7 +296,10 @@ def _window_attributions(
     stay put rather than blinking out for one quiet night.
     """
     first_night: dict[tuple, str] = {}
-    by_window: dict[tuple, list[MetricVerdict]] = {}
+    # One entry per *metric*, keeping the newest night's verdict for it: the
+    # release's nights re-judge the same metrics, and a window's size is how
+    # many metrics carry it, not how often they were reconfirmed.
+    by_window: dict[tuple, dict[tuple, MetricVerdict]] = {}
     for night in sorted(reports):
         night_group = _night_group(reports[night], detector, platform, sample)
         if night_group is None or night_group.k4h_release != stack:
@@ -295,7 +307,7 @@ def _window_attributions(
         for v in night_group.verdicts:
             if _blame.has_window(v):
                 first_night.setdefault(_window_key(v), night)
-                by_window.setdefault(_window_key(v), []).append(v)
+                by_window.setdefault(_window_key(v), {})[_metric_key(v)] = v
 
     tonight: dict[tuple, list[MetricVerdict]] = {}
     for v in group.verdicts:
@@ -308,8 +320,8 @@ def _window_attributions(
         blame = _blame_for_night(data_url, night)
         # Prefer the selected night's metrics for the count and representative;
         # a window the selected rerun did not confirm still describes this
-        # release, and falls back to the night that did.
-        verdicts = tonight.get(key) or seen
+        # release, and falls back to the metrics of the nights that did.
+        verdicts = tonight.get(key) or list(seen.values())
         ranked = sorted(verdicts, key=attention_key)
         # Represent the window by a metric the sidecar actually ranked, when
         # there is one: a partially covered window still has one ranking, and
@@ -549,9 +561,20 @@ def _window_label(attribution: _WindowAttribution) -> str:
 def _window_token(attribution: _WindowAttribution) -> str:
     """A change window's ``?window=`` value — the pill's stored identity, and
     what an emailed deep link carries (see
-    :func:`k4bench.regression.render.window_token`)."""
+    :func:`k4bench.regression.render.window_token`).
+
+    A same-release window keeps its baseline, matching what the email emits for
+    it (``R..R``) and keeping it distinct from an open window onto the same
+    onset (``..R``), which would otherwise collide on one token.
+    """
     v = attribution.verdict
-    base = v.last_accepted_run_date if _blame.classify(v) is _blame.WindowKind.BOUNDED else None
+    kind = _blame.classify(v)
+    if kind is _blame.WindowKind.SAME_STACK:
+        base = v.onset_run_date
+    elif kind is _blame.WindowKind.BOUNDED:
+        base = v.last_accepted_run_date
+    else:                                   # OPEN: no trustworthy older end
+        base = None
     return window_token(base, v.onset_run_date)
 
 
@@ -561,18 +584,26 @@ def _window_token(attribution: _WindowAttribution) -> str:
 _NO_WINDOW_LABEL = "Watch"
 
 
-def _window_pill(label: str, n_metrics: int, noun: str = "regression") -> str:
+def _window_pill(
+    label: str, n_flagged: int, n_metrics: int, noun: str = "regression"
+) -> str:
     """A pill's *display*: the window, then its size in bold so the split
     between windows is legible before clicking either —
     ``🔴 2026-06-25 → 2026-06-27 · **14 regressions**``.
 
+    A window the selected night did not flag still belongs to the release, so
+    it says what it confirmed and that tonight was quiet — rather than a bare
+    "0 regressions" next to an attribution card describing several metrics.
+
     Only the display carries the count; the pill's stored value stays the plain
-    window label, so a night with different counts re-labels the pills without
+    window token, so a night with different counts re-labels the pills without
     resetting the reader's selection.
     """
     badge = "⚠️" if label == _NO_WINDOW_LABEL else "🔴"
-    plural = noun if n_metrics == 1 else f"{noun}s"
-    return f"{badge} {label} · **{n_metrics} {plural}**"
+    if not n_flagged:
+        return f"{badge} {label} · **{n_metrics} confirmed** · none tonight"
+    plural = noun if n_flagged == 1 else f"{noun}s"
+    return f"{badge} {label} · **{n_flagged} {plural}**"
 
 
 def _select_window(
@@ -613,16 +644,25 @@ def _select_window(
     pills: dict[str, str] = {}
     for a in ranked:
         token = _window_token(a)
+        while token in options:     # only reachable from a corrupt window pair
+            token += "~"            # keep both selectable rather than drop one
         options[token] = a
         pills[token] = _window_pill(
-            _window_label(a), len(in_window[_window_key(a.verdict)])
+            _window_label(a), len(in_window[_window_key(a.verdict)]), a.n_metrics
         )
     if unwindowed:
         options[WINDOW_WATCH_TOKEN] = None
         pills[WINDOW_WATCH_TOKEN] = _window_pill(
-            _NO_WINDOW_LABEL, len(unwindowed), "metric"
+            _NO_WINDOW_LABEL, len(unwindowed), len(unwindowed), "metric"
         )
     if len(options) < 2:
+        # No picker to render, but the URL still describes the view: leave a
+        # stale ?window= from another report behind and the link would be
+        # copied pointing at a window that isn't on screen.
+        if options:
+            st.query_params["window"] = next(iter(options))
+        else:
+            st.query_params.pop("window", None)
         return (ranked[0] if ranked else None), flagged
 
     picker_key = f"regr_window_{key}"
@@ -638,10 +678,16 @@ def _select_window(
              "belongs to exactly one. Picking a window scopes the trend "
              "preview and the candidate pull requests to that change.",
     )
-    st.caption(
-        f"{len(attributions)} separate changes are confirmed for this release "
-        "— each metric belongs to exactly one."
-    )
+    if len(attributions) > 1:
+        st.caption(
+            f"{len(attributions)} separate changes are confirmed for this "
+            "release — each metric belongs to exactly one."
+        )
+    elif unwindowed:
+        st.caption(
+            "One confirmed change for this release; the other pill holds "
+            "flagged metrics it doesn't explain."
+        )
     if chosen is None or chosen not in options:
         chosen = next(iter(options))
     st.query_params["window"] = chosen   # keep the URL shareable/deep-linkable
