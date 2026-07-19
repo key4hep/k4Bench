@@ -1418,7 +1418,7 @@ def to_html(
         '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
         'style="border-collapse:collapse;width:100%;"><tr><td align="center">',
         '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
-        'style="border-collapse:collapse;width:100%;max-width:660px;"><tr>'
+        'style="border-collapse:collapse;width:100%;max-width:860px;"><tr>'
         f'<td style="{_CONTAINER_STYLE}">',
         _html_header(report, dashboard_url, actions_url),
         _html_summary(report),
