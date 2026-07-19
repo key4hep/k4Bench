@@ -125,6 +125,30 @@ class MetricVerdict:
         """True for anything worth a row in the report (not OK/UNKNOWN)."""
         return self.severity in (Severity.WATCH, Severity.CONFIRMED, Severity.FAILURE)
 
+    @property
+    def is_reconfirmed(self) -> bool:
+        """True when a *later* nightly measurement of the **same** Key4hep
+        release re-confirms a change already confirmed for that release.
+
+        The engine resets its confirmation state at a release boundary, so a
+        ``first_confirmed_run_id`` that both exists and differs from this
+        night's ``run_id`` can only mean the same release was measured again —
+        never a different release still tripping the old baseline. A legacy
+        verdict with no ``first_confirmed_run_id`` is therefore *not*
+        reconfirmed (it is treated as New)."""
+        return (
+            self.severity is Severity.CONFIRMED
+            and bool(self.first_confirmed_run_id)
+            and self.first_confirmed_run_id != self.run_id
+        )
+
+    @property
+    def is_new_confirmation(self) -> bool:
+        """True for the first confirmation of a change for the release currently
+        being measured — a confirmed verdict that is not a same-release
+        reconfirmation (see :attr:`is_reconfirmed`)."""
+        return self.severity is Severity.CONFIRMED and not self.is_reconfirmed
+
 
 @dataclass
 class RunGroupReport:
@@ -163,6 +187,19 @@ class RunGroupReport:
         return self._select(Severity.CONFIRMED)
 
     @property
+    def new_regressions(self) -> list[MetricVerdict]:
+        """Confirmed regressions first confirmed for the release being measured
+        (see :attr:`MetricVerdict.is_new_confirmation`)."""
+        return [v for v in self.verdicts if v.is_new_confirmation]
+
+    @property
+    def reconfirmed_regressions(self) -> list[MetricVerdict]:
+        """Confirmed regressions that are a later measurement of the *same*
+        release re-confirming an earlier confirmation (see
+        :attr:`MetricVerdict.is_reconfirmed`)."""
+        return [v for v in self.verdicts if v.is_reconfirmed]
+
+    @property
     def watches(self) -> list[MetricVerdict]:
         return self._select(Severity.WATCH)
 
@@ -182,6 +219,17 @@ class NightlyReport:
     def regressions(self) -> list[MetricVerdict]:
         """Confirmed regressions across all groups, either direction."""
         return [v for g in self.groups for v in g.regressions]
+
+    @property
+    def new_regressions(self) -> list[MetricVerdict]:
+        """New confirmations across all groups (first confirmation for the
+        release being measured)."""
+        return [v for g in self.groups for v in g.new_regressions]
+
+    @property
+    def reconfirmed_regressions(self) -> list[MetricVerdict]:
+        """Same-release reconfirmations across all groups."""
+        return [v for g in self.groups for v in g.reconfirmed_regressions]
 
     @property
     def watches(self) -> list[MetricVerdict]:

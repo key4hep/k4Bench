@@ -76,7 +76,8 @@ def test_confirmed_regression_sends_alert(fake_smtp):
     assert _send(_report(_verdict(Severity.CONFIRMED, Direction.UP)))
     ((frm, to, msg),) = fake_smtp.sent
     assert to == ["egroup@cern.ch"]
-    assert "1 regression(s)" in msg
+    # A fresh confirmation with no first_confirmed_run_id is a New regression.
+    assert _subject_of(msg) == "[k4Bench][ACTION] 2026-01-12 — 1 new regression"
 
 
 def test_job_failure_sends_alert(fake_smtp):
@@ -93,13 +94,39 @@ def test_confirmed_regression_sends_regardless_of_direction(fake_smtp):
 
 
 def test_clean_night_still_sends(fake_smtp):
-    # Every night's report is emailed, regardless of content.
+    # Every night's report is emailed, regardless of content. A watch-only night
+    # is [WATCH], not an alert.
     assert _send(_report(
         _verdict(Severity.WATCH, Direction.UP),
         _verdict(Severity.OK, Direction.NONE),
     ))
     ((_frm, _to, msg),) = fake_smtp.sent
-    assert "no regressions" in msg
+    assert "[k4Bench][WATCH]" in _subject_of(msg)
+    assert "awaiting confirmation" in _subject_of(msg)
+
+
+def test_all_ok_night_sends_ok_subject(fake_smtp):
+    assert _send(_report(_verdict(Severity.OK, Direction.NONE)))
+    ((_frm, _to, msg),) = fake_smtp.sent
+    assert "[k4Bench][OK]" in _subject_of(msg)
+
+
+def test_mime_plain_text_precedes_html(fake_smtp):
+    _send(_report(_verdict(Severity.CONFIRMED, Direction.UP)))
+    ((_frm, _to, msg),) = fake_smtp.sent
+    message = email.message_from_string(msg)
+    payloads = message.get_payload()
+    assert payloads[0].get_content_type() == "text/plain"
+    assert payloads[1].get_content_type() == "text/html"
+
+
+def test_automated_message_headers_are_set(fake_smtp):
+    _send(_report(_verdict(Severity.CONFIRMED, Direction.UP)))
+    ((_frm, _to, msg),) = fake_smtp.sent
+    message = email.message_from_string(msg)
+    assert message["Date"]
+    assert message["Message-ID"]
+    assert message["Auto-Submitted"] == "auto-generated"
 
 
 def test_cli_sends_without_force_flag(fake_smtp, tmp_path):
@@ -119,6 +146,13 @@ def test_cli_skips_quietly_without_recipient(fake_smtp, tmp_path):
 
 
 # ── Blame sidecar loading ─────────────────────────────────────────────────────
+
+def _subject_of(msg_str: str) -> str:
+    """The decoded Subject header — the subject carries an em dash, so the raw
+    MIME string holds it RFC 2047-encoded, not as plain text."""
+    message = email.message_from_string(msg_str)
+    return str(email.header.make_header(email.header.decode_header(message["Subject"])))
+
 
 def _decoded_body(msg_str: str) -> str:
     """The message's text parts, base64/QP-decoded — the body substrings live
@@ -227,3 +261,84 @@ def test_cli_still_sends_when_blame_has_a_non_numeric_score(fake_smtp, tmp_path)
     ]) == 0
     ((_frm, _to, msg),) = fake_smtp.sent
     assert "key4hep/k4geo#1234" not in _decoded_body(msg)
+
+
+# ── Historical sidecar reuse for same-release reconfirmations ─────────────────
+
+def _reconfirmed_report_path(tmp_path, *nights):
+    """A report whose confirmed verdict is a *reconfirmation* first confirmed on
+    ``2026-01-05`` (matching :func:`_blame_sidecar`'s window), plus extra
+    reconfirmed verdicts pointing at *nights* to exercise per-night fetching."""
+    base = dataclasses.replace(
+        _verdict(Severity.CONFIRMED, Direction.UP),
+        run_id="2026-01-12", first_confirmed_run_id="2026-01-05",
+        onset_run_id="2026-01-09", onset_run_date="2026-01-09",
+        last_accepted_run_id="2026-01-05", last_accepted_run_date="2026-01-05",
+    )
+    extras = [
+        dataclasses.replace(base, metric=f"extra_{n}", first_confirmed_run_id=n)
+        for n in nights
+    ]
+    report_path = tmp_path / "report.json"
+    report_path.write_text(json.dumps(to_json(_report(base, *extras))))
+    return report_path
+
+
+def test_historical_blame_fetched_once_per_unique_night(fake_smtp, tmp_path, monkeypatch):
+    # Two reconfirmed verdicts share a first-confirmation night; a third names a
+    # different one — the fetcher is called once per unique night, never per row.
+    report_path = _reconfirmed_report_path(tmp_path, "2026-01-05", "2026-01-04")
+    calls: list[str] = []
+
+    def fake_fetch(data_url, date):
+        calls.append(date)
+        return _blame_sidecar().to_json() if date == "2026-01-05" else None
+
+    monkeypatch.setattr(notify, "fetch_blame", fake_fetch)
+    assert notify.main([
+        str(report_path), "--to", "egroup@cern.ch", "--from-addr", "noreply@cern.ch",
+        "--data-url", "https://data.example",
+    ]) == 0
+    assert sorted(calls) == ["2026-01-04", "2026-01-05"]  # each unique night once
+
+
+def test_reused_first_confirmation_ranking_surfaces_in_body(fake_smtp, tmp_path, monkeypatch):
+    report_path = _reconfirmed_report_path(tmp_path)
+    monkeypatch.setattr(notify, "fetch_blame", lambda url, date: _blame_sidecar().to_json())
+    assert notify.main([
+        str(report_path), "--to", "egroup@cern.ch", "--from-addr", "noreply@cern.ch",
+        "--data-url", "https://data.example",
+    ]) == 0
+    body = _decoded_body(fake_smtp.sent[0][2])
+    assert "key4hep/k4geo#1234" in body
+    assert "Reused from first confirmation" in body
+
+
+def test_omitting_data_url_stays_offline(fake_smtp, tmp_path, monkeypatch):
+    # Without --data-url, no historical sidecar is fetched at all — local/offline
+    # rendering is preserved.
+    report_path = _reconfirmed_report_path(tmp_path)
+    called = False
+
+    def fake_fetch(url, date):
+        nonlocal called
+        called = True
+        return None
+
+    monkeypatch.setattr(notify, "fetch_blame", fake_fetch)
+    assert notify.main([
+        str(report_path), "--to", "egroup@cern.ch", "--from-addr", "noreply@cern.ch",
+    ]) == 0
+    assert called is False
+    assert len(fake_smtp.sent) == 1
+
+
+def test_malformed_historical_sidecar_degrades_cleanly(fake_smtp, tmp_path, monkeypatch):
+    report_path = _reconfirmed_report_path(tmp_path)
+    monkeypatch.setattr(notify, "fetch_blame", lambda url, date: {"entries": [{"detector": "X"}]})
+    assert notify.main([
+        str(report_path), "--to", "egroup@cern.ch", "--from-addr", "noreply@cern.ch",
+        "--data-url", "https://data.example",
+    ]) == 0
+    body = _decoded_body(fake_smtp.sent[0][2])
+    assert "key4hep/k4geo#1234" not in body  # malformed → no reused ranking, still sent

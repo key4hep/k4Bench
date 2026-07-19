@@ -73,8 +73,12 @@ def test_regression_report_cli_local_mode(tmp_path):
     assert any(v["metric"] == "wall_time_s" for v in confirmed)
 
     md = (out_dir / "report.md").read_text()
-    assert "k4Bench nightly regression report — 2026-01-12" in md
-    assert "🔴 Regression" in md
+    # The report.md artifact is the email's Markdown body: a "12 Jan 2026" header,
+    # the Needs-attention / detailed hierarchy, and a NEW status for the fresh
+    # confirmation.
+    assert "k4Bench nightly report — 12 Jan 2026" in md
+    assert "Needs attention" in md
+    assert "NEW" in md
 
 
 def _wall_time_verdict(report: dict) -> dict:

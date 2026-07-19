@@ -132,5 +132,6 @@ python -m k4bench.regression.notify report/report.json \
     --to "${K4BENCH_REGRESSION_EGROUP:-}" \
     --from-addr "${K4BENCH_REGRESSION_FROM:-}" \
     --dashboard-url "${K4BENCH_DASHBOARD_URL:-https://k4bench-dashboard.app.cern.ch}" \
-    --actions-url "${GITHUB_RUN_URL:-}"
+    --actions-url "${GITHUB_RUN_URL:-}" \
+    --data-url "${K4BENCH_DATA_URL}"
 echo "::endgroup::"
