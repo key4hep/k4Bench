@@ -337,6 +337,95 @@ def test_watch_from_previous_release_confirms_on_every_night_of_the_next():
     assert _window(verdicts[-1]) == _window(verdicts[-2])
 
 
+def test_clean_first_night_of_a_new_release_clears_a_carried_watch():
+    # A WATCH carries across a release boundary only as long as no reliable
+    # night lands back inside the band: a clean first night of the next
+    # release clears it, and a later trip of that release starts a fresh
+    # two-strike cycle rather than completing the old one.
+    rows = _steady_rows() + [
+        ("2026-02-11", "2026-02-11", 120.0),   # release R-1: first strike
+        ("2026-02-12", "2026-02-12", 100.1),   # release R, night 1: clean
+        ("2026-02-13", "2026-02-12", 120.5),   # release R, night 2: trips again
+    ]
+    verdicts = evaluate_series(_release_rows(rows), series=_TIME)
+    assert _severities(verdicts[-3:]) == [
+        Severity.WATCH, Severity.OK, Severity.WATCH,
+    ]
+    assert _window(verdicts[-1]) == (None, None)
+
+
+def test_carried_watch_confirms_across_an_unreliable_release_boundary_night():
+    # An unreliable night is no evidence either way, even when it is the first
+    # night of a new release: the carried strike survives it, and the next
+    # reliable trip confirms with the onset still on the WATCH night — the
+    # unreliable night is spanned by the window, never narrowing it.
+    rows = _steady_rows() + [
+        ("2026-02-11", "2026-02-11", 120.0),          # release R-1: first strike
+        ("2026-02-12", "2026-02-13", 500.0, False),   # release R, night 1: unreliable
+        ("2026-02-13", "2026-02-13", 120.5),          # release R, night 2: trips
+    ]
+    verdicts = evaluate_series(_release_rows(rows), series=_TIME)
+    assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
+    confirmed = verdicts[-1]
+    assert _window(confirmed) == ("2026-02-10", "2026-02-11")
+    assert confirmed.onset_run_date == "2026-02-11"
+    assert confirmed.last_accepted_run_date == "2026-02-10"
+
+
+def test_release_calendar_gap_has_no_semantic_role():
+    # Releases are opaque published states compared pairwise; days without a
+    # release between them change nothing. A WATCH under release B confirming
+    # under release C behaves identically whether C is B+1 day or B+2.
+    def run(c_release):
+        rows = _steady_rows() + [
+            ("2026-02-11", "2026-02-11", 120.0),   # release B: first strike
+            ("2026-02-12", c_release, 120.5),      # release C, night 1
+            ("2026-02-13", c_release, 120.2),      # release C, night 2
+        ]
+        return evaluate_series(_release_rows(rows), series=_TIME)
+
+    adjacent, gapped = run("2026-02-12"), run("2026-02-13")
+    assert _severities(adjacent[-3:]) == _severities(gapped[-3:]) == [
+        Severity.WATCH, Severity.CONFIRMED, Severity.CONFIRMED,
+    ]
+    for a, g in zip(adjacent[-2:], gapped[-2:]):
+        assert _window(a) == _window(g) == ("2026-02-10", "2026-02-11")
+        assert a.onset_run_date == g.onset_run_date == "2026-02-11"
+        assert a.last_accepted_run_date == g.last_accepted_run_date == "2026-02-10"
+
+
+def test_downward_carry_over_window_mirrors_upward():
+    # Direction is a mechanical sign: a downward step carried across a release
+    # boundary confirms with exactly the mirrored severities and the same
+    # last-good → first-bad window as the upward case.
+    rows = _steady_rows() + [
+        ("2026-02-11", "2026-02-11", 80.0),    # release B: first strike, DOWN
+        ("2026-02-12", "2026-02-12", 79.5),    # release C confirms
+    ]
+    verdicts = evaluate_series(_release_rows(rows), series=_TIME)
+    assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
+    confirmed = verdicts[-1]
+    assert confirmed.direction is Direction.DOWN
+    assert _window(confirmed) == ("2026-02-10", "2026-02-11")
+
+
+def test_once_per_release_cadence_still_confirms_a_persistent_step():
+    # The common cadence: every release benchmarked exactly once. The carried
+    # strike is what makes confirmation possible at all here — clearing
+    # pending at each boundary would leave this cadence permanently blind.
+    rows = _steady_rows() + [
+        ("2026-02-11", "2026-02-11", 120.0),
+        ("2026-02-12", "2026-02-12", 120.5),
+        ("2026-02-13", "2026-02-13", 120.2),
+    ]
+    verdicts = evaluate_series(_release_rows(rows), series=_TIME)
+    assert _severities(verdicts[-3:]) == [
+        Severity.WATCH, Severity.CONFIRMED, Severity.OK,
+    ]
+    assert _window(verdicts[-2]) == ("2026-02-10", "2026-02-11")
+    assert "re-anchoring" in verdicts[-1].reason
+
+
 def test_all_nights_of_a_release_share_one_baseline_snapshot():
     # The snapshot is frozen on entering the release: a night's own value
     # must never shift what a later night of the same release is judged

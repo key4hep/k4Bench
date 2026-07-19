@@ -169,6 +169,24 @@ def _dashboard_link(dashboard_url: str, **params: str) -> str:
     return urlunsplit(split._replace(query=urlencode(query)))
 
 
+#: Query value selecting the dashboard's flagged metrics that belong to no
+#: change window (watches, and confirmations with no bounded onset).
+WINDOW_WATCH_TOKEN = "watch"
+
+
+def window_token(base_release: str | None, onset_release: str | None) -> str:
+    """A change window as a compact, URL-safe ``?window=`` value —
+    ``2026-06-25..2026-06-27``, or ``..2026-06-27`` when the older end is open.
+
+    Shared by the email (which emits the link) and the dashboard's Regressions
+    tab (which reads it back), so a deep link always selects the window whose
+    metrics and candidate PRs the mail was talking about. ``..`` rather than the
+    displayed ``→`` keeps the value readable in a URL bar instead of
+    percent-encoded.
+    """
+    return f"{base_release or ''}..{onset_release or ''}"
+
+
 # ── JSON (EOS artifact) ───────────────────────────────────────────────────────
 
 def _sanitize(obj):

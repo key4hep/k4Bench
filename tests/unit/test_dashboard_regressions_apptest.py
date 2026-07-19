@@ -190,10 +190,15 @@ def test_missing_detector_names_the_covered_ones():
 
 # ── the sidebar's release offers its report nights, ranked by severity ────────
 
-def _report_param(at: AppTest) -> str:
-    """The ``?report=`` value, normalising AppTest's list-or-scalar return."""
-    v = at.query_params["report"]
+def _query_param(at: AppTest, name: str) -> str:
+    """A query param's value, normalising AppTest's list-or-scalar return."""
+    v = at.query_params[name]
     return v[0] if isinstance(v, list) else v
+
+
+def _report_param(at: AppTest) -> str:
+    """The ``?report=`` value."""
+    return _query_param(at, "report")
 
 
 def _quiet_report() -> dict:
@@ -761,10 +766,12 @@ def test_stale_blame_with_a_different_window_is_not_joined():
     assert not any("Pull request" in d.value.columns for d in at.dataframe)
 
 
-def test_reruns_share_first_confirmed_release_attribution():
-    """A later rerun can confirm another metric, but it measured the same
-    software and must not add a second package window to the release view.
-    The first confirmed night's sidecar supplies the stable PR ranking too."""
+def test_rerun_confirming_a_later_window_shows_both_changes():
+    """A rerun measures the same software, so it adds no *new* package
+    comparison — but a metric reaching its second strike on the rerun can carry
+    a window describing an earlier, different stack transition. Those are two
+    changes, so both get a card, each pinned to the report night that first
+    confirmed it, and a lead-in says the metrics split between them."""
     from k4bench.blame.models import CandidatePR
 
     canonical = _windowed_confirmed()
@@ -794,17 +801,252 @@ def test_reruns_share_first_confirmed_release_attribution():
     )
 
     captions = [c.value for c in at.caption]
-    windows = [c for c in captions if "Change window:" in c]
+    assert any(
+        "2 separate changes are confirmed for this release" in c for c in captions
+    )
+    # Both windows are on offer; the newest onset leads and is shown first.
+    (window_picker,) = [
+        c for c in at.segmented_control if c.label == "Change window"
+    ]
+    # Each pill displays its own size, so the split is legible before clicking
+    # (the leading badge becomes the pill's icon, so it is not part of the
+    # label), while the stored value stays the plain window label.
+    assert list(window_picker.options) == [
+        f"2026-07-04 → {NIGHT} · **1 regression**",
+        "2026-07-01 → 2026-07-04 · **1 regression**",
+    ]
+    # The stored value is the URL-safe token an emailed deep link carries.
+    assert window_picker.value == f"2026-07-04..{NIGHT}"
+    assert _query_param(at, "window") == f"2026-07-04..{NIGHT}"
+    windows = [c for c in captions if "Change entered:" in c]
     assert len(windows) == 1
-    assert "2026-07-04" in windows[0]
-    assert NIGHT not in windows[0]
-    assert any("first confirmed report night" in c and NIGHT in c for c in captions)
-    # The selected later night has no sidecar; the ranking must come from the
-    # release's canonical first-confirmed night.
+    assert f"Change entered: **2026-07-04 → {NIGHT}**" in windows[0]
+    # This window was first confirmed on the rerun, and has no sidecar of its
+    # own — so it honestly reports no ranking rather than borrowing the other
+    # window's PRs.
+    assert "first confirmed on report night **2026-07-11**" in windows[0]
+    assert not any("Pull request" in d.value.columns for d in at.dataframe)
+    # The trend preview offers only the metric whose change entered in *this*
+    # window — the picker scopes the plot, not just the attribution.
+    (preview,) = at.selectbox
+    assert [o for o in preview.options if o != "—"] == [
+        "🔴 Regression · median event time · baseline — Δ +15.0%"
+    ]
+
+    # Switching to the original window shows its metrics and only its PRs,
+    # still attributed to the night that first confirmed it.
+    window_picker.set_value("2026-07-01..2026-07-04").run()
+    assert not at.exception, at.exception
+    captions = [c.value for c in at.caption]
+    windows = [c for c in captions if "Change entered:" in c]
+    assert len(windows) == 1
+    assert "Change entered: **2026-07-01 → 2026-07-04**" in windows[0]
+    assert f"first confirmed on report night **{NIGHT}**" in windows[0]
     assert "AI-generated PR ranking" in " ".join(captions)
     pr_frames = [d.value for d in at.dataframe if "Pull request" in d.value.columns]
     assert len(pr_frames) == 1
     assert list(pr_frames[0]["Pull request"]) == ["key4hep/k4geo#1234"]
+    (preview,) = at.selectbox
+    assert [o for o in preview.options if o != "—"] == [
+        "🔴 Regression · wall time · baseline — Δ +20.0%"
+    ]
+
+
+def test_window_deep_link_opens_that_change_window():
+    """The link a nightly email emits per change window: ``?window=`` selects
+    it directly, so the reader lands on the metrics and PRs the mail named
+    rather than on whichever window happens to be largest."""
+    canonical = _windowed_confirmed()
+    smaller = _verdict(
+        "median_time_s", Severity.CONFIRMED, 0.15, run_id="2026-07-11",
+        onset_run_id=NIGHT, onset_run_date=NIGHT,
+        last_accepted_run_id="2026-07-04", last_accepted_run_date="2026-07-04",
+    )
+    at = _run(
+        reports_map={
+            NIGHT: _report([_group(verdicts=[canonical])]),
+            "2026-07-11": _report([_group(
+                verdicts=[
+                    canonical,
+                    # A second metric sharing the canonical window, so that
+                    # window is the larger one and leads the pill order.
+                    _verdict(
+                        "peak_rss_mb", Severity.CONFIRMED, -0.30,
+                        onset_run_id="2026-07-04", onset_run_date="2026-07-04",
+                        last_accepted_run_id="2026-07-01",
+                        last_accepted_run_date="2026-07-01",
+                    ),
+                    smaller,
+                ],
+            )]),
+        },
+        dates=("2026-07-11", NIGHT),
+        stacks_dates={STACK: [NIGHT, "2026-07-11"]},
+        query_params={"report": "2026-07-11", "window": f"2026-07-04..{NIGHT}"},
+    )
+    (picker,) = [c for c in at.segmented_control if c.label == "Change window"]
+    # The linked window is selected even though the other one is larger and
+    # therefore leads the pill order.
+    assert picker.options[0] == "2026-07-01 → 2026-07-04 · **2 regressions**"
+    assert picker.value == f"2026-07-04..{NIGHT}"
+    captions = " ".join(c.value for c in at.caption)
+    assert f"Change entered: **2026-07-04 → {NIGHT}**" in captions
+
+
+def test_watch_metrics_stay_reachable_beside_the_change_windows():
+    """A watch belongs to no change window, so scoping to a window would put it
+    out of the trend preview's reach. It gets its own pill instead — and no
+    upstream attribution, because there is no window to attribute."""
+    watch = _verdict("mean_time_s", Severity.WATCH, 0.50)
+    at = _run(
+        _report([_group(verdicts=[_windowed_confirmed(), watch])]),
+        stacks_dates={STACK: [NIGHT]},
+    )
+    (picker,) = [c for c in at.segmented_control if c.label == "Change window"]
+    assert list(picker.options) == [
+        "2026-07-01 → 2026-07-04 · **1 regression**", "Watch · **1 metric**",
+    ]
+    at = picker.set_value("watch").run()
+    assert not at.exception, at.exception
+    (preview,) = at.selectbox
+    assert [o for o in preview.options if o != "—"] == [
+        "⚠️ Watch · mean event time · baseline — Δ +50.0%"
+    ]
+    assert not any("What changed upstream" in str(m.value) for m in at.markdown)
+
+
+def test_quiet_rerun_keeps_the_releases_change_windows():
+    """Every metric falling back inside the band for one night does not undo
+    the release's confirmed change: the upstream cards stay, attributed to the
+    night that confirmed them."""
+    at = _run(
+        reports_map={
+            NIGHT: _report([_group(verdicts=[_windowed_confirmed()])]),
+            "2026-07-11": _quiet_report(),
+        },
+        dates=("2026-07-11", NIGHT),
+        stacks_dates={STACK: [NIGHT, "2026-07-11"]},
+        query_params={"report": "2026-07-11"},
+    )
+    captions = " ".join(c.value for c in at.caption)
+    assert "Change entered: **2026-07-01 → 2026-07-04**" in captions
+    assert f"first confirmed on report night **{NIGHT}**" in captions
+
+
+def _same_release_confirmed() -> MetricVerdict:
+    """A confirmed regression whose change entered *within* one release —
+    baseline and onset are the same stack."""
+    return _verdict(
+        "median_time_s", Severity.CONFIRMED, 0.15,
+        onset_run_id="2026-07-04", onset_run_date="2026-07-04",
+        last_accepted_run_id="2026-07-03", last_accepted_run_date="2026-07-04",
+    )
+
+
+def test_same_release_deep_link_opens_that_window():
+    """The email emits ``R..R`` for a same-release window (both ends set), so
+    the dashboard must key that window the same way — otherwise the mail's link
+    lands on whichever window leads instead."""
+    at = _run(
+        _report([_group(verdicts=[_windowed_confirmed(), _same_release_confirmed()])]),
+        stacks_dates={STACK: [NIGHT]},
+        query_params={"window": "2026-07-04..2026-07-04"},
+    )
+    (picker,) = [c for c in at.segmented_control if c.label == "Change window"]
+    assert picker.value == "2026-07-04..2026-07-04"
+    captions = " ".join(c.value for c in at.caption)
+    assert "Change entered within release **2026-07-04**" in captions
+
+
+def test_open_and_same_release_windows_on_one_onset_stay_distinct():
+    """An open window and a same-release window can share an onset. They are
+    different changes, so they must not collapse onto one pill."""
+    open_window = _verdict(
+        "wall_time_s", Severity.CONFIRMED, 0.20,
+        onset_run_id="2026-07-04", onset_run_date="2026-07-04",
+    )
+    at = _run(
+        _report([_group(verdicts=[open_window, _same_release_confirmed()])]),
+        stacks_dates={STACK: [NIGHT]},
+    )
+    (picker,) = [c for c in at.segmented_control if c.label == "Change window"]
+    assert sorted(picker.options) == [
+        "up to 2026-07-04 · **1 regression**",
+        "within 2026-07-04 · **1 regression**",
+    ]
+
+
+def test_reconfirmed_metric_counts_once_on_a_quiet_rerun():
+    """A window the selected night did not flag falls back to the metrics of
+    the nights that did — once per *metric*, not once per night that
+    reconfirmed it."""
+    confirmed = _windowed_confirmed()
+    at = _run(
+        reports_map={
+            NIGHT: _report([_group(verdicts=[confirmed])]),
+            "2026-07-11": _report([_group(verdicts=[confirmed])]),
+            "2026-07-12": _quiet_report(),
+        },
+        dates=("2026-07-12", "2026-07-11", NIGHT),
+        stacks_dates={STACK: [NIGHT, "2026-07-11", "2026-07-12"]},
+        query_params={"report": "2026-07-12"},
+    )
+    captions = " ".join(c.value for c in at.caption)
+    assert "· 1 metric(s) ·" in captions
+
+
+def test_quiet_rerun_pills_report_what_the_release_confirmed():
+    """Two windows survive a quiet rerun, so the picker renders — its pills say
+    what each window confirmed and that tonight was quiet, rather than
+    contradicting the attribution card with a bare "0 regressions"."""
+    at = _run(
+        reports_map={
+            NIGHT: _report([_group(
+                verdicts=[_windowed_confirmed(), _same_release_confirmed()],
+            )]),
+            "2026-07-11": _quiet_report(),
+        },
+        dates=("2026-07-11", NIGHT),
+        stacks_dates={STACK: [NIGHT, "2026-07-11"]},
+        query_params={"report": "2026-07-11"},
+    )
+    (picker,) = [c for c in at.segmented_control if c.label == "Change window"]
+    assert sorted(picker.options) == [
+        "2026-07-01 → 2026-07-04 · **1 confirmed** · none tonight",
+        "within 2026-07-04 · **1 confirmed** · none tonight",
+    ]
+
+
+def test_single_window_normalises_a_stale_window_param():
+    """One window renders no picker, but the URL must still describe what is on
+    screen: a ``?window=`` carried over from another release is replaced by the
+    window actually shown, so the link stays copyable."""
+    at = _run(
+        _report([_group(verdicts=[_windowed_confirmed()])]),
+        stacks_dates={STACK: [NIGHT]},
+        query_params={"window": "2026-06-01..2026-06-02"},
+    )
+    assert not [c for c in at.segmented_control if c.label == "Change window"]
+    assert _query_param(at, "window") == "2026-07-01..2026-07-04"
+
+
+def test_only_unwindowed_metrics_normalise_the_param_to_the_watch_token():
+    at = _run(
+        _report([_group(verdicts=[_verdict("wall_time_s", Severity.WATCH, 0.2)])]),
+        stacks_dates={STACK: [NIGHT]},
+        query_params={"window": "2026-06-01..2026-06-02"},
+    )
+    assert _query_param(at, "window") == "watch"
+
+
+def test_nothing_flagged_drops_the_window_param():
+    """Nothing to scope, so the parameter says nothing — better absent than
+    naming a window this view never offered."""
+    at = _run(
+        _quiet_report(), stacks_dates={STACK: [NIGHT]},
+        query_params={"window": "2026-06-01..2026-06-02"},
+    )
+    assert "window" not in at.query_params
 
 
 def test_trend_window_has_14_history_releases_and_7_future_releases():
