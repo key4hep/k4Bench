@@ -25,12 +25,8 @@ from data import (
 from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
 from k4bench.regression.engine import Z_THRESHOLD
 from k4bench.regression.models import MetricVerdict, Severity
-from k4bench.regression.render import (
-    _badge,
-    _fmt_pct,
-    _metric_name,
-    _pretty_sample,
-)
+from k4bench.labels import pretty_sample
+from k4bench.regression.render import _badge, _fmt_pct, _metric_name
 from k4bench.regression.report_builder import (
     EVENT_METRICS,
     RUN_METRICS,
@@ -64,7 +60,7 @@ def metric_option(
     """
     parts = [_badge(verdict), pretty_metric(verdict), verdict.label]
     if include_scope:
-        parts.append(f"{verdict.detector}, {_pretty_sample(verdict.sample)}")
+        parts.append(f"{verdict.detector}, {pretty_sample(verdict.sample)}")
     if include_window:
         base = verdict.last_accepted_run_date or "?"
         parts.append(f"{base} → {verdict.onset_run_date}")
@@ -134,7 +130,7 @@ def _drilldown_caption(
     context = f"{item.detector} · " if include_scope else ""
     return (
         f"**{item.reason}** — {context}{item.label}, "
-        f"{_pretty_sample(item.sample)}"
+        f"{pretty_sample(item.sample)}"
     )
 
 

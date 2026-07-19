@@ -15,6 +15,7 @@ import pytest
 import requests
 
 from k4bench.blame import rank as rank_mod
+from k4bench.labels import pretty_sample
 from k4bench.blame.rank import (
     MetricStep,
     OpenAICompatRanker,
@@ -76,7 +77,8 @@ def _ranker(actions, **kwargs) -> OpenAICompatRanker:
     )
 
 
-def _request(candidates=None, metrics=None) -> RankRequest:
+def _request(candidates=None, metrics=None, detector="IDEA_o1_v03",
+             sample="single_mu-") -> RankRequest:
     if candidates is None:
         candidates = (
             RankCandidate(repo="key4hep/k4geo", number=10, title="Lower the step limit",
@@ -91,8 +93,8 @@ def _request(candidates=None, metrics=None) -> RankRequest:
         )
     return RankRequest(
         metrics=metrics,
-        detector="IDEA_o1_v03", platform="x86_64-almalinux9-gcc14.2.0-opt",
-        sample="single_mu-",
+        detector=detector, platform="x86_64-almalinux9-gcc14.2.0-opt",
+        sample=sample,
         base_release="2026-07-03", onset_release="2026-07-04",
         candidates=candidates,
     )
@@ -119,6 +121,109 @@ def test_prompt_carries_the_regression_and_every_candidate():
     assert "+ more steps here" in prompt
     # The response shape it must answer in.
     assert '"rankings"' in prompt
+
+
+def test_prompt_states_the_full_run_context():
+    # One shared library can regress several detectors in the same window, each
+    # ranked in its own call: the run the reason must be about — detector,
+    # sample and the decomposed build platform — is spelled out, not left to a
+    # raw slug the model can under-weight against a large diff.
+    prompt = _build_user_prompt(_request(sample="p8_ee_Zbb_ecm91"))
+    assert "- Detector: IDEA_o1_v03" in prompt
+    assert "p8_ee_Zbb_ecm91" in prompt                     # raw identity
+    assert "Pythia8: e⁺e⁻ → Z → bb (91 GeV)" in prompt     # what is simulated
+    assert "x86_64-almalinux9-gcc14.2.0-opt" in prompt     # raw slug
+    for part in ("x86_64", "AlmaLinux 9", "GCC 14.2.0", "optimized"):
+        assert part in prompt                              # decomposed build
+    assert "- Release window: 2026-07-03 → 2026-07-04" in prompt
+
+
+def test_prompt_asks_the_plausibility_question_about_this_run():
+    # The instruction is a question about *this* run, not a list of
+    # prohibitions: the context is what steers the answer. It is asked again
+    # after the candidates, naming this run's identifiers, so it is the last
+    # thing read before the model answers.
+    prompt = _build_user_prompt(_request(sample="p8_ee_Zbb_ecm91"))
+    question = prompt.rsplit("\n\n", 1)[-1]
+    assert "makes sense that this change affected" in question
+    assert "IDEA_o1_v03" in question and "p8_ee_Zbb_ecm91" in question
+
+
+def test_prompt_allows_a_shared_infrastructure_answer():
+    # Not every regression has a detector- or sample-specific mechanism: a
+    # framework, allocation or build-flag change moves the metrics without one.
+    # Demanding a context-specific story would make the model invent it.
+    prompt = _build_user_prompt(_request())
+    assert "shared infrastructure" in rank_mod._SYSTEM_PROMPT
+    assert "shared code the run goes through" in prompt
+
+
+def test_prompt_carries_no_context_from_another_detectors_request():
+    # Two windows differing only in detector: neither prompt may carry any
+    # identifier derived from the other request.
+    idea = _request(detector="IDEA_o2_v01", sample="p8_ee_Zbb_ecm91")
+    allegro = _request(detector="ALLEGRO_o1_v03", sample="single_mu-")
+    idea_prompt = _build_user_prompt(idea)
+    allegro_prompt = _build_user_prompt(allegro)
+    for prompt, mine, theirs in (
+        (idea_prompt, idea, allegro), (allegro_prompt, allegro, idea),
+    ):
+        # Every identifier of this run is present…
+        assert mine.detector in prompt and mine.sample in prompt
+        # …and every identifier unique to the other run is absent, including
+        # the readable sample label derived from it.
+        assert theirs.detector not in prompt
+        assert theirs.sample not in prompt
+        assert pretty_sample(theirs.sample) not in prompt
+
+
+def test_prompt_preserves_every_metric_and_candidate_exactly_once():
+    # The context block is assembled, not filtered: nothing may be dropped,
+    # duplicated or reordered on the way into the prompt.
+    metrics = (
+        MetricStep(metric="wall_time_s", metric_family="time", direction="UP",
+                   pct_change=0.2, label="baseline"),
+        MetricStep(metric="peak_rss_mb", metric_family="memory", direction="UP",
+                   pct_change=0.15, label="baseline"),
+        MetricStep(metric="wall_time_s", metric_family="time", direction="UP",
+                   pct_change=0.35, label="without_HCAL"),
+    )
+    request = _request(metrics=metrics)
+    prompt = _build_user_prompt(request)
+    bullets = [ln for ln in prompt.splitlines() if ln.startswith("  - ")]
+    assert bullets == [
+        "  - wall_time_s (baseline) up +20.0%",
+        "  - peak_rss_mb (baseline) up +15.0%",
+        "  - wall_time_s (without_HCAL) up +35.0%",
+    ]
+    numbers = [int(ln.split("#")[1].split(" ")[0])
+               for ln in prompt.splitlines() if ln.startswith("- #")]
+    assert numbers == [c.number for c in request.candidates]
+
+
+def test_unrecognized_sample_and_platform_degrade_to_the_raw_names():
+    request = RankRequest(
+        metrics=(MetricStep(metric="wall_time_s", metric_family="time",
+                            direction="UP", pct_change=0.2, label="baseline"),),
+        detector="IDEA_o1_v03", platform="some-future-triplet",
+        sample="whatever_v2", base_release=None, onset_release="2026-07-04",
+        candidates=(RankCandidate(repo="key4hep/k4geo", number=1, title="t"),),
+    )
+    prompt = _build_user_prompt(request)
+    assert "- Sample: whatever_v2\n" in prompt
+    assert "- Platform: some-future-triplet\n" in prompt
+    assert "- Release window: 2026-07-04" in prompt
+
+
+def test_system_message_travels_with_every_call():
+    ranker = _ranker([_completion(_rankings_json(
+        {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 1, "reason": "x"},
+        {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 1, "reason": "y"},
+    ))])
+    ranker.rank(_request())
+    messages = ranker.session.calls[0].json["messages"]
+    assert messages[0] == {"role": "system", "content": rank_mod._SYSTEM_PROMPT}
+    assert "- Detector: IDEA_o1_v03" in messages[1]["content"]
 
 
 def test_prompt_direction_and_subdetector_render():

@@ -45,6 +45,8 @@ from typing import Protocol
 
 import requests
 
+from k4bench.labels import describe_platform, pretty_sample
+
 _log = logging.getLogger(__name__)
 
 
@@ -128,14 +130,21 @@ class Ranker(Protocol):
 
 _SYSTEM_PROMPT = (
     "You attribute a software performance regression to the pull request most "
-    "likely responsible. You are given every metric that moved across the same "
-    "release window — each labelled with the benchmark configuration it was "
-    "measured under, e.g. a detector-removal sweep's baseline vs. "
-    "without_<detector> runs — and, for each package that changed, the pull "
-    "requests in its commit range with their code diffs. Score each PR "
-    "independently 0-100 for how likely it caused the regressions as a whole, "
-    "and give a one-sentence reason grounded in the diff. Do not invent PRs. "
-    "Output JSON only."
+    "likely responsible. You are given the run context the regression was "
+    "measured in — one detector, one physics sample, one build platform — plus "
+    "every metric that moved across the same release window, each labelled with "
+    "the benchmark configuration it was measured under, e.g. a detector-removal "
+    "sweep's baseline vs. without_<detector> runs — and, for each package that "
+    "changed, the pull requests in its commit range with their code diffs. "
+    "Score each PR independently 0-100 for how likely it caused the regressions "
+    "as a whole, and give a one-sentence reason grounded in the diff. "
+    "For every candidate, ask whether it makes sense that this change affected "
+    "the metrics of the run in the context — its detector, its sample, its "
+    "build, or the shared infrastructure that run goes through (framework, "
+    "allocation, I/O, logging, build flags). A shared-infrastructure cause is a "
+    "perfectly good answer: say so at that level rather than inventing a "
+    "detector- or sample-specific mechanism the diff does not show. "
+    "Do not invent PRs. Output JSON only."
 )
 
 #: Total *diff* budget (chars) across all candidates. Per-PR patches are
@@ -377,7 +386,9 @@ def ranker_from_env() -> Ranker | None:
 _RESPONSE_INSTRUCTION = (
     'Respond with JSON only, no prose: {"rankings": [{"repo": "<owner/repo>", '
     '"pr": <number>, "likelihood": <0-100>, "reason": "<one sentence grounded '
-    'in the diff>"}]}. Score every candidate listed above and invent none.'
+    'in the diff, at whatever level the diff supports — this detector and '
+    'sample, or the shared code the run goes through>"}]}. '
+    'Score every candidate listed above and invent none.'
 )
 
 
@@ -390,21 +401,59 @@ def _direction_phrase(step: MetricStep) -> str:
     return word
 
 
-def _regression_lines(request: RankRequest) -> str:
-    """The header line (where and when) plus one bullet per metric that
-    stepped across the window — every metric rides in the same block, so the
-    model judges the candidates against the window's full picture rather than
-    a single arbitrary metric sharing it."""
+def _sample_line(sample: str) -> str:
+    """``"- Sample: p8_ee_Zbb_ecm91 — Pythia8: e⁺e⁻ → Z → bb (91 GeV)"``.
+
+    The raw directory name is the identity the rest of the report uses; the
+    readable form tells the model what physics is actually being simulated,
+    which is what decides whether a diff can plausibly touch it."""
+    pretty = pretty_sample(sample)
+    return f"- Sample: {sample}" + (f" — {pretty}" if pretty != sample else "")
+
+
+def _platform_line(platform: str) -> str:
+    """``"- Platform: <slug> — x86_64 · AlmaLinux 9 · GCC 14.2.0 (optimized)"``.
+
+    The slug alone under-reads: a codegen- or build-flag-sensitive change lands
+    differently under ``opt`` than ``dbg`` and across compiler versions, so the
+    architecture, OS, compiler and build type are spelled out — all four from
+    :func:`~k4bench.labels.describe_platform`, which owns the layout. An
+    unrecognized platform degrades to the raw slug."""
+    label = describe_platform(platform)
+    if label is None:
+        return f"- Platform: {platform}"
+    return (
+        f"- Platform: {platform} — {label.architecture} · {label.os} · "
+        f"{label.compiler} ({label.build_type})"
+    )
+
+
+def _run_context_lines(request: RankRequest) -> str:
+    """The labelled run context — detector, sample, platform, release window —
+    plus one bullet per metric that stepped across the window.
+
+    Every metric rides in the same block, so the model judges the candidates
+    against the window's full picture rather than a single arbitrary metric
+    sharing it. The context is spelled out line by line because one shared
+    library can regress several detectors in the same window: each detector is
+    ranked in its own call, and a terse header is too easy to under-weight
+    against a large diff — the answer must be about *this* run, not the most
+    prominent detector in the diff."""
     window = request.onset_release
     if request.base_release:
         window = f"{request.base_release} → {request.onset_release}"
-    header = f"{request.detector} / {request.sample} on {request.platform}, between releases {window}:"
-    lines = [header]
+    lines = [
+        f"- Detector: {request.detector}",
+        _sample_line(request.sample),
+        _platform_line(request.platform),
+        f"- Release window: {window}",
+        "- Metrics that stepped across the window:",
+    ]
     for step in request.metrics:
         subject = f"{step.metric} ({step.label})"
         if step.sub_detector:
             subject += f" [{step.sub_detector}]"
-        lines.append(f"- {subject} {_direction_phrase(step)}")
+        lines.append(f"  - {subject} {_direction_phrase(step)}")
     return "\n".join(lines)
 
 
@@ -461,8 +510,9 @@ def _build_user_prompt(request: RankRequest) -> str:
     """The user message: the window's regressions, then every candidate grouped
     by package, each with its fair share of the total diff budget."""
     parts = [
-        "Regression window:",
-        _regression_lines(request),
+        f"Run context — the {request.detector} run these metrics were "
+        f"measured on; judge every candidate against it:",
+        _run_context_lines(request),
         "",
         "Candidate pull requests, grouped by package — score each on its own:",
     ]
@@ -482,6 +532,13 @@ def _build_user_prompt(request: RankRequest) -> str:
             parts.append(_render_candidate(candidate, budget_for[candidate]))
 
     parts.append("")
+    parts.append(
+        f"For each pull request above, ask whether it makes sense that this "
+        f"change affected the metrics measured on {request.detector} with "
+        f"{request.sample} — through that detector and sample specifically, or "
+        f"through shared code the run goes through — and let that answer decide "
+        f"the score and the reason."
+    )
     parts.append(_RESPONSE_INSTRUCTION)
     return "\n".join(parts)
 

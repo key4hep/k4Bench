@@ -44,14 +44,13 @@ from k4bench.regression.models import (
     RunGroupReport,
     Severity,
 )
+from k4bench.labels import pretty_platform, pretty_sample
 from k4bench.regression.render import (
     _dashboard_link,
     _detector_badge,
     _fmt,
     _fmt_pct,
     _group_title,
-    _pretty_platform,
-    _pretty_sample,
     window_token,
 )
 
@@ -1257,7 +1256,7 @@ def _html_attention_card(
         f"background:{_C_CARD_BG};padding:12px 14px;margin:12px 0;\">"
         f'<div style="font-size:16px;font-weight:700;">{_esc(group.detector)}</div>'
         f'<div style="font-size:13px;color:{_C_MUTED};">'
-        f"{_esc(_pretty_sample(group.sample))} · {_esc(_pretty_platform(group.platform))}</div>"
+        f"{_esc(pretty_sample(group.sample))} · {_esc(pretty_platform(group.platform))}</div>"
         f'<div style="font-size:12px;color:{_C_FAINT};margin:2px 0 4px;">'
         f"{_esc(group.k4h_release or 'no release')} · {counts_html}</div>"
         f"{failure_msgs}{rows_html}{actions_html}{context_html}{ranking}</div>"
@@ -1538,7 +1537,7 @@ def _md_attention_card(
     if n_watch:
         counts.append(f"{n_watch} WATCH")
     lines = [
-        f"### {group.detector} · {_pretty_sample(group.sample)}",
+        f"### {group.detector} · {pretty_sample(group.sample)}",
         f"{group.k4h_release or 'no release'} · {' · '.join(counts)}",
         "",
     ]

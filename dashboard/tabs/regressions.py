@@ -30,11 +30,11 @@ from k4bench.regression.models import (
     RunGroupReport,
     Severity,
 )
+from k4bench.labels import pretty_sample
 from k4bench.regression.render import (
     WINDOW_WATCH_TOKEN,
     _detector_badge,
     _group_title,
-    _pretty_sample,
     from_json,
     window_token,
 )
@@ -449,7 +449,7 @@ def _render_no_group_notice(
     if others:
         scopes = "; ".join(_group_title(g) for g in others)
         st.info(
-            f"The {night} report has no **{_pretty_sample(sample)}** run group "
+            f"The {night} report has no **{pretty_sample(sample)}** run group "
             f"for **{detector}** on the selected platform. Judged that night: "
             f"{scopes} — switch the sidebar to one of those."
         )
