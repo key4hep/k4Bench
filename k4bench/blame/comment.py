@@ -60,6 +60,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from k4bench.blame.attribute import (
+    MAX_COMPETITORS,
     Attribution,
     Attributor,
     AttributionRequest,
@@ -528,11 +529,15 @@ def _outcomes_for(
     A configuration counts only when it genuinely produced a clean measurement
     to compare against — it ran the same release the regressed rows were
     measured on, its host was judged reliable, its group had no job failure, it
-    recorded no metric failure of its own, and it holds no confirmed step in
-    this window. Everything else is silence from a run that did not happen or
-    cannot be read, and silence must never be rendered as evidence of absence:
-    ``reliable is None`` means *no evidence either way*, so it is treated like
-    an unreliable run rather than like a clean one."""
+    recorded no metric failure of its own, it confirmed no step inside this
+    window, and at least one of its metrics could actually be judged. Everything
+    else is silence from a run that did not happen or cannot be read, and silence
+    must never be rendered as evidence of absence: ``reliable is None`` means *no
+    evidence either way*, so it is treated like an unreliable run rather than
+    like a clean one, and a metric with too little history to judge
+    (``UNKNOWN``) is unread rather than flat — it never contributes to the clean
+    verdict, and the ones that remain are counted onto the outcome so the prompt
+    can state the gap."""
     window = (plan.base_release, plan.onset_release)
     regressed = plan.scopes
     stacks = {row.stack for row in plan.rows}
@@ -553,11 +558,17 @@ def _outcomes_for(
         for verdict in group.verdicts:
             by_label.setdefault(verdict.label, []).append(verdict)
         for label, verdicts in by_label.items():
-            if any(v.severity is Severity.CONFIRMED and _window_of(v) == window
-                   for v in verdicts):
+            if any(_steps_in_window(v, window) for v in verdicts):
                 continue  # stepped in this very window — it is not a control
             if any(v.severity is Severity.FAILURE for v in verdicts):
                 continue  # a configuration that partly failed did not run clean
+            unjudged = sum(1 for v in verdicts if v.severity is Severity.UNKNOWN)
+            if unjudged == len(verdicts):
+                # Nothing here was judged at all — the configuration ran, but
+                # every metric is still warming up. "No evidence" rendered as
+                # "did not move" is the false control this whole function is
+                # written to avoid.
+                continue
             watched = tuple(sorted(
                 {v.metric for v in verdicts if v.severity is Severity.WATCH}
             ))[:_MAX_WATCHED_METRICS]
@@ -565,6 +576,7 @@ def _outcomes_for(
                 detector=group.detector, platform=group.platform,
                 sample=group.sample, label=label,
                 status="watch" if watched else "clean", watched=watched,
+                unjudged=unjudged,
             ))
     # Controls from a run group that *did* regress first: those are the
     # like-for-like comparisons — same detector, same sample, same platform,
@@ -579,8 +591,26 @@ def _outcomes_for(
     ))
 
 
-def _window_of(verdict: MetricVerdict) -> tuple[str | None, str | None]:
-    return (verdict.last_accepted_run_date, verdict.onset_run_date)
+def _steps_in_window(
+    verdict: MetricVerdict, window: tuple[str | None, str]
+) -> bool:
+    """Does *verdict* place a confirmed step inside this comment's window?
+
+    Onset, not the whole ``(base, onset)`` pair: the base is *inferred* per
+    metric series — the last release that metric was settled on — so the same
+    step can be reported against different bases by different metrics, and
+    requiring both to match would read a configuration that stepped on exactly
+    this release as one that never moved. Anything that stepped strictly inside
+    the window is ours too; a step onsetting after it left this window flat and
+    is still a control for it. An unplaceable onset counts as inside, because a
+    step nobody can date is not evidence of flatness."""
+    if verdict.severity is not Severity.CONFIRMED:
+        return False
+    base, onset = window
+    at = verdict.onset_run_date
+    if at is None:
+        return True
+    return at <= onset and (base is None or at > base)
 
 
 # ── Building ──────────────────────────────────────────────────────────────────
@@ -699,7 +729,12 @@ def _attribution_request(plan: CommentPlan, fetch: PatchFor) -> AttributionReque
                 scope_score=other.score, scope_reason=other.description,
                 patch=fetch(other.repo, other.number),
             )
-            for other in _sorted_others(plan)
+            # Cut the field to what the prompt can actually carry *before*
+            # fetching anything: the prompt keeps the strongest
+            # `MAX_COMPETITORS` in this same order, so a window with a hundred
+            # candidates would otherwise spend a hundred GitHub round trips —
+            # inside one shared timeout — to show thirty.
+            for other in _sorted_others(plan)[:MAX_COMPETITORS]
         ),
         packages=plan.packages,
         n_unchanged=plan.n_unchanged,
@@ -859,7 +894,14 @@ def _assessment(
 
     With a cross-configuration review, that is its summary: it saw every
     configuration that moved and every one that did not, so it is the account
-    that can actually explain the pattern. Without one, the comment falls back to
+    that can actually explain the pattern. It does not necessarily account for
+    every row in the table, though — a very wide window offers the review only
+    its largest movements, and a reply may answer only some of what it was
+    offered — so a partial review says which rows it covered. A narrative reading
+    "this PR does not fit the affected set" printed above rows still carrying an
+    unrelated 91% must not look like it was talking about them.
+
+    Without a review, the comment falls back to
     the per-configuration ranker's one-liner for its strongest row, and then it
     claims "the most likely cause" only when this PR outranks every other
     candidate — a comment can fire on any score above ``min_score``, and a PR the
@@ -869,7 +911,10 @@ def _assessment(
     if attribution is not None:
         text = _one_line(attribution.summary, _MAX_SUMMARY_CHARS)
         if text:
-            return f"\n> 🤖 **The AI reviewer's assessment:** {text}"
+            return (
+                f"\n> 🤖 **The AI reviewer's assessment:** {text}"
+                + _coverage_note(rows, attribution)
+            )
         return None
     lead = rows[0] if rows else None
     text = _one_line(lead.scope_reason, _MAX_DESCRIPTION_CHARS) if lead else ""
@@ -882,6 +927,28 @@ def _assessment(
     return (
         f"\n> 🤖 **The AI ranker judged this PR {claim} cause of the "
         f"regression:** {text}"
+    )
+
+
+def _coverage_note(
+    rows: list[RegressionRow], attribution: Attribution
+) -> str:
+    """What the assessment above does *not* cover, when it covers less than all.
+
+    Two ways a row goes unreviewed: the window carried more regressions than the
+    prompt offers (only the largest movements are shown), or the reply simply
+    skipped it. Either way the row keeps its per-configuration likelihood
+    (:func:`_likelihood`) and the table shows it — so the summary has to say it
+    was not part of what the reviewer weighed. Nothing is added when every row
+    was answered, which is the ordinary night."""
+    unreviewed = sum(1 for row in rows if row.fact_id not in attribution.likelihoods)
+    if not unreviewed:
+        return ""
+    return (
+        f"\n>\n> <sub>This assessment covers "
+        f"{_count(len(rows) - unreviewed, 'regression')} of {len(rows)}; the "
+        f"remaining {unreviewed} keep the per-configuration ranker's score and "
+        "were not part of it.</sub>"
     )
 
 
@@ -1000,7 +1067,10 @@ def _table(
     ]
     lines = [
         "",
-        "##### 📊 Regressions attributed to this pull request",
+        # "reviewed against", not "attributed to": the table deliberately keeps
+        # rows the review scored *down*, and a 20% row under a heading claiming
+        # attribution reads as an accusation the numbers next to it deny.
+        "##### 📊 Regressions reviewed against this pull request",
         "",
         *head,
         *(_line(row) for row in shown),

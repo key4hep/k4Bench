@@ -254,7 +254,7 @@ def test_competitors_are_capped_by_strength_not_by_walk_order():
     competitors = tuple(
         CompetingPR(repo="key4hep/k4geo", number=n, url=f"https://gh/{n}",
                     title=f"PR {n}", scope_score=float(n))
-        for n in range(1, attr_mod._MAX_COMPETITORS + 6)
+        for n in range(1, attr_mod.MAX_COMPETITORS + 6)
     )
     prompt = build_user_prompt(_request(competitors=competitors))
     strongest = competitors[-1]
@@ -300,6 +300,24 @@ def test_an_invented_regression_is_dropped():
         _completion(_reply(r1=90, r9="80"))
     ]).attribute(request)
     assert set(attribution.likelihoods) == {"r1"}
+
+
+def test_a_row_past_the_prompt_cap_cannot_be_scored_either():
+    # Only-echo is enforced against what the prompt *offered*, not against every
+    # regression in the window: a row the model was never shown can only have
+    # been guessed at, and a guessed judgement of an unreviewed row is exactly
+    # what must never reach someone else's pull request.
+    rows = tuple(
+        _fact(f"r{n}", metric=f"m{n}", pct_change=n / 1000)
+        for n in range(1, attr_mod._MAX_ATTRIBUTED_ROWS + 3)
+    )
+    request = _request(regressions=rows)
+    dropped = rows[0].id   # smallest movement — cut from the prompt
+    offered = rows[-1].id
+    attribution = _attributor([
+        _completion(_reply(**{dropped: 95, offered: 40}))
+    ]).attribute(request)
+    assert set(attribution.likelihoods) == {offered}
 
 
 def test_a_row_the_model_skipped_is_simply_absent_not_zero():

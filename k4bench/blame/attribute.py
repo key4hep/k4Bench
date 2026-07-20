@@ -21,10 +21,11 @@ diff and the first pass's judgement of it.
 The guarantees mirror :mod:`k4bench.blame.rank`'s, because the failure modes are
 the same and the consequences here are larger:
 
-* **Only-echo.** :func:`_parse_attribution` drops any row id the request did not
-  contain, so a regression the model invented is structurally impossible to
-  surface. A row the model simply omitted keeps the first pass's score — an
-  unanswered row is not a zero.
+* **Only-echo.** :func:`_parse_attribution` drops any row id the prompt did not
+  offer (:func:`_attributed_facts`), so a regression the model invented — or one
+  it guessed the id of past the row cap — is structurally impossible to surface.
+  A row the model simply omitted keeps the first pass's score: an unanswered row
+  is not a zero, and the comment says how many rows the review covered.
 
 * **Honest failure.** Every failure path — no model configured, HTTP error,
   timeout, malformed JSON, a reply with no usable rows — returns ``None``. The
@@ -114,9 +115,15 @@ class ScopeOutcome:
     ``status`` is ``"watch"`` when the configuration has sub-threshold movement
     and ``"clean"`` when it is flat — a distinction worth keeping, because "IDEA
     moved but not enough to confirm" and "IDEA did not move" point at different
-    mechanisms. A configuration that did not run, failed, or ran unreliably is
-    *not* represented here at all: absence of evidence must never be rendered as
-    evidence of absence.
+    mechanisms. A configuration that did not run, failed, ran unreliably, or
+    stepped in this very window is *not* represented here at all: absence of
+    evidence must never be rendered as evidence of absence.
+
+    ``unjudged`` counts the metrics this configuration recorded but could not
+    judge — too little settled history behind them (``UNKNOWN``). They are not
+    flat, they are unread, so the prompt states them: a configuration whose every
+    metric is unjudged never becomes an outcome at all, and one with partial
+    coverage is offered as the partial evidence it is.
     """
 
     detector: str
@@ -125,6 +132,7 @@ class ScopeOutcome:
     label: str
     status: str  # "watch" | "clean"
     watched: tuple[str, ...] = ()  # metric names, when status == "watch"
+    unjudged: int = 0  # metrics recorded with too little history to judge
 
 
 @dataclass(frozen=True)
@@ -278,7 +286,11 @@ _SUBJECT_DIFF_FLOOR = 12000
 #: Display/prompt bounds. Rows beyond the cap keep their per-configuration score
 #: rather than going unscored, and competitors are cut by strength first.
 _MAX_ATTRIBUTED_ROWS = 60
-_MAX_COMPETITORS = 30
+#: Public, because the caller must cut the field to this *before* fetching a diff
+#: for each competitor (:func:`k4bench.blame.comment._attribution_request`) —
+#: fetching a hundred patches to prompt with thirty is a hundred GitHub round
+#: trips inside one shared timeout.
+MAX_COMPETITORS = 30
 _MAX_FILES_LISTED = 12
 _MAX_OUTCOMES_LISTED = 40
 
@@ -392,6 +404,20 @@ def _by_movement(fact: RegressionFact) -> tuple:
     )
 
 
+def _attributed_facts(request: AttributionRequest) -> list[RegressionFact]:
+    """The regressions actually placed in the prompt — biggest step first.
+
+    The single definition of what was *offered*, because the prompt and the parse
+    must agree on it exactly. A window wider than :data:`_MAX_ATTRIBUTED_ROWS`
+    shows the model the largest movements and leaves the rest at their
+    per-configuration score; only-echo then has to be enforced against this set
+    and not against every regression in the request, or ``"r61"`` — an id the
+    model was never shown and can only have guessed — would be accepted as a
+    judgement of a row nobody reviewed.
+    """
+    return sorted(request.regressions, key=_by_movement)[:_MAX_ATTRIBUTED_ROWS]
+
+
 def _regression_lines(request: AttributionRequest) -> list[str]:
     """One block per regression to be scored, grouped by run configuration.
 
@@ -400,11 +426,10 @@ def _regression_lines(request: AttributionRequest) -> list[str]:
     did not" off the shape of the prompt, not reconstruct it from sixty
     identically-shaped lines. Each row carries its id, so scoring never depends on
     re-typing an identity."""
-    # Largest movement first when the cap bites, so what is dropped from a very
-    # wide window is what moved least. A row that does not fit is not scored at
-    # all — only-echo leaves it out of the answer, and the caller keeps its
-    # per-configuration score rather than inventing one.
-    facts = sorted(request.regressions, key=_by_movement)[:_MAX_ATTRIBUTED_ROWS]
+    # A row that does not fit the cap is not scored at all — only-echo leaves it
+    # out of the answer, and the caller keeps its per-configuration score rather
+    # than inventing one.
+    facts = _attributed_facts(request)
     by_scope: dict[tuple[str, str, str], list[RegressionFact]] = {}
     for fact in facts:
         by_scope.setdefault((fact.detector, fact.platform, fact.sample), []).append(fact)
@@ -446,8 +471,10 @@ def _outcome_lines(request: AttributionRequest) -> list[str]:
     a model given only the regressions has no way to tell "every detector moved"
     from "one detector moved and four others did not", and those two windows call
     for opposite conclusions. Configurations that did not run, failed, or ran
-    unreliably never reach this list — the caller drops them, because silence
-    from a run that never happened is not a clean result."""
+    unreliably, or stepped in this window themselves never reach this list — the
+    caller drops them, because silence from a run that never happened is not a
+    clean result. A configuration that could judge only some of its metrics says
+    so on its own line: the unjudged ones are unread, not flat."""
     if not request.outcomes:
         return []
     lines = [
@@ -460,14 +487,22 @@ def _outcome_lines(request: AttributionRequest) -> list[str]:
             f"{outcome.detector} · {outcome.sample} · {outcome.platform} · "
             f"{outcome.label}"
         )
+        # An unjudged metric is one this configuration measured but had too
+        # little settled history to read — it is neither agreement nor
+        # disagreement, and saying so keeps a thinly-covered control from being
+        # weighed like a fully-read one.
+        gap = (
+            f"; {outcome.unjudged} further metric(s) had too little history to "
+            "judge" if outcome.unjudged else ""
+        )
         if outcome.status == "watch":
             watched = ", ".join(outcome.watched[:6]) or "some metrics"
             lines.append(
                 f"- {where}: moved but stayed under the confirmation threshold "
-                f"({watched})"
+                f"({watched}){gap}"
             )
         else:
-            lines.append(f"- {where}: no metric stepped in this window")
+            lines.append(f"- {where}: no metric stepped in this window{gap}")
     omitted = len(request.outcomes) - len(request.outcomes[:_MAX_OUTCOMES_LISTED])
     if omitted > 0:
         lines.append(f"- … and {omitted} more configuration(s) that did not confirm")
@@ -558,7 +593,7 @@ def build_user_prompt(request: AttributionRequest) -> str:
 
     competitors = sorted(
         request.competitors, key=lambda c: (-c.scope_score, c.repo, c.number)
-    )[:_MAX_COMPETITORS]
+    )[:MAX_COMPETITORS]
     # The reviewed diff is reserved first, then the competitors waterfill what is
     # left: the review is about *this* pull request, and a window with thirty
     # candidates must not be able to price its diff out of its own prompt. Above
@@ -597,15 +632,17 @@ def _parse_attribution(
 ) -> Attribution | None:
     """Turn the model's reply into an :class:`Attribution`, or ``None``.
 
-    Enforces only-echo: an ``id`` the request did not contain is dropped, so no
-    invented regression can reach the comment. Shape drift — not an object, no
+    Enforces only-echo against the rows the prompt actually *offered*
+    (:func:`_attributed_facts`), not against every row in the request: an id the
+    model was never shown is a guess, and a guess about an unreviewed row is
+    exactly what this pipeline must not publish. Shape drift — not an object, no
     ``attributions`` list, a row missing ``id``, a ``likelihood`` that is not a
     number — skips that row rather than raising. A reply with no usable row at all
     is a decline, not an empty verdict: rendering a table of zeros the model never
     committed to would be the confident wrong answer this pipeline exists to
     avoid.
     """
-    known = {fact.id for fact in request.regressions}
+    known = {fact.id for fact in _attributed_facts(request)}
     data = extract_json(content)
     if not isinstance(data, dict):
         return None

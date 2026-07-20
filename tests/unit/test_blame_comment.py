@@ -13,7 +13,11 @@ from dataclasses import replace
 
 import pytest
 
-from k4bench.blame.attribute import Attribution
+from k4bench.blame.attribute import (
+    MAX_COMPETITORS,
+    Attribution,
+    build_user_prompt,
+)
 from k4bench.blame.comment import (
     CommentConfigError,
     CommentPolicy,
@@ -444,6 +448,85 @@ def test_a_control_is_found_even_though_the_onset_is_long_past():
     assert [o.detector for o in attributor.requests[0].outcomes] == ["IDEA_o1_v03"]
 
 
+def test_a_configuration_with_nothing_judged_is_not_a_clean_control():
+    # UNKNOWN is "too little history to judge", not "flat". A configuration whose
+    # every metric is still warming up measured nothing that can disagree with
+    # the regressed rows, and showing it as one that did not move is the false
+    # negative evidence that can talk the review out of a real attribution.
+    allegro = _verdict(detector="ALLEGRO_o1_v03")
+    idea = _verdict(detector="IDEA_o1_v03", severity=Severity.UNKNOWN)
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(_report(allegro, idea), _blame([allegro], [_candidate()]),
+              attributor=attributor)
+    assert attributor.requests[0].outcomes == ()
+
+
+def test_a_partly_judged_configuration_is_offered_with_its_gap_stated():
+    # Some coverage is still evidence — as long as the prompt says how much.
+    allegro = _verdict(detector="ALLEGRO_o1_v03")
+    idea_ok = _verdict(detector="IDEA_o1_v03", metric="wall_time_s",
+                       severity=Severity.OK)
+    idea_new = _verdict(detector="IDEA_o1_v03", metric="peak_rss_mb",
+                        severity=Severity.UNKNOWN)
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(_report(allegro, idea_ok, idea_new),
+              _blame([allegro], [_candidate()]), attributor=attributor)
+    outcome = attributor.requests[0].outcomes[0]
+    assert (outcome.detector, outcome.status, outcome.unjudged) == (
+        "IDEA_o1_v03", "clean", 1,
+    )
+    assert "too little history to judge" in build_user_prompt(
+        attributor.requests[0]
+    )
+
+
+def test_a_step_at_the_same_onset_is_not_a_control_whatever_its_base():
+    # The base is inferred per metric series — the last release *that* metric was
+    # settled on — so two configurations that stepped on the same release can
+    # report different bases. Requiring the whole window to match would read the
+    # second one as a configuration that never moved.
+    allegro = _verdict(detector="ALLEGRO_o1_v03", onset="2026-07-04", base="2026-07-03")
+    idea_stepped = _verdict(detector="IDEA_o1_v03", onset="2026-07-04",
+                            base="2026-06-28")
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(_report(allegro, idea_stepped), _blame([allegro], [_candidate()]),
+              attributor=attributor)
+    assert attributor.requests[0].outcomes == ()
+
+
+def test_a_step_from_a_different_window_is_still_a_control():
+    # A configuration that stepped weeks earlier and has been settled since was
+    # flat across *this* window, which is the only question being asked of it.
+    allegro = _verdict(detector="ALLEGRO_o1_v03", onset="2026-07-04", base="2026-07-03")
+    idea_old = _verdict(detector="IDEA_o1_v03", onset="2026-06-10", base="2026-06-09")
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(_report(allegro, idea_old), _blame([allegro], [_candidate()]),
+              attributor=attributor)
+    assert [o.detector for o in attributor.requests[0].outcomes] == ["IDEA_o1_v03"]
+
+
+def test_only_the_competitors_the_prompt_can_carry_are_fetched():
+    # A diff fetch is a GitHub round trip inside a shared timeout, and the prompt
+    # keeps only the strongest MAX_COMPETITORS: fetching the rest buys nothing.
+    v = _verdict()
+    rivals = [
+        _candidate(number=2000 + n, repo="key4hep/DD4hep", score=float(n))
+        for n in range(MAX_COMPETITORS + 8)
+    ]
+    fetched: list[tuple[str, int]] = []
+
+    def patch_for(repo, number):
+        fetched.append((repo, number))
+        return "diff"
+
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(_report(v), _blame([v], [_candidate(), *rivals]),
+              attributor=attributor, patch_for=patch_for)
+    # The subject plus the capped field, and the ones kept are the strongest.
+    assert len(fetched) == MAX_COMPETITORS + 1
+    assert (v.detector, 2000) not in fetched
+
+
 def test_the_review_is_shown_the_diffs_the_release_and_the_competing_field():
     v = _verdict()
     rival = _candidate(number=1180, repo="key4hep/DD4hep", score=64.0, title="Field map")
@@ -618,7 +701,7 @@ def test_the_old_two_section_layout_is_gone():
     body = _comments(_report(allegro, idea), _blame([allegro, idea], [_candidate()]))[0].body
     assert "Also affected in this window" not in body
     assert "What moved" not in body
-    assert body.count("Regressions attributed to this pull request") == 1
+    assert body.count("Regressions reviewed against this pull request") == 1
 
 
 # ── The claim, and the withdrawal gate ────────────────────────────────────────
@@ -663,6 +746,26 @@ def test_a_row_the_review_left_alone_can_hold_the_comment_up():
     assert len(comments) == 1
     assert "91%" in _row(comments[0].body, "a_metric")
     assert "20%" in _row(comments[0].body, "b_metric")
+
+
+def test_a_partial_review_says_how_much_of_the_table_it_speaks_for():
+    # Otherwise a narrative about the one row the reviewer answered reads as the
+    # verdict on the rows above it that it never saw — a summary saying "this PR
+    # does not fit" printed over an untouched 91%.
+    a, b = _verdict(metric="a_metric"), _verdict(metric="b_metric")
+    blame = _blame_of((a, [_candidate(score=91.0)]), (b, [_candidate(score=88.0)]))
+    attributor = _FakeAttributor({"r2": 20.0}, summary="This PR does not fit.")
+    body = _comments(_report(a, b), blame, attributor=attributor)[0].body
+    assert "This assessment covers 1 regression of 2" in body
+    assert "not part of it" in body
+
+
+def test_a_review_that_answered_everything_adds_no_coverage_caveat():
+    v = _verdict()
+    attributor = _FakeAttributor({"r1": 92.0})
+    body = _comments(_report(v), _blame([v], [_candidate()]),
+                     attributor=attributor)[0].body
+    assert "This assessment covers" not in body
 
 
 @pytest.mark.parametrize("attributor", [
