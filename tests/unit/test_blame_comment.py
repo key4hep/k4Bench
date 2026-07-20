@@ -1901,3 +1901,44 @@ def test_the_digest_notices_the_reviewed_pull_requests_own_title_changing():
         for blame in (before, after)
     ]
     assert digests[0] != digests[1]
+
+
+def test_the_digest_ignores_competitors_trading_places():
+    # The payload names no score, but listing competitors in strength order
+    # would let one overtake another and move the hash anyway — model drift
+    # smuggled in through list order, editing a public comment for nothing.
+    v = _verdict()
+
+    def digest(first_score, second_score):
+        return _comments(_report(v), _blame([v], [
+            _candidate(score=92.0),
+            _candidate(number=1180, repo="key4hep/DD4hep", score=first_score,
+                       title="Field map"),
+            _candidate(number=1190, repo="key4hep/edm4hep", score=second_score,
+                       title="Collection rename"),
+        ]))[0].facts_digest
+
+    assert digest(85.0, 80.0) == digest(78.0, 82.0)
+    # The rendered table still ranks them by score — only the digest is blind
+    # to it.
+    body = _comments(_report(v), _blame([v], [
+        _candidate(score=92.0),
+        _candidate(number=1180, repo="key4hep/DD4hep", score=78.0, title="Field map"),
+        _candidate(number=1190, repo="key4hep/edm4hep", score=82.0,
+                   title="Collection rename"),
+    ]))[0].body
+    rows = [line for line in body.splitlines() if line.startswith("| key4hep/")]
+    assert "edm4hep" in rows[0] and "DD4hep" in rows[1]
+
+
+def test_the_digest_still_notices_a_different_competitor_appearing():
+    # Blind to their order, not to who they are.
+    v = _verdict()
+    one = _blame([v], [_candidate(score=92.0),
+                       _candidate(number=1180, repo="key4hep/DD4hep", score=80.0)])
+    two = _blame([v], [_candidate(score=92.0),
+                       _candidate(number=1181, repo="key4hep/DD4hep", score=80.0)])
+    assert (
+        _comments(_report(v), one)[0].facts_digest
+        != _comments(_report(v), two)[0].facts_digest
+    )

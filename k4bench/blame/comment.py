@@ -1674,6 +1674,12 @@ def _facts_digest(
         },
         "unchanged": dict(sorted(plan.unchanged.items())),
         "packages_unavailable_on": list(plan.packages_unavailable_on),
+        # Listed in *identity* order, never :func:`_sorted_others`' strength
+        # order. That helper ranks by score, so two competitors trading places
+        # — 85/80 one night, 78/82 the next — would reorder this list and move
+        # the hash, smuggling back in exactly the model-score drift the payload
+        # is careful never to name. Which pull requests were in the field is the
+        # fact; where the ranker put them is not.
         "competitors": [
             {
                 "pr": f"{other.repo}#{other.number}",
@@ -1684,7 +1690,10 @@ def _facts_digest(
                 # whether or not a review ran.
                 "title": _one_line(other.title, _MAX_DESCRIPTION_CHARS),
             }
-            for other, _scope in _sorted_others(plan)
+            for other in sorted(
+                (candidate for candidate, _scope in plan.others.values()),
+                key=lambda c: (c.repo.lower(), c.number),
+            )
         ],
         "evidence": _evidence_facts(request),
     }

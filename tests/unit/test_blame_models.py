@@ -211,19 +211,52 @@ def test_the_ranked_state_survives_a_round_trip():
     assert by_number[1].ranked and not by_number[2].ranked
 
 
-def test_a_sidecar_that_records_no_judgement_is_read_as_unranked():
-    # A file with no ``ranked`` key never recorded a judgement, so it has not
-    # made one — whatever score sits beside it. Reading that as "ranked" is the
-    # only unsafe direction, since it is what clears a comment threshold.
+def _legacy(*candidates) -> dict:
+    """A sidecar as written before ``ranked`` existed — the field stripped, the
+    rest of the schema unchanged. These files are on EOS and are still read by
+    the dashboard and by the email's reused-attribution path."""
     data = BlameReport("g", "2026-07-05", entries=(_entry(repos=(RepoBlame(
         package="k4geo", repo="key4hep/k4geo", base_commit="a" * 40,
         head_commit="c" * 40, compare_url=None, status="CHANGED",
-        candidates=(_pr(1, score=95.0),),
+        candidates=candidates,
     ),)),)).to_json()
-    del data["entries"][0]["repos"][0]["candidates"][0]["ranked"]
+    for candidate in data["entries"][0]["repos"][0]["candidates"]:
+        del candidate["ranked"]
+    return data
 
-    restored = BlameReport.from_json(data)
-    assert not restored.entries[0].candidates[0].ranked
+
+def test_a_legacy_sidecars_explained_candidate_stays_ranked():
+    # Absence of the key means "written before the field", not "never judged".
+    # The old schema recorded the state just as unambiguously: the ranker
+    # rejects any row without a reason, so a description *is* the judgement.
+    # Reading these as unranked would erase every historical ranking the
+    # dashboard shows and the email reuses.
+    restored = BlameReport.from_json(_legacy(_pr(1, score=95.0)))
+    candidate = restored.entries[0].candidates[0]
+    assert candidate.ranked
+    assert candidate.score == 95.0
+
+
+def test_a_legacy_sidecars_unexplained_candidate_is_unranked():
+    # The other half of the same rule: a legacy candidate the ranking stage
+    # never reached carries no reason, and must not clear a threshold.
+    data = _legacy(_pr(1, score=0.0))
+    data["entries"][0]["repos"][0]["candidates"][0]["description"] = ""
+
+    assert not BlameReport.from_json(data).entries[0].candidates[0].ranked
+
+
+def test_the_explicit_field_wins_wherever_it_is_present():
+    # New sidecars are authoritative, which is what keeps a *partial* ranking
+    # unambiguous: a candidate the model skipped is written ranked=False even
+    # though nothing distinguishes it in the legacy encoding.
+    data = BlameReport("g", "2026-07-05", entries=(_entry(repos=(RepoBlame(
+        package="k4geo", repo="key4hep/k4geo", base_commit="a" * 40,
+        head_commit="c" * 40, compare_url=None, status="CHANGED",
+        candidates=(_pr(1, score=95.0, ranked=False),),
+    ),)),)).to_json()
+    assert data["entries"][0]["repos"][0]["candidates"][0]["ranked"] is False
+    assert not BlameReport.from_json(data).entries[0].candidates[0].ranked
 
 
 def test_the_flat_ledger_puts_the_unjudged_after_the_judged():

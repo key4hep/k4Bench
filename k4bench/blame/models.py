@@ -77,6 +77,9 @@ class CandidatePR:
     the two would turn "we never asked" into "we asked and it said no", and
     downstream — the comment bot's threshold, the second pass's prior — that
     difference decides whether someone's pull request is publicly accused.
+
+    The field is newer than the sidecars already on EOS; :meth:`from_dict`
+    reconstructs it for those, so a historical ranking keeps rendering.
     """
 
     repo: str  # "owner/repo" slug on GitHub
@@ -118,6 +121,17 @@ class CandidatePR:
         schema boundary — rather than later in a sort or an email format."""
         d = _only_known(cls, data)
         score = float(d.get("score") or 0.0)
+        description = str(d.get("description") or "")
+        # ``ranked`` is newer than the sidecars on EOS. Absent, it does not mean
+        # "unranked" — it means the file predates the field, and reading it that
+        # way would erase every historical ranking the dashboard and the email
+        # still display. Those files record the state just as unambiguously:
+        # :func:`k4bench.blame.rank._parse_rankings` rejects any row without a
+        # reason, so exactly their judged candidates carry a description. That
+        # was the discriminator ``ranking_coverage`` itself used before the
+        # field existed. Present, the field is authoritative — which is what
+        # keeps a *new* partial ranking unambiguous.
+        ranked = bool(d["ranked"]) if "ranked" in d else bool(description)
         return cls(
             repo=str(d["repo"]),
             number=int(d["number"]),
@@ -129,11 +143,8 @@ class CandidatePR:
             additions=int(d.get("additions") or 0),
             deletions=int(d.get("deletions") or 0),
             score=score if math.isfinite(score) else 0.0,
-            description=str(d.get("description") or ""),
-            # Absent ⇒ unranked, which is the fail-closed reading: a sidecar
-            # that does not record a judgement has not made one, and nothing
-            # downstream may treat its ``score`` as though it had.
-            ranked=bool(d.get("ranked", False)),
+            description=description,
+            ranked=ranked,
         )
 
 
