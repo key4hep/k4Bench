@@ -349,10 +349,16 @@ _COMMENTS_PER_PAGE = 100
 @dataclass(frozen=True)
 class IssueComment:
     """One existing comment on a pull request — just enough to recognise our
-    own marker and decide whether its body still needs updating."""
+    own marker and decide whether its body still needs updating.
+
+    ``author`` is the commenter's login, lower-cased for a case-insensitive
+    match: the upsert edits only a comment the bot itself wrote, so someone who
+    quotes the hidden marker in their own comment cannot make the bot try to
+    PATCH a comment it does not own."""
 
     id: int
     body: str
+    author: str = ""
 
 
 def list_issue_comments(
@@ -386,7 +392,11 @@ def list_issue_comments(
         if not isinstance(batch, list):
             return None
         out.extend(
-            IssueComment(id=int(c["id"]), body=str(c.get("body") or ""))
+            IssueComment(
+                id=int(c["id"]),
+                body=str(c.get("body") or ""),
+                author=str((c.get("user") or {}).get("login", "")).lower(),
+            )
             for c in batch
             if isinstance(c, dict) and c.get("id") is not None
         )
@@ -398,6 +408,25 @@ def list_issue_comments(
         slug, number, _MAX_COMMENT_PAGES,
     )
     return None
+
+
+def authenticated_login(client: GitHubClient) -> str | None:
+    """The login of the token *client* carries, lower-cased, or ``None`` when it
+    cannot be read (unauthenticated, or ``GET /user`` failed).
+
+    The publisher uses it to edit only its own marker-bearing comment. ``None``
+    is a soft failure: the caller falls back to matching on the marker alone, so
+    a transient ``/user`` hiccup does not stop the night, it only forgoes the
+    extra safety of the author check."""
+    resp = client.get("/user")
+    if resp.status_code != 200:
+        _log.warning("authenticated_login: GET /user -> HTTP %s", resp.status_code)
+        return None
+    try:
+        login = (resp.json() or {}).get("login")
+    except ValueError:
+        return None
+    return str(login).lower() if login else None
 
 
 def create_issue_comment(

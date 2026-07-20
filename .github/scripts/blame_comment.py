@@ -85,7 +85,6 @@ def main(argv: list[str] | None = None) -> int:
              "(default: .github/blame-comments.yml)",
     )
     parser.add_argument("--dashboard-url", default=os.environ.get("K4BENCH_DASHBOARD_URL"))
-    parser.add_argument("--actions-url", default=os.environ.get("GITHUB_RUN_URL"))
     parser.add_argument(
         "--token", default=os.environ.get("K4BENCH_PR_COMMENT_TOKEN"),
         help="GitHub token with pull-requests:write on the allowlisted repos "
@@ -147,10 +146,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: unreadable blame sidecar {blame_path}: {exc}", file=sys.stderr)
         return 1
 
-    comments = select(
-        report, blame, policy,
-        dashboard_url=args.dashboard_url, actions_url=args.actions_url,
-    )
+    comments = select(report, blame, policy, dashboard_url=args.dashboard_url)
     if not comments:
         print(
             f"blame comments for {blame.report_night or 'no data'}: no candidate "

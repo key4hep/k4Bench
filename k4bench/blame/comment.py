@@ -123,9 +123,8 @@ class CommentPolicy:
         )
         if min_score > 100:
             raise CommentConfigError("min_score must be between 0 and 100")
-        max_comments = int(
-            _positive_number(data.get("max_comments", _DEFAULT_MAX_COMMENTS),
-                             "max_comments")
+        max_comments = _positive_int(
+            data.get("max_comments", _DEFAULT_MAX_COMMENTS), "max_comments"
         )
 
         raw_repos = data.get("repos") or []
@@ -146,6 +145,18 @@ def _positive_number(value: object, name: str) -> float:
     if not math.isfinite(value) or value < 0:
         raise CommentConfigError(f"{name} must be a non-negative number")
     return float(value)
+
+
+def _positive_int(value: object, name: str) -> int:
+    """A count that must be a whole number, at least one. A float like ``2.9``
+    is a typo, not a rounding hint — silently truncating it would post one fewer
+    comment than the config appears to ask for; a zero disables the bot in a way
+    an empty ``repos`` already expresses more honestly."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise CommentConfigError(f"{name} must be a whole number")
+    if value < 1:
+        raise CommentConfigError(f"{name} must be a positive integer")
+    return value
 
 
 @dataclass(frozen=True)
@@ -205,13 +216,20 @@ def select(
     policy: CommentPolicy,
     *,
     dashboard_url: str | None = None,
-    actions_url: str | None = None,
 ) -> list[PRComment]:
-    """The comments this night warrants, worst-first and capped.
+    """The comments this night warrants, worst-first.
 
     Driven from the *report*'s confirmed regressions rather than from the
     sidecar's entries, so a comment can only ever describe a regression that is
     confirmed in tonight's report — a stale entry has nothing to attach to.
+
+    The rendered body carries nothing that varies from night to night (no run
+    URL, no report-night query param): a regression that stands for a week is
+    one comment, and the upsert must see an unchanged body so it edits nothing
+    and re-notifies no one. Overshooting ``max_comments`` returns *no* comments
+    at all — a night that loud is a bug, not a night, and blind-posting ten
+    accusations into repositories k4Bench does not own is the exact harm the
+    gates exist to prevent.
     """
     if not policy.enabled:
         return []
@@ -248,28 +266,33 @@ def select(
                     bucket.candidate = candidate
                 bucket.verdicts.append(verdict)
                 for other in candidates:
-                    if (other.repo.lower(), other.number) != (key[0], key[1]):
-                        bucket.others.setdefault(
-                            (other.repo.lower(), other.number), other
-                        )
+                    ident = (other.repo.lower(), other.number)
+                    if ident == (key[0], key[1]):
+                        continue
+                    prev = bucket.others.get(ident)
+                    if prev is None or other.score > prev.score:
+                        # Same rule as the headline candidate above: a competing
+                        # PR scored across several of the window's metrics shows
+                        # its strongest likelihood, and which score wins cannot
+                        # depend on the order the verdicts were walked in — that
+                        # order must not leak into the body or edit it nightly.
+                        bucket.others[ident] = other
 
     comments = [
-        _render(
-            bucket, report_night=report.report_night,
-            dashboard_url=dashboard_url, actions_url=actions_url,
-        )
+        _render(bucket, dashboard_url=dashboard_url)
         for bucket in sorted(
             buckets.values(),
             key=lambda b: (-b.candidate.score, b.candidate.repo, b.candidate.number),
         )
     ]
     if len(comments) > policy.max_comments:
-        dropped = ", ".join(c.target for c in comments[policy.max_comments:])
+        targets = ", ".join(c.target for c in comments)
         _log.warning(
-            "select: %d comments exceed the max_comments cap of %d — not posting: %s",
-            len(comments), policy.max_comments, dropped,
+            "select: %d comments exceed the max_comments cap of %d — a night this "
+            "loud is a bug, not a night; posting none of them: %s",
+            len(comments), policy.max_comments, targets,
         )
-        comments = comments[:policy.max_comments]
+        return []
     return comments
 
 
@@ -278,9 +301,7 @@ def select(
 def _render(
     bucket: _Bucket,
     *,
-    report_night: str,
     dashboard_url: str | None,
-    actions_url: str | None,
 ) -> PRComment:
     """One bucket as a GitHub-flavoured Markdown comment."""
     marker = marker_for(bucket.base_release, bucket.onset_release)
@@ -299,10 +320,7 @@ def _render(
             _quote(bucket),
             _metrics_table(verdicts, multi_scope=len(scopes) > 1),
             _others_section(bucket),
-            _where_to_look(
-                bucket, primary, scopes, report_night=report_night,
-                dashboard_url=dashboard_url, actions_url=actions_url,
-            ),
+            _where_to_look(bucket, primary, scopes, dashboard_url=dashboard_url),
             "",
             "---",
             "",
@@ -464,21 +482,22 @@ def _where_to_look(
     primary: MetricVerdict,
     scopes: set[tuple[str, str, str]],
     *,
-    report_night: str,
     dashboard_url: str | None,
-    actions_url: str | None,
 ) -> str | None:
     """The links that let a reader check the claim rather than take it.
 
     Scoped to the *primary* benchmark configuration — the one carrying the
     largest step — with the others named as a count, since a dashboard view is
-    always one configuration.
+    always one configuration. Every link here names the *window*, which does not
+    change from one night to the next: no ``report=`` night and no CI-run URL,
+    both of which would vary nightly and edit a standing comment for no reason.
+    The window's own Regressions view already shows the latest confirmation.
     """
     regressions = window_href(
         dashboard_url,
         detector=primary.detector, platform=primary.platform, sample=primary.sample,
         base_release=bucket.base_release, onset_release=bucket.onset_release,
-        stack=bucket.stack, report_night=report_night,
+        stack=bucket.stack,
     )
     packages = stack_changes_href(
         dashboard_url,
@@ -488,7 +507,6 @@ def _where_to_look(
     items = [
         (regressions, "📈", "Review this regression in the dashboard"),
         (packages, "📦", "Every package that changed across this window"),
-        (actions_url, "⚙️", "The nightly benchmark run that produced this"),
     ]
     links = [f"- {icon} [{text}]({href})" for href, icon, text in items if href]
     if not links:

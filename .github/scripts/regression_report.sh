@@ -147,7 +147,6 @@ if [[ -f report/blame.json ]]; then
         --blame report/blame.json \
         --config .github/blame-comments.yml \
         --dashboard-url "${K4BENCH_DASHBOARD_URL:-https://k4bench-dashboard.app.cern.ch}" \
-        --actions-url "${GITHUB_RUN_URL:-}" \
       || echo "No pull-request comments this night (nothing attributed confidently, no enabled repo, timeout, or a failed write)." >&2
 else
     echo "No blame sidecar this night — no pull request to comment on."

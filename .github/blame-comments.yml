@@ -17,4 +17,7 @@ min_score: 80
 max_comments: 10
 
 # Repositories that receive comments, as `owner/repo`. Add one per line.
-repos: []
+repos:
+  - key4hep/k4geo
+  - HEP-FCC/FCC-config
+  - AIDASoft/DD4hep

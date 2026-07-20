@@ -47,7 +47,7 @@ def _verdict(*, metric="wall_time_s", label="baseline", onset="2026-07-04",
     )
 
 
-def _report(*verdicts: MetricVerdict) -> NightlyReport:
+def _report(*verdicts: MetricVerdict, night="2026-07-05") -> NightlyReport:
     groups: dict[tuple, RunGroupReport] = {}
     for v in verdicts:
         key = (v.detector, v.platform, v.sample)
@@ -55,11 +55,11 @@ def _report(*verdicts: MetricVerdict) -> NightlyReport:
         if group is None:
             group = groups[key] = RunGroupReport(
                 detector=v.detector, platform=v.platform, sample=v.sample,
-                k4h_release="key4hep-2026-07-04", run_date="2026-07-05",
-                run_id="2026-07-05", verdicts=[],
+                k4h_release="key4hep-2026-07-04", run_date=night,
+                run_id=night, verdicts=[],
             )
         group.verdicts.append(v)
-    return NightlyReport(generated_at="2026-07-05T00:00:00", groups=list(groups.values()))
+    return NightlyReport(generated_at=f"{night}T00:00:00", groups=list(groups.values()))
 
 
 def _candidate(number=1234, repo="key4hep/k4geo", score=91.0, merged="2026-07-04T09:00:00Z",
@@ -98,10 +98,7 @@ def _blame(verdicts, candidates, *, truncated=False, unavailable=False) -> Blame
 
 
 def _select(report, blame, policy=None):
-    return select(
-        report, blame, policy or _policy(),
-        dashboard_url=_DASH, actions_url="https://github.com/key4hep/k4Bench/actions/runs/1",
-    )
+    return select(report, blame, policy or _policy(), dashboard_url=_DASH)
 
 
 # ── The policy ────────────────────────────────────────────────────────────────
@@ -119,6 +116,9 @@ def test_policy_defaults_to_inert():
     {"min_score": "eighty"},                  # not a number
     {"min_score": 140},                       # out of range
     {"max_comments": -1},                     # negative
+    {"max_comments": 0},                      # zero is "disable", not a cap
+    {"max_comments": 2.5},                    # a fractional cap is a typo
+    {"max_comments": True},                   # a bool is not a count
     {"treshold": 80},                         # typo'd key, silently narrowing
 ])
 def test_policy_rejects_malformed_config(bad):
@@ -197,7 +197,9 @@ def test_a_second_window_gets_its_own_comment():
     assert len({c.marker for c in comments}) == 2
 
 
-def test_max_comments_caps_the_night():
+def test_over_the_cap_posts_nothing():
+    # A night louder than max_comments is a bug, not a night: rather than post
+    # the top N accusations into repos we don't own, the whole night is dropped.
     verdicts = [_verdict(metric=f"m{i}", sample=f"s{i}") for i in range(4)]
     candidates = [_candidate(number=100 + i) for i in range(4)]
     blame = BlameReport(
@@ -206,8 +208,20 @@ def test_max_comments_caps_the_night():
             _blame([v], [c]).entries[0] for v, c in zip(verdicts, candidates, strict=True)
         ),
     )
-    comments = _select(_report(*verdicts), blame, _policy(max_comments=2))
-    assert len(comments) == 2
+    assert _select(_report(*verdicts), blame, _policy(max_comments=2)) == []
+
+
+def test_at_the_cap_still_posts():
+    # The cap is a ceiling, not a trigger: exactly max_comments is fine.
+    verdicts = [_verdict(metric=f"m{i}", sample=f"s{i}") for i in range(2)]
+    candidates = [_candidate(number=100 + i) for i in range(2)]
+    blame = BlameReport(
+        generated_at="x", report_night="2026-07-05",
+        entries=tuple(
+            _blame([v], [c]).entries[0] for v, c in zip(verdicts, candidates, strict=True)
+        ),
+    )
+    assert len(_select(_report(*verdicts), blame, _policy(max_comments=2))) == 2
 
 
 # ── The rendered body ─────────────────────────────────────────────────────────
@@ -264,10 +278,13 @@ def test_body_links_the_window_in_the_dashboard():
     body = _select(_report(v), _blame([v], [_candidate()]))[0].body
     assert "window=2026-07-03..2026-07-04" in body        # the scoped Regressions view
     assert "&to=2026-07-04" in body                       # the package diff
-    assert "actions/runs/1" in body                       # the run that produced it
     # ?stack= is the dashboard's release *directory*, not the bare release date
     # a verdict carries — a bare date selects nothing and silently falls back.
     assert "stack=key4hep-2026-07-04" in body
+    # Nothing that varies from night to night: no report-night query param and no
+    # CI-run URL, either of which would edit a standing comment every night.
+    assert "report=" not in body
+    assert "actions/runs" not in body
 
 
 def test_body_renders_without_a_dashboard_url():
@@ -308,3 +325,35 @@ def test_body_is_stable_across_identical_nights():
     first = _select(_report(a, b), _blame([a, b], [_candidate()]))[0].body
     second = _select(_report(b, a), _blame([b, a], [_candidate()]))[0].body
     assert first == second
+
+
+def test_body_is_stable_across_consecutive_nights():
+    # A standing regression renders byte-identically on the next night too, so
+    # the upsert edits nothing and re-notifies no one. Nothing that changes from
+    # night to night — the report night, a per-run CI URL — may leak into it.
+    v = _verdict()
+    monday = _select(_report(v, night="2026-07-05"), _blame([v], [_candidate()]))[0].body
+    tuesday = _select(_report(v, night="2026-07-06"), _blame([v], [_candidate()]))[0].body
+    assert monday == tuesday
+
+
+def test_other_candidate_shows_its_highest_score_regardless_of_order():
+    # A competing PR can be scored differently for each metric in the window; the
+    # likelihood shown is its strongest, and must not depend on which verdict was
+    # walked first — that order would otherwise edit the comment when it shifts.
+    a = _verdict(metric="wall_time_s")
+    b = _verdict(metric="mean_time_s", pct=0.14)
+    hi = _candidate()
+    lo = _candidate(number=1180, repo="key4hep/DD4hep", score=25.0, title="Other work")
+    top = _candidate(number=1180, repo="key4hep/DD4hep", score=70.0, title="Other work")
+
+    def blame(*pairs):
+        return BlameReport(
+            generated_at="x", report_night="2026-07-05",
+            entries=tuple(_blame([v], cands).entries[0] for v, cands in pairs),
+        )
+
+    forward = _select(_report(a, b), blame((a, [hi, lo]), (b, [hi, top])))[0].body
+    reverse = _select(_report(b, a), blame((b, [hi, top]), (a, [hi, lo])))[0].body
+    assert forward == reverse
+    assert "70%" in forward and "25%" not in forward

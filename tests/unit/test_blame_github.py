@@ -300,6 +300,26 @@ def test_list_issue_comments_reads_every_page():
     assert len(got) == gh_mod._COMMENTS_PER_PAGE + 1
 
 
+def test_list_issue_comments_captures_the_lowercased_author():
+    # The upsert edits only the bot's own comment, so the author must survive the
+    # read — case-folded, since GitHub logins compare case-insensitively.
+    body = [{"id": 1, "body": "hi", "user": {"login": "K4bench-Bot"}}]
+    routes = {"/issues/7/comments": _Resp(200, body)}
+    got = gh_mod.list_issue_comments(_client(routes), "key4hep/k4geo", 7)
+    assert got[0].author == "k4bench-bot"
+
+
+def test_authenticated_login_reads_the_lowercased_login():
+    routes = {"/user": _Resp(200, {"login": "K4bench-Bot"})}
+    assert gh_mod.authenticated_login(_client(routes)) == "k4bench-bot"
+
+
+def test_authenticated_login_none_when_it_cannot_be_read():
+    # A soft failure: the publisher falls back to matching on the marker alone.
+    routes = {"/user": _Resp(403, {"message": "nope"})}
+    assert gh_mod.authenticated_login(_client(routes)) is None
+
+
 def test_list_issue_comments_none_when_thread_unreadable():
     # None ≠ []: "did not see the thread" must not be read as "we have not
     # commented", which would post a duplicate.

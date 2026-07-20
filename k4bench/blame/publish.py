@@ -13,6 +13,11 @@ lives in one readable place:
 * **Never post blind.** If the existing comments could not be read
   (:func:`~k4bench.blame.github.list_issue_comments` returning ``None``), the PR
   is skipped: a duplicate comment is worse than a missing one.
+* **Edit only our own comment.** The marker recognises the comment, but a comment
+  is claimed as the bot's own only when its author is the token's login too, so
+  someone quoting the hidden marker cannot make the bot try to PATCH a comment it
+  does not own. The login is read once per run; if it cannot be read the check is
+  skipped and the marker alone identifies the comment, as before.
 * **One failure is one PR's failure.** Every per-comment error is caught and
   counted, so a repo the token cannot write to does not silence the others. The
   one exception is :class:`~k4bench.blame.github.RateLimitError`, which stops
@@ -31,6 +36,7 @@ from k4bench.blame.comment import PRComment
 from k4bench.blame.github import (
     GitHubClient,
     RateLimitError,
+    authenticated_login,
     create_issue_comment,
     list_issue_comments,
     update_issue_comment,
@@ -75,6 +81,9 @@ def publish(
     continue.
     """
     result = PublishResult()
+    # Resolved once for the whole run: it identifies the bot across every repo,
+    # so the per-comment upsert edits only a comment this token itself wrote.
+    login = None if dry_run else authenticated_login(client)
     for comment in comments:
         if dry_run:
             _log.info(
@@ -84,7 +93,7 @@ def publish(
             result.planned.append(comment.target)
             continue
         try:
-            _upsert(client, comment, result)
+            _upsert(client, comment, result, login=login)
         except RateLimitError:
             raise
         except Exception as exc:  # noqa: BLE001 — one PR must not stop the rest
@@ -94,8 +103,18 @@ def publish(
     return result
 
 
-def _upsert(client: GitHubClient, comment: PRComment, result: PublishResult) -> None:
-    """Create, edit, or leave alone the one comment carrying *comment*'s marker."""
+def _upsert(
+    client: GitHubClient,
+    comment: PRComment,
+    result: PublishResult,
+    *,
+    login: str | None,
+) -> None:
+    """Create, edit, or leave alone the one comment carrying *comment*'s marker.
+
+    When *login* is known, a comment counts as the bot's own only if it carries
+    the marker *and* was written by that login, so a quoted marker in someone
+    else's comment cannot divert the edit."""
     existing = list_issue_comments(client, comment.repo, comment.number)
     if existing is None:
         _log.warning(
@@ -105,7 +124,13 @@ def _upsert(client: GitHubClient, comment: PRComment, result: PublishResult) -> 
         result.failed.append(comment.target)
         return
 
-    mine = next((c for c in existing if comment.marker in c.body), None)
+    mine = next(
+        (
+            c for c in existing
+            if comment.marker in c.body and (login is None or c.author == login)
+        ),
+        None,
+    )
     if mine is None:
         url = create_issue_comment(client, comment.repo, comment.number, comment.body)
         if url is None:
