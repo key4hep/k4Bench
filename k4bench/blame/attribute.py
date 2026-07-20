@@ -194,6 +194,14 @@ class CompetingPR:
     That is not a low score and must never be shown as one: a partially ranked
     field must not make the pull requests nobody looked at read as the ones
     everybody cleared.
+
+    ``scope`` names the run scope that score came from. The first pass judged
+    this pull request once per scope and those readings can disagree — 95 where
+    it touched the affected detector, 10 elsewhere — and only the strongest is
+    carried here, because the prompt cannot hold every scope's reading of thirty
+    competitors. Naming it keeps a one-scope judgement from being read as a
+    window-wide one, which is the flattening this whole pass exists to undo.
+    Empty when there is no score to attribute to a scope.
     """
 
     repo: str
@@ -205,6 +213,7 @@ class CompetingPR:
     deletions: int = 0
     scope_score: float | None = None
     scope_reason: str = ""
+    scope: str = ""
     patch: str = ""
 
 
@@ -255,6 +264,10 @@ class AttributionRequest:
     )
     #: ``platform -> tracked packages that stood still`` on that platform.
     unchanged_by_platform: dict[str, int] = field(default_factory=dict)
+    #: Platforms that regressed in this window but whose release diff for
+    #: exactly this window was not read. Stated in the prompt, because a silent
+    #: omission would read as "nothing changed there".
+    packages_unavailable_on: tuple[str, ...] = ()
 
     @property
     def slug(self) -> str:
@@ -488,7 +501,15 @@ def _regression_lines(request: AttributionRequest) -> list[str]:
     the whole task: the model should be able to read "ALLEGRO_o1_v03 moved, IDEA
     did not" off the shape of the prompt, not reconstruct it from sixty
     identically-shaped lines. Each row carries its id, so scoring never depends on
-    re-typing an identity."""
+    re-typing an identity.
+
+    The first pass's prior rides on **each row**, not once per run group. Rows in
+    one group can genuinely disagree about it: a row's candidate population is
+    its own metric's change range, and those ranges differ inside one comment
+    window — the same detector, platform and sample can hold a row this pull
+    request was ranked 92 on and a row it is not a candidate for at all.
+    Printing one prior above both would state the 92 and lose the absence, which
+    is the exculpatory half."""
     # A row that does not fit the cap is not scored at all — only-echo leaves it
     # out of the answer, and the caller keeps its per-configuration score rather
     # than inventing one.
@@ -498,14 +519,15 @@ def _regression_lines(request: AttributionRequest) -> list[str]:
         by_scope.setdefault((fact.detector, fact.platform, fact.sample), []).append(fact)
 
     lines = [
-        "Confirmed regressions in this window — score each by its id:",
+        "Confirmed regressions in this window — score each by its id. "
+        "'prior' is what the earlier per-configuration pass knew about this "
+        "pull request for that row:",
     ]
     for (detector, platform, sample), facts in by_scope.items():
         lines.append("")
         lines.append(f"### {detector}")
         lines.append(sample_line(sample, prefix="  "))
         lines.append(platform_line(platform, prefix="  "))
-        lines.append("  " + _prior_line(facts))
         for fact in facts:
             subject = f"{fact.metric} ({fact.label})"
             if fact.sub_detector:
@@ -516,59 +538,39 @@ def _regression_lines(request: AttributionRequest) -> list[str]:
                 f"{direction_phrase(fact.direction, fact.pct_change)}"
                 + (f" ({detail})" if detail else "")
             )
+            lines.append(f"      prior: {_prior_phrase(fact)}")
     return lines
 
 
-#: Precedence when the rows of one run group disagree about the subject's
-#: first-pass state — they can, since each row's candidate population is its own
-#: metric's change range. A real judgement outranks an unknown one, and an
-#: unknown one outranks an absence, because absence is only worth stating when
-#: nothing better is known *and* the population it is measured against is
-#: complete.
-_STATE_PRECEDENCE = ("ranked", "unranked", "discovery_incomplete", "not_candidate")
-
-
-def _prior_line(facts: list[RegressionFact]) -> str:
-    """What the first pass concluded about the reviewed pull request in this run
-    group — a score only where one was actually given.
+def _prior_phrase(fact: RegressionFact) -> str:
+    """What the first pass concluded about the reviewed pull request for *this*
+    row — a score only where one was actually given.
 
     The three unscored states are spelled out instead, because each is a
     different piece of evidence and none of them is 0/100. "Not among the
     candidates, and the candidate list was complete" in particular argues
     *against* this pull request having caused the row — printing it as a zero
-    would say the same thing far less clearly, and printing it as a zero the
-    model reads as a judgement would say something false about who made it."""
-    prior = min(
-        facts,
-        key=lambda f: (
-            _STATE_PRECEDENCE.index(f.scope_state)
-            if f.scope_state in _STATE_PRECEDENCE else len(_STATE_PRECEDENCE),
-            # Every metric in a run group shares one first-pass judgement, so
-            # these are equal in valid input; take the strongest defensively so
-            # the prior never depends on which metric was walked first.
-            -(f.scope_score if f.scope_score is not None else 0.0),
-        ),
-    )
-    if prior.scope_state == "ranked" and prior.scope_score is not None:
+    would say the same thing far less clearly, and a zero the model reads as a
+    judgement would say something false about who made it."""
+    if fact.scope_state == "ranked" and fact.scope_score is not None:
         return (
-            f"Earlier per-configuration review of this pull request here: "
-            f"{prior.scope_score:.0f}/100"
-            + (f" — {prior.scope_reason}" if prior.scope_reason else "")
+            f"ranked {fact.scope_score:.0f}/100 by the per-configuration pass"
+            + (f" — {fact.scope_reason}" if fact.scope_reason else "")
         )
-    if prior.scope_state == "unranked":
+    if fact.scope_state == "unranked":
         return (
-            "The pull request is a candidate here, but the first pass returned "
-            "no score for it — treat this as no prior, not as a low one."
+            "this pull request was a candidate for this regression but the "
+            "first pass returned no score for it — no prior, not a low one"
         )
-    if prior.scope_state == "not_candidate":
+    if fact.scope_state == "not_candidate":
         return (
-            "The pull request is NOT among the candidates for this scope: the "
-            "candidate search here was complete and this change is not in the "
-            "commit range behind these regressions. Weigh that as evidence."
+            "this pull request is NOT among the candidates for this regression: "
+            "the candidate search for its change range was complete and this "
+            "change is not in it. Weigh that as evidence"
         )
     return (
-        "Candidate discovery for this scope was incomplete, so nothing follows "
-        "from whether this pull request appears in it — no prior either way."
+        "candidate discovery for this regression was incomplete, so nothing "
+        "follows from whether this pull request appears in it"
     )
 
 
@@ -649,6 +651,13 @@ def _package_lines(request: AttributionRequest) -> list[str]:
         for package in packages:
             note = "" if package.status == "CHANGED" else f" [{package.status}]"
             lines.append(f"- {package.package}{note}")
+    if request.packages_unavailable_on:
+        lines += [
+            "",
+            "No release diff was read for this exact window on: "
+            + ", ".join(request.packages_unavailable_on)
+            + " — do not read that as nothing having changed there.",
+        ]
     return lines
 
 
@@ -723,8 +732,13 @@ def _competitor_lines(competitors: list[CompetingPR], budgets: list[int]) -> lis
                 "not scored by the first pass"
             )
         else:
+            # Named with its scope: this is the strongest of that candidate's
+            # per-scope judgements, not a verdict on the whole window, and the
+            # difference is exactly what the reviewer is here to weigh.
+            where = f" in {competitor.scope}" if competitor.scope else ""
             lines.append(
-                f"  earlier per-configuration review: {competitor.scope_score:.0f}/100"
+                f"  strongest earlier per-configuration review{where}: "
+                f"{competitor.scope_score:.0f}/100"
                 + (f" — {competitor.scope_reason}" if competitor.scope_reason else "")
             )
         lines += diff_block(competitor.patch, budget)

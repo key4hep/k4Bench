@@ -53,6 +53,13 @@ likelihood per regression and the narrative the comment quotes.
     | Not scored | It was a candidate, but the first pass returned no judgement about it (a partial response). Unknown, never zero. |
     | Discovery incomplete | The candidate population there is not known to be complete, so nothing follows from absence. Stated as such rather than dropped. |
 
+    The state is attached to **each row**, not once per run group: a metric's
+    candidate range is its own, so the same detector, platform and sample can
+    hold a row this PR was ranked 92 on and a row it is not a candidate for.
+    A row it is *not* a candidate for never carries a likelihood, not even one
+    the review offers for it — that absence is a measurement, and it outranks a
+    model's opinion about it.
+
     An incomplete scope does *not* suppress the comment: the accusation already
     requires a complete, scored scope to have cleared the threshold, so a
     truncated range elsewhere in the stack adds no risk of a false claim — while
@@ -204,15 +211,23 @@ upserts on that marker:
   row's identity (platform included) and how far it moved; this pull request's
   standing in each of those scopes; the configurations that measured the window
   cleanly or stayed under the threshold, with their watched metrics and unjudged
-  counts; the per-platform package diff and unchanged counts; and which pull
-  requests were in the field, with whether each was judged at all. The outcomes
-  matter especially: a comment written while IDEA had no reliable result reads
+  counts; the per-platform package diff and unchanged counts; which pull
+  requests were in the field and whether each was judged; and whether the
+  review's evidence — the diffs — could actually be fetched. The outcomes matter
+  especially: a comment written while IDEA had no reliable result reads
   differently once IDEA delivers a clean measurement of the same window, and a
   digest of the positive rows alone would leave that stale reasoning standing
-  forever. The narrative and every score — the review's likelihoods and the
-  ranker's scoring of the competing candidates alike — are model output that
-  drifts between nights without anything having happened, so they are
-  deliberately left out of it.
+  forever. Diff availability is the same argument — a night where GitHub refused
+  the patch produced a review made from paths and titles alone.
+
+    Left out: the narrative and every model score, which drift between nights
+    without anything having happened. Also left out, less obviously — the
+    absolute value, baseline median and z-score. Those are deterministic and do
+    reach the review's prompt, but they are re-derived from the *latest run*
+    every night, so hashing them would edit every standing comment nightly,
+    which is the exact harm the digest exists to prevent. `pct_change` is the
+    same kind of number and counts only at the precision the table displays it,
+    so the digest changes when the visible comment does and not before.
 - **A genuinely different window** — a separate comment, with its own marker.
 - **The regression resolves, or the score drops below `min_score`** — the
   comment is **left exactly as it is**. It is not edited, retracted, or deleted.

@@ -409,7 +409,9 @@ class CommentPlan:
     base_release: str | None
     onset_release: str
     rows: list[RegressionRow] = field(default_factory=list)
-    others: dict[tuple[str, int], CandidatePR] = field(default_factory=dict)
+    #: ``(repo, number) -> (candidate, scope label)`` — the strongest sighting
+    #: of each competing pull request, and which run scope judged it that way.
+    others: dict[tuple[str, int], tuple[CandidatePR, str]] = field(default_factory=dict)
     outcomes: tuple[ScopeOutcome, ...] = ()
     #: ``platform -> {(package, status): compare_url}`` — one release diff per
     #: platform, exactly as provenance recorded it.
@@ -418,6 +420,12 @@ class CommentPlan:
     )
     #: ``platform -> tracked packages that stood still`` on that platform.
     unchanged: dict[str, int] = field(default_factory=dict)
+    #: Every platform that contributed a row with a sidecar entry — including
+    #: those whose entries all measured a *narrower* window than this comment's
+    #: and so contributed no package facts. Kept apart from ``package_facts`` so
+    #: :attr:`packages_unavailable_on` can name them rather than let the prompt
+    #: read as though those platforms had nothing to report.
+    platforms_seen: set[str] = field(default_factory=set)
     selected: bool = False
 
     @property
@@ -439,6 +447,17 @@ class CommentPlan:
             )
             for platform, facts in sorted(self.package_facts.items())
         }
+
+    @property
+    def packages_unavailable_on(self) -> tuple[str, ...]:
+        """Platforms that regressed in this window but whose release diff for
+        *exactly* this window was never read.
+
+        Their rows entered on narrower ranges of their own, and those ranges'
+        package sets are not this window's. Named rather than silently missing:
+        "no diff was read for this platform" and "nothing changed on this
+        platform" are opposite claims."""
+        return tuple(sorted(self.platforms_seen - set(self.package_facts)))
 
     @property
     def platforms(self) -> set[str]:
@@ -620,7 +639,15 @@ def _collect_window(confirmed: list[_Confirmed], plan: CommentPlan) -> None:
             continue
         state, candidate = _scope_state(entry, ident)
         if entry is not None:
-            _record_packages(plan, entry, verdict.platform)
+            plan.platforms_seen.add(verdict.platform)
+            # Only an entry measuring *this comment's* window describes this
+            # comment's release diff. A row can enter the window on a narrower
+            # range of its own (a metric settled later carries a later base),
+            # and folding that range's packages in would build a changed-package
+            # set — and a "N of M tracked" denominator — that no provenance
+            # read ever produced.
+            if (entry.base_release, entry.onset_release) == window:
+                _record_packages(plan, entry, verdict.platform)
             _record_others(plan, entry, ident)
         plan.rows.append(RegressionRow(
             verdict=verdict, stack=stack, scope_state=state,
@@ -672,16 +699,30 @@ def _record_others(plan: CommentPlan, entry: BlameEntry, ident: tuple[str, int])
     against — including from scopes the subject was never a candidate in, which
     is where the alternative that fits the evidence better often lives.
 
-    A candidate seen twice keeps its judged reading: a ranked sighting beats an
-    unranked one whatever the scores say, since an unranked one carries no score
-    at all."""
+    A competing pull request is judged once per scope, and those judgements can
+    disagree sharply — 95 on one detector, 10 on another. Only the strongest is
+    carried (the prompt cannot hold every scope's reading of thirty
+    competitors), so the scope it came from is carried with it: "95/100 on
+    IDEA · debug" is a usable alternative, while a bare "95/100" invites the
+    reviewer to read a one-scope judgement as a window-wide one — the very
+    flattening this second pass exists to undo.
+
+    A ranked sighting beats an unranked one whatever the scores say, since an
+    unranked one carries no score at all."""
     for other in entry.candidates:
         other_ident = (other.repo.lower(), other.number)
         if other_ident == ident:
             continue
+        sighting = (other, _scope_label(entry))
         previous = plan.others.get(other_ident)
-        if previous is None or _candidate_rank(other) > _candidate_rank(previous):
-            plan.others[other_ident] = other
+        if previous is None or _candidate_rank(other) > _candidate_rank(previous[0]):
+            plan.others[other_ident] = sighting
+
+
+def _scope_label(entry: BlameEntry) -> str:
+    """How a scope is named to the reviewing model — the same order the outcome
+    lines use, so one vocabulary describes the whole prompt."""
+    return f"{entry.detector} · {entry.sample} · {entry.platform}"
 
 
 def _candidate_rank(candidate: CandidatePR) -> tuple[bool, float]:
@@ -854,7 +895,9 @@ def build_comments(
     """
     comments = []
     for plan in plans:
-        attribution = _review(plan, attributor=attributor, patch_for=patch_for)
+        attribution, request = _review(
+            plan, attributor=attributor, patch_for=patch_for
+        )
         # Measured on what the table will actually show, not on the review's
         # own scores: a partial reply leaves the rows it omitted at their
         # per-configuration likelihood (:func:`_likelihood`), and a row the
@@ -874,7 +917,9 @@ def build_comments(
                 plan.target, min_score, effective_top,
             )
             continue
-        comments.append(_render(plan, attribution, dashboard_url=dashboard_url))
+        comments.append(
+            _render(plan, attribution, request, dashboard_url=dashboard_url)
+        )
     return comments
 
 
@@ -883,15 +928,20 @@ def _review(
     *,
     attributor: Attributor | None,
     patch_for: PatchFor | None,
-) -> Attribution | None:
-    """One plan's cross-configuration review, or ``None`` when it did not happen.
+) -> tuple[Attribution | None, AttributionRequest | None]:
+    """One plan's cross-configuration review and the request it was made from.
 
     Every failure — no attributor, no diff source, a raising fetch, a raising or
-    declining model — is the same ``None``: the comment then renders from the
-    per-configuration scores, which is exactly what it did before this stage
-    existed. A degraded comment beats a blocked one."""
+    declining model — leaves the attribution ``None``: the comment then renders
+    from the per-configuration scores, which is exactly what it did before this
+    stage existed. A degraded comment beats a blocked one.
+
+    The *request* comes back alongside it, even when the model then declined,
+    because it records which evidence this night could actually assemble — a
+    diff that GitHub refused is a materially weaker review, and the digest has
+    to be able to see that (:func:`_facts_digest`)."""
     if attributor is None:
-        return None
+        return None, None
     fetch = patch_for or (lambda _repo, _number: "")
     try:
         request = _attribution_request(plan, fetch)
@@ -900,15 +950,15 @@ def _review(
             "build_comments: %s — could not assemble the review request (%s); "
             "falling back to the per-configuration scores", plan.target, exc,
         )
-        return None
+        return None, None
     try:
-        return attributor.attribute(request)
+        return attributor.attribute(request), request
     except Exception as exc:  # noqa: BLE001 — an adapter that raises is a decline
         _log.warning(
             "build_comments: %s — the cross-configuration review failed (%s); "
             "falling back to the per-configuration scores", plan.target, exc,
         )
-        return None
+        return None, request
 
 
 def _attribution_request(plan: CommentPlan, fetch: PatchFor) -> AttributionRequest:
@@ -926,28 +976,30 @@ def _attribution_request(plan: CommentPlan, fetch: PatchFor) -> AttributionReque
         regressions=tuple(_fact(row) for row in plan.rows),
         outcomes=plan.outcomes,
         competitors=tuple(
-            _competitor(other, fetch)
+            _competitor(other, scope, fetch)
             # Cut the field to what the prompt can actually carry *before*
             # fetching anything: the prompt keeps the strongest
             # `MAX_COMPETITORS` in this same order, so a window with a hundred
             # candidates would otherwise spend a hundred GitHub round trips —
             # inside one shared timeout — to show thirty.
-            for other in _sorted_others(plan)[:MAX_COMPETITORS]
+            for other, scope in _sorted_others(plan)[:MAX_COMPETITORS]
         ),
         packages_by_platform=plan.packages_by_platform,
         unchanged_by_platform=dict(plan.unchanged),
+        packages_unavailable_on=plan.packages_unavailable_on,
     )
 
 
-def _competitor(other: CandidatePR, fetch: PatchFor) -> CompetingPR:
+def _competitor(other: CandidatePR, scope: str, fetch: PatchFor) -> CompetingPR:
     """One competing candidate as the review sees it — with a score only if the
-    first pass gave it one."""
+    first pass gave it one, and the scope that gave it."""
     return CompetingPR(
         repo=other.repo, number=other.number, url=other.url,
         title=other.title, files=other.files,
         additions=other.additions, deletions=other.deletions,
         scope_score=other.score if other.ranked else None,
         scope_reason=other.description,
+        scope=scope if other.ranked else "",
         patch=fetch(other.repo, other.number),
     )
 
@@ -966,14 +1018,16 @@ def _fact(row: RegressionRow) -> RegressionFact:
     )
 
 
-def _sorted_others(plan: CommentPlan) -> list[CandidatePR]:
+def _sorted_others(plan: CommentPlan) -> list[tuple[CandidatePR, str]]:
     """The competing candidates, strongest first and the unjudged last — the
     order both the prompt and the rendered disclosure use, and the order the
     competitor cap cuts on (:func:`~k4bench.blame.attribute.competitor_order`,
     which this must agree with)."""
     return sorted(
         plan.others.values(),
-        key=lambda c: competitor_order(_competitor(c, lambda _r, _n: "")),
+        key=lambda pair: competitor_order(
+            _competitor(pair[0], pair[1], lambda _r, _n: "")
+        ),
     )
 
 
@@ -982,6 +1036,7 @@ def _sorted_others(plan: CommentPlan) -> list[CandidatePR]:
 def _render(
     plan: CommentPlan,
     attribution: Attribution | None,
+    request: AttributionRequest | None,
     *,
     dashboard_url: str | None,
 ) -> PRComment:
@@ -994,7 +1049,7 @@ def _render(
     rows = sorted(
         plan.rows, key=lambda row: _row_sort_key(row, attribution)
     )
-    digest = _facts_digest(plan)
+    digest = _facts_digest(plan, request)
     # Only the rows that survive the table's caps are linked: a definition no
     # row references is dead weight against the comment-size limit.
     links = _row_links(
@@ -1164,7 +1219,7 @@ def _assessment(
     # first place either.
     outranks_all = all(
         other.ranked and other.score < lead.scope_score
-        for other in plan.others.values()
+        for other, _scope in plan.others.values()
     )
     claim = "the most likely" if outranks_all else "a likely"
     return (
@@ -1180,18 +1235,21 @@ def _coverage_note(
 
     Two ways a row goes unreviewed: the window carried more regressions than the
     prompt offers (only the largest movements are shown), or the reply simply
-    skipped it. Either way the row keeps its per-configuration likelihood
-    (:func:`_likelihood`) and the table shows it — so the summary has to say it
-    was not part of what the reviewer weighed. Nothing is added when every row
-    was answered, which is the ordinary night."""
+    skipped it. Either way the row keeps whatever the first pass left it with —
+    a score, or one of the states that has none (:func:`_likelihood`) — and the
+    table shows it, so the summary has to say it was not part of what the
+    reviewer weighed. The wording avoids promising a score for those rows:
+    plenty of them have none, because this pull request was never judged
+    against them. Nothing is added when every row was answered, which is the
+    ordinary night."""
     unreviewed = sum(1 for row in rows if row.fact_id not in attribution.likelihoods)
     if not unreviewed:
         return ""
     return (
         f"\n>\n> <sub>This assessment covers "
         f"{_count(len(rows) - unreviewed, 'regression')} of {len(rows)}; the "
-        f"remaining {unreviewed} keep the per-configuration ranker's score and "
-        "were not part of it.</sub>"
+        f"remaining {unreviewed} were not part of it and keep their "
+        "first-pass state, and its score where there is one.</sub>"
     )
 
 
@@ -1364,7 +1422,7 @@ def _others_section(plan: CommentPlan) -> str:
     # ``others`` is judged-first (:func:`_sorted_others`), so the strongest
     # *scored* candidate leads when there is one. A field nobody scored says
     # that instead of quoting a percentage no model produced.
-    strongest = others[0] if others[0].ranked else None
+    strongest = others[0][0] if others[0][0].ranked else None
     headline = (
         f"highest {_pct(strongest.score)}" if strongest is not None
         else "none of them scored by the ranker"
@@ -1386,7 +1444,7 @@ def _others_section(plan: CommentPlan) -> str:
         *(
             f"| {_pr_ref(c)} — {_cell(_one_line(c.title, 80))} | "
             f"{_candidate_score_cell(c)} |"
-            for c in shown
+            for c, _scope in shown
         ),
     ]
     if len(others) > len(shown):
@@ -1507,27 +1565,33 @@ def _where_to_look(
     return "\n".join(["", "##### 🔎 Where to look", "", *links])
 
 
-def _facts_digest(plan: CommentPlan) -> str:
+def _facts_digest(
+    plan: CommentPlan, request: AttributionRequest | None = None
+) -> str:
     """A fingerprint of the *benchmark facts* behind a comment.
 
     The publisher edits a standing comment only when this changes
-    (:func:`k4bench.blame.publish._upsert`), so the rule is: everything
-    deterministic that a reader would call a change goes in, and everything a
-    model re-rolls each night stays out.
+    (:func:`k4bench.blame.publish._upsert`), and an edit re-notifies everyone
+    subscribed to the pull request. So the rule is two-sided, and both sides
+    matter: a fact that changes what the comment claims must be in, and a number
+    that moves on its own every night must be out.
 
-    **In**, because they are measurements and because they visibly change what
-    the comment says: the window; every regression row's identity — platform
-    included — and how far it moved; what the first pass knew about this pull
-    request in each of those scopes; the clean and watch outcomes with their
-    watched metrics and unjudged counts; the per-platform package diff and
-    unchanged counts; and which pull requests were in the field, with whether
-    each was judged at all.
+    **In**: the window; every regression row's identity — platform included —
+    and how far it moved; what the first pass knew about this pull request in
+    each of those scopes; the clean and watch outcomes with their watched
+    metrics and unjudged counts; the per-platform package diff and unchanged
+    counts; which pull requests were in the field and whether each was judged;
+    and whether the review's evidence — the subject's and competitors' diffs —
+    could actually be fetched.
 
     The outcomes especially. A comment posted while IDEA had no reliable result
     reads differently once IDEA delivers a clean measurement of the same window
     — that control weakens the attribution and the review is shown it — and a
     digest covering only the positive rows would leave the old reasoning
     standing on the pull request forever, because nothing it hashed had moved.
+    Diff availability is the same argument: a night where GitHub refused the
+    patch produces a review made from paths and titles, and the night the fetch
+    succeeds is a materially better-evidenced comment, not a reworded one.
 
     **Out**: the narrative, and every model score — the review's likelihoods and
     the ranker's scoring alike. Those drift between nights without anything
@@ -1535,6 +1599,16 @@ def _facts_digest(plan: CommentPlan) -> str:
     re-notifying everyone watching a pull request. (Whether a candidate was
     scored *at all* is a different thing, and is in: it changes the table cell
     and the prompt from a percentage to "not scored".)
+
+    **Also out, and less obviously so**: ``value``, ``baseline_median`` and
+    ``z_score``. They are deterministic and they do reach the review's prompt,
+    but they are *tonight's* measurement of a standing regression — the engine
+    re-derives them from the latest run every night, so they move whenever the
+    benchmark is re-run, which is nightly. Hashing them would edit every
+    standing comment every night, which is the exact harm this digest exists to
+    prevent. ``pct_change`` is the same kind of number and is included only at
+    the precision the comment *displays* it (:func:`_canonical_pct`), so the
+    digest changes when the visible table does and not before.
 
     Serialized as canonical JSON rather than joined strings so a field's value
     can never migrate into its neighbour's — ``a|b`` and ``a`` + ``|b`` hash
@@ -1564,18 +1638,65 @@ def _facts_digest(plan: CommentPlan) -> str:
             for platform, packages in plan.packages_by_platform.items()
         },
         "unchanged": dict(sorted(plan.unchanged.items())),
+        "packages_unavailable_on": list(plan.packages_unavailable_on),
         "competitors": [
             {"pr": f"{other.repo}#{other.number}", "ranked": other.ranked}
-            for other in _sorted_others(plan)
+            for other, _scope in _sorted_others(plan)
         ],
+        "evidence": _evidence_facts(request),
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
 
+def _evidence_facts(request: AttributionRequest | None) -> dict[str, Any] | None:
+    """Which of the review's inputs this night could actually assemble.
+
+    Diff *availability*, not diff content: a merged pull request's diff does not
+    change, so hashing the text would add nothing a boolean does not already say
+    while making the digest sensitive to incidental churn in how the patch was
+    clipped. What genuinely varies is whether GitHub answered — and that decides
+    whether the model reasoned about code or about file names.
+
+    The paths and sizes ride along because they are shown to the model too and
+    are fixed for a merged pull request, so they cost nothing and catch a
+    candidate whose metadata was read differently. ``None`` when no review was
+    assembled at all: a comment rendered from the first pass alone rests on no
+    such evidence, and configuring a model later is itself a change of basis."""
+    if request is None:
+        return None
+    return {
+        "subject": {
+            "files": list(request.files),
+            "size": [request.additions, request.deletions],
+            "patch": bool(request.patch),
+        },
+        "competitors": [
+            {
+                "pr": f"{c.repo}#{c.number}",
+                "files": list(c.files),
+                "size": [c.additions, c.deletions],
+                "patch": bool(c.patch),
+            }
+            for c in sorted(request.competitors, key=lambda c: (c.repo, c.number))
+        ],
+    }
+
+
 def _canonical_pct(pct: float | None) -> str:
-    """A step size as fixed text, so a float's repr can never move a digest."""
-    return f"{pct:.4f}" if pct is not None and math.isfinite(pct) else "-"
+    """A step size at the precision the comment shows it.
+
+    ``pct_change`` is re-measured every night, so a standing regression's step
+    wobbles a little from one run to the next. Quantizing to what
+    :func:`_change_cell` actually prints ties the digest to the rendered table:
+    a wobble too small to change a single character of the comment produces no
+    edit, and a real move produces one. Hashing the raw float instead — even to
+    four decimals, ten times finer than the display — edits a comment whose
+    visible body is byte-for-byte identical, which is the most pointless
+    notification this bot can send."""
+    if pct is None or not math.isfinite(pct):
+        return "-"
+    return f"{pct:+.1%}"
 
 
 def _pct(score: float) -> str:

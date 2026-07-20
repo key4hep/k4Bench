@@ -670,7 +670,9 @@ def _ranking_cards(group: RunGroupReport, index: _BlameIndex) -> list[RankingCar
                 prev = chosen.get(ck)
                 if prev is None or (prev[1] is not None and reused_from is None):
                     chosen[ck] = (c, reused_from)
-        ranked = [c for c, _src in chosen.values() if c.score or c.description]
+        # Only judged candidates: an unranked one carries a placeholder score,
+        # never an opinion, and the email renders these as percentages.
+        ranked = [c for c, _src in chosen.values() if c.ranked]
         ranked.sort(key=lambda c: (-c.score, c.repo, c.number))
         compare_links = sorted(compares)
         window_verdicts = [

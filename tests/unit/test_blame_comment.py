@@ -1397,7 +1397,7 @@ def test_a_confirmed_row_the_pr_is_not_a_candidate_for_is_still_collected():
     # And it is not silently reclassified as a configuration that stayed flat.
     assert not any(o.detector == "IDEA_o1_v03" for o in request.outcomes)
     prompt = build_user_prompt(request)
-    assert "NOT among the candidates for this scope" in prompt
+    assert "NOT among the candidates for this regression" in prompt
     # The rival from the scope the subject never appeared in is a real
     # alternative, and is offered as one.
     assert any(c.number == 77 for c in request.competitors)
@@ -1454,7 +1454,7 @@ def test_a_row_whose_discovery_was_incomplete_is_carried_as_unknown():
     assert by_detector["IDEA_o1_v03"].scope_state == "discovery_incomplete"
     assert by_detector["IDEA_o1_v03"].scope_score is None
     prompt = build_user_prompt(request)
-    assert "Candidate discovery for this scope was incomplete" in prompt
+    assert "candidate discovery for this regression was incomplete" in prompt
     # An incomplete scope elsewhere does not silence a comment whose own
     # accusation rests on a complete, ranked scope — but it never lends it
     # support either.
@@ -1620,3 +1620,181 @@ def test_a_review_cannot_pin_a_claim_on_a_scope_the_pr_is_absent_from():
                                   ids["IDEA_o1_v03"]: 95.0})
     comments = _comments(_report(allegro, idea), blame, attributor=attributor)
     assert comments == []
+
+
+# ── One prior per row, never one per run group ────────────────────────────────
+
+def test_two_rows_in_one_scope_keep_their_own_first_pass_priors():
+    # Same detector, platform and sample — but each metric's change range is its
+    # own, so the PR can be ranked 92 for one row and absent from the candidate
+    # set of the other. A prior printed once per run group would state the 92
+    # above both and delete the absence, which is the exculpatory half.
+    ranked_row = _verdict(metric="wall_time_s", base="2026-07-03")
+    absent_row = _verdict(metric="peak_rss_mb", base="2026-07-03")
+    blame = BlameReport("x", "2026-07-05", entries=(
+        _blame([ranked_row], [_candidate(score=92.0)]).entries[0],
+        _entry_without(absent_row, [_candidate(number=77, repo="key4hep/DD4hep")]),
+    ))
+    attributor = _FakeAttributor({"r1": 90.0, "r2": 10.0})
+    _comments(_report(ranked_row, absent_row), blame, attributor=attributor)
+    request = attributor.requests[0]
+    # One run scope, two rows, two different first-pass states.
+    assert {(f.detector, f.platform, f.sample) for f in request.regressions} == {
+        ("ALLEGRO_o1_v03", _PLAT, "single_e-_10GeV"),
+    }
+    by_metric = {f.metric: f for f in request.regressions}
+    assert by_metric["wall_time_s"].scope_state == "ranked"
+    assert by_metric["peak_rss_mb"].scope_state == "not_candidate"
+
+    prompt = build_user_prompt(request)
+    # Both priors are stated, each attached to its own row.
+    assert "prior: ranked 92/100" in prompt
+    assert "NOT among the candidates for this regression" in prompt
+    # One run-group heading, two rows, two priors — the grouping survives.
+    assert prompt.count("### ALLEGRO_o1_v03") == 1
+    assert prompt.count("      prior: ") == 2
+
+
+def test_every_prior_state_has_its_own_wording():
+    v = _verdict()
+    blame = _blame([v], [_candidate(score=92.0)])
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(_report(v), blame, attributor=attributor)
+    request = attributor.requests[0]
+    states = {
+        "unranked": "was a candidate for this regression but the first pass "
+                    "returned no score",
+        "not_candidate": "NOT among the candidates for this regression",
+        "discovery_incomplete": "candidate discovery for this regression was "
+                                "incomplete",
+    }
+    for state, phrase in states.items():
+        mutated = replace(
+            request,
+            regressions=(replace(request.regressions[0],
+                                 scope_state=state, scope_score=None),),
+        )
+        assert phrase in build_user_prompt(mutated), state
+
+
+# ── Package facts belong to the window they were read for ─────────────────────
+
+def test_a_narrower_windows_package_diff_is_not_folded_into_this_one():
+    # A metric settled later carries a later base, so its regression enters this
+    # comment's window on a range of its own. Its package diff is that range's,
+    # not this window's — folding it in would state a changed-package set, and a
+    # "N of M tracked" denominator, that no provenance read ever produced.
+    subject = _verdict(metric="wall_time_s", base="2026-07-03", onset="2026-07-04")
+    narrower = _verdict(metric="peak_rss_mb", base="2026-07-035", onset="2026-07-04")
+    blame = BlameReport("x", "2026-07-05", entries=(
+        _entry_with(subject, ["k4geo"], n_unchanged=18),
+        replace(
+            _entry_with(narrower, ["k4geo", "DD4hep", "edm4hep"], n_unchanged=2),
+            base_release="2026-07-035",
+        ),
+    ))
+    attributor = _FakeAttributor({"r1": 90.0, "r2": 90.0})
+    _comments(_report(subject, narrower), blame, attributor=attributor)
+    request = attributor.requests[0]
+    # Only the entry measuring exactly 2026-07-03 → 2026-07-04 contributes.
+    assert [p.package for p in request.packages_by_platform[_PLAT]] == ["k4geo"]
+    assert request.unchanged_by_platform == {_PLAT: 18}
+    assert "1 of 19 tracked" in build_user_prompt(request)
+    # The narrower row is still collected as evidence — only its package diff
+    # is left out.
+    assert len(request.regressions) == 2
+
+
+def test_a_platform_with_no_diff_for_this_window_is_named_not_omitted():
+    # "No diff was read for this platform" and "nothing changed on this
+    # platform" are opposite claims; silence would assert the second.
+    dbg = "x86_64-almalinux9-gcc14.2.0-dbg"
+    subject = _verdict(platform=_PLAT, base="2026-07-03")
+    other = _verdict(platform=dbg, base="2026-07-035")
+    blame = BlameReport("x", "2026-07-05", entries=(
+        _entry_with(subject, ["k4geo"]),
+        replace(_entry_with(other, ["DD4hep"]), base_release="2026-07-035"),
+    ))
+    attributor = _FakeAttributor({"r1": 90.0, "r2": 90.0})
+    _comments(_report(subject, other), blame, attributor=attributor)
+    request = attributor.requests[0]
+    assert set(request.packages_by_platform) == {_PLAT}
+    assert request.packages_unavailable_on == (dbg,)
+    prompt = build_user_prompt(request)
+    assert f"No release diff was read for this exact window on: {dbg}" in prompt
+
+
+# ── Competing priors keep the scope that produced them ────────────────────────
+
+def test_a_competitors_prior_names_the_scope_it_came_from():
+    # A rival can score 95 on one detector and 10 on another. Only the strongest
+    # is carried, so it must say where it came from — a bare "95/100" invites
+    # the reviewer to read a one-scope judgement as a window-wide one.
+    allegro = _verdict(detector="ALLEGRO_o1_v03")
+    idea = _verdict(detector="IDEA_o1_v03")
+    rival_strong = _candidate(number=77, repo="key4hep/DD4hep", score=95.0,
+                              title="Field map")
+    rival_weak = _candidate(number=77, repo="key4hep/DD4hep", score=10.0,
+                            title="Field map")
+    blame = _blame_of(
+        (allegro, [_candidate(score=92.0), rival_weak]),
+        (idea, [_candidate(score=92.0), rival_strong]),
+    )
+    attributor = _FakeAttributor({"r1": 90.0, "r2": 90.0})
+    _comments(_report(allegro, idea), blame, attributor=attributor)
+    competitor = attributor.requests[0].competitors[0]
+    assert competitor.scope_score == 95.0
+    assert competitor.scope == f"IDEA_o1_v03 · single_e-_10GeV · {_PLAT}"
+    prompt = build_user_prompt(attributor.requests[0])
+    assert "strongest earlier per-configuration review in IDEA_o1_v03" in prompt
+
+
+# ── What the digest must and must not react to ────────────────────────────────
+
+def test_the_digest_changes_when_the_reviews_diff_becomes_available():
+    # Night one: GitHub refuses the patch, so the review reasons from paths and
+    # titles and writes a weaker public explanation. Night two it succeeds. That
+    # is a better-evidenced comment, not a reworded one, and nothing else would
+    # ever bring the standing comment up to date.
+    v = _verdict()
+    blame = _blame([v], [_candidate()])
+    without = _comments(_report(v), blame, attributor=_FakeAttributor({"r1": 90.0}),
+                        patch_for=lambda _r, _n: "")[0]
+    with_diff = _comments(_report(v), blame, attributor=_FakeAttributor({"r1": 90.0}),
+                          patch_for=lambda _r, _n: "@@ -1 +1 @@\n-a\n+b")[0]
+    assert without.facts_digest != with_diff.facts_digest
+
+
+def test_the_digest_ignores_a_re_measured_night_that_changes_nothing_visible():
+    # value/baseline/z-score are re-derived from the *latest* run every night,
+    # so they move whenever the benchmark re-runs. Hashing them would edit every
+    # standing comment nightly — the exact harm the digest exists to prevent.
+    # Only movement large enough to change the rendered table counts.
+    v = _verdict(pct=0.2000)
+    blame = _blame([v], [_candidate()])
+    tonight = _comments(_report(v), blame)[0]
+    remeasured = replace(
+        v, value=120.4, baseline_median=99.8, z_score=6.4, pct_change=0.20034,
+    )
+    later = _comments(
+        _report(remeasured), BlameReport("x", "2026-07-05", entries=blame.entries)
+    )[0]
+    assert tonight.body == later.body
+    assert tonight.facts_digest == later.facts_digest
+
+
+def test_the_digest_tracks_the_step_at_the_precision_the_comment_shows_it():
+    # An edit re-notifies everyone watching the pull request, so it has to be
+    # visible in the comment. A drift too small to change a single rendered
+    # character must not produce one; a drift that changes the cell must.
+    v = _verdict(pct=0.2000)
+    blame = _blame([v], [_candidate()])
+
+    def digest_for(pct):
+        return _comments(
+            _report(replace(v, pct_change=pct)),
+            BlameReport("x", "2026-07-05", entries=blame.entries),
+        )[0].facts_digest
+
+    assert digest_for(0.2000) == digest_for(0.20034)   # both render "+20.0%"
+    assert digest_for(0.2000) != digest_for(0.2034)    # renders "+20.3%"

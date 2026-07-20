@@ -321,6 +321,7 @@ def test_selected_regression_shows_its_ai_ranked_prs():
         title="Reduce geometry navigation overhead", author="alice",
         url="https://github.com/key4hep/k4geo/pull/1234",
         score=84.0, description="touches the geometry path used by this job",
+        ranked=True,
     )
     report = _raw_report([verdict], night="2026-07-10")
     at = _run(

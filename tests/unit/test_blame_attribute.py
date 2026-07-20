@@ -168,7 +168,7 @@ def test_prompt_carries_the_first_passs_prior_for_this_pull_request():
     prompt = build_user_prompt(_request(regressions=(
         _fact(scope_score=91.0, scope_reason="raises the step count"),
     )))
-    assert "Earlier per-configuration review of this pull request here: 91/100" in prompt
+    assert "prior: ranked 91/100 by the per-configuration pass" in prompt
     assert "raises the step count" in prompt
 
 
