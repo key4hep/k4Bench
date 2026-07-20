@@ -31,6 +31,7 @@ from k4bench.regression.models import (
     RunGroupReport,
     Severity,
 )
+from k4bench.regression.render import regression_href
 
 _PLAT = "x86_64-almalinux9-gcc14.2.0-opt"
 _DASH = "https://k4bench-dashboard.app.cern.ch"
@@ -60,6 +61,10 @@ def _verdict(*, metric="wall_time_s", label="baseline", onset="2026-07-04",
 
 
 def _report(*verdicts: MetricVerdict, night="2026-07-05", **group_kw) -> NightlyReport:
+    # Reliability is a tri-state and only ``True`` is a trustworthy run, so the
+    # groups here are reliable unless a test says otherwise — a fixture left at
+    # the ``None`` default would silently be "no evidence", never a control.
+    group_kw.setdefault("reliable", True)
     groups: dict[tuple, RunGroupReport] = {}
     for v in verdicts:
         key = (v.detector, v.platform, v.sample)
@@ -162,7 +167,12 @@ def _row(body: str, needle: str) -> str:
 
 
 def _table_rows(body: str) -> list[str]:
-    return [line for line in body.splitlines() if line.startswith("| `")]
+    # A row opens with its metric cell, linked (``| [`wall_time_s`][r1] |``)
+    # when the dashboard is configured and bare when it is not.
+    return [
+        line for line in body.splitlines()
+        if line.startswith("| `") or line.startswith("| [`")
+    ]
 
 
 # ── The policy ────────────────────────────────────────────────────────────────
@@ -255,6 +265,36 @@ def test_metrics_sharing_a_window_collapse_into_one_comment():
     assert "`wall_time_s`" in body and "`mean_time_s`" in body
 
 
+def test_a_low_scoring_configuration_of_a_selected_pr_is_still_collected():
+    # The PR is selected because it scored 92 on ALLEGRO; the ranker gave it 30
+    # on the IDEA regression of the same window. That IDEA row is exactly the
+    # cross-configuration evidence the review exists to weigh — it bounds what
+    # the diff reached — and it is not recoverable as negative evidence either,
+    # since IDEA *did* confirm a step here. So it is collected, not filtered.
+    allegro = _verdict(detector="ALLEGRO_o1_v03")
+    idea = _verdict(detector="IDEA_o1_v03")
+    blame = _blame_of((allegro, [_candidate(score=92.0)]),
+                      (idea, [_candidate(score=30.0)]))
+    attributor = _FakeAttributor({"r1": 92.0, "r2": 30.0})
+    comments = _comments(_report(allegro, idea), blame, attributor=attributor)
+    assert len(comments) == 1
+    scored = attributor.requests[0].regressions
+    assert {(f.detector, f.scope_score) for f in scored} == {
+        ("ALLEGRO_o1_v03", 92.0), ("IDEA_o1_v03", 30.0),
+    }
+    assert "30%" in comments[0].body
+
+
+def test_a_pr_below_the_threshold_everywhere_is_still_not_selected():
+    # Collecting low-scoring rows must not become a way in: the plan is kept
+    # only when some scoring of it crosses min_score.
+    allegro = _verdict(detector="ALLEGRO_o1_v03")
+    idea = _verdict(detector="IDEA_o1_v03")
+    blame = _blame_of((allegro, [_candidate(score=42.0)]),
+                      (idea, [_candidate(score=30.0)]))
+    assert _plans(_report(allegro, idea), blame) == []
+
+
 def test_a_second_window_gets_its_own_comment():
     # Two genuinely different change windows are two claims about the same PR,
     # and must not overwrite each other.
@@ -326,6 +366,7 @@ def test_a_configuration_that_moved_without_confirming_is_reported_as_watching()
 
 @pytest.mark.parametrize("group_kw", [
     {"reliable": False},                       # the host was not trustworthy
+    {"reliable": None},                        # no reliability evidence at all
     {"job_failures": ["no run uploaded"]},     # the run did not really happen
 ])
 def test_a_run_that_cannot_be_trusted_is_not_evidence_of_absence(group_kw):
@@ -341,13 +382,66 @@ def test_a_run_that_cannot_be_trusted_is_not_evidence_of_absence(group_kw):
     assert attributor.requests[0].outcomes == ()
 
 
-def test_a_configuration_that_measured_another_release_is_not_evidence():
-    allegro = _verdict(detector="ALLEGRO_o1_v03")
-    stale = _verdict(detector="IDEA_o1_v03", severity=Severity.OK, onset="2026-06-01")
+def test_a_detector_removal_run_is_a_control_for_its_own_baseline():
+    # The sharpest control the suite produces is *inside* a run group: baseline
+    # stepped, without_HCAL did not, same detector, sample, platform and night —
+    # which places the cost inside the HCAL. Judging the negative evidence per
+    # run group would delete exactly this comparison, since the regression it is
+    # a control for lives in the same group.
+    baseline = _verdict(label="baseline")
+    without_hcal = _verdict(label="without_HCAL", severity=Severity.OK)
     attributor = _FakeAttributor({"r1": 90.0})
-    _comments(_report(allegro, stale), _blame([allegro], [_candidate()]),
+    _comments(_report(baseline, without_hcal), _blame([baseline], [_candidate()]),
               attributor=attributor)
+    outcomes = attributor.requests[0].outcomes
+    assert [(o.detector, o.label, o.status) for o in outcomes] == [
+        ("ALLEGRO_o1_v03", "without_HCAL", "clean"),
+    ]
+
+
+def test_a_configuration_that_partly_failed_is_not_a_clean_control():
+    # A metric that failed outright is a configuration that did not measure,
+    # not one that measured and stayed flat.
+    allegro = _verdict(detector="ALLEGRO_o1_v03")
+    idea_ok = _verdict(detector="IDEA_o1_v03", metric="wall_time_s",
+                       severity=Severity.OK)
+    idea_failed = _verdict(detector="IDEA_o1_v03", metric="peak_rss_mb",
+                           severity=Severity.FAILURE)
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(_report(allegro, idea_ok, idea_failed),
+              _blame([allegro], [_candidate()]), attributor=attributor)
     assert attributor.requests[0].outcomes == ()
+
+
+def test_a_configuration_that_measured_another_release_is_not_evidence():
+    # The control has to be a like-for-like measurement: a group that ran a
+    # different Key4hep release than the regressed rows says nothing about them.
+    # Note this is the release the group *ran*, not the window's onset — a step
+    # that entered on 2026-06-25 is still being re-measured weeks later, so
+    # matching on the onset would find no control at all.
+    allegro = _verdict(detector="ALLEGRO_o1_v03")
+    other_stack = _report(_verdict(detector="IDEA_o1_v03", severity=Severity.OK))
+    other_stack.groups[0].k4h_release = "key4hep-2026-06-01"
+    report = _report(allegro)
+    report.groups.extend(other_stack.groups)
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(report, _blame([allegro], [_candidate()]), attributor=attributor)
+    assert attributor.requests[0].outcomes == ()
+
+
+def test_a_control_is_found_even_though_the_onset_is_long_past():
+    # The regression entered on 2026-06-25 and is still confirmed while the
+    # nightlies measure 2026-06-27. The clean configurations measuring *that*
+    # release are the evidence, and an earlier version of this rule found none.
+    allegro = _verdict(detector="ALLEGRO_o1_v03", onset="2026-06-25", base="2026-06-24")
+    idea = _verdict(detector="IDEA_o1_v03", severity=Severity.OK,
+                    onset="2026-06-25", base="2026-06-24")
+    report = _report(allegro, idea)
+    for group in report.groups:
+        group.k4h_release = "key4hep-2026-06-27"
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(report, _blame([allegro], [_candidate()]), attributor=attributor)
+    assert [o.detector for o in attributor.requests[0].outcomes] == ["IDEA_o1_v03"]
 
 
 def test_the_review_is_shown_the_diffs_the_release_and_the_competing_field():
@@ -430,6 +524,39 @@ def test_only_the_first_rows_are_visible_and_the_rest_fold_away():
     assert len(_table_rows(tail)) == 3
 
 
+def test_a_detector_sweeps_worth_of_rows_still_fits_in_a_github_comment():
+    # A detector-removal sweep confirms one row per removed sub-detector: a real
+    # night has carried 318. Pasting them all is both unreadable and, past
+    # GitHub's 65,536-character limit, *rejected outright* — the comment would
+    # simply fail to post. The folded rows are capped and the rest counted.
+    verdicts = [
+        _verdict(metric=f"m{i % 4}", label=f"without_Sub{i}", pct=(300 - i) / 1000)
+        for i in range(318)
+    ]
+    comment = _comments(_report(*verdicts), _blame(verdicts, [_candidate()]))[0]
+    assert len(comment.body) < 65_536
+    assert len(_table_rows(comment.body)) == 30      # 5 visible + 25 folded
+    assert "313 further regressions in this window" in comment.body
+    assert "…and 288 more regressions, in the dashboard._" in comment.body
+
+
+def test_the_urls_live_in_reference_definitions_not_in_the_rows():
+    # The dashboard URL is ~400 characters; inlining one per row is what blew
+    # the size limit. A row carries a two-character label, and only the rows
+    # that survive the table's caps get a definition at all.
+    a = _verdict(metric="wall_time_s")
+    b = _verdict(metric="peak_rss_mb", pct=0.1)
+    body = _comments(_report(a, b), _blame([a, b], [_candidate()]))[0].body
+    assert _row(body, "peak_rss_mb").count(_DASH) == 0
+    assert body.count(f"[r1]: {_DASH}") == 1
+    assert body.count(f"[r2]: {_DASH}") == 1
+    assert body.count(_DASH) == 3        # two row links + the package diff
+
+    many = [_verdict(metric=f"m{i}", pct=(300 - i) / 1000) for i in range(40)]
+    body = _comments(_report(*many), _blame(many, [_candidate()]))[0].body
+    assert body.count(f"]: {_DASH}") == 30      # 5 visible + 25 folded, no more
+
+
 def test_the_platform_column_appears_only_when_platforms_differ():
     one = _verdict(detector="ALLEGRO_o1_v03")
     body = _comments(_report(one), _blame([one], [_candidate()]))[0].body
@@ -441,17 +568,37 @@ def test_the_platform_column_appears_only_when_platforms_differ():
     assert "debug" in body and "optimized" in body
 
 
-def test_each_row_links_to_its_own_window_in_the_dashboard():
-    allegro = _verdict(detector="ALLEGRO_o1_v03")
-    idea = _verdict(detector="IDEA_o1_v03")
+def test_each_row_links_to_its_own_regression_in_the_dashboard():
+    # A reader's question is about *their* metric, so the row opens the exact
+    # regression: the package diff for the window with that metric selected
+    # under it, where its trend and onset are.
+    allegro = _verdict(detector="ALLEGRO_o1_v03", metric="wall_time_s")
+    idea = _verdict(detector="IDEA_o1_v03", metric="peak_rss_mb", sub="ECalBarrel")
     body = _comments(_report(allegro, idea), _blame([allegro, idea], [_candidate()]))[0].body
-    for detector in ("ALLEGRO_o1_v03", "IDEA_o1_v03"):
-        row = _row(body, f"[{detector}]")
-        assert f"detector={detector}" in row
-        assert "window=2026-07-03..2026-07-04" in row
-        # ?stack= is the dashboard's release *directory*, not the bare release
-        # date a verdict carries — a bare date selects nothing.
-        assert "stack=key4hep-2026-07-04" in row
+    for verdict in (allegro, idea):
+        # The row carries the reference label; the definition carries the URL.
+        label = _row(body, f"`{verdict.metric}`").split("][")[1].split("]")[0]
+        definition = _row(body, f"[{label}]: ")
+        assert "tab=Stack+Changes" in definition
+        assert f"detector={verdict.detector}" in definition
+        assert "from=2026-07-03" in definition and "to=2026-07-04" in definition
+        # The reg_* params pin one verdict: the tab needs the onset to tell two
+        # onsets of the same release apart, and the region for a region metric.
+        assert f"reg_metric={verdict.metric}" in definition
+        assert "reg_onset=2026-07-04" in definition
+    assert "reg_region=ECalBarrel" in body
+
+
+def test_a_regression_with_no_onset_identity_is_not_pinned():
+    # Two onsets can measure the same release, so the dashboard needs the onset
+    # to know which step is meant: without one there is no link that selects the
+    # right regression, and the comment falls back to the window (see
+    # :func:`~k4bench.blame.comment._row_links`) rather than pinning the wrong
+    # one.
+    v = replace(_verdict(), onset_run_id=None, onset_run_date=None)
+    assert regression_href(
+        _DASH, verdict=v, base_release="2026-07-03", onset_release="2026-07-04"
+    ) is None
 
 
 def test_the_window_wide_package_diff_is_the_only_link_left_over():
@@ -502,6 +649,20 @@ def test_one_row_above_the_threshold_is_enough_to_keep_the_comment():
                          attributor=attributor)
     assert len(comments) == 1
     assert "12%" in _row(comments[0].body, "a_metric")
+
+
+def test_a_row_the_review_left_alone_can_hold_the_comment_up():
+    # A partial reply is an accepted outcome: the rows it omitted keep their
+    # per-configuration score. The withdrawal gate therefore has to read what
+    # the table will show — one low answer about one row must not acquit a PR
+    # the review never disputed on the row that caused the comment.
+    a, b = _verdict(metric="a_metric"), _verdict(metric="b_metric")
+    blame = _blame_of((a, [_candidate(score=91.0)]), (b, [_candidate(score=88.0)]))
+    attributor = _FakeAttributor({"r2": 20.0})   # r1 omitted, keeps its 91
+    comments = _comments(_report(a, b), blame, attributor=attributor)
+    assert len(comments) == 1
+    assert "91%" in _row(comments[0].body, "a_metric")
+    assert "20%" in _row(comments[0].body, "b_metric")
 
 
 @pytest.mark.parametrize("attributor", [
@@ -846,6 +1007,18 @@ def test_the_facts_digest_ignores_the_model_and_tracks_the_benchmarks():
     moved_further = _comments(_report(_verdict(pct=0.55)),
                               _blame([_verdict(pct=0.55)], [_candidate()]))[0]
     assert moved_further.facts_digest != first.facts_digest
+
+
+def test_the_digest_ignores_a_competitors_score_drifting():
+    # The field is a fact; what the ranker scored it is model output. A rival
+    # sliding from 84.4 to 84.6 crosses a rounding boundary and would otherwise
+    # re-render, edit and re-notify a standing comment for nothing.
+    v = _verdict()
+    rival = _candidate(number=1180, repo="key4hep/DD4hep", score=84.4)
+    first = _comments(_report(v), _blame([v], [_candidate(), rival]))[0]
+    second = _comments(_report(v), _blame(
+        [v], [_candidate(), replace(rival, score=84.6)]))[0]
+    assert first.facts_digest == second.facts_digest
 
 
 def test_the_digest_is_carried_in_the_body_and_readable_back():

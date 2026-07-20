@@ -40,6 +40,23 @@ confirm; the release's package diff; and every other pull request that landed in
 the window, with its diff and the first pass's judgement of it. It returns a
 likelihood per regression and the narrative the comment quotes.
 
+"Everything" is meant literally, and both halves of it are load-bearing:
+
+- Every regression the pull request was a *candidate* for is in the request,
+  including the ones the first pass scored badly. A PR that scored 92 on ALLEGRO
+  and 30 on IDEA in the same window is a PR whose reach the IDEA row bounds;
+  filtering rows by score would show the review the accusation with the
+  exculpatory half removed.
+- The negative evidence is identified down to the **benchmark configuration**,
+  not the run group. The sharpest control this suite produces lives *inside* a
+  group — `baseline` stepped, `without_HCAL` did not, same detector, sample,
+  platform and night, which places the cost inside the HCAL — and that is
+  exactly the comparison the review is asked to make. A configuration counts as
+  a control only when it genuinely measured cleanly: same release, reliable
+  host, no job failure, no failed metric of its own, no confirmed step in this
+  window. A run whose reliability is simply *unknown* is not a control either —
+  silence from a run that may not have happened is never evidence of absence.
+
 Three rules bound it:
 
 - **Only-echo.** A regression id the request did not contain is dropped, so a
@@ -50,7 +67,14 @@ Three rules bound it:
   this pass existed.
 - **Narrowing only.** This pass never *causes* a comment. Selection happens on
   the first pass's scores, and a review that finds every regression unlikely can
-  only withdraw the comment. The second opinion may acquit, not accuse.
+  only withdraw the comment. The second opinion may acquit, not accuse. The
+  withdrawal is measured on what the table would show — the review's score for
+  the rows it answered, the per-configuration score for the rows it left alone —
+  so a partial reply cannot acquit a pull request on rows it never disputed.
+- **Untrusted evidence.** PR titles, file paths and diffs are written by the
+  authors of the changes under review. Both system prompts say so, and diffs
+  arrive fenced between explicit markers: they are artifacts to analyse, never
+  instructions to follow.
 
 Both passes use the same `K4BENCH_LLM_*` configuration and are off by default;
 `K4BENCH_LLM_SUMMARY_MODEL` optionally points this pass alone at a stronger
@@ -71,7 +95,7 @@ being wrong about far less often than it is worth being silent.
 | Complete discovery | The blame entry's candidate search was complete. Naming one PR out of a knowingly partial set is the overclaim the ranker itself refuses to make. |
 | Confirmed tonight | Selection is driven from the *report*'s confirmed regressions, so a comment can only describe a regression that is confirmed in tonight's report. |
 | Not a storm | More than `max_comments` (default 10) comments in one night suppresses **all** of them: a night that loud is a bug, not a night. |
-| Not withdrawn | When the cross-configuration review ran and scored *every* regression in the window below `min_score`, the comment is dropped. See [Two passes](#two-passes). |
+| Not withdrawn | When the cross-configuration review ran and left *every* regression in the window below `min_score`, the comment is dropped. See [Two passes](#two-passes). |
 
 Most nights nothing is posted at all — most nights have no confirmed
 regression, let alone a confidently attributed one.
@@ -109,13 +133,25 @@ reader's question — "did my change do this?" — is asked once per window.
 It opens with the change window and the reviewer's short account of the pattern
 it found, then **one table** of every regression in that window — metric,
 detector, sample, benchmark configuration, how far it moved, and the attribution
-likelihood — ordered by likelihood, the first five visible and the rest folded
-into a disclosure. Which configurations moved (and, by their absence, which did
-not) is the substance of the claim, so it is one list a reader can scan rather
-than one configuration in full and the others in a footnote. A **Platform**
-column appears only when the window spans more than one. Each detector cell links
-to that regression's own dashboard view; below the table sit the other candidates
-in the window with their likelihoods, and the package diff for the release.
+likelihood — ordered by likelihood, the first five visible and the next
+twenty-five folded into a disclosure. Which configurations moved (and, by their
+absence, which did not) is the substance of the claim, so it is one list a reader
+can scan rather than one configuration in full and the others in a footnote. A
+**Platform** column appears only when the window spans more than one. Each
+**metric** cell links to that regression pinned in the dashboard's Stack Changes
+view — the metric's own trend and onset, the ranked candidates, and the window's
+package diff in one place, which is what "did my change do this?" actually needs.
+Below the table sit the other candidates in the window with their likelihoods,
+and the unpinned package diff for the release.
+
+The folded rows are capped, and anything past them is counted rather than pasted.
+A detector-removal sweep confirms one row per removed sub-detector — a real night
+has carried 318, nearly all repeating the same movement — and a comment over
+GitHub's 65,536-character limit is rejected outright rather than truncated. The
+dashboard link on each row is where the complete set lives — and because those
+URLs are ~400 characters each, they are written as Markdown *reference* links
+collected at the end of the body, one per rendered row and none for a row that
+did not survive the caps.
 
 Two rules run through the rendering:
 
@@ -142,9 +178,11 @@ upserts on that marker:
   everyone watching the PR, so it must mean something changed. The body contains
   nothing nightly-varying (no run URL, no report-night parameter), and "changed"
   is judged on a second hidden line: a digest of the *benchmark facts* — the
-  window, the regressions and how far they moved, the field of candidates. The
-  narrative and the likelihoods are model output that drifts between nights
-  without anything having happened, so they are deliberately left out of it.
+  window, the regressions and how far they moved, and *which* pull requests were
+  in the field. The narrative and every score — the review's likelihoods and the
+  ranker's scoring of the competing candidates alike — are model output that
+  drifts between nights without anything having happened, so they are
+  deliberately left out of it.
 - **A genuinely different window** — a separate comment, with its own marker.
 - **The regression resolves, or the score drops below `min_score`** — the
   comment is **left exactly as it is**. It is not edited, retracted, or deleted.

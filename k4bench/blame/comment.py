@@ -75,8 +75,9 @@ from k4bench.blame.models import (
     CandidatePR,
 )
 from k4bench.labels import pretty_platform, pretty_sample
-from k4bench.regression.models import MetricVerdict, NightlyReport
+from k4bench.regression.models import MetricVerdict, NightlyReport, Severity
 from k4bench.regression.render import (
+    regression_href,
     stack_changes_href,
     window_href,
     window_token,
@@ -89,11 +90,18 @@ _log = logging.getLogger(__name__)
 #: changes only when a body is no longer an in-place successor of the old one.
 MARKER_VERSION = "v1"
 
-#: Regression rows shown before the table folds into a disclosure, and candidate
-#: rows shown for the rest of the window. Both are display caps: the selection
-#: above them is complete, and every row is still scored — only the rendering is
-#: bounded.
+#: Regression rows shown before the table folds into a disclosure, rows kept
+#: inside that disclosure, and candidate rows shown for the rest of the window.
+#: All three are display caps: the selection above them is complete, and every
+#: row is still scored — only the rendering is bounded.
+#:
+#: The folded rows are capped rather than complete because a detector-removal
+#: sweep confirms one row per removed sub-detector — a single night can carry
+#: three hundred, nearly all repeating the same movement — and because a comment
+#: over GitHub's 65,536-character limit is rejected outright. The dashboard link
+#: on every row is where the full set lives.
 _MAX_TABLE_ROWS = 5
+_MAX_FOLDED_ROWS = 25
 _MAX_OTHER_CANDIDATES = 5
 
 #: Likelihood points between this PR and the closest other candidate at or
@@ -113,6 +121,11 @@ _MAX_SUMMARY_CHARS = 700
 #: show *what* is drifting there, not so many that the negative evidence turns
 #: into a second report.
 _MAX_WATCHED_METRICS = 6
+
+#: Where the comment's own footer points: the page describing how a regression
+#: is attributed to a pull request, on the published docs site (``site_url`` in
+#: mkdocs.yml + the page's nav path).
+_METHOD_URL = "https://key4hep.github.io/k4Bench/user-guide/features/pr-comments/"
 
 _DEFAULT_MIN_SCORE = 80.0
 _DEFAULT_MAX_COMMENTS = 10
@@ -165,13 +178,25 @@ class CommentPolicy:
     def enabled(self) -> bool:
         return bool(self.repos)
 
+    def targets(self, candidate: CandidatePR) -> bool:
+        """True when *candidate* is a pull request the bot may write to **at
+        all** — the repo and merged gates.
+
+        Both are properties of the pull request itself rather than of any one
+        regression, so a candidate that fails either can never be commented on,
+        however it scores. That is what makes this the right gate for deciding
+        which pull requests get a plan built at all: everything a plan collects
+        beyond that point is evidence, and evidence is not filtered by score
+        (see :func:`select`)."""
+        return candidate.repo.lower() in self.repos and bool(candidate.merged_at)
+
     def allows(self, candidate: CandidatePR) -> bool:
-        """True when *candidate* clears the repo, score and merged gates."""
+        """True when *candidate* clears the repo, score and merged gates —
+        i.e. when this scoring is strong enough to *cause* a comment."""
         return (
-            candidate.repo.lower() in self.repos
+            self.targets(candidate)
             and math.isfinite(candidate.score)
             and candidate.score >= self.min_score
-            and bool(candidate.merged_at)
         )
 
     @classmethod
@@ -333,6 +358,11 @@ class CommentPlan:
     ``outcomes`` is the negative evidence — the configurations that measured the
     same window and did *not* confirm — which only :func:`select` can compute,
     because only the report knows which groups ran at all.
+
+    ``rows`` holds **every** regression of the window this pull request was a
+    candidate for, including the ones it scored badly on; ``selected`` records
+    whether any of them scored high enough to warrant the comment. The two are
+    deliberately separate — see :func:`select`.
     """
 
     repo: str
@@ -345,6 +375,7 @@ class CommentPlan:
     outcomes: tuple[ScopeOutcome, ...] = ()
     packages: tuple[PackageChangeFact, ...] = ()
     n_unchanged: int = 0
+    selected: bool = False
 
     @property
     def target(self) -> str:
@@ -372,6 +403,18 @@ def select(
     sidecar's entries, so a comment can only ever describe a regression that is
     confirmed in tonight's report — a stale entry has nothing to attach to.
 
+    Collection and selection are separate passes over different gates, and the
+    order matters. A plan collects every regression this pull request was a
+    candidate for, at *whatever* the ranker scored it there; only then is the
+    plan kept, and only if at least one of those scorings clears ``min_score``.
+    Filtering rows by score while collecting — the obvious shape — would hide
+    precisely the evidence the cross-configuration review exists to weigh: a PR
+    that scores 92 on ALLEGRO and 30 on IDEA in the same window is a PR whose
+    reach the IDEA row bounds, and dropping that row leaves the review looking
+    at the accusation with the exculpatory half removed. (It would not resurface
+    as negative evidence either: :func:`_outcomes_for` correctly refuses to call
+    a configuration clean when it confirmed a step in this window.)
+
     Overshooting ``max_comments`` raises :class:`CommentStormError` rather than
     returning a truncated list — a night that loud is a bug, not a night, and
     blind-posting ten accusations into repositories k4Bench does not own is the
@@ -392,8 +435,8 @@ def select(
                 continue
             candidates = entry.candidates
             for candidate in candidates:
-                if not policy.allows(candidate):
-                    continue
+                if not policy.targets(candidate):
+                    continue  # unreachable repo or unmerged: no comment, ever
                 ident = (candidate.repo.lower(), candidate.number)
                 key = (*ident, entry.base_release, entry.onset_release)
                 plan = plans.get(key)
@@ -412,6 +455,9 @@ def select(
                     # defensively so the identity rendered never depends on
                     # which metric was walked first.
                     plan.subject = candidate
+                # One scoring above the threshold is what causes the comment;
+                # every scoring, high or low, is what the comment is judged on.
+                plan.selected = plan.selected or policy.allows(candidate)
                 plan.rows.append(RegressionRow(
                     verdict=verdict, stack=group.k4h_release,
                     scope_score=candidate.score, scope_reason=candidate.description,
@@ -424,7 +470,10 @@ def select(
                     if previous is None or other.score > previous.score:
                         plan.others[other_ident] = other
 
-    ordered = sorted(plans.values(), key=lambda p: (-p.top_score, p.repo, p.number))
+    ordered = sorted(
+        (plan for plan in plans.values() if plan.selected),
+        key=lambda p: (-p.top_score, p.repo, p.number),
+    )
     for plan in ordered:
         # Ids ride on identity order so they are reproducible from the plan
         # alone: a night re-run must ask the model about "r3" and mean the same
@@ -464,41 +513,70 @@ def _packages_of(entry: BlameEntry) -> tuple[PackageChangeFact, ...]:
 def _outcomes_for(
     report: NightlyReport, plan: CommentPlan
 ) -> tuple[ScopeOutcome, ...]:
-    """The configurations that measured this window and did **not** confirm.
+    """The benchmark configurations that measured this window and did **not**
+    confirm.
 
     The negative evidence the cross-configuration review turns on: "ALLEGRO
-    moved and IDEA did not" is only readable if the *did not* is stated. A group
-    counts only when it genuinely produced a clean measurement of this window —
-    it ran the onset release, its host was not judged unreliable, it had no job
-    failure, and it holds no confirmed step in this window. Everything else is
-    silence from a run that did not happen, and silence must never be rendered
-    as evidence of absence."""
+    moved and IDEA did not" is only readable if the *did not* is stated, and so
+    is the sharper within-detector version — "baseline moved and without_HCAL
+    did not" — which is why a configuration, not a run group, is the unit here.
+    Excluding a whole group because one of its configurations regressed would
+    delete exactly the control the prompt asks the model to reason from: the
+    baseline that stepped and the detector-removal run that did not live in the
+    *same* group.
+
+    A configuration counts only when it genuinely produced a clean measurement
+    to compare against — it ran the same release the regressed rows were
+    measured on, its host was judged reliable, its group had no job failure, it
+    recorded no metric failure of its own, and it holds no confirmed step in
+    this window. Everything else is silence from a run that did not happen or
+    cannot be read, and silence must never be rendered as evidence of absence:
+    ``reliable is None`` means *no evidence either way*, so it is treated like
+    an unreliable run rather than like a clean one."""
+    window = (plan.base_release, plan.onset_release)
     regressed = plan.scopes
+    stacks = {row.stack for row in plan.rows}
     outcomes = []
     for group in report.groups:
-        scope = (group.detector, group.platform, group.sample)
-        if scope in regressed:
-            continue
-        if group.reliable is False or group.job_failures:
+        if group.reliable is not True or group.job_failures:
             continue  # a run that cannot be trusted is not a clean result
-        # Which *release* a group measured is carried by its verdicts, not by
-        # the group (whose ``run_date`` is the nightly run's own identity —
-        # see :class:`~k4bench.regression.models.MetricVerdict`). A group that
-        # measured some other release says nothing about this window, and one
-        # with no verdicts at all measured nothing.
-        if not any(v.run_date == plan.onset_release for v in group.verdicts):
+        # The comparison that matters is against the *same measurement* the
+        # regressed rows came from — the release this night ran, which is
+        # generally long past the window's onset (a step that entered on
+        # 2026-06-25 is still being re-measured on 2026-06-27). Comparing
+        # against the onset release instead would find nothing, since no group
+        # in tonight's report measured it. A group that ran a different release
+        # than the regressed rows is not a like-for-like control.
+        if group.k4h_release not in stacks:
             continue
-        if any(_window_of(v) == (plan.base_release, plan.onset_release)
-               for v in group.regressions):
-            continue  # confirmed this very window under another pull request
-        watched = tuple(
-            sorted({v.metric for v in group.watches})
-        )[:_MAX_WATCHED_METRICS]
-        outcomes.append(ScopeOutcome(
-            detector=group.detector, platform=group.platform, sample=group.sample,
-            status="watch" if watched else "clean", watched=watched,
-        ))
-    return tuple(sorted(outcomes, key=lambda o: (o.detector, o.sample, o.platform)))
+        by_label: dict[str, list[MetricVerdict]] = {}
+        for verdict in group.verdicts:
+            by_label.setdefault(verdict.label, []).append(verdict)
+        for label, verdicts in by_label.items():
+            if any(v.severity is Severity.CONFIRMED and _window_of(v) == window
+                   for v in verdicts):
+                continue  # stepped in this very window — it is not a control
+            if any(v.severity is Severity.FAILURE for v in verdicts):
+                continue  # a configuration that partly failed did not run clean
+            watched = tuple(sorted(
+                {v.metric for v in verdicts if v.severity is Severity.WATCH}
+            ))[:_MAX_WATCHED_METRICS]
+            outcomes.append(ScopeOutcome(
+                detector=group.detector, platform=group.platform,
+                sample=group.sample, label=label,
+                status="watch" if watched else "clean", watched=watched,
+            ))
+    # Controls from a run group that *did* regress first: those are the
+    # like-for-like comparisons — same detector, same sample, same platform,
+    # same night — and the prompt lists only the first
+    # :data:`~k4bench.blame.attribute._MAX_OUTCOMES_LISTED` of these.
+    return tuple(sorted(
+        outcomes,
+        key=lambda o: (
+            (o.detector, o.platform, o.sample) not in regressed,
+            o.detector, o.sample, o.platform, o.label,
+        ),
+    ))
 
 
 def _window_of(verdict: MetricVerdict) -> tuple[str | None, str | None]:
@@ -526,11 +604,18 @@ def build_comments(
 
     With an *attributor* configured, every plan gets one cross-configuration
     review (:mod:`k4bench.blame.attribute`) whose likelihoods order and fill the
-    table. The review may only ever **narrow**: a plan whose every row it scores
-    below *min_score* is withdrawn, while a plan it declines to review — no
-    model, a failed call, an unusable reply — still renders from the
+    table. The review may only ever **narrow**: a plan is withdrawn when no row
+    is left standing at or above *min_score*, while a plan it declines to review
+    — no model, a failed call, an unusable reply — still renders from the
     per-configuration scores it already had. Selection was made on those scores,
     so a second opinion is allowed to acquit, never to accuse.
+
+    "Left standing" is the operative phrase: the gate reads each row's
+    *effective* likelihood, the review's score where it gave one and the
+    per-configuration score where it did not. A partial reply is an accepted
+    outcome (:func:`~k4bench.blame.attribute._parse_attribution`), so measuring
+    withdrawal on the review's scores alone would let one low answer about one
+    row acquit a pull request the review never disputed on the others.
 
     The rendered body carries nothing that varies from night to night (no run
     URL, no report-night query param): a regression that stands for a week is
@@ -540,11 +625,19 @@ def build_comments(
     comments = []
     for plan in plans:
         attribution = _review(plan, attributor=attributor, patch_for=patch_for)
-        if attribution is not None and attribution.top_score < min_score:
+        # Measured on what the table will actually show, not on the review's
+        # own scores: a partial reply leaves the rows it omitted at their
+        # per-configuration likelihood (:func:`_likelihood`), and a row the
+        # review never spoke about must not be able to withdraw a comment the
+        # ranker put at 91% and the review left standing.
+        effective_top = max(
+            (_likelihood(row, attribution) for row in plan.rows), default=0.0
+        )
+        if attribution is not None and effective_top < min_score:
             _log.info(
                 "build_comments: %s withdrawn — the cross-configuration review "
-                "scored every regression under %g%% (highest %.0f%%)",
-                plan.target, min_score, attribution.top_score,
+                "left every regression under %g%% (highest %.0f%%)",
+                plan.target, min_score, effective_top,
             )
             continue
         comments.append(_render(plan, attribution, dashboard_url=dashboard_url))
@@ -650,6 +743,11 @@ def _render(
         plan.rows, key=lambda row: _row_sort_key(row, attribution)
     )
     digest = _facts_digest(plan)
+    # Only the rows that survive the table's caps are linked: a definition no
+    # row references is dead weight against the comment-size limit.
+    links = _row_links(
+        plan, rows[:_MAX_TABLE_ROWS + _MAX_FOLDED_ROWS], dashboard_url
+    )
 
     body = "\n".join(
         part for part in (
@@ -661,18 +759,22 @@ def _render(
             "",
             _window_line(plan),
             _assessment(plan, rows, attribution),
-            _table(plan, rows, attribution, dashboard_url=dashboard_url),
+            _table(plan, rows, attribution, links=links),
             _others_section(plan),
             _where_to_look(plan, rows, dashboard_url=dashboard_url),
+            _link_definitions(links),
             "",
             "---",
             "",
             # The reply invitation is this renderer's own, not part of the
             # shared disclosure: the e-group mail carries the same sentence to
-            # readers with no thread to answer in.
+            # readers with no thread to answer in. k4Bench's name carries the
+            # page describing how this attribution is made rather than the
+            # repository root: someone who doubts a machine-written accusation
+            # wants the method, and a README makes them go looking for it.
             f"<sub>🤖 {RANKING_DISCLOSURE} Posted automatically by "
-            "[k4Bench](https://github.com/key4hep/k4Bench) — reply here if this "
-            "attribution looks wrong.</sub>",
+            f"[k4Bench]({_METHOD_URL}) — reply here if this attribution looks "
+            "wrong.</sub>",
         ) if part is not None
     )
     return PRComment(
@@ -783,26 +885,83 @@ def _assessment(
     )
 
 
+def _row_links(
+    plan: CommentPlan, rows: list[RegressionRow], dashboard_url: str | None
+) -> dict[str, str]:
+    """``{fact id: href}`` for every row the table will render.
+
+    Each row goes to its *own* regression pinned in the dashboard's Stack
+    Changes view (:func:`~k4bench.regression.render.regression_href`), where the
+    metric's trend, its onset and the window's package diff sit in one place —
+    the reader's question is "did my change do this?", and that view is the one
+    that answers it without a second click. A row whose verdict cannot be pinned
+    (no onset identity) falls back to its configuration's Regressions view, which
+    at least lands on the right window.
+
+    The hrefs are ~400 characters each and a night can carry hundreds of rows;
+    writing one inline per row is what pushes a wide night past GitHub's
+    65,536-character comment limit, where a comment is rejected outright rather
+    than truncated. Markdown *reference* links move each URL into a definition at
+    the bottom of the body, and only rendered rows get one. The labels are the
+    rows' own fact ids — already assigned in identity order — so a body is stable
+    across nights and a re-render triggers no edit."""
+    if not dashboard_url:
+        return {}
+    links = {}
+    for row in rows:
+        href = regression_href(
+            dashboard_url,
+            verdict=row.verdict,
+            base_release=plan.base_release, onset_release=plan.onset_release,
+        ) or window_href(
+            dashboard_url,
+            detector=row.verdict.detector, platform=row.verdict.platform,
+            sample=row.verdict.sample,
+            base_release=plan.base_release, onset_release=plan.onset_release,
+            stack=row.stack,
+        )
+        if href:
+            links[row.fact_id] = href
+    return links
+
+
+def _link_definitions(links: dict[str, str]) -> str | None:
+    """The reference-link definitions :func:`_row_links` promised.
+
+    Markdown renders these as nothing at all, so they sit at the end of the body
+    where they interrupt no one."""
+    if not links:
+        return None
+    return "\n" + "\n".join(
+        f"[{label}]: {href}" for label, href in sorted(links.items())
+    )
+
+
 def _table(
     plan: CommentPlan,
     rows: list[RegressionRow],
     attribution: Attribution | None,
     *,
-    dashboard_url: str | None,
+    links: dict[str, str],
 ) -> str:
     """Every regression in the window, most likely first.
 
     One table rather than one section per configuration: which configurations
-    moved — and, read against *Where to look*, which did not — is the substance
-    of the claim, and a reader weighing it needs to see the pattern at once. The
-    first rows are visible and the rest fold into a disclosure, so a wide window
-    stays readable without hiding anything.
+    moved — and, read against the review's summary, which did not — is the
+    substance of the claim, and a reader weighing it needs to see the pattern at
+    once. The first rows are visible, the next fold into a disclosure, and a
+    night wider than that says how many more there are rather than pasting them:
+    a detector-removal sweep can confirm three hundred near-identical rows, which
+    no one reads and GitHub will not accept. Every row links to its own regression
+    in the dashboard, which is where the complete set lives.
 
-    Metric and configuration keep their raw names: they are the identifiers the
-    dashboard behind each detector link is labelled with, so a reader can find
-    the exact series. The platform earns a column only when the window spans more
-    than one — a column repeating the same slug on every row is noise, but a row
-    that quietly ran somewhere else must say so."""
+    That link hangs off the **metric** cell, because that is what it opens: the
+    metric's own trend, its onset and the window's package diff. Metric and
+    configuration keep their raw names — they are the identifiers the dashboard
+    labels the series with, so a reader can find it. The platform earns a column
+    only when the window spans more than one — a column repeating the same slug
+    on every row is noise, but a row that quietly ran somewhere else must say
+    so."""
     multi_platform = len({row.verdict.platform for row in rows}) > 1
     header = ["Metric", "Detector"]
     align = [":---", ":---"]
@@ -814,17 +973,13 @@ def _table(
 
     def _line(row: RegressionRow) -> str:
         v = row.verdict
-        href = window_href(
-            dashboard_url,
-            detector=v.detector, platform=v.platform, sample=v.sample,
-            base_release=plan.base_release, onset_release=plan.onset_release,
-            stack=row.stack,
-        )
-        detector = _cell(v.detector)
-        cells = [
+        metric = (
             f"`{_cell(v.metric)}`"
-            + (f" · {_cell(v.sub_detector)}" if v.sub_detector else ""),
-            f"[{detector}]({href})" if href else detector,
+            + (f" · {_cell(v.sub_detector)}" if v.sub_detector else "")
+        )
+        cells = [
+            f"[{metric}][{row.fact_id}]" if row.fact_id in links else metric,
+            _cell(v.detector),
         ]
         if multi_platform:
             cells.append(_cell(pretty_platform(v.platform)))
@@ -836,7 +991,9 @@ def _table(
         ]
         return "| " + " | ".join(cells) + " |"
 
-    shown, hidden = rows[:_MAX_TABLE_ROWS], rows[_MAX_TABLE_ROWS:]
+    shown = rows[:_MAX_TABLE_ROWS]
+    folded = rows[_MAX_TABLE_ROWS:_MAX_TABLE_ROWS + _MAX_FOLDED_ROWS]
+    omitted = len(rows) - len(shown) - len(folded)
     head = [
         "| " + " | ".join(header) + " |",
         "|" + "|".join(align) + "|",
@@ -848,18 +1005,22 @@ def _table(
         *head,
         *(_line(row) for row in shown),
     ]
-    if hidden:
+    if folded:
+        summary = _count(len(folded) + omitted, "further regression")
         lines += [
             "",
             "<details>",
-            f"<summary><b>{_count(len(hidden), 'further regression')} in this "
-            "window</b></summary>",
+            f"<summary><b>{summary} in this window</b></summary>",
             "",
             *head,
-            *(_line(row) for row in hidden),
-            "",
-            "</details>",
+            *(_line(row) for row in folded),
         ]
+        if omitted:
+            lines += [
+                "",
+                f"_…and {_count(omitted, 'more regression')}, in the dashboard._",
+            ]
+        lines += ["", "</details>"]
     return "\n".join(lines)
 
 
@@ -969,8 +1130,10 @@ def _where_to_look(
     """The window-wide link that lets a reader check the claim rather than take
     it: every package that moved across these two releases.
 
-    Per-regression dashboard views are already on each row's detector cell, so
-    what is left here is the one thing that is not per-row. A dashboard view is
+    Per-regression dashboard views are already on each row's metric cell, so
+    what is left here is the one thing that is not per-row: the unpinned diff,
+    for a reader who wants the packages without a metric selected — including
+    one whose rows all fell past the table's caps. A dashboard view is
     always one configuration, so the package diff is named from the leading row's
     scope. The link names the *window*, which does not change from one night to
     the next: no ``report=`` night and no CI-run URL, both of which would vary
@@ -1001,16 +1164,18 @@ def _facts_digest(plan: CommentPlan) -> str:
     a standing regression nightly, which is exactly what
     :mod:`k4bench.blame.publish` refuses to do. This digest covers what a reader
     would call a change: the window, the regressions and how far they moved, and
-    the field of candidates. Deliberately *not* the narrative, and not the
-    attributed likelihoods, both of which are model output that drifts without
-    anything having happened."""
+    *which* pull requests were in the field. Deliberately not the narrative, and
+    no score of any kind — neither the review's likelihoods nor the ranker's
+    scoring of the competing candidates. All of it is model output that drifts
+    between nights without anything having happened, and a competitor sliding
+    from 84.4 to 84.6 is not a fact a reader would want re-notifying about."""
     parts = [plan.base_release or "", plan.onset_release]
     for row in sorted(plan.rows, key=_row_identity):
         pct = row.verdict.pct_change
         moved = f"{pct:.4f}" if pct is not None and math.isfinite(pct) else "-"
         parts.append("|".join((*_row_identity(row), moved)))
     for other in _sorted_others(plan):
-        parts.append(f"{other.repo}#{other.number}@{int(round(other.score))}")
+        parts.append(f"{other.repo}#{other.number}")
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:16]
 
 

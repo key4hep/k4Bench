@@ -177,6 +177,51 @@ def stack_changes_href(
     return _dashboard_link(dashboard_url, **params)
 
 
+def regression_href(
+    dashboard_url: str | None,
+    *,
+    verdict: MetricVerdict,
+    base_release: str | None,
+    onset_release: str | None,
+) -> str | None:
+    """The Stack Changes view for one exact regression — the package diff for
+    its window with *that* metric already selected below it, which renders its
+    trend, its onset and the ranked candidates in the same view.
+
+    This is the one destination that answers "did my change do this?" without a
+    second click, so it is what the pull-request comments point every row at.
+    Where :func:`stack_changes_href` opens the range and leaves the reader to
+    find their metric, this pins it: the ``reg_*`` params name a verdict
+    exactly (see ``_query_verdict`` in dashboard/tabs/stack_changes.py), and a
+    verdict the tab cannot match falls back to the same unpinned range.
+
+    Like :func:`stack_changes_href`, the param names are literals the dashboard
+    reads back (``PARAM_REG_*``); a mismatch here loses the selection silently.
+    Returns ``None`` when the verdict carries no onset identity — the tab needs
+    one to tell two onsets of the same release apart, and a link that would
+    quietly select the wrong step is worse than the unpinned one.
+    """
+    base = stack_changes_href(
+        dashboard_url,
+        detector=verdict.detector, platform=verdict.platform,
+        sample=verdict.sample,
+        base_release=base_release, onset_release=onset_release,
+    )
+    onset = verdict.onset_run_id or verdict.onset_run_date
+    if not base or not onset:
+        return None
+    params = {
+        "reg_detector": verdict.detector,
+        "reg_sample": verdict.sample,
+        "reg_config": verdict.label,
+        "reg_metric": verdict.metric,
+        "reg_onset": onset,
+    }
+    if verdict.sub_detector:
+        params["reg_region"] = verdict.sub_detector
+    return _dashboard_link(base, **params)
+
+
 # ── JSON (EOS artifact) ───────────────────────────────────────────────────────
 
 def _sanitize(obj):

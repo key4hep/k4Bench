@@ -175,15 +175,18 @@ def test_prompt_states_what_measured_the_window_and_did_not_confirm():
     # The negative evidence, and the reason this stage exists.
     prompt = build_user_prompt(_request(outcomes=(
         ScopeOutcome(detector="IDEA_o1_v03", platform=_PLATFORM,
-                     sample="p8_ee_Zbb_ecm91", status="clean"),
+                     sample="p8_ee_Zbb_ecm91", label="baseline", status="clean"),
         ScopeOutcome(detector="IDEA_o2_v01", platform=_PLATFORM,
-                     sample="p8_ee_Zbb_ecm91", status="watch",
-                     watched=("wall_time_s",)),
+                     sample="p8_ee_Zbb_ecm91", label="without_HCAL",
+                     status="watch", watched=("wall_time_s",)),
     )))
     assert "did NOT confirm" in prompt
     assert "IDEA_o1_v03" in prompt and "no metric stepped" in prompt
     assert "IDEA_o2_v01" in prompt
     assert "under the confirmation threshold (wall_time_s)" in prompt
+    # The configuration label is part of the identity: without it the prompt's
+    # "baseline vs without_<X>" reasoning has nothing to attach to.
+    assert "· baseline:" in prompt and "· without_HCAL:" in prompt
 
 
 def test_prompt_sizes_the_release_diff_by_what_did_not_change():
