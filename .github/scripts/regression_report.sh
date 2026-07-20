@@ -63,6 +63,11 @@ fi
 cvmfs-venv py-venv
 . py-venv/bin/activate
 pip install --no-build-isolation --quiet "."
+# The blame-comment CLI parses .github/blame-comments.yml with PyYAML, kept out
+# of the k4bench package on purpose (YAML lives in the CI-script layer). Pinned
+# to match the nightly benchmark-discovery workflow rather than relying on it
+# being incidentally present in the Key4hep stack.
+pip install --quiet 'pyyaml>=6.0,<6.1'
 echo "::endgroup::"
 
 # ── 4. Build the report ───────────────────────────────────────────────────────

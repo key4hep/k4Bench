@@ -13,6 +13,16 @@ on:
   workflow_call:
   workflow_dispatch:
 
+# Serialise every run of this workflow (nightly call and manual dispatch alike).
+# The pull-request comment step reads a PR's comments and then posts if it sees
+# none of its own; two overlapping runs could both pass that read before either
+# posts, and duplicate a comment into a repository k4Bench does not own. A single
+# lane makes the read-then-write safe. `cancel-in-progress: false` lets an
+# in-flight run finish its writes rather than being killed mid-post.
+concurrency:
+  group: regression-report
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -64,8 +74,8 @@ jobs:
           # scoped to k4Bench, while these comments land in the Key4hep package
           # repositories. This is a separate token carrying pull-requests:write
           # on exactly the repos listed in .github/blame-comments.yml — with an
-          # empty allowlist there (the default) the step is a no-op, and with no
-          # token at all it only logs what it would have posted.
+          # empty allowlist there the step is a no-op, and with no token at all
+          # it only logs what it would have posted.
           K4BENCH_PR_COMMENT_TOKEN:   ${{ secrets.K4BENCH_PR_COMMENT_TOKEN }}
           K4BENCH_PR_COMMENT_DRY_RUN: ${{ vars.K4BENCH_PR_COMMENT_DRY_RUN }}
           K4BENCH_PR_COMMENT_TIMEOUT: ${{ vars.K4BENCH_PR_COMMENT_TIMEOUT || '5m' }}

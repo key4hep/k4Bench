@@ -7,7 +7,8 @@
 #
 # Commenting writes into a repository k4Bench does not own, so it is opt-in per
 # repository and reviewed here rather than flipped in a CI setting: an empty
-# `repos` list means the bot is inert, which is the shipped default.
+# `repos` list means the bot is inert. Nothing is posted until the
+# K4BENCH_PR_COMMENT_TOKEN secret exists; without it every run is a dry run.
 
 # Ranker likelihood (0-100) a pull request must reach before it is commented on.
 min_score: 80

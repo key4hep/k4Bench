@@ -13,11 +13,12 @@ lives in one readable place:
 * **Never post blind.** If the existing comments could not be read
   (:func:`~k4bench.blame.github.list_issue_comments` returning ``None``), the PR
   is skipped: a duplicate comment is worse than a missing one.
-* **Edit only our own comment.** The marker recognises the comment, but a comment
-  is claimed as the bot's own only when its author is the token's login too, so
-  someone quoting the hidden marker cannot make the bot try to PATCH a comment it
-  does not own. The login is read once per run; if it cannot be read the check is
-  skipped and the marker alone identifies the comment, as before.
+* **Edit only our own comment.** A comment is the bot's own only when its *first
+  line* is the marker **and** its author is the token's login — a marker quoted
+  somewhere inside a human's comment cannot divert the edit. The login is read
+  once per run; if it cannot be established the run **fails closed** and posts
+  nothing, because an off-repository write must never fall back to editing a
+  comment whose ownership it could not prove.
 * **One failure is one PR's failure.** Every per-comment error is caught and
   counted, so a repo the token cannot write to does not silence the others. The
   one exception is :class:`~k4bench.blame.github.RateLimitError`, which stops
@@ -83,7 +84,18 @@ def publish(
     result = PublishResult()
     # Resolved once for the whole run: it identifies the bot across every repo,
     # so the per-comment upsert edits only a comment this token itself wrote.
-    login = None if dry_run else authenticated_login(client)
+    # Failing to read it is fail-closed — an off-repo write must not guess at
+    # ownership — but it is a soft failure, recorded, never raised.
+    login = None
+    if not dry_run:
+        login = authenticated_login(client)
+        if login is None:
+            _log.error(
+                "publish: could not establish the bot's own login (GET /user) — "
+                "refusing to edit comments it cannot prove it owns; posting nothing"
+            )
+            result.failed.extend(c.target for c in comments)
+            return result
     for comment in comments:
         if dry_run:
             _log.info(
@@ -108,13 +120,14 @@ def _upsert(
     comment: PRComment,
     result: PublishResult,
     *,
-    login: str | None,
+    login: str,
 ) -> None:
-    """Create, edit, or leave alone the one comment carrying *comment*'s marker.
+    """Create, edit, or leave alone the one comment the bot owns for this window.
 
-    When *login* is known, a comment counts as the bot's own only if it carries
-    the marker *and* was written by that login, so a quoted marker in someone
-    else's comment cannot divert the edit."""
+    A comment counts as the bot's own only when its *first line* is the marker
+    (the shape :func:`~k4bench.blame.comment._render` always produces) **and** it
+    was written by *login* — a marker quoted inside someone else's comment
+    matches neither test, so it cannot divert the edit."""
     existing = list_issue_comments(client, comment.repo, comment.number)
     if existing is None:
         _log.warning(
@@ -124,10 +137,11 @@ def _upsert(
         result.failed.append(comment.target)
         return
 
+    marker_line = comment.marker + "\n"
     mine = next(
         (
             c for c in existing
-            if comment.marker in c.body and (login is None or c.author == login)
+            if c.body.startswith(marker_line) and c.author == login
         ),
         None,
     )

@@ -61,7 +61,12 @@ def _load_policy(path: Path, overrides: dict):
 
     data = {}
     if path.is_file():
-        data = yaml.safe_load(path.read_text()) or {}
+        # An empty file (``safe_load`` → None) is an empty policy; a falsey but
+        # present document (``false``, ``0``) is malformed and must reach
+        # ``from_config`` to be rejected, not be quietly turned into ``{}``.
+        loaded = yaml.safe_load(path.read_text())
+        if loaded is not None:
+            data = loaded
     else:
         _log.info("blame_comment: no config at %s — the bot is off", path)
     if isinstance(data, dict):
@@ -112,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
         force=True,
     )
 
-    from k4bench.blame.comment import CommentConfigError, select
+    from k4bench.blame.comment import CommentConfigError, CommentStormError, select
     from k4bench.blame.github import GitHubClient
     from k4bench.blame.models import BlameReport, BlameSchemaError
     from k4bench.blame.publish import publish
@@ -146,10 +151,24 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: unreadable blame sidecar {blame_path}: {exc}", file=sys.stderr)
         return 1
 
-    comments = select(report, blame, policy, dashboard_url=args.dashboard_url)
+    night = blame.report_night or "no data"
+    try:
+        comments = select(report, blame, policy, dashboard_url=args.dashboard_url)
+    except CommentStormError as exc:
+        # Distinct from "no candidate reached the threshold" below: the circuit
+        # breaker tripped, so something is likely wrong with tonight's
+        # attribution. Kept best-effort (exit 0) but said in words automation can
+        # tell apart from a healthy quiet night.
+        print(
+            f"blame comments for {night}: SUPPRESSED — {exc.count} comments "
+            f"exceeded the max_comments cap of {exc.cap}; attribution is suspect, "
+            f"so none were posted",
+            file=sys.stderr,
+        )
+        return 0
     if not comments:
         print(
-            f"blame comments for {blame.report_night or 'no data'}: no candidate "
+            f"blame comments for {night}: no candidate "
             f"reached {policy.min_score:g}% in an enabled repository"
         )
         return 0
@@ -160,9 +179,7 @@ def main(argv: list[str] | None = None) -> int:
             "blame_comment: no K4BENCH_PR_COMMENT_TOKEN — dry run, nothing posted"
         )
     result = publish(GitHubClient(token=args.token), comments, dry_run=dry_run)
-    print(
-        f"blame comments for {blame.report_night or 'no data'}: {result.summary}"
-    )
+    print(f"blame comments for {night}: {result.summary}")
     # A write that failed is worth a red step *inside this isolated block* — the
     # caller already contains it, and silence would hide a revoked token forever.
     return 1 if result.failed else 0
