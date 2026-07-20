@@ -414,10 +414,11 @@ def authenticated_login(client: GitHubClient) -> str | None:
     """The login of the token *client* carries, lower-cased, or ``None`` when it
     cannot be read (unauthenticated, or ``GET /user`` failed).
 
-    The publisher uses it to edit only its own marker-bearing comment. ``None``
-    is a soft failure: the caller falls back to matching on the marker alone, so
-    a transient ``/user`` hiccup does not stop the night, it only forgoes the
-    extra safety of the author check."""
+    The publisher uses it to edit only its own marker-bearing comment, so
+    ``None`` costs it the one check that proves ownership: it fails closed and
+    posts nothing that night (:func:`k4bench.blame.publish.publish`). Returned
+    rather than raised so that decision stays with the caller — this function
+    reports what it could read, it does not decide what to do about it."""
     resp = client.get("/user")
     if resp.status_code != 200:
         _log.warning("authenticated_login: GET /user -> HTTP %s", resp.status_code)

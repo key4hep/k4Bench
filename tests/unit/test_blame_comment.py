@@ -108,7 +108,7 @@ def _select(report, blame, policy=None):
 # ── The policy ────────────────────────────────────────────────────────────────
 
 def test_policy_defaults_to_inert():
-    # The shipped config: no repository enabled, so nothing is ever written.
+    # An empty allowlist: no repository enabled, so nothing is ever written.
     policy = CommentPolicy.from_config({"min_score": 80, "max_comments": 10, "repos": []})
     assert policy.enabled is False
     assert policy.min_score == 80.0
@@ -327,7 +327,6 @@ def test_the_strongest_competing_score_shows_without_expanding():
         (86.0, "Only 5 points separate this PR"),
         (90.0, "Only 1 point separates this PR"),
         (91.0, "Nothing separates this PR"),
-        (95.0, "Only 4 points separate this PR"),  # crowded from above, too
     ],
 )
 def test_a_close_ranking_admits_it_is_a_weak_preference(runner_up, expected):
@@ -336,6 +335,31 @@ def test_a_close_ranking_admits_it_is_a_weak_preference(runner_up, expected):
     body = _select(_report(v), _blame([v], [_candidate(), other]))[0].body
     assert expected in body
     assert "weak preference" in body
+
+
+def test_a_ranking_that_ran_against_this_pr_says_which_way_it_ran():
+    # 85% is not 85% "out of nowhere": another candidate scored 97% in the same
+    # configuration, so the ranker preferred someone else and this PR merely also
+    # cleared the bar. Saying "only 12 points separate them" would hide which way
+    # the preference ran — the one thing the author needs to know.
+    v = _verdict()
+    mine = _candidate(score=85.0)
+    other = _candidate(number=1180, repo="key4hep/DD4hep", score=97.0)
+    body = _select(_report(v), _blame([v], [mine, other]))[0].body
+    assert "scored 12 points **higher** than this PR" in body
+    assert "runs against it" in body
+    # …and the headline claim is downgraded to match.
+    assert "a likely cause" in body and "the most likely cause" not in body
+
+
+def test_a_sub_point_deficit_reads_as_no_separation():
+    # Both render as 91%: claiming one is "0 points higher" would contradict the
+    # table right above it.
+    v = _verdict()
+    other = _candidate(number=1180, repo="key4hep/DD4hep", score=91.4)
+    body = _select(_report(v), _blame([v], [_candidate(score=91.0), other]))[0].body
+    assert "Nothing separates this PR" in body
+    assert "higher** than this PR" not in body
 
 
 def test_a_clear_ranking_adds_no_caveat():
@@ -427,6 +451,35 @@ def test_external_prose_is_defanged_of_mentions_and_markup():
     assert "@alice" not in body and f"@{zwsp}alice" in body        # reason mention
     assert f"!{zwsp}[" in body                                     # image defused
     assert "<script>" not in body and f"<{zwsp}script>" in body
+
+
+def test_external_prose_cannot_carry_an_active_link():
+    # The sharpest version of the same problem: no mention, no markup, just a
+    # link. A Markdown link puts an arbitrary destination into a comment the bot
+    # signs its own name to, and a bare pull-request URL — which GitHub autolinks
+    # with no syntax at all — cross-references that PR's timeline, the exact
+    # notification _pr_ref refuses to send. Both must land as inert text.
+    v = _verdict()
+    headline = replace(
+        _candidate(number=3, score=95.0),
+        description="see https://evil.example/x and www.evil.example",
+    )
+    other = _candidate(
+        number=1180, repo="key4hep/DD4hep", score=30.0,
+        title="[click me](https://evil.example) "
+              "https://github.com/key4hep/DD4hep/pull/1180",
+    )
+    body = _select(_report(v), _blame([v], [headline, other]))[0].body
+    zwsp = _ZWSP
+    row = next(line for line in body.splitlines() if f"DD4hep#{zwsp}1180" in line)
+    assert "](" not in row and f"]{zwsp}(" in row            # no link in the title
+    assert "https://evil.example" not in body                # no autolinked URL
+    assert f"https:{zwsp}//evil.example" in body
+    assert "www.evil.example" not in body
+    assert f"www{zwsp}.evil.example" in body
+    # The bot's *own* links — the dashboard views it renders itself — are
+    # untouched: only quoted, externally-authored prose is defanged.
+    assert f"]({_DASH}" in body
     # The only live HTML comment is the bot's own marker on the first line; the
     # one smuggled into the reason is broken by the same zero-width space.
     assert body.count("<!--") == 1 and body.startswith("<!--")
@@ -439,6 +492,23 @@ def test_body_is_stable_across_identical_nights():
     first = _select(_report(a, b), _blame([a, b], [_candidate()]))[0].body
     second = _select(_report(b, a), _blame([b, a], [_candidate()]))[0].body
     assert first == second
+
+
+def test_a_non_finite_change_does_not_destabilise_the_order():
+    # A NaN in the sort key compares false against everything, which would leave
+    # the metric table in whatever order the verdicts happened to arrive in — the
+    # one thing the key exists to rule out. It sorts as no movement instead,
+    # matching the "—" the cell renders for it.
+    a = _verdict(metric="wall_time_s", pct=float("nan"))
+    b = _verdict(metric="mean_time_s", pct=0.14)
+    c = _verdict(metric="peak_rss_mb", pct=None)
+    first = _select(_report(a, b, c), _blame([a, b, c], [_candidate()]))[0].body
+    second = _select(_report(c, a, b), _blame([c, a, b], [_candidate()]))[0].body
+    assert first == second
+    metrics = [line for line in first.splitlines() if line.startswith("| `")]
+    # Biggest real movement first; the two immeasurable ones fall to identity.
+    assert "mean_time_s" in metrics[0]
+    assert "—" in metrics[1] and "—" in metrics[2]
 
 
 def test_body_is_stable_across_consecutive_nights():
@@ -538,6 +608,32 @@ def test_summary_rows_name_only_what_differs_from_the_leading_configuration():
     }
     assert "Single e⁻" not in rows["IDEA_o1_v03"]
     assert "Z → bb" in rows["CLD_o2_v07"]
+
+
+def test_summary_rows_say_where_their_likelihood_placed():
+    # A comment fires on any score above the threshold, so a summary row's bare
+    # percentage is ambiguous: 84% while another candidate scored 96% is not the
+    # same claim as 84% ahead of everyone. The Ranking column resolves it, the
+    # way the lead scope resolves it in prose.
+    lead = _verdict(detector="ALLEGRO_o1_v03", pct=0.30)
+    behind = _verdict(detector="IDEA_o1_v03", pct=0.20)
+    alone = _verdict(detector="CLD_o2_v07", pct=0.10)
+    rival = _candidate(number=1180, repo="key4hep/DD4hep", score=96.0)
+    blame = BlameReport(
+        generated_at="x", report_night="2026-07-05",
+        entries=(
+            _blame([lead], [_candidate(score=95.0)]).entries[0],
+            _blame([behind], [_candidate(score=84.0), rival]).entries[0],
+            _blame([alone], [_candidate(score=84.0)]).entries[0],
+        ),
+    )
+    body = _select(_report(lead, behind, alone), blame)[0].body
+    rows = {
+        d: next(line for line in body.splitlines() if f"[{d}" in line)
+        for d in ("IDEA_o1_v03", "CLD_o2_v07")
+    }
+    assert "84%" in rows["IDEA_o1_v03"] and "Behind 96%" in rows["IDEA_o1_v03"]
+    assert "84%" in rows["CLD_o2_v07"] and "Only candidate" in rows["CLD_o2_v07"]
 
 
 def test_a_single_configuration_carries_no_summary_section():

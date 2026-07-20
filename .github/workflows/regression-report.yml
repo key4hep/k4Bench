@@ -29,12 +29,25 @@ permissions:
 jobs:
   regression-report:
     runs-on: [self-hosted, fcc-ironic]
+    # Scopes K4BENCH_PR_COMMENT_TOKEN — the one secret here that can write
+    # outside this repository — to an environment rather than leaving it a plain
+    # repository secret, so it is reachable only from this job on an allowed
+    # branch. Configure it in Settings → Environments → `pr-comments` as:
+    #   • Deployment branches: selected branches, `main` only. A run from any
+    #     other ref then cannot start with the write token in scope.
+    #   • Required reviewers: MUST stay off. Protection rules gate the *job*, not
+    #     the comment step, and they apply to every trigger — a reviewer rule
+    #     would hold the nightly workflow_call run at the gate and with it
+    #     report.json, the EOS upload and the e-group email, none of which write
+    #     anywhere but our own storage. Manual dispatch is already limited to
+    #     people who can run workflows in this repository; gate it further with
+    #     K4BENCH_PR_COMMENT_DRY_RUN rather than with reviewers.
+    # Add the token to the environment only after the branch restriction is in
+    # place; an environment secret on an unrestricted environment is a
+    # repository secret with extra steps.
     environment:
       name: pr-comments
       url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-    # This environment should be configured in GitHub Settings → Environments with:
-    # - Deployment branches restricted to "main" (to auto-allow nightly runs)
-    # - Required reviewers (optional but recommended for manual workflow_dispatch runs)
     env:
       CONTAINER_IMAGE: ghcr.io/key4hep/key4hep-images/alma9
     steps:

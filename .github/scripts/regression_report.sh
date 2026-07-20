@@ -134,26 +134,29 @@ echo "::endgroup::"
 # ── 5c. Pull-request comments (best-effort; the only step that writes off-repo) ─
 # Posts one comment on each pull request tonight's sidecar holds responsible with
 # a high enough likelihood, and edits it in place on later nights. Gated on
-# .github/blame-comments.yml — an empty allowlist there (the shipped state) makes
-# this a no-op — and on a write-scoped K4BENCH_PR_COMMENT_TOKEN; without one the
+# .github/blame-comments.yml — an empty allowlist there makes this a no-op —
+# and on a write-scoped K4BENCH_PR_COMMENT_TOKEN; without one the
 # script logs the comments it would post and writes nothing. Isolated exactly
 # like 5b: writing into someone else's repository must never be able to fail the
 # report or hold up the e-group email below.
 echo "::group::5c. Pull-request comments"
 if [[ -f report/blame.json ]]; then
     {
-        # Install PyYAML here (best-effort; network failure skips PR comments only).
-        pip install --quiet 'pyyaml>=6.0,<6.1' || {
+        # Install PyYAML here (best-effort; network failure skips PR comments
+        # only). `if !` rather than `... || { echo; exit 0; }`: a brace group runs
+        # in *this* shell, so that `exit 0` would end the whole script and skip
+        # the e-group email below.
+        if ! pip install --quiet 'pyyaml>=6.0,<6.1'; then
             echo "Failed to install PyYAML for blame-comment CLI; skipping PR comments." >&2
-            exit 0
-        }
-        timeout --signal=TERM --kill-after=30s "${K4BENCH_PR_COMMENT_TIMEOUT:-5m}" \
-          python .github/scripts/blame_comment.py \
-            --report report/report.json \
-            --blame report/blame.json \
-            --config .github/blame-comments.yml \
-            --dashboard-url "${K4BENCH_DASHBOARD_URL:-https://k4bench-dashboard.app.cern.ch}" \
-          || echo "No pull-request comments this night (nothing attributed confidently, no enabled repo, timeout, or a failed write)." >&2
+        else
+            timeout --signal=TERM --kill-after=30s "${K4BENCH_PR_COMMENT_TIMEOUT:-5m}" \
+              python .github/scripts/blame_comment.py \
+                --report report/report.json \
+                --blame report/blame.json \
+                --config .github/blame-comments.yml \
+                --dashboard-url "${K4BENCH_DASHBOARD_URL:-https://k4bench-dashboard.app.cern.ch}" \
+              || echo "No pull-request comments this night (nothing attributed confidently, no enabled repo, timeout, or a failed write)." >&2
+        fi
     } || echo "Pull-request comments step failed (best-effort; the report and email are unaffected)." >&2
 else
     echo "No blame sidecar this night — no pull request to comment on."

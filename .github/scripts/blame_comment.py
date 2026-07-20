@@ -14,8 +14,8 @@ report, the sidecar, or the e-group email. Most nights it does nothing at all �
 most nights have no confirmed regression, let alone a confidently attributed one.
 
 Which repositories may be commented in, and how confident the ranker must be,
-come from ``.github/blame-comments.yml`` (``--config``); the allowlist ships
-empty, so the bot is inert until a repository is added there by pull request.
+come from ``.github/blame-comments.yml`` (``--config``); a repository is added
+to that allowlist by pull request, and an empty one makes the bot inert.
 The config is parsed here rather than in the package for the same reason
 ``.github/benchmarks/*.yml`` is: the ``k4bench`` package stays free of a YAML
 dependency, and every knob crosses the boundary as plain values.
@@ -51,9 +51,9 @@ _log = logging.getLogger(__name__)
 def _load_policy(path: Path, overrides: dict):
     """The comment policy from *path*, with any CLI *overrides* applied.
 
-    A missing file is an empty policy (the bot is off), matching the shipped
-    state; a malformed one raises, because a config that cannot be read must
-    never be guessed at — see :class:`k4bench.blame.comment.CommentConfigError`.
+    A missing file is an empty policy — the bot is off; a malformed one raises,
+    because a config that cannot be read must never be guessed at — see
+    :class:`k4bench.blame.comment.CommentConfigError`.
     """
     import yaml
 

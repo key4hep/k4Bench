@@ -34,6 +34,14 @@ reason, what moved, the competing candidates, the links — and every further
 scope of the same window becomes a single summary row keeping its own
 likelihood. Two judgements are then neither flattened into one headline number
 nor repeated at full length down a page nobody reads to the end of.
+
+A comment is written once and thereafter only *edited*, never retracted: when
+the regression resolves, or the candidate drops below ``min_score``, tonight's
+selection simply stops producing it and the comment already on the pull request
+is left exactly as it stands. That is deliberate. It records what the benchmarks
+saw at the time — which remains true after the metric recovers — and silently
+rewriting or deleting a comment people may have replied to is worse than leaving
+a dated one in place. Follow-ups belong in the thread.
 """
 
 from __future__ import annotations
@@ -588,16 +596,29 @@ def _pr_ref(candidate: CandidatePR) -> str:
 
 
 def _crowded_note(scope: _Scope, closest: CandidatePR) -> str | None:
-    """Said out loud only when the ranking is close: a likelihood that barely
-    clears the next candidate is a weak preference, and a comment posted into
-    someone else's repository should admit that in words rather than leave the
-    reader to subtract two numbers. Nothing is rendered when this PR is clearly
-    ahead — a caveat printed every night is wallpaper, and the score and the
-    summary line already say what a comfortable lead looks like."""
-    spread = abs(scope.candidate.score - closest.score)
-    if not math.isfinite(spread) or spread > _CROWDED_SPREAD:
+    """Said out loud when the ranking does not clearly favour this PR — in
+    words, rather than leaving the reader to subtract two numbers.
+
+    Which way the preference runs is the whole point, so the note is
+    direction-aware. A PR the ranker placed *behind* another candidate is told so
+    however wide the gap is: that is the single most important qualifier on a
+    comment accusing it. A PR that is ahead hears about it only when the lead is
+    thin (``_CROWDED_SPREAD``) — a caveat printed on every comfortable night is
+    wallpaper, and the score and the summary line already say what a comfortable
+    lead looks like."""
+    delta = scope.candidate.score - closest.score
+    if not math.isfinite(delta) or delta > _CROWDED_SPREAD:
         return None
-    points = int(round(spread))
+    points = int(round(abs(delta)))
+    # A sub-point deficit rounds to zero and falls through to "nothing separates
+    # them": both scores render as the same percentage, so claiming one is
+    # "0 points higher" would contradict the table right above it.
+    if delta < 0 and points > 0:
+        return (
+            f"\n_The closest other candidate scored {_count(points, 'point')} "
+            "**higher** than this PR — the ranker's preference in this "
+            "configuration runs against it, not for it._"
+        )
     if points == 0:
         separation = "Nothing separates this PR from the closest other candidate"
     else:
@@ -618,11 +639,15 @@ def _also_section(
     """The window's remaining benchmark scopes, one row each.
 
     Each row keeps that scope's *own* likelihood — the ranker judged it
-    separately, and the lead scope's number does not speak for it — plus the
-    single largest movement, which is what a reader deciding whether to open the
-    dashboard actually weighs. The configuration links straight to its own
-    dashboard view, so the rest of the window is one click rather than another
-    screen of Markdown."""
+    separately, and the lead scope's number does not speak for it — next to
+    where that likelihood *placed*, since a comment fires on any score above the
+    threshold and a bare 85% reads very differently once another candidate
+    scored 97% in the same configuration. The lead scope makes the same
+    distinction in prose (:func:`_quote`, :func:`_crowded_note`); a summary row
+    makes it in one column. Then the single largest movement, which is what a
+    reader deciding whether to open the dashboard actually weighs. The
+    configuration links straight to its own dashboard view, so the rest of the
+    window is one click rather than another screen of Markdown."""
     if not scopes:
         return None
 
@@ -634,8 +659,8 @@ def _also_section(
         "",
         f"The same window regressed in {counted}, each ranked on its own:",
         "",
-        "| Configuration | Likelihood | Largest move |",
-        "|:---|---:|---:|",
+        "| Configuration | Likelihood | Ranking | Largest move |",
+        "|:---|---:|:---|---:|",
     ]
     for scope in shown:
         # The sample and platform are spelled out only where they differ from
@@ -659,6 +684,7 @@ def _also_section(
         lines.append(
             f"| {f'[{label}]({href})' if href else label} "
             f"| {_pct(scope.candidate.score)} "
+            f"| {_ranking_cell(scope)} "
             f"| `{_cell(worst.metric)}` {_change_cell(worst.pct_change)} |"
         )
     if len(scopes) > len(shown):
@@ -667,6 +693,24 @@ def _also_section(
             f"_…and {_count(len(scopes) - len(shown), 'more configuration')}._",
         ]
     return "\n".join(lines)
+
+
+def _ranking_cell(scope: _Scope) -> str:
+    """Where this PR's likelihood placed among the candidates scored for
+    *scope* — the context a bare percentage is missing.
+
+    A comment fires on any score at or above ``min_score``, so a row can show a
+    high likelihood while another candidate scored higher still; naming the
+    competing score is the difference between "the ranker picked this PR" and
+    "the ranker preferred someone else, and this PR also cleared the bar"."""
+    if not scope.others:
+        return "Only candidate"
+    best_other = max(c.score for c in scope.others.values())
+    if scope.candidate.score > best_other:
+        return "Top-ranked"
+    if scope.candidate.score == best_other:
+        return f"Tied with {_pct(best_other)}"
+    return f"Behind {_pct(best_other)}"
 
 
 def _where_to_look(
@@ -723,8 +767,15 @@ def _scope_sort_key(scope: _Scope) -> tuple:
 def _verdict_sort_key(v: MetricVerdict) -> tuple:
     """Biggest movement first, ties broken by identity so a body is stable
     across nights — a reordered table would look like a change and trigger a
-    pointless edit."""
-    magnitude = abs(v.pct_change) if v.pct_change is not None else 0.0
+    pointless edit. A non-finite change sorts as no movement, matching what
+    :func:`_change_cell` renders for it: a NaN in the key would compare false
+    against everything and leave the order dependent on input order, which is
+    the one thing this key exists to rule out."""
+    magnitude = (
+        abs(v.pct_change)
+        if v.pct_change is not None and math.isfinite(v.pct_change)
+        else 0.0
+    )
     return (
         -magnitude, v.detector, v.platform, v.sample,
         v.label, v.metric, v.sub_detector or "",
@@ -777,17 +828,29 @@ def _defang(text: str) -> str:
       a title like "Revert #45" carries one for free (:func:`_pr_ref` applies the
       same rule to the references this module writes itself);
     * ``<!-- … -->`` / ``<tag>`` — hide following content, or inject markup;
-    * ``![alt](url)`` — pull in a remote image on every render.
+    * ``[text](url)`` / ``![alt](url)`` — put an arbitrary clickable destination,
+      or a remote image, into a comment the bot signs its own name to;
+    * ``https://...`` / ``www....`` — GitHub autolinks a bare URL, so the prose
+      needs no Markdown at all to become a link. A pull-request URL autolinked
+      this way also cross-references that PR's timeline, which is the very
+      notification :func:`_pr_ref` goes out of its way not to send.
 
-    A zero-width space after each trigger character breaks the sequence GitHub
-    would act on while leaving the text visually unchanged. Table pipes are left
-    to :func:`_cell`, which the cell paths still apply on top of this."""
+    A zero-width space at each sequence's join breaks what GitHub would act on
+    while leaving the text visually unchanged: after the trigger character for
+    the prefix forms, and between ``]`` and ``(`` for a link, whose two halves
+    are what make it one. Emphasis and backticks are deliberately left alone —
+    they restyle the quoted text but cannot carry a reader anywhere. Table pipes
+    are left to :func:`_cell`, which the cell paths still apply on top of this."""
     zwsp = "\u200b"  # U+200B zero-width space
     return (
         text.replace("@", "@" + zwsp)
         .replace("#", "#" + zwsp)
         .replace("<", "<" + zwsp)
+        .replace("](", "]" + zwsp + "(")
         .replace("![", "!" + zwsp + "[")
+        .replace("://", ":" + zwsp + "//")
+        .replace("www.", "www" + zwsp + ".")
+        .replace("WWW.", "WWW" + zwsp + ".")
     )
 
 

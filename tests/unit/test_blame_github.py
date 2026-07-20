@@ -315,7 +315,7 @@ def test_authenticated_login_reads_the_lowercased_login():
 
 
 def test_authenticated_login_none_when_it_cannot_be_read():
-    # A soft failure: the publisher falls back to matching on the marker alone.
+    # Returned, not raised — the publisher turns this into a fail-closed night.
     routes = {"/user": _Resp(403, {"message": "nope"})}
     assert gh_mod.authenticated_login(_client(routes)) is None
 
