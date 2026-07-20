@@ -336,11 +336,14 @@ def _apply_rankings(
     repo: RepoBlame, rankings: dict[tuple[str, int], Ranking]
 ) -> RepoBlame:
     """Fold the ranker's verdict onto a repo's candidates, matched on
-    ``(repo, number)``. A candidate with no ranking keeps its unranked
-    ``score``/``description``; a ranking keyed to a PR not in this repo is never
-    looked up — unknown keys drop out here as required."""
+    ``(repo, number)``. A candidate the ranking omitted — a partial response
+    leaves some out — keeps ``ranked=False``, the *no judgement* state, rather
+    than a 0.0 that would read as one; a ranking keyed to a PR not in this repo
+    is never looked up, so unknown keys drop out here as required."""
     candidates = tuple(
-        dataclasses.replace(pr, score=ranking.score, description=ranking.description)
+        dataclasses.replace(
+            pr, score=ranking.score, description=ranking.description, ranked=True,
+        )
         if (ranking := rankings.get((pr.repo, pr.number))) is not None
         else pr
         for pr in repo.candidates

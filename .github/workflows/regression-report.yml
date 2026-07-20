@@ -13,12 +13,41 @@ on:
   workflow_call:
   workflow_dispatch:
 
+# Serialise every run of this workflow (nightly call and manual dispatch alike).
+# The pull-request comment step reads a PR's comments and then posts if it sees
+# none of its own; two overlapping runs could both pass that read before either
+# posts, and duplicate a comment into a repository k4Bench does not own. A single
+# lane makes the read-then-write safe. `cancel-in-progress: false` lets an
+# in-flight run finish its writes rather than being killed mid-post.
+concurrency:
+  group: regression-report
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
 jobs:
   regression-report:
     runs-on: [self-hosted, fcc-ironic]
+    # Scopes K4BENCH_PR_COMMENT_TOKEN — the one secret here that can write
+    # outside this repository — to an environment rather than leaving it a plain
+    # repository secret, so it is reachable only from this job on an allowed
+    # branch. Configure it in Settings → Environments → `pr-comments` as:
+    #   • Deployment branches: selected branches, `main` only. A run from any
+    #     other ref then cannot start with the write token in scope.
+    #   • Required reviewers: MUST stay off. Protection rules gate the *job*, not
+    #     the comment step, and they apply to every trigger — a reviewer rule
+    #     would hold the nightly workflow_call run at the gate and with it
+    #     report.json, the EOS upload and the e-group email, none of which write
+    #     anywhere but our own storage. Manual dispatch is already limited to
+    #     people who can run workflows in this repository; gate it further with
+    #     K4BENCH_PR_COMMENT_DRY_RUN rather than with reviewers.
+    # Add the token to the environment only after the branch restriction is in
+    # place; an environment secret on an unrestricted environment is a
+    # repository secret with extra steps.
+    environment:
+      name: pr-comments
+      url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
     env:
       CONTAINER_IMAGE: ghcr.io/key4hep/key4hep-images/alma9
     steps:
@@ -56,9 +85,24 @@ jobs:
           K4BENCH_LLM_MODEL:         ${{ vars.K4BENCH_LLM_MODEL }}
           K4BENCH_LLM_API_KEY:       ${{ secrets.K4BENCH_LLM_API_KEY }}
           K4BENCH_LLM_MAX_TOKENS:    ${{ vars.K4BENCH_LLM_MAX_TOKENS || '16384' }}
+          # The pull-request comments below review each selected PR against its
+          # whole change window — one call per comment, at most ten a night,
+          # feeding the only outward-facing artifact. This optionally spends a
+          # stronger model on that pass alone; unset, it uses the model above.
+          K4BENCH_LLM_SUMMARY_MODEL: ${{ vars.K4BENCH_LLM_SUMMARY_MODEL }}
           # Bounds the entire optional GitHub+LLM attribution stage. A timeout
           # skips blame.json but cannot affect report.json or notification.
           K4BENCH_BLAME_TIMEOUT:     ${{ vars.K4BENCH_BLAME_TIMEOUT || '15m' }}
+          # Comments on the pull requests the blame ranker holds responsible.
+          # The built-in GITHUB_TOKEN above cannot do this: it is read-only and
+          # scoped to k4Bench, while these comments land in the Key4hep package
+          # repositories. This is a separate token carrying pull-requests:write
+          # on exactly the repos listed in .github/blame-comments.yml — with an
+          # empty allowlist there the step is a no-op, and with no token at all
+          # it only logs what it would have posted.
+          K4BENCH_PR_COMMENT_TOKEN:   ${{ secrets.K4BENCH_PR_COMMENT_TOKEN }}
+          K4BENCH_PR_COMMENT_DRY_RUN: ${{ vars.K4BENCH_PR_COMMENT_DRY_RUN }}
+          K4BENCH_PR_COMMENT_TIMEOUT: ${{ vars.K4BENCH_PR_COMMENT_TIMEOUT || '15m' }}
         run: |
           docker pull "${{ env.CONTAINER_IMAGE }}"
           docker run --rm --init \
@@ -74,7 +118,10 @@ jobs:
             -e K4BENCH_REGRESSION_FROM -e K4BENCH_DASHBOARD_URL \
             -e GITHUB_RUN_URL -e GITHUB_TOKEN \
             -e K4BENCH_LLM_URL -e K4BENCH_LLM_MODEL -e K4BENCH_LLM_API_KEY \
+            -e K4BENCH_LLM_SUMMARY_MODEL \
             -e K4BENCH_LLM_MAX_TOKENS -e K4BENCH_BLAME_TIMEOUT \
+            -e K4BENCH_PR_COMMENT_TOKEN -e K4BENCH_PR_COMMENT_DRY_RUN \
+            -e K4BENCH_PR_COMMENT_TIMEOUT \
             "${{ env.CONTAINER_IMAGE }}" \
             bash /workspace/.github/scripts/regression_report.sh
 

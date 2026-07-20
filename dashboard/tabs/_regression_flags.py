@@ -19,7 +19,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from k4bench.blame.models import BlameReport, CandidatePR
+from k4bench.blame.models import RANKING_DISCLOSURE, BlameReport, CandidatePR
 from k4bench.regression.models import MetricVerdict, Severity
 from k4bench.labels import pretty_sample
 from k4bench.regression.render import _fmt
@@ -241,22 +241,27 @@ def flag_table(
 
 
 def has_ranking(candidates: list[CandidatePR]) -> bool:
-    """True when the ranking stage has judged any candidate — a non-zero score or
-    a description. Nothing to show (and no "Suggested" heading) until it has."""
-    return any(c.score or c.description for c in candidates)
+    """True when the ranking stage has judged *any* candidate. Nothing to show
+    (and no "Suggested" heading) until it has."""
+    return any(c.ranked for c in candidates)
 
 
 def _render_candidate_rows(candidates: list[CandidatePR]) -> None:
-    """Render the complete candidate ledger using Streamlit's native sizing."""
+    """Render the complete candidate ledger using Streamlit's native sizing.
+
+    A ranking response can be partial, so one candidate being judged does not
+    mean they all were. An unjudged one shows an empty likelihood rather than a
+    0% bar: it carries no score, and rendering the placeholder would put this
+    table's weakest verdict on a pull request nobody actually rated."""
     records = [
         {
-            "Likelihood": c.score,
+            "Likelihood": c.score if c.ranked else None,
             "Pull request": f"{c.repo}#{c.number}",
             "Open": c.url,
             "Title": c.title,
             "Author": c.author or "—",
             "Merged": (c.merged_at or "")[:10] or "—",
-            "Why": c.description or "—",
+            "Why": c.description if c.ranked else "Not scored by the ranker",
         }
         for c in candidates
     ]
@@ -331,8 +336,6 @@ def render_candidate_ranking(
         if show_empty:
             st.caption("🤖 No AI PR ranking is stored for this regression.")
         return False
-    st.caption(
-        "🤖 **AI-generated PR ranking** — suggested leads to verify, not proof."
-    )
+    st.caption(f"🤖 {RANKING_DISCLOSURE}")
     candidate_table(entry.candidates)
     return True

@@ -5,6 +5,10 @@ under test is the one the builder and the UI depend on — score each PR
 independently, never surface a PR the request didn't contain, and turn *any*
 failure (bad JSON, HTTP error, timeout) into ``{}`` so candidates stay unranked
 rather than the pipeline breaking.
+
+What this ranker asks and how it reads the answer is here; the HTTP transport
+underneath it belongs to :mod:`k4bench.blame.llm` and is tested in
+``test_blame_llm.py``, once for both model stages.
 """
 
 from __future__ import annotations
@@ -14,7 +18,9 @@ from types import SimpleNamespace
 import pytest
 import requests
 
+from k4bench.blame import prompt as prompt_mod
 from k4bench.blame import rank as rank_mod
+from k4bench.blame.llm import ChatClient
 from k4bench.labels import pretty_sample
 from k4bench.blame.rank import (
     MetricStep,
@@ -70,11 +76,16 @@ def _completion(content: str, *, finish_reason: str = "stop") -> _FakeResp:
 
 
 def _ranker(actions, **kwargs) -> OpenAICompatRanker:
+    """A ranker over a scripted transport — the seam every test drives it through."""
     kwargs.setdefault("sleep_fn", lambda _seconds: None)
-    return OpenAICompatRanker(
+    return OpenAICompatRanker(client=ChatClient(
         url="https://llm.example/api/v1", model="some/model",
         api_key="secret", session=_FakeSession(actions), **kwargs,
-    )
+    ))
+
+
+def _calls(ranker: OpenAICompatRanker) -> list:
+    return ranker.client.session.calls
 
 
 def _request(candidates=None, metrics=None, detector="IDEA_o1_v03",
@@ -221,7 +232,7 @@ def test_system_message_travels_with_every_call():
         {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 1, "reason": "y"},
     ))])
     ranker.rank(_request())
-    messages = ranker.session.calls[0].json["messages"]
+    messages = _calls(ranker)[0].json["messages"]
     assert messages[0] == {"role": "system", "content": rank_mod._SYSTEM_PROMPT}
     assert "- Detector: IDEA_o1_v03" in messages[1]["content"]
 
@@ -283,10 +294,10 @@ def test_diff_budget_is_shared_fairly_not_first_come_first_served(monkeypatch):
 
 
 def test_allocate_diff_budget_waterfills():
-    assert rank_mod._allocate_diff_budget([30, 300, 300], 100) == [30, 35, 35]
-    assert rank_mod._allocate_diff_budget([10, 20], 100) == [10, 20]  # all fits
-    assert rank_mod._allocate_diff_budget([], 100) == []
-    assert rank_mod._allocate_diff_budget([50, 50], 0) == [0, 0]
+    assert prompt_mod.allocate_diff_budget([30, 300, 300], 100) == [30, 35, 35]
+    assert prompt_mod.allocate_diff_budget([10, 20], 100) == [10, 20]  # all fits
+    assert prompt_mod.allocate_diff_budget([], 100) == []
+    assert prompt_mod.allocate_diff_budget([50, 50], 0) == [0, 0]
 
 
 # ── Parsing a good response ───────────────────────────────────────────────────
@@ -301,19 +312,6 @@ def test_parses_a_good_response_scoring_each_pr_independently():
     assert result[("AIDASoft/DD4hep", 20)] == Ranking(15.0, "unrelated cleanup")
 
 
-def test_sends_model_endpoint_and_auth():
-    ranker = _ranker([_completion(_rankings_json(
-        {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 1, "reason": "x"},
-        {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 1, "reason": "y"},
-    ))])
-    ranker.rank(_request())
-    call = ranker.session.calls[0]
-    assert call.url == "https://llm.example/api/v1/chat/completions"
-    assert call.json["model"] == "some/model"
-    assert call.json["response_format"] == {"type": "json_object"}
-    assert call.headers["Authorization"] == "Bearer secret"
-
-
 def test_output_budget_scales_for_wide_candidate_windows():
     candidates = tuple(
         RankCandidate(repo="key4hep/k4geo", number=n, title=f"PR {n}")
@@ -324,27 +322,7 @@ def test_output_budget_scales_for_wide_candidate_windows():
         for c in candidates
     )))])
     ranker.rank(_request(candidates=candidates))
-    assert ranker.session.calls[0].json["max_tokens"] == 4096
-
-
-def test_length_limited_response_retries_with_twice_the_output_budget():
-    candidates = tuple(
-        RankCandidate(repo="key4hep/k4geo", number=n, title=f"PR {n}")
-        for n in range(1, 6)
-    )
-    body = _rankings_json(*(
-        {"repo": c.repo, "pr": c.number, "likelihood": 0, "reason": "unrelated"}
-        for c in candidates
-    ))
-    ranker = _ranker([
-        _completion('{"rankings":[', finish_reason="length"),
-        _completion(body),
-    ])
-    result = ranker.rank(_request(candidates=candidates))
-    assert len(result) == 5
-    assert all(r.score == 0 and r.description == "unrelated" for r in result.values())
-    assert ranker.session.calls[0].json["max_tokens"] == 4096
-    assert ranker.session.calls[1].json["max_tokens"] == 8192
+    assert _calls(ranker)[0].json["max_tokens"] == 4096
 
 
 def test_parses_json_wrapped_in_code_fences():
@@ -427,7 +405,7 @@ def test_empty_reason_rejects_the_row_and_is_recovered_by_the_retry():
     result = ranker.rank(_request())
     assert result[("key4hep/k4geo", 10)] == Ranking(70.0, "explains it")
     assert result[("AIDASoft/DD4hep", 20)].score == 5.0
-    assert len(ranker.session.calls) == 2
+    assert len(_calls(ranker)) == 2
 
 
 def test_missing_and_non_finite_likelihoods_reject_the_row():
@@ -469,13 +447,13 @@ def test_partial_response_is_completed_by_one_followup_call():
     ranker = _ranker([_completion(first), _completion(second)])
     result = ranker.rank(_request())
     assert set(result) == {("key4hep/k4geo", 10), ("AIDASoft/DD4hep", 20)}
-    assert len(ranker.session.calls) == 2
+    assert len(_calls(ranker)) == 2
 
 
 def test_http_error_yields_empty_after_retry():
     ranker = _ranker([_FakeResp({}, status=500) for _ in range(4)])
     assert ranker.rank(_request()) == {}
-    assert len(ranker.session.calls) == 4
+    assert len(_calls(ranker)) == 4
 
 
 def test_timeout_yields_empty():
@@ -483,58 +461,16 @@ def test_timeout_yields_empty():
     assert ranker.rank(_request()) == {}
 
 
-def test_rate_limit_honours_retry_after():
-    delays = []
-    body = _rankings_json(
-        {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 55, "reason": "ok"},
-        {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "low"},
-    )
-    ranker = _ranker([
-        _FakeResp({}, status=429, headers={"Retry-After": "7"}),
-        _completion(body),
-    ], sleep_fn=delays.append)
-    assert len(ranker.rank(_request())) == 2
-    assert delays == [7.0]
-
-
-def test_400_retries_once_without_response_format_then_succeeds():
-    # Not every "OpenAI-compatible" provider implements JSON mode; a 400 gets
-    # one retry with the optional field stripped before counting as fatal.
-    body = _rankings_json(
-        {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 55, "reason": "ok"},
-        {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "low"},
-    )
-    ranker = _ranker([_FakeResp({}, status=400), _completion(body)])
-    assert len(ranker.rank(_request())) == 2
-    assert "response_format" in ranker.session.calls[0].json
-    assert "response_format" not in ranker.session.calls[1].json
-
-
-def test_non_retryable_client_error_fails_after_the_compat_strip():
-    # A 400 that persists without response_format is a real request error.
-    ranker = _ranker([_FakeResp({}, status=400), _FakeResp({}, status=400)])
-    assert ranker.rank(_request()) == {}
-    assert len(ranker.session.calls) == 2
-
-
-def test_transient_error_then_success_is_retried():
-    body = _rankings_json(
-        {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 55, "reason": "ok"},
-        {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "low"},
-    )
-    ranker = _ranker([requests.ConnectionError("blip"), _completion(body)])
-    result = ranker.rank(_request())
-    assert result[("key4hep/k4geo", 10)].score == 55.0
-    assert len(ranker.session.calls) == 2
-
-
 def test_no_candidates_short_circuits_without_calling_the_model():
     ranker = _ranker([])  # no queued action; a post() would IndexError
     assert ranker.rank(_request(candidates=())) == {}
-    assert ranker.session.calls == []
+    assert _calls(ranker) == []
 
 
 # ── ranker_from_env ───────────────────────────────────────────────────────────
+# How ``K4BENCH_LLM_*`` is *read* belongs to the shared client and is covered in
+# ``test_blame_llm.py``; what matters here is only that ranking stays off until
+# an endpoint and a model are both configured.
 
 def test_ranker_from_env_none_when_unset(monkeypatch):
     for var in ("K4BENCH_LLM_URL", "K4BENCH_LLM_MODEL", "K4BENCH_LLM_API_KEY"):
@@ -554,38 +490,9 @@ def test_ranker_from_env_builds_ranker_when_configured(monkeypatch):
     monkeypatch.setenv("K4BENCH_LLM_API_KEY", "k")
     ranker = ranker_from_env()
     assert isinstance(ranker, OpenAICompatRanker)
-    assert ranker.url == "https://llm.example/api/v1"
-    assert ranker.model == "some/model"
-    assert ranker.api_key == "k"
-
-
-def test_ranker_from_env_key_optional(monkeypatch):
-    # A keyless endpoint (local server) is valid — URL+model are the only gate.
-    monkeypatch.setenv("K4BENCH_LLM_URL", "http://localhost:8000/v1")
-    monkeypatch.setenv("K4BENCH_LLM_MODEL", "local")
-    monkeypatch.delenv("K4BENCH_LLM_API_KEY", raising=False)
-    ranker = ranker_from_env()
-    assert isinstance(ranker, OpenAICompatRanker)
-    assert ranker.api_key is None
-
-
-def test_ranker_from_env_accepts_max_tokens_override(monkeypatch):
-    monkeypatch.setenv("K4BENCH_LLM_URL", "https://llm.example/v1")
-    monkeypatch.setenv("K4BENCH_LLM_MODEL", "reasoning-model")
-    monkeypatch.setenv("K4BENCH_LLM_MAX_TOKENS", "16384")
-    ranker = ranker_from_env()
-    assert isinstance(ranker, OpenAICompatRanker)
-    assert ranker.max_tokens == 16384
-
-
-def test_ranker_from_env_ignores_invalid_max_tokens(monkeypatch, caplog):
-    monkeypatch.setenv("K4BENCH_LLM_URL", "https://llm.example/v1")
-    monkeypatch.setenv("K4BENCH_LLM_MODEL", "some-model")
-    monkeypatch.setenv("K4BENCH_LLM_MAX_TOKENS", "many")
-    ranker = ranker_from_env()
-    assert isinstance(ranker, OpenAICompatRanker)
-    assert ranker.max_tokens == 4096
-    assert "ignoring invalid K4BENCH_LLM_MAX_TOKENS" in caplog.text
+    assert ranker.client.url == "https://llm.example/api/v1"
+    assert ranker.client.model == "some/model"
+    assert ranker.client.api_key == "k"
 
 
 if __name__ == "__main__":

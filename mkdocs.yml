@@ -136,6 +136,7 @@ nav:
           - user-guide/features/timing-plugins.md
           - user-guide/features/analysis.md
           - user-guide/features/dashboard.md
+          - user-guide/features/pr-comments.md
   - Architecture:
       - architecture/overview.md
       - architecture/component-diagrams.md

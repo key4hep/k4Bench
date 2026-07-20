@@ -180,7 +180,7 @@ def _blame_sidecar() -> BlameReport:
                 candidates=(CandidatePR(
                     repo="key4hep/k4geo", number=1234, title="Lower the step limit",
                     author="alice", url="https://github.com/key4hep/k4geo/pull/1234",
-                    score=72.0, description="raises the step count",
+                    score=72.0, description="raises the step count", ranked=True,
                 ),),
             ),),
         ),),

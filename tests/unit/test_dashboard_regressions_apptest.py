@@ -369,7 +369,7 @@ def test_switching_picker_keeps_release_attribution_but_changes_verdicts():
         author="alice", url="https://github.com/key4hep/k4geo/pull/1234",
         merged_at="2026-07-04T10:00:00Z", files=("FCCee/CLD/compact/x.xml",),
         additions=20, deletions=4, score=72.0,
-        description="raises tracker step count, plausibly slower",
+        description="raises tracker step count, plausibly slower", ranked=True,
     )
     at = _run(
         reports_map={
@@ -647,7 +647,7 @@ def test_ranked_candidate_prs_render_when_a_blame_sidecar_is_present():
         author="alice", url="https://github.com/key4hep/k4geo/pull/1234",
         merged_at="2026-07-04T10:00:00Z", files=("FCCee/CLD/compact/x.xml",),
         additions=20, deletions=4, score=72.0,
-        description="raises tracker step count, plausibly slower",
+        description="raises tracker step count, plausibly slower", ranked=True,
     )
     at = _run(
         _report([_group(verdicts=[_windowed_confirmed()])]),
@@ -680,7 +680,7 @@ def test_candidate_ranking_uses_native_column_sizing(monkeypatch):
     flags._render_candidate_rows([CandidatePR(
         repo="key4hep/k4geo", number=1234, title="Candidate title",
         author="alice", url="https://github.com/key4hep/k4geo/pull/1234",
-        score=72.0, description="candidate rationale",
+        score=72.0, description="candidate rationale", ranked=True,
     )])
 
     assert captured["width"] == "stretch"
@@ -690,13 +690,49 @@ def test_candidate_ranking_uses_native_column_sizing(monkeypatch):
     )
 
 
+def test_an_unranked_candidate_shows_no_likelihood_rather_than_zero():
+    # A ranking response can be partial. One candidate being judged must not
+    # make the rest render as 0% — that is a verdict nobody gave, on someone's
+    # pull request, in the surface people read to decide what broke.
+    from dashboard.tabs import _regression_flags as flags
+    from k4bench.blame.models import CandidatePR
+
+    judged = CandidatePR(
+        repo="key4hep/k4geo", number=1, title="Judged", author="alice",
+        url="https://github.com/key4hep/k4geo/pull/1",
+        score=92.0, description="raises the step count", ranked=True,
+    )
+    never_asked = CandidatePR(
+        repo="key4hep/k4geo", number=2, title="Unjudged", author="bob",
+        url="https://github.com/key4hep/k4geo/pull/2",
+    )
+    assert flags.has_ranking([judged, never_asked])
+    assert not flags.has_ranking([never_asked])
+
+    import pandas as pd
+
+    captured = {}
+    original = flags.st.dataframe
+    try:
+        flags.st.dataframe = lambda data, **kw: captured.update(frame=data)
+        flags._render_candidate_rows([judged, never_asked])
+    finally:
+        flags.st.dataframe = original
+
+    frame = captured["frame"]
+    likelihoods = list(frame["Likelihood"])
+    assert likelihoods[0] == 92.0
+    assert likelihoods[1] is None or pd.isna(likelihoods[1])
+    assert list(frame["Why"])[1] == "Not scored by the ranker"
+
+
 def test_candidate_ranking_shows_every_candidate_in_one_table():
     from k4bench.blame.models import CandidatePR
     candidates = [
         CandidatePR(
             repo="key4hep/k4geo", number=1200 + i, title=f"Candidate {i}",
             author="alice", url=f"https://github.com/key4hep/k4geo/pull/{1200 + i}",
-            score=float(100 - i * 10), description=f"ranked reason {i}",
+            score=float(100 - i * 10), description=f"ranked reason {i}", ranked=True,
         )
         for i in range(5)
     ]
@@ -754,7 +790,7 @@ def test_stale_blame_with_a_different_window_is_not_joined():
     cand = CandidatePR(
         repo="key4hep/k4geo", number=1234, title="Some PR", author="alice",
         url="https://github.com/key4hep/k4geo/pull/1234",
-        score=90.0, description="from another window",
+        score=90.0, description="from another window", ranked=True,
     )
     stale = _blame_json([cand])
     stale["entries"][0]["base_release"] = "2026-06-20"
@@ -785,7 +821,7 @@ def test_rerun_confirming_a_later_window_shows_both_changes():
     cand = CandidatePR(
         repo="key4hep/k4geo", number=1234, title="Canonical release cause",
         author="alice", url="https://github.com/key4hep/k4geo/pull/1234",
-        score=90.0, description="ranked on the first confirmed report",
+        score=90.0, description="ranked on the first confirmed report", ranked=True,
     )
     at = _run(
         reports_map={

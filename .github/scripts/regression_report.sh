@@ -24,10 +24,30 @@
 #   K4BENCH_LLM_API_KEY           — bearer token for the endpoint (kept in secrets)
 #   K4BENCH_LLM_MAX_TOKENS        — optional initial completion-token budget;
 #                                   length truncation grows it up to a safe cap
+#   K4BENCH_LLM_SUMMARY_MODEL     — optional model id for the PR comments'
+#                                   cross-configuration review only (step 5c);
+#                                   defaults to K4BENCH_LLM_MODEL
 #   K4BENCH_BLAME_TIMEOUT         — wall-clock limit for the isolated blame
 #                                   step (default: 15m; GNU timeout syntax)
+#   K4BENCH_PR_COMMENT_TOKEN      — token with pull-requests:write on the repos
+#                                   listed in .github/blame-comments.yml; enables
+#                                   the PR comments. Unset ⇒ they are only logged
+#   K4BENCH_PR_COMMENT_DRY_RUN    — non-empty ⇒ log the comments, post nothing
+#   K4BENCH_PR_COMMENT_TIMEOUT    — wall-clock limit for the comment step
+#                                   (default: 15m — the step reviews each
+#                                   selected PR against its whole window, so it
+#                                   makes model calls of its own)
 
 set -euo pipefail
+
+# The one credential here that can write outside this repository is taken out of
+# the environment immediately and held in a shell variable, so it is exported to
+# exactly one process — the comment CLI in step 5c — and to nothing else. Every
+# `pip install`, every `dnf`, every subprocess of the report build below then
+# runs without it in scope. A write token has no business being readable by a
+# package index's install hooks.
+PR_COMMENT_TOKEN="${K4BENCH_PR_COMMENT_TOKEN:-}"
+unset K4BENCH_PR_COMMENT_TOKEN
 
 # Personal EOS area (same as nightly_benchmark.sh).
 EOS_FQDN="eosuser.cern.ch"
@@ -57,6 +77,14 @@ fi
 cvmfs-venv py-venv
 . py-venv/bin/activate
 pip install --no-build-isolation --quiet "."
+# PyYAML is not a k4bench dependency (the package stays free of one on purpose —
+# see blame_comment.py) but step 5c's CLI needs it to read the comment
+# allowlist. Installed here, with the report still unbuilt and the write token
+# already out of the environment: publishing must not depend on a package index
+# being reachable at the moment it posts. A failure costs only the comments —
+# hence the `||` — never the report or the e-group email.
+pip install --quiet "pyyaml>=6.0,<6.1" \
+  || echo "PyYAML install failed — step 5c's pull-request comments will be skipped." >&2
 echo "::endgroup::"
 
 # ── 4. Build the report ───────────────────────────────────────────────────────
@@ -123,6 +151,40 @@ echo "::group::5b. Blame sidecar"
         echo "Removed a previous run's blame.json for this night."
     fi
 } || echo "Blame sidecar upload/cleanup failed (best-effort; the report and email are unaffected)." >&2
+echo "::endgroup::"
+
+# ── 5c. Pull-request comments (best-effort; the only step that writes off-repo) ─
+# Posts one comment on each pull request tonight's sidecar holds responsible with
+# a high enough likelihood, and edits it in place on later nights. Each selected
+# pull request is first reviewed once against its whole change window, which is
+# why this step reads K4BENCH_LLM_* and GITHUB_TOKEN as well; with no model
+# configured the comments render from the sidecar's per-configuration scores.
+# Gated on
+# .github/blame-comments.yml — an empty allowlist there makes this a no-op —
+# and on a write-scoped K4BENCH_PR_COMMENT_TOKEN; without one the
+# script logs the comments it would post and writes nothing. Isolated exactly
+# like 5b: writing into someone else's repository must never be able to fail the
+# report or hold up the e-group email below.
+echo "::group::5c. Pull-request comments"
+if [[ -f report/blame.json ]]; then
+    {
+        # The write token enters exactly one process, here, and only for the
+        # length of this call: its dependencies were installed in step 3, with
+        # it out of scope, so nothing between a package index and this token
+        # ever shares an environment. `env` also keeps it out of the shell's
+        # exported set afterwards.
+        env K4BENCH_PR_COMMENT_TOKEN="${PR_COMMENT_TOKEN}" \
+          timeout --signal=TERM --kill-after=30s "${K4BENCH_PR_COMMENT_TIMEOUT:-15m}" \
+            python .github/scripts/blame_comment.py \
+              --report report/report.json \
+              --blame report/blame.json \
+              --config .github/blame-comments.yml \
+              --dashboard-url "${K4BENCH_DASHBOARD_URL:-https://k4bench-dashboard.app.cern.ch}" \
+          || echo "No pull-request comments this night (nothing attributed confidently, no enabled repo, missing PyYAML, timeout, or a failed write)." >&2
+    } || echo "Pull-request comments step failed (best-effort; the report and email are unaffected)." >&2
+else
+    echo "No blame sidecar this night — no pull request to comment on."
+fi
 echo "::endgroup::"
 
 # ── 6. E-group email (sent every night regardless of content; skips quietly

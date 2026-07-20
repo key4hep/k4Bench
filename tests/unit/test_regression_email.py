@@ -384,11 +384,11 @@ def test_detail_ordering_is_stable_regardless_of_input_order():
 # ── Ranking ───────────────────────────────────────────────────────────────────
 
 def _candidate(number, score, title="Lower the step limit", desc="raises the step count",
-               repo="key4hep/k4geo", author="alice"):
+               repo="key4hep/k4geo", author="alice", ranked=True):
     return CandidatePR(
         repo=repo, number=number, title=title, author=author,
         url=f"https://github.com/{repo}/pull/{number}", merged_at="2026-06-26T10:00:00",
-        score=score, description=desc,
+        score=score, description=desc, ranked=ranked,
     )
 
 
@@ -653,8 +653,8 @@ def test_absent_blame_produces_no_ranking_card_but_still_renders():
 
 def test_incomplete_blame_shows_best_effort_state():
     v = _windowed(first_confirmed_run_id="2026-06-27")
-    # Candidate collected but unranked (score 0, no description).
-    blame = _blame(_candidate(1, 0.0, desc=""))
+    # Candidate collected but never judged by the ranker.
+    blame = _blame(_candidate(1, 0.0, desc="", ranked=False))
     html = to_html(_report(_group(v)), blame=blame)
     assert "No complete PR ranking is available" in html
 

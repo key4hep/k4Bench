@@ -114,6 +114,114 @@ def window_token(base_release: str | None, onset_release: str | None) -> str:
     return f"{base_release or ''}..{onset_release or ''}"
 
 
+def window_href(
+    dashboard_url: str | None,
+    *,
+    detector: str,
+    platform: str,
+    sample: str,
+    base_release: str | None,
+    onset_release: str | None,
+    stack: str | None = None,
+    report_night: str = "",
+) -> str | None:
+    """The Regressions view scoped to one change window — the link that lands
+    the reader on exactly the metrics and candidate PRs that window is about,
+    rather than on whichever window the tab would open by default.
+
+    Shared by every renderer that points at a window (the nightly email, the
+    pull-request comments in :mod:`k4bench.blame.comment`), so one link shape is
+    defined once beside the ``?window=`` vocabulary it uses.
+    """
+    if not dashboard_url or not onset_release:
+        return None
+    params = dict(
+        detector=detector, platform=platform, sample=sample,
+        window=window_token(base_release, onset_release),
+    )
+    if stack:
+        params["stack"] = stack
+    if report_night:
+        params["report"] = report_night
+    return _dashboard_link(dashboard_url, tab="Regressions", **params)
+
+
+def stack_changes_href(
+    dashboard_url: str | None,
+    *,
+    detector: str,
+    platform: str,
+    sample: str,
+    base_release: str | None,
+    onset_release: str | None,
+) -> str | None:
+    """The Stack Changes view for one exact release window — the package diff
+    behind a change window, where a reader goes to see what actually moved.
+
+    The param names ``to``/``from`` must match what the dashboard's Stack
+    Changes tab reads back (``PARAM_TO``/``PARAM_FROM`` in
+    dashboard/tabs/stack_changes.py) — a literal mismatch here silently
+    breaks the deep link instead of raising.
+    """
+    if not dashboard_url or not onset_release:
+        return None
+    params = {
+        "tab": "Stack Changes",
+        "detector": detector,
+        "platform": platform,
+        "sample": sample,
+        "to": onset_release,
+    }
+    if base_release:
+        params["from"] = base_release
+    return _dashboard_link(dashboard_url, **params)
+
+
+def regression_href(
+    dashboard_url: str | None,
+    *,
+    verdict: MetricVerdict,
+    base_release: str | None,
+    onset_release: str | None,
+) -> str | None:
+    """The Stack Changes view for one exact regression — the package diff for
+    its window with *that* metric already selected below it, which renders its
+    trend, its onset and the ranked candidates in the same view.
+
+    This is the one destination that answers "did my change do this?" without a
+    second click, so it is what the pull-request comments point every row at.
+    Where :func:`stack_changes_href` opens the range and leaves the reader to
+    find their metric, this pins it: the ``reg_*`` params name a verdict
+    exactly (see ``_query_verdict`` in dashboard/tabs/stack_changes.py), and a
+    verdict the tab cannot match falls back to the same unpinned range.
+
+    Like :func:`stack_changes_href`, the param names are literals the dashboard
+    reads back (``PARAM_REG_*``); a mismatch here loses the selection silently.
+    Returns ``None`` when the verdict carries no onset identity — the tab needs
+    one to tell two onsets of the same release apart, and a link that would
+    quietly select the wrong step is worse than the unpinned one.
+    """
+    base = stack_changes_href(
+        dashboard_url,
+        detector=verdict.detector, platform=verdict.platform,
+        sample=verdict.sample,
+        base_release=base_release, onset_release=onset_release,
+    )
+    onset = verdict.onset_run_id or verdict.onset_run_date
+    if not base or not onset:
+        return None
+    params = {
+        "reg_detector": verdict.detector,
+        "reg_sample": verdict.sample,
+        "reg_config": verdict.label,
+        "reg_metric": verdict.metric,
+        "reg_onset": onset,
+    }
+    if verdict.sub_detector:
+        params["reg_region"] = verdict.sub_detector
+    return _dashboard_link(base, **params)
+
+
 # ── JSON (EOS artifact) ───────────────────────────────────────────────────────
 
 def _sanitize(obj):

@@ -37,7 +37,12 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from k4bench.blame.models import BlameEntry, BlameReport, CandidatePR
+from k4bench.blame.models import (
+    RANKING_DISCLOSURE,
+    BlameEntry,
+    BlameReport,
+    CandidatePR,
+)
 from k4bench.regression.models import (
     MetricVerdict,
     NightlyReport,
@@ -51,7 +56,8 @@ from k4bench.regression.render import (
     _fmt,
     _fmt_pct,
     _group_title,
-    window_token,
+    stack_changes_href,
+    window_href,
 )
 
 # ── Friendly metric names, units and value formatting ─────────────────────────
@@ -392,43 +398,24 @@ def _review_text(section) -> str:
 def _window_href(
     dashboard_url: str | None, section, report_night: str
 ) -> str | None:
-    """The Regressions view scoped to one change window — the link that lands
-    the reader on exactly the metrics and candidate PRs this section is about,
-    rather than on whichever window the tab would open by default."""
-    if not dashboard_url or not section.onset_release:
-        return None
-    params = dict(
+    """A window section's scoped Regressions view."""
+    return window_href(
+        dashboard_url,
         detector=section.detector, platform=section.platform,
         sample=section.sample,
-        window=window_token(section.base_release, section.onset_release),
+        base_release=section.base_release, onset_release=section.onset_release,
+        stack=section.k4h_release, report_night=report_night,
     )
-    if section.k4h_release:
-        params["stack"] = section.k4h_release
-    if report_night:
-        params["report"] = report_night
-    return _dashboard_link(dashboard_url, tab="Regressions", **params)
 
 
 def _stack_changes_href(dashboard_url: str | None, section) -> str | None:
-    """The Stack Changes view for a window section's exact release window.
-
-    The param names ``to``/``from`` must match what the dashboard's Stack
-    Changes tab reads back (``PARAM_TO``/``PARAM_FROM`` in
-    dashboard/tabs/stack_changes.py) — a literal mismatch here silently
-    breaks the deep link instead of raising.
-    """
-    if not dashboard_url or not section.onset_release:
-        return None
-    params = {
-        "tab": "Stack Changes",
-        "detector": section.detector,
-        "platform": section.platform,
-        "sample": section.sample,
-        "to": section.onset_release,
-    }
-    if section.base_release:
-        params["from"] = section.base_release
-    return _dashboard_link(dashboard_url, **params)
+    """The Stack Changes view for a window section's exact release window."""
+    return stack_changes_href(
+        dashboard_url,
+        detector=section.detector, platform=section.platform,
+        sample=section.sample,
+        base_release=section.base_release, onset_release=section.onset_release,
+    )
 
 
 # ── Attention ordering ────────────────────────────────────────────────────────
@@ -618,9 +605,6 @@ _MAX_CARD_CANDIDATES = 3
 #: turning a compact email card into the full Stack Changes ledger.
 _MAX_CARD_COMPARE_LINKS = 3
 
-#: The mandatory qualifier on every ranking — a lead to verify, never proof.
-_RANKING_DISCLOSURE = "AI-generated PR ranking — suggested leads to verify, not proof."
-
 
 @dataclass
 class RankingCard:
@@ -686,7 +670,9 @@ def _ranking_cards(group: RunGroupReport, index: _BlameIndex) -> list[RankingCar
                 prev = chosen.get(ck)
                 if prev is None or (prev[1] is not None and reused_from is None):
                     chosen[ck] = (c, reused_from)
-        ranked = [c for c, _src in chosen.values() if c.score or c.description]
+        # Only judged candidates: an unranked one carries a placeholder score,
+        # never an opinion, and the email renders these as percentages.
+        ranked = [c for c, _src in chosen.values() if c.ranked]
         ranked.sort(key=lambda c: (-c.score, c.repo, c.number))
         compare_links = sorted(compares)
         window_verdicts = [
@@ -1147,7 +1133,7 @@ def _html_ranking_body(section: WindowSection, dashboard_url: str | None) -> str
         f'<p style="margin:0 0 3px;font-size:13px;font-weight:700;">'
         "Likely contributing pull requests</p>"
         f'<p style="margin:0 0 6px;font-size:11px;color:{_C_FAINT};font-style:italic;">'
-        f"{_esc(_RANKING_DISCLOSURE)}</p>"
+        f"{_esc(RANKING_DISCLOSURE)}</p>"
         '<table role="presentation" cellpadding="0" cellspacing="0" '
         'style="border-collapse:collapse;width:100%;table-layout:fixed;">'
         f"{rows}</table>{more}{compares}"
@@ -1513,7 +1499,7 @@ def _md_window_section(
             lines.append(compare_line)
         return lines
     lines.append("  **Likely contributing pull requests**")
-    lines.append(f"  _{_RANKING_DISCLOSURE}_")
+    lines.append(f"  _{RANKING_DISCLOSURE}_")
     lines.extend(
         _md_candidate(i + 1, c) for i, c in enumerate(card.candidates)
     )
