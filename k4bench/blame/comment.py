@@ -291,24 +291,23 @@ def _render(
     body = "\n".join(
         part for part in (
             marker,
-            "### ⚠️ Possible performance regression traced to this pull request",
+            "### 📉 Possible performance regression traced to this pull request",
             "",
-            _lead(primary, bucket, len(scopes)),
+            _alert(bucket),
             "",
-            f"**Likelihood this pull request is the cause: "
-            f"{_pct(bucket.candidate.score)}**",
-            _quote(bucket.candidate.description),
+            _summary_table(bucket, primary, len(scopes)),
+            _quote(bucket),
             _metrics_table(verdicts, multi_scope=len(scopes) > 1),
-            _others_table(bucket),
+            _others_section(bucket),
             _where_to_look(
                 bucket, primary, scopes, report_night=report_night,
                 dashboard_url=dashboard_url, actions_url=actions_url,
             ),
             "",
-            f"<sub>{RANKING_DISCLOSURE} Posted automatically by "
-            "[k4Bench](https://github.com/key4hep/k4Bench); this comment is "
-            "updated in place while the regression stands. If the attribution "
-            "is wrong, say so here — nothing is blocked by it.</sub>",
+            "---",
+            "",
+            f"<sub>🤖 {RANKING_DISCLOSURE} Posted automatically by "
+            "[k4Bench](https://github.com/key4hep/k4Bench).</sub>",
         ) if part is not None
     )
     return PRComment(
@@ -320,34 +319,71 @@ def _render(
     )
 
 
-def _lead(primary: MetricVerdict, bucket: _Bucket, n_scopes: int) -> str:
-    """The opening sentence: what was measured, and which release window the
-    step entered in — the window being the reason this PR is implicated."""
-    where = (
-        f"**{primary.detector}** · {pretty_sample(primary.sample)} · "
-        f"{pretty_platform(primary.platform)}"
-        if n_scopes == 1
-        else f"**{n_scopes} benchmark configurations**"
-    )
-    window = (
-        f"with Key4hep release **{bucket.onset_release}**, the first release "
-        f"benchmarked after **{bucket.base_release}**"
+def _alert(bucket: _Bucket) -> str:
+    """The headline claim as a GitHub warning alert — one sentence; the stat
+    row below it carries the specifics."""
+    tail = (
+        ""
         if bucket.base_release
-        else f"at or before Key4hep release **{bucket.onset_release}** "
-             "(no earlier settled measurement bounds the window)"
+        else " The window is open-ended: no earlier settled measurement "
+             "bounds it."
     )
     return (
-        f"k4Bench's nightly benchmarks confirmed a step in {where} that entered "
-        f"{window} — the change window this pull request merged in."
+        "> [!WARNING]\n"
+        "> k4Bench's nightly benchmarks confirmed a regression in the change "
+        f"window this PR merged in.{tail}"
     )
 
 
-def _quote(description: str) -> str | None:
-    """The ranker's one-line reason as a blockquote, or nothing when it declined
-    to explain (a scored-but-unexplained candidate is not comment-worthy prose,
-    and the score already stands on its own line)."""
-    text = _one_line(description, _MAX_DESCRIPTION_CHARS)
-    return f"\n> {text}" if text else None
+def _summary_table(bucket: _Bucket, primary: MetricVerdict, n_scopes: int) -> str:
+    """The at-a-glance stat row: likelihood, window, and where it was seen.
+
+    Cells stay short so nothing wraps — the Key4hep release dates name the
+    window, and for a single configuration the sample and platform follow as a
+    small full-width caption under the table."""
+    window = (
+        f"`{bucket.base_release}` → `{bucket.onset_release}`"
+        if bucket.base_release
+        else f"≤ `{bucket.onset_release}`"
+    )
+    benchmark = (
+        f"**{_cell(primary.detector)}**"
+        if n_scopes == 1
+        else f"**{n_scopes} configurations**"
+    )
+    lines = [
+        "| 🎯 Likelihood | 📆 Change window | 🧪 Benchmark |",
+        "|:---:|:---:|:---:|",
+        f"| **{_pct(bucket.candidate.score)}** | {window} | {benchmark} |",
+    ]
+    if n_scopes == 1:
+        lines += [
+            "",
+            f"<sub>{pretty_sample(primary.sample)} · "
+            f"{pretty_platform(primary.platform)}</sub>",
+        ]
+    return "\n".join(lines)
+
+
+def _quote(bucket: _Bucket) -> str | None:
+    """The ranker's one-line reason as a labelled blockquote — the label is
+    where the comment openly says an AI made this call. It claims "the most
+    likely cause" only when this PR outranks every other candidate in the
+    window; a comment can fire on any score above ``min_score``, and a PR the
+    ranker placed second must not be told it came first. Nothing is rendered
+    when the ranker declined to explain (a scored-but-unexplained candidate is
+    not comment-worthy prose, and the score already stands in the stat row)."""
+    text = _one_line(bucket.candidate.description, _MAX_DESCRIPTION_CHARS)
+    if not text:
+        return None
+    outranks_all = all(
+        other.score < bucket.candidate.score for other in bucket.others.values()
+    )
+    claim = "the most likely" if outranks_all else "a likely"
+    return (
+        f"\n> 🤖 **The AI ranker judged this PR {claim} cause of the "
+        f"regression:** {text}"
+    )
 
 
 def _metrics_table(verdicts: list[MetricVerdict], *, multi_scope: bool) -> str:
@@ -357,49 +393,60 @@ def _metrics_table(verdicts: list[MetricVerdict], *, multi_scope: bool) -> str:
     the links point at is labelled with, so a reader can find the exact series.
     """
     header = ["Metric", "Config", "Change"]
+    align = [":---", ":---", "---:"]
     if multi_scope:
         header.insert(0, "Benchmark")
+        align.insert(0, ":---")
     rows = []
     for v in verdicts[:_MAX_METRIC_ROWS]:
         metric = f"`{v.metric}`" + (f" · {_cell(v.sub_detector)}" if v.sub_detector else "")
-        row = [metric, f"`{_cell(v.label)}`", _signed_pct(v.pct_change)]
+        row = [metric, f"`{_cell(v.label)}`", _change_cell(v.pct_change)]
         if multi_scope:
             row.insert(0, f"{_cell(v.detector)} · {_cell(v.sample)}")
         rows.append(row)
 
     lines = [
         "",
-        "#### What moved",
+        "#### 📊 What moved",
         "",
         "| " + " | ".join(header) + " |",
-        "|" + "|".join(["---"] * len(header)) + "|",
+        "|" + "|".join(align) + "|",
         *("| " + " | ".join(row) + " |" for row in rows),
     ]
     omitted = len(verdicts) - len(rows)
     if omitted > 0:
-        lines += ["", f"_…and {omitted} more metric(s) in the same change window._"]
+        lines += [
+            "",
+            f"_…and {_count(omitted, 'more metric')} in the same change window._",
+        ]
     return "\n".join(lines)
 
 
-def _others_table(bucket: _Bucket) -> str | None:
+def _others_section(bucket: _Bucket) -> str:
     """The rest of the window's candidates with their likelihoods — the reader
     needs to see what else was in the frame to weigh the claim against this PR,
-    including the case where nothing else was."""
+    including the case where nothing else was. Collapsed by default: the count
+    in the summary line carries the weight, the rows are one click away."""
     others = sorted(
         bucket.others.values(), key=lambda c: (-c.score, c.repo, c.number)
     )
-    lines = ["", "#### Other pull requests in the same change window", ""]
     if not others:
-        lines.append(
-            "_None — this was the only pull request found across every tracked "
-            "package that changed in this window._"
-        )
-        return "\n".join(lines)
+        return "\n".join([
+            "",
+            "> [!NOTE]",
+            "> This was the only pull request found across every tracked "
+            "package that changed in this window.",
+        ])
 
     shown = others[:_MAX_OTHER_CANDIDATES]
-    lines += [
+    lines = [
+        "",
+        "<details>",
+        "<summary><b>Other pull requests in the same change window</b> — "
+        f"{_count(len(others), 'candidate')}</summary>",
+        "",
         "| Pull request | Likelihood |",
-        "|---|---|",
+        "|:---|---:|",
         *(
             f"| [{_cell(c.repo)}#{c.number}]({c.url}) — {_cell(_one_line(c.title, 80))} "
             f"| {_pct(c.score)} |"
@@ -407,7 +454,8 @@ def _others_table(bucket: _Bucket) -> str | None:
         ),
     ]
     if len(others) > len(shown):
-        lines += ["", f"_…and {len(others) - len(shown)} more candidate(s)._"]
+        lines += ["", f"_…and {_count(len(others) - len(shown), 'more candidate')}._"]
+    lines += ["", "</details>"]
     return "\n".join(lines)
 
 
@@ -438,18 +486,18 @@ def _where_to_look(
         base_release=bucket.base_release, onset_release=bucket.onset_release,
     )
     items = [
-        (regressions, "Review this regression in the dashboard"),
-        (packages, "Every package that changed across this window"),
-        (actions_url, "The nightly benchmark run that produced this"),
+        (regressions, "📈", "Review this regression in the dashboard"),
+        (packages, "📦", "Every package that changed across this window"),
+        (actions_url, "⚙️", "The nightly benchmark run that produced this"),
     ]
-    links = [f"- [{text}]({href})" for href, text in items if href]
+    links = [f"- {icon} [{text}]({href})" for href, icon, text in items if href]
     if not links:
         return None
-    lines = ["", "#### Where to look", "", *links]
+    lines = ["", "#### 🔎 Where to look", "", *links]
     if len(scopes) > 1:
         lines.append(
-            f"- _…{len(scopes) - 1} further benchmark configuration(s) moved in "
-            "the same window; the dashboard has them all._"
+            f"- _…{_count(len(scopes) - 1, 'further benchmark configuration')} "
+            "moved in the same window; the dashboard has them all._"
         )
     return "\n".join(lines)
 
@@ -466,12 +514,21 @@ def _pct(score: float) -> str:
     return f"{int(round(score))}%"
 
 
-def _signed_pct(pct_change: float | None) -> str:
-    """A metric's step as a signed percentage. ``pct_change`` is a fraction on
-    :class:`MetricVerdict`, matching the report's own formatting."""
+def _change_cell(pct_change: float | None) -> str:
+    """A metric's step as a signed percentage with a direction marker.
+    ``pct_change`` is a fraction on :class:`MetricVerdict`, matching the
+    report's own formatting. Both arrows are red on purpose: whichever way a
+    confirmed regression moved, it moved the wrong way."""
     if pct_change is None or not math.isfinite(pct_change):
         return "—"
-    return f"{pct_change:+.1%}"
+    arrow = "🔺" if pct_change >= 0 else "🔻"
+    return f"{arrow} **{pct_change:+.1%}**"
+
+
+def _count(n: int, noun: str) -> str:
+    """``3 candidates`` / ``1 candidate`` — every noun this comment counts
+    pluralises with a plain ``s``."""
+    return f"{n} {noun}" + ("" if n == 1 else "s")
 
 
 def _one_line(text: str, limit: int) -> str:

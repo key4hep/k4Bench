@@ -227,6 +227,25 @@ def test_body_states_likelihood_reason_and_disclosure():
     assert "AI-generated PR ranking" in body  # never presented as proof
 
 
+def test_reason_label_does_not_overclaim_when_outranked():
+    # The comment gate is min_score, not "ranked first": a PR at 85% fires even
+    # when another candidate sits at 92% right below it in the others table, so
+    # the label must not call it the *most* likely cause.
+    v = _verdict()
+    outranked = _candidate(score=85.0)
+    top = _candidate(number=1180, repo="key4hep/DD4hep", score=92.0)
+    body = _select(_report(v), _blame([v], [outranked, top]))[0].body
+    assert "judged this PR a likely cause" in body
+    assert "most likely" not in body
+
+
+def test_reason_label_claims_most_likely_only_when_top_ranked():
+    v = _verdict()
+    runner_up = _candidate(number=1180, repo="key4hep/DD4hep", score=22.0)
+    body = _select(_report(v), _blame([v], [_candidate(), runner_up]))[0].body
+    assert "judged this PR the most likely cause" in body
+
+
 def test_body_lists_the_other_candidates_with_their_likelihoods():
     v = _verdict()
     others = [_candidate(), _candidate(number=1180, score=22.0, title="Unrelated cleanup")]
