@@ -288,7 +288,11 @@ def test_ranker_scores_land_on_the_right_candidate(monkeypatch):
     )
     cands = {c.number: c for c in blame.entries[0].candidates}
     assert cands[10].score == 72.0 and cands[10].description == "raises the step count"
-    # A candidate the ranker didn't score keeps its unranked defaults.
+    assert cands[10].ranked
+    # A candidate a partial response left out stays *unranked* — the "no
+    # judgement" state, not a 0/100 the model never gave. Downstream this is
+    # what keeps an unasked pull request from clearing a comment threshold.
+    assert not cands[11].ranked
     assert cands[11].score == 0.0 and cands[11].description == ""
     # The request carried every candidate, each with its transient patch.
     req = ranker.requests[0]

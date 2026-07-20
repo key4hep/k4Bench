@@ -84,12 +84,21 @@ def _report(*verdicts: MetricVerdict, night="2026-07-05", **group_kw) -> Nightly
 
 
 def _candidate(number=1234, repo="key4hep/k4geo", score=91.0, merged="2026-07-04T09:00:00Z",
-               title="Add a per-step material lookup") -> CandidatePR:
+               title="Add a per-step material lookup", ranked=True) -> CandidatePR:
+    """A candidate the first pass judged, unless *ranked* says otherwise.
+
+    ``ranked=False`` is the unjudged state — a partial ranking response left this
+    PR out — and carries no score at all, whatever ``score`` says; the builder
+    only ever writes one alongside a judgement."""
     return CandidatePR(
         repo=repo, number=number, title=title, author="alice",
         url=f"https://github.com/{repo}/pull/{number}", merged_at=merged,
         files=("src/a.cpp",), additions=40, deletions=2,
-        score=score, description="Adds a lookup on the hot path of every step.",
+        score=score if ranked else 0.0,
+        description=(
+            "Adds a lookup on the hot path of every step." if ranked else ""
+        ),
+        ranked=ranked,
     )
 
 
@@ -546,8 +555,8 @@ def test_the_review_is_shown_the_diffs_the_release_and_the_competing_field():
     ]
     assert request.competitors[0].patch == "diff of key4hep/DD4hep#1180"
     assert request.competitors[0].scope_score == 64.0
-    assert [p.package for p in request.packages] == ["k4geo"]
-    assert request.n_unchanged == 18
+    assert [p.package for p in request.packages_by_platform[_PLAT]] == ["k4geo"]
+    assert request.unchanged_by_platform == {_PLAT: 18}
     assert fetched == [("key4hep/k4geo", 1234), ("key4hep/DD4hep", 1180)]
 
 
@@ -640,15 +649,50 @@ def test_the_urls_live_in_reference_definitions_not_in_the_rows():
     assert body.count(f"]: {_DASH}") == 30      # 5 visible + 25 folded, no more
 
 
-def test_the_platform_column_appears_only_when_platforms_differ():
+def test_the_table_hides_the_platform_column_while_one_platform_is_built():
+    # Presentation policy, not a data model: the suite builds on one platform,
+    # so a column repeating one slug down every row is noise. The column stays
+    # off even for a window that *does* span platforms — the switch is a
+    # decision, never a function of tonight's data.
     one = _verdict(detector="ALLEGRO_o1_v03")
     body = _comments(_report(one), _blame([one], [_candidate()]))[0].body
     assert "| Platform |" not in body
 
     other = _verdict(detector="ALLEGRO_o1_v03", platform="x86_64-almalinux9-gcc14.2.0-dbg")
     body = _comments(_report(one, other), _blame([one, other], [_candidate()]))[0].body
-    assert "| Platform |" in body
-    assert "debug" in body and "optimized" in body
+    assert "| Platform |" not in body
+
+
+def test_platform_stays_part_of_row_identity_under_the_hidden_column():
+    # Two rows identical but for the platform: both survive collection, both
+    # get their own fact id and their own dashboard link, and both reach the
+    # review — none of which the table's rendering has any say over.
+    dbg = "x86_64-almalinux9-gcc14.2.0-dbg"
+    opt = _verdict(platform=_PLAT)
+    debug = _verdict(platform=dbg)
+    attributor = _FakeAttributor({"r1": 90.0, "r2": 90.0})
+    comment = _comments(
+        _report(opt, debug), _blame([opt, debug], [_candidate()]),
+        attributor=attributor,
+    )[0]
+    facts = attributor.requests[0].regressions
+    assert len(facts) == 2
+    assert len({f.id for f in facts}) == 2
+    assert {f.platform for f in facts} == {_PLAT, dbg}
+    # Both platforms' links are in the body, distinguishable, though no cell
+    # names a platform.
+    assert f"platform={_PLAT}" in comment.body and f"platform={dbg}" in comment.body
+
+
+def test_the_digest_separates_two_rows_that_differ_only_by_platform():
+    dbg = "x86_64-almalinux9-gcc14.2.0-dbg"
+    opt = _verdict(platform=_PLAT)
+    debug = _verdict(platform=dbg)
+    one = _comments(_report(opt), _blame([opt], [_candidate()]))[0]
+    both = _comments(
+        _report(opt, debug), _blame([opt, debug], [_candidate()])
+    )[0]
+    assert one.facts_digest != both.facts_digest
 
 
 def _entry_with(verdict, packages, *, n_unchanged=18) -> BlameEntry:
@@ -686,13 +730,56 @@ def test_a_comment_spanning_platforms_is_shown_every_platforms_package_diff():
     attributor = _FakeAttributor({"r1": 90.0, "r2": 90.0})
     _comments(_report(opt, debug), blame, attributor=attributor)
     request = attributor.requests[0]
-    assert sorted(p.package for p in request.packages) == ["DD4hep", "k4geo"]
-    # The one only the debug build recorded says so; the shared one does not.
-    facts = {p.package: p.platforms for p in request.packages}
-    assert facts["DD4hep"] == (dbg,) and facts["k4geo"] == ()
-    # The unchanged claim is the one that holds on both platforms.
-    assert request.n_unchanged == 17
-    assert "recorded on x86_64-almalinux9-gcc14.2.0-dbg only" in build_user_prompt(request)
+    # Each platform keeps its own diff against its own denominator. A union
+    # paired with one unchanged count would quote "3 of 20 tracked" — a ratio
+    # neither platform measured.
+    assert [p.package for p in request.packages_by_platform[_PLAT]] == ["k4geo"]
+    assert [p.package for p in request.packages_by_platform[dbg]] == ["DD4hep", "k4geo"]
+    assert request.unchanged_by_platform == {_PLAT: 18, dbg: 17}
+    prompt = build_user_prompt(request)
+    assert f"release window on {_PLAT} (1 of 19 tracked)" in prompt
+    assert f"release window on {dbg} (2 of 19 tracked)" in prompt
+
+
+def test_one_packages_status_can_differ_between_platforms():
+    # The same package ADDED on one platform and CHANGED on another is two
+    # different events, and merging them would erase which build saw which.
+    dbg = "x86_64-almalinux9-gcc14.2.0-dbg"
+    opt = _verdict(platform=_PLAT)
+    debug = _verdict(platform=dbg)
+    entry = _entry_with(opt, ["k4geo"])
+    added = replace(
+        _entry_with(debug, ["k4geo"]),
+        repos=(replace(_entry_with(debug, ["k4geo"]).repos[0], status="ADDED"),),
+    )
+    blame = BlameReport(
+        generated_at="x", report_night="2026-07-05", entries=(entry, added),
+    )
+    attributor = _FakeAttributor({"r1": 90.0, "r2": 90.0})
+    _comments(_report(opt, debug), blame, attributor=attributor)
+    request = attributor.requests[0]
+    assert [(p.package, p.status) for p in request.packages_by_platform[_PLAT]] == [
+        ("k4geo", "CHANGED"),
+    ]
+    assert [(p.package, p.status) for p in request.packages_by_platform[dbg]] == [
+        ("k4geo", "ADDED"),
+    ]
+    assert "- k4geo [ADDED]" in build_user_prompt(request)
+
+
+def test_a_window_spanning_platforms_links_each_platforms_package_diff():
+    # One link labelled "every package that changed" that opens one platform's
+    # view would claim more than the view shows.
+    dbg = "x86_64-almalinux9-gcc14.2.0-dbg"
+    opt = _verdict(platform=_PLAT)
+    debug = _verdict(platform=dbg)
+    body = _comments(_report(opt, debug), _blame([opt, debug], [_candidate()]))[0].body
+    assert body.count("Every package that changed across this window on ") == 2
+    assert f"platform={_PLAT}" in body and f"platform={dbg}" in body
+
+    # One platform keeps the plain sentence.
+    body = _comments(_report(opt), _blame([opt], [_candidate()]))[0].body
+    assert "[Every package that changed across this window](" in body
 
 
 def test_each_row_links_to_its_own_regression_in_the_dashboard():
@@ -1188,3 +1275,348 @@ def test_the_digest_notices_a_change_in_the_competing_field():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
+
+
+# ── Unranked is not zero ──────────────────────────────────────────────────────
+# A partial ranking response leaves some candidates with no judgement at all.
+# That state has to stay distinguishable from an explicit 0/100 everywhere it
+# can decide something: the comment threshold, the prompt, and the table.
+
+def test_an_unranked_candidate_is_never_selected_even_at_min_score_zero():
+    # ``min_score: 0`` is a legal config. It must mean "any judgement, however
+    # low", never "no judgement required" — otherwise every merged PR in an
+    # allowlisted repo gets an accusation on the strength of an opinion nobody
+    # gave.
+    v = _verdict()
+    blame = _blame([v], [_candidate(ranked=False)])
+    assert _plans(_report(v), blame, _policy(min_score=0)) == []
+    # The same candidate, judged at exactly zero, is a real judgement and does
+    # clear a zero threshold.
+    judged = _blame([v], [_candidate(score=0.0, ranked=True)])
+    assert len(_plans(_report(v), judged, _policy(min_score=0))) == 1
+
+
+def test_a_partial_first_pass_leaves_the_omitted_candidate_unranked_in_the_prompt():
+    # The response scored one candidate at 92 and said nothing about the other.
+    # The second pass must be told exactly that — not shown "0/100", which is a
+    # judgement the first pass never made and which would read as the field
+    # having cleared the competitor.
+    v = _verdict()
+    subject = _candidate(number=1234, score=92.0)
+    omitted = _candidate(number=1180, repo="key4hep/DD4hep", ranked=False,
+                         title="Field map")
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(_report(v), _blame([v], [subject, omitted]), attributor=attributor)
+    request = attributor.requests[0]
+    competitor = next(c for c in request.competitors if c.number == 1180)
+    assert competitor.scope_score is None
+    prompt = build_user_prompt(request)
+    assert "not scored by the first pass" in prompt
+    assert "0/100" not in prompt
+
+
+def test_an_unranked_competitor_is_shown_as_unscored_not_as_zero_percent():
+    v = _verdict()
+    body = _comments(_report(v), _blame([v], [
+        _candidate(number=1234, score=92.0),
+        _candidate(number=1180, repo="key4hep/DD4hep", ranked=False, title="Field map"),
+    ]))[0].body
+    row = _row(body, "key4hep/DD4hep#")
+    assert "not scored" in row and "0%" not in row
+
+
+def test_an_unranked_competitor_cannot_make_the_claim_look_uncontested():
+    # "the most likely cause" requires outranking every other candidate. A
+    # candidate nobody scored is not behind this one — it is unknown — so the
+    # claim softens rather than benefiting from the gap.
+    v = _verdict()
+    body = _comments(_report(v), _blame([v], [
+        _candidate(number=1234, score=92.0),
+        _candidate(number=1180, repo="key4hep/DD4hep", ranked=False, title="Field map"),
+    ]))[0].body
+    assert "judged this PR a likely cause" in body
+    assert "most likely" not in body
+    # And no gap is invented against an unscored competitor.
+    assert "separate this PR from the closest other candidate" not in body
+
+
+def test_a_wide_window_keeps_unknown_candidates_in_the_field():
+    # The competitor cap cuts by strength. An unranked candidate has no strength
+    # to be cut by, and must not be discarded as though it had scored zero: it
+    # survives the cap, after the judged ones, and is offered as an alternative.
+    v = _verdict()
+    judged = [
+        _candidate(number=n, repo="key4hep/DD4hep", score=50.0, title=f"PR {n}")
+        for n in range(2000, 2000 + MAX_COMPETITORS - 1)
+    ]
+    unknown = _candidate(number=1180, repo="AIDASoft/edm4hep", ranked=False,
+                         title="Unjudged change")
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(
+        _report(v), _blame([v], [_candidate(score=92.0), *judged, unknown]),
+        attributor=attributor,
+    )
+    competitors = attributor.requests[0].competitors
+    assert len(competitors) == MAX_COMPETITORS
+    assert competitors[-1].number == 1180
+    assert competitors[-1].scope_score is None
+
+
+# ── The second pass sees the whole window ─────────────────────────────────────
+# A comment claims something about a change window. Everything that window
+# confirmed is evidence about that claim, including — especially — the
+# regressions this pull request had nothing to do with.
+
+def _entry_without(verdict, others) -> BlameEntry:
+    """A sidecar entry for *verdict* whose candidate list is exactly *others* —
+    a scope the subject pull request is not a candidate in."""
+    return _blame([verdict], others).entries[0]
+
+
+def test_a_confirmed_row_the_pr_is_not_a_candidate_for_is_still_collected():
+    # ALLEGRO names the PR at 92; IDEA regressed in the same window and the PR
+    # is not in its candidate set at all. That absence is the strongest
+    # exculpatory evidence available, and a collection driven by candidacy
+    # loses the row entirely — it does not resurface as a clean control either,
+    # because IDEA did confirm a step.
+    allegro = _verdict(detector="ALLEGRO_o1_v03")
+    idea = _verdict(detector="IDEA_o1_v03")
+    rival = _candidate(number=77, repo="key4hep/DD4hep", title="Field map")
+    blame = BlameReport("x", "2026-07-05", entries=(
+        _blame([allegro], [_candidate(score=92.0)]).entries[0],
+        _entry_without(idea, [rival]),
+    ))
+    attributor = _FakeAttributor({"r1": 90.0, "r2": 20.0})
+    comments = _comments(_report(allegro, idea), blame, attributor=attributor)
+    request = attributor.requests[0]
+    by_detector = {f.detector: f for f in request.regressions}
+    assert set(by_detector) == {"ALLEGRO_o1_v03", "IDEA_o1_v03"}
+    assert by_detector["ALLEGRO_o1_v03"].scope_state == "ranked"
+    assert by_detector["IDEA_o1_v03"].scope_state == "not_candidate"
+    assert by_detector["IDEA_o1_v03"].scope_score is None
+    # And it is not silently reclassified as a configuration that stayed flat.
+    assert not any(o.detector == "IDEA_o1_v03" for o in request.outcomes)
+    prompt = build_user_prompt(request)
+    assert "NOT among the candidates for this scope" in prompt
+    # The rival from the scope the subject never appeared in is a real
+    # alternative, and is offered as one.
+    assert any(c.number == 77 for c in request.competitors)
+    assert "IDEA_o1_v03" in comments[0].body
+
+
+def test_the_whole_window_is_collected_across_samples():
+    one = _verdict(sample="single_e-_10GeV")
+    other = _verdict(sample="p8_ee_Zbb_ecm91")
+    blame = BlameReport("x", "2026-07-05", entries=(
+        _blame([one], [_candidate(score=92.0)]).entries[0],
+        _entry_without(other, [_candidate(number=77, repo="key4hep/DD4hep")]),
+    ))
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(_report(one, other), blame, attributor=attributor)
+    facts = attributor.requests[0].regressions
+    assert {f.sample for f in facts} == {"single_e-_10GeV", "p8_ee_Zbb_ecm91"}
+    assert {f.scope_state for f in facts} == {"ranked", "not_candidate"}
+
+
+def test_the_whole_window_is_collected_across_platforms():
+    # Package provenance is per platform, so a PR can be a candidate on one
+    # build and absent from the other's changed-package set entirely. Platform
+    # is a scope dimension like any other: the row still counts.
+    dbg = "x86_64-almalinux9-gcc14.2.0-dbg"
+    opt = _verdict(platform=_PLAT)
+    debug = _verdict(platform=dbg)
+    blame = BlameReport("x", "2026-07-05", entries=(
+        _blame([opt], [_candidate(score=92.0)]).entries[0],
+        _entry_without(debug, [_candidate(number=77, repo="key4hep/DD4hep")]),
+    ))
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(_report(opt, debug), blame, attributor=attributor)
+    facts = {f.platform: f for f in attributor.requests[0].regressions}
+    assert set(facts) == {_PLAT, dbg}
+    assert facts[_PLAT].scope_state == "ranked"
+    assert facts[dbg].scope_state == "not_candidate"
+
+
+def test_a_row_whose_discovery_was_incomplete_is_carried_as_unknown():
+    # A truncated or unavailable candidate search means absence proves nothing.
+    # The row is neither dropped (it confirmed a step in this window) nor read
+    # as exculpatory — it is stated as the unknown it is.
+    allegro = _verdict(detector="ALLEGRO_o1_v03")
+    idea = _verdict(detector="IDEA_o1_v03")
+    blame = BlameReport("x", "2026-07-05", entries=(
+        _blame([allegro], [_candidate(score=92.0)]).entries[0],
+        _blame([idea], [_candidate(score=92.0)], truncated=True).entries[0],
+    ))
+    attributor = _FakeAttributor({"r1": 90.0})
+    comments = _comments(_report(allegro, idea), blame, attributor=attributor)
+    request = attributor.requests[0]
+    by_detector = {f.detector: f for f in request.regressions}
+    assert by_detector["IDEA_o1_v03"].scope_state == "discovery_incomplete"
+    assert by_detector["IDEA_o1_v03"].scope_score is None
+    prompt = build_user_prompt(request)
+    assert "Candidate discovery for this scope was incomplete" in prompt
+    # An incomplete scope elsewhere does not silence a comment whose own
+    # accusation rests on a complete, ranked scope — but it never lends it
+    # support either.
+    assert len(comments) == 1
+
+
+def test_an_incomplete_scope_still_cannot_produce_a_comment_of_its_own():
+    # The selection gate is unchanged: a partial candidate set may contribute
+    # context to someone else's comment, never an accusation of its own.
+    v = _verdict()
+    blame = _blame([v], [_candidate(score=99.0)], truncated=True)
+    assert _plans(_report(v), blame) == []
+
+
+def test_a_regression_with_no_sidecar_entry_is_not_read_as_absence():
+    # No entry means no candidate population was ever established (missing
+    # provenance, an unattributable window). Absence from a set that does not
+    # exist is not evidence.
+    allegro = _verdict(detector="ALLEGRO_o1_v03")
+    idea = _verdict(detector="IDEA_o1_v03")
+    blame = _blame([allegro], [_candidate(score=92.0)])
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(_report(allegro, idea), blame, attributor=attributor)
+    facts = {f.detector: f for f in attributor.requests[0].regressions}
+    assert facts["IDEA_o1_v03"].scope_state == "discovery_incomplete"
+
+
+def test_an_unscored_row_renders_as_unscored_rather_than_zero_percent():
+    allegro = _verdict(detector="ALLEGRO_o1_v03")
+    idea = _verdict(detector="IDEA_o1_v03")
+    blame = BlameReport("x", "2026-07-05", entries=(
+        _blame([allegro], [_candidate(score=92.0)]).entries[0],
+        _entry_without(idea, [_candidate(number=77, repo="key4hep/DD4hep")]),
+    ))
+    body = _comments(_report(allegro, idea), blame)[0].body
+    # The row says *why* there is no number, since that reason argues for the
+    # reader: this change is not in the range behind that regression.
+    attribution_cell = _row(body, "IDEA_o1_v03").rsplit("|", 2)[1].strip()
+    assert attribution_cell == "_not a candidate_"
+    assert "92%" in _row(body, "ALLEGRO_o1_v03")
+    # The claim leads the table; the unscored evidence follows it.
+    rows = _table_rows(body)
+    assert "ALLEGRO_o1_v03" in rows[0] and "IDEA_o1_v03" in rows[1]
+
+
+# ── The facts digest covers the deterministic evidence ────────────────────────
+# An edit re-notifies everyone watching a pull request, so the digest excludes
+# everything a model re-rolls each night. That exclusion is only safe if it does
+# not also exclude *measurements*: a comment written when IDEA had no result
+# reads differently once IDEA delivers a clean one, and nothing else would ever
+# bring the standing comment up to date.
+
+def _digest(report, blame, **kw) -> str:
+    return _comments(report, blame, **kw)[0].facts_digest
+
+
+def test_the_digest_changes_when_a_clean_control_appears():
+    v = _verdict()
+    blame = _blame([v], [_candidate()])
+    without = _digest(_report(v), blame)
+    # A second configuration measured the same release and stayed flat. That
+    # weakens the attribution, the review is shown it, and the comment's
+    # reasoning changes with it.
+    clean = _verdict(detector="IDEA_o1_v03", severity=Severity.OK)
+    with_control = _digest(_report(v, clean), blame)
+    assert without != with_control
+
+
+def test_the_digest_changes_when_a_clean_control_becomes_a_watch():
+    # "IDEA did not move" and "IDEA moved but not enough to confirm" point at
+    # different mechanisms; the comment must not keep saying the first one.
+    v = _verdict()
+    blame = _blame([v], [_candidate()])
+    clean = _verdict(detector="IDEA_o1_v03", severity=Severity.OK)
+    watch = _verdict(detector="IDEA_o1_v03", severity=Severity.WATCH)
+    assert _digest(_report(v, clean), blame) != _digest(_report(v, watch), blame)
+
+
+def test_the_digest_changes_when_a_controls_coverage_changes():
+    # A control that could read only half its metrics is weaker evidence than
+    # one that read them all, and the prompt says so — so a change in that
+    # count is a change in the comment's basis.
+    v = _verdict()
+    blame = _blame([v], [_candidate()])
+    clean = _verdict(detector="IDEA_o1_v03", severity=Severity.OK)
+    unjudged = _verdict(detector="IDEA_o1_v03", metric="peak_rss_mb",
+                        severity=Severity.UNKNOWN)
+    assert _digest(_report(v, clean), blame) != _digest(
+        _report(v, clean, unjudged), blame
+    )
+
+
+def test_the_digest_changes_when_the_package_facts_change():
+    v = _verdict()
+    one = _blame([v], [_candidate()])
+    fewer_unchanged = BlameReport("x", "2026-07-05", entries=(
+        replace(one.entries[0], n_unchanged=4),
+    ))
+    assert _digest(_report(v), one) != _digest(_report(v), fewer_unchanged)
+
+    added = BlameReport("x", "2026-07-05", entries=(
+        _entry_with(v, ["k4geo", "DD4hep"]),
+    ))
+    assert _digest(_report(v), one) != _digest(_report(v), added)
+
+
+def test_the_digest_changes_when_a_candidate_becomes_scored():
+    # Whether a candidate was judged *at all* is displayed ("not scored" vs a
+    # percentage) and shapes the prompt, so it belongs in the digest — unlike
+    # the score itself, which drifts.
+    v = _verdict()
+    unranked = _blame([v], [
+        _candidate(score=92.0),
+        _candidate(number=1180, repo="key4hep/DD4hep", ranked=False),
+    ])
+    ranked = _blame([v], [
+        _candidate(score=92.0),
+        _candidate(number=1180, repo="key4hep/DD4hep", score=40.0, ranked=True),
+    ])
+    assert _digest(_report(v), unranked) != _digest(_report(v), ranked)
+
+
+def test_the_digest_changes_when_the_subjects_standing_in_a_scope_changes():
+    allegro = _verdict(detector="ALLEGRO_o1_v03")
+    idea = _verdict(detector="IDEA_o1_v03")
+    absent = BlameReport("x", "2026-07-05", entries=(
+        _blame([allegro], [_candidate(score=92.0)]).entries[0],
+        _entry_without(idea, [_candidate(number=77, repo="key4hep/DD4hep")]),
+    ))
+    present = _blame_of((allegro, [_candidate(score=92.0)]),
+                        (idea, [_candidate(score=20.0)]))
+    report = _report(allegro, idea)
+    assert _digest(report, absent) != _digest(report, present)
+
+
+def test_stable_deterministic_evidence_produces_no_new_digest():
+    # The steady state: same measurements two nights running, however the models
+    # word themselves. Anything else here would edit a standing comment nightly.
+    v = _verdict()
+    blame = _blame([v], [_candidate()])
+    clean = _verdict(detector="IDEA_o1_v03", severity=Severity.OK)
+    first = _digest(_report(v, clean), blame,
+                    attributor=_FakeAttributor({"r1": 91.0}, summary="One reading."))
+    second = _digest(_report(v, clean), blame,
+                     attributor=_FakeAttributor({"r1": 84.0}, summary="Quite another."))
+    assert first == second
+
+
+def test_a_review_cannot_pin_a_claim_on_a_scope_the_pr_is_absent_from():
+    # The review is free to revise the rows it was asked about — but "this PR is
+    # not in the commit range behind that regression" is a measurement, not an
+    # opinion, and it outranks a stray high score on that row. Otherwise a
+    # review that acquitted the PR everywhere it *was* a candidate could keep
+    # the comment alive on a scope it provably cannot have shipped in.
+    allegro = _verdict(detector="ALLEGRO_o1_v03")
+    idea = _verdict(detector="IDEA_o1_v03")
+    blame = BlameReport("x", "2026-07-05", entries=(
+        _blame([allegro], [_candidate(score=92.0)]).entries[0],
+        _entry_without(idea, [_candidate(number=77, repo="key4hep/DD4hep")]),
+    ))
+    ids = {"ALLEGRO_o1_v03": "r1", "IDEA_o1_v03": "r2"}
+    attributor = _FakeAttributor({ids["ALLEGRO_o1_v03"]: 10.0,
+                                  ids["IDEA_o1_v03"]: 95.0})
+    comments = _comments(_report(allegro, idea), blame, attributor=attributor)
+    assert comments == []

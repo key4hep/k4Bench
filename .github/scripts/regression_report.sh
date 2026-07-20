@@ -40,6 +40,15 @@
 
 set -euo pipefail
 
+# The one credential here that can write outside this repository is taken out of
+# the environment immediately and held in a shell variable, so it is exported to
+# exactly one process — the comment CLI in step 5c — and to nothing else. Every
+# `pip install`, every `dnf`, every subprocess of the report build below then
+# runs without it in scope. A write token has no business being readable by a
+# package index's install hooks.
+PR_COMMENT_TOKEN="${K4BENCH_PR_COMMENT_TOKEN:-}"
+unset K4BENCH_PR_COMMENT_TOKEN
+
 # Personal EOS area (same as nightly_benchmark.sh).
 EOS_FQDN="eosuser.cern.ch"
 EOS_ROOT="/eos/user/j/jbeirer/k4bench"
@@ -68,6 +77,14 @@ fi
 cvmfs-venv py-venv
 . py-venv/bin/activate
 pip install --no-build-isolation --quiet "."
+# PyYAML is not a k4bench dependency (the package stays free of one on purpose —
+# see blame_comment.py) but step 5c's CLI needs it to read the comment
+# allowlist. Installed here, with the report still unbuilt and the write token
+# already out of the environment: publishing must not depend on a package index
+# being reachable at the moment it posts. A failure costs only the comments —
+# hence the `||` — never the report or the e-group email.
+pip install --quiet "pyyaml>=6.0,<6.1" \
+  || echo "PyYAML install failed — step 5c's pull-request comments will be skipped." >&2
 echo "::endgroup::"
 
 # ── 4. Build the report ───────────────────────────────────────────────────────
@@ -151,22 +168,19 @@ echo "::endgroup::"
 echo "::group::5c. Pull-request comments"
 if [[ -f report/blame.json ]]; then
     {
-        # PyYAML is installed here rather than as a k4bench dependency (see
-        # blame_comment.py's module docstring: the package stays free of a
-        # YAML dependency on purpose) — so the install and the CLI it feeds
-        # must share one wall-clock budget. Running both inside the `timeout`
-        # subshell means a stuck package-index connection is bounded exactly
-        # like a stuck CLI, and neither can hold up the e-group email above.
-        timeout --signal=TERM --kill-after=30s "${K4BENCH_PR_COMMENT_TIMEOUT:-15m}" \
-          bash -c '
-            pip install --quiet "pyyaml>=6.0,<6.1" &&
+        # The write token enters exactly one process, here, and only for the
+        # length of this call: its dependencies were installed in step 3, with
+        # it out of scope, so nothing between a package index and this token
+        # ever shares an environment. `env` also keeps it out of the shell's
+        # exported set afterwards.
+        env K4BENCH_PR_COMMENT_TOKEN="${PR_COMMENT_TOKEN}" \
+          timeout --signal=TERM --kill-after=30s "${K4BENCH_PR_COMMENT_TIMEOUT:-15m}" \
             python .github/scripts/blame_comment.py \
               --report report/report.json \
               --blame report/blame.json \
               --config .github/blame-comments.yml \
-              --dashboard-url "${K4BENCH_DASHBOARD_URL:-https://k4bench-dashboard.app.cern.ch}"
-          ' \
-          || echo "No pull-request comments this night (nothing attributed confidently, no enabled repo, PyYAML install failed, timeout, or a failed write)." >&2
+              --dashboard-url "${K4BENCH_DASHBOARD_URL:-https://k4bench-dashboard.app.cern.ch}" \
+          || echo "No pull-request comments this night (nothing attributed confidently, no enabled repo, missing PyYAML, timeout, or a failed write)." >&2
     } || echo "Pull-request comments step failed (best-effort; the report and email are unaffected)." >&2
 else
     echo "No blame sidecar this night — no pull request to comment on."

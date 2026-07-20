@@ -48,6 +48,12 @@ from k4bench.blame.github import (
 
 _log = logging.getLogger(__name__)
 
+#: GitHub's hard limit on an issue-comment body, in bytes. Over it the write is
+#: rejected outright rather than truncated, so the final body is measured here —
+#: the renderer's row caps are sized to stay well clear, and a body that reaches
+#: this is a bug worth naming rather than a 422 to decode after the fact.
+_MAX_COMMENT_BYTES = 65536
+
 
 @dataclass
 class PublishResult:
@@ -92,7 +98,25 @@ def publish(
     # ownership — but it is a soft failure, recorded, never raised.
     login = None
     if not dry_run:
-        login = authenticated_login(client)
+        try:
+            login = authenticated_login(client)
+        except RateLimitError:
+            # The one failure that aborts the run, here as everywhere else:
+            # nothing after this point can succeed.
+            raise
+        except Exception as exc:  # noqa: BLE001 — identity failures must fail closed
+            # A timeout, a connection reset, a proxy's HTML error page: the
+            # function returns ``None`` for a *read* it understood, and raises
+            # for one it never completed. Both mean the same thing here — the
+            # bot cannot prove what it owns — and neither may escape a publisher
+            # whose contract is that only a rate limit stops the run.
+            _log.error(
+                "publish: could not establish the bot's own login (GET /user "
+                "raised %s: %s) — refusing to edit comments it cannot prove it "
+                "owns; posting nothing", type(exc).__name__, exc,
+            )
+            result.failed.extend(c.target for c in comments)
+            return result
         if login is None:
             _log.error(
                 "publish: could not establish the bot's own login (GET /user) — "
@@ -131,13 +155,30 @@ def _upsert(
     A comment counts as the bot's own only when its *first line* is the marker
     (the shape :func:`~k4bench.blame.comment._render` always produces) **and** it
     was written by *login* — a marker quoted inside someone else's comment
-    matches neither test, so it cannot divert the edit.
+    matches neither test, so it cannot divert the edit. Finding *several* is a
+    broken invariant rather than a choice to make: the pull request is skipped
+    and the duplicate ids logged, since editing one of them would leave the rest
+    standing with reasoning nobody updates.
 
     Whether it needs rewriting is decided on the hidden facts digest
     (:func:`~k4bench.blame.comment.facts_digest_of`) rather than the body, so a
-    freshly-worded summary of the same regressions is left alone. A comment from
-    before digests existed carries none; those fall back to comparing bodies and
-    so take one upgrade edit, once."""
+    freshly-worded summary of the same regressions is left alone. Every comment
+    this module writes carries one; a standing comment whose digest line cannot
+    be read falls back to comparing whole bodies, which errs towards an edit
+    rather than towards leaving a stale body in place."""
+    if len(comment.body.encode()) > _MAX_COMMENT_BYTES:
+        # The renderer's caps are meant to keep every body well inside this, so
+        # reaching it means a cap was mis-sized. GitHub would reject the write
+        # anyway; failing here names the comment and the size in our own log
+        # instead of leaving an opaque 422 to be read backwards.
+        _log.warning(
+            "publish: %s's body is %d bytes, over GitHub's %d-byte comment "
+            "limit — not written", comment.target,
+            len(comment.body.encode()), _MAX_COMMENT_BYTES,
+        )
+        result.failed.append(comment.target)
+        return
+
     existing = list_issue_comments(client, comment.repo, comment.number)
     if existing is None:
         _log.warning(
@@ -148,14 +189,25 @@ def _upsert(
         return
 
     marker_line = comment.marker + "\n"
-    mine = next(
-        (
-            c for c in existing
-            if c.body.startswith(marker_line) and c.author == login
-        ),
-        None,
-    )
-    if mine is None:
+    mine = [
+        c for c in existing
+        if c.body.startswith(marker_line) and c.author == login
+    ]
+    if len(mine) > 1:
+        # Two comments the bot owns for one window: the upsert's identity
+        # assumption is broken, and editing an arbitrary one leaves the other
+        # standing with stale reasoning. Neither writing nor guessing is safe,
+        # so the pull request is skipped and the duplicates are named for a
+        # human to remove.
+        _log.error(
+            "publish: %s carries %d comments with this window's marker "
+            "(ids %s) — editing an arbitrary one would leave the others "
+            "stale; skipping",
+            comment.target, len(mine), ", ".join(str(c.id) for c in mine),
+        )
+        result.failed.append(comment.target)
+        return
+    if not mine:
         url = create_issue_comment(client, comment.repo, comment.number, comment.body)
         if url is None:
             result.failed.append(comment.target)
@@ -164,17 +216,20 @@ def _upsert(
         result.created.append(comment.target)
         return
 
-    posted_digest = facts_digest_of(mine.body)
+    existing_comment = mine[0]
+    posted_digest = facts_digest_of(existing_comment.body)
     if (
         posted_digest == comment.facts_digest
         if posted_digest and comment.facts_digest
-        else mine.body == comment.body
+        else existing_comment.body == comment.body
     ):
         _log.info("publish: %s already says this — no edit", comment.target)
         result.unchanged.append(comment.target)
         return
 
-    url = update_issue_comment(client, comment.repo, mine.id, comment.body)
+    url = update_issue_comment(
+        client, comment.repo, existing_comment.id, comment.body
+    )
     if url is None:
         result.failed.append(comment.target)
         return

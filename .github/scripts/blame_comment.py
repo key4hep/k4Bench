@@ -61,20 +61,26 @@ _log = logging.getLogger(__name__)
 def _load_policy(path: Path, overrides: dict):
     """The comment policy from *path*, with any CLI *overrides* applied.
 
-    A missing file is an empty policy — the bot is off; a malformed one raises,
-    because a config that cannot be read must never be guessed at — see
-    :class:`k4bench.blame.comment.CommentConfigError`.
+    A missing file is an empty policy — the bot is off; a malformed or unreadable
+    one raises :class:`~k4bench.blame.comment.CommentConfigError`, because a
+    config that cannot be read must never be guessed at. Unparseable YAML and an
+    unreadable file are the same answer as a bad value — *we do not know where
+    this bot may write* — so they arrive as that one error rather than as a
+    traceback the CI log makes someone decode.
     """
     import yaml
 
-    from k4bench.blame.comment import CommentPolicy
+    from k4bench.blame.comment import CommentConfigError, CommentPolicy
 
     data = {}
     if path.is_file():
         # An empty file (``safe_load`` → None) is an empty policy; a falsey but
         # present document (``false``, ``0``) is malformed and must reach
         # ``from_config`` to be rejected, not be quietly turned into ``{}``.
-        loaded = yaml.safe_load(path.read_text())
+        try:
+            loaded = yaml.safe_load(path.read_text())
+        except (yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
+            raise CommentConfigError(f"could not read {path}: {exc}") from exc
         if loaded is not None:
             data = loaded
     else:
@@ -93,20 +99,35 @@ def _patch_source(token: str | None):
     degrades on (the pull request still appears with its paths, its size and the
     per-configuration reason); it never raises, because a missing diff must not
     cost the comment.
+
+    A rate limit *latches*: it is a statement about the whole token budget, not
+    about one pull request, so every later fetch skips the call rather than
+    spending a round trip on an answer already known — the same rule
+    :func:`k4bench.blame.builder._resolve` follows during the nightly build.
     """
-    from k4bench.blame.github import GitHubClient, fetch_pr
+    from k4bench.blame.github import GitHubClient, RateLimitError, fetch_pr
 
     client = GitHubClient(token=token)
     cache: dict[tuple[str, int], str] = {}
+    state = {"rate_limited": False}
 
     def patch_for(repo: str, number: int) -> str:
         key = (repo.lower(), number)
         if key not in cache:
             patch = ""
+            if state["rate_limited"]:
+                return ""
             try:
                 fetched = fetch_pr(client, repo, number)
                 if fetched is not None:
                     patch = fetched[1]
+            except RateLimitError as exc:
+                state["rate_limited"] = True
+                _log.warning(
+                    "blame_comment: GitHub rate limit (%s) — the review runs on "
+                    "paths and titles from here on", exc,
+                )
+                return ""
             except Exception as exc:  # noqa: BLE001 — best-effort input, never fatal
                 _log.warning("blame_comment: no diff for %s#%s (%s)", repo, number, exc)
             cache[key] = patch
@@ -197,11 +218,32 @@ def main(argv: list[str] | None = None) -> int:
         print(f"No repositories enabled in {args.config}: nothing to comment on")
         return 0
 
-    report = from_json(json.loads(report_path.read_text()))
+    # Both files are read at a boundary this script does not control: they are
+    # produced by earlier steps that are themselves best-effort. A truncated
+    # upload or a half-written file is an expected failure of *this* step, so it
+    # is reported as one line naming the file, not as a traceback.
+    try:
+        report = from_json(json.loads(report_path.read_text()))
+    except (OSError, UnicodeDecodeError, ValueError, TypeError, KeyError) as exc:
+        print(f"ERROR: unreadable report {report_path}: {exc}", file=sys.stderr)
+        return 1
     try:
         blame = BlameReport.from_json(json.loads(blame_path.read_text()))
-    except (BlameSchemaError, ValueError) as exc:
+    except (BlameSchemaError, OSError, UnicodeDecodeError, ValueError) as exc:
         print(f"ERROR: unreadable blame sidecar {blame_path}: {exc}", file=sys.stderr)
+        return 1
+
+    if blame.report_night and blame.report_night != report.report_night:
+        # The sidecar's rankings are only meaningful against the report they
+        # were built from. A mismatch means one of the two is left over from an
+        # earlier run, and commenting off a stale pairing is exactly the kind of
+        # wrong-but-confident claim this bot must not make.
+        print(
+            f"ERROR: blame sidecar is for {blame.report_night} but the report is "
+            f"for {report.report_night or 'no night'}: refusing to comment off a "
+            "mismatched pair",
+            file=sys.stderr,
+        )
         return 1
 
     night = blame.report_night or "no data"

@@ -64,10 +64,19 @@ class CandidatePR:
     one-line "why") are the **ranker's** output. Several PRs can land in one
     package's commit range, so each is scored independently — the ranker judges
     every candidate of a regression together and assigns each its own
-    likelihood. Both are empty on a candidate the ranker has not judged —
-    ``score`` 0.0, ``description`` ""; the pipeline collects every PR in the
-    window first and the ranking stage fills these in, so an unranked candidate
-    is a PR awaiting judgement, not one ruled out.
+    likelihood.
+
+    ``ranked`` says whether that judgement exists at all, and is the field every
+    consumer must read before ``score`` means anything. The pipeline collects
+    every PR in the window first and the ranking stage fills the judgement in,
+    but a ranking response can be *partial* (see
+    :meth:`k4bench.blame.rank.OpenAICompatRanker.rank`) — so a candidate can
+    reach the sidecar with no judgement at all. ``ranked=False`` is that state:
+    *no model opinion*, which is emphatically not the same evidence as an
+    explicit ``score=0.0`` (a PR the model looked at and ruled out). Collapsing
+    the two would turn "we never asked" into "we asked and it said no", and
+    downstream — the comment bot's threshold, the second pass's prior — that
+    difference decides whether someone's pull request is publicly accused.
     """
 
     repo: str  # "owner/repo" slug on GitHub
@@ -79,8 +88,11 @@ class CandidatePR:
     files: tuple[str, ...] = ()
     additions: int = 0
     deletions: int = 0
+    #: Only meaningful when :attr:`ranked`; 0.0 on an unranked candidate is a
+    #: placeholder, never a judgement.
     score: float = 0.0
     description: str = ""
+    ranked: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -95,6 +107,7 @@ class CandidatePR:
             "deletions": self.deletions,
             "score": self.score,
             "description": self.description,
+            "ranked": self.ranked,
         }
 
     @classmethod
@@ -117,6 +130,10 @@ class CandidatePR:
             deletions=int(d.get("deletions") or 0),
             score=score if math.isfinite(score) else 0.0,
             description=str(d.get("description") or ""),
+            # Absent ⇒ unranked, which is the fail-closed reading: a sidecar
+            # that does not record a judgement has not made one, and nothing
+            # downstream may treat its ``score`` as though it had.
+            ranked=bool(d.get("ranked", False)),
         )
 
 
@@ -213,9 +230,14 @@ class BlameEntry:
     def candidates(self) -> list[CandidatePR]:
         """Every candidate PR across the changed repos, worst-first (highest
         score, then repo/number for a stable order) — the flat ledger the UI and
-        the email render."""
+        the email render.
+
+        Judged candidates come first as a block: an unranked one carries no
+        likelihood at all, so it cannot be placed *among* the scores without
+        implying one. It sorts after them rather than at the 0% end, where it
+        would read as the model's weakest pick."""
         flat = [c for r in self.repos for c in r.candidates]
-        return sorted(flat, key=lambda c: (-c.score, c.repo, c.number))
+        return sorted(flat, key=lambda c: (not c.ranked, -c.score, c.repo, c.number))
 
     @property
     def discovery_incomplete(self) -> bool:
@@ -322,9 +344,9 @@ def ranking_coverage(blame: BlameReport) -> tuple[int, int, list[str]]:
     leaves those unranked (a partial candidate set must not produce a "most
     likely" claim), so they are exempt rather than counted as failures.
 
-    A zero score with a non-empty explanation is a valid ranking. An empty
-    description is incomplete regardless of score: the contract asks the model
-    to explain every judgement, including why a PR is unlikely.
+    A zero score with a non-empty explanation is a valid ranking — it is
+    :attr:`CandidatePR.ranked` that decides, never the score, precisely so an
+    explicit 0/100 counts as the judgement it is.
     """
     expected: set[tuple] = set()
     ranked: set[tuple] = set()
@@ -334,7 +356,7 @@ def ranking_coverage(blame: BlameReport) -> tuple[int, int, list[str]]:
         for candidate in entry.candidates:
             key = (*entry.key, candidate.repo, candidate.number)
             expected.add(key)
-            if candidate.description:
+            if candidate.ranked:
                 ranked.add(key)
     missing = sorted({f"{key[-2]}#{key[-1]}" for key in expected - ranked})
     return len(ranked), len(expected), missing

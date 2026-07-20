@@ -42,11 +42,22 @@ likelihood per regression and the narrative the comment quotes.
 
 "Everything" is meant literally, and both halves of it are load-bearing:
 
-- Every regression the pull request was a *candidate* for is in the request,
-  including the ones the first pass scored badly. A PR that scored 92 on ALLEGRO
-  and 30 on IDEA in the same window is a PR whose reach the IDEA row bounds;
-  filtering rows by score would show the review the accusation with the
-  exculpatory half removed.
+- **Every** confirmed regression whose onset falls inside the window is in the
+  request — not just the ones the pull request was a candidate for. Each row
+  carries what the first pass knew about the pull request *there*:
+
+    | State | Meaning |
+    |:---|:---|
+    | Scored | It was a candidate in that scope and the first pass rated it. A PR that scored 92 on ALLEGRO and 30 on IDEA is a PR whose reach the IDEA row bounds. |
+    | Not a candidate | The candidate search in that scope was complete and this change was not in it. The strongest exculpatory evidence the pipeline produces — and the row a collection driven by candidacy loses entirely. |
+    | Not scored | It was a candidate, but the first pass returned no judgement about it (a partial response). Unknown, never zero. |
+    | Discovery incomplete | The candidate population there is not known to be complete, so nothing follows from absence. Stated as such rather than dropped. |
+
+    An incomplete scope does *not* suppress the comment: the accusation already
+    requires a complete, scored scope to have cleared the threshold, so a
+    truncated range elsewhere in the stack adds no risk of a false claim — while
+    silencing on it would let one force-pushed branch mute a well-evidenced
+    comment. What is never acceptable is dropping such a scope silently.
 - The negative evidence is identified down to the **benchmark configuration**,
   not the run group. The sharpest control this suite produces lives *inside* a
   group — `baseline` stepped, `without_HCAL` did not, same detector, sample,
@@ -65,12 +76,18 @@ Three rules bound it:
 - **Honest failure.** No model configured, an HTTP error, an unusable reply: the
   comment renders from the per-configuration scores, exactly as it did before
   this pass existed.
-- **Narrowing only.** This pass never *causes* a comment. Selection happens on
-  the first pass's scores, and a review that finds every regression unlikely can
-  only withdraw the comment. The second opinion may acquit, not accuse. The
-  withdrawal is measured on what the table would show — the review's score for
-  the rows it answered, the per-configuration score for the rows it left alone —
-  so a partial reply cannot acquit a pull request on rows it never disputed.
+- **Narrowing at the target level.** This pass never *causes* a comment on a
+  pull request selection did not already implicate: selection happens entirely
+  on the first pass's scores, and the only outcome this pass adds is
+  withdrawal — a review that leaves every regression under `min_score` drops the
+  comment. Inside an already-selected pull request it is a full second opinion,
+  and an individual row's likelihood may come back **higher** as well as lower;
+  the first pass scored that row without ever seeing the other configurations,
+  which is the deficiency this pass exists to correct. What it cannot do is
+  widen the bot's reach. The withdrawal is measured on what the table would
+  show — the review's score for the rows it answered, the per-configuration
+  score for the rows it left alone — so a partial reply cannot acquit a pull
+  request on rows it never disputed.
 - **Untrusted evidence.** PR titles, file paths and diffs are written by the
   authors of the changes under review. Both system prompts say so, and diffs
   arrive fenced between explicit markers: they are artifacts to analyse, never
@@ -90,6 +107,7 @@ being wrong about far less often than it is worth being silent.
 | Gate | Rule |
 |:---|:---|
 | Repository | The candidate's repo is listed in `.github/blame-comments.yml`. An empty list makes the bot inert. |
+| Judged | The ranker actually scored the candidate. An unranked one carries no opinion, and no threshold — not even `min_score: 0` — is cleared by a missing judgement. |
 | Likelihood | The ranker's score is at or above `min_score` (default 80). |
 | Merged | The PR is merged — an open PR cannot have shipped in a release. |
 | Complete discovery | The blame entry's candidate search was complete. Naming one PR out of a knowingly partial set is the overclaim the ranker itself refuses to make. |
@@ -137,7 +155,11 @@ likelihood — ordered by likelihood, the first five visible and the next
 twenty-five folded into a disclosure. Which configurations moved (and, by their
 absence, which did not) is the substance of the claim, so it is one list a reader
 can scan rather than one configuration in full and the others in a footnote. A
-**Platform** column appears only when the window spans more than one. Each
+row nobody scored — a regression this pull request was not even a candidate for —
+says "not scored" rather than 0%, which would claim a judgement no model made.
+There is **no Platform column** while the suite builds on a single platform; that
+is a rendering switch only, and platform remains part of every row's identity,
+of both prompts, of the links and of the digest. Each
 **metric** cell links to that regression pinned in the dashboard's Stack Changes
 view — the metric's own trend and onset, the ranked candidates, and the window's
 package diff in one place, which is what "did my change do this?" actually needs.
@@ -177,9 +199,17 @@ upserts on that marker:
 - **Nothing changed** — no request at all. An edit re-surfaces the comment for
   everyone watching the PR, so it must mean something changed. The body contains
   nothing nightly-varying (no run URL, no report-night parameter), and "changed"
-  is judged on a second hidden line: a digest of the *benchmark facts* — the
-  window, the regressions and how far they moved, and *which* pull requests were
-  in the field. The narrative and every score — the review's likelihoods and the
+  is judged on a second hidden line: a digest of the *benchmark facts*. It covers
+  everything deterministic the comment rests on — the window; every regression
+  row's identity (platform included) and how far it moved; this pull request's
+  standing in each of those scopes; the configurations that measured the window
+  cleanly or stayed under the threshold, with their watched metrics and unjudged
+  counts; the per-platform package diff and unchanged counts; and which pull
+  requests were in the field, with whether each was judged at all. The outcomes
+  matter especially: a comment written while IDEA had no reliable result reads
+  differently once IDEA delivers a clean measurement of the same window, and a
+  digest of the positive rows alone would leave that stale reasoning standing
+  forever. The narrative and every score — the review's likelihoods and the
   ranker's scoring of the competing candidates alike — are model output that
   drifts between nights without anything having happened, so they are
   deliberately left out of it.
@@ -196,7 +226,11 @@ Safety rules on the write path:
   is skipped — a duplicate comment is worse than a missing one.
 - **Edit only our own comment.** A comment is the bot's own only when its first
   line is the marker *and* its author is the token's login. If that login cannot
-  be established, the run fails closed and posts nothing.
+  be established — an empty answer or a failed call alike — the run fails closed:
+  it reads no thread, posts nothing and records every comment as failed.
+- **Duplicates are never guessed at.** If two comments the bot owns carry the
+  same window marker, the pull request is skipped and the duplicate ids logged.
+  Editing one would leave the other standing with reasoning nobody updates.
 - **One failure is one PR's failure.** A repo the token cannot write to does not
   silence the others. Only a rate limit stops the run.
 

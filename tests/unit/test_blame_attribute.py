@@ -105,6 +105,7 @@ def _fact(row_id="r1", detector="ALLEGRO_o1_v03", metric="wall_time_s",
         z_score=kw.pop("z_score", 8.1),
         scope_score=kw.pop("scope_score", 91.0),
         scope_reason=kw.pop("scope_reason", "raises the step count"),
+        scope_state=kw.pop("scope_state", "ranked"),
     )
 
 
@@ -191,13 +192,16 @@ def test_prompt_states_what_measured_the_window_and_did_not_confirm():
 
 def test_prompt_sizes_the_release_diff_by_what_did_not_change():
     prompt = build_user_prompt(_request(
-        packages=(
+        packages_by_platform={_PLATFORM: (
             PackageChangeFact(package="k4geo", status="CHANGED"),
             PackageChangeFact(package="edm4hep", status="ADDED"),
-        ),
-        n_unchanged=18,
+        )},
+        unchanged_by_platform={_PLATFORM: 18},
     ))
     assert "2 of 20 tracked" in prompt
+    # One platform: the sentence stays unqualified, because there is nothing to
+    # tell apart.
+    assert "Packages that changed across the release window (" in prompt
     assert "- k4geo" in prompt
     assert "- edm4hep [ADDED]" in prompt
 

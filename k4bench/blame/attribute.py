@@ -42,18 +42,23 @@ the same and the consequences here are larger:
   had, which is exactly what it did before this stage existed. A degraded comment
   beats a blocked one, and both beat an invented one.
 
-* **Narrowing only.** This pass never causes a comment. Selection happens on the
-  first pass's scores (:mod:`k4bench.blame.comment`), and a review that finds
-  every row unlikely can only *withdraw* the comment, never widen the bot's
-  reach. The second opinion is allowed to acquit, not to accuse.
+* **Narrowing at the target level.** This pass never causes a comment on a pull
+  request selection did not already implicate: selection happens entirely on the
+  first pass's scores (:mod:`k4bench.blame.comment`), and the only *outcome* this
+  pass can add is withdrawal — a review that leaves every row under the threshold
+  drops the comment. Within an already-selected pull request it is a full second
+  opinion: an individual row's likelihood may go up as well as down, because a
+  row the first pass judged blind to the other configurations is exactly what
+  cross-configuration evidence exists to correct. What that cannot do is widen
+  the bot's reach, which is the property being protected.
 """
 
 from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
-from typing import Protocol
+from dataclasses import dataclass, field
+from typing import Literal, Protocol
 
 from k4bench.blame.llm import (
     MAX_OUTPUT_TOKENS,
@@ -77,6 +82,29 @@ _log = logging.getLogger(__name__)
 
 # ── The request/response contract ─────────────────────────────────────────────
 
+#: What the first pass had to say about the reviewed pull request *in one
+#: regression's own scope*. Four states, because they are four different pieces
+#: of evidence and only one of them is a number:
+#:
+#: * ``"ranked"`` — the pull request was a candidate there and the first pass
+#:   scored it. ``scope_score`` carries that score, 0/100 included.
+#: * ``"not_candidate"`` — candidate discovery for that scope was complete and
+#:   the pull request was not in it. Strong *exculpatory* evidence: the change
+#:   is not in the commit range that produced this regression.
+#: * ``"unranked"`` — it was a candidate, but the first pass returned no
+#:   judgement about it (a partial ranking response). Unknown, not zero.
+#: * ``"discovery_incomplete"`` — the candidate population for that scope is not
+#:   known to be complete (a truncated or unavailable range, or no sidecar entry
+#:   at all), so absence proves nothing and presence is not a full field.
+#:
+#: Kept as explicit states rather than folded into a likelihood prior: three of
+#: the four have no honest numeric value, and inventing one — 0 for "we never
+#: asked" above all — is how unknown evidence turns into negative evidence.
+ScopeCandidateState = Literal[
+    "ranked", "not_candidate", "unranked", "discovery_incomplete",
+]
+
+
 @dataclass(frozen=True)
 class RegressionFact:
     """One confirmed regression offered for attribution — one row of the comment's
@@ -85,10 +113,16 @@ class RegressionFact:
     ``id`` is the opaque handle the model echoes back (``"r1"``, ``"r2"``, …)
     rather than a re-typed six-field identity: a model that mis-spells a detector
     name loses the row, while a model that mis-types ``"r7"`` is caught by
-    only-echo. ``scope_score``/``scope_reason`` are the *first* pass's judgement
-    of this pull request in this row's run group — a prior the review may revise
-    in either direction, and the reason is diff-grounded, so it also tells the
-    model what an earlier reading of the same diff concluded.
+    only-echo.
+
+    ``scope_state`` is what the first pass knew about the reviewed pull request
+    *here* (see :data:`ScopeCandidateState`), and ``scope_score``/
+    ``scope_reason`` carry its judgement when — and only when — that state is
+    ``"ranked"``. A prior the review may revise in either direction; the reason
+    is diff-grounded, so it also tells the model what an earlier reading of the
+    same diff concluded. ``scope_score`` is ``None`` in every other state: a row
+    the first pass never judged has no prior, and the prompt says so in words
+    rather than printing a 0/100 nobody wrote.
     """
 
     id: str
@@ -104,8 +138,9 @@ class RegressionFact:
     value: float | None = None
     baseline_median: float | None = None
     z_score: float | None = None
-    scope_score: float = 0.0
+    scope_score: float | None = None
     scope_reason: str = ""
+    scope_state: ScopeCandidateState = "discovery_incomplete"
 
 
 @dataclass(frozen=True)
@@ -154,6 +189,11 @@ class CompetingPR:
     ``owner/repo#123`` fits the affected set better"*. ``patch`` is best-effort:
     a competitor whose diff could not be refetched still appears with its paths,
     its size and the first pass's reason, which is diff-grounded already.
+
+    ``scope_score`` is ``None`` for a competitor the first pass never judged.
+    That is not a low score and must never be shown as one: a partially ranked
+    field must not make the pull requests nobody looked at read as the ones
+    everybody cleared.
     """
 
     repo: str
@@ -163,7 +203,7 @@ class CompetingPR:
     files: tuple[str, ...] = ()
     additions: int = 0
     deletions: int = 0
-    scope_score: float = 0.0
+    scope_score: float | None = None
     scope_reason: str = ""
     patch: str = ""
 
@@ -177,18 +217,16 @@ class PackageChangeFact:
     kinds of event: a package entering the stack can change a run without any
     pull request in anyone's commit range.
 
-    ``platforms`` names the build platforms this change was recorded on, and is
-    empty when it was recorded on all of them — the ordinary case, and not worth
-    a word in the prompt. A comment can span platforms while release provenance
-    is read per platform, so a package that moved on only one of them is both
-    possible and interesting: it narrows the reach of the change the same way a
-    detector that did not move does.
+    A fact belongs to exactly one build platform — the one whose provenance it
+    was read from (see
+    :attr:`~k4bench.blame.comment.CommentPlan.packages_by_platform`). The same
+    package can appear on two platforms with two different statuses, and that
+    difference is evidence about reach, so it is never merged away.
     """
 
     package: str
     status: str
     compare_url: str | None = None
-    platforms: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -207,8 +245,16 @@ class AttributionRequest:
     regressions: tuple[RegressionFact, ...] = ()
     outcomes: tuple[ScopeOutcome, ...] = ()
     competitors: tuple[CompetingPR, ...] = ()
-    packages: tuple[PackageChangeFact, ...] = ()
-    n_unchanged: int = 0
+    #: The release diff, kept **per build platform** rather than unioned.
+    #: Provenance is recorded per platform, so two platforms can carry different
+    #: package sets, different unchanged counts, and different statuses for the
+    #: same package. A union combined with one unchanged count would state a
+    #: denominator ("2 of 20 tracked") that no platform ever measured.
+    packages_by_platform: dict[str, tuple[PackageChangeFact, ...]] = field(
+        default_factory=dict
+    )
+    #: ``platform -> tracked packages that stood still`` on that platform.
+    unchanged_by_platform: dict[str, int] = field(default_factory=dict)
 
     @property
     def slug(self) -> str:
@@ -459,15 +505,7 @@ def _regression_lines(request: AttributionRequest) -> list[str]:
         lines.append(f"### {detector}")
         lines.append(sample_line(sample, prefix="  "))
         lines.append(platform_line(platform, prefix="  "))
-        # Every metric in a run group shares one first-pass judgement, so these
-        # are equal in valid input; take the strongest defensively so the prior
-        # never depends on which metric was walked first.
-        prior = max(facts, key=lambda f: f.scope_score)
-        lines.append(
-            f"  Earlier per-configuration review of this pull request here: "
-            f"{prior.scope_score:.0f}/100"
-            + (f" — {prior.scope_reason}" if prior.scope_reason else "")
-        )
+        lines.append("  " + _prior_line(facts))
         for fact in facts:
             subject = f"{fact.metric} ({fact.label})"
             if fact.sub_detector:
@@ -479,6 +517,59 @@ def _regression_lines(request: AttributionRequest) -> list[str]:
                 + (f" ({detail})" if detail else "")
             )
     return lines
+
+
+#: Precedence when the rows of one run group disagree about the subject's
+#: first-pass state — they can, since each row's candidate population is its own
+#: metric's change range. A real judgement outranks an unknown one, and an
+#: unknown one outranks an absence, because absence is only worth stating when
+#: nothing better is known *and* the population it is measured against is
+#: complete.
+_STATE_PRECEDENCE = ("ranked", "unranked", "discovery_incomplete", "not_candidate")
+
+
+def _prior_line(facts: list[RegressionFact]) -> str:
+    """What the first pass concluded about the reviewed pull request in this run
+    group — a score only where one was actually given.
+
+    The three unscored states are spelled out instead, because each is a
+    different piece of evidence and none of them is 0/100. "Not among the
+    candidates, and the candidate list was complete" in particular argues
+    *against* this pull request having caused the row — printing it as a zero
+    would say the same thing far less clearly, and printing it as a zero the
+    model reads as a judgement would say something false about who made it."""
+    prior = min(
+        facts,
+        key=lambda f: (
+            _STATE_PRECEDENCE.index(f.scope_state)
+            if f.scope_state in _STATE_PRECEDENCE else len(_STATE_PRECEDENCE),
+            # Every metric in a run group shares one first-pass judgement, so
+            # these are equal in valid input; take the strongest defensively so
+            # the prior never depends on which metric was walked first.
+            -(f.scope_score if f.scope_score is not None else 0.0),
+        ),
+    )
+    if prior.scope_state == "ranked" and prior.scope_score is not None:
+        return (
+            f"Earlier per-configuration review of this pull request here: "
+            f"{prior.scope_score:.0f}/100"
+            + (f" — {prior.scope_reason}" if prior.scope_reason else "")
+        )
+    if prior.scope_state == "unranked":
+        return (
+            "The pull request is a candidate here, but the first pass returned "
+            "no score for it — treat this as no prior, not as a low one."
+        )
+    if prior.scope_state == "not_candidate":
+        return (
+            "The pull request is NOT among the candidates for this scope: the "
+            "candidate search here was complete and this change is not in the "
+            "commit range behind these regressions. Weigh that as evidence."
+        )
+    return (
+        "Candidate discovery for this scope was incomplete, so nothing follows "
+        "from whether this pull request appears in it — no prior either way."
+    )
 
 
 def _outcome_lines(request: AttributionRequest) -> list[str]:
@@ -527,29 +618,37 @@ def _outcome_lines(request: AttributionRequest) -> list[str]:
 
 
 def _package_lines(request: AttributionRequest) -> list[str]:
-    """What moved in the release, and how much did not.
+    """What moved in the release, and how much did not — one block per platform.
 
     The unchanged count is the half of the diff that bounds the search: "three of
     twenty tracked packages moved" tells the model the regression has to come out
-    of those three, or out of something k4Bench does not track at all."""
-    if not request.packages and not request.n_unchanged:
-        return []
-    total = len(request.packages) + request.n_unchanged
-    lines = [
-        "",
-        f"Packages that changed across the release window "
-        f"({len(request.packages)} of {total} tracked):",
-    ]
-    for package in request.packages:
-        note = "" if package.status == "CHANGED" else f" [{package.status}]"
-        # Only stated when the change is *not* everywhere this window was
-        # measured — a package that moved on one platform and not another
-        # bounds the reach of the change, like a detector that stayed flat.
-        where = (
-            f" (recorded on {', '.join(package.platforms)} only)"
-            if package.platforms else ""
-        )
-        lines.append(f"- {package.package}{note}{where}")
+    of those three, or out of something k4Bench does not track at all.
+
+    That claim is only true *per platform*. Provenance is read per platform, so
+    unioning two platforms' changed packages and pairing the union with one
+    unchanged count would state a ratio neither platform measured. Each platform
+    therefore reports its own diff against its own denominator; where a package
+    appears on one and not the other, or with a different status, that difference
+    survives — it bounds the reach of the change the way a detector that stayed
+    flat does."""
+    platforms = sorted(
+        set(request.packages_by_platform) | set(request.unchanged_by_platform)
+    )
+    lines: list[str] = []
+    for platform in platforms:
+        packages = request.packages_by_platform.get(platform, ())
+        unchanged = request.unchanged_by_platform.get(platform, 0)
+        if not packages and not unchanged:
+            continue
+        where = f" on {platform}" if len(platforms) > 1 else ""
+        lines += [
+            "",
+            f"Packages that changed across the release window{where} "
+            f"({len(packages)} of {len(packages) + unchanged} tracked):",
+        ]
+        for package in packages:
+            note = "" if package.status == "CHANGED" else f" [{package.status}]"
+            lines.append(f"- {package.package}{note}")
     return lines
 
 
@@ -564,6 +663,26 @@ def _subject_lines(request: AttributionRequest, budget: int) -> list[str]:
         lines.append(f"  files: {format_files(request.files, _MAX_FILES_LISTED)}")
     lines += diff_block(request.patch, budget)
     return lines
+
+
+def competitor_order(competitor: CompetingPR) -> tuple:
+    """Strongest first, then the unscored, then identity.
+
+    Public because the caller must cut the field to :data:`MAX_COMPETITORS` in
+    *this* order before fetching any diffs, and a prompt showing a different
+    thirty than the caller fetched would be its own bug.
+
+    An unscored candidate sorts as a block after the scored ones rather than at
+    the 0/100 end. It has no likelihood, so it cannot be interleaved with the
+    ones that do without implying it — but it is never dropped for lacking one
+    either: the cap keeps whole candidates, and "nobody judged this PR" stays
+    visible as an alternative."""
+    return (
+        competitor.scope_score is None,
+        -(competitor.scope_score if competitor.scope_score is not None else 0.0),
+        competitor.repo,
+        competitor.number,
+    )
 
 
 def _competitor_lines(competitors: list[CompetingPR], budgets: list[int]) -> list[str]:
@@ -596,10 +715,18 @@ def _competitor_lines(competitors: list[CompetingPR], budgets: list[int]) -> lis
             lines.append(
                 f"  files: {format_files(competitor.files, _MAX_FILES_LISTED)}"
             )
-        lines.append(
-            f"  earlier per-configuration review: {competitor.scope_score:.0f}/100"
-            + (f" — {competitor.scope_reason}" if competitor.scope_reason else "")
-        )
+        if competitor.scope_score is None:
+            # Never "0/100": the first pass returning nothing about a competitor
+            # must not make it look like the alternative everyone ruled out.
+            lines.append(
+                "  earlier per-configuration review: none — this candidate was "
+                "not scored by the first pass"
+            )
+        else:
+            lines.append(
+                f"  earlier per-configuration review: {competitor.scope_score:.0f}/100"
+                + (f" — {competitor.scope_reason}" if competitor.scope_reason else "")
+            )
         lines += diff_block(competitor.patch, budget)
     return lines
 
@@ -615,9 +742,7 @@ def build_user_prompt(request: AttributionRequest) -> str:
     if request.base_release:
         window = f"{request.base_release} → {request.onset_release}"
 
-    competitors = sorted(
-        request.competitors, key=lambda c: (-c.scope_score, c.repo, c.number)
-    )[:MAX_COMPETITORS]
+    competitors = sorted(request.competitors, key=competitor_order)[:MAX_COMPETITORS]
     # The reviewed diff is reserved first, then the competitors waterfill what is
     # left: the review is about *this* pull request, and a window with thirty
     # candidates must not be able to price its diff out of its own prompt. Above

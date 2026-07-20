@@ -7,6 +7,7 @@ read."""
 from __future__ import annotations
 
 import pytest
+import requests
 
 from k4bench.blame.comment import PRComment
 from k4bench.blame.github import GitHubClient, IssueComment, RateLimitError
@@ -34,13 +35,19 @@ class _FakeGitHub:
     for a thread that cannot be read. ``write_fails`` makes writes return
     ``None``, and ``raises`` makes the read blow up. ``login`` is the identity
     ``authenticated_login`` reports for this token (``None`` = could not read it).
+
+    ``login_raises`` is the other way identity resolution fails: not "read it and
+    found nothing" but "never completed the read" — a timeout, a proxy's HTML
+    error page, a rate limit.
     """
 
-    def __init__(self, threads=None, *, write_fails=False, raises=None, login=_BOT):
+    def __init__(self, threads=None, *, write_fails=False, raises=None, login=_BOT,
+                 login_raises=None):
         self.threads = threads or {}
         self.write_fails = write_fails
         self.raises = raises
         self.login = login
+        self.login_raises = login_raises
         self.created: list[tuple[int, str]] = []
         self.updated: list[tuple[int, str]] = []
         self.reads: list[int] = []
@@ -54,6 +61,8 @@ def _patch_github(monkeypatch):
 
     def _login(client):
         client.logins += 1
+        if client.login_raises is not None:
+            raise client.login_raises
         return client.login
 
     def _list(client, slug, number):
@@ -209,10 +218,78 @@ def test_changed_facts_are_edited():
     assert result.updated == ["key4hep/k4geo#7"]
 
 
-def test_a_comment_from_before_digests_existed_takes_one_upgrade_edit():
-    # Nothing to compare against, so the old whole-body rule applies and the
-    # standing comment is rewritten once — into a body that does carry a digest.
+def test_a_standing_comment_with_no_readable_digest_is_rewritten():
+    # Nothing to compare against, so the whole-body rule applies: erring towards
+    # an edit beats leaving a body nobody can verify is current.
     gh = _FakeGitHub({7: [_mine(42, f"{_MARKER}\nan older body")]})
     result = publish(gh, [_digested("abc123", "Only ALLEGRO moved.")])
     assert result.updated == ["key4hep/k4geo#7"]
     assert "k4bench-blame-facts:abc123" in gh.updated[0][1]
+
+
+# ── Fail-closed on identity, duplicates and size ──────────────────────────────
+# Three ways a run can be in a state where *writing anything* is the wrong move.
+# Each records a failure and performs no write, rather than guessing.
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        requests.Timeout("GET /user timed out"),
+        ValueError("Expecting value: line 1 column 1 (char 0)"),
+        RuntimeError("proxy returned an HTML error page"),
+    ],
+    ids=["timeout", "malformed-json", "unexpected"],
+)
+def test_a_login_that_raises_fails_closed_like_one_that_is_unreadable(failure):
+    # The publisher's contract is that only a rate limit escapes it. Identity
+    # resolution runs before the per-comment guard, so a raising GET /user would
+    # otherwise take the whole run down with a traceback — and, worse, do so
+    # having decided nothing about the comments it was holding.
+    gh = _FakeGitHub(
+        {7: [_mine(42, f"{_MARKER}\nyesterday")]}, login_raises=failure,
+    )
+    result = publish(gh, [_comment(number=7), _comment(number=8)])
+    assert result.failed == ["key4hep/k4geo#7", "key4hep/k4geo#8"]
+    assert (result.created, result.updated, result.unchanged) == ([], [], [])
+    # No thread is even read once ownership cannot be established.
+    assert not gh.reads
+
+
+def test_a_rate_limited_login_still_aborts_the_run():
+    # The one exception to fail-closed-and-continue: past a rate limit nothing
+    # will succeed, and the caller wants to know the night stopped.
+    gh = _FakeGitHub({7: []}, login_raises=RateLimitError("throttled"))
+    with pytest.raises(RateLimitError):
+        publish(gh, [_comment()])
+    assert not gh.reads
+
+
+def test_two_owned_comments_for_one_window_are_never_silently_edited():
+    # The upsert's identity assumption is broken. Editing an arbitrary one
+    # leaves the other standing with stale reasoning, and posting a third makes
+    # it worse — so the pull request is skipped and the duplicates named.
+    body = f"{_MARKER}\nyesterday"
+    gh = _FakeGitHub({7: [_mine(42, body), _mine(43, body)]})
+    result = publish(gh, [_comment()])
+    assert result.failed == ["key4hep/k4geo#7"]
+    assert not gh.created and not gh.updated
+
+
+def test_a_body_over_githubs_limit_fails_before_the_write():
+    # GitHub rejects an oversized body outright rather than truncating it. The
+    # renderer's caps are meant to stay clear of that; if one is mis-sized, the
+    # failure should name the comment here rather than arrive as a 422.
+    huge = f"{_MARKER}\n" + "x" * 70_000
+    gh = _FakeGitHub({7: []})
+    result = publish(gh, [_comment(huge)])
+    assert result.failed == ["key4hep/k4geo#7"]
+    assert not gh.created
+
+
+def test_a_body_at_the_limit_is_measured_in_bytes_not_characters():
+    # Multi-byte prose (a model summary, a detector name) costs more than one
+    # byte per character, and GitHub counts bytes.
+    body = f"{_MARKER}\n" + "é" * 40_000  # 40k chars, ~80k bytes
+    assert len(body) < 65536 < len(body.encode())
+    gh = _FakeGitHub({7: []})
+    assert publish(gh, [_comment(body)]).failed == ["key4hep/k4geo#7"]

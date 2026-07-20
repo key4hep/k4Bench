@@ -16,12 +16,14 @@ from k4bench.blame.models import (
 from k4bench.regression.models import Direction, MetricVerdict, Severity
 
 
-def _pr(number: int, score: float = 0.0, repo: str = "key4hep/k4geo") -> CandidatePR:
+def _pr(
+    number: int, score: float = 0.0, repo: str = "key4hep/k4geo", ranked: bool = True
+) -> CandidatePR:
     return CandidatePR(
         repo=repo, number=number, title=f"PR {number}", author="alice",
         url=f"https://github.com/{repo}/pull/{number}", merged_at="2026-07-04T00:00:00Z",
         files=("FCCee/ALLEGRO/compact/x.xml",), additions=10, deletions=2,
-        score=score, description="lowers the tracker step limit",
+        score=score, description="lowers the tracker step limit", ranked=ranked,
     )
 
 
@@ -109,9 +111,11 @@ def test_entry_for_joins_on_verdict_identity_and_window():
 
 def test_ranking_coverage_counts_each_entry_and_accepts_zero_with_reason():
     ranked_zero = _pr(1, score=0.0)
+    # Never scored: the state, not the number, is what coverage counts — this
+    # one carries a score only because a hostile sidecar could.
     missing = CandidatePR(
         repo="key4hep/k4geo", number=2, title="PR 2", author="alice", url="u",
-        score=99.0, description="",
+        score=99.0, description="", ranked=False,
     )
     repos = (RepoBlame(
         package="k4geo", repo="key4hep/k4geo", base_commit="a" * 40,
@@ -182,3 +186,56 @@ def test_from_json_coerces_lenient_but_renderable_values():
     assert report.entries[0].repos[0].candidates[0].score == 72.0
     report = BlameReport.from_json(_with_candidate_field(score=float("nan")))
     assert report.entries[0].repos[0].candidates[0].score == 0.0
+
+
+# ── Ranked is a state, not a score ────────────────────────────────────────────
+# ``score == 0.0`` has to mean one thing only: "the model looked at this pull
+# request and rated it zero". "Nobody ever asked" is a different fact with
+# different consequences — it must never clear a threshold, and it must never be
+# shown as a judgement — so it travels as its own field.
+
+def test_the_ranked_state_survives_a_round_trip():
+    judged_zero = _pr(1, score=0.0, ranked=True)
+    never_asked = _pr(2, score=0.0, ranked=False)
+    entry = _entry(repos=(RepoBlame(
+        package="k4geo", repo="key4hep/k4geo", base_commit="a" * 40,
+        head_commit="c" * 40, compare_url=None, status="CHANGED",
+        candidates=(judged_zero, never_asked),
+    ),))
+    restored = BlameReport.from_json(
+        BlameReport("g", "2026-07-05", entries=(entry,)).to_json()
+    )
+    by_number = {c.number: c for c in restored.entries[0].candidates}
+    # Identical scores, opposite states — and the states are what survived.
+    assert by_number[1].score == by_number[2].score == 0.0
+    assert by_number[1].ranked and not by_number[2].ranked
+
+
+def test_a_sidecar_that_records_no_judgement_is_read_as_unranked():
+    # A file with no ``ranked`` key never recorded a judgement, so it has not
+    # made one — whatever score sits beside it. Reading that as "ranked" is the
+    # only unsafe direction, since it is what clears a comment threshold.
+    data = BlameReport("g", "2026-07-05", entries=(_entry(repos=(RepoBlame(
+        package="k4geo", repo="key4hep/k4geo", base_commit="a" * 40,
+        head_commit="c" * 40, compare_url=None, status="CHANGED",
+        candidates=(_pr(1, score=95.0),),
+    ),)),)).to_json()
+    del data["entries"][0]["repos"][0]["candidates"][0]["ranked"]
+
+    restored = BlameReport.from_json(data)
+    assert not restored.entries[0].candidates[0].ranked
+
+
+def test_the_flat_ledger_puts_the_unjudged_after_the_judged():
+    # An unranked candidate has no likelihood at all, so it cannot sit *among*
+    # the scores — least of all at the 0% end, where it would read as the
+    # ranker's weakest pick rather than as one it never rated.
+    entry = _entry(repos=(RepoBlame(
+        package="k4geo", repo="key4hep/k4geo", base_commit="a" * 40,
+        head_commit="c" * 40, compare_url=None, status="CHANGED",
+        candidates=(
+            _pr(1, score=0.0, ranked=False),
+            _pr(2, score=0.0, ranked=True),
+        ),
+    ),))
+    assert [c.number for c in entry.candidates] == [2, 1]
