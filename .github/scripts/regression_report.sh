@@ -63,11 +63,6 @@ fi
 cvmfs-venv py-venv
 . py-venv/bin/activate
 pip install --no-build-isolation --quiet "."
-# The blame-comment CLI parses .github/blame-comments.yml with PyYAML, kept out
-# of the k4bench package on purpose (YAML lives in the CI-script layer). Pinned
-# to match the nightly benchmark-discovery workflow rather than relying on it
-# being incidentally present in the Key4hep stack.
-pip install --quiet 'pyyaml>=6.0,<6.1'
 echo "::endgroup::"
 
 # ── 4. Build the report ───────────────────────────────────────────────────────
@@ -146,13 +141,20 @@ echo "::endgroup::"
 # report or hold up the e-group email below.
 echo "::group::5c. Pull-request comments"
 if [[ -f report/blame.json ]]; then
-    timeout --signal=TERM --kill-after=30s "${K4BENCH_PR_COMMENT_TIMEOUT:-5m}" \
-      python .github/scripts/blame_comment.py \
-        --report report/report.json \
-        --blame report/blame.json \
-        --config .github/blame-comments.yml \
-        --dashboard-url "${K4BENCH_DASHBOARD_URL:-https://k4bench-dashboard.app.cern.ch}" \
-      || echo "No pull-request comments this night (nothing attributed confidently, no enabled repo, timeout, or a failed write)." >&2
+    {
+        # Install PyYAML here (best-effort; network failure skips PR comments only).
+        pip install --quiet 'pyyaml>=6.0,<6.1' || {
+            echo "Failed to install PyYAML for blame-comment CLI; skipping PR comments." >&2
+            exit 0
+        }
+        timeout --signal=TERM --kill-after=30s "${K4BENCH_PR_COMMENT_TIMEOUT:-5m}" \
+          python .github/scripts/blame_comment.py \
+            --report report/report.json \
+            --blame report/blame.json \
+            --config .github/blame-comments.yml \
+            --dashboard-url "${K4BENCH_DASHBOARD_URL:-https://k4bench-dashboard.app.cern.ch}" \
+          || echo "No pull-request comments this night (nothing attributed confidently, no enabled repo, timeout, or a failed write)." >&2
+    } || echo "Pull-request comments step failed (best-effort; the report and email are unaffected)." >&2
 else
     echo "No blame sidecar this night — no pull request to comment on."
 fi

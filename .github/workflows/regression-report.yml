@@ -29,6 +29,12 @@ permissions:
 jobs:
   regression-report:
     runs-on: [self-hosted, fcc-ironic]
+    environment:
+      name: pr-comments
+      url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    # This environment should be configured in GitHub Settings → Environments with:
+    # - Deployment branches restricted to "main" (to auto-allow nightly runs)
+    # - Required reviewers (optional but recommended for manual workflow_dispatch runs)
     env:
       CONTAINER_IMAGE: ghcr.io/key4hep/key4hep-images/alma9
     steps:

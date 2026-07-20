@@ -27,11 +27,13 @@ must pass:
 One comment covers one ``(pull request, change window)`` pair — the reader's
 question is "did my change do this?", asked once — and :func:`marker_for` gives
 that pair a stable hidden key so a later night edits the existing comment
-instead of posting a second one. Inside that one comment, each benchmark scope
-(``detector, platform, sample``) the window moved is its own subsection: the
-ranker scores a candidate once per scope, so two independent judgements (a 95%
-ALLEGRO and an 81% IDEA, say) are shown side by side, never flattened into a
-single headline number.
+instead of posting a second one. The ranker scores a candidate once per
+benchmark scope (``detector, platform, sample``), so one comment can carry
+several independent judgements; the strongest one is rendered in full — the
+reason, what moved, the competing candidates, the links — and every further
+scope of the same window becomes a single summary row keeping its own
+likelihood. Two judgements are then neither flattened into one headline number
+nor repeated at full length down a page nobody reads to the end of.
 """
 
 from __future__ import annotations
@@ -57,11 +59,19 @@ _log = logging.getLogger(__name__)
 #: changes only when a body is no longer an in-place successor of the old one.
 MARKER_VERSION = "v1"
 
-#: Metric rows shown before the table defers to the dashboard, and candidate
-#: rows shown for the rest of the window. Both are display caps: the selection
-#: above them is complete, only the rendering is bounded.
+#: Metric rows shown before the table defers to the dashboard, candidate rows
+#: shown for the rest of the window, and summary rows for the further benchmark
+#: scopes the window moved. All three are display caps: the selection above them
+#: is complete, only the rendering is bounded.
 _MAX_METRIC_ROWS = 8
 _MAX_OTHER_CANDIDATES = 5
+_MAX_ALSO_ROWS = 5
+
+#: Likelihood points between this PR and the closest other candidate at or
+#: under which the ranking is called a weak preference in words. Wide enough to
+#: catch a genuinely crowded field, narrow enough that an ordinary night — where
+#: the ranker picked one PR out of the pack — says nothing extra.
+_CROWDED_SPREAD = 10.0
 
 #: Longest ranker explanation quoted verbatim. The contract asks for one
 #: sentence; a model that ignores it must not paste an essay into someone's PR.
@@ -234,8 +244,8 @@ class _Scope:
     The ranker scores each candidate once per ``(detector, platform, sample)``
     scope — every metric in that scope shares the one judgement — so a scope,
     not a metric, is the unit that carries its own likelihood, reason and
-    competing candidates. A comment renders one subsection per scope rather than
-    flattening two independent judgements into a single headline number.
+    competing candidates. The strongest scope leads the comment in full; the
+    rest keep their own likelihood in one summary row each.
     """
 
     detector: str
@@ -367,15 +377,15 @@ def _render(
 ) -> PRComment:
     """One bucket as a GitHub-flavoured Markdown comment.
 
-    A single comment for the ``(pull request, window)``, but one subsection per
-    benchmark scope: each scope carries the ranker's own likelihood and reason
-    for that scope, so two independent judgements are never collapsed into a
-    single headline number."""
+    A single comment for the ``(pull request, window)``, led by the one
+    benchmark scope the ranker is most confident about, rendered in full. Every
+    further scope of the same window follows as one summary row keeping its own
+    likelihood — enough to see that the window moved more than one
+    configuration, and to reach the rest in the dashboard, without repeating a
+    full section per scope."""
     marker = marker_for(bucket.base_release, bucket.onset_release)
-    scopes = sorted(
-        bucket.scopes.values(),
-        key=lambda s: (-s.candidate.score, s.detector, s.platform, s.sample),
-    )
+    scopes = sorted(bucket.scopes.values(), key=_scope_sort_key)
+    lead, *rest = scopes
 
     body = "\n".join(
         part for part in (
@@ -385,13 +395,17 @@ def _render(
             _alert(bucket, len(scopes)),
             "",
             _window_line(bucket),
-            *(_scope_section(scope, bucket, dashboard_url=dashboard_url)
-              for scope in scopes),
+            _scope_section(lead, bucket, dashboard_url=dashboard_url),
+            _also_section(rest, lead, bucket, dashboard_url=dashboard_url),
             "",
             "---",
             "",
+            # The reply invitation is this renderer's own, not part of the
+            # shared disclosure: the e-group mail carries the same sentence to
+            # readers with no thread to answer in.
             f"<sub>🤖 {RANKING_DISCLOSURE} Posted automatically by "
-            "[k4Bench](https://github.com/key4hep/k4Bench).</sub>",
+            "[k4Bench](https://github.com/key4hep/k4Bench) — reply here if this "
+            "attribution looks wrong.</sub>",
         ) if part is not None
     )
     return PRComment(
@@ -404,47 +418,42 @@ def _render(
 
 
 def _alert(bucket: _Bucket, n_scopes: int) -> str:
-    """The headline claim as a GitHub warning alert — one sentence; the
-    per-scope subsections below carry the specifics."""
-    tail = (
-        ""
-        if bucket.base_release
-        else " The window is open-ended: no earlier settled measurement "
-             "bounds it."
-    )
+    """The headline claim as a GitHub warning alert: one short sentence that
+    reads on a single line, since everything below it — the window, the scope,
+    what moved — is the specifics."""
     what = (
-        "a regression in the change window"
+        "a regression in"
         if n_scopes == 1
-        else (
-            f"regressions in {_count(n_scopes, 'benchmark configuration')} "
-            "of the change window"
-        )
+        else f"regressions in {_count(n_scopes, 'configuration')} of"
     )
     return (
         "> [!WARNING]\n"
-        f"> k4Bench's nightly benchmarks confirmed {what} this PR merged "
-        f"in.{tail}"
+        f"> k4Bench's nightly benchmarks confirmed {what} this PR's change "
+        "window."
     )
 
 
 def _window_line(bucket: _Bucket) -> str:
     """The change window as a single caption line — the Key4hep release dates
-    that bound the step, shared by every scope below."""
-    window = (
-        f"`{bucket.base_release}` → `{bucket.onset_release}`"
-        if bucket.base_release
-        else f"≤ `{bucket.onset_release}`"
-    )
+    that bound the step, shared by every scope below. An open-ended window says
+    so here, where the dates it is missing one of are."""
+    if bucket.base_release:
+        window = f"`{bucket.base_release}` → `{bucket.onset_release}`"
+    else:
+        window = (
+            f"≤ `{bucket.onset_release}` — open-ended: no earlier settled "
+            "measurement bounds it"
+        )
     return f"📆 **Change window:** {window}"
 
 
 def _scope_section(
     scope: _Scope, bucket: _Bucket, *, dashboard_url: str | None
 ) -> str:
-    """One benchmark scope as a subsection: its likelihood and detector in the
-    heading, then the ranker's reason, what moved, the other candidates scored
-    for that scope, and the links to check it — all named to the one scope the
-    ranker actually judged."""
+    """The comment's leading benchmark scope, in full: its likelihood and
+    detector in the heading, then the ranker's reason, what moved, the other
+    candidates scored for that scope, and the links to check it — all named to
+    the one scope the ranker actually judged."""
     verdicts = sorted(scope.verdicts, key=_verdict_sort_key)
     heading = f"#### 🎯 {_pct(scope.candidate.score)} — {_cell(scope.detector)}"
     caption = (
@@ -523,8 +532,12 @@ def _others_section(scope: _Scope) -> str:
     """The rest of the candidates scored for this scope, with their
     likelihoods — the reader needs to see what else was in the frame to weigh
     the claim against this PR, including the case where nothing else was.
-    Collapsed by default: the count in the summary line carries the weight, the
-    rows are one click away."""
+    Collapsed by default, but the summary line carries the strongest competing
+    score without being opened: how far ahead this PR sits is the difference
+    between a ranking that picked it and one that barely preferred it, and that
+    belongs in front of a reader who expands nothing.
+
+    The candidates are named, never linked — see :func:`_pr_ref`."""
     others = sorted(
         scope.others.values(), key=lambda c: (-c.score, c.repo, c.number)
     )
@@ -538,22 +551,121 @@ def _others_section(scope: _Scope) -> str:
 
     shown = others[:_MAX_OTHER_CANDIDATES]
     lines = [
+        *(note for note in (_crowded_note(scope, others[0]),) if note),
         "",
         "<details>",
         "<summary><b>Other pull requests scored for this configuration</b> — "
-        f"{_count(len(others), 'candidate')}</summary>",
+        f"{_count(len(others), 'candidate')}, highest {_pct(others[0].score)}"
+        "</summary>",
         "",
         "| Pull request | Likelihood |",
         "|:---|---:|",
         *(
-            f"| [{_cell(c.repo)}#{c.number}]({c.url}) — {_cell(_one_line(c.title, 80))} "
-            f"| {_pct(c.score)} |"
+            f"| {_pr_ref(c)} — {_cell(_one_line(c.title, 80))} | {_pct(c.score)} |"
             for c in shown
         ),
     ]
     if len(others) > len(shown):
         lines += ["", f"_…and {_count(len(others) - len(shown), 'more candidate')}._"]
     lines += ["", "</details>"]
+    return "\n".join(lines)
+
+
+def _pr_ref(candidate: CandidatePR) -> str:
+    """A competing candidate named as ``owner/repo#123``, inert on purpose.
+
+    These pull requests are *not* the ones being commented on — they are the
+    field the ranking was made against — and GitHub turns any reference to them,
+    a bare ``owner/repo#123`` or a link carrying their URL, into a cross-
+    reference on their own timeline, notifying everyone subscribed there. A PR
+    that was merely a candidate should not collect a notification every time
+    another window implicates someone else, so the number is broken with a
+    zero-width space: unchanged to a reader, unparsed by GitHub, and
+    unclickable. Whoever wants the full field has the package-diff link in
+    *Where to look*."""
+    zwsp = "\u200b"  # U+200B zero-width space
+    return _cell(f"{candidate.repo}#{zwsp}{candidate.number}")
+
+
+def _crowded_note(scope: _Scope, closest: CandidatePR) -> str | None:
+    """Said out loud only when the ranking is close: a likelihood that barely
+    clears the next candidate is a weak preference, and a comment posted into
+    someone else's repository should admit that in words rather than leave the
+    reader to subtract two numbers. Nothing is rendered when this PR is clearly
+    ahead — a caveat printed every night is wallpaper, and the score and the
+    summary line already say what a comfortable lead looks like."""
+    spread = abs(scope.candidate.score - closest.score)
+    if not math.isfinite(spread) or spread > _CROWDED_SPREAD:
+        return None
+    points = int(round(spread))
+    if points == 0:
+        separation = "Nothing separates this PR from the closest other candidate"
+    else:
+        verb = "separates" if points == 1 else "separate"
+        separation = (
+            f"Only {_count(points, 'point')} {verb} this PR from the closest "
+            "other candidate"
+        )
+    return (
+        f"\n_{separation} — the ranker is expressing a weak preference here, "
+        "not a clear pick._"
+    )
+
+
+def _also_section(
+    scopes: list[_Scope], lead: _Scope, bucket: _Bucket, *, dashboard_url: str | None
+) -> str | None:
+    """The window's remaining benchmark scopes, one row each.
+
+    Each row keeps that scope's *own* likelihood — the ranker judged it
+    separately, and the lead scope's number does not speak for it — plus the
+    single largest movement, which is what a reader deciding whether to open the
+    dashboard actually weighs. The configuration links straight to its own
+    dashboard view, so the rest of the window is one click rather than another
+    screen of Markdown."""
+    if not scopes:
+        return None
+
+    shown = scopes[:_MAX_ALSO_ROWS]
+    counted = _count(len(scopes), "further benchmark configuration")
+    lines = [
+        "",
+        "##### 📌 Also affected in this window",
+        "",
+        f"The same window regressed in {counted}, each ranked on its own:",
+        "",
+        "| Configuration | Likelihood | Largest move |",
+        "|:---|---:|---:|",
+    ]
+    for scope in shown:
+        # The sample and platform are spelled out only where they differ from
+        # the section above: a whole column repeating one run configuration is
+        # noise, but a row that quietly ran something else must say so.
+        label = _cell(
+            scope.detector
+            if (scope.sample, scope.platform) == (lead.sample, lead.platform)
+            else (
+                f"{scope.detector} — {pretty_sample(scope.sample)} · "
+                f"{pretty_platform(scope.platform)}"
+            )
+        )
+        href = window_href(
+            dashboard_url,
+            detector=scope.detector, platform=scope.platform, sample=scope.sample,
+            base_release=bucket.base_release, onset_release=bucket.onset_release,
+            stack=scope.stack,
+        )
+        worst = min(scope.verdicts, key=_verdict_sort_key)
+        lines.append(
+            f"| {f'[{label}]({href})' if href else label} "
+            f"| {_pct(scope.candidate.score)} "
+            f"| `{_cell(worst.metric)}` {_change_cell(worst.pct_change)} |"
+        )
+    if len(scopes) > len(shown):
+        lines += [
+            "",
+            f"_…and {_count(len(scopes) - len(shown), 'more configuration')}._",
+        ]
     return "\n".join(lines)
 
 
@@ -586,6 +698,26 @@ def _where_to_look(
     if not links:
         return None
     return "\n".join(["", "##### 🔎 Where to look", "", *links])
+
+
+def _scope_sort_key(scope: _Scope) -> tuple:
+    """Which scope leads the comment: the ranker's strongest judgement about
+    this PR first — that is the claim the comment is making — and among equal
+    likelihoods the scope that moved furthest, since that is the one worth
+    reading in full. Identity breaks the remaining ties so the order, and with
+    it the body, is stable across nights."""
+    movement = max(
+        (
+            abs(v.pct_change)
+            for v in scope.verdicts
+            if v.pct_change is not None and math.isfinite(v.pct_change)
+        ),
+        default=0.0,
+    )
+    return (
+        -scope.candidate.score, -movement,
+        scope.detector, scope.platform, scope.sample,
+    )
 
 
 def _verdict_sort_key(v: MetricVerdict) -> tuple:
@@ -641,6 +773,9 @@ def _defang(text: str) -> str:
 
     * ``@login`` — ping a person on every nightly edit (the same ban the whole
       bot honours by never rendering an author with an ``@``);
+    * ``#123`` — cross-reference an unrelated issue, notifying its subscribers;
+      a title like "Revert #45" carries one for free (:func:`_pr_ref` applies the
+      same rule to the references this module writes itself);
     * ``<!-- … -->`` / ``<tag>`` — hide following content, or inject markup;
     * ``![alt](url)`` — pull in a remote image on every render.
 
@@ -650,6 +785,7 @@ def _defang(text: str) -> str:
     zwsp = "\u200b"  # U+200B zero-width space
     return (
         text.replace("@", "@" + zwsp)
+        .replace("#", "#" + zwsp)
         .replace("<", "<" + zwsp)
         .replace("![", "!" + zwsp + "[")
     )

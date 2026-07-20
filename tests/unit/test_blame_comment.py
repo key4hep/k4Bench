@@ -27,6 +27,9 @@ from k4bench.regression.models import (
 
 _PLAT = "x86_64-almalinux9-gcc14.2.0-opt"
 _DASH = "https://k4bench-dashboard.app.cern.ch"
+#: What the renderer breaks a GitHub-active sequence with — invisible to a
+#: reader, inert to GitHub's reference and mention parsers.
+_ZWSP = "\u200b"
 
 
 def _policy(**kw) -> CommentPolicy:
@@ -278,7 +281,78 @@ def test_body_lists_the_other_candidates_with_their_likelihoods():
     v = _verdict()
     others = [_candidate(), _candidate(number=1180, score=22.0, title="Unrelated cleanup")]
     body = _select(_report(v), _blame([v], others))[0].body
-    assert "key4hep/k4geo#1180" in body and "22%" in body
+    assert f"key4hep/k4geo#{_ZWSP}1180" in body and "22%" in body
+
+
+def test_competing_candidates_are_named_but_never_referenced():
+    # A PR that was only ever a candidate must not collect a cross-reference —
+    # and with it a notification for everyone subscribed to it — every time some
+    # other window implicates someone else. Neither its URL nor a live
+    # `owner/repo#123` may appear; the broken number reads the same to a human.
+    v = _verdict()
+    other = _candidate(number=1180, repo="key4hep/DD4hep", score=22.0)
+    body = _select(_report(v), _blame([v], [_candidate(), other]))[0].body
+    assert "key4hep/DD4hep#1180" not in body
+    assert other.url not in body
+    assert f"key4hep/DD4hep#{_ZWSP}1180" in body
+
+
+def test_a_hash_in_external_prose_references_nothing():
+    # "Revert #45" in a candidate's title would cross-reference issue 45 in the
+    # repository the comment is posted to — the same spam, smuggled in.
+    v = _verdict()
+    other = _candidate(number=1180, score=22.0, title="Revert #45 for now")
+    body = _select(_report(v), _blame([v], [_candidate(), other]))[0].body
+    assert "#45" not in body and f"#{_ZWSP}45" in body
+
+
+def test_the_strongest_competing_score_shows_without_expanding():
+    # How far ahead this PR sits is the difference between a ranking that picked
+    # it and one that barely preferred it, so the collapsed summary carries the
+    # top competing likelihood for a reader who expands nothing.
+    v = _verdict()
+    others = [
+        _candidate(),
+        _candidate(number=1180, repo="key4hep/DD4hep", score=22.0, title="Cleanup"),
+        _candidate(number=1181, repo="key4hep/DD4hep", score=64.0, title="Field map"),
+    ]
+    body = _select(_report(v), _blame([v], others))[0].body
+    summary = next(line for line in body.splitlines() if "<summary>" in line)
+    assert "2 candidates" in summary and "highest 64%" in summary
+
+
+@pytest.mark.parametrize(
+    ("runner_up", "expected"),
+    [
+        (86.0, "Only 5 points separate this PR"),
+        (90.0, "Only 1 point separates this PR"),
+        (91.0, "Nothing separates this PR"),
+        (95.0, "Only 4 points separate this PR"),  # crowded from above, too
+    ],
+)
+def test_a_close_ranking_admits_it_is_a_weak_preference(runner_up, expected):
+    v = _verdict()
+    other = _candidate(number=1180, repo="key4hep/DD4hep", score=runner_up)
+    body = _select(_report(v), _blame([v], [_candidate(), other]))[0].body
+    assert expected in body
+    assert "weak preference" in body
+
+
+def test_a_clear_ranking_adds_no_caveat():
+    # A caveat printed every night is wallpaper: it fires only when the field is
+    # genuinely crowded, and the scores speak for a comfortable lead.
+    v = _verdict()
+    other = _candidate(number=1180, repo="key4hep/DD4hep", score=22.0)
+    body = _select(_report(v), _blame([v], [_candidate(), other]))[0].body
+    assert "weak preference" not in body
+
+
+def test_body_invites_a_correction():
+    # The bot writes into repositories k4Bench does not own, so the author is
+    # told what to do when the call is wrong, not only that it might be.
+    v = _verdict()
+    body = _select(_report(v), _blame([v], [_candidate()]))[0].body
+    assert "reply here if this attribution looks wrong" in body
 
 
 def test_body_says_so_when_nothing_else_was_in_the_frame():
@@ -325,7 +399,7 @@ def test_table_cells_survive_hostile_text():
     )
     headline = replace(_candidate(number=2, score=95.0), description="Line one\nline two")
     body = _select(_report(v), _blame([v], [headline, hostile]))[0].body
-    row = next(line for line in body.splitlines() if "key4hep/k4geo#1]" in line)
+    row = next(line for line in body.splitlines() if f"key4hep/k4geo#{_ZWSP}1 " in line)
     # Two columns: the title's pipe is escaped, so it opens no third one.
     assert row.replace("\\|", "").count("|") == 3
     assert "a \\| b second line" in row  # pipe escaped, newline collapsed
@@ -348,7 +422,7 @@ def test_external_prose_is_defanged_of_mentions_and_markup():
         title="ping @team see ![x](http://e/i.png)",
     )
     body = _select(_report(v), _blame([v], [headline, other]))[0].body
-    zwsp = "\u200b"
+    zwsp = _ZWSP
     assert "@team" not in body and f"@{zwsp}team" in body          # title mention
     assert "@alice" not in body and f"@{zwsp}alice" in body        # reason mention
     assert f"!{zwsp}[" in body                                     # image defused
@@ -377,12 +451,12 @@ def test_body_is_stable_across_consecutive_nights():
     assert monday == tuesday
 
 
-def test_each_scope_keeps_its_own_candidate_scores_and_is_order_independent():
+def test_scope_walk_order_does_not_change_the_body():
     # The ranker scores a candidate once per (detector, platform, sample) scope,
     # so a competing PR can carry a different likelihood in each scope of the
-    # same window. Both scores are shown, each under its own scope — never
-    # flattened to one — and the body is identical whichever scope was walked
-    # first, so a reordering between nights does not re-edit the comment.
+    # same window. Whichever scope was walked first, the same one leads the
+    # comment and the body is identical, so a reordering between nights does not
+    # re-edit a standing comment.
     allegro = _verdict(detector="ALLEGRO_o1_v03")
     idea = _verdict(detector="IDEA_o1_v03")
     hi = _candidate()
@@ -397,26 +471,76 @@ def test_each_scope_keeps_its_own_candidate_scores_and_is_order_independent():
 
     forward = _select(_report(allegro, idea), blame((allegro, [hi, lo]), (idea, [hi, top])))
     reverse = _select(_report(idea, allegro), blame((idea, [hi, top]), (allegro, [hi, lo])))
-    assert len(forward) == 1  # one comment for the PR+window, two scope subsections
+    assert len(forward) == 1  # one comment for the PR+window, whatever the order
     assert forward[0].body == reverse[0].body
-    # Each scope reports its own competitor likelihood — both survive, unflattened.
-    assert "25%" in forward[0].body and "70%" in forward[0].body
+    # The leading scope is rendered in full, so its competitor is the one named.
+    assert "25%" in forward[0].body
 
 
-def test_a_pr_scored_in_two_scopes_shows_both_not_a_combined_max():
+def test_only_the_leading_configuration_is_rendered_in_full():
     # A 95% ALLEGRO judgement and an 81% IDEA judgement are two rankings, not one
-    # 95% ranking of both — each scope is its own subsection with its own score.
-    allegro = _verdict(detector="ALLEGRO_o1_v03")
-    idea = _verdict(detector="IDEA_o1_v03")
-    strong = _candidate(score=95.0)
-    weak = _candidate(score=81.0)
+    # 95% ranking of both. The strongest leads the comment in full; the other
+    # keeps its own likelihood in one summary row rather than a second section.
+    allegro = _verdict(detector="ALLEGRO_o1_v03", pct=0.21)
+    idea = _verdict(detector="IDEA_o1_v03", metric="peak_rss_mb", pct=0.11)
     blame = BlameReport(
         generated_at="x", report_night="2026-07-05",
         entries=(
-            _blame([allegro], [strong]).entries[0],
-            _blame([idea], [weak]).entries[0],
+            _blame([allegro], [_candidate(score=95.0)]).entries[0],
+            _blame([idea], [_candidate(score=81.0)]).entries[0],
         ),
     )
     body = _select(_report(allegro, idea), blame)[0].body
-    assert "🎯 95% — ALLEGRO_o1_v03" in body
-    assert "🎯 81% — IDEA_o1_v03" in body
+    assert "🎯 95% — ALLEGRO_o1_v03" in body      # the lead, with its own section
+    assert "🎯 81% — IDEA_o1_v03" not in body     # not a second full section
+    assert body.count("What moved") == 1
+    # …but the reader still learns it moved, by how much, and how likely the
+    # ranker held this PR to be *there* — the lead's score speaks only for itself.
+    assert "Also affected in this window" in body
+    assert "1 further benchmark configuration" in body
+    row = next(line for line in body.splitlines() if "IDEA_o1_v03" in line)
+    assert "81%" in row and "peak_rss_mb" in row and "+11.0%" in row
+    assert "detector=IDEA_o1_v03" in row  # one click to the rest of the window
+
+
+def test_the_largest_movement_leads_among_equally_ranked_configurations():
+    # Same likelihood in both scopes: the one that moved furthest is the one
+    # worth reading in full.
+    small = _verdict(detector="ALLEGRO_o1_v03", pct=0.05)
+    large = _verdict(detector="IDEA_o1_v03", pct=0.40)
+    blame = BlameReport(
+        generated_at="x", report_night="2026-07-05",
+        entries=(
+            _blame([small], [_candidate()]).entries[0],
+            _blame([large], [_candidate()]).entries[0],
+        ),
+    )
+    body = _select(_report(small, large), blame)[0].body
+    assert "🎯 91% — IDEA_o1_v03" in body
+
+
+def test_summary_rows_name_only_what_differs_from_the_leading_configuration():
+    # Same sample and platform as the lead: the detector alone identifies the
+    # row. A row that ran a different sample says which one.
+    lead = _verdict(detector="ALLEGRO_o1_v03", pct=0.30)
+    same = _verdict(detector="IDEA_o1_v03", pct=0.20)
+    other = _verdict(detector="CLD_o2_v07", pct=0.10, sample="p8_ee_Zbb_ecm91")
+    blame = BlameReport(
+        generated_at="x", report_night="2026-07-05",
+        entries=tuple(
+            _blame([v], [_candidate()]).entries[0] for v in (lead, same, other)
+        ),
+    )
+    body = _select(_report(lead, same, other), blame)[0].body
+    rows = {
+        d: next(line for line in body.splitlines() if f"[{d}" in line)
+        for d in ("IDEA_o1_v03", "CLD_o2_v07")
+    }
+    assert "Single e⁻" not in rows["IDEA_o1_v03"]
+    assert "Z → bb" in rows["CLD_o2_v07"]
+
+
+def test_a_single_configuration_carries_no_summary_section():
+    v = _verdict()
+    body = _select(_report(v), _blame([v], [_candidate()]))[0].body
+    assert "Also affected" not in body
