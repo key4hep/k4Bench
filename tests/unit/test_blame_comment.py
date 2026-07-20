@@ -12,6 +12,7 @@ import pytest
 from k4bench.blame.comment import (
     CommentConfigError,
     CommentPolicy,
+    CommentStormError,
     marker_for,
     select,
 )
@@ -120,6 +121,9 @@ def test_policy_defaults_to_inert():
     {"max_comments": 2.5},                    # a fractional cap is a typo
     {"max_comments": True},                   # a bool is not a count
     {"treshold": 80},                         # typo'd key, silently narrowing
+    False,                                     # a falsey document is not "no config"
+    {"repos": False},                         # a scalar is not an allowlist
+    {"repos": ["owner/ "]},                   # slug is "owner/" once stripped
 ])
 def test_policy_rejects_malformed_config(bad):
     # A config that decides where the bot writes must fail loudly, never default.
@@ -130,6 +134,13 @@ def test_policy_rejects_malformed_config(bad):
 def test_policy_matches_repo_case_insensitively():
     policy = CommentPolicy.from_config({"repos": ["Key4hep/K4geo"]})
     assert policy.allows(_candidate(repo="key4hep/k4geo")) is True
+
+
+@pytest.mark.parametrize("absent", [None, {}, {"repos": None}])
+def test_absent_or_empty_config_is_inert_not_an_error(absent):
+    # Only a *present but malformed* document raises; a missing one, an empty
+    # mapping, or an explicitly empty `repos:` all mean "the bot is off".
+    assert CommentPolicy.from_config(absent).enabled is False
 
 
 # ── Selection gates ───────────────────────────────────────────────────────────
@@ -197,9 +208,10 @@ def test_a_second_window_gets_its_own_comment():
     assert len({c.marker for c in comments}) == 2
 
 
-def test_over_the_cap_posts_nothing():
+def test_over_the_cap_raises_a_storm_error():
     # A night louder than max_comments is a bug, not a night: rather than post
-    # the top N accusations into repos we don't own, the whole night is dropped.
+    # the top N accusations into repos we don't own, the whole night is dropped —
+    # and raising (not returning []) lets the CLI tell it apart from a quiet night.
     verdicts = [_verdict(metric=f"m{i}", sample=f"s{i}") for i in range(4)]
     candidates = [_candidate(number=100 + i) for i in range(4)]
     blame = BlameReport(
@@ -208,7 +220,9 @@ def test_over_the_cap_posts_nothing():
             _blame([v], [c]).entries[0] for v, c in zip(verdicts, candidates, strict=True)
         ),
     )
-    assert _select(_report(*verdicts), blame, _policy(max_comments=2)) == []
+    with pytest.raises(CommentStormError) as exc:
+        _select(_report(*verdicts), blame, _policy(max_comments=2))
+    assert exc.value.count == 4 and exc.value.cap == 2
 
 
 def test_at_the_cap_still_posts():
@@ -318,6 +332,32 @@ def test_table_cells_survive_hostile_text():
     assert "Line one line two" in body  # the same for the quoted reason
 
 
+def test_external_prose_is_defanged_of_mentions_and_markup():
+    # A PR title and a model reason are untrusted text pasted into a comment the
+    # bot posts in someone else's repo: an @mention must not ping, an HTML
+    # comment must not hide content, an image must not load. A zero-width space
+    # breaks each trigger while leaving the words readable. The reason is quoted
+    # for the headline PR; a candidate's title shows in the others table.
+    v = _verdict()
+    headline = replace(
+        _candidate(number=3, score=95.0),
+        description="blame <!-- hidden --> @alice and <script>",
+    )
+    other = _candidate(
+        number=1180, repo="key4hep/DD4hep", score=30.0,
+        title="ping @team see ![x](http://e/i.png)",
+    )
+    body = _select(_report(v), _blame([v], [headline, other]))[0].body
+    zwsp = "\u200b"
+    assert "@team" not in body and f"@{zwsp}team" in body          # title mention
+    assert "@alice" not in body and f"@{zwsp}alice" in body        # reason mention
+    assert f"!{zwsp}[" in body                                     # image defused
+    assert "<script>" not in body and f"<{zwsp}script>" in body
+    # The only live HTML comment is the bot's own marker on the first line; the
+    # one smuggled into the reason is broken by the same zero-width space.
+    assert body.count("<!--") == 1 and body.startswith("<!--")
+
+
 def test_body_is_stable_across_identical_nights():
     # The upsert only edits when the body changes, so an unchanged night must
     # render byte-identically — no set ordering leaking into the output.
@@ -337,12 +377,14 @@ def test_body_is_stable_across_consecutive_nights():
     assert monday == tuesday
 
 
-def test_other_candidate_shows_its_highest_score_regardless_of_order():
-    # A competing PR can be scored differently for each metric in the window; the
-    # likelihood shown is its strongest, and must not depend on which verdict was
-    # walked first — that order would otherwise edit the comment when it shifts.
-    a = _verdict(metric="wall_time_s")
-    b = _verdict(metric="mean_time_s", pct=0.14)
+def test_each_scope_keeps_its_own_candidate_scores_and_is_order_independent():
+    # The ranker scores a candidate once per (detector, platform, sample) scope,
+    # so a competing PR can carry a different likelihood in each scope of the
+    # same window. Both scores are shown, each under its own scope — never
+    # flattened to one — and the body is identical whichever scope was walked
+    # first, so a reordering between nights does not re-edit the comment.
+    allegro = _verdict(detector="ALLEGRO_o1_v03")
+    idea = _verdict(detector="IDEA_o1_v03")
     hi = _candidate()
     lo = _candidate(number=1180, repo="key4hep/DD4hep", score=25.0, title="Other work")
     top = _candidate(number=1180, repo="key4hep/DD4hep", score=70.0, title="Other work")
@@ -353,7 +395,28 @@ def test_other_candidate_shows_its_highest_score_regardless_of_order():
             entries=tuple(_blame([v], cands).entries[0] for v, cands in pairs),
         )
 
-    forward = _select(_report(a, b), blame((a, [hi, lo]), (b, [hi, top])))[0].body
-    reverse = _select(_report(b, a), blame((b, [hi, top]), (a, [hi, lo])))[0].body
-    assert forward == reverse
-    assert "70%" in forward and "25%" not in forward
+    forward = _select(_report(allegro, idea), blame((allegro, [hi, lo]), (idea, [hi, top])))
+    reverse = _select(_report(idea, allegro), blame((idea, [hi, top]), (allegro, [hi, lo])))
+    assert len(forward) == 1  # one comment for the PR+window, two scope subsections
+    assert forward[0].body == reverse[0].body
+    # Each scope reports its own competitor likelihood — both survive, unflattened.
+    assert "25%" in forward[0].body and "70%" in forward[0].body
+
+
+def test_a_pr_scored_in_two_scopes_shows_both_not_a_combined_max():
+    # A 95% ALLEGRO judgement and an 81% IDEA judgement are two rankings, not one
+    # 95% ranking of both — each scope is its own subsection with its own score.
+    allegro = _verdict(detector="ALLEGRO_o1_v03")
+    idea = _verdict(detector="IDEA_o1_v03")
+    strong = _candidate(score=95.0)
+    weak = _candidate(score=81.0)
+    blame = BlameReport(
+        generated_at="x", report_night="2026-07-05",
+        entries=(
+            _blame([allegro], [strong]).entries[0],
+            _blame([idea], [weak]).entries[0],
+        ),
+    )
+    body = _select(_report(allegro, idea), blame)[0].body
+    assert "🎯 95% — ALLEGRO_o1_v03" in body
+    assert "🎯 81% — IDEA_o1_v03" in body

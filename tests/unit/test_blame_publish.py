@@ -148,12 +148,23 @@ def test_the_login_is_resolved_once_for_the_whole_run():
     assert gh.logins == 1
 
 
-def test_falls_back_to_the_marker_when_the_login_is_unreadable():
-    # A transient GET /user failure must not stop the night: with no login to
-    # match on, the marker alone identifies the comment, as it did before.
-    gh = _FakeGitHub({7: [IssueComment(42, f"{_MARKER}\nyesterday", author="")]}, login=None)
+def test_an_unreadable_login_fails_closed_and_posts_nothing():
+    # An off-repository write must never guess at ownership: if the bot cannot
+    # establish its own login, it edits nothing and reads no thread at all.
+    gh = _FakeGitHub({7: [_mine(42, f"{_MARKER}\nyesterday")]}, login=None)
     result = publish(gh, [_comment()])
-    assert result.updated == ["key4hep/k4geo#7"]
+    assert result.failed == ["key4hep/k4geo#7"]
+    assert not gh.created and not gh.updated and not gh.reads
+
+
+def test_a_marker_only_in_the_body_not_the_first_line_is_not_ours():
+    # The marker identifies our comment only as its first line; the same string
+    # quoted deeper in a comment (even one authored by the bot) is not a match.
+    quoted = IssueComment(9, f"as noted:\n{_MARKER}\ntext", author=_BOT)
+    gh = _FakeGitHub({7: [quoted]})
+    result = publish(gh, [_comment()])
+    assert result.created == ["key4hep/k4geo#7"]
+    assert not gh.updated
 
 
 def test_dry_run_writes_nothing_and_says_so():
