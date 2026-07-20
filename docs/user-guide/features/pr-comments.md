@@ -262,8 +262,9 @@ already uploaded, under a wall-clock timeout, inside a block that degrades any
 failure to a log line. Commenting must never be able to affect the report, the
 blame sidecar, or the e-group email.
 
-## Replying to a comment
+## Questioning a comment
 
-Every comment says an AI made the call, and ends with an invitation to
-reply if the attribution looks wrong. That reply is the feedback channel — the
-bot does not read it, but the people running k4Bench do.
+Every comment says an AI made the call, and ends with a `mailto:` link to
+<jbeirer@cern.ch>. That is the feedback channel: the bot reads nothing, and a
+reply in the thread relies on someone happening to watch it, so an attribution
+that looks wrong should go to a person directly.

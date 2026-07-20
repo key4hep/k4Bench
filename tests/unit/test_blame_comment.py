@@ -1066,12 +1066,13 @@ def test_a_clear_ranking_adds_no_caveat():
     assert "weak preference" not in body
 
 
-def test_body_invites_a_correction():
-    # The bot writes into repositories k4Bench does not own, so the author is
-    # told what to do when the call is wrong, not only that it might be.
+def test_body_names_a_human_to_contact():
+    # The bot writes into repositories k4Bench does not own, so a reader who
+    # thinks the call is wrong is given a person to reach — clickable, and not
+    # dependent on anyone watching the thread they would otherwise reply in.
     v = _verdict()
     body = _comments(_report(v), _blame([v], [_candidate()]))[0].body
-    assert "reply here if this attribution looks wrong" in body
+    assert "any questions to [jbeirer@cern.ch](mailto:jbeirer@cern.ch)" in body
 
 
 def test_body_says_so_when_nothing_else_was_in_the_frame():

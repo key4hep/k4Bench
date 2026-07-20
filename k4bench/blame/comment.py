@@ -145,6 +145,11 @@ _MAX_WATCHED_METRICS = 6
 #: mkdocs.yml + the page's nav path).
 _METHOD_URL = "https://key4hep.github.io/k4Bench/user-guide/features/pr-comments/"
 
+#: Who to write to about a comment. Rendered as a ``mailto:`` link, so a reader
+#: who thinks the bot got it wrong can reach a person in one click rather than
+#: replying into a thread nobody may be watching.
+_CONTACT_EMAIL = "jbeirer@cern.ch"
+
 _DEFAULT_MIN_SCORE = 80.0
 _DEFAULT_MAX_COMMENTS = 10
 
@@ -1107,15 +1112,16 @@ def _render(
             "",
             "---",
             "",
-            # The reply invitation is this renderer's own, not part of the
-            # shared disclosure: the e-group mail carries the same sentence to
-            # readers with no thread to answer in. k4Bench's name carries the
-            # page describing how this attribution is made rather than the
-            # repository root: someone who doubts a machine-written accusation
-            # wants the method, and a README makes them go looking for it.
+            # The contact line is this renderer's own, not part of the shared
+            # disclosure. A machine-written accusation needs a human at the end
+            # of it, and a named address reaches one whether or not anyone is
+            # watching the thread. k4Bench's name carries the page describing
+            # how this attribution is made rather than the repository root:
+            # someone who doubts the claim wants the method, and a README makes
+            # them go looking for it.
             f"<sub>🤖 {RANKING_DISCLOSURE} Posted automatically by "
-            f"[k4Bench]({_METHOD_URL}) — reply here if this attribution looks "
-            "wrong.</sub>",
+            f"[k4Bench]({_METHOD_URL}) — any questions to "
+            f"[{_CONTACT_EMAIL}](mailto:{_CONTACT_EMAIL})</sub>",
         ) if part is not None
     )
     return PRComment(
