@@ -12,11 +12,20 @@ and not IDEA, under the same sample and the same platform, says something no
 per-configuration call can see, because no per-configuration call is ever shown
 the other configurations. So this module asks the transposed question — *"which of
 this window's regressions did **this** pull request cause?"* — once per
-``(pull request, change window)``, and it is shown everything: every confirmed
-regression across every detector, sample, platform and benchmark configuration;
-the configurations that ran the same window and did *not* confirm; the release's
-package diff; and every other pull request that landed in the window, with its
-diff and the first pass's judgement of it.
+``(pull request, change window)``, and it is shown the whole window rather than
+one slice of it: the confirmed regressions across every detector, sample,
+platform and benchmark configuration; the configurations that ran the same
+window and did *not* confirm; the release's package diff; and the other pull
+requests that landed in the window, with their diffs and the first pass's
+judgement of them.
+
+The prompt is bounded, and honestly so. Every regression of the window is
+*collected* — that is what makes the exculpatory rows visible — but only the
+:data:`_MAX_ATTRIBUTED_ROWS` largest movements and the
+:data:`MAX_COMPETITORS` strongest competitors are put in front of the model. A
+row past that cap is never scored by this pass: it keeps the first pass's
+likelihood, it cannot be answered even if the model guesses its id, and the
+comment states how much of its table the review actually covered.
 
 The guarantees mirror :mod:`k4bench.blame.rank`'s, because the failure modes are
 the same and the consequences here are larger:
@@ -167,11 +176,19 @@ class PackageChangeFact:
     that appeared or disappeared (``ADDED``/``REMOVED``), which are different
     kinds of event: a package entering the stack can change a run without any
     pull request in anyone's commit range.
+
+    ``platforms`` names the build platforms this change was recorded on, and is
+    empty when it was recorded on all of them — the ordinary case, and not worth
+    a word in the prompt. A comment can span platforms while release provenance
+    is read per platform, so a package that moved on only one of them is both
+    possible and interesting: it narrows the reach of the change the same way a
+    detector that did not move does.
     """
 
     package: str
     status: str
     compare_url: str | None = None
+    platforms: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -525,7 +542,14 @@ def _package_lines(request: AttributionRequest) -> list[str]:
     ]
     for package in request.packages:
         note = "" if package.status == "CHANGED" else f" [{package.status}]"
-        lines.append(f"- {package.package}{note}")
+        # Only stated when the change is *not* everywhere this window was
+        # measured — a package that moved on one platform and not another
+        # bounds the reach of the change, like a detector that stayed flat.
+        where = (
+            f" (recorded on {', '.join(package.platforms)} only)"
+            if package.platforms else ""
+        )
+        lines.append(f"- {package.package}{note}{where}")
     return lines
 
 

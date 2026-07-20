@@ -352,6 +352,21 @@ class RegressionRow:
 
 
 @dataclass
+class _PackageSighting:
+    """One package change, and the build platforms it was observed on.
+
+    The provenance a release diff is read from is recorded *per platform*
+    (:func:`k4bench.blame.builder.build_blame_report` keys its diff cache on
+    ``(platform, base, onset)``), so the same window can carry a slightly
+    different package set on each platform — one lagging a build, one tracking a
+    package the other does not. A comment spans platforms, so the sightings are
+    merged and each remembers where it was seen."""
+
+    compare_url: str | None
+    platforms: set[str] = field(default_factory=set)
+
+
+@dataclass
 class CommentPlan:
     """Everything one comment is decided from: one pull request, one change
     window, every regression of that window, and the evidence around them.
@@ -364,6 +379,13 @@ class CommentPlan:
     candidate for, including the ones it scored badly on; ``selected`` records
     whether any of them scored high enough to warrant the comment. The two are
     deliberately separate — see :func:`select`.
+
+    A plan is keyed by pull request and window, never by platform, so its rows
+    can come from several build platforms at once. The release diff cannot
+    therefore be taken from whichever row was walked first: ``package_facts`` and
+    ``unchanged`` accumulate every contributing platform's view, and
+    :attr:`packages` / :attr:`n_unchanged` merge them into what the review is
+    shown.
     """
 
     repo: str
@@ -374,13 +396,55 @@ class CommentPlan:
     rows: list[RegressionRow] = field(default_factory=list)
     others: dict[tuple[str, int], CandidatePR] = field(default_factory=dict)
     outcomes: tuple[ScopeOutcome, ...] = ()
-    packages: tuple[PackageChangeFact, ...] = ()
-    n_unchanged: int = 0
+    #: ``(package, status) -> sighting``, across every platform in the plan.
+    package_facts: dict[tuple[str, str], _PackageSighting] = field(default_factory=dict)
+    #: ``platform -> tracked packages that stood still`` on that platform.
+    unchanged: dict[str, int] = field(default_factory=dict)
     selected: bool = False
 
     @property
     def target(self) -> str:
         return f"{self.repo}#{self.number}"
+
+    @property
+    def packages(self) -> tuple[PackageChangeFact, ...]:
+        """The window's package diff, as the review is shown it.
+
+        The union across every platform the plan's rows came from — a package
+        that moved on one platform moved in this window, and dropping it because
+        another platform did not record it would understate the search space. A
+        change seen on some platforms but not all says which, because "only the
+        ARM build's compiler moved" is itself an attribution clue; a change seen
+        everywhere says nothing, since that is the ordinary case."""
+        everywhere = self.platforms
+        return tuple(
+            PackageChangeFact(
+                package=package,
+                status=status,
+                compare_url=sighting.compare_url,
+                platforms=(
+                    () if sighting.platforms >= everywhere
+                    else tuple(sorted(sighting.platforms))
+                ),
+            )
+            for (package, status), sighting in sorted(self.package_facts.items())
+        )
+
+    @property
+    def n_unchanged(self) -> int:
+        """How many tracked packages stood still — the smallest count any
+        contributing platform saw.
+
+        This number bounds the search ("three of twenty tracked packages
+        moved"), so where platforms disagree the claim has to be the one that
+        holds on all of them. Understating how much stood still costs the review
+        a little context; overstating it would tell the model a package was
+        ruled out somewhere it never was."""
+        return min(self.unchanged.values(), default=0)
+
+    @property
+    def platforms(self) -> set[str]:
+        return {row.verdict.platform for row in self.rows}
 
     @property
     def top_score(self) -> float:
@@ -447,8 +511,6 @@ def select(
                         subject=candidate,
                         base_release=entry.base_release,
                         onset_release=entry.onset_release,
-                        packages=_packages_of(entry),
-                        n_unchanged=entry.n_unchanged,
                     )
                 elif candidate.score > plan.subject.score:
                     # Every metric of a run group shares one ranking, so these
@@ -459,6 +521,7 @@ def select(
                 # One scoring above the threshold is what causes the comment;
                 # every scoring, high or low, is what the comment is judged on.
                 plan.selected = plan.selected or policy.allows(candidate)
+                _record_packages(plan, entry, verdict.platform)
                 plan.rows.append(RegressionRow(
                     verdict=verdict, stack=group.k4h_release,
                     scope_score=candidate.score, scope_reason=candidate.description,
@@ -501,13 +564,23 @@ def select(
     return ordered
 
 
-def _packages_of(entry: BlameEntry) -> tuple[PackageChangeFact, ...]:
-    """The window's package diff, as the review is shown it."""
-    return tuple(
-        PackageChangeFact(
-            package=repo.package, status=repo.status, compare_url=repo.compare_url
+def _record_packages(plan: CommentPlan, entry: BlameEntry, platform: str) -> None:
+    """Fold one entry's release diff into *plan*, remembering whose it was.
+
+    Called for every row, not only the first: the entries behind one comment can
+    come from different platforms, and their package sets are read from
+    per-platform provenance. Repeats are free — an entry re-seen on a platform
+    already recorded adds nothing."""
+    for repo in entry.repos:
+        sighting = plan.package_facts.setdefault(
+            (repo.package, repo.status), _PackageSighting(repo.compare_url)
         )
-        for repo in entry.repos
+        sighting.platforms.add(platform)
+    # Every entry of one platform in one window is read from the same diff, so
+    # this is the same count each time; taking the smallest keeps a surprise in
+    # the sidecar from inflating a claim about what stood still.
+    plan.unchanged[platform] = min(
+        plan.unchanged.get(platform, entry.n_unchanged), entry.n_unchanged
     )
 
 

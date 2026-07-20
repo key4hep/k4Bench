@@ -651,6 +651,50 @@ def test_the_platform_column_appears_only_when_platforms_differ():
     assert "debug" in body and "optimized" in body
 
 
+def _entry_with(verdict, packages, *, n_unchanged=18) -> BlameEntry:
+    """One sidecar entry whose release diff is spelled out per package."""
+    return replace(
+        _blame([verdict], [_candidate()]).entries[0],
+        repos=tuple(
+            RepoBlame(
+                package=package, repo=f"key4hep/{package}",
+                base_commit="a" * 40, head_commit="c" * 40,
+                compare_url=f"https://github.com/key4hep/{package}/compare/a...c",
+                status="CHANGED", candidates=(_candidate(),),
+            )
+            for package in packages
+        ),
+        n_unchanged=n_unchanged,
+    )
+
+
+def test_a_comment_spanning_platforms_is_shown_every_platforms_package_diff():
+    # A plan is keyed by pull request and window, never by platform, while the
+    # release provenance a diff is read from *is* per platform. Taking whichever
+    # entry was walked first would tell the review one platform's changed-package
+    # set while showing it both platforms' regressions.
+    dbg = "x86_64-almalinux9-gcc14.2.0-dbg"
+    opt = _verdict(platform=_PLAT)
+    debug = _verdict(platform=dbg)
+    blame = BlameReport(
+        generated_at="x", report_night="2026-07-05",
+        entries=(
+            _entry_with(opt, ["k4geo"], n_unchanged=18),
+            _entry_with(debug, ["k4geo", "DD4hep"], n_unchanged=17),
+        ),
+    )
+    attributor = _FakeAttributor({"r1": 90.0, "r2": 90.0})
+    _comments(_report(opt, debug), blame, attributor=attributor)
+    request = attributor.requests[0]
+    assert sorted(p.package for p in request.packages) == ["DD4hep", "k4geo"]
+    # The one only the debug build recorded says so; the shared one does not.
+    facts = {p.package: p.platforms for p in request.packages}
+    assert facts["DD4hep"] == (dbg,) and facts["k4geo"] == ()
+    # The unchanged claim is the one that holds on both platforms.
+    assert request.n_unchanged == 17
+    assert "recorded on x86_64-almalinux9-gcc14.2.0-dbg only" in build_user_prompt(request)
+
+
 def test_each_row_links_to_its_own_regression_in_the_dashboard():
     # A reader's question is about *their* metric, so the row opens the exact
     # regression: the package diff for the window with that metric selected
