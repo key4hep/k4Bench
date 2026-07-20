@@ -7,9 +7,12 @@ lives in one readable place:
 
 * **Upsert, never append.** A comment is identified by its hidden marker, so a
   regression that stands for a week is one comment edited nightly, not seven.
-* **No pointless edits.** An unchanged body performs *no* request at all — an
+* **No pointless edits.** An unchanged comment performs *no* request at all — an
   edit re-surfaces the comment for everyone watching the PR, so it must mean
-  something changed.
+  something changed. "Unchanged" is judged on the hidden *facts* digest, not on
+  the body: part of the body is model prose regenerated every night, and a
+  reworded sentence about the same regression is not a change anyone wants a
+  notification for.
 * **Never post blind.** If the existing comments could not be read
   (:func:`~k4bench.blame.github.list_issue_comments` returning ``None``), the PR
   is skipped: a duplicate comment is worse than a missing one.
@@ -33,7 +36,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from k4bench.blame.comment import PRComment
+from k4bench.blame.comment import PRComment, facts_digest_of
 from k4bench.blame.github import (
     GitHubClient,
     RateLimitError,
@@ -51,7 +54,8 @@ class PublishResult:
     """What the run did, in the four outcomes worth telling apart.
 
     ``unchanged`` is a success, not a no-op to be fixed: it is the steady state
-    of a regression that has been standing for days.
+    of a regression that has been standing for days — the benchmark facts are
+    the same tonight, whatever words the model chose for them this time.
     """
 
     created: list[str] = field(default_factory=list)
@@ -127,7 +131,13 @@ def _upsert(
     A comment counts as the bot's own only when its *first line* is the marker
     (the shape :func:`~k4bench.blame.comment._render` always produces) **and** it
     was written by *login* — a marker quoted inside someone else's comment
-    matches neither test, so it cannot divert the edit."""
+    matches neither test, so it cannot divert the edit.
+
+    Whether it needs rewriting is decided on the hidden facts digest
+    (:func:`~k4bench.blame.comment.facts_digest_of`) rather than the body, so a
+    freshly-worded summary of the same regressions is left alone. A comment from
+    before digests existed carries none; those fall back to comparing bodies and
+    so take one upgrade edit, once."""
     existing = list_issue_comments(client, comment.repo, comment.number)
     if existing is None:
         _log.warning(
@@ -154,7 +164,12 @@ def _upsert(
         result.created.append(comment.target)
         return
 
-    if mine.body == comment.body:
+    posted_digest = facts_digest_of(mine.body)
+    if (
+        posted_digest == comment.facts_digest
+        if posted_digest and comment.facts_digest
+        else mine.body == comment.body
+    ):
         _log.info("publish: %s already says this — no edit", comment.target)
         result.unchanged.append(comment.target)
         return

@@ -1,7 +1,11 @@
 """Unit tests for :mod:`k4bench.blame.comment` — who gets commented on, and
-what the comment says. Everything here is offline: the module is pure by design
-so the "do we write into someone else's repository?" decision is testable
-without a token."""
+what the comment says.
+
+Everything here is offline. :func:`~k4bench.blame.comment.select` is pure by
+design, so the "do we write into someone else's repository?" decision is
+testable without a token; :func:`~k4bench.blame.comment.build_comments` takes
+its model and its diff source as arguments, so the cross-configuration review is
+driven here by a recording fake rather than an endpoint."""
 
 from __future__ import annotations
 
@@ -9,10 +13,13 @@ from dataclasses import replace
 
 import pytest
 
+from k4bench.blame.attribute import Attribution
 from k4bench.blame.comment import (
     CommentConfigError,
     CommentPolicy,
     CommentStormError,
+    build_comments,
+    facts_digest_of,
     marker_for,
     select,
 )
@@ -29,7 +36,7 @@ _PLAT = "x86_64-almalinux9-gcc14.2.0-opt"
 _DASH = "https://k4bench-dashboard.app.cern.ch"
 #: What the renderer breaks a GitHub-active sequence with — invisible to a
 #: reader, inert to GitHub's reference and mention parsers.
-_ZWSP = "\u200b"
+_ZWSP = "​"
 
 
 def _policy(**kw) -> CommentPolicy:
@@ -38,20 +45,21 @@ def _policy(**kw) -> CommentPolicy:
 
 def _verdict(*, metric="wall_time_s", label="baseline", onset="2026-07-04",
              base="2026-07-03", pct=0.2, detector="ALLEGRO_o1_v03",
-             sample="single_e-_10GeV", sub=None) -> MetricVerdict:
+             sample="single_e-_10GeV", sub=None, platform=_PLAT,
+             severity=Severity.CONFIRMED) -> MetricVerdict:
     return MetricVerdict(
-        detector=detector, platform=_PLAT, sample=sample,
+        detector=detector, platform=platform, sample=sample,
         label=label, metric_family="time", metric=metric, sub_detector=sub,
-        run_id="2026-07-05", run_date="2026-07-04", value=120.0,
+        run_id="2026-07-05", run_date=onset, value=120.0,
         baseline_median=100.0, baseline_mad=1.0, pct_change=pct, z_score=6.0,
-        severity=Severity.CONFIRMED, direction=Direction.UP, reason="step",
+        severity=severity, direction=Direction.UP, reason="step",
         onset_run_id=onset, onset_run_date=onset,
         last_accepted_run_id=base, last_accepted_run_date=base,
         first_confirmed_run_id="2026-07-05",
     )
 
 
-def _report(*verdicts: MetricVerdict, night="2026-07-05") -> NightlyReport:
+def _report(*verdicts: MetricVerdict, night="2026-07-05", **group_kw) -> NightlyReport:
     groups: dict[tuple, RunGroupReport] = {}
     for v in verdicts:
         key = (v.detector, v.platform, v.sample)
@@ -60,7 +68,7 @@ def _report(*verdicts: MetricVerdict, night="2026-07-05") -> NightlyReport:
             group = groups[key] = RunGroupReport(
                 detector=v.detector, platform=v.platform, sample=v.sample,
                 k4h_release="key4hep-2026-07-04", run_date=night,
-                run_id=night, verdicts=[],
+                run_id=night, verdicts=[], **group_kw,
             )
         group.verdicts.append(v)
     return NightlyReport(generated_at=f"{night}T00:00:00", groups=list(groups.values()))
@@ -92,6 +100,7 @@ def _blame(verdicts, candidates, *, truncated=False, unavailable=False) -> Blame
                     commits_unavailable=unavailable, truncated=truncated,
                 ),
             ),
+            n_unchanged=18,
         )
         for v in verdicts
     ]
@@ -101,8 +110,59 @@ def _blame(verdicts, candidates, *, truncated=False, unavailable=False) -> Blame
     )
 
 
-def _select(report, blame, policy=None):
-    return select(report, blame, policy or _policy(), dashboard_url=_DASH)
+def _blame_of(*pairs) -> BlameReport:
+    """A sidecar built from explicit ``(verdict, candidates)`` pairs — the shape
+    a window needs when its scopes carry *different* candidate scores."""
+    return BlameReport(
+        generated_at="x", report_night="2026-07-05",
+        entries=tuple(_blame([v], cands).entries[0] for v, cands in pairs),
+    )
+
+
+class _FakeAttributor:
+    """A scripted cross-configuration review that records what it was asked.
+
+    ``scores`` maps a regression's ``fact_id`` to a likelihood; anything not
+    named is simply not answered, which is a real case the renderer must handle
+    (the row keeps its per-configuration score)."""
+
+    def __init__(self, scores=None, *, summary="ALLEGRO moved and IDEA did not.",
+                 declines=False, raises=None):
+        self.scores = scores or {}
+        self.summary = summary
+        self.declines = declines
+        self.raises = raises
+        self.requests: list = []
+
+    def attribute(self, request):
+        self.requests.append(request)
+        if self.raises is not None:
+            raise self.raises
+        if self.declines:
+            return None
+        return Attribution(summary=self.summary, likelihoods=dict(self.scores))
+
+
+def _plans(report, blame, policy=None):
+    return select(report, blame, policy or _policy())
+
+
+def _comments(report, blame, policy=None, *, attributor=None, patch_for=None,
+              dashboard_url=_DASH):
+    policy = policy or _policy()
+    return build_comments(
+        _plans(report, blame, policy),
+        attributor=attributor, patch_for=patch_for,
+        dashboard_url=dashboard_url, min_score=policy.min_score,
+    )
+
+
+def _row(body: str, needle: str) -> str:
+    return next(line for line in body.splitlines() if needle in line)
+
+
+def _table_rows(body: str) -> list[str]:
+    return [line for line in body.splitlines() if line.startswith("| `")]
 
 
 # ── The policy ────────────────────────────────────────────────────────────────
@@ -150,25 +210,25 @@ def test_absent_or_empty_config_is_inert_not_an_error(absent):
 
 def test_confident_candidate_in_an_enabled_repo_is_selected():
     v = _verdict()
-    comments = _select(_report(v), _blame([v], [_candidate()]))
-    assert [(c.repo, c.number) for c in comments] == [("key4hep/k4geo", 1234)]
+    plans = _plans(_report(v), _blame([v], [_candidate()]))
+    assert [(p.repo, p.number) for p in plans] == [("key4hep/k4geo", 1234)]
 
 
 def test_below_threshold_candidate_is_not_selected():
     v = _verdict()
-    assert _select(_report(v), _blame([v], [_candidate(score=79.0)])) == []
+    assert _plans(_report(v), _blame([v], [_candidate(score=79.0)])) == []
 
 
 def test_repo_outside_the_allowlist_is_not_selected():
     v = _verdict()
     other = _candidate(repo="key4hep/DD4hep")
-    assert _select(_report(v), _blame([v], [other])) == []
+    assert _plans(_report(v), _blame([v], [other])) == []
 
 
 def test_unmerged_candidate_is_not_selected():
     # An open PR cannot have shipped in the release the step entered with.
     v = _verdict()
-    assert _select(_report(v), _blame([v], [_candidate(merged=None)])) == []
+    assert _plans(_report(v), _blame([v], [_candidate(merged=None)])) == []
 
 
 @pytest.mark.parametrize("flags", [{"truncated": True}, {"unavailable": True}])
@@ -176,27 +236,20 @@ def test_incomplete_discovery_is_never_commented_on(flags):
     # The ranker refuses to name a culprit out of a knowingly partial candidate
     # set; posting one into someone's PR would be the same overclaim, louder.
     v = _verdict()
-    assert _select(_report(v), _blame([v], [_candidate()], **flags)) == []
+    assert _plans(_report(v), _blame([v], [_candidate()], **flags)) == []
 
 
 def test_watch_verdicts_are_not_commented_on():
     # Only confirmed regressions reach report.regressions, so a sidecar entry
     # for anything else has nothing to attach to.
     v = _verdict()
-    report = NightlyReport(
-        generated_at="2026-07-05T00:00:00",
-        groups=[RunGroupReport(
-            detector=v.detector, platform=v.platform, sample=v.sample,
-            k4h_release="key4hep-2026-07-04", run_date="2026-07-05", run_id="2026-07-05",
-            verdicts=[replace(v, severity=Severity.WATCH)],
-        )],
-    )
-    assert _select(report, _blame([v], [_candidate()])) == []
+    report = _report(replace(v, severity=Severity.WATCH))
+    assert _plans(report, _blame([v], [_candidate()])) == []
 
 
 def test_metrics_sharing_a_window_collapse_into_one_comment():
     a, b = _verdict(metric="wall_time_s"), _verdict(metric="mean_time_s", pct=0.14)
-    comments = _select(_report(a, b), _blame([a, b], [_candidate()]))
+    comments = _comments(_report(a, b), _blame([a, b], [_candidate()]))
     assert len(comments) == 1
     body = comments[0].body
     assert "`wall_time_s`" in body and "`mean_time_s`" in body
@@ -207,7 +260,7 @@ def test_a_second_window_gets_its_own_comment():
     # and must not overwrite each other.
     old = _verdict(metric="peak_rss_mb", onset="2026-06-20", base="2026-06-19")
     new = _verdict(metric="wall_time_s")
-    comments = _select(_report(old, new), _blame([old, new], [_candidate()]))
+    comments = _comments(_report(old, new), _blame([old, new], [_candidate()]))
     assert len({c.marker for c in comments}) == 2
 
 
@@ -217,14 +270,9 @@ def test_over_the_cap_raises_a_storm_error():
     # and raising (not returning []) lets the CLI tell it apart from a quiet night.
     verdicts = [_verdict(metric=f"m{i}", sample=f"s{i}") for i in range(4)]
     candidates = [_candidate(number=100 + i) for i in range(4)]
-    blame = BlameReport(
-        generated_at="x", report_night="2026-07-05",
-        entries=tuple(
-            _blame([v], [c]).entries[0] for v, c in zip(verdicts, candidates, strict=True)
-        ),
-    )
+    blame = _blame_of(*zip(verdicts, ([c] for c in candidates), strict=True))
     with pytest.raises(CommentStormError) as exc:
-        _select(_report(*verdicts), blame, _policy(max_comments=2))
+        _plans(_report(*verdicts), blame, _policy(max_comments=2))
     assert exc.value.count == 4 and exc.value.cap == 2
 
 
@@ -232,31 +280,262 @@ def test_at_the_cap_still_posts():
     # The cap is a ceiling, not a trigger: exactly max_comments is fine.
     verdicts = [_verdict(metric=f"m{i}", sample=f"s{i}") for i in range(2)]
     candidates = [_candidate(number=100 + i) for i in range(2)]
-    blame = BlameReport(
-        generated_at="x", report_night="2026-07-05",
-        entries=tuple(
-            _blame([v], [c]).entries[0] for v, c in zip(verdicts, candidates, strict=True)
-        ),
+    blame = _blame_of(*zip(verdicts, ([c] for c in candidates), strict=True))
+    assert len(_plans(_report(*verdicts), blame, _policy(max_comments=2))) == 2
+
+
+# ── What the review is shown ──────────────────────────────────────────────────
+
+def test_the_review_is_asked_about_every_configuration_at_once():
+    # The whole point of the second pass: one request carrying every scope of
+    # the window, not one request per scope.
+    allegro = _verdict(detector="ALLEGRO_o1_v03")
+    idea = _verdict(detector="IDEA_o1_v03", metric="peak_rss_mb", pct=0.11)
+    attributor = _FakeAttributor({"r1": 90.0, "r2": 20.0})
+    _comments(_report(allegro, idea), _blame([allegro, idea], [_candidate()]),
+              attributor=attributor)
+    assert len(attributor.requests) == 1
+    request = attributor.requests[0]
+    assert {f.detector for f in request.regressions} == {
+        "ALLEGRO_o1_v03", "IDEA_o1_v03",
+    }
+    assert request.repo == "key4hep/k4geo" and request.number == 1234
+
+
+def test_the_review_is_shown_what_measured_the_window_and_stayed_clean():
+    # "ALLEGRO moved and IDEA did not" is the evidence this stage exists for.
+    allegro = _verdict(detector="ALLEGRO_o1_v03")
+    idea_clean = _verdict(detector="IDEA_o1_v03", severity=Severity.OK)
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(_report(allegro, idea_clean), _blame([allegro], [_candidate()]),
+              attributor=attributor)
+    outcomes = attributor.requests[0].outcomes
+    assert [(o.detector, o.status) for o in outcomes] == [("IDEA_o1_v03", "clean")]
+
+
+def test_a_configuration_that_moved_without_confirming_is_reported_as_watching():
+    allegro = _verdict(detector="ALLEGRO_o1_v03")
+    idea_watch = _verdict(detector="IDEA_o1_v03", severity=Severity.WATCH,
+                          metric="peak_rss_mb")
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(_report(allegro, idea_watch), _blame([allegro], [_candidate()]),
+              attributor=attributor)
+    outcome = attributor.requests[0].outcomes[0]
+    assert (outcome.status, outcome.watched) == ("watch", ("peak_rss_mb",))
+
+
+@pytest.mark.parametrize("group_kw", [
+    {"reliable": False},                       # the host was not trustworthy
+    {"job_failures": ["no run uploaded"]},     # the run did not really happen
+])
+def test_a_run_that_cannot_be_trusted_is_not_evidence_of_absence(group_kw):
+    # Silence from a broken run must never be shown to the model as a clean
+    # measurement — that is the difference between "IDEA did not move" and
+    # "IDEA was not measured".
+    allegro = _verdict(detector="ALLEGRO_o1_v03")
+    idea = _verdict(detector="IDEA_o1_v03", severity=Severity.OK)
+    report = _report(allegro)
+    report.groups.extend(_report(idea, **group_kw).groups)
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(report, _blame([allegro], [_candidate()]), attributor=attributor)
+    assert attributor.requests[0].outcomes == ()
+
+
+def test_a_configuration_that_measured_another_release_is_not_evidence():
+    allegro = _verdict(detector="ALLEGRO_o1_v03")
+    stale = _verdict(detector="IDEA_o1_v03", severity=Severity.OK, onset="2026-06-01")
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(_report(allegro, stale), _blame([allegro], [_candidate()]),
+              attributor=attributor)
+    assert attributor.requests[0].outcomes == ()
+
+
+def test_the_review_is_shown_the_diffs_the_release_and_the_competing_field():
+    v = _verdict()
+    rival = _candidate(number=1180, repo="key4hep/DD4hep", score=64.0, title="Field map")
+    fetched: list[tuple[str, int]] = []
+
+    def patch_for(repo, number):
+        fetched.append((repo, number))
+        return f"diff of {repo}#{number}"
+
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(_report(v), _blame([v], [_candidate(), rival]),
+              attributor=attributor, patch_for=patch_for)
+    request = attributor.requests[0]
+    assert request.patch == "diff of key4hep/k4geo#1234"
+    assert [(c.repo, c.number) for c in request.competitors] == [
+        ("key4hep/DD4hep", 1180),
+    ]
+    assert request.competitors[0].patch == "diff of key4hep/DD4hep#1180"
+    assert request.competitors[0].scope_score == 64.0
+    assert [p.package for p in request.packages] == ["k4geo"]
+    assert request.n_unchanged == 18
+    assert fetched == [("key4hep/k4geo", 1234), ("key4hep/DD4hep", 1180)]
+
+
+def test_the_first_passs_score_rides_along_as_the_priors():
+    v = _verdict()
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(_report(v), _blame([v], [_candidate(score=87.0)]), attributor=attributor)
+    fact = attributor.requests[0].regressions[0]
+    assert fact.scope_score == 87.0
+    assert fact.scope_reason == "Adds a lookup on the hot path of every step."
+    assert fact.direction == "UP"
+
+
+def test_row_ids_are_assigned_by_identity_not_by_score():
+    # A re-run must ask the model about "r2" and mean the same regression, so
+    # the ids cannot depend on an ordering the model itself influences.
+    a = _verdict(metric="a_metric", pct=0.05)
+    b = _verdict(metric="b_metric", pct=0.40)
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(_report(a, b), _blame([a, b], [_candidate()]), attributor=attributor)
+    facts = attributor.requests[0].regressions
+    assert [(f.id, f.metric) for f in facts] == [("r1", "a_metric"), ("r2", "b_metric")]
+
+
+# ── The single table ──────────────────────────────────────────────────────────
+
+def test_the_table_is_ordered_by_the_reviews_likelihood():
+    # The per-configuration ranker scored both scopes the same; the review has
+    # seen the whole window and disagrees, and its order is what a reader sees.
+    allegro = _verdict(detector="ALLEGRO_o1_v03", metric="wall_time_s")
+    idea = _verdict(detector="IDEA_o1_v03", metric="wall_time_s")
+    attributor = _FakeAttributor({"r1": 30.0, "r2": 95.0})
+    body = _comments(_report(allegro, idea), _blame([allegro, idea], [_candidate()]),
+                     attributor=attributor)[0].body
+    rows = _table_rows(body)
+    assert "IDEA_o1_v03" in rows[0] and "95%" in rows[0]
+    assert "ALLEGRO_o1_v03" in rows[1] and "30%" in rows[1]
+
+
+def test_a_row_the_review_skipped_keeps_its_per_configuration_score():
+    # An unanswered row is not a zero.
+    a = _verdict(metric="a_metric")
+    b = _verdict(metric="b_metric")
+    attributor = _FakeAttributor({"r1": 88.0})
+    body = _comments(_report(a, b), _blame([a, b], [_candidate(score=91.0)]),
+                     attributor=attributor)[0].body
+    assert "88%" in _row(body, "a_metric")
+    assert "91%" in _row(body, "b_metric")
+
+
+def test_only_the_first_rows_are_visible_and_the_rest_fold_away():
+    verdicts = [_verdict(metric=f"m{i}", pct=(20 - i) / 100) for i in range(8)]
+    body = _comments(_report(*verdicts), _blame(verdicts, [_candidate()]))[0].body
+    head, _, tail = body.partition("<details>")
+    assert len(_table_rows(head)) == 5
+    assert "3 further regressions in this window" in tail
+    assert len(_table_rows(tail)) == 3
+
+
+def test_the_platform_column_appears_only_when_platforms_differ():
+    one = _verdict(detector="ALLEGRO_o1_v03")
+    body = _comments(_report(one), _blame([one], [_candidate()]))[0].body
+    assert "| Platform |" not in body
+
+    other = _verdict(detector="ALLEGRO_o1_v03", platform="x86_64-almalinux9-gcc14.2.0-dbg")
+    body = _comments(_report(one, other), _blame([one, other], [_candidate()]))[0].body
+    assert "| Platform |" in body
+    assert "debug" in body and "optimized" in body
+
+
+def test_each_row_links_to_its_own_window_in_the_dashboard():
+    allegro = _verdict(detector="ALLEGRO_o1_v03")
+    idea = _verdict(detector="IDEA_o1_v03")
+    body = _comments(_report(allegro, idea), _blame([allegro, idea], [_candidate()]))[0].body
+    for detector in ("ALLEGRO_o1_v03", "IDEA_o1_v03"):
+        row = _row(body, f"[{detector}]")
+        assert f"detector={detector}" in row
+        assert "window=2026-07-03..2026-07-04" in row
+        # ?stack= is the dashboard's release *directory*, not the bare release
+        # date a verdict carries — a bare date selects nothing.
+        assert "stack=key4hep-2026-07-04" in row
+
+
+def test_the_window_wide_package_diff_is_the_only_link_left_over():
+    v = _verdict()
+    body = _comments(_report(v), _blame([v], [_candidate()]))[0].body
+    assert body.count("Where to look") == 1
+    assert "&to=2026-07-04" in body
+    # Nothing that varies from night to night: no report-night query param and
+    # no CI-run URL, either of which would edit a standing comment every night.
+    assert "report=" not in body
+    assert "actions/runs" not in body
+
+
+def test_the_old_two_section_layout_is_gone():
+    allegro = _verdict(detector="ALLEGRO_o1_v03")
+    idea = _verdict(detector="IDEA_o1_v03")
+    body = _comments(_report(allegro, idea), _blame([allegro, idea], [_candidate()]))[0].body
+    assert "Also affected in this window" not in body
+    assert "What moved" not in body
+    assert body.count("Regressions attributed to this pull request") == 1
+
+
+# ── The claim, and the withdrawal gate ────────────────────────────────────────
+
+def test_the_review_supplies_the_narrative():
+    v = _verdict()
+    attributor = _FakeAttributor(
+        {"r1": 92.0}, summary="Only ALLEGRO moved; IDEA ran the same sample clean.",
     )
-    assert len(_select(_report(*verdicts), blame, _policy(max_comments=2))) == 2
+    body = _comments(_report(v), _blame([v], [_candidate()]), attributor=attributor)[0].body
+    assert "The AI reviewer's assessment" in body
+    assert "IDEA ran the same sample clean" in body
+    assert "92%" in body
 
 
-# ── The rendered body ─────────────────────────────────────────────────────────
-
-def test_body_carries_the_marker_for_its_window():
+def test_a_review_that_clears_every_row_withdraws_the_comment():
+    # Selection happens on the first pass; the second may only narrow.
     v = _verdict()
-    comment = _select(_report(v), _blame([v], [_candidate()]))[0]
-    assert comment.marker == marker_for("2026-07-03", "2026-07-04")
-    assert comment.body.startswith(comment.marker)
+    attributor = _FakeAttributor({"r1": 12.0})
+    assert _comments(_report(v), _blame([v], [_candidate()]),
+                     attributor=attributor) == []
 
 
-def test_body_states_likelihood_reason_and_disclosure():
+def test_one_row_above_the_threshold_is_enough_to_keep_the_comment():
+    a, b = _verdict(metric="a_metric"), _verdict(metric="b_metric")
+    attributor = _FakeAttributor({"r1": 12.0, "r2": 81.0})
+    comments = _comments(_report(a, b), _blame([a, b], [_candidate()]),
+                         attributor=attributor)
+    assert len(comments) == 1
+    assert "12%" in _row(comments[0].body, "a_metric")
+
+
+@pytest.mark.parametrize("attributor", [
+    None,
+    _FakeAttributor(declines=True),
+    _FakeAttributor(raises=RuntimeError("endpoint on fire")),
+])
+def test_without_a_usable_review_the_comment_still_renders(attributor):
+    # No model, a decline, an adapter that raises: all the same degradation to
+    # the per-configuration scores. A degraded comment beats a blocked one — and
+    # nothing is withdrawn on the strength of a review that did not happen.
     v = _verdict()
-    body = _select(_report(v), _blame([v], [_candidate()]))[0].body
+    comments = _comments(_report(v), _blame([v], [_candidate()]), attributor=attributor)
+    assert len(comments) == 1
+    body = comments[0].body
     assert "91%" in body
-    assert "hot path of every step" in body
-    assert "AI-generated PR ranking" in body  # never presented as proof
+    assert "hot path of every step" in body      # the ranker's own reason
+    assert "AI-generated PR ranking" in body     # never presented as proof
 
+
+def test_a_failing_diff_fetch_does_not_cost_the_comment():
+    v = _verdict()
+
+    def patch_for(repo, number):
+        raise RuntimeError("GitHub is down")
+
+    attributor = _FakeAttributor({"r1": 95.0})
+    comments = _comments(_report(v), _blame([v], [_candidate()]),
+                         attributor=attributor, patch_for=patch_for)
+    assert len(comments) == 1
+    assert attributor.requests == []  # the review never ran; the comment stands
+
+
+# ── The claim's honesty, without a review ─────────────────────────────────────
 
 def test_reason_label_does_not_overclaim_when_outranked():
     # The comment gate is min_score, not "ranked first": a PR at 85% fires even
@@ -265,7 +544,7 @@ def test_reason_label_does_not_overclaim_when_outranked():
     v = _verdict()
     outranked = _candidate(score=85.0)
     top = _candidate(number=1180, repo="key4hep/DD4hep", score=92.0)
-    body = _select(_report(v), _blame([v], [outranked, top]))[0].body
+    body = _comments(_report(v), _blame([v], [outranked, top]))[0].body
     assert "judged this PR a likely cause" in body
     assert "most likely" not in body
 
@@ -273,15 +552,37 @@ def test_reason_label_does_not_overclaim_when_outranked():
 def test_reason_label_claims_most_likely_only_when_top_ranked():
     v = _verdict()
     runner_up = _candidate(number=1180, repo="key4hep/DD4hep", score=22.0)
-    body = _select(_report(v), _blame([v], [_candidate(), runner_up]))[0].body
+    body = _comments(_report(v), _blame([v], [_candidate(), runner_up]))[0].body
     assert "judged this PR the most likely cause" in body
+
+
+def test_body_carries_the_marker_for_its_window():
+    v = _verdict()
+    comment = _comments(_report(v), _blame([v], [_candidate()]))[0]
+    assert comment.marker == marker_for("2026-07-03", "2026-07-04")
+    assert comment.body.startswith(comment.marker)
 
 
 def test_body_lists_the_other_candidates_with_their_likelihoods():
     v = _verdict()
     others = [_candidate(), _candidate(number=1180, score=22.0, title="Unrelated cleanup")]
-    body = _select(_report(v), _blame([v], others))[0].body
+    body = _comments(_report(v), _blame([v], others))[0].body
     assert f"key4hep/k4geo#{_ZWSP}1180" in body and "22%" in body
+
+
+def test_the_competing_field_is_gathered_across_the_whole_window():
+    # A candidate that only competed in one configuration is still part of the
+    # field the claim is made against, and keeps its strongest score.
+    allegro = _verdict(detector="ALLEGRO_o1_v03")
+    idea = _verdict(detector="IDEA_o1_v03")
+    weak = _candidate(number=1180, repo="key4hep/DD4hep", score=20.0, title="Field map")
+    strong = replace(weak, score=64.0)
+    body = _comments(
+        _report(allegro, idea),
+        _blame_of((allegro, [_candidate(), weak]), (idea, [_candidate(), strong])),
+    )[0].body
+    summary = _row(body, "<summary>")
+    assert "1 candidate" in summary and "highest 64%" in summary
 
 
 def test_competing_candidates_are_named_but_never_referenced():
@@ -291,7 +592,7 @@ def test_competing_candidates_are_named_but_never_referenced():
     # `owner/repo#123` may appear; the broken number reads the same to a human.
     v = _verdict()
     other = _candidate(number=1180, repo="key4hep/DD4hep", score=22.0)
-    body = _select(_report(v), _blame([v], [_candidate(), other]))[0].body
+    body = _comments(_report(v), _blame([v], [_candidate(), other]))[0].body
     assert "key4hep/DD4hep#1180" not in body
     assert other.url not in body
     assert f"key4hep/DD4hep#{_ZWSP}1180" in body
@@ -302,23 +603,8 @@ def test_a_hash_in_external_prose_references_nothing():
     # repository the comment is posted to — the same spam, smuggled in.
     v = _verdict()
     other = _candidate(number=1180, score=22.0, title="Revert #45 for now")
-    body = _select(_report(v), _blame([v], [_candidate(), other]))[0].body
+    body = _comments(_report(v), _blame([v], [_candidate(), other]))[0].body
     assert "#45" not in body and f"#{_ZWSP}45" in body
-
-
-def test_the_strongest_competing_score_shows_without_expanding():
-    # How far ahead this PR sits is the difference between a ranking that picked
-    # it and one that barely preferred it, so the collapsed summary carries the
-    # top competing likelihood for a reader who expands nothing.
-    v = _verdict()
-    others = [
-        _candidate(),
-        _candidate(number=1180, repo="key4hep/DD4hep", score=22.0, title="Cleanup"),
-        _candidate(number=1181, repo="key4hep/DD4hep", score=64.0, title="Field map"),
-    ]
-    body = _select(_report(v), _blame([v], others))[0].body
-    summary = next(line for line in body.splitlines() if "<summary>" in line)
-    assert "2 candidates" in summary and "highest 64%" in summary
 
 
 @pytest.mark.parametrize(
@@ -332,34 +618,24 @@ def test_the_strongest_competing_score_shows_without_expanding():
 def test_a_close_ranking_admits_it_is_a_weak_preference(runner_up, expected):
     v = _verdict()
     other = _candidate(number=1180, repo="key4hep/DD4hep", score=runner_up)
-    body = _select(_report(v), _blame([v], [_candidate(), other]))[0].body
+    body = _comments(_report(v), _blame([v], [_candidate(), other]))[0].body
     assert expected in body
     assert "weak preference" in body
 
 
 def test_a_ranking_that_ran_against_this_pr_says_which_way_it_ran():
     # 85% is not 85% "out of nowhere": another candidate scored 97% in the same
-    # configuration, so the ranker preferred someone else and this PR merely also
+    # window, so the ranker preferred someone else and this PR merely also
     # cleared the bar. Saying "only 12 points separate them" would hide which way
     # the preference ran — the one thing the author needs to know.
     v = _verdict()
     mine = _candidate(score=85.0)
     other = _candidate(number=1180, repo="key4hep/DD4hep", score=97.0)
-    body = _select(_report(v), _blame([v], [mine, other]))[0].body
+    body = _comments(_report(v), _blame([v], [mine, other]))[0].body
     assert "scored 12 points **higher** than this PR" in body
     assert "runs against it" in body
     # …and the headline claim is downgraded to match.
     assert "a likely cause" in body and "the most likely cause" not in body
-
-
-def test_a_sub_point_deficit_reads_as_no_separation():
-    # Both render as 91%: claiming one is "0 points higher" would contradict the
-    # table right above it.
-    v = _verdict()
-    other = _candidate(number=1180, repo="key4hep/DD4hep", score=91.4)
-    body = _select(_report(v), _blame([v], [_candidate(score=91.0), other]))[0].body
-    assert "Nothing separates this PR" in body
-    assert "higher** than this PR" not in body
 
 
 def test_crowded_prose_matches_displayed_percentages_at_a_rounding_boundary():
@@ -369,7 +645,7 @@ def test_crowded_prose_matches_displayed_percentages_at_a_rounding_boundary():
     # from the same rounding _pct uses.
     v = _verdict()
     other = _candidate(number=1180, repo="key4hep/DD4hep", score=90.51)
-    body = _select(_report(v), _blame([v], [_candidate(score=90.49), other]))[0].body
+    body = _comments(_report(v), _blame([v], [_candidate(score=90.49), other]))[0].body
     assert "scored 1 point **higher** than this PR" in body
     assert "Nothing separates this PR" not in body
 
@@ -379,7 +655,7 @@ def test_a_clear_ranking_adds_no_caveat():
     # genuinely crowded, and the scores speak for a comfortable lead.
     v = _verdict()
     other = _candidate(number=1180, repo="key4hep/DD4hep", score=22.0)
-    body = _select(_report(v), _blame([v], [_candidate(), other]))[0].body
+    body = _comments(_report(v), _blame([v], [_candidate(), other]))[0].body
     assert "weak preference" not in body
 
 
@@ -387,43 +663,32 @@ def test_body_invites_a_correction():
     # The bot writes into repositories k4Bench does not own, so the author is
     # told what to do when the call is wrong, not only that it might be.
     v = _verdict()
-    body = _select(_report(v), _blame([v], [_candidate()]))[0].body
+    body = _comments(_report(v), _blame([v], [_candidate()]))[0].body
     assert "reply here if this attribution looks wrong" in body
 
 
 def test_body_says_so_when_nothing_else_was_in_the_frame():
     v = _verdict()
-    body = _select(_report(v), _blame([v], [_candidate()]))[0].body
+    body = _comments(_report(v), _blame([v], [_candidate()]))[0].body
     assert "only pull request found" in body
-
-
-def test_body_links_the_window_in_the_dashboard():
-    v = _verdict()
-    body = _select(_report(v), _blame([v], [_candidate()]))[0].body
-    assert "window=2026-07-03..2026-07-04" in body        # the scoped Regressions view
-    assert "&to=2026-07-04" in body                       # the package diff
-    # ?stack= is the dashboard's release *directory*, not the bare release date
-    # a verdict carries — a bare date selects nothing and silently falls back.
-    assert "stack=key4hep-2026-07-04" in body
-    # Nothing that varies from night to night: no report-night query param and no
-    # CI-run URL, either of which would edit a standing comment every night.
-    assert "report=" not in body
-    assert "actions/runs" not in body
 
 
 def test_body_renders_without_a_dashboard_url():
     # Offline/local rendering must still produce a usable comment.
     v = _verdict()
-    comments = select(_report(v), _blame([v], [_candidate()]), _policy())
-    assert "Where to look" not in comments[0].body
-    assert "91%" in comments[0].body
+    body = _comments(_report(v), _blame([v], [_candidate()]), dashboard_url=None)[0].body
+    assert "Where to look" not in body
+    assert "91%" in body
+    assert "ALLEGRO_o1_v03" in body  # the row still names its detector, unlinked
 
 
 def test_open_ended_window_is_described_as_such():
     v = _verdict(base=None)
-    body = _select(_report(v), _blame([v], [_candidate()]))[0].body
+    body = _comments(_report(v), _blame([v], [_candidate()]))[0].body
     assert "no earlier settled measurement" in body
 
+
+# ── Untrusted text ────────────────────────────────────────────────────────────
 
 def test_table_cells_survive_hostile_text():
     # A pipe in a model-written reason or a PR title would end the column.
@@ -434,8 +699,8 @@ def test_table_cells_survive_hostile_text():
         merged_at="2026-07-04T00:00:00Z", score=90.0, description="ranked",
     )
     headline = replace(_candidate(number=2, score=95.0), description="Line one\nline two")
-    body = _select(_report(v), _blame([v], [headline, hostile]))[0].body
-    row = next(line for line in body.splitlines() if f"key4hep/k4geo#{_ZWSP}1 " in line)
+    body = _comments(_report(v), _blame([v], [headline, hostile]))[0].body
+    row = _row(body, f"key4hep/k4geo#{_ZWSP}1 ")
     # Two columns: the title's pipe is escaped, so it opens no third one.
     assert row.replace("\\|", "").count("|") == 3
     assert "a \\| b second line" in row  # pipe escaped, newline collapsed
@@ -446,8 +711,7 @@ def test_external_prose_is_defanged_of_mentions_and_markup():
     # A PR title and a model reason are untrusted text pasted into a comment the
     # bot posts in someone else's repo: an @mention must not ping, an HTML
     # comment must not hide content, an image must not load. A zero-width space
-    # breaks each trigger while leaving the words readable. The reason is quoted
-    # for the headline PR; a candidate's title shows in the others table.
+    # breaks each trigger while leaving the words readable.
     v = _verdict()
     headline = replace(
         _candidate(number=3, score=95.0),
@@ -457,12 +721,27 @@ def test_external_prose_is_defanged_of_mentions_and_markup():
         number=1180, repo="key4hep/DD4hep", score=30.0,
         title="ping @team see ![x](http://e/i.png)",
     )
-    body = _select(_report(v), _blame([v], [headline, other]))[0].body
-    zwsp = _ZWSP
-    assert "@team" not in body and f"@{zwsp}team" in body          # title mention
-    assert "@alice" not in body and f"@{zwsp}alice" in body        # reason mention
-    assert f"!{zwsp}[" in body                                     # image defused
-    assert "<script>" not in body and f"<{zwsp}script>" in body
+    body = _comments(_report(v), _blame([v], [headline, other]))[0].body
+    assert "@team" not in body and f"@{_ZWSP}team" in body          # title mention
+    assert "@alice" not in body and f"@{_ZWSP}alice" in body        # reason mention
+    assert f"!{_ZWSP}[" in body                                     # image defused
+    assert "<script>" not in body and f"<{_ZWSP}script>" in body
+
+
+def test_the_reviews_narrative_is_defanged_like_any_other_quoted_prose():
+    # The review is *asked* to name a better-fitting alternative as
+    # owner/repo#number — which is exactly the cross-reference the bot refuses
+    # to send. It renders as inert text.
+    v = _verdict()
+    attributor = _FakeAttributor(
+        {"r1": 90.0},
+        summary="AIDASoft/DD4hep#77 fits better; see https://evil.example and @alice",
+    )
+    body = _comments(_report(v), _blame([v], [_candidate()]),
+                     attributor=attributor)[0].body
+    assert "DD4hep#77" not in body and f"DD4hep#{_ZWSP}77" in body
+    assert "https://evil.example" not in body
+    assert "@alice" not in body
 
 
 def test_external_prose_cannot_carry_an_active_link():
@@ -481,174 +760,111 @@ def test_external_prose_cannot_carry_an_active_link():
         title="[click me](https://evil.example) "
               "https://github.com/key4hep/DD4hep/pull/1180",
     )
-    body = _select(_report(v), _blame([v], [headline, other]))[0].body
-    zwsp = _ZWSP
-    row = next(line for line in body.splitlines() if f"DD4hep#{zwsp}1180" in line)
-    assert "](" not in row and f"]{zwsp}(" in row            # no link in the title
+    body = _comments(_report(v), _blame([v], [headline, other]))[0].body
+    row = _row(body, f"DD4hep#{_ZWSP}1180")
+    assert "](" not in row and f"]{_ZWSP}(" in row            # no link in the title
     assert "https://evil.example" not in body                # no autolinked URL
-    assert f"https:{zwsp}//evil.example" in body
+    assert f"https:{_ZWSP}//evil.example" in body
     assert "www.evil.example" not in body
-    assert f"www{zwsp}.evil.example" in body
+    assert f"www{_ZWSP}.evil.example" in body
     # The bot's *own* links — the dashboard views it renders itself — are
     # untouched: only quoted, externally-authored prose is defanged.
     assert f"]({_DASH}" in body
-    # The only live HTML comment is the bot's own marker on the first line; the
-    # one smuggled into the reason is broken by the same zero-width space.
-    assert body.count("<!--") == 1 and body.startswith("<!--")
+    # The only live HTML comments are the bot's own hidden lines; the one
+    # smuggled into the reason is broken by the same zero-width space.
+    assert body.count("<!--") == 2 and body.startswith("<!--")
 
+
+# ── Stability, and the facts digest ───────────────────────────────────────────
 
 def test_body_is_stable_across_identical_nights():
-    # The upsert only edits when the body changes, so an unchanged night must
+    # The upsert only edits when something changed, so an unchanged night must
     # render byte-identically — no set ordering leaking into the output.
     a, b = _verdict(metric="wall_time_s"), _verdict(metric="mean_time_s", pct=0.14)
-    first = _select(_report(a, b), _blame([a, b], [_candidate()]))[0].body
-    second = _select(_report(b, a), _blame([b, a], [_candidate()]))[0].body
+    first = _comments(_report(a, b), _blame([a, b], [_candidate()]))[0].body
+    second = _comments(_report(b, a), _blame([b, a], [_candidate()]))[0].body
     assert first == second
 
 
 def test_a_non_finite_change_does_not_destabilise_the_order():
     # A NaN in the sort key compares false against everything, which would leave
-    # the metric table in whatever order the verdicts happened to arrive in — the
-    # one thing the key exists to rule out. It sorts as no movement instead,
+    # the table in whatever order the verdicts happened to arrive in — the one
+    # thing the key exists to rule out. It sorts as no movement instead,
     # matching the "—" the cell renders for it.
     a = _verdict(metric="wall_time_s", pct=float("nan"))
     b = _verdict(metric="mean_time_s", pct=0.14)
     c = _verdict(metric="peak_rss_mb", pct=None)
-    first = _select(_report(a, b, c), _blame([a, b, c], [_candidate()]))[0].body
-    second = _select(_report(c, a, b), _blame([c, a, b], [_candidate()]))[0].body
+    first = _comments(_report(a, b, c), _blame([a, b, c], [_candidate()]))[0].body
+    second = _comments(_report(c, a, b), _blame([c, a, b], [_candidate()]))[0].body
     assert first == second
-    metrics = [line for line in first.splitlines() if line.startswith("| `")]
+    rows = _table_rows(first)
     # Biggest real movement first; the two immeasurable ones fall to identity.
-    assert "mean_time_s" in metrics[0]
-    assert "—" in metrics[1] and "—" in metrics[2]
+    assert "mean_time_s" in rows[0]
+    assert "—" in rows[1] and "—" in rows[2]
 
 
 def test_body_is_stable_across_consecutive_nights():
     # A standing regression renders byte-identically on the next night too, so
-    # the upsert edits nothing and re-notifies no one. Nothing that changes from
-    # night to night — the report night, a per-run CI URL — may leak into it.
+    # the upsert edits nothing and re-notifies no one.
     v = _verdict()
-    monday = _select(_report(v, night="2026-07-05"), _blame([v], [_candidate()]))[0].body
-    tuesday = _select(_report(v, night="2026-07-06"), _blame([v], [_candidate()]))[0].body
+    monday = _comments(_report(v, night="2026-07-05"), _blame([v], [_candidate()]))[0].body
+    tuesday = _comments(_report(v, night="2026-07-06"), _blame([v], [_candidate()]))[0].body
     assert monday == tuesday
 
 
 def test_scope_walk_order_does_not_change_the_body():
-    # The ranker scores a candidate once per (detector, platform, sample) scope,
-    # so a competing PR can carry a different likelihood in each scope of the
-    # same window. Whichever scope was walked first, the same one leads the
-    # comment and the body is identical, so a reordering between nights does not
-    # re-edit a standing comment.
+    # A competing PR can carry a different likelihood in each scope of the same
+    # window. Whichever scope was walked first, one comment is produced and the
+    # body is identical, so a reordering between nights does not re-edit it.
     allegro = _verdict(detector="ALLEGRO_o1_v03")
     idea = _verdict(detector="IDEA_o1_v03")
     hi = _candidate()
     lo = _candidate(number=1180, repo="key4hep/DD4hep", score=25.0, title="Other work")
-    top = _candidate(number=1180, repo="key4hep/DD4hep", score=70.0, title="Other work")
+    top = replace(lo, score=70.0)
 
-    def blame(*pairs):
-        return BlameReport(
-            generated_at="x", report_night="2026-07-05",
-            entries=tuple(_blame([v], cands).entries[0] for v, cands in pairs),
-        )
-
-    forward = _select(_report(allegro, idea), blame((allegro, [hi, lo]), (idea, [hi, top])))
-    reverse = _select(_report(idea, allegro), blame((idea, [hi, top]), (allegro, [hi, lo])))
+    forward = _comments(_report(allegro, idea),
+                        _blame_of((allegro, [hi, lo]), (idea, [hi, top])))
+    reverse = _comments(_report(idea, allegro),
+                        _blame_of((idea, [hi, top]), (allegro, [hi, lo])))
     assert len(forward) == 1  # one comment for the PR+window, whatever the order
     assert forward[0].body == reverse[0].body
-    # The leading scope is rendered in full, so its competitor is the one named.
-    assert "25%" in forward[0].body
 
 
-def test_only_the_leading_configuration_is_rendered_in_full():
-    # A 95% ALLEGRO judgement and an 81% IDEA judgement are two rankings, not one
-    # 95% ranking of both. The strongest leads the comment in full; the other
-    # keeps its own likelihood in one summary row rather than a second section.
-    allegro = _verdict(detector="ALLEGRO_o1_v03", pct=0.21)
-    idea = _verdict(detector="IDEA_o1_v03", metric="peak_rss_mb", pct=0.11)
-    blame = BlameReport(
-        generated_at="x", report_night="2026-07-05",
-        entries=(
-            _blame([allegro], [_candidate(score=95.0)]).entries[0],
-            _blame([idea], [_candidate(score=81.0)]).entries[0],
-        ),
-    )
-    body = _select(_report(allegro, idea), blame)[0].body
-    assert "🎯 95% — ALLEGRO_o1_v03" in body      # the lead, with its own section
-    assert "🎯 81% — IDEA_o1_v03" not in body     # not a second full section
-    assert body.count("What moved") == 1
-    # …but the reader still learns it moved, by how much, and how likely the
-    # ranker held this PR to be *there* — the lead's score speaks only for itself.
-    assert "Also affected in this window" in body
-    assert "1 further benchmark configuration" in body
-    row = next(line for line in body.splitlines() if "IDEA_o1_v03" in line)
-    assert "81%" in row and "peak_rss_mb" in row and "+11.0%" in row
-    assert "detector=IDEA_o1_v03" in row  # one click to the rest of the window
-
-
-def test_the_largest_movement_leads_among_equally_ranked_configurations():
-    # Same likelihood in both scopes: the one that moved furthest is the one
-    # worth reading in full.
-    small = _verdict(detector="ALLEGRO_o1_v03", pct=0.05)
-    large = _verdict(detector="IDEA_o1_v03", pct=0.40)
-    blame = BlameReport(
-        generated_at="x", report_night="2026-07-05",
-        entries=(
-            _blame([small], [_candidate()]).entries[0],
-            _blame([large], [_candidate()]).entries[0],
-        ),
-    )
-    body = _select(_report(small, large), blame)[0].body
-    assert "🎯 91% — IDEA_o1_v03" in body
-
-
-def test_summary_rows_name_only_what_differs_from_the_leading_configuration():
-    # Same sample and platform as the lead: the detector alone identifies the
-    # row. A row that ran a different sample says which one.
-    lead = _verdict(detector="ALLEGRO_o1_v03", pct=0.30)
-    same = _verdict(detector="IDEA_o1_v03", pct=0.20)
-    other = _verdict(detector="CLD_o2_v07", pct=0.10, sample="p8_ee_Zbb_ecm91")
-    blame = BlameReport(
-        generated_at="x", report_night="2026-07-05",
-        entries=tuple(
-            _blame([v], [_candidate()]).entries[0] for v in (lead, same, other)
-        ),
-    )
-    body = _select(_report(lead, same, other), blame)[0].body
-    rows = {
-        d: next(line for line in body.splitlines() if f"[{d}" in line)
-        for d in ("IDEA_o1_v03", "CLD_o2_v07")
-    }
-    assert "Single e⁻" not in rows["IDEA_o1_v03"]
-    assert "Z → bb" in rows["CLD_o2_v07"]
-
-
-def test_summary_rows_say_where_their_likelihood_placed():
-    # A comment fires on any score above the threshold, so a summary row's bare
-    # percentage is ambiguous: 84% while another candidate scored 96% is not the
-    # same claim as 84% ahead of everyone. The Ranking column resolves it, the
-    # way the lead scope resolves it in prose.
-    lead = _verdict(detector="ALLEGRO_o1_v03", pct=0.30)
-    behind = _verdict(detector="IDEA_o1_v03", pct=0.20)
-    alone = _verdict(detector="CLD_o2_v07", pct=0.10)
-    rival = _candidate(number=1180, repo="key4hep/DD4hep", score=96.0)
-    blame = BlameReport(
-        generated_at="x", report_night="2026-07-05",
-        entries=(
-            _blame([lead], [_candidate(score=95.0)]).entries[0],
-            _blame([behind], [_candidate(score=84.0), rival]).entries[0],
-            _blame([alone], [_candidate(score=84.0)]).entries[0],
-        ),
-    )
-    body = _select(_report(lead, behind, alone), blame)[0].body
-    rows = {
-        d: next(line for line in body.splitlines() if f"[{d}" in line)
-        for d in ("IDEA_o1_v03", "CLD_o2_v07")
-    }
-    assert "84%" in rows["IDEA_o1_v03"] and "Behind 96%" in rows["IDEA_o1_v03"]
-    assert "84%" in rows["CLD_o2_v07"] and "Only candidate" in rows["CLD_o2_v07"]
-
-
-def test_a_single_configuration_carries_no_summary_section():
+def test_the_facts_digest_ignores_the_model_and_tracks_the_benchmarks():
+    # The narrative is regenerated nightly and will not repeat itself word for
+    # word; editing a standing comment for that would notify everyone watching
+    # the PR for nothing. The digest covers what a reader would call a change.
     v = _verdict()
-    body = _select(_report(v), _blame([v], [_candidate()]))[0].body
-    assert "Also affected" not in body
+    blame = _blame([v], [_candidate()])
+    first = _comments(_report(v), blame, attributor=_FakeAttributor(
+        {"r1": 92.0}, summary="Only ALLEGRO moved."))[0]
+    second = _comments(_report(v), blame, attributor=_FakeAttributor(
+        {"r1": 88.0}, summary="ALLEGRO alone shows the step."))[0]
+    assert first.body != second.body
+    assert first.facts_digest == second.facts_digest
+
+    moved_further = _comments(_report(_verdict(pct=0.55)),
+                              _blame([_verdict(pct=0.55)], [_candidate()]))[0]
+    assert moved_further.facts_digest != first.facts_digest
+
+
+def test_the_digest_is_carried_in_the_body_and_readable_back():
+    v = _verdict()
+    comment = _comments(_report(v), _blame([v], [_candidate()]))[0]
+    assert facts_digest_of(comment.body) == comment.facts_digest
+    assert facts_digest_of("no markers here") == ""
+
+
+def test_the_digest_notices_a_change_in_the_competing_field():
+    # A new candidate appearing in the window changes what the claim was made
+    # against, which is a real change worth an edit.
+    v = _verdict()
+    alone = _comments(_report(v), _blame([v], [_candidate()]))[0]
+    crowded = _comments(_report(v), _blame(
+        [v], [_candidate(), _candidate(number=1180, repo="key4hep/DD4hep", score=30.0)],
+    ))[0]
+    assert alone.facts_digest != crowded.facts_digest
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__]))

@@ -179,3 +179,40 @@ def test_dry_run_writes_nothing_and_says_so():
 def test_client_type_is_the_shared_github_client():
     # The fake stands in for a real client; keep the seam honest.
     assert publish(GitHubClient(token=None), [], dry_run=True).planned == []
+
+
+# ── The facts digest ──────────────────────────────────────────────────────────
+# Part of a comment is model prose, regenerated every night and never repeating
+# itself word for word. What decides an edit is the hidden digest of the
+# *benchmark facts* underneath it, so a rephrased summary of the same
+# regressions notifies nobody.
+
+def _digested(digest: str, text: str, *, number: int = 7) -> PRComment:
+    body = f"{_MARKER}\n<!-- k4bench-blame-facts:{digest} -->\n{text}"
+    return PRComment(
+        repo="key4hep/k4geo", number=number, marker=_MARKER, body=body,
+        score=91.0, facts_digest=digest,
+    )
+
+
+def test_the_same_facts_worded_differently_are_not_edited():
+    posted = _digested("abc123", "Only ALLEGRO moved.")
+    gh = _FakeGitHub({7: [_mine(42, posted.body)]})
+    result = publish(gh, [_digested("abc123", "ALLEGRO alone shows the step.")])
+    assert result.unchanged == ["key4hep/k4geo#7"]
+    assert not gh.updated
+
+
+def test_changed_facts_are_edited():
+    gh = _FakeGitHub({7: [_mine(42, _digested("abc123", "Only ALLEGRO moved.").body)]})
+    result = publish(gh, [_digested("def456", "Only ALLEGRO moved.")])
+    assert result.updated == ["key4hep/k4geo#7"]
+
+
+def test_a_comment_from_before_digests_existed_takes_one_upgrade_edit():
+    # Nothing to compare against, so the old whole-body rule applies and the
+    # standing comment is rewritten once — into a body that does carry a digest.
+    gh = _FakeGitHub({7: [_mine(42, f"{_MARKER}\nan older body")]})
+    result = publish(gh, [_digested("abc123", "Only ALLEGRO moved.")])
+    assert result.updated == ["key4hep/k4geo#7"]
+    assert "k4bench-blame-facts:abc123" in gh.updated[0][1]

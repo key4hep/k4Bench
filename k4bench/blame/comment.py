@@ -6,9 +6,15 @@ e-group mail or open the dashboard — never the author of the change. This modu
 turns a night's ``report.json`` + ``blame.json`` into a set of pull-request
 comments; :mod:`k4bench.blame.publish` posts them.
 
-Everything here is pure — no network, no token, no clock — so the whole
-"who gets told what" decision is unit-testable, and the CLI can print exactly
-what would be posted (``--dry-run``) without touching GitHub.
+The work happens in two halves, because they have different failure domains:
+
+* :func:`select` is **pure** — no network, no token, no clock — so the whole
+  "who gets told what" decision is unit-testable, and the CLI can print exactly
+  what would be posted (``--dry-run``) without touching GitHub.
+* :func:`build_comments` renders those selections, and is where the optional
+  second model pass (:mod:`k4bench.blame.attribute`) and the diff fetch it needs
+  arrive — as *injected callables*, the same seam
+  :mod:`k4bench.blame.builder` uses for its ranker.
 
 Commenting in someone else's repository is an outward-facing act on the strength
 of a model's judgement, so the gates are deliberately narrow and all of them
@@ -22,18 +28,18 @@ must pass:
   (:attr:`~k4bench.blame.models.BlameEntry.discovery_incomplete`) — naming one PR
   out of a knowingly partial set is exactly the overclaim the ranker itself
   refuses to make;
-* the night is under the ``max_comments`` cap — a storm is a bug, not a night.
+* the night is under the ``max_comments`` cap — a storm is a bug, not a night;
+* and, when a cross-configuration review ran, it did not acquit the pull request
+  outright (:func:`build_comments`'s withdrawal gate).
 
 One comment covers one ``(pull request, change window)`` pair — the reader's
 question is "did my change do this?", asked once — and :func:`marker_for` gives
 that pair a stable hidden key so a later night edits the existing comment
-instead of posting a second one. The ranker scores a candidate once per
-benchmark scope (``detector, platform, sample``), so one comment can carry
-several independent judgements; the strongest one is rendered in full — the
-reason, what moved, the competing candidates, the links — and every further
-scope of the same window becomes a single summary row keeping its own
-likelihood. Two judgements are then neither flattened into one headline number
-nor repeated at full length down a page nobody reads to the end of.
+instead of posting a second one. Everything the window regressed goes into a
+single table ordered by attribution likelihood, across every detector, sample,
+platform and benchmark configuration: which configurations moved *and which did
+not* is the substance of the claim, so it is one table a reader can scan rather
+than one configuration in full and the rest in a footnote.
 
 A comment is written once and thereafter only *edited*, never retracted: when
 the regression resolves, or the candidate drops below ``min_score``, tonight's
@@ -46,12 +52,28 @@ a dated one in place. Follow-ups belong in the thread.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
-from k4bench.blame.models import RANKING_DISCLOSURE, BlameReport, CandidatePR
+from k4bench.blame.attribute import (
+    Attribution,
+    Attributor,
+    AttributionRequest,
+    CompetingPR,
+    PackageChangeFact,
+    RegressionFact,
+    ScopeOutcome,
+)
+from k4bench.blame.models import (
+    RANKING_DISCLOSURE,
+    BlameEntry,
+    BlameReport,
+    CandidatePR,
+)
 from k4bench.labels import pretty_platform, pretty_sample
 from k4bench.regression.models import MetricVerdict, NightlyReport
 from k4bench.regression.render import (
@@ -67,13 +89,12 @@ _log = logging.getLogger(__name__)
 #: changes only when a body is no longer an in-place successor of the old one.
 MARKER_VERSION = "v1"
 
-#: Metric rows shown before the table defers to the dashboard, candidate rows
-#: shown for the rest of the window, and summary rows for the further benchmark
-#: scopes the window moved. All three are display caps: the selection above them
-#: is complete, only the rendering is bounded.
-_MAX_METRIC_ROWS = 8
+#: Regression rows shown before the table folds into a disclosure, and candidate
+#: rows shown for the rest of the window. Both are display caps: the selection
+#: above them is complete, and every row is still scored — only the rendering is
+#: bounded.
+_MAX_TABLE_ROWS = 5
 _MAX_OTHER_CANDIDATES = 5
-_MAX_ALSO_ROWS = 5
 
 #: Likelihood points between this PR and the closest other candidate at or
 #: under which the ranking is called a weak preference in words. Wide enough to
@@ -81,9 +102,17 @@ _MAX_ALSO_ROWS = 5
 #: the ranker picked one PR out of the pack — says nothing extra.
 _CROWDED_SPREAD = 10.0
 
-#: Longest ranker explanation quoted verbatim. The contract asks for one
-#: sentence; a model that ignores it must not paste an essay into someone's PR.
+#: Longest model explanation quoted verbatim — the per-configuration ranker's
+#: one-liner, or the cross-configuration review's short paragraph. Both contracts
+#: ask for less than this; a model that ignores its contract must not be able to
+#: paste an essay into someone's pull request.
 _MAX_DESCRIPTION_CHARS = 400
+_MAX_SUMMARY_CHARS = 700
+
+#: Metric names named in a "moved but did not confirm" outcome line. Enough to
+#: show *what* is drifting there, not so many that the negative evidence turns
+#: into a second report.
+_MAX_WATCHED_METRICS = 6
 
 _DEFAULT_MIN_SCORE = 80.0
 _DEFAULT_MAX_COMMENTS = 10
@@ -214,8 +243,10 @@ def _positive_int(value: object, name: str) -> int:
 class PRComment:
     """One rendered comment and where it goes.
 
-    ``marker`` is the hidden key the upsert recognises; it is also the first
-    line of ``body``, so a comment always carries the key that identifies it.
+    ``marker`` is the hidden key the upsert recognises and ``facts_digest``
+    fingerprints the benchmark facts behind the body; both are hidden lines at
+    the top of ``body``, so a comment always carries the keys that identify it
+    and the state it was rendered from.
     """
 
     repo: str
@@ -223,6 +254,7 @@ class PRComment:
     marker: str
     body: str
     score: float
+    facts_digest: str = ""
 
     @property
     def target(self) -> str:
@@ -245,75 +277,112 @@ def marker_for(base_release: str | None, onset_release: str | None) -> str:
     )
 
 
-@dataclass
-class _Scope:
-    """One benchmark scope's slice of a comment.
+#: Prefix of the second hidden line — see :func:`_facts_digest` and
+#: :func:`facts_digest_of`.
+_FACTS_MARKER_PREFIX = "<!-- k4bench-blame-facts:"
 
-    The ranker scores each candidate once per ``(detector, platform, sample)``
-    scope — every metric in that scope shares the one judgement — so a scope,
-    not a metric, is the unit that carries its own likelihood, reason and
-    competing candidates. The strongest scope leads the comment in full; the
-    rest keep their own likelihood in one summary row each.
+
+def facts_digest_of(body: str) -> str:
+    """The facts digest carried by an already-posted comment, or ``""``.
+
+    The read half of :func:`_facts_digest`, used by
+    :func:`k4bench.blame.publish._upsert` to decide whether a differing body
+    represents a real change. A comment posted before digests existed returns
+    ``""``, and the caller falls back to comparing whole bodies."""
+    for line in body.split("\n", 3)[:3]:
+        line = line.strip()
+        if line.startswith(_FACTS_MARKER_PREFIX) and line.endswith("-->"):
+            return line[len(_FACTS_MARKER_PREFIX):-3].strip()
+    return ""
+
+
+# ── Selection ─────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class RegressionRow:
+    """One confirmed regression this pull request is being asked about — one row
+    of the comment's table.
+
+    ``scope_score``/``scope_reason`` are the *per-configuration* ranker's
+    judgement of this pull request in this row's run group: the prior the review
+    starts from, and the likelihood shown when no review runs. ``fact_id`` is the
+    opaque handle the review echoes back (see
+    :class:`~k4bench.blame.attribute.RegressionFact`); it is assigned in identity
+    order, never score order, so the same night's rows always carry the same ids.
+    ``stack`` is the group's Key4hep release *directory* — the dashboard's
+    ``?stack=`` vocabulary, kept per row so each link names the stack that row
+    actually ran against.
     """
 
-    detector: str
-    platform: str
-    sample: str
-    #: This scope's Key4hep release directory (``key4hep-2026-07-04``) — the
-    #: dashboard's ``?stack=`` vocabulary, the release *directory* name rather
-    #: than the bare date a verdict carries. Kept per scope so each subsection's
-    #: dashboard link names the stack the scope actually ran against.
+    verdict: MetricVerdict
     stack: str
-    candidate: CandidatePR
-    verdicts: list[MetricVerdict]
-    others: dict[tuple[str, int], CandidatePR]
+    fact_id: str = ""
+    scope_score: float = 0.0
+    scope_reason: str = ""
+
+    @property
+    def scope(self) -> tuple[str, str, str]:
+        return (self.verdict.detector, self.verdict.platform, self.verdict.sample)
 
 
 @dataclass
-class _Bucket:
-    """Everything one comment is rendered from: one pull request, one change
-    window, and every benchmark scope of that window the PR was scored in."""
+class CommentPlan:
+    """Everything one comment is decided from: one pull request, one change
+    window, every regression of that window, and the evidence around them.
+
+    ``outcomes`` is the negative evidence — the configurations that measured the
+    same window and did *not* confirm — which only :func:`select` can compute,
+    because only the report knows which groups ran at all.
+    """
 
     repo: str
     number: int
+    subject: CandidatePR
     base_release: str | None
     onset_release: str
-    scopes: dict[tuple[str, str, str], _Scope]
+    rows: list[RegressionRow] = field(default_factory=list)
+    others: dict[tuple[str, int], CandidatePR] = field(default_factory=dict)
+    outcomes: tuple[ScopeOutcome, ...] = ()
+    packages: tuple[PackageChangeFact, ...] = ()
+    n_unchanged: int = 0
+
+    @property
+    def target(self) -> str:
+        return f"{self.repo}#{self.number}"
 
     @property
     def top_score(self) -> float:
-        """The strongest likelihood across the PR's scopes — used only to order
-        and log comments, never rendered as a single combined judgement."""
-        return max(s.candidate.score for s in self.scopes.values())
+        """The strongest per-configuration likelihood across this window — what
+        selection was made on, and how comments are ordered."""
+        return max((row.scope_score for row in self.rows), default=0.0)
+
+    @property
+    def scopes(self) -> set[tuple[str, str, str]]:
+        return {row.scope for row in self.rows}
 
 
 def select(
     report: NightlyReport,
     blame: BlameReport,
     policy: CommentPolicy,
-    *,
-    dashboard_url: str | None = None,
-) -> list[PRComment]:
-    """The comments this night warrants, worst-first.
+) -> list[CommentPlan]:
+    """The comments this night warrants, worst-first — decided, not yet rendered.
 
     Driven from the *report*'s confirmed regressions rather than from the
     sidecar's entries, so a comment can only ever describe a regression that is
     confirmed in tonight's report — a stale entry has nothing to attach to.
 
-    The rendered body carries nothing that varies from night to night (no run
-    URL, no report-night query param): a regression that stands for a week is
-    one comment, and the upsert must see an unchanged body so it edits nothing
-    and re-notifies no one. Overshooting ``max_comments`` raises
-    :class:`CommentStormError` rather than returning a truncated list — a night
-    that loud is a bug, not a night, and blind-posting ten accusations into
-    repositories k4Bench does not own is the exact harm the gates exist to
-    prevent. It is raised, not returned empty, so the caller can tell it apart
-    from an ordinary night that simply implicated no one.
+    Overshooting ``max_comments`` raises :class:`CommentStormError` rather than
+    returning a truncated list — a night that loud is a bug, not a night, and
+    blind-posting ten accusations into repositories k4Bench does not own is the
+    exact harm the gates exist to prevent. It is raised, not returned empty, so
+    the caller can tell it apart from an ordinary night that simply implicated
+    no one.
     """
     if not policy.enabled:
         return []
 
-    buckets: dict[tuple[str, int, str | None, str], _Bucket] = {}
+    plans: dict[tuple[str, int, str | None, str], CommentPlan] = {}
     # Walked group by group rather than through ``report.regressions`` so each
     # verdict keeps its group's release directory — the dashboard links need it.
     for group in report.groups:
@@ -326,85 +395,275 @@ def select(
                 if not policy.allows(candidate):
                     continue
                 ident = (candidate.repo.lower(), candidate.number)
-                bkey = (*ident, entry.base_release, entry.onset_release)
-                bucket = buckets.get(bkey)
-                if bucket is None:
-                    bucket = buckets[bkey] = _Bucket(
+                key = (*ident, entry.base_release, entry.onset_release)
+                plan = plans.get(key)
+                if plan is None:
+                    plan = plans[key] = CommentPlan(
                         repo=candidate.repo, number=candidate.number,
+                        subject=candidate,
                         base_release=entry.base_release,
                         onset_release=entry.onset_release,
-                        scopes={},
+                        packages=_packages_of(entry),
+                        n_unchanged=entry.n_unchanged,
                     )
-                skey = (verdict.detector, verdict.platform, verdict.sample)
-                scope = bucket.scopes.get(skey)
-                if scope is None:
-                    scope = bucket.scopes[skey] = _Scope(
-                        detector=verdict.detector, platform=verdict.platform,
-                        sample=verdict.sample, stack=group.k4h_release,
-                        candidate=candidate, verdicts=[], others={},
-                    )
-                elif candidate.score > scope.candidate.score:
-                    # Every metric in a scope shares one ranking, so these are
-                    # equal in valid builder output; keep the max defensively so
-                    # the choice never depends on which metric was walked first.
-                    scope.candidate = candidate
-                scope.verdicts.append(verdict)
+                elif candidate.score > plan.subject.score:
+                    # Every metric of a run group shares one ranking, so these
+                    # are equal in valid builder output; keep the strongest
+                    # defensively so the identity rendered never depends on
+                    # which metric was walked first.
+                    plan.subject = candidate
+                plan.rows.append(RegressionRow(
+                    verdict=verdict, stack=group.k4h_release,
+                    scope_score=candidate.score, scope_reason=candidate.description,
+                ))
                 for other in candidates:
                     other_ident = (other.repo.lower(), other.number)
                     if other_ident == ident:
                         continue
-                    prev = scope.others.get(other_ident)
-                    if prev is None or other.score > prev.score:
-                        scope.others[other_ident] = other
+                    previous = plan.others.get(other_ident)
+                    if previous is None or other.score > previous.score:
+                        plan.others[other_ident] = other
 
-    comments = [
-        _render(bucket, dashboard_url=dashboard_url)
-        for bucket in sorted(
-            buckets.values(),
-            key=lambda b: (-b.top_score, b.repo, b.number),
-        )
-    ]
-    if len(comments) > policy.max_comments:
+    ordered = sorted(plans.values(), key=lambda p: (-p.top_score, p.repo, p.number))
+    for plan in ordered:
+        # Ids ride on identity order so they are reproducible from the plan
+        # alone: a night re-run must ask the model about "r3" and mean the same
+        # regression it meant last time.
+        plan.rows.sort(key=_row_identity)
+        plan.rows = [
+            RegressionRow(
+                verdict=row.verdict, stack=row.stack, fact_id=f"r{index}",
+                scope_score=row.scope_score, scope_reason=row.scope_reason,
+            )
+            for index, row in enumerate(plan.rows, start=1)
+        ]
+        plan.outcomes = _outcomes_for(report, plan)
+
+    if len(ordered) > policy.max_comments:
         _log.warning(
             "select: %d comments exceed the max_comments cap of %d — a night this "
             "loud is a bug, not a night; posting none of them",
-            len(comments), policy.max_comments,
+            len(ordered), policy.max_comments,
         )
         raise CommentStormError(
-            len(comments), policy.max_comments, [c.target for c in comments]
+            len(ordered), policy.max_comments, [p.target for p in ordered]
         )
+    return ordered
+
+
+def _packages_of(entry: BlameEntry) -> tuple[PackageChangeFact, ...]:
+    """The window's package diff, as the review is shown it."""
+    return tuple(
+        PackageChangeFact(
+            package=repo.package, status=repo.status, compare_url=repo.compare_url
+        )
+        for repo in entry.repos
+    )
+
+
+def _outcomes_for(
+    report: NightlyReport, plan: CommentPlan
+) -> tuple[ScopeOutcome, ...]:
+    """The configurations that measured this window and did **not** confirm.
+
+    The negative evidence the cross-configuration review turns on: "ALLEGRO
+    moved and IDEA did not" is only readable if the *did not* is stated. A group
+    counts only when it genuinely produced a clean measurement of this window —
+    it ran the onset release, its host was not judged unreliable, it had no job
+    failure, and it holds no confirmed step in this window. Everything else is
+    silence from a run that did not happen, and silence must never be rendered
+    as evidence of absence."""
+    regressed = plan.scopes
+    outcomes = []
+    for group in report.groups:
+        scope = (group.detector, group.platform, group.sample)
+        if scope in regressed:
+            continue
+        if group.reliable is False or group.job_failures:
+            continue  # a run that cannot be trusted is not a clean result
+        # Which *release* a group measured is carried by its verdicts, not by
+        # the group (whose ``run_date`` is the nightly run's own identity —
+        # see :class:`~k4bench.regression.models.MetricVerdict`). A group that
+        # measured some other release says nothing about this window, and one
+        # with no verdicts at all measured nothing.
+        if not any(v.run_date == plan.onset_release for v in group.verdicts):
+            continue
+        if any(_window_of(v) == (plan.base_release, plan.onset_release)
+               for v in group.regressions):
+            continue  # confirmed this very window under another pull request
+        watched = tuple(
+            sorted({v.metric for v in group.watches})
+        )[:_MAX_WATCHED_METRICS]
+        outcomes.append(ScopeOutcome(
+            detector=group.detector, platform=group.platform, sample=group.sample,
+            status="watch" if watched else "clean", watched=watched,
+        ))
+    return tuple(sorted(outcomes, key=lambda o: (o.detector, o.sample, o.platform)))
+
+
+def _window_of(verdict: MetricVerdict) -> tuple[str | None, str | None]:
+    return (verdict.last_accepted_run_date, verdict.onset_run_date)
+
+
+# ── Building ──────────────────────────────────────────────────────────────────
+
+#: How a caller supplies one pull request's diff — ``(repo, number) -> patch``,
+#: empty when it could not be fetched. Injected rather than imported so this
+#: module stays free of the network, and so the CLI can memoize a night's
+#: fetches (one window's subject is another's competitor).
+PatchFor = Callable[[str, int], str]
+
+
+def build_comments(
+    plans: list[CommentPlan],
+    *,
+    attributor: Attributor | None = None,
+    patch_for: PatchFor | None = None,
+    dashboard_url: str | None = None,
+    min_score: float = _DEFAULT_MIN_SCORE,
+) -> list[PRComment]:
+    """Render *plans*, reviewing each against the whole window if it can.
+
+    With an *attributor* configured, every plan gets one cross-configuration
+    review (:mod:`k4bench.blame.attribute`) whose likelihoods order and fill the
+    table. The review may only ever **narrow**: a plan whose every row it scores
+    below *min_score* is withdrawn, while a plan it declines to review — no
+    model, a failed call, an unusable reply — still renders from the
+    per-configuration scores it already had. Selection was made on those scores,
+    so a second opinion is allowed to acquit, never to accuse.
+
+    The rendered body carries nothing that varies from night to night (no run
+    URL, no report-night query param): a regression that stands for a week is
+    one comment, and the upsert must see unchanged *facts* so it edits nothing
+    and re-notifies no one.
+    """
+    comments = []
+    for plan in plans:
+        attribution = _review(plan, attributor=attributor, patch_for=patch_for)
+        if attribution is not None and attribution.top_score < min_score:
+            _log.info(
+                "build_comments: %s withdrawn — the cross-configuration review "
+                "scored every regression under %g%% (highest %.0f%%)",
+                plan.target, min_score, attribution.top_score,
+            )
+            continue
+        comments.append(_render(plan, attribution, dashboard_url=dashboard_url))
     return comments
+
+
+def _review(
+    plan: CommentPlan,
+    *,
+    attributor: Attributor | None,
+    patch_for: PatchFor | None,
+) -> Attribution | None:
+    """One plan's cross-configuration review, or ``None`` when it did not happen.
+
+    Every failure — no attributor, no diff source, a raising fetch, a raising or
+    declining model — is the same ``None``: the comment then renders from the
+    per-configuration scores, which is exactly what it did before this stage
+    existed. A degraded comment beats a blocked one."""
+    if attributor is None:
+        return None
+    fetch = patch_for or (lambda _repo, _number: "")
+    try:
+        request = _attribution_request(plan, fetch)
+    except Exception as exc:  # noqa: BLE001 — a diff fetch must not lose the comment
+        _log.warning(
+            "build_comments: %s — could not assemble the review request (%s); "
+            "falling back to the per-configuration scores", plan.target, exc,
+        )
+        return None
+    try:
+        return attributor.attribute(request)
+    except Exception as exc:  # noqa: BLE001 — an adapter that raises is a decline
+        _log.warning(
+            "build_comments: %s — the cross-configuration review failed (%s); "
+            "falling back to the per-configuration scores", plan.target, exc,
+        )
+        return None
+
+
+def _attribution_request(plan: CommentPlan, fetch: PatchFor) -> AttributionRequest:
+    """The whole window, as the reviewing model is shown it."""
+    return AttributionRequest(
+        repo=plan.repo,
+        number=plan.number,
+        title=plan.subject.title,
+        base_release=plan.base_release,
+        onset_release=plan.onset_release,
+        files=plan.subject.files,
+        patch=fetch(plan.repo, plan.number),
+        additions=plan.subject.additions,
+        deletions=plan.subject.deletions,
+        regressions=tuple(_fact(row) for row in plan.rows),
+        outcomes=plan.outcomes,
+        competitors=tuple(
+            CompetingPR(
+                repo=other.repo, number=other.number, url=other.url,
+                title=other.title, files=other.files,
+                additions=other.additions, deletions=other.deletions,
+                scope_score=other.score, scope_reason=other.description,
+                patch=fetch(other.repo, other.number),
+            )
+            for other in _sorted_others(plan)
+        ),
+        packages=plan.packages,
+        n_unchanged=plan.n_unchanged,
+    )
+
+
+def _fact(row: RegressionRow) -> RegressionFact:
+    v = row.verdict
+    return RegressionFact(
+        id=row.fact_id,
+        detector=v.detector, platform=v.platform, sample=v.sample,
+        label=v.label, metric=v.metric, metric_family=v.metric_family,
+        sub_detector=v.sub_detector, direction=str(getattr(v.direction, "value", v.direction)),
+        pct_change=v.pct_change, value=v.value,
+        baseline_median=v.baseline_median, z_score=v.z_score,
+        scope_score=row.scope_score, scope_reason=row.scope_reason,
+    )
+
+
+def _sorted_others(plan: CommentPlan) -> list[CandidatePR]:
+    """The competing candidates, strongest first — a stable order for both the
+    prompt and the rendered disclosure."""
+    return sorted(plan.others.values(), key=lambda c: (-c.score, c.repo, c.number))
 
 
 # ── Rendering ─────────────────────────────────────────────────────────────────
 
 def _render(
-    bucket: _Bucket,
+    plan: CommentPlan,
+    attribution: Attribution | None,
     *,
     dashboard_url: str | None,
 ) -> PRComment:
-    """One bucket as a GitHub-flavoured Markdown comment.
+    """One plan as a GitHub-flavoured Markdown comment.
 
-    A single comment for the ``(pull request, window)``, led by the one
-    benchmark scope the ranker is most confident about, rendered in full. Every
-    further scope of the same window follows as one summary row keeping its own
-    likelihood — enough to see that the window moved more than one
-    configuration, and to reach the rest in the dashboard, without repeating a
-    full section per scope."""
-    marker = marker_for(bucket.base_release, bucket.onset_release)
-    scopes = sorted(bucket.scopes.values(), key=_scope_sort_key)
-    lead, *rest = scopes
+    A single comment for the ``(pull request, window)``: the claim, the window,
+    the model's reasoning, and one table of every regression the window carries,
+    ordered by how likely this pull request is to be behind each."""
+    marker = marker_for(plan.base_release, plan.onset_release)
+    rows = sorted(
+        plan.rows, key=lambda row: _row_sort_key(row, attribution)
+    )
+    digest = _facts_digest(plan)
 
     body = "\n".join(
         part for part in (
             marker,
+            f"{_FACTS_MARKER_PREFIX}{digest} -->",
             "### 📉 Possible performance regression traced to this pull request",
             "",
-            _alert(bucket, len(scopes)),
+            _alert(plan),
             "",
-            _window_line(bucket),
-            _scope_section(lead, bucket, dashboard_url=dashboard_url),
-            _also_section(rest, lead, bucket, dashboard_url=dashboard_url),
+            _window_line(plan),
+            _assessment(plan, rows, attribution),
+            _table(plan, rows, attribution, dashboard_url=dashboard_url),
+            _others_section(plan),
+            _where_to_look(plan, rows, dashboard_url=dashboard_url),
             "",
             "---",
             "",
@@ -417,18 +676,53 @@ def _render(
         ) if part is not None
     )
     return PRComment(
-        repo=bucket.repo,
-        number=bucket.number,
+        repo=plan.repo,
+        number=plan.number,
         marker=marker,
         body=body,
-        score=bucket.top_score,
+        score=plan.top_score,
+        facts_digest=digest,
     )
 
 
-def _alert(bucket: _Bucket, n_scopes: int) -> str:
+def _likelihood(row: RegressionRow, attribution: Attribution | None) -> float:
+    """What this row is shown as, and ordered by.
+
+    The review's score when it gave one; otherwise the per-configuration
+    ranker's. A row the review omitted is not a zero — an unanswered row keeps
+    the judgement that was already made about it."""
+    if attribution is None:
+        return row.scope_score
+    return attribution.likelihoods.get(row.fact_id, row.scope_score)
+
+
+def _row_sort_key(row: RegressionRow, attribution: Attribution | None) -> tuple:
+    """Most likely first, then the largest movement, then identity — so the
+    table is stable across nights and a re-render triggers no edit."""
+    return (-_likelihood(row, attribution), -_movement(row), *_row_identity(row))
+
+
+def _row_identity(row: RegressionRow) -> tuple:
+    v = row.verdict
+    return (
+        v.detector, v.platform, v.sample, v.label, v.metric, v.sub_detector or "",
+    )
+
+
+def _movement(row: RegressionRow) -> float:
+    """A row's step size, with a non-finite change counting as no movement —
+    matching what :func:`_change_cell` renders for it. A NaN in a sort key would
+    compare false against everything and leave the order dependent on input
+    order, which is the one thing these keys exist to rule out."""
+    pct = row.verdict.pct_change
+    return abs(pct) if pct is not None and math.isfinite(pct) else 0.0
+
+
+def _alert(plan: CommentPlan) -> str:
     """The headline claim as a GitHub warning alert: one short sentence that
-    reads on a single line, since everything below it — the window, the scope,
-    what moved — is the specifics."""
+    reads on a single line, since everything below it — the window, the
+    reasoning, what moved — is the specifics."""
+    n_scopes = len(plan.scopes)
     what = (
         "a regression in"
         if n_scopes == 1
@@ -441,61 +735,46 @@ def _alert(bucket: _Bucket, n_scopes: int) -> str:
     )
 
 
-def _window_line(bucket: _Bucket) -> str:
+def _window_line(plan: CommentPlan) -> str:
     """The change window as a single caption line — the Key4hep release dates
-    that bound the step, shared by every scope below. An open-ended window says
-    so here, where the dates it is missing one of are."""
-    if bucket.base_release:
-        window = f"`{bucket.base_release}` → `{bucket.onset_release}`"
+    that bound the step, shared by every row below. An open-ended window says so
+    here, where the dates it is missing one of are."""
+    if plan.base_release:
+        window = f"`{plan.base_release}` → `{plan.onset_release}`"
     else:
         window = (
-            f"≤ `{bucket.onset_release}` — open-ended: no earlier settled "
+            f"≤ `{plan.onset_release}` — open-ended: no earlier settled "
             "measurement bounds it"
         )
     return f"📆 **Change window:** {window}"
 
 
-def _scope_section(
-    scope: _Scope, bucket: _Bucket, *, dashboard_url: str | None
-) -> str:
-    """The comment's leading benchmark scope, in full: its likelihood and
-    detector in the heading, then the ranker's reason, what moved, the other
-    candidates scored for that scope, and the links to check it — all named to
-    the one scope the ranker actually judged."""
-    verdicts = sorted(scope.verdicts, key=_verdict_sort_key)
-    heading = f"#### 🎯 {_pct(scope.candidate.score)} — {_cell(scope.detector)}"
-    caption = (
-        f"<sub>{pretty_sample(scope.sample)} · "
-        f"{pretty_platform(scope.platform)}</sub>"
-    )
-    return "\n".join(
-        part for part in (
-            "",
-            heading,
-            "",
-            caption,
-            _quote(scope),
-            _metrics_table(verdicts),
-            _others_section(scope),
-            _where_to_look(scope, bucket, dashboard_url=dashboard_url),
-        ) if part is not None
-    )
+def _assessment(
+    plan: CommentPlan, rows: list[RegressionRow], attribution: Attribution | None
+) -> str | None:
+    """The model's reasoning as a labelled blockquote — the label is where the
+    comment openly says an AI made this call.
 
-
-def _quote(scope: _Scope) -> str | None:
-    """The ranker's one-line reason as a labelled blockquote — the label is
-    where the comment openly says an AI made this call. It claims "the most
-    likely cause" only when this PR outranks every other candidate *in this
-    scope*; a comment can fire on any score above ``min_score``, and a PR the
-    ranker placed second here must not be told it came first. Nothing is
-    rendered when the ranker declined to explain (a scored-but-unexplained
-    candidate is not comment-worthy prose, and the score already stands in the
-    heading)."""
-    text = _one_line(scope.candidate.description, _MAX_DESCRIPTION_CHARS)
+    With a cross-configuration review, that is its summary: it saw every
+    configuration that moved and every one that did not, so it is the account
+    that can actually explain the pattern. Without one, the comment falls back to
+    the per-configuration ranker's one-liner for its strongest row, and then it
+    claims "the most likely cause" only when this PR outranks every other
+    candidate — a comment can fire on any score above ``min_score``, and a PR the
+    ranker placed second must not be told it came first. Nothing is rendered when
+    neither model explained itself: an unexplained score is not comment-worthy
+    prose, and it already stands in the table."""
+    if attribution is not None:
+        text = _one_line(attribution.summary, _MAX_SUMMARY_CHARS)
+        if text:
+            return f"\n> 🤖 **The AI reviewer's assessment:** {text}"
+        return None
+    lead = rows[0] if rows else None
+    text = _one_line(lead.scope_reason, _MAX_DESCRIPTION_CHARS) if lead else ""
     if not text:
         return None
     outranks_all = all(
-        other.score < scope.candidate.score for other in scope.others.values()
+        other.score < lead.scope_score for other in plan.others.values()
     )
     claim = "the most likely" if outranks_all else "a likely"
     return (
@@ -504,40 +783,88 @@ def _quote(scope: _Scope) -> str | None:
     )
 
 
-def _metrics_table(verdicts: list[MetricVerdict]) -> str:
-    """What actually moved in this scope: metric, benchmark label, and by how
-    much. Metric columns keep their raw names — they are the identifiers the
-    dashboard the links point at is labelled with, so a reader can find the
-    exact series."""
-    header = ["Metric", "Config", "Change"]
-    align = [":---", ":---", "---:"]
-    rows = [
-        [
-            f"`{v.metric}`" + (f" · {_cell(v.sub_detector)}" if v.sub_detector else ""),
+def _table(
+    plan: CommentPlan,
+    rows: list[RegressionRow],
+    attribution: Attribution | None,
+    *,
+    dashboard_url: str | None,
+) -> str:
+    """Every regression in the window, most likely first.
+
+    One table rather than one section per configuration: which configurations
+    moved — and, read against *Where to look*, which did not — is the substance
+    of the claim, and a reader weighing it needs to see the pattern at once. The
+    first rows are visible and the rest fold into a disclosure, so a wide window
+    stays readable without hiding anything.
+
+    Metric and configuration keep their raw names: they are the identifiers the
+    dashboard behind each detector link is labelled with, so a reader can find
+    the exact series. The platform earns a column only when the window spans more
+    than one — a column repeating the same slug on every row is noise, but a row
+    that quietly ran somewhere else must say so."""
+    multi_platform = len({row.verdict.platform for row in rows}) > 1
+    header = ["Metric", "Detector"]
+    align = [":---", ":---"]
+    if multi_platform:
+        header.append("Platform")
+        align.append(":---")
+    header += ["Sample", "Config", "Change", "Attribution"]
+    align += [":---", ":---", "---:", "---:"]
+
+    def _line(row: RegressionRow) -> str:
+        v = row.verdict
+        href = window_href(
+            dashboard_url,
+            detector=v.detector, platform=v.platform, sample=v.sample,
+            base_release=plan.base_release, onset_release=plan.onset_release,
+            stack=row.stack,
+        )
+        detector = _cell(v.detector)
+        cells = [
+            f"`{_cell(v.metric)}`"
+            + (f" · {_cell(v.sub_detector)}" if v.sub_detector else ""),
+            f"[{detector}]({href})" if href else detector,
+        ]
+        if multi_platform:
+            cells.append(_cell(pretty_platform(v.platform)))
+        cells += [
+            _cell(pretty_sample(v.sample)),
             f"`{_cell(v.label)}`",
             _change_cell(v.pct_change),
+            _pct(_likelihood(row, attribution)),
         ]
-        for v in verdicts[:_MAX_METRIC_ROWS]
+        return "| " + " | ".join(cells) + " |"
+
+    shown, hidden = rows[:_MAX_TABLE_ROWS], rows[_MAX_TABLE_ROWS:]
+    head = [
+        "| " + " | ".join(header) + " |",
+        "|" + "|".join(align) + "|",
     ]
     lines = [
         "",
-        "##### 📊 What moved",
+        "##### 📊 Regressions attributed to this pull request",
         "",
-        "| " + " | ".join(header) + " |",
-        "|" + "|".join(align) + "|",
-        *("| " + " | ".join(row) + " |" for row in rows),
+        *head,
+        *(_line(row) for row in shown),
     ]
-    omitted = len(verdicts) - len(rows)
-    if omitted > 0:
+    if hidden:
         lines += [
             "",
-            f"_…and {_count(omitted, 'more metric')} in this configuration._",
+            "<details>",
+            f"<summary><b>{_count(len(hidden), 'further regression')} in this "
+            "window</b></summary>",
+            "",
+            *head,
+            *(_line(row) for row in hidden),
+            "",
+            "</details>",
         ]
     return "\n".join(lines)
 
 
-def _others_section(scope: _Scope) -> str:
-    """The rest of the candidates scored for this scope, with their
+def _others_section(plan: CommentPlan) -> str:
+    """The rest of the candidates scored across this window, with their
     likelihoods — the reader needs to see what else was in the frame to weigh
     the claim against this PR, including the case where nothing else was.
     Collapsed by default, but the summary line carries the strongest competing
@@ -546,23 +873,21 @@ def _others_section(scope: _Scope) -> str:
     belongs in front of a reader who expands nothing.
 
     The candidates are named, never linked — see :func:`_pr_ref`."""
-    others = sorted(
-        scope.others.values(), key=lambda c: (-c.score, c.repo, c.number)
-    )
+    others = _sorted_others(plan)
     if not others:
         return "\n".join([
             "",
             "> [!NOTE]",
             "> This was the only pull request found across every tracked "
-            "package that changed in this configuration's window.",
+            "package that changed in this window.",
         ])
 
     shown = others[:_MAX_OTHER_CANDIDATES]
     lines = [
-        *(note for note in (_crowded_note(scope, others[0]),) if note),
+        *(note for note in (_crowded_note(plan, others[0]),) if note),
         "",
         "<details>",
-        "<summary><b>Other pull requests scored for this configuration</b> — "
+        "<summary><b>Other pull requests in this window</b> — "
         f"{_count(len(others), 'candidate')}, highest {_pct(others[0].score)}"
         "</summary>",
         "",
@@ -591,11 +916,11 @@ def _pr_ref(candidate: CandidatePR) -> str:
     zero-width space: unchanged to a reader, unparsed by GitHub, and
     unclickable. Whoever wants the full field has the package-diff link in
     *Where to look*."""
-    zwsp = "\u200b"  # U+200B zero-width space
+    zwsp = "​"  # U+200B zero-width space
     return _cell(f"{candidate.repo}#{zwsp}{candidate.number}")
 
 
-def _crowded_note(scope: _Scope, closest: CandidatePR) -> str | None:
+def _crowded_note(plan: CommentPlan, closest: CandidatePR) -> str | None:
     """Said out loud when the ranking does not clearly favour this PR — in
     words, rather than leaving the reader to subtract two numbers.
 
@@ -606,7 +931,7 @@ def _crowded_note(scope: _Scope, closest: CandidatePR) -> str | None:
     thin (``_CROWDED_SPREAD``) — a caveat printed on every comfortable night is
     wallpaper, and the score and the summary line already say what a comfortable
     lead looks like."""
-    delta = scope.candidate.score - closest.score
+    delta = plan.top_score - closest.score
     if not math.isfinite(delta) or delta > _CROWDED_SPREAD:
         return None
     # Prose has to agree with the percentages sitting right above it, not with
@@ -614,15 +939,15 @@ def _crowded_note(scope: _Scope, closest: CandidatePR) -> str | None:
     # so a sub-point raw gap can render as a one-point *displayed* gap and vice
     # versa. Rounding both scores the same way :func:`_pct` does, then
     # differencing, keeps the two in lockstep.
-    mine = int(round(scope.candidate.score))
+    mine = int(round(plan.top_score))
     theirs = int(round(closest.score))
     display_delta = mine - theirs
     points = abs(display_delta)
     if display_delta < 0:
         return (
             f"\n_The closest other candidate scored {_count(points, 'point')} "
-            "**higher** than this PR — the ranker's preference in this "
-            "configuration runs against it, not for it._"
+            "**higher** than this PR — the ranker's preference in this window "
+            "runs against it, not for it._"
         )
     if points == 0:
         separation = "Nothing separates this PR from the closest other candidate"
@@ -638,153 +963,55 @@ def _crowded_note(scope: _Scope, closest: CandidatePR) -> str | None:
     )
 
 
-def _also_section(
-    scopes: list[_Scope], lead: _Scope, bucket: _Bucket, *, dashboard_url: str | None
-) -> str | None:
-    """The window's remaining benchmark scopes, one row each.
-
-    Each row keeps that scope's *own* likelihood — the ranker judged it
-    separately, and the lead scope's number does not speak for it — next to
-    where that likelihood *placed*, since a comment fires on any score above the
-    threshold and a bare 85% reads very differently once another candidate
-    scored 97% in the same configuration. The lead scope makes the same
-    distinction in prose (:func:`_quote`, :func:`_crowded_note`); a summary row
-    makes it in one column. Then the single largest movement, which is what a
-    reader deciding whether to open the dashboard actually weighs. The
-    configuration links straight to its own dashboard view, so the rest of the
-    window is one click rather than another screen of Markdown."""
-    if not scopes:
-        return None
-
-    shown = scopes[:_MAX_ALSO_ROWS]
-    counted = _count(len(scopes), "further benchmark configuration")
-    lines = [
-        "",
-        "##### 📌 Also affected in this window",
-        "",
-        f"The same window regressed in {counted}, each ranked on its own:",
-        "",
-        "| Configuration | Likelihood | Ranking | Largest move |",
-        "|:---|---:|:---|---:|",
-    ]
-    for scope in shown:
-        # The sample and platform are spelled out only where they differ from
-        # the section above: a whole column repeating one run configuration is
-        # noise, but a row that quietly ran something else must say so.
-        label = _cell(
-            scope.detector
-            if (scope.sample, scope.platform) == (lead.sample, lead.platform)
-            else (
-                f"{scope.detector} — {pretty_sample(scope.sample)} · "
-                f"{pretty_platform(scope.platform)}"
-            )
-        )
-        href = window_href(
-            dashboard_url,
-            detector=scope.detector, platform=scope.platform, sample=scope.sample,
-            base_release=bucket.base_release, onset_release=bucket.onset_release,
-            stack=scope.stack,
-        )
-        worst = min(scope.verdicts, key=_verdict_sort_key)
-        lines.append(
-            f"| {f'[{label}]({href})' if href else label} "
-            f"| {_pct(scope.candidate.score)} "
-            f"| {_ranking_cell(scope)} "
-            f"| `{_cell(worst.metric)}` {_change_cell(worst.pct_change)} |"
-        )
-    if len(scopes) > len(shown):
-        lines += [
-            "",
-            f"_…and {_count(len(scopes) - len(shown), 'more configuration')}._",
-        ]
-    return "\n".join(lines)
-
-
-def _ranking_cell(scope: _Scope) -> str:
-    """Where this PR's likelihood placed among the candidates scored for
-    *scope* — the context a bare percentage is missing.
-
-    A comment fires on any score at or above ``min_score``, so a row can show a
-    high likelihood while another candidate scored higher still; naming the
-    competing score is the difference between "the ranker picked this PR" and
-    "the ranker preferred someone else, and this PR also cleared the bar"."""
-    if not scope.others:
-        return "Only candidate"
-    best_other = max(c.score for c in scope.others.values())
-    if scope.candidate.score > best_other:
-        return "Top-ranked"
-    if scope.candidate.score == best_other:
-        return f"Tied with {_pct(best_other)}"
-    return f"Behind {_pct(best_other)}"
-
-
 def _where_to_look(
-    scope: _Scope, bucket: _Bucket, *, dashboard_url: str | None
+    plan: CommentPlan, rows: list[RegressionRow], *, dashboard_url: str | None
 ) -> str | None:
-    """The links that let a reader check this scope's claim rather than take it.
+    """The window-wide link that lets a reader check the claim rather than take
+    it: every package that moved across these two releases.
 
-    Scoped to this subsection's ``(detector, platform, sample)`` and the stack
-    the scope actually ran against, since a dashboard view is always one
-    configuration. Every link names the *window*, which does not change from one
-    night to the next: no ``report=`` night and no CI-run URL, both of which
-    would vary nightly and edit a standing comment for no reason."""
-    regressions = window_href(
-        dashboard_url,
-        detector=scope.detector, platform=scope.platform, sample=scope.sample,
-        base_release=bucket.base_release, onset_release=bucket.onset_release,
-        stack=scope.stack,
-    )
+    Per-regression dashboard views are already on each row's detector cell, so
+    what is left here is the one thing that is not per-row. A dashboard view is
+    always one configuration, so the package diff is named from the leading row's
+    scope. The link names the *window*, which does not change from one night to
+    the next: no ``report=`` night and no CI-run URL, both of which would vary
+    nightly and edit a standing comment for no reason."""
+    if not rows:
+        return None
+    lead = rows[0].verdict
     packages = stack_changes_href(
         dashboard_url,
-        detector=scope.detector, platform=scope.platform, sample=scope.sample,
-        base_release=bucket.base_release, onset_release=bucket.onset_release,
+        detector=lead.detector, platform=lead.platform, sample=lead.sample,
+        base_release=plan.base_release, onset_release=plan.onset_release,
     )
-    items = [
-        (regressions, "📈", "Review this regression in the dashboard"),
-        (packages, "📦", "Every package that changed across this window"),
-    ]
-    links = [f"- {icon} [{text}]({href})" for href, icon, text in items if href]
-    if not links:
+    if not packages:
         return None
-    return "\n".join(["", "##### 🔎 Where to look", "", *links])
+    return "\n".join([
+        "",
+        "##### 🔎 Where to look",
+        "",
+        f"- 📦 [Every package that changed across this window]({packages})",
+    ])
 
 
-def _scope_sort_key(scope: _Scope) -> tuple:
-    """Which scope leads the comment: the ranker's strongest judgement about
-    this PR first — that is the claim the comment is making — and among equal
-    likelihoods the scope that moved furthest, since that is the one worth
-    reading in full. Identity breaks the remaining ties so the order, and with
-    it the body, is stable across nights."""
-    movement = max(
-        (
-            abs(v.pct_change)
-            for v in scope.verdicts
-            if v.pct_change is not None and math.isfinite(v.pct_change)
-        ),
-        default=0.0,
-    )
-    return (
-        -scope.candidate.score, -movement,
-        scope.detector, scope.platform, scope.sample,
-    )
+def _facts_digest(plan: CommentPlan) -> str:
+    """A fingerprint of the *benchmark facts* behind a comment.
 
-
-def _verdict_sort_key(v: MetricVerdict) -> tuple:
-    """Biggest movement first, ties broken by identity so a body is stable
-    across nights — a reordered table would look like a change and trigger a
-    pointless edit. A non-finite change sorts as no movement, matching what
-    :func:`_change_cell` renders for it: a NaN in the key would compare false
-    against everything and leave the order dependent on input order, which is
-    the one thing this key exists to rule out."""
-    magnitude = (
-        abs(v.pct_change)
-        if v.pct_change is not None and math.isfinite(v.pct_change)
-        else 0.0
-    )
-    return (
-        -magnitude, v.detector, v.platform, v.sample,
-        v.label, v.metric, v.sub_detector or "",
-    )
+    The model's prose is regenerated every night and will not repeat itself
+    word for word, so comparing whole bodies would edit — and re-notify —
+    a standing regression nightly, which is exactly what
+    :mod:`k4bench.blame.publish` refuses to do. This digest covers what a reader
+    would call a change: the window, the regressions and how far they moved, and
+    the field of candidates. Deliberately *not* the narrative, and not the
+    attributed likelihoods, both of which are model output that drifts without
+    anything having happened."""
+    parts = [plan.base_release or "", plan.onset_release]
+    for row in sorted(plan.rows, key=_row_identity):
+        pct = row.verdict.pct_change
+        moved = f"{pct:.4f}" if pct is not None and math.isfinite(pct) else "-"
+        parts.append("|".join((*_row_identity(row), moved)))
+    for other in _sorted_others(plan):
+        parts.append(f"{other.repo}#{other.number}@{int(round(other.score))}")
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:16]
 
 
 def _pct(score: float) -> str:
@@ -824,14 +1051,15 @@ def _one_line(text: str, limit: int) -> str:
 def _defang(text: str) -> str:
     """Neutralise the active Markdown/HTML in quoted, externally-authored prose.
 
-    A PR title or a model's one-line reason is untrusted text pasted into a
-    comment the bot posts in someone else's repository. Left as-is it could:
+    A PR title or a model's summary is untrusted text pasted into a comment the
+    bot posts in someone else's repository. Left as-is it could:
 
     * ``@login`` — ping a person on every nightly edit (the same ban the whole
       bot honours by never rendering an author with an ``@``);
     * ``#123`` — cross-reference an unrelated issue, notifying its subscribers;
       a title like "Revert #45" carries one for free (:func:`_pr_ref` applies the
-      same rule to the references this module writes itself);
+      same rule to the references this module writes itself, and the review is
+      asked to name alternatives in exactly that form);
     * ``<!-- … -->`` / ``<tag>`` — hide following content, or inject markup;
     * ``[text](url)`` / ``![alt](url)`` — put an arbitrary clickable destination,
       or a remote image, into a comment the bot signs its own name to;
@@ -846,7 +1074,7 @@ def _defang(text: str) -> str:
     are what make it one. Emphasis and backticks are deliberately left alone —
     they restyle the quoted text but cannot carry a reader anywhere. Table pipes
     are left to :func:`_cell`, which the cell paths still apply on top of this."""
-    zwsp = "\u200b"  # U+200B zero-width space
+    zwsp = "​"  # U+200B zero-width space
     return (
         text.replace("@", "@" + zwsp)
         .replace("#", "#" + zwsp)

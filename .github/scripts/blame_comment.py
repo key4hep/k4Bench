@@ -8,6 +8,14 @@ whom) and :mod:`k4bench.blame.publish` (which writes it): reads the already-buil
 change window is attributed to a merged pull request at or above the configured
 likelihood, upserts one comment on that pull request.
 
+Each selected pull request is then reviewed once against its *whole* window
+(:mod:`k4bench.blame.attribute`) — the cross-configuration question the nightly
+per-configuration ranker is never asked. That pass needs the candidates' diffs,
+which is what the read-only ``GITHUB_TOKEN`` below is for, and it is configured
+by the same ``K4BENCH_LLM_*`` environment as the ranker. With no model
+configured it simply does not run, and the comments render from the
+per-configuration scores in ``blame.json`` alone.
+
 Runs last in the nightly job and is best-effort throughout: it is the only step
 that writes outside this repository, so it must never be able to affect the
 report, the sidecar, or the e-group email. Most nights it does nothing at all —
@@ -25,6 +33,8 @@ repositories — ``K4BENCH_PR_COMMENT_TOKEN``, deliberately *not* the workflow's
 built-in ``GITHUB_TOKEN``, which is read-only and scoped to k4Bench alone.
 Without it (or with ``--dry-run``) the rendered comments are logged and nothing
 is written, which is how a new repository is checked before it is enabled.
+The two tokens stay apart on purpose: reading diffs is an ordinary public-repo
+read, and the write token is never spent on one.
 """
 from __future__ import annotations
 
@@ -74,6 +84,37 @@ def _load_policy(path: Path, overrides: dict):
     return CommentPolicy.from_config(data)
 
 
+def _patch_source(token: str | None):
+    """``(repo, number) -> diff text`` for the cross-configuration review.
+
+    Memoized for the whole run: one window's subject pull request is another
+    window's competitor, so a night fetches each diff once. A fetch that fails —
+    no token, a rate limit, a deleted fork — yields ``""``, which the review
+    degrades on (the pull request still appears with its paths, its size and the
+    per-configuration reason); it never raises, because a missing diff must not
+    cost the comment.
+    """
+    from k4bench.blame.github import GitHubClient, fetch_pr
+
+    client = GitHubClient(token=token)
+    cache: dict[tuple[str, int], str] = {}
+
+    def patch_for(repo: str, number: int) -> str:
+        key = (repo.lower(), number)
+        if key not in cache:
+            patch = ""
+            try:
+                fetched = fetch_pr(client, repo, number)
+                if fetched is not None:
+                    patch = fetched[1]
+            except Exception as exc:  # noqa: BLE001 — best-effort input, never fatal
+                _log.warning("blame_comment: no diff for %s#%s (%s)", repo, number, exc)
+            cache[key] = patch
+        return cache[key]
+
+    return patch_for
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -94,6 +135,12 @@ def main(argv: list[str] | None = None) -> int:
         "--token", default=os.environ.get("K4BENCH_PR_COMMENT_TOKEN"),
         help="GitHub token with pull-requests:write on the allowlisted repos "
              "(default: $K4BENCH_PR_COMMENT_TOKEN); without one the run is a dry run",
+    )
+    parser.add_argument(
+        "--read-token", default=os.environ.get("GITHUB_TOKEN"),
+        help="Read-only GitHub token used to fetch the candidates' diffs for the "
+             "cross-configuration review (default: $GITHUB_TOKEN); without one "
+             "the review still runs, on paths and titles alone",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -117,7 +164,13 @@ def main(argv: list[str] | None = None) -> int:
         force=True,
     )
 
-    from k4bench.blame.comment import CommentConfigError, CommentStormError, select
+    from k4bench.blame.attribute import attributor_from_env
+    from k4bench.blame.comment import (
+        CommentConfigError,
+        CommentStormError,
+        build_comments,
+        select,
+    )
     from k4bench.blame.github import GitHubClient
     from k4bench.blame.models import BlameReport, BlameSchemaError
     from k4bench.blame.publish import publish
@@ -153,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
 
     night = blame.report_night or "no data"
     try:
-        comments = select(report, blame, policy, dashboard_url=args.dashboard_url)
+        plans = select(report, blame, policy)
     except CommentStormError as exc:
         # Distinct from "no candidate reached the threshold" below: the circuit
         # breaker tripped, so something is likely wrong with tonight's
@@ -166,10 +219,33 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 0
-    if not comments:
+    if not plans:
         print(
             f"blame comments for {night}: no candidate "
             f"reached {policy.min_score:g}% in an enabled repository"
+        )
+        return 0
+
+    attributor = attributor_from_env()
+    if attributor is None:
+        _log.info(
+            "blame_comment: no K4BENCH_LLM_URL/MODEL — commenting from the "
+            "per-configuration scores, without a cross-configuration review"
+        )
+    comments = build_comments(
+        plans,
+        attributor=attributor,
+        patch_for=_patch_source(args.read_token) if attributor else None,
+        dashboard_url=args.dashboard_url,
+        min_score=policy.min_score,
+    )
+    if not comments:
+        # Only reachable through the withdrawal gate: the review looked at the
+        # whole window and cleared every pull request selection had implicated.
+        print(
+            f"blame comments for {night}: {len(plans)} candidate(s) selected, all "
+            f"withdrawn by the cross-configuration review (under "
+            f"{policy.min_score:g}%)"
         )
         return 0
 

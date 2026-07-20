@@ -24,6 +24,9 @@
 #   K4BENCH_LLM_API_KEY           — bearer token for the endpoint (kept in secrets)
 #   K4BENCH_LLM_MAX_TOKENS        — optional initial completion-token budget;
 #                                   length truncation grows it up to a safe cap
+#   K4BENCH_LLM_SUMMARY_MODEL     — optional model id for the PR comments'
+#                                   cross-configuration review only (step 5c);
+#                                   defaults to K4BENCH_LLM_MODEL
 #   K4BENCH_BLAME_TIMEOUT         — wall-clock limit for the isolated blame
 #                                   step (default: 15m; GNU timeout syntax)
 #   K4BENCH_PR_COMMENT_TOKEN      — token with pull-requests:write on the repos
@@ -31,7 +34,9 @@
 #                                   the PR comments. Unset ⇒ they are only logged
 #   K4BENCH_PR_COMMENT_DRY_RUN    — non-empty ⇒ log the comments, post nothing
 #   K4BENCH_PR_COMMENT_TIMEOUT    — wall-clock limit for the comment step
-#                                   (default: 5m)
+#                                   (default: 15m — the step reviews each
+#                                   selected PR against its whole window, so it
+#                                   makes model calls of its own)
 
 set -euo pipefail
 
@@ -133,7 +138,11 @@ echo "::endgroup::"
 
 # ── 5c. Pull-request comments (best-effort; the only step that writes off-repo) ─
 # Posts one comment on each pull request tonight's sidecar holds responsible with
-# a high enough likelihood, and edits it in place on later nights. Gated on
+# a high enough likelihood, and edits it in place on later nights. Each selected
+# pull request is first reviewed once against its whole change window, which is
+# why this step reads K4BENCH_LLM_* and GITHUB_TOKEN as well; with no model
+# configured the comments render from the sidecar's per-configuration scores.
+# Gated on
 # .github/blame-comments.yml — an empty allowlist there makes this a no-op —
 # and on a write-scoped K4BENCH_PR_COMMENT_TOKEN; without one the
 # script logs the comments it would post and writes nothing. Isolated exactly
@@ -148,7 +157,7 @@ if [[ -f report/blame.json ]]; then
         # must share one wall-clock budget. Running both inside the `timeout`
         # subshell means a stuck package-index connection is bounded exactly
         # like a stuck CLI, and neither can hold up the e-group email above.
-        timeout --signal=TERM --kill-after=30s "${K4BENCH_PR_COMMENT_TIMEOUT:-5m}" \
+        timeout --signal=TERM --kill-after=30s "${K4BENCH_PR_COMMENT_TIMEOUT:-15m}" \
           bash -c '
             pip install --quiet "pyyaml>=6.0,<6.1" &&
             python .github/scripts/blame_comment.py \

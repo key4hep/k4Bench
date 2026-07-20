@@ -223,7 +223,7 @@ def resolve_repo_prs(
             pr_numbers.append(number)
 
     for number in pr_numbers:
-        fetched = _fetch_pr(client, slug, number)
+        fetched = fetch_pr(client, slug, number)
         if fetched is None:
             # A PR known to be in the range but unreadable right now — the
             # candidate list is incomplete, not merely smaller.
@@ -251,7 +251,7 @@ def _pr_for_commit(client: GitHubClient, slug: str, sha: str) -> int | None:
     return pulls[0].get("number") if pulls else None
 
 
-def _fetch_pr(
+def fetch_pr(
     client: GitHubClient, slug: str, number: int
 ) -> tuple[CandidatePR, str] | None:
     """One PR's metadata with its changed paths, and a bounded diff sample, or
@@ -259,10 +259,13 @@ def _fetch_pr(
 
     Returns the persisted :class:`CandidatePR` alongside the *transient* patch
     text — the diff is ranker input, never stored on the candidate (see
-    :class:`RepoResolution`)."""
+    :class:`RepoResolution`). Public (not just :func:`resolve_repo_prs`'s
+    internal helper) because a re-rank backfill already knows which PR numbers
+    are candidates and only needs their diffs refetched, not a fresh compare/
+    commit-walk to rediscover them."""
     resp = client.get(f"/repos/{slug}/pulls/{number}")
     if resp.status_code != 200:
-        _log.debug("_fetch_pr: %s#%s -> HTTP %s", slug, number, resp.status_code)
+        _log.debug("fetch_pr: %s#%s -> HTTP %s", slug, number, resp.status_code)
         return None
     try:
         data = resp.json()

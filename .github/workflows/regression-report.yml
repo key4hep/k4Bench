@@ -85,6 +85,11 @@ jobs:
           K4BENCH_LLM_MODEL:         ${{ vars.K4BENCH_LLM_MODEL }}
           K4BENCH_LLM_API_KEY:       ${{ secrets.K4BENCH_LLM_API_KEY }}
           K4BENCH_LLM_MAX_TOKENS:    ${{ vars.K4BENCH_LLM_MAX_TOKENS || '16384' }}
+          # The pull-request comments below review each selected PR against its
+          # whole change window — one call per comment, at most ten a night,
+          # feeding the only outward-facing artifact. This optionally spends a
+          # stronger model on that pass alone; unset, it uses the model above.
+          K4BENCH_LLM_SUMMARY_MODEL: ${{ vars.K4BENCH_LLM_SUMMARY_MODEL }}
           # Bounds the entire optional GitHub+LLM attribution stage. A timeout
           # skips blame.json but cannot affect report.json or notification.
           K4BENCH_BLAME_TIMEOUT:     ${{ vars.K4BENCH_BLAME_TIMEOUT || '15m' }}
@@ -97,7 +102,7 @@ jobs:
           # it only logs what it would have posted.
           K4BENCH_PR_COMMENT_TOKEN:   ${{ secrets.K4BENCH_PR_COMMENT_TOKEN }}
           K4BENCH_PR_COMMENT_DRY_RUN: ${{ vars.K4BENCH_PR_COMMENT_DRY_RUN }}
-          K4BENCH_PR_COMMENT_TIMEOUT: ${{ vars.K4BENCH_PR_COMMENT_TIMEOUT || '5m' }}
+          K4BENCH_PR_COMMENT_TIMEOUT: ${{ vars.K4BENCH_PR_COMMENT_TIMEOUT || '15m' }}
         run: |
           docker pull "${{ env.CONTAINER_IMAGE }}"
           docker run --rm --init \
