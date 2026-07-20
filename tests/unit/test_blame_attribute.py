@@ -374,7 +374,7 @@ def test_an_unusable_reply_declines(content):
 def test_an_http_failure_declines_rather_than_raising(caplog):
     attributor = _attributor([_FakeResp({}, status=500) for _ in range(4)])
     assert attributor.attribute(_request()) is None
-    assert "falling back to the per-configuration scores" in caplog.text
+    assert "no cross-configuration review" in caplog.text
 
 
 def test_a_timeout_declines():

@@ -80,9 +80,16 @@ Three rules bound it:
 - **Only-echo.** A regression id the request did not contain is dropped, so a
   regression the model invented cannot reach a comment. A row it simply omitted
   keeps its per-configuration score — an unanswered row is not a zero.
-- **Honest failure.** No model configured, an HTTP error, an unusable reply: the
-  comment renders from the per-configuration scores, exactly as it did before
-  this pass existed.
+- **Honest failure.** With no model configured at all, the comment renders from
+  the per-configuration scores — the whole of what this bot did before this pass
+  existed, and a coherent mode in its own right. But when a reviewer *is*
+  configured and does not answer (an HTTP error, a timeout, an unusable reply,
+  a diff fetch that failed outright), **no comment is posted that night**. Not a
+  fallback: a first-pass-only comment rests on the same benchmark facts as the
+  reviewed one, so it carries the same digest, and the publisher would refuse to
+  edit it — the degraded body would stand forever however many later reviews
+  succeeded. Skipping the night keeps comment quality monotonic: no comment,
+  then a reviewed comment, and never back the other way.
 - **Narrowing at the target level.** This pass never *causes* a comment on a
   pull request selection did not already implicate: selection happens entirely
   on the first pass's scores, and the only outcome this pass adds is
@@ -121,6 +128,7 @@ being wrong about far less often than it is worth being silent.
 | Confirmed tonight | Selection is driven from the *report*'s confirmed regressions, so a comment can only describe a regression that is confirmed in tonight's report. |
 | Not a storm | More than `max_comments` (default 10) comments in one night suppresses **all** of them: a night that loud is a bug, not a night. |
 | Not withdrawn | When the cross-configuration review ran and left *every* regression in the window below `min_score`, the comment is dropped. See [Two passes](#two-passes). |
+| Reviewed, when a reviewer is configured | If a model is configured but returns nothing usable, nothing is posted that night — never a first-pass-only fallback, which a later successful review could not replace. See [Two passes](#two-passes). |
 
 Most nights nothing is posted at all — most nights have no confirmed
 regression, let alone a confidently attributed one.

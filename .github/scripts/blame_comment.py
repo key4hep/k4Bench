@@ -282,13 +282,25 @@ def main(argv: list[str] | None = None) -> int:
         min_score=policy.min_score,
     )
     if not comments:
-        # Only reachable through the withdrawal gate: the review looked at the
-        # whole window and cleared every pull request selection had implicated.
-        print(
-            f"blame comments for {night}: {len(plans)} candidate(s) selected, all "
-            f"withdrawn by the cross-configuration review (under "
-            f"{policy.min_score:g}%)"
-        )
+        # Two ways to get here, and they mean opposite things. The review either
+        # ran and cleared everyone — a healthy outcome — or never answered, in
+        # which case nothing is posted tonight *on purpose*: a first-pass-only
+        # comment would share its digest with the reviewed one and could never
+        # be replaced by it. The second is worth a stderr line, since a model
+        # endpoint that stays down silences the bot indefinitely.
+        if attributor is None:
+            print(
+                f"blame comments for {night}: {len(plans)} candidate(s) "
+                f"selected, none rendered"
+            )
+        else:
+            print(
+                f"blame comments for {night}: {len(plans)} candidate(s) "
+                f"selected, none posted — the cross-configuration review either "
+                f"cleared them (under {policy.min_score:g}%) or could not be "
+                f"obtained; see the log above",
+                file=sys.stderr,
+            )
         return 0
 
     dry_run = args.dry_run or not args.token

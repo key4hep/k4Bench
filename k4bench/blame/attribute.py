@@ -36,11 +36,14 @@ the same and the consequences here are larger:
   A row the model simply omitted keeps the first pass's score: an unanswered row
   is not a zero, and the comment says how many rows the review covered.
 
-* **Honest failure.** Every failure path — no model configured, HTTP error,
-  timeout, malformed JSON, a reply with no usable rows — returns ``None``. The
-  caller then renders the comment from the per-configuration scores it already
-  had, which is exactly what it did before this stage existed. A degraded comment
-  beats a blocked one, and both beat an invented one.
+* **Honest failure.** Every failure path — HTTP error, timeout, malformed JSON,
+  a reply with no usable rows — returns ``None``, and this module never decides
+  what that costs. :func:`k4bench.blame.comment.build_comments` does: with a
+  reviewer configured, ``None`` means *no comment that night*, because a
+  first-pass-only body posted now would share its facts digest with the reviewed
+  body rendered later and could never be replaced by it. A blocked comment is
+  recoverable tomorrow; a frozen degraded one is not, and both beat an invented
+  one.
 
 * **Narrowing at the target level.** This pass never causes a comment on a pull
   request selection did not already implicate: selection happens entirely on the
@@ -386,8 +389,9 @@ class OpenAICompatAttributor:
 
     Transport — retries, backoff, output-budget growth, JSON-mode compatibility —
     belongs to the injected :class:`~k4bench.blame.llm.ChatClient`; what is here
-    is the prompt and the parse. Any failure returns ``None`` rather than raising:
-    the comment then falls back to the per-configuration scores.
+    is the prompt and the parse. Any failure returns ``None`` rather than
+    raising; what the caller does with that is its decision, not this
+    adapter's.
     """
 
     client: ChatClient
@@ -408,16 +412,16 @@ class OpenAICompatAttributor:
         except Exception as exc:
             # Timeout, connection error, HTTP status, bad shape — one outcome.
             _log.warning(
-                "attribute: %s — LLM call failed (%s); falling back to the "
-                "per-configuration scores", request.slug, exc,
+                "attribute: %s — LLM call failed (%s); no cross-configuration "
+                "review for this pull request", request.slug, exc,
             )
             return None
 
         attribution = _parse_attribution(content, request)
         if attribution is None:
             _log.warning(
-                "attribute: %s — unusable reply (finish_reason=%s); falling back "
-                "to the per-configuration scores; response prefix=%r",
+                "attribute: %s — unusable reply (finish_reason=%s); no "
+                "cross-configuration review; response prefix=%r",
                 request.slug, finish_reason, content[:500],
             )
         return attribution

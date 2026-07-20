@@ -899,17 +899,11 @@ def test_a_review_that_answered_everything_adds_no_coverage_caveat():
     assert "This assessment covers" not in body
 
 
-@pytest.mark.parametrize("attributor", [
-    None,
-    _FakeAttributor(declines=True),
-    _FakeAttributor(raises=RuntimeError("endpoint on fire")),
-])
-def test_without_a_usable_review_the_comment_still_renders(attributor):
-    # No model, a decline, an adapter that raises: all the same degradation to
-    # the per-configuration scores. A degraded comment beats a blocked one — and
-    # nothing is withdrawn on the strength of a review that did not happen.
+def test_with_no_model_configured_the_comment_renders_from_the_first_pass():
+    # A coherent mode of its own: with no reviewer anywhere, every comment rests
+    # on the same evidence as every other, and nothing can later supersede one.
     v = _verdict()
-    comments = _comments(_report(v), _blame([v], [_candidate()]), attributor=attributor)
+    comments = _comments(_report(v), _blame([v], [_candidate()]), attributor=None)
     assert len(comments) == 1
     body = comments[0].body
     assert "91%" in body
@@ -917,7 +911,25 @@ def test_without_a_usable_review_the_comment_still_renders(attributor):
     assert "AI-generated PR ranking" in body     # never presented as proof
 
 
-def test_a_failing_diff_fetch_does_not_cost_the_comment():
+@pytest.mark.parametrize("attributor", [
+    _FakeAttributor(declines=True),
+    _FakeAttributor(raises=RuntimeError("endpoint on fire")),
+], ids=["declines", "raises"])
+def test_a_configured_review_that_does_not_answer_posts_nothing(attributor):
+    # Not a fallback rendered from the first-pass scores — nothing. A degraded
+    # comment posted tonight rests on the *same* benchmark facts as the reviewed
+    # one rendered tomorrow, so the digest would match and the publisher would
+    # refuse the edit: the degraded body would stand forever. Skipping the night
+    # keeps comment quality monotonic.
+    v = _verdict()
+    assert _comments(_report(v), _blame([v], [_candidate()]),
+                     attributor=attributor) == []
+
+
+def test_a_failing_diff_fetch_blocks_the_night_rather_than_degrading_the_comment():
+    # The request could not even be assembled, so no review happened — and a
+    # comment posted without one could never be replaced by a later reviewed
+    # one. A blocked night is recoverable; a frozen degraded accusation is not.
     v = _verdict()
 
     def patch_for(repo, number):
@@ -926,8 +938,8 @@ def test_a_failing_diff_fetch_does_not_cost_the_comment():
     attributor = _FakeAttributor({"r1": 95.0})
     comments = _comments(_report(v), _blame([v], [_candidate()]),
                          attributor=attributor, patch_for=patch_for)
-    assert len(comments) == 1
-    assert attributor.requests == []  # the review never ran; the comment stands
+    assert comments == []
+    assert attributor.requests == []  # the review never ran
 
 
 # ── The claim's honesty, without a review ─────────────────────────────────────
@@ -1798,3 +1810,94 @@ def test_the_digest_tracks_the_step_at_the_precision_the_comment_shows_it():
 
     assert digest_for(0.2000) == digest_for(0.20034)   # both render "+20.0%"
     assert digest_for(0.2000) != digest_for(0.2034)    # renders "+20.3%"
+
+
+# ── A comment's quality only ever goes up ─────────────────────────────────────
+# The publisher edits on the facts digest, and a first-pass-only comment shares
+# its digest inputs with the reviewed comment for the same night's facts. So a
+# degraded body, once posted, could never be replaced. These three assert the
+# lifecycle that avoids it.
+
+def _lifecycle_comment(attributor):
+    v = _verdict()
+    return _comments(_report(v), _blame([v], [_candidate()]), attributor=attributor)
+
+
+def test_review_lifecycle_a_failed_night_posts_nothing():
+    assert _lifecycle_comment(_FakeAttributor(raises=RuntimeError("down"))) == []
+
+
+def test_review_lifecycle_a_later_success_posts_the_reviewed_comment():
+    # Nothing was posted on the failed night, so the first working review is a
+    # *create*, carrying the cross-configuration account — not an upgrade the
+    # publisher would have had to notice.
+    comments = _lifecycle_comment(
+        _FakeAttributor({"r1": 90.0}, summary="ALLEGRO moved and IDEA did not.")
+    )
+    assert len(comments) == 1
+    assert "The AI reviewer's assessment" in comments[0].body
+    assert "ALLEGRO moved and IDEA did not." in comments[0].body
+
+
+def test_review_lifecycle_a_later_failure_cannot_downgrade_what_is_posted():
+    # The night after a successful review fails. Nothing is rendered for that
+    # target, so the publisher is never handed a first-pass-only body for it and
+    # the reviewed comment on the pull request is left exactly as it stands.
+    reviewed = _lifecycle_comment(_FakeAttributor({"r1": 90.0}))
+    assert len(reviewed) == 1
+    later = _lifecycle_comment(_FakeAttributor(declines=True))
+    assert later == []
+    # And the same facts under a working review still produce the same digest,
+    # so a standing reviewed comment is not edited for nothing either.
+    again = _lifecycle_comment(_FakeAttributor({"r1": 84.0}, summary="Reworded."))
+    assert again[0].facts_digest == reviewed[0].facts_digest
+
+
+def test_a_platform_whose_regression_has_no_entry_is_named_as_unread():
+    # No sidecar entry at all means no release diff was read for that platform
+    # either — the same gap as an entry for a narrower window, and it must be
+    # named rather than leave the prompt reading as "nothing changed there".
+    dbg = "x86_64-almalinux9-gcc14.2.0-dbg"
+    subject = _verdict(platform=_PLAT)
+    orphan = _verdict(platform=dbg)
+    blame = _blame([subject], [_candidate(score=92.0)])
+    attributor = _FakeAttributor({"r1": 90.0, "r2": 90.0})
+    _comments(_report(subject, orphan), blame, attributor=attributor)
+    request = attributor.requests[0]
+    assert request.packages_unavailable_on == (dbg,)
+    assert f"No release diff was read for this exact window on: {dbg}" in (
+        build_user_prompt(request)
+    )
+
+
+def test_the_digest_notices_a_competitor_being_retitled():
+    # Competitor titles are rendered verbatim in the "other pull requests"
+    # table, so a retitled candidate is a changed comment — and this holds with
+    # no reviewer configured, where that table is still drawn.
+    v = _verdict()
+    before = _blame([v], [
+        _candidate(score=92.0),
+        _candidate(number=1180, repo="key4hep/DD4hep", score=40.0, title="Field map"),
+    ])
+    after = _blame([v], [
+        _candidate(score=92.0),
+        _candidate(number=1180, repo="key4hep/DD4hep", score=40.0,
+                   title="Field map, take two"),
+    ])
+    assert (
+        _comments(_report(v), before)[0].facts_digest
+        != _comments(_report(v), after)[0].facts_digest
+    )
+
+
+def test_the_digest_notices_the_reviewed_pull_requests_own_title_changing():
+    # The subject's title is prompt-only, so it rides in the evidence block.
+    v = _verdict()
+    before = _blame([v], [_candidate(score=92.0, title="Add a lookup")])
+    after = _blame([v], [_candidate(score=92.0, title="Add a lookup, revised")])
+    digests = [
+        _comments(_report(v), blame,
+                  attributor=_FakeAttributor({"r1": 90.0}))[0].facts_digest
+        for blame in (before, after)
+    ]
+    assert digests[0] != digests[1]

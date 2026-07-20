@@ -638,8 +638,13 @@ def _collect_window(confirmed: list[_Confirmed], plan: CommentPlan) -> None:
         if not _steps_in_window(verdict, window):
             continue
         state, candidate = _scope_state(entry, ident)
+        # Recorded whether or not the sidecar has an entry: a platform whose
+        # regression has *no* entry at all (missing provenance, an
+        # unattributable window) had no release diff read for it either, and is
+        # exactly the kind of gap :attr:`CommentPlan.packages_unavailable_on`
+        # exists to name.
+        plan.platforms_seen.add(verdict.platform)
         if entry is not None:
-            plan.platforms_seen.add(verdict.platform)
             # Only an entry measuring *this comment's* window describes this
             # comment's release diff. A row can enter the window on a narrower
             # range of its own (a metric settled later carries a later base),
@@ -877,13 +882,33 @@ def build_comments(
     *min_score*. Within a plan it is a genuine second opinion, and an individual
     row's likelihood may come back higher than the first pass's as well as
     lower: that pass scored the row without ever seeing the other
-    configurations, which is the deficiency this one exists to correct. A plan
-    the review declines — no model, a failed call, an unusable reply — still
-    renders from the per-configuration scores it already had.
+    configurations, which is the deficiency this one exists to correct.
 
-    "Left standing" is the operative phrase: the gate reads each row's
-    *effective* likelihood, the review's score where it gave one and the
-    per-configuration score where it did not. A partial reply is an accepted
+    **A configured review that does not answer produces no comment at all.**
+    Not a fallback rendered from the first-pass scores — nothing. Two reasons,
+    and the second is the load-bearing one:
+
+    * The first pass asks the weaker question. It is enough to *select* a pull
+      request; the whole premise of this stage is that a claim posted into
+      someone else's repository deserves the cross-configuration reading too.
+      An endpoint that is down is not a reason to lower that bar.
+    * It makes comment quality **monotonic**, which nothing else here can. A
+      degraded comment posted tonight and a reviewed comment rendered tomorrow
+      rest on the *same* benchmark facts, so the digest is the same and
+      :mod:`k4bench.blame.publish` would refuse the edit — the degraded body
+      would stand forever, however many later reviews succeeded. Skipping the
+      night instead means a standing comment is simply left alone and the next
+      working review posts the real thing. A comment can therefore only ever
+      improve: no review, then reviewed, and never back again.
+
+    With no attributor configured at all the comment renders from the
+    per-configuration scores, which is the whole of what this bot did before
+    this stage existed and a coherent mode in its own right — every comment in
+    it rests on the same evidence as every other.
+
+    "Left standing" is the operative phrase in the withdrawal gate: it reads
+    each row's *effective* likelihood, the review's score where it gave one and
+    the per-configuration score where it did not. A partial reply is an accepted
     outcome (:func:`~k4bench.blame.attribute._parse_attribution`), so measuring
     withdrawal on the review's scores alone would let one low answer about one
     row acquit a pull request the review never disputed on the others.
@@ -898,6 +923,14 @@ def build_comments(
         attribution, request = _review(
             plan, attributor=attributor, patch_for=patch_for
         )
+        if attributor is not None and attribution is None:
+            _log.warning(
+                "build_comments: %s — the cross-configuration review produced "
+                "nothing usable; posting no comment tonight rather than a "
+                "first-pass-only one a later review could never replace",
+                plan.target,
+            )
+            continue
         # Measured on what the table will actually show, not on the review's
         # own scores: a partial reply leaves the rows it omitted at their
         # per-configuration likelihood (:func:`_likelihood`), and a row the
@@ -931,15 +964,16 @@ def _review(
 ) -> tuple[Attribution | None, AttributionRequest | None]:
     """One plan's cross-configuration review and the request it was made from.
 
-    Every failure — no attributor, no diff source, a raising fetch, a raising or
-    declining model — leaves the attribution ``None``: the comment then renders
-    from the per-configuration scores, which is exactly what it did before this
-    stage existed. A degraded comment beats a blocked one.
+    Every failure — no diff source, a raising fetch, a raising or declining
+    model — leaves the attribution ``None``. With an attributor configured that
+    means *no comment tonight* (see :func:`build_comments`): a blocked comment
+    is recoverable on the next working night, while a degraded one posted now
+    would be frozen in place by its own digest.
 
-    The *request* comes back alongside it, even when the model then declined,
-    because it records which evidence this night could actually assemble — a
-    diff that GitHub refused is a materially weaker review, and the digest has
-    to be able to see that (:func:`_facts_digest`)."""
+    The *request* comes back alongside it because it records which evidence this
+    night could actually assemble — a diff that GitHub refused is a materially
+    weaker review, and the digest has to be able to see that
+    (:func:`_facts_digest`)."""
     if attributor is None:
         return None, None
     fetch = patch_for or (lambda _repo, _number: "")
@@ -948,7 +982,7 @@ def _review(
     except Exception as exc:  # noqa: BLE001 — a diff fetch must not lose the comment
         _log.warning(
             "build_comments: %s — could not assemble the review request (%s); "
-            "falling back to the per-configuration scores", plan.target, exc,
+            "no review, so no comment tonight", plan.target, exc,
         )
         return None, None
     try:
@@ -956,7 +990,7 @@ def _review(
     except Exception as exc:  # noqa: BLE001 — an adapter that raises is a decline
         _log.warning(
             "build_comments: %s — the cross-configuration review failed (%s); "
-            "falling back to the per-configuration scores", plan.target, exc,
+            "no review, so no comment tonight", plan.target, exc,
         )
         return None, request
 
@@ -1195,8 +1229,9 @@ def _assessment(
     "this PR does not fit the affected set" printed above rows still carrying an
     unrelated 91% must not look like it was talking about them.
 
-    Without a review, the comment falls back to
-    the per-configuration ranker's one-liner for its strongest row, and then it
+    With no reviewer configured at all — the only way a comment is rendered
+    without a review (:func:`build_comments`) — the comment quotes the
+    per-configuration ranker's one-liner for its strongest row, and then it
     claims "the most likely cause" only when this PR outranks every other
     candidate — a comment can fire on any score above ``min_score``, and a PR the
     ranker placed second must not be told it came first. Nothing is rendered when
@@ -1640,7 +1675,15 @@ def _facts_digest(
         "unchanged": dict(sorted(plan.unchanged.items())),
         "packages_unavailable_on": list(plan.packages_unavailable_on),
         "competitors": [
-            {"pr": f"{other.repo}#{other.number}", "ranked": other.ranked}
+            {
+                "pr": f"{other.repo}#{other.number}",
+                "ranked": other.ranked,
+                # Rendered verbatim in the "other pull requests" table, so a
+                # retitled candidate is a changed comment — and lives here
+                # rather than in ``evidence`` because that table is drawn
+                # whether or not a review ran.
+                "title": _one_line(other.title, _MAX_DESCRIPTION_CHARS),
+            }
             for other, _scope in _sorted_others(plan)
         ],
         "evidence": _evidence_facts(request),
@@ -1658,15 +1701,18 @@ def _evidence_facts(request: AttributionRequest | None) -> dict[str, Any] | None
     clipped. What genuinely varies is whether GitHub answered — and that decides
     whether the model reasoned about code or about file names.
 
-    The paths and sizes ride along because they are shown to the model too and
-    are fixed for a merged pull request, so they cost nothing and catch a
-    candidate whose metadata was read differently. ``None`` when no review was
-    assembled at all: a comment rendered from the first pass alone rests on no
-    such evidence, and configuring a model later is itself a change of basis."""
+    Titles, paths and sizes ride along because they are shown to the model too
+    and are fixed for a merged pull request, so they cost nothing and catch a
+    candidate whose metadata was read differently — a retitled pull request is
+    a different prompt, and the reviewer's account of it can legitimately
+    change. ``None`` when no review was assembled at all: a comment rendered
+    from the first pass alone rests on no such evidence, and configuring a model
+    later is itself a change of basis."""
     if request is None:
         return None
     return {
         "subject": {
+            "title": _one_line(request.title, _MAX_DESCRIPTION_CHARS),
             "files": list(request.files),
             "size": [request.additions, request.deletions],
             "patch": bool(request.patch),
@@ -1674,6 +1720,7 @@ def _evidence_facts(request: AttributionRequest | None) -> dict[str, Any] | None
         "competitors": [
             {
                 "pr": f"{c.repo}#{c.number}",
+                "title": _one_line(c.title, _MAX_DESCRIPTION_CHARS),
                 "files": list(c.files),
                 "size": [c.additions, c.deletions],
                 "patch": bool(c.patch),
