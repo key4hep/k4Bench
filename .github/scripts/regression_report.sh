@@ -142,21 +142,22 @@ echo "::endgroup::"
 echo "::group::5c. Pull-request comments"
 if [[ -f report/blame.json ]]; then
     {
-        # Install PyYAML here (best-effort; network failure skips PR comments
-        # only). `if !` rather than `... || { echo; exit 0; }`: a brace group runs
-        # in *this* shell, so that `exit 0` would end the whole script and skip
-        # the e-group email below.
-        if ! pip install --quiet 'pyyaml>=6.0,<6.1'; then
-            echo "Failed to install PyYAML for blame-comment CLI; skipping PR comments." >&2
-        else
-            timeout --signal=TERM --kill-after=30s "${K4BENCH_PR_COMMENT_TIMEOUT:-5m}" \
-              python .github/scripts/blame_comment.py \
-                --report report/report.json \
-                --blame report/blame.json \
-                --config .github/blame-comments.yml \
-                --dashboard-url "${K4BENCH_DASHBOARD_URL:-https://k4bench-dashboard.app.cern.ch}" \
-              || echo "No pull-request comments this night (nothing attributed confidently, no enabled repo, timeout, or a failed write)." >&2
-        fi
+        # PyYAML is installed here rather than as a k4bench dependency (see
+        # blame_comment.py's module docstring: the package stays free of a
+        # YAML dependency on purpose) — so the install and the CLI it feeds
+        # must share one wall-clock budget. Running both inside the `timeout`
+        # subshell means a stuck package-index connection is bounded exactly
+        # like a stuck CLI, and neither can hold up the e-group email above.
+        timeout --signal=TERM --kill-after=30s "${K4BENCH_PR_COMMENT_TIMEOUT:-5m}" \
+          bash -c '
+            pip install --quiet "pyyaml>=6.0,<6.1" &&
+            python .github/scripts/blame_comment.py \
+              --report report/report.json \
+              --blame report/blame.json \
+              --config .github/blame-comments.yml \
+              --dashboard-url "${K4BENCH_DASHBOARD_URL:-https://k4bench-dashboard.app.cern.ch}"
+          ' \
+          || echo "No pull-request comments this night (nothing attributed confidently, no enabled repo, PyYAML install failed, timeout, or a failed write)." >&2
     } || echo "Pull-request comments step failed (best-effort; the report and email are unaffected)." >&2
 else
     echo "No blame sidecar this night — no pull request to comment on."

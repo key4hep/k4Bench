@@ -362,6 +362,18 @@ def test_a_sub_point_deficit_reads_as_no_separation():
     assert "higher** than this PR" not in body
 
 
+def test_crowded_prose_matches_displayed_percentages_at_a_rounding_boundary():
+    # 90.49 displays as 90%, 90.51 displays as 91% (see _pct) — a one-point
+    # *displayed* gap — even though the raw scores are 0.02 apart, which would
+    # round to 0 "points" if the prose were computed from raw deltas instead of
+    # from the same rounding _pct uses.
+    v = _verdict()
+    other = _candidate(number=1180, repo="key4hep/DD4hep", score=90.51)
+    body = _select(_report(v), _blame([v], [_candidate(score=90.49), other]))[0].body
+    assert "scored 1 point **higher** than this PR" in body
+    assert "Nothing separates this PR" not in body
+
+
 def test_a_clear_ranking_adds_no_caveat():
     # A caveat printed every night is wallpaper: it fires only when the field is
     # genuinely crowded, and the scores speak for a comfortable lead.

@@ -609,11 +609,16 @@ def _crowded_note(scope: _Scope, closest: CandidatePR) -> str | None:
     delta = scope.candidate.score - closest.score
     if not math.isfinite(delta) or delta > _CROWDED_SPREAD:
         return None
-    points = int(round(abs(delta)))
-    # A sub-point deficit rounds to zero and falls through to "nothing separates
-    # them": both scores render as the same percentage, so claiming one is
-    # "0 points higher" would contradict the table right above it.
-    if delta < 0 and points > 0:
+    # Prose has to agree with the percentages sitting right above it, not with
+    # the raw scores behind them: :func:`_pct` rounds each score independently,
+    # so a sub-point raw gap can render as a one-point *displayed* gap and vice
+    # versa. Rounding both scores the same way :func:`_pct` does, then
+    # differencing, keeps the two in lockstep.
+    mine = int(round(scope.candidate.score))
+    theirs = int(round(closest.score))
+    display_delta = mine - theirs
+    points = abs(display_delta)
+    if display_delta < 0:
         return (
             f"\n_The closest other candidate scored {_count(points, 'point')} "
             "**higher** than this PR — the ranker's preference in this "

@@ -19,7 +19,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from k4bench.blame.models import BlameReport, CandidatePR
+from k4bench.blame.models import RANKING_DISCLOSURE, BlameReport, CandidatePR
 from k4bench.regression.models import MetricVerdict, Severity
 from k4bench.labels import pretty_sample
 from k4bench.regression.render import _fmt
@@ -331,8 +331,6 @@ def render_candidate_ranking(
         if show_empty:
             st.caption("🤖 No AI PR ranking is stored for this regression.")
         return False
-    st.caption(
-        "🤖 **AI-generated PR ranking** — suggested leads to verify, not proof."
-    )
+    st.caption(f"🤖 {RANKING_DISCLOSURE}")
     candidate_table(entry.candidates)
     return True
