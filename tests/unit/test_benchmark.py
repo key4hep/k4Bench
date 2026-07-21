@@ -288,3 +288,89 @@ class TestFailureHandling:
         labels = {r.label for r in results}
         assert "without_EcalBarrel" not in labels
         assert len(results) == 4
+
+
+# ---------------------------------------------------------------------------
+# Steering-file reconciliation
+# ---------------------------------------------------------------------------
+
+
+class TestSteeringReconciliation:
+    """Which runs get a reconciled steering file, and with which detector set."""
+
+    @staticmethod
+    def _run_capturing(config) -> dict[str, list[str]]:
+        """Return {label: extra_args} for every ddsim invocation of a sweep."""
+        captured: dict[str, list[str]] = {}
+
+        def side_effect(**kw):
+            captured[kw["label"]] = kw["extra_args"]
+            return _make_result(kw["label"])
+
+        with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=side_effect):
+            run_sweep(config)
+        return captured
+
+    @staticmethod
+    def _present_in(steering_copy: Path) -> set[str]:
+        """Detector set the generated epilogue reconciles against."""
+        scope: dict = {}
+        for line in steering_copy.read_text().splitlines():
+            if line.startswith("_k4bench_present"):
+                exec(line, scope)
+        return scope["_k4bench_present"]
+
+    def _steering_args(self, tmp_path) -> tuple[Path, list[str]]:
+        steering = tmp_path / "steer.py"
+        steering.write_text("SIM = None\n")
+        return steering, ["--steeringFile", str(steering), "--enableGun"]
+
+    def test_baseline_keeps_the_original_steering_file(self, tmp_path):
+        """A typo in a steering file must stay a hard error, not be filtered."""
+        steering, args = self._steering_args(tmp_path)
+        config = _make_config(tmp_path, mode=SweepMode.FULL, extra_args=args)
+
+        captured = self._run_capturing(config)
+
+        assert captured["baseline_all"] == args
+        assert not (config.log_dir / "baseline_all_steering.py").exists()
+
+    def test_removal_runs_reconcile_against_the_remaining_detectors(self, tmp_path):
+        steering, args = self._steering_args(tmp_path)
+        config = _make_config(
+            tmp_path,
+            mode=SweepMode.FULL,
+            detector_names=["EcalBarrel"],
+            extra_args=args,
+        )
+
+        captured = self._run_capturing(config)
+        copy = config.log_dir / "without_EcalBarrel_steering.py"
+
+        assert captured["without_EcalBarrel"][1] == str(copy)
+        assert self._present_in(copy) == ALL_DETECTORS - {"EcalBarrel"}
+
+    def test_keep_only_runs_reconcile_against_the_kept_detectors(self, tmp_path):
+        steering, args = self._steering_args(tmp_path)
+        config = _make_config(
+            tmp_path,
+            mode=SweepMode.INCLUDE_ONLY,
+            detector_names=["EcalBarrel", "HcalBarrel"],
+            extra_args=args,
+        )
+
+        captured = self._run_capturing(config)
+        label = next(iter(captured))
+        copy = config.log_dir / f"{label}_steering.py"
+
+        assert self._present_in(copy) == {"EcalBarrel", "HcalBarrel"}
+
+    def test_runs_without_a_steering_file_write_no_copy(self, tmp_path):
+        config = _make_config(
+            tmp_path, mode=SweepMode.FULL, extra_args=["--enableGun"]
+        )
+
+        captured = self._run_capturing(config)
+
+        assert all(args == ["--enableGun"] for args in captured.values())
+        assert not list(config.log_dir.glob("*_steering.py"))

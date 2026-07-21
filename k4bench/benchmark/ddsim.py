@@ -43,6 +43,7 @@ from k4bench.geometry.patcher import (
 from k4bench.geometry.scanner import get_detector_names
 from k4bench.results.model import RunResult
 from k4bench.runner.executor import run_ddsim
+from k4bench.runner.steering import reconcile_steering_file
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +212,12 @@ def _run_removal_sweep(config: BenchmarkConfig) -> list[RunResult]:
             with patched_geometry(config.xml_path, name) as tmp_xml:
                 _print_run_header(i, total, label, tmp_xml)
                 results.append(
-                    _timed_run(xml_path=tmp_xml, label=label, config=config)
+                    _timed_run(
+                        xml_path=tmp_xml,
+                        label=label,
+                        config=config,
+                        present_detectors=set(get_detector_names(tmp_xml)),
+                    )
                 )
         except DetectorNotFoundError as exc:
             print(f"  SKIP {label}: {exc}\n")
@@ -279,7 +285,14 @@ def _run_keep_only(config: BenchmarkConfig, keep: set[str], label: str) -> list[
     """Execute a single patched run with *keep* as the active detector set."""
     with patched_geometry_keep_only(config.xml_path, keep) as tmp_xml:
         _print_run_header(1, 1, label, tmp_xml)
-        return [_timed_run(xml_path=tmp_xml, label=label, config=config)]
+        return [
+            _timed_run(
+                xml_path=tmp_xml,
+                label=label,
+                config=config,
+                present_detectors=set(get_detector_names(tmp_xml)),
+            )
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -331,8 +344,27 @@ def _resolve_detectors(config: BenchmarkConfig) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _timed_run(*, xml_path: Path, label: str, config: BenchmarkConfig) -> RunResult:
-    """Execute one ddsim run and print a one-line status summary."""
+def _timed_run(
+    *,
+    xml_path: Path,
+    label: str,
+    config: BenchmarkConfig,
+    present_detectors: set[str] | None = None,
+) -> RunResult:
+    """Execute one ddsim run and print a one-line status summary.
+
+    *present_detectors* is the detector set of a patched geometry; passing it
+    reconciles the steering file with that geometry.  Omit it for unpatched runs.
+    """
+    extra_args = config.extra_args
+    if present_detectors is not None:
+        extra_args = reconcile_steering_file(
+            extra_args=extra_args,
+            present_detectors=present_detectors,
+            log_dir=config.log_dir,
+            label=label,
+        )
+
     result = run_ddsim(
         xml_path=xml_path,
         label=label,
@@ -340,7 +372,7 @@ def _timed_run(*, xml_path: Path, label: str, config: BenchmarkConfig) -> RunRes
         output_file=config.output_file,
         log_dir=config.log_dir,
         setup_script=config.setup_script,
-        extra_args=config.extra_args,
+        extra_args=extra_args,
         verbose=config.verbose,
     )
     _print_run_result(result)
