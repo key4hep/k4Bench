@@ -79,7 +79,17 @@ Three rules bound it:
 
 - **Only-echo.** A regression id the request did not contain is dropped, so a
   regression the model invented cannot reach a comment. A row it simply omitted
-  keeps its per-configuration score — an unanswered row is not a zero.
+  is asked again — in a follow-up that still carries the whole window, since the
+  cross-configuration pattern is what decides that row too, and narrows only
+  which ids to answer for. A row still unanswered after that keeps its
+  per-configuration score, and the comment says so: an unanswered row is not a
+  zero, and the headline counts only what the review itself scored.
+
+    Those ids never appear in the comment. They are a handle between the prompt
+    and the parser, and nothing on a pull request page defines them, so a summary
+    that reaches for one is rewritten into the identities it stands for: "the
+    steps in IDEA_o2_v01 (r316, r317)" is published as "the steps in IDEA_o2_v01
+    (sim_time_s and wall_time_s)".
 - **Honest failure.** With no model configured at all, the comment renders from
   the per-configuration scores — the whole of what this bot did before this pass
   existed, and a coherent mode in its own right. But when a reviewer *is*
@@ -163,29 +173,48 @@ how a new repository is checked before it is added to the allowlist.
 One comment covers one `(pull request, change window)` pair, because the
 reader's question — "did my change do this?" — is asked once per window.
 
-It opens with the change window and the reviewer's short account of the pattern
-it found, then **one table** of every regression in that window — metric,
-detector, sample, benchmark configuration, how far it moved, and the attribution
-likelihood — ordered by likelihood, the first five visible and the next
-twenty-five folded into a disclosure. Which configurations moved (and, by their
+It opens with a warning alert giving both halves of the claim — what the
+benchmarks measured, and what a model estimated from it: how many of the
+window's regressions are attributed to this pull request at or above the
+configured `min_score`, and the strongest likelihood among them. Two numbers
+rather than one, because a single high score says nothing about reach: one row
+at 95% out of forty is a very different claim from thirty-eight of them. The
+threshold is named rather than called "certain" — it is the same configured
+number that decided the comment exists at all. Then comes the change window,
+labelled as **Key4hep releases** since the two dates are release dates and not
+the days the benchmark ran, and the reviewer's short account of the pattern it
+found. Below those sits a **table** of
+the regressions in that window — metric, detector, sample, benchmark
+configuration, how far it moved, and the attribution likelihood — ordered by
+likelihood, with the top five shown. Which configurations moved (and, by their
 absence, which did not) is the substance of the claim, so it is one list a reader
 can scan rather than one configuration in full and the others in a footnote. A
 row nobody scored — a regression this pull request was not even a candidate for —
 says "not scored" rather than 0%, which would claim a judgement no model made.
+
+Under the table, when the window carried more regressions than it shows, **one
+line counts them and links into the dashboard**. The likelihood ranking answers
+"did my change do this?", but a window can carry a regression that moved further
+than anything near the top of it — and the dashboard is where the whole set can
+be read in whatever ordering a reader wants. The link opens the leading row's
+configuration, which is as much as one dashboard view shows; a window spanning
+several is re-scoped from there.
+
 There is **no Platform column** while the suite builds on a single platform; that
 is a rendering switch only, and platform remains part of every row's identity,
 of both prompts, of the links and of the digest. Each
 **metric** cell links to that regression pinned in the dashboard's Stack Changes
 view — the metric's own trend and onset, the ranked candidates, and the window's
 package diff in one place, which is what "did my change do this?" actually needs.
-Below the table sit the other candidates in the window with their likelihoods,
-and the unpinned package diff for the release.
+Below the table sit the other candidates in the window with their likelihoods, in
+a disclosure whose summary carries the count and the strongest competing score
+without being opened (capped at five, the rest counted).
 
-The folded rows are capped, and anything past them is counted rather than pasted.
+The table is capped, and anything past it is linked rather than pasted.
 A detector-removal sweep confirms one row per removed sub-detector — a real night
 has carried 318, nearly all repeating the same movement — and a comment over
 GitHub's 65,536-character limit is rejected outright rather than truncated. The
-dashboard link on each row is where the complete set lives — and because those
+dashboard is where the complete set lives — and because those
 URLs are ~400 characters each, they are written as Markdown *reference* links
 collected at the end of the body, one per rendered row and none for a row that
 did not survive the caps.

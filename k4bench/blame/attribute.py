@@ -60,7 +60,9 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from dataclasses import dataclass, field
+from collections.abc import Sequence
 from typing import Literal, Protocol
 
 from k4bench.blame.llm import (
@@ -364,7 +366,7 @@ _SUBJECT_DIFF_FLOOR = 12000
 
 #: Display/prompt bounds. Rows beyond the cap keep their per-configuration score
 #: rather than going unscored, and competitors are cut by strength first.
-_MAX_ATTRIBUTED_ROWS = 60
+_MAX_ATTRIBUTED_ROWS = 500
 #: Public, because the caller must cut the field to this *before* fetching a diff
 #: for each competitor (:func:`k4bench.blame.comment._attribution_request`) —
 #: fetching a hundred patches to prompt with thirty is a hundred GitHub round
@@ -372,6 +374,11 @@ _MAX_ATTRIBUTED_ROWS = 60
 MAX_COMPETITORS = 30
 _MAX_FILES_LISTED = 12
 _MAX_OUTCOMES_LISTED = 40
+
+#: Follow-up rounds re-asking for offered rows a reply left unanswered. Each
+#: round costs a full request, so this is small; a model that has skipped the
+#: same row twice is refusing it, not forgetting it.
+_MAX_COMPLETION_ROUNDS = 2
 
 #: The summary is a short paragraph, not a sentence, so the output allowance
 #: starts higher than the ranker's per-row figure and still scales with rows.
@@ -424,7 +431,96 @@ class OpenAICompatAttributor:
                 "cross-configuration review; response prefix=%r",
                 request.slug, finish_reason, content[:500],
             )
-        return attribution
+            return None
+        return self._complete(request, attribution)
+
+    def _complete(
+        self, request: AttributionRequest, attribution: Attribution
+    ) -> Attribution:
+        """Re-ask for the offered rows the reply left unanswered.
+
+        A model handed a wide window reliably scores nearly all of it and then
+        drops a handful — not because those rows are hard, but because it stopped
+        enumerating. Those rows would otherwise fall back to their first-pass
+        score and be disclaimed in the comment, which reads as a weaker review
+        than actually happened. So the gap is asked again, in follow-up rounds
+        carrying the *whole* window — every regression, every clean control,
+        every competitor — and narrowing only the *answer* to the missing ids
+        (``only_ids`` in :func:`build_user_prompt`). Showing the model just the
+        unanswered rows would ask a different question than the one this pass
+        exists for: an ALLEGRO row is judged by whether IDEA moved with it, and a
+        follow-up that has dropped IDEA cannot see that. The replies are merged
+        into the first round's likelihoods; the summary always stays the first
+        round's, since that is the one written against the whole window.
+
+        Best-effort throughout: a round that fails, declines, or answers nothing
+        new stops the loop and keeps what is already scored. Bounded by
+        :data:`_MAX_COMPLETION_ROUNDS` and by requiring strict progress, so a
+        model that simply refuses a row costs a fixed number of calls, never a
+        spin."""
+        offered = {fact.id: fact for fact in _attributed_facts(request)}
+        likelihoods = dict(attribution.likelihoods)
+        rounds = 0
+        for _ in range(_MAX_COMPLETION_ROUNDS):
+            missing = [offered[i] for i in offered if i not in likelihoods]
+            if not missing:
+                break
+            rounds += 1
+            # The ids are named, not just counted: the same row going unanswered
+            # every night points at that row, while a different one each time is
+            # the model losing count over a long enumeration. The two call for
+            # opposite investigations and the count alone cannot tell them apart.
+            _log.info(
+                "attribute: %s — re-asking for %d unanswered row(s) of %d: %s",
+                request.slug, len(missing), len(offered),
+                ", ".join(
+                    f"{f.id} ({f.detector} {f.label} {f.metric})"
+                    for f in missing[:5]
+                ) + (f", … (+{len(missing) - 5} more)" if len(missing) > 5 else ""),
+            )
+            try:
+                content, _finish = self.client.complete(
+                    _SYSTEM_PROMPT,
+                    build_user_prompt(
+                        request, only_ids=[f.id for f in missing]
+                    ),
+                    max_output_tokens=min(
+                        MAX_OUTPUT_TOKENS,
+                        _OUTPUT_TOKENS_BASE + _OUTPUT_TOKENS_PER_ROW * len(missing),
+                    ),
+                )
+            except Exception as exc:
+                _log.warning(
+                    "attribute: %s — follow-up for %d unanswered row(s) failed "
+                    "(%s); keeping what is scored",
+                    request.slug, len(missing), exc,
+                )
+                break
+            data = extract_json(content)
+            more = (
+                _parse_likelihoods(data, {f.id for f in missing}, slug=request.slug)
+                if isinstance(data, dict) else {}
+            )
+            if not more:
+                _log.warning(
+                    "attribute: %s — follow-up answered none of the %d "
+                    "unanswered row(s); keeping what is scored",
+                    request.slug, len(missing),
+                )
+                break
+            likelihoods.update(more)
+        still_missing = len(offered) - len(likelihoods)
+        if still_missing:
+            _log.warning(
+                # The rounds actually *attempted*, not the cap: a loop that
+                # stopped after one failed round and one that spent its whole
+                # budget are different faults, and reading the cap back would
+                # report them identically.
+                "attribute: %s — %d row(s) left unscored after %d follow-up "
+                "round(s); they keep their first-pass state",
+                request.slug, still_missing, rounds,
+            )
+        return Attribution(summary=attribution.summary, likelihoods=likelihoods)
 
 
 def attributor_from_env() -> Attributor | None:
@@ -450,7 +546,19 @@ _RESPONSE_INSTRUCTION = (
     'these regressions this pull request is responsible for and why, naming the '
     'cross-configuration evidence that decided it>", "attributions": [{"id": '
     '"<the id given above>", "likelihood": <0-100>}]}. '
-    "Score every regression listed above and invent none."
+    # The summary is quoted into a pull-request comment, where nothing defines
+    # the ids.
+    "In the summary, refer to regressions by their detector, sample and metric "
+    "— never by id: it is read by people who never see these ids. "
+)
+
+#: The scope sentence closing :data:`_RESPONSE_INSTRUCTION`. Which rows to
+#: answer for is the one thing a follow-up round changes about the ask, so it is
+#: swapped here — one sentence saying it, never two disagreeing.
+_SCORE_ALL = "Score every regression listed above and invent none."
+_SCORE_ONLY = (
+    "Score ONLY the ids listed as unanswered above — leave every other id out — "
+    "and invent none."
 )
 
 
@@ -749,13 +857,19 @@ def _competitor_lines(competitors: list[CompetingPR], budgets: list[int]) -> lis
     return lines
 
 
-def build_user_prompt(request: AttributionRequest) -> str:
+def build_user_prompt(
+    request: AttributionRequest, *, only_ids: Sequence[str] = ()
+) -> str:
     """The user message: the window, what regressed, what did not, what changed in
     the release, the pull request under review, and the rest of the field.
 
     Public so a caller can log or snapshot exactly what was asked — the prompt is
     the whole substance of this stage, and a comment nobody can reconstruct the
-    input of is not reviewable."""
+    input of is not reviewable.
+
+    *only_ids* narrows what is *asked for* without narrowing what is *shown* —
+    the whole window stays in the prompt. See
+    :meth:`OpenAICompatAttributor._complete`, its only caller, for why."""
     window = request.onset_release
     if request.base_release:
         window = f"{request.base_release} → {request.onset_release}"
@@ -787,12 +901,165 @@ def build_user_prompt(request: AttributionRequest) -> str:
         f"Decide, for each regression id above, how likely it is that "
         f"{request.slug} caused it — judging what this diff can actually reach "
         f"against which configurations moved and which did not.",
-        _RESPONSE_INSTRUCTION,
+        *_unanswered_instruction(only_ids),
+        _RESPONSE_INSTRUCTION + (_SCORE_ONLY if only_ids else _SCORE_ALL),
     ]
     return "\n".join(parts)
 
 
+def _unanswered_instruction(only_ids: Sequence[str]) -> list[str]:
+    """The line that turns the full prompt into a request for a few rows.
+
+    Placed after the decision instruction and before the response format, so it
+    reads as a narrowing of what to *return* rather than of what to weigh — the
+    paragraphs above still say to judge the window as a whole, and they must keep
+    meaning that."""
+    if not only_ids:
+        return []
+    return [
+        "",
+        "Your earlier reply already scored the rest of this window. Re-read all "
+        "of the above as evidence — the cross-configuration pattern is still what "
+        "decides these rows — but answer only for the ids left unanswered: "
+        f"{', '.join(only_ids)}.",
+    ]
+
+
 # ── Defensive response parsing ────────────────────────────────────────────────
+
+#: A bracket holding nothing but row ids — ``"(r316, r317 and r318)"``. The
+#: space before it is part of the match, so the replacement owns its own
+#: spacing.
+_ID_GROUP = re.compile(
+    r"\s*[(\[]\s*(?:r\d+)(?:\s*(?:,|;|/|&|and|·)\s*r\d+)*\s*[)\]]",
+    re.IGNORECASE,
+)
+#: A bare id anywhere else. Bounded both sides so ``v1r2`` and ``r2d2`` survive.
+_ID_TOKEN = re.compile(r"(?<![0-9A-Za-z_])r\d+(?![0-9A-Za-z_])", re.IGNORECASE)
+
+
+def _without_row_ids(
+    summary: str, facts: Sequence[RegressionFact], *, slug: str = ""
+) -> str:
+    """*summary* with the prompt's row ids rewritten into names a reader of the
+    comment can recognise. The prompt asks for prose without them; this is what
+    makes it true.
+
+    Every id is *replaced*, never deleted. Telling an appositive — "the steps in
+    IDEA_o2_v01 (r316, r317)" — from a group carrying its own sentence — "Only
+    (r316, r317) regressed" — takes more grammar than a regex has, and guessing
+    wrong turns the second into "Only regressed", which no longer says what the
+    model said. Repetitive prose is a much smaller failure than altered meaning.
+
+    What varies is only how much of the identity is worth repeating: a group
+    whose detector the sentence has just named is expanded to bare metric names,
+    which is what makes the common appositive read naturally instead of stuttering
+    the detector three times.
+
+    Ids from *this window* only: one that matches no offered row cannot be
+    resolved, and a guessed expansion would be worse than the bare token.
+    """
+    known = {fact.id.lower(): fact for fact in facts}
+    if not known or not _ID_TOKEN.search(summary):
+        return summary
+
+    def _rewrite_group(match: re.Match) -> str:
+        ids = [i.lower() for i in _ID_TOKEN.findall(match.group())]
+        if any(i not in known for i in ids):
+            return match.group()  # not ours to resolve; leave it exactly as-is
+        before = summary[:match.start()]
+        names = [
+            known[i].metric if _names_detector(before, known[i]) else
+            _fact_phrase(known[i])
+            for i in ids
+        ]
+        return " (" + _join(names) + ")"
+
+    cleaned = _ID_GROUP.sub(_rewrite_group, summary)
+    cleaned = _ID_TOKEN.sub(
+        lambda m: _fact_phrase(known[m.group().lower()])
+        if m.group().lower() in known else m.group(),
+        cleaned,
+    )
+    cleaned = " ".join(cleaned.split())
+    if cleaned != summary:
+        _log.info(
+            "attribute: %s — rewrote row ids out of the review's summary; they "
+            "mean nothing to a reader of the comment", slug or "?",
+        )
+    return cleaned
+
+
+#: How far back a bracket's own clause is taken to reach, for deciding whether
+#: the detector has just been named. Long enough for "the steps in IDEA_o2_v01",
+#: short enough that a detector named two sentences ago does not count.
+_NEARBY_CHARS = 60
+
+
+def _names_detector(before: str, fact: RegressionFact) -> bool:
+    """Whether the text just before a bracket already names its detector."""
+    return fact.detector in before[-_NEARBY_CHARS:]
+
+
+def _join(names: list[str]) -> str:
+    """``"a"`` / ``"a and b"`` / ``"a, b and c"`` — an id list read out loud."""
+    if len(names) <= 2:
+        return " and ".join(names)
+    return ", ".join(names[:-1]) + f" and {names[-1]}"
+
+
+def _fact_phrase(fact: RegressionFact) -> str:
+    """A regression named the way the comment's reader meets it elsewhere — its
+    detector and metric, with the benchmark configuration in between when it is
+    not the default one, since that is then part of what identifies the row."""
+    where = fact.detector
+    if fact.label and fact.label != "baseline":
+        where += f" {fact.label}"
+    return f"{where} {fact.metric}"
+
+def _parse_likelihoods(
+    data: dict, known: set[str], *, slug: str = ""
+) -> dict[str, float]:
+    """The ``attributions`` rows of a reply, keyed by id and filtered to *known*.
+
+    Only-echo lives here: an id the prompt did not offer is a guess, and a guess
+    about an unreviewed row is exactly what this pipeline must not publish. Shape
+    drift — not an object, a row missing ``id``, a ``likelihood`` that is not a
+    number — skips that row rather than raising.
+
+    Every way a row is dropped is *counted and logged*, because all of them look
+    identical downstream: the row simply has no score, and "the model never
+    mentioned it", "it answered with prose", and "it echoed the same id twice"
+    are three different problems with the same symptom."""
+    rows = data.get("attributions")
+    if not isinstance(rows, list):
+        return {}
+    likelihoods: dict[str, float] = {}
+    malformed = unknown_id = unreadable = duplicate = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            malformed += 1
+            continue
+        row_id = row.get("id")
+        if row_id is None or str(row_id) not in known:
+            unknown_id += 1
+            continue
+        score = parse_score(row.get("likelihood"))
+        if score is None:
+            unreadable += 1
+            continue  # unreadable likelihood: reject the row, don't publish 0%
+        if str(row_id) in likelihoods:
+            duplicate += 1
+        likelihoods[str(row_id)] = score
+    if malformed or unknown_id or unreadable or duplicate:
+        _log.warning(
+            "attribute: %s — reply carried %d row(s), %d usable: %d malformed, "
+            "%d unknown id, %d unreadable likelihood, %d duplicate id",
+            slug or "?", len(rows), len(likelihoods),
+            malformed, unknown_id, unreadable, duplicate,
+        )
+    return likelihoods
+
 
 def _parse_attribution(
     content: str, request: AttributionRequest
@@ -809,29 +1076,19 @@ def _parse_attribution(
     committed to would be the confident wrong answer this pipeline exists to
     avoid.
     """
-    known = {fact.id for fact in _attributed_facts(request)}
     data = extract_json(content)
     if not isinstance(data, dict):
         return None
-    rows = data.get("attributions")
-    if not isinstance(rows, list):
-        return None
-
-    likelihoods: dict[str, float] = {}
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        row_id = row.get("id")
-        if row_id is None or str(row_id) not in known:
-            continue  # only-echo: never score a row the input didn't hold
-        score = parse_score(row.get("likelihood"))
-        if score is None:
-            continue  # unreadable likelihood: reject the row, don't publish 0%
-        likelihoods[str(row_id)] = score
-
+    facts = _attributed_facts(request)
+    likelihoods = _parse_likelihoods(
+        data, {f.id for f in facts}, slug=request.slug
+    )
     if not likelihoods:
         return None
-    summary = one_line(data.get("summary"), _MAX_SUMMARY_CHARS)
+    summary = _without_row_ids(
+        one_line(data.get("summary"), _MAX_SUMMARY_CHARS), facts,
+        slug=request.slug,
+    )
     if not summary:
         # The scores without the narrative would be a table of numbers with no
         # stated reasoning, in a comment posted to someone else's repository.

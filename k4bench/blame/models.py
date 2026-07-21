@@ -122,16 +122,20 @@ class CandidatePR:
         d = _only_known(cls, data)
         score = float(d.get("score") or 0.0)
         description = str(d.get("description") or "")
-        # ``ranked`` is newer than the sidecars on EOS. Absent, it does not mean
-        # "unranked" — it means the file predates the field, and reading it that
-        # way would erase every historical ranking the dashboard and the email
-        # still display. Those files record the state just as unambiguously:
+        # ``ranked`` is newer than the sidecars on EOS. Missing — absent, or
+        # present as ``null`` from a builder that carried the key before it
+        # carried a value — it does not mean "unranked": it means the file
+        # predates the settled field, and reading it that way would erase every
+        # historical ranking the dashboard and the email still display. Those
+        # files record the state just as unambiguously:
         # :func:`k4bench.blame.rank._parse_rankings` rejects any row without a
         # reason, so exactly their judged candidates carry a description. That
         # was the discriminator ``ranking_coverage`` itself used before the
-        # field existed. Present, the field is authoritative — which is what
-        # keeps a *new* partial ranking unambiguous.
-        ranked = bool(d["ranked"]) if "ranked" in d else bool(description)
+        # field existed. A real ``true``/``false`` is authoritative — which is
+        # what keeps a *new* partial ranking unambiguous — but a ``null`` is not
+        # a "no": it is the absence the description then resolves.
+        raw_ranked = d.get("ranked")
+        ranked = bool(raw_ranked) if raw_ranked is not None else bool(description)
         return cls(
             repo=str(d["repo"]),
             number=int(d["number"]),

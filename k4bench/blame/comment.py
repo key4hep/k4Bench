@@ -38,11 +38,14 @@ must pass:
 One comment covers one ``(pull request, change window)`` pair — the reader's
 question is "did my change do this?", asked once — and :func:`marker_for` gives
 that pair a stable hidden key so a later night edits the existing comment
-instead of posting a second one. Everything the window regressed goes into a
-single table ordered by attribution likelihood, across every detector, sample,
-platform and benchmark configuration: which configurations moved *and which did
-not* is the substance of the claim, so it is one table a reader can scan rather
-than one configuration in full and the rest in a footnote.
+instead of posting a second one. Everything the window regressed goes into one
+table ordered by attribution likelihood, across every detector, sample, platform
+and benchmark configuration: which configurations moved *and which did not* is
+the substance of the claim, so it is one table a reader can scan rather than one
+configuration in full and the rest in a footnote. That table shows only its top
+few rows, and one line under it counts the window's regressions and links all of
+them in the dashboard, which is where any other reading of the night — by step
+size, by configuration, over time — already lives.
 
 A comment is written once and thereafter only *edited*, never retracted: when
 the regression resolves, or the candidate drops below ``min_score``, tonight's
@@ -97,18 +100,13 @@ _log = logging.getLogger(__name__)
 #: changes only when a body is no longer an in-place successor of the old one.
 MARKER_VERSION = "v1"
 
-#: Regression rows shown before the table folds into a disclosure, rows kept
-#: inside that disclosure, and candidate rows shown for the rest of the window.
-#: All three are display caps: the selection above them is complete, and every
-#: row is still scored — only the rendering is bounded.
-#:
-#: The folded rows are capped rather than complete because a detector-removal
-#: sweep confirms one row per removed sub-detector — a single night can carry
-#: three hundred, nearly all repeating the same movement — and because a comment
-#: over GitHub's 65,536-character limit is rejected outright. The dashboard link
-#: on every row is where the full set lives.
+#: Regression rows shown in the table, and candidate rows shown for the rest of
+#: the window. Both are display caps: the selection above them is complete, and
+#: every row is still scored — only the rendering is bounded. A sweep can confirm
+#: three hundred near-identical rows and a comment over GitHub's 65,536-character
+#: limit is rejected outright, so everything past a cap is counted in one line
+#: pointing at the dashboard.
 _MAX_TABLE_ROWS = 5
-_MAX_FOLDED_ROWS = 25
 _MAX_OTHER_CANDIDATES = 5
 
 #: Likelihood points between this PR and the closest other candidate at or
@@ -956,7 +954,10 @@ def build_comments(
             )
             continue
         comments.append(
-            _render(plan, attribution, request, dashboard_url=dashboard_url)
+            _render(
+                plan, attribution, request,
+                dashboard_url=dashboard_url, min_score=min_score,
+            )
         )
     return comments
 
@@ -1078,22 +1079,24 @@ def _render(
     request: AttributionRequest | None,
     *,
     dashboard_url: str | None,
+    min_score: float,
 ) -> PRComment:
     """One plan as a GitHub-flavoured Markdown comment.
 
     A single comment for the ``(pull request, window)``: the claim, the window,
-    the model's reasoning, and one table of every regression the window carries,
-    ordered by how likely this pull request is to be behind each."""
+    the model's reasoning and any qualifier on it, the dashboard view of the
+    whole window, the table of the most likely rows, and the competing pull
+    requests."""
     marker = marker_for(plan.base_release, plan.onset_release)
-    rows = sorted(
+    by_likelihood = sorted(
         plan.rows, key=lambda row: _row_sort_key(row, attribution)
     )
     digest = _facts_digest(plan, request)
-    # Only the rows that survive the table's caps are linked: a definition no
-    # row references is dead weight against the comment-size limit.
-    links = _row_links(
-        plan, rows[:_MAX_TABLE_ROWS + _MAX_FOLDED_ROWS], dashboard_url
-    )
+    # The rows the body actually renders: they get the reference links (a link
+    # nothing references is dead weight against the comment-size limit), and
+    # they are what the coverage caveat is measured against.
+    rendered = by_likelihood[:_MAX_TABLE_ROWS]
+    links = _row_links(plan, rendered, dashboard_url)
 
     body = "\n".join(
         part for part in (
@@ -1101,13 +1104,16 @@ def _render(
             f"{_FACTS_MARKER_PREFIX}{digest} -->",
             "### 📉 Possible performance regression traced to this pull request",
             "",
-            _alert(plan),
+            _alert(plan, by_likelihood, attribution, min_score=min_score),
             "",
             _window_line(plan),
-            _assessment(plan, rows, attribution),
-            _table(plan, rows, attribution, links=links),
+            _assessment(plan, by_likelihood, attribution, rendered=rendered),
+            _crowded_note(plan),
+            _table(
+                plan, by_likelihood, attribution,
+                links=links, dashboard_url=dashboard_url,
+            ),
             _others_section(plan),
-            _where_to_look(plan, rows, dashboard_url=dashboard_url),
             _link_definitions(links),
             "",
             "---",
@@ -1120,7 +1126,7 @@ def _render(
             # someone who doubts the claim wants the method, and a README makes
             # them go looking for it.
             f"<sub>🤖 {RANKING_DISCLOSURE} Posted automatically by "
-            f"[k4Bench]({_METHOD_URL}) — any questions to "
+            f"[k4Bench]({_METHOD_URL}) — questions or feedback: "
             f"[{_CONTACT_EMAIL}](mailto:{_CONTACT_EMAIL})</sub>",
         ) if part is not None
     )
@@ -1189,21 +1195,170 @@ def _movement(row: RegressionRow) -> float:
     return abs(pct) if pct is not None and math.isfinite(pct) else 0.0
 
 
-def _alert(plan: CommentPlan) -> str:
-    """The headline claim as a GitHub warning alert: one short sentence that
-    reads on a single line, since everything below it — the window, the
-    reasoning, what moved — is the specifics."""
+def _alert(
+    plan: CommentPlan,
+    rows: list[RegressionRow],
+    attribution: Attribution | None,
+    *,
+    min_score: float,
+) -> str:
+    """The headline claim as a GitHub warning alert: what the benchmarks
+    measured, and how strongly a model ties it to this pull request.
+
+    It opens with the measurement and only then estimates, because they are two
+    different kinds of statement and the comment is careful to keep them apart
+    everywhere else. The estimate is named as one — so a reader who stops at the
+    alert stops at percentages rather than at an unqualified accusation — and the
+    model behind it is said out loud, matching what the assessment below calls
+    itself.
+
+    A peak alone is misleading, so each clause pairs it with *reach*: one row at
+    95% out of forty reads very differently from thirty-eight of them, and the
+    count of rows at or above the threshold is what tells them apart. (A window
+    of one regression has no reach to report, and says the one score.) The
+    threshold is named rather than summarised as "certain": it is a configured
+    number (``min_score``), the same one that decided this comment exists at all,
+    and a reader who thinks it is set wrong can go and see what it is set to.
+
+    Every number is attributed to whoever produced it (:func:`_scored`), in one
+    clause per model. A partial review is the case that makes this matter: the
+    reviewer answers one row at 20%, the comment survives on another row the
+    ranker left at 91%, and a single blended sentence would credit the reviewer
+    with a claim it did not make while contradicting the count it did. Hence
+    "likely contributor" is claimed only by a model whose own scores actually
+    reach the threshold.
+
+    A window nothing was scored against says nothing in the second sentence
+    rather than reaching for a number — the rows are still real, and the table
+    is where their states are spelled out."""
     n_scopes = len(plan.scopes)
     what = (
         "a regression in"
         if n_scopes == 1
         else f"regressions in {_count(n_scopes, 'configuration')} of"
     )
-    return (
-        "> [!WARNING]\n"
-        f"> k4Bench's nightly benchmarks confirmed {what} this PR's change "
-        "window."
+    measured = (
+        f"k4Bench's nightly benchmarks confirmed {what} this PR's change window."
     )
+    reviewed, carried = _scored(rows, attribution)
+    if not reviewed and not carried:
+        return f"> [!WARNING]\n> {measured}"
+    clauses = []
+    if reviewed:
+        clauses.append(_reviewer_clause(reviewed, min_score=min_score))
+    if carried:
+        clauses.append(_ranker_clause(
+            carried, min_score=min_score,
+            # Every row the review did not answer, including the ones nobody
+            # scored: the clause counts *within* that set, so it has to know how
+            # big the set is.
+            unreviewed=len(rows) - len(reviewed) if reviewed else 0,
+        ))
+    return f"> [!WARNING]\n> {measured} {' '.join(clauses)}"
+
+
+def _reviewer_clause(reviewed: list[float], *, min_score: float) -> str:
+    """What the cross-configuration review found, in its own voice.
+
+    "A likely contributor" is a claim about *these* scores, so a review that put
+    nothing at or above the threshold does not make it — it reports what it
+    found, and any surviving claim is left to the clause that earns it."""
+    over = sum(1 for likelihood in reviewed if likelihood >= min_score)
+    scored = _count(len(reviewed), "regression")
+    highest = _pct(max(reviewed))
+    if not over:
+        return (
+            f"The AI reviewer scored {scored} and put none at "
+            f"{_pct(min_score)} or above (highest {highest})."
+        )
+    lead = "The AI reviewer estimates this PR is a likely contributor:"
+    if len(reviewed) == 1:
+        return (
+            f"{lead} it scored the one regression at {highest}, at or above "
+            f"the {_pct(min_score)} threshold."
+        )
+    verb = "is" if over == 1 else "are"
+    return (
+        f"{lead} {over} of the {scored} it scored {verb} attributed to it at "
+        f"{_pct(min_score)} or above, the highest at {highest}."
+    )
+
+
+def _ranker_clause(
+    carried: list[float], *, min_score: float, unreviewed: int
+) -> str:
+    """What the per-configuration pass scored, in *its* voice.
+
+    Two shapes, because the rows mean different things in each. Alone
+    (``unreviewed`` zero — no reviewer configured), this is the whole estimate.
+    After a review, these are rows the review did not answer, and *unreviewed*
+    is how many such rows there are in total: the ones with no score at all
+    belong to neither model, so they are named as a difference rather than
+    counted into a clause that would then claim scores for them."""
+    over = sum(1 for likelihood in carried if likelihood >= min_score)
+    scored = _count(len(carried), "regression")
+    highest = _pct(max(carried))
+    if unreviewed:
+        which = (
+            "The one regression it did not score" if unreviewed == 1
+            else f"Of the {_count(unreviewed, 'regression')} it did not score, "
+                 f"{len(carried)}"
+        )
+        if len(carried) == 1:
+            # One row's count, reach and maximum are three ways of saying one
+            # number, and the threshold is already named in the clause before.
+            return f"{which} keeps a first-pass ranker score of {highest}."
+        reach = (
+            f"{over} of them at {_pct(min_score)} or above"
+            if over else f"none at {_pct(min_score)} or above"
+        )
+        return (
+            f"{which} keep a first-pass ranker score, {reach} "
+            f"(highest {highest})."
+        )
+    if not over:
+        return (
+            f"The AI ranker scored {scored} and put none at {_pct(min_score)} "
+            f"or above (highest {highest})."
+        )
+    lead = "The AI ranker estimates this PR is a likely contributor:"
+    if len(carried) == 1:
+        return (
+            f"{lead} it scored the one regression at {highest}, at or above "
+            f"the {_pct(min_score)} threshold."
+        )
+    verb = "is" if over == 1 else "are"
+    return (
+        f"{lead} {over} of {scored} {verb} attributed to it at "
+        f"{_pct(min_score)} or above, the highest at {highest}."
+    )
+
+
+def _scored(
+    rows: list[RegressionRow], attribution: Attribution | None
+) -> tuple[list[float], list[float]]:
+    """``(what the review scored, what only the first pass scored)``.
+
+    The table and the withdrawal gate read a row's *effective* likelihood
+    (:func:`_likelihood`); the alert cannot, because a count is worthless without
+    knowing whose judgement it holds. On a wide window the split is routine
+    rather than rare — everything past
+    :data:`~k4bench.blame.attribute._MAX_ATTRIBUTED_ROWS` is first-pass-only by
+    construction.
+
+    Rows with no likelihood at all (``not_candidate``, or unscored by both
+    passes) appear in neither list — the alert claims nothing about them."""
+    reviewed: list[float] = []
+    carried: list[float] = []
+    for row in rows:
+        likelihood = _likelihood(row, attribution)
+        if likelihood is None:
+            continue
+        if attribution is not None and row.fact_id in attribution.likelihoods:
+            reviewed.append(likelihood)
+        else:
+            carried.append(likelihood)
+    return reviewed, carried
 
 
 def _window_line(plan: CommentPlan) -> str:
@@ -1217,11 +1372,17 @@ def _window_line(plan: CommentPlan) -> str:
             f"≤ `{plan.onset_release}` — open-ended: no earlier settled "
             "measurement bounds it"
         )
-    return f"📆 **Change window:** {window}"
+    # The dates are Key4hep release dates, not calendar dates the benchmark ran:
+    # said in the label so a reader does not read them as run days.
+    return f"**Change window** (Key4hep releases): {window}"
 
 
 def _assessment(
-    plan: CommentPlan, rows: list[RegressionRow], attribution: Attribution | None
+    plan: CommentPlan,
+    rows: list[RegressionRow],
+    attribution: Attribution | None,
+    *,
+    rendered: list[RegressionRow] | None = None,
 ) -> str | None:
     """The model's reasoning as a labelled blockquote — the label is where the
     comment openly says an AI made this call.
@@ -1248,7 +1409,7 @@ def _assessment(
         if text:
             return (
                 f"\n> 🤖 **The AI reviewer's assessment:** {text}"
-                + _coverage_note(rows, attribution)
+                + _coverage_note(rendered if rendered is not None else rows, attribution)
             )
         return None
     lead = rows[0] if rows else None
@@ -1274,23 +1435,24 @@ def _coverage_note(
 ) -> str:
     """What the assessment above does *not* cover, when it covers less than all.
 
-    Two ways a row goes unreviewed: the window carried more regressions than the
-    prompt offers (only the largest movements are shown), or the reply simply
-    skipped it. Either way the row keeps whatever the first pass left it with —
-    a score, or one of the states that has none (:func:`_likelihood`) — and the
-    table shows it, so the summary has to say it was not part of what the
-    reviewer weighed. The wording avoids promising a score for those rows:
-    plenty of them have none, because this pull request was never judged
-    against them. Nothing is added when every row was answered, which is the
-    ordinary night."""
+    Measured over the rows this comment actually *renders*, not over the whole
+    window. A row goes unreviewed either because the window carried more
+    regressions than the prompt offers or because the reply simply skipped it,
+    and it then keeps whatever the first pass left it with — a score, or one of
+    the states that has none (:func:`_likelihood`). That only misleads a reader
+    who can see the row: a caveat about rows nobody renders warns of a
+    discrepancy nothing on the page shows, and on a wide window a single dropped
+    row would print one every night. The wording avoids promising a score for
+    those rows, since plenty of them have none, and stays agreement-free so one
+    unreviewed row reads as well as twenty."""
     unreviewed = sum(1 for row in rows if row.fact_id not in attribution.likelihoods)
     if not unreviewed:
         return ""
     return (
         f"\n>\n> <sub>This assessment covers "
-        f"{_count(len(rows) - unreviewed, 'regression')} of {len(rows)}; the "
-        f"remaining {unreviewed} were not part of it and keep their "
-        "first-pass state, and its score where there is one.</sub>"
+        f"{_count(len(rows) - unreviewed, 'regression')} of the {len(rows)} "
+        "shown; anything it did not answer keeps its first-pass state, and its "
+        "score where there is one.</sub>"
     )
 
 
@@ -1346,36 +1508,9 @@ def _link_definitions(links: dict[str, str]) -> str | None:
     )
 
 
-def _table(
-    plan: CommentPlan,
-    rows: list[RegressionRow],
-    attribution: Attribution | None,
-    *,
-    links: dict[str, str],
-) -> str:
-    """Every regression in the window, most likely first.
-
-    One table rather than one section per configuration: which configurations
-    moved — and, read against the review's summary, which did not — is the
-    substance of the claim, and a reader weighing it needs to see the pattern at
-    once. The first rows are visible, the next fold into a disclosure, and a
-    night wider than that says how many more there are rather than pasting them:
-    a detector-removal sweep can confirm three hundred near-identical rows, which
-    no one reads and GitHub will not accept. Every row links to its own regression
-    in the dashboard, which is where the complete set lives.
-
-    That link hangs off the **metric** cell, because that is what it opens: the
-    metric's own trend, its onset and the window's package diff. Metric and
-    configuration keep their raw names — they are the identifiers the dashboard
-    labels the series with, so a reader can find it.
-
-    The **Platform** column is switched off (:data:`_SHOW_PLATFORM_COLUMN`)
-    because the suite currently builds on exactly one platform, and a column
-    repeating the same slug on every row is noise. That is a presentation policy
-    and nothing more: platform stays part of every row's identity, of the
-    grouping, of the links, of the digest and of both prompts. Flipping the
-    switch is what a second platform needs — not a change to how rows are
-    collected."""
+def _table_head() -> list[str]:
+    """The header and alignment rows both tables share. The **Platform** column
+    follows :data:`_SHOW_PLATFORM_COLUMN`, which is a rendering choice only."""
     header = ["Metric", "Detector"]
     align = [":---", ":---"]
     if _SHOW_PLATFORM_COLUMN:
@@ -1383,71 +1518,122 @@ def _table(
         align.append(":---")
     header += ["Sample", "Config", "Change", "Attribution"]
     align += [":---", ":---", "---:", "---:"]
-
-    def _line(row: RegressionRow) -> str:
-        v = row.verdict
-        metric = (
-            f"`{_cell(v.metric)}`"
-            + (f" · {_cell(v.sub_detector)}" if v.sub_detector else "")
-        )
-        cells = [
-            f"[{metric}][{row.fact_id}]" if row.fact_id in links else metric,
-            _cell(v.detector),
-        ]
-        if _SHOW_PLATFORM_COLUMN:
-            cells.append(_cell(pretty_platform(v.platform)))
-        cells += [
-            _cell(pretty_sample(v.sample)),
-            f"`{_cell(v.label)}`",
-            _change_cell(v.pct_change),
-            _likelihood_cell(row, attribution),
-        ]
-        return "| " + " | ".join(cells) + " |"
-
-    shown = rows[:_MAX_TABLE_ROWS]
-    folded = rows[_MAX_TABLE_ROWS:_MAX_TABLE_ROWS + _MAX_FOLDED_ROWS]
-    omitted = len(rows) - len(shown) - len(folded)
-    head = [
+    return [
         "| " + " | ".join(header) + " |",
         "|" + "|".join(align) + "|",
     ]
+
+
+def _row_line(
+    row: RegressionRow, attribution: Attribution | None, links: dict[str, str]
+) -> str:
+    """One regression as a table row — the same cells whichever ordering placed
+    it, so both tables read identically row for row.
+
+    The dashboard link hangs off the **metric** cell because that is what it
+    opens, and only when :func:`_row_links` emitted a definition for this row.
+    Metric and configuration keep their raw names: those are what the dashboard
+    labels the series with."""
+    v = row.verdict
+    metric = (
+        f"`{_cell(v.metric)}`"
+        + (f" · {_cell(v.sub_detector)}" if v.sub_detector else "")
+    )
+    cells = [
+        f"[{metric}][{row.fact_id}]" if row.fact_id in links else metric,
+        _cell(v.detector),
+    ]
+    if _SHOW_PLATFORM_COLUMN:
+        cells.append(_cell(pretty_platform(v.platform)))
+    cells += [
+        _cell(pretty_sample(v.sample)),
+        f"`{_cell(v.label)}`",
+        _change_cell(v.pct_change),
+        _likelihood_cell(row, attribution),
+    ]
+    return "| " + " | ".join(cells) + " |"
+
+
+def _table(
+    plan: CommentPlan,
+    rows: list[RegressionRow],
+    attribution: Attribution | None,
+    *,
+    links: dict[str, str],
+    dashboard_url: str | None,
+) -> str:
+    """Every regression in the window, most likely first.
+
+    One table rather than one section per configuration: which configurations
+    moved — and, read against the review's summary, which did not — is the
+    substance of the claim, and a reader weighing it needs to see the pattern at
+    once. The first rows are shown and a night wider than that says how many more
+    there are in one line rather than pasting or folding them: a detector-removal
+    sweep can confirm three hundred near-identical rows, which no one reads and
+    GitHub will not accept. Every shown row links to its own regression in the
+    dashboard, which is where the complete set — and any re-sorting, by step size
+    or otherwise — lives.
+
+    Rows are ordered by attribution likelihood, not claimed as attributed: the
+    table deliberately keeps rows the review scored *down*, and a 20% row under a
+    heading claiming attribution would read as an accusation the numbers next to
+    it deny. That ordering can push the window's largest movement past the cap;
+    the overflow line below counts what was cut and links all of it
+    (:func:`_overflow_line`)."""
+    shown = rows[:_MAX_TABLE_ROWS]
     lines = [
         "",
-        # "reviewed against", not "attributed to": the table deliberately keeps
-        # rows the review scored *down*, and a 20% row under a heading claiming
-        # attribution reads as an accusation the numbers next to it deny.
-        "##### 📊 Regressions reviewed against this pull request",
+        # A bold caption, not a Markdown heading: it reads at the same size as the
+        # window line above it (:func:`_window_line`), so the two captions the
+        # reader scans first sit at one level rather than the table's shouting over
+        # the window that scopes it.
+        "📊 **Regressions in this window, ranked by AI-based attribution likelihood**",
         "",
-        *head,
-        *(_line(row) for row in shown),
+        *_table_head(),
+        *(_row_line(row, attribution, links) for row in shown),
     ]
-    if folded:
-        summary = _count(len(folded) + omitted, "further regression")
-        lines += [
-            "",
-            "<details>",
-            f"<summary><b>{summary} in this window</b></summary>",
-            "",
-            *head,
-            *(_line(row) for row in folded),
-        ]
-        if omitted:
-            lines += [
-                "",
-                f"_…and {_count(omitted, 'more regression')}, in the dashboard._",
-            ]
-        lines += ["", "</details>"]
+    overflow = _overflow_line(plan, rows, len(shown), dashboard_url=dashboard_url)
+    if overflow:
+        lines += ["", overflow]
     return "\n".join(lines)
+
+
+def _overflow_line(
+    plan: CommentPlan,
+    rows: list[RegressionRow],
+    shown: int,
+    *,
+    dashboard_url: str | None,
+) -> str | None:
+    """What the table did not show, as one line pointing into the dashboard.
+
+    A wide night is not folded into a second copy of the table: a
+    detector-removal sweep confirms three hundred near-identical rows, which no
+    one reads whether or not they are behind a disclosure, and which GitHub will
+    not accept in one comment anyway. The dashboard holds the complete set and
+    every re-sorting of it, so the line points there. Only the destination is
+    linked — the words naming it, plus the arrow that conventionally means "this
+    opens somewhere else" — so the count reads as prose and the click target is
+    the thing being opened. The link lands on the leading row's configuration
+    (:func:`_window_href`), which is as much as one dashboard view holds; a
+    window spanning several is re-scoped from there."""
+    if shown >= len(rows):
+        return None
+    href = _window_href(plan, rows, dashboard_url)
+    where = f"[dashboard ↗]({href})" if href else "dashboard"
+    return f"View all {_count(len(rows), 'regression')} in the {where}"
 
 
 def _others_section(plan: CommentPlan) -> str:
     """The rest of the candidates scored across this window, with their
     likelihoods — the reader needs to see what else was in the frame to weigh
     the claim against this PR, including the case where nothing else was.
-    Collapsed by default, but the summary line carries the strongest competing
-    score without being opened: how far ahead this PR sits is the difference
-    between a ranking that picked it and one that barely preferred it, and that
-    belongs in front of a reader who expands nothing.
+
+    Collapsed by default, but the summary carries the strongest competing score
+    without being opened: how far ahead this PR sits — the difference between a
+    ranking that picked it and one that barely preferred it — belongs in front of
+    a reader who expands nothing. The table is capped at
+    :data:`_MAX_OTHER_CANDIDATES`, with any surplus counted rather than pasted.
 
     The candidates are named, never linked — see :func:`_pr_ref`."""
     others = _sorted_others(plan)
@@ -1460,23 +1646,15 @@ def _others_section(plan: CommentPlan) -> str:
         ])
 
     shown = others[:_MAX_OTHER_CANDIDATES]
-    # ``others`` is judged-first (:func:`_sorted_others`), so the strongest
-    # *scored* candidate leads when there is one. A field nobody scored says
-    # that instead of quoting a percentage no model produced.
-    strongest = others[0][0] if others[0][0].ranked else None
+    strongest = _closest_candidate(plan)
     headline = (
         f"highest {_pct(strongest.score)}" if strongest is not None
         else "none of them scored by the ranker"
     )
     lines = [
-        *(
-            note for note in (
-                _crowded_note(plan, strongest) if strongest is not None else None,
-            ) if note
-        ),
         "",
         "<details>",
-        "<summary><b>Other pull requests in this window</b> — "
+        "<summary><b>📋 Other pull requests in this window</b> — "
         f"{_count(len(others), 'candidate')}, {headline}"
         "</summary>",
         "",
@@ -1510,11 +1688,25 @@ def _pr_ref(candidate: CandidatePR) -> str:
     return _cell(f"{candidate.repo}#{zwsp}{candidate.number}")
 
 
-def _crowded_note(plan: CommentPlan, closest: CandidatePR) -> str | None:
+def _closest_candidate(plan: CommentPlan) -> CandidatePR | None:
+    """The strongest competing candidate the first pass actually scored.
+
+    :func:`_sorted_others` is judged-first, so the leading entry is that
+    candidate when there is one. A field nobody scored has no closest
+    candidate: an unscored rival is an unknown, not a near miss, and neither the
+    competing-field headline nor :func:`_crowded_note` may quote a percentage no
+    model produced."""
+    others = _sorted_others(plan)
+    top = others[0][0] if others else None
+    return top if top is not None and top.ranked else None
+
+
+def _crowded_note(plan: CommentPlan) -> str | None:
     """Said out loud when the ranking does not clearly favour this PR — in
-    words, rather than leaving the reader to subtract two numbers. *closest* is
-    always a candidate the first pass actually scored; an unscored one is not a
-    near miss, it is an unknown, and no gap can be computed from it.
+    words, rather than leaving the reader to subtract two numbers. Nothing is
+    said when no competing candidate was scored (:func:`_closest_candidate`): an
+    unscored rival is not a near miss, it is an unknown, and no gap can be
+    computed from it.
 
     Which way the preference runs is the whole point, so the note is
     direction-aware. A PR the ranker placed *behind* another candidate is told so
@@ -1522,7 +1714,14 @@ def _crowded_note(plan: CommentPlan, closest: CandidatePR) -> str | None:
     comment accusing it. A PR that is ahead hears about it only when the lead is
     thin (``_CROWDED_SPREAD``) — a caveat printed on every comfortable night is
     wallpaper, and the score and the summary line already say what a comfortable
-    lead looks like."""
+    lead looks like.
+
+    It renders directly under the assessment, where the claim it qualifies is
+    made — not down beside the competing field, where a reader has already
+    finished reading the accusation."""
+    closest = _closest_candidate(plan)
+    if closest is None:
+        return None
     delta = plan.top_score - closest.score
     if not math.isfinite(delta) or delta > _CROWDED_SPREAD:
         return None
@@ -1555,55 +1754,23 @@ def _crowded_note(plan: CommentPlan, closest: CandidatePR) -> str | None:
     )
 
 
-def _where_to_look(
-    plan: CommentPlan, rows: list[RegressionRow], *, dashboard_url: str | None
+def _window_href(
+    plan: CommentPlan, rows: list[RegressionRow], dashboard_url: str | None
 ) -> str | None:
-    """The window-wide link that lets a reader check the claim rather than take
-    it: every package that moved across these two releases.
+    """The window's dashboard view for the leading row's configuration.
 
-    Per-regression dashboard views are already on each row's metric cell, so
-    what is left here is the one thing that is not per-row: the unpinned diff,
-    for a reader who wants the packages without a metric selected — including
-    one whose rows all fell past the table's caps. The link names the *window*,
-    which does not change from one night to the next: no ``report=`` night and
-    no CI-run URL, both of which would vary nightly and edit a standing comment
-    for no reason.
-
-    A dashboard view is always one configuration, and the package diff behind it
-    is read from *that platform's* provenance — so a window spanning platforms
-    gets one link each, named after the platform it opens. One link labelled
-    "every package that changed" that in fact shows one platform's packages
-    would be a claim the view does not support."""
+    What :func:`_overflow_line` points at. A dashboard view is one configuration
+    at a time, and the leading row is the one this comment is most about — the
+    reader lands where the strongest claim was made and re-scopes from there,
+    which is the one thing the caps above cannot do for them."""
     if not rows:
         return None
     lead = rows[0].verdict
-    by_platform = {
-        row.verdict.platform: row.verdict for row in rows
-    }
-    # The leading row's scope names the link when there is only one platform —
-    # the ordinary case, and the one that keeps the sentence simple.
-    scopes = [lead] if len(by_platform) == 1 else [
-        by_platform[platform] for platform in sorted(by_platform)
-    ]
-    links = []
-    for scope in scopes:
-        href = stack_changes_href(
-            dashboard_url,
-            detector=scope.detector, platform=scope.platform, sample=scope.sample,
-            base_release=plan.base_release, onset_release=plan.onset_release,
-        )
-        if not href:
-            continue
-        where = (
-            "" if len(scopes) == 1
-            else f" on {pretty_platform(scope.platform)}"
-        )
-        links.append(
-            f"- 📦 [Every package that changed across this window{where}]({href})"
-        )
-    if not links:
-        return None
-    return "\n".join(["", "##### 🔎 Where to look", "", *links])
+    return stack_changes_href(
+        dashboard_url,
+        detector=lead.detector, platform=lead.platform, sample=lead.sample,
+        base_release=plan.base_release, onset_release=plan.onset_release,
+    )
 
 
 def _facts_digest(
@@ -1798,11 +1965,17 @@ def _change_cell(pct_change: float | None) -> str:
     """A metric's step as a signed percentage with a direction marker.
     ``pct_change`` is a fraction on :class:`MetricVerdict`, matching the
     report's own formatting. Both arrows are red on purpose: whichever way a
-    confirmed regression moved, it moved the wrong way."""
+    confirmed regression moved, it moved the wrong way. The gap between arrow
+    and number is non-breaking so a narrow column wraps the cell as a whole
+    rather than stranding the arrow on its own line.
+
+    Emphasised with ``**``, so every caller must be somewhere GitHub renders
+    Markdown — inside a raw ``<summary>`` the asterisks would reach the reader
+    as asterisks."""
     if pct_change is None or not math.isfinite(pct_change):
         return "—"
     arrow = "🔺" if pct_change >= 0 else "🔻"
-    return f"{arrow} **{pct_change:+.1%}**"
+    return f"{arrow}&nbsp;**{pct_change:+.1%}**"
 
 
 def _count(n: int, noun: str) -> str:

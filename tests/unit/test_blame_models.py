@@ -237,6 +237,20 @@ def test_a_legacy_sidecars_explained_candidate_stays_ranked():
     assert candidate.score == 95.0
 
 
+def test_a_null_ranked_field_is_resolved_by_the_description_like_an_absent_one():
+    # Some sidecars on EOS carry the key as an explicit ``null`` (a builder that
+    # wrote the field before it wrote a value). ``null`` is the absence of a
+    # judgement, not a "no": a candidate with a real score and reason under it is
+    # ranked, exactly as when the key is missing entirely — reading it as
+    # unranked would erase the historical ranking the same way.
+    data = _legacy(_pr(1, score=90.0))
+    data["entries"][0]["repos"][0]["candidates"][0]["ranked"] = None
+    restored = BlameReport.from_json(data)
+    candidate = restored.entries[0].candidates[0]
+    assert candidate.ranked
+    assert candidate.score == 90.0
+
+
 def test_a_legacy_sidecars_unexplained_candidate_is_unranked():
     # The other half of the same rule: a legacy candidate the ranking stage
     # never reached carries no reason, and must not clear a threshold.

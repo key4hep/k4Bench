@@ -324,11 +324,63 @@ def test_a_row_past_the_prompt_cap_cannot_be_scored_either():
     assert set(attribution.likelihoods) == {offered}
 
 
-def test_a_row_the_model_skipped_is_simply_absent_not_zero():
-    # The caller falls back to that row's per-configuration score; publishing a
-    # zero the model never committed to would invert its meaning.
+def test_a_row_the_model_skipped_is_re_asked_and_merged():
+    # A model handed a wide window drops rows by stopping early, not because
+    # those rows are hard — so the gap is asked again and folded into the first
+    # reply, whose summary (written against the whole window) is the one kept.
     request = _request(regressions=(_fact("r1"), _fact("r2")))
-    attribution = _attributor([_completion(_reply(r1=88))]).attribute(request)
+    attribution = _attributor([
+        _completion(_reply("ALLEGRO moved and IDEA did not.", r1=88)),
+        _completion(_reply("a second summary, discarded", r2=42)),
+    ]).attribute(request)
+    assert attribution.likelihoods == {"r1": 88.0, "r2": 42.0}
+    assert attribution.summary == "ALLEGRO moved and IDEA did not."
+
+
+def test_the_follow_up_keeps_the_window_and_narrows_only_the_answer():
+    # The whole point of this pass is judging a row against what the other
+    # configurations did, so a follow-up still carries every regression and every
+    # clean control — it just says which ids to answer for.
+    request = _request(regressions=(
+        _fact("r1", metric="answered_metric"),
+        _fact("r2", metric="skipped_metric"),
+    ))
+    attributor = _attributor([
+        _completion(_reply(r1=88)),
+        _completion(_reply(r2=42)),
+    ])
+    attributor.attribute(request)
+    second = attributor.client.session.calls[1].json["messages"][-1]["content"]
+    assert "skipped_metric" in second
+    assert "answered_metric" in second
+    assert "answer only for the ids left unanswered: r2" in second
+    # …and the standing "score every regression listed above" is gone, rather
+    # than left contradicting the narrowed ask.
+    assert "Score every regression listed above" not in second
+
+
+def test_a_row_the_follow_up_never_answers_is_absent_not_zero():
+    # Publishing a zero the model never committed to would invert its meaning;
+    # the caller falls back to that row's per-configuration score instead. The
+    # rounds are bounded, so a refused row costs a fixed number of calls.
+    request = _request(regressions=(_fact("r1"), _fact("r2")))
+    attributor = _attributor(
+        [_completion(_reply(r1=88))]
+        + [_completion(_reply(r1=88)) for _ in range(attr_mod._MAX_COMPLETION_ROUNDS)]
+    )
+    attribution = attributor.attribute(request)
+    assert attribution.likelihoods == {"r1": 88.0}
+    # One initial call, then a single follow-up: a round answering nothing new
+    # stops the loop rather than spinning to the bound.
+    assert len(attributor.client.session.calls) == 2
+
+
+def test_a_failing_follow_up_keeps_what_was_already_scored():
+    request = _request(regressions=(_fact("r1"), _fact("r2")))
+    attribution = _attributor([
+        _completion(_reply(r1=88)),
+        requests.ConnectionError("boom"),
+    ]).attribute(request)
     assert attribution.likelihoods == {"r1": 88.0}
 
 
@@ -350,6 +402,65 @@ def test_the_summary_is_flattened_and_capped():
         _completion(_reply(long_summary, r1=90))
     ]).attribute(_request())
     assert len(attribution.summary) == attr_mod._MAX_SUMMARY_CHARS
+
+
+# ── The summary is read by people who never saw the prompt ────────────────────
+
+def test_the_prompt_asks_for_prose_without_row_ids():
+    assert "never by id" in build_user_prompt(_request())
+
+
+def test_a_bracketed_group_becomes_the_metrics_it_stood_for():
+    # The detector is right there in the sentence, so repeating it inside the
+    # bracket would only stutter; the metrics are what the ids were hiding.
+    request = _request(regressions=(
+        _fact("r1", detector="IDEA_o2_v01", metric="sim_time_s"),
+        _fact("r2", detector="IDEA_o2_v01", metric="wall_time_s"),
+    ))
+    attribution = _attributor([_completion(_reply(
+        "The steps in IDEA_o2_v01 (r1, r2) are a decrease in simulation time.",
+        r1=90, r2=88,
+    ))]).attribute(request)
+    assert attribution.summary == (
+        "The steps in IDEA_o2_v01 (sim_time_s and wall_time_s) are a decrease "
+        "in simulation time."
+    )
+
+
+def test_an_id_is_never_deleted_out_of_the_sentence_it_carries():
+    # "Only (r1, r2) regressed" is not an appositive — dropping the bracket
+    # would leave "Only regressed", which is not what the model said. No regex
+    # can tell the two apart, so nothing is ever cut.
+    request = _request(regressions=(
+        _fact("r1", detector="IDEA_o2_v01", metric="sim_time_s"),
+        _fact("r2", detector="ALLEGRO_o1_v03", metric="wall_time_s",
+              label="without_HCAL"),
+    ))
+    attribution = _attributor([_completion(_reply(
+        "Only (r1, r2) regressed. r1 is the one this PR reaches.", r1=90, r2=88,
+    ))]).attribute(request)
+    assert attribution.summary == (
+        "Only (IDEA_o2_v01 sim_time_s and ALLEGRO_o1_v03 without_HCAL "
+        "wall_time_s) regressed. IDEA_o2_v01 sim_time_s is the one this PR "
+        "reaches."
+    )
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "The v1r2 tag and the r2d2 sample are untouched.",
+        "Row r99 is not from this window.",
+        "ALLEGRO moved and IDEA did not.",
+    ],
+)
+def test_prose_that_only_looks_like_an_id_is_left_alone(summary):
+    # Only ids this window actually offered are resolvable; anything else is
+    # left exactly as written rather than expanded into a guess.
+    attribution = _attributor([
+        _completion(_reply(summary, r1=90))
+    ]).attribute(_request())
+    assert attribution.summary == summary
 
 
 # ── Every failure is the same decline ─────────────────────────────────────────
