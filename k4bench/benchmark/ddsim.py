@@ -198,7 +198,6 @@ def _run_removal_sweep(config: BenchmarkConfig) -> list[RunResult]:
         raise ValueError(f"_run_removal_sweep called with unexpected mode: {config.mode}")
 
     detectors_to_remove = _resolve_detectors(config)
-    all_names = set(get_detector_names(config.xml_path))
     results: list[RunResult] = []
 
     total = 1 + len(detectors_to_remove)
@@ -217,7 +216,7 @@ def _run_removal_sweep(config: BenchmarkConfig) -> list[RunResult]:
                         xml_path=tmp_xml,
                         label=label,
                         config=config,
-                        present_detectors=all_names - {name},
+                        present_detectors=set(get_detector_names(tmp_xml)),
                     )
                 )
         except DetectorNotFoundError as exc:
@@ -288,7 +287,10 @@ def _run_keep_only(config: BenchmarkConfig, keep: set[str], label: str) -> list[
         _print_run_header(1, 1, label, tmp_xml)
         return [
             _timed_run(
-                xml_path=tmp_xml, label=label, config=config, present_detectors=keep
+                xml_path=tmp_xml,
+                label=label,
+                config=config,
+                present_detectors=set(get_detector_names(tmp_xml)),
             )
         ]
 

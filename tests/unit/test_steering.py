@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from k4bench.runner.steering import reconcile_steering_file
 
 STEERING_BODY = """\
@@ -57,6 +59,35 @@ def test_short_flag_is_recognised(tmp_path):
         label="only_A",
     )
     assert patched[1] != str(steering)
+
+
+@pytest.mark.parametrize("spelling", ["--steeringFile={path}", "-S{path}"])
+def test_path_attached_to_the_flag_is_rewritten_in_place(tmp_path, spelling):
+    """argparse also accepts --opt=value and -Ovalue; both must be handled."""
+    steering = _write_steering(tmp_path)
+    patched = reconcile_steering_file(
+        extra_args=[spelling.format(path=steering), "--enableGun"],
+        present_detectors={"DREndcapTubes"},
+        log_dir=tmp_path,
+        label="without_DRBarrelTubes",
+    )
+
+    dest = tmp_path / "without_DRBarrelTubes_steering.py"
+    assert patched == [spelling.format(path=dest), "--enableGun"]
+    assert dest.exists()
+
+
+def test_trailing_flag_without_a_path_is_left_to_ddsim(tmp_path):
+    args = ["--enableGun", "--steeringFile"]
+    assert (
+        reconcile_steering_file(
+            extra_args=args,
+            present_detectors={"A"},
+            log_dir=tmp_path,
+            label="without_B",
+        )
+        is args
+    )
 
 
 def test_copy_preserves_original_and_appends_epilogue(tmp_path):

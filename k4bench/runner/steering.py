@@ -30,6 +30,10 @@ from pathlib import Path
 #: ddsim spellings that introduce a steering file path as the *next* argument.
 _STEERING_FLAGS = ("--steeringFile", "-S")
 
+#: Spellings carrying the path in the same argument.  ``argparse`` accepts
+#: ``--long=value`` and, for short options, a directly appended value.
+_STEERING_PREFIXES = ("--steeringFile=", "-S")
+
 
 #: Appended to the copy. Placeholders are substituted by :func:`_epilogue`;
 #: written without f-string escaping so it reads as the code it emits.
@@ -65,11 +69,23 @@ def _epilogue(original: Path, label: str, present_detectors: set[str]) -> str:
     )
 
 
-def _steering_index(args: list[str]) -> int | None:
-    """Return the index of the steering file *path* in *args*, if any."""
+def _find_steering(args: list[str]) -> tuple[int, str, str] | None:
+    """Locate the steering file in *args*.
+
+    Returns ``(index, prefix, path)``, where replacing ``args[index]`` with
+    ``prefix + new_path`` preserves the spelling the caller used, or None when
+    *args* carries no steering file.
+    """
     for i, arg in enumerate(args):
-        if arg in _STEERING_FLAGS and i + 1 < len(args):
-            return i + 1
+        if arg in _STEERING_FLAGS:
+            # Path is the next argument; a trailing flag with no value is left
+            # alone so ddsim reports it, rather than duplicating its message.
+            if i + 1 < len(args):
+                return i + 1, "", args[i + 1]
+            return None
+        for prefix in _STEERING_PREFIXES:
+            if arg.startswith(prefix) and len(arg) > len(prefix):
+                return i, prefix, arg[len(prefix):]
     return None
 
 
@@ -101,11 +117,12 @@ def reconcile_steering_file(
     list[str]
         Arguments to hand to :func:`k4bench.runner.executor.run_ddsim`.
     """
-    idx = _steering_index(extra_args)
-    if idx is None:
+    found = _find_steering(extra_args)
+    if found is None:
         return extra_args
+    idx, prefix, path = found
 
-    original = Path(extra_args[idx])
+    original = Path(path)
     dest = log_dir / f"{label}_steering.py"
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(
@@ -113,5 +130,5 @@ def reconcile_steering_file(
     )
 
     patched = list(extra_args)
-    patched[idx] = str(dest)
+    patched[idx] = f"{prefix}{dest}"
     return patched
