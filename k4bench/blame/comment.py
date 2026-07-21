@@ -1205,30 +1205,28 @@ def _alert(
     """The headline claim as a GitHub warning alert: what the benchmarks
     measured, and how strongly a model ties it to this pull request.
 
-    Two sentences, because they are two different kinds of statement and the
-    comment is careful to keep them apart everywhere else: the first is a
-    measurement, the second an estimate, and the estimate is named as one — so a
-    reader who stops at the alert stops at percentages rather than at an
-    unqualified accusation. Which model made it is said out loud, matching what
-    the assessment below calls itself.
+    It opens with the measurement and only then estimates, because they are two
+    different kinds of statement and the comment is careful to keep them apart
+    everywhere else. The estimate is named as one — so a reader who stops at the
+    alert stops at percentages rather than at an unqualified accusation — and the
+    model behind it is said out loud, matching what the assessment below calls
+    itself.
 
-    The estimate is two numbers, because one is misleading on its own. A single
-    high score says nothing about *reach* — one row at 95% out of forty reads
-    very differently from thirty-eight of them — so the alert also counts the
-    rows at or above the comment threshold, and names the threshold rather than
-    a word like "certain": it is a configured number (``min_score``), the same
-    one that decided this comment exists at all, and a reader who thinks it is
-    set wrong can go and see what it is set to.
+    A peak alone is misleading, so each clause pairs it with *reach*: one row at
+    95% out of forty reads very differently from thirty-eight of them, and the
+    count of rows at or above the threshold is what tells them apart. (A window
+    of one regression has no reach to report, and says the one score.) The
+    threshold is named rather than summarised as "certain": it is a configured
+    number (``min_score``), the same one that decided this comment exists at all,
+    and a reader who thinks it is set wrong can go and see what it is set to.
 
-    Every number is attributed to whoever produced it (:func:`_scored`). A
-    partial review is the case that makes this matter: the reviewer answers one
-    row at 20%, the comment survives on another row the ranker left at 91%, and
-    a headline reading "the AI reviewer estimates this PR is a likely
-    contributor: 0 of 1 it scored is at 80% or above" would be self-contradictory
-    *and* credited to the wrong model. So the reviewer's rows and the rows still
-    carrying a first-pass score are counted in separate clauses, and "likely
-    contributor" is claimed only by a model whose own scores actually reach the
-    threshold.
+    Every number is attributed to whoever produced it (:func:`_scored`), in one
+    clause per model. A partial review is the case that makes this matter: the
+    reviewer answers one row at 20%, the comment survives on another row the
+    ranker left at 91%, and a single blended sentence would credit the reviewer
+    with a claim it did not make while contradicting the count it did. Hence
+    "likely contributor" is claimed only by a model whose own scores actually
+    reach the threshold.
 
     A window nothing was scored against says nothing in the second sentence
     rather than reaching for a number — the rows are still real, and the table
@@ -1249,9 +1247,13 @@ def _alert(
     if reviewed:
         clauses.append(_reviewer_clause(reviewed, min_score=min_score))
     if carried:
-        clauses.append(
-            _ranker_clause(carried, min_score=min_score, after_review=bool(reviewed))
-        )
+        clauses.append(_ranker_clause(
+            carried, min_score=min_score,
+            # Every row the review did not answer, including the ones nobody
+            # scored: the clause counts *within* that set, so it has to know how
+            # big the set is.
+            unreviewed=len(rows) - len(reviewed) if reviewed else 0,
+        ))
     return f"> [!WARNING]\n> {measured} {' '.join(clauses)}"
 
 
@@ -1269,53 +1271,66 @@ def _reviewer_clause(reviewed: list[float], *, min_score: float) -> str:
             f"The AI reviewer scored {scored} and put none at "
             f"{_pct(min_score)} or above (highest {highest})."
         )
+    lead = "The AI reviewer estimates this PR is a likely contributor:"
+    if len(reviewed) == 1:
+        return (
+            f"{lead} it scored the one regression at {highest}, at or above "
+            f"the {_pct(min_score)} threshold."
+        )
     verb = "is" if over == 1 else "are"
     return (
-        f"The AI reviewer estimates this PR is a likely contributor: {over} of "
-        f"the {scored} it scored {verb} attributed to it at {_pct(min_score)} "
-        f"or above, the highest at {highest}."
+        f"{lead} {over} of the {scored} it scored {verb} attributed to it at "
+        f"{_pct(min_score)} or above, the highest at {highest}."
     )
 
 
 def _ranker_clause(
-    carried: list[float], *, min_score: float, after_review: bool
+    carried: list[float], *, min_score: float, unreviewed: int
 ) -> str:
     """What the per-configuration pass scored, in *its* voice.
 
-    Two shapes, because the rows mean different things in each. Alone, this is
-    the whole estimate — the mode the bot runs in with no reviewer configured.
-    After a review, these are the leftovers the review never answered, and the
-    clause says so: a reader seeing two counts over one table needs to know why
-    they do not add up to it."""
+    Two shapes, because the rows mean different things in each. Alone
+    (``unreviewed`` zero — no reviewer configured), this is the whole estimate.
+    After a review, these are rows the review did not answer, and *unreviewed*
+    is how many such rows there are in total: the ones with no score at all
+    belong to neither model, so they are named as a difference rather than
+    counted into a clause that would then claim scores for them."""
     over = sum(1 for likelihood in carried if likelihood >= min_score)
     scored = _count(len(carried), "regression")
     highest = _pct(max(carried))
-    if after_review:
+    if unreviewed:
+        which = (
+            "The one regression it did not score" if unreviewed == 1
+            else f"Of the {_count(unreviewed, 'regression')} it did not score, "
+                 f"{len(carried)}"
+        )
         if len(carried) == 1:
-            # One row's "highest" is just that row's score; the count and the
-            # reach would be three ways of saying the same number.
-            return (
-                f"The remaining regression keeps the first pass's ranker score "
-                f"of {highest}."
-            )
+            # One row's count, reach and maximum are three ways of saying one
+            # number, and the threshold is already named in the clause before.
+            return f"{which} keeps a first-pass ranker score of {highest}."
         reach = (
             f"{over} of them at {_pct(min_score)} or above"
             if over else f"none at {_pct(min_score)} or above"
         )
         return (
-            f"The remaining {scored} keep the first pass's ranker score, "
-            f"{reach} (highest {highest})."
+            f"{which} keep a first-pass ranker score, {reach} "
+            f"(highest {highest})."
         )
     if not over:
         return (
             f"The AI ranker scored {scored} and put none at {_pct(min_score)} "
             f"or above (highest {highest})."
         )
+    lead = "The AI ranker estimates this PR is a likely contributor:"
+    if len(carried) == 1:
+        return (
+            f"{lead} it scored the one regression at {highest}, at or above "
+            f"the {_pct(min_score)} threshold."
+        )
     verb = "is" if over == 1 else "are"
     return (
-        f"The AI ranker estimates this PR is a likely contributor: {over} of "
-        f"{scored} {verb} attributed to it at {_pct(min_score)} or above, the "
-        f"highest at {highest}."
+        f"{lead} {over} of {scored} {verb} attributed to it at "
+        f"{_pct(min_score)} or above, the highest at {highest}."
     )
 
 
@@ -1590,7 +1605,7 @@ def _overflow_line(
     *,
     dashboard_url: str | None,
 ) -> str | None:
-    """What the table did not show, as one line pointing at all of it.
+    """What the table did not show, as one line pointing into the dashboard.
 
     A wide night is not folded into a second copy of the table: a
     detector-removal sweep confirms three hundred near-identical rows, which no
@@ -1599,38 +1614,14 @@ def _overflow_line(
     every re-sorting of it, so the line points there. Only the destination is
     linked — the words naming it, plus the arrow that conventionally means "this
     opens somewhere else" — so the count reads as prose and the click target is
-    the thing being opened.
-
-    What the line *promises* is bounded by what the destination can do. The
-    dashboard shows one detector, platform and sample at a time — its Stack
-    Changes tab is scoped by the sidebar — so a window spanning several
-    configurations has no single view holding all of it, and the link opens the
-    leading row's. The wording says so rather than offering "view all N" against
-    a view that shows a fraction of them: a reader who has to re-scope should
-    learn that here, not after the click."""
+    the thing being opened. The link lands on the leading row's configuration
+    (:func:`_window_href`), which is as much as one dashboard view holds; a
+    window spanning several is re-scoped from there."""
     if shown >= len(rows):
         return None
     href = _window_href(plan, rows, dashboard_url)
-    total = _count(len(rows), "regression")
-    if not href:
-        # Nothing to link: the count is still worth stating, and where the full
-        # set lives is true whether or not this comment can point at it.
-        return f"View all {total} in the dashboard"
-    scopes = {_configuration(row) for row in rows}
-    if len(scopes) == 1:
-        return f"View all {total} in the [dashboard ↗]({href})"
-    return (
-        f"This window holds {total} across {_count(len(scopes), 'configuration')} "
-        f"— [open the leading one in the dashboard ↗]({href}) and re-scope there "
-        "for the others"
-    )
-
-
-def _configuration(row: RegressionRow) -> tuple[str, str, str]:
-    """The dashboard scope a row lives in — one detector, platform and sample,
-    which is as much as one dashboard view can show at once."""
-    v = row.verdict
-    return (v.detector, v.platform, v.sample)
+    where = f"[dashboard ↗]({href})" if href else "dashboard"
+    return f"View all {_count(len(rows), 'regression')} in the {where}"
 
 
 def _others_section(plan: CommentPlan) -> str:

@@ -798,28 +798,18 @@ def test_one_packages_status_can_differ_between_platforms():
     assert "- k4geo [ADDED]" in build_user_prompt(request)
 
 
-def test_the_overflow_line_does_not_promise_a_view_the_dashboard_cannot_show():
+def test_the_overflow_link_names_the_dashboard_and_not_one_platforms_view():
     # A dashboard view is one configuration at a time, so a window spanning
-    # platforms gets one link and says what it opens — "view all N" there would
-    # send a reader to a view holding a fraction of them without warning.
+    # platforms still gets one link — and the label claims no more than "the
+    # dashboard", which is true of whichever view it opens.
     dbg = "x86_64-almalinux9-gcc14.2.0-dbg"
     verdicts = [
         _verdict(metric=f"m{i}", platform=plat, pct=(20 - i) / 100)
         for plat in (_PLAT, dbg) for i in range(3)
     ]
     body = _comments(_report(*verdicts), _blame(verdicts, [_candidate()]))[0].body
-    assert body.count("dashboard ↗](") == 1
-    assert "across 2 configurations" in body
-    assert "open the leading one in the dashboard" in body
-    assert "View all" not in body
+    assert body.count("in the [dashboard ↗](") == 1
     assert "every package" not in body.lower()
-
-
-def test_a_single_configuration_overflow_does_open_all_of_them():
-    # Where one view *can* hold the whole window, the line says so plainly.
-    verdicts = [_verdict(metric=f"m{i}", pct=(20 - i) / 100) for i in range(8)]
-    body = _comments(_report(*verdicts), _blame(verdicts, [_candidate()]))[0].body
-    assert "View all 8 regressions in the [dashboard ↗](" in body
 
 
 def test_each_row_links_to_its_own_regression_in_the_dashboard():
@@ -1078,12 +1068,12 @@ def test_the_alert_carries_the_strongest_likelihood_and_names_the_model():
     )[0].body
     alert = _row(body, "nightly benchmarks confirmed")
     assert "The AI reviewer estimates this PR is a likely contributor" in alert
-    assert "the highest at 84%" in alert
+    assert "it scored the one regression at 84%" in alert
     # With no review configured the number is the ranker's, and says so.
     body = _comments(_report(v), _blame([v], [_candidate()]))[0].body
     alert = _row(body, "nightly benchmarks confirmed")
     assert "The AI ranker estimates" in alert
-    assert "the highest at 91%" in alert
+    assert "it scored the one regression at 91%" in alert
 
 
 def test_the_alert_counts_the_rows_over_the_configured_threshold():
@@ -1123,9 +1113,32 @@ def test_the_alert_does_not_credit_the_reviewer_with_the_rankers_scores():
     assert "The AI reviewer estimates" in alert
     assert "2 of the 2 regressions it scored" in alert
     assert (
-        "The remaining 2 regressions keep the first pass's ranker score, "
-        "2 of them at 80% or above (highest 91%)."
+        "Of the 2 regressions it did not score, 2 keep a first-pass ranker "
+        "score, 2 of them at 80% or above (highest 91%)."
     ) in alert
+
+
+def test_the_ranker_clause_counts_against_every_row_the_review_skipped():
+    # Rows nobody scored belong to neither model, so they cannot be counted into
+    # the ranker's clause — but they *are* rows the review did not answer, so the
+    # denominator it counts against has to include them.
+    reviewed = _verdict(metric="aaa")
+    carried = _verdict(metric="bbb")
+    unscored = _verdict(metric="ccc")
+    rival = _candidate(number=77, repo="key4hep/DD4hep", title="Field map")
+    blame = BlameReport("x", "2026-07-05", entries=(
+        *_blame([reviewed, carried], [_candidate()]).entries,
+        _entry_without(unscored, [rival]),
+    ))
+    body = _comments(
+        _report(reviewed, carried, unscored), blame,
+        attributor=_FakeAttributor({"r1": 95.0}),
+    )[0].body
+    alert = _row(body, "nightly benchmarks confirmed")
+    assert "The AI reviewer estimates this PR is a likely contributor: it " \
+           "scored the one regression at 95%, at or above the 80% threshold." in alert
+    assert "Of the 2 regressions it did not score, 1 keeps a first-pass " \
+           "ranker score of 91%." in alert
 
 
 def test_a_review_that_clears_a_row_does_not_claim_a_likely_contributor():
@@ -1143,7 +1156,8 @@ def test_a_review_that_clears_a_row_does_not_claim_a_likely_contributor():
     assert "likely contributor" not in alert
     assert "The AI reviewer scored 1 regression and put none at 80% or above " \
            "(highest 20%)." in alert
-    assert "The remaining regression keeps the first pass's ranker score of 91%." in alert
+    assert "The one regression it did not score keeps a first-pass ranker " \
+           "score of 91%." in alert
 
 
 @pytest.mark.parametrize(

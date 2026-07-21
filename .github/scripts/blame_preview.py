@@ -8,14 +8,13 @@ This is a previewing tool, not part of the nightly job. It answers a single
 question — "what would the bot post on pull request X for the regression window
 attributed to it?" — using the report and blame sidecar already on WebEOS, the
 same cross-configuration review the nightly ``blame_comment`` step runs, and the
-same renderer. The one thing it changes is *where* the finished comment lands:
-``--post-to`` redirects the upsert to a test pull request while the body is left
-exactly as it was rendered for ``--only`` — so the comment on the test PR reads,
-links and cross-references as though it were posted on the real one. The bot, in
-other words, *thinks* it is commenting on ``--only``; only the write target moves.
-The redirected comment is keyed on the window *and* the source pull request, so
-previews of two different PRs from the same night sit side by side on the test PR
-while a re-run of either edits its own comment in place (see :func:`_redirect`).
+same renderer. What it changes is *where* the finished comment lands:
+``--post-to`` redirects the upsert to a test pull request while the visible body
+is left exactly as it was rendered for ``--only`` — so the comment on the test PR
+reads, links and cross-references as though it were posted on the real one. The
+bot, in other words, *thinks* it is commenting on ``--only``. Only the address
+and the hidden keys underneath it move, which is what lets several previews share
+one test pull request and re-render in place there (see :func:`_redirect`).
 
 Everything downstream of the data source is production code:
 
@@ -109,6 +108,15 @@ def _redirect(comment, repo: str, number: int):
 
     The marker has to be the body's first line for the upsert to recognise it
     (``publish._upsert``), so both copies move together.
+
+    The facts digest is *dropped*, which flips the upsert to comparing whole
+    bodies. Production wants the opposite — the digest is what stops a reworded
+    summary of the same regressions from re-notifying everyone watching a pull
+    request every night — but here the facts are deliberately held still while
+    the rendering changes, and a preview that refuses to update after a renderer
+    change is a preview of the wrong thing. The body still carries its digest
+    line, so what is being previewed is unchanged; only this run's decision to
+    rewrite is.
     """
     if (repo, number) == (comment.repo, comment.number):
         return comment
@@ -116,7 +124,10 @@ def _redirect(comment, repo: str, number: int):
         " -->", f" preview-of={comment.repo}#{comment.number} -->"
     )
     body = comment.body.replace(comment.marker, marker, 1)
-    return replace(comment, repo=repo, number=number, marker=marker, body=body)
+    return replace(
+        comment, repo=repo, number=number, marker=marker, body=body,
+        facts_digest="",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

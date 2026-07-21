@@ -410,10 +410,9 @@ def test_the_prompt_asks_for_prose_without_row_ids():
     assert "never by id" in build_user_prompt(_request())
 
 
-def test_an_id_the_sentence_can_spare_is_dropped():
-    # "the steps in IDEA_o2_v01 (r316, r317)" — the prose already names the
-    # thing, and the bracket is a reference to a document the reader of the
-    # comment has never seen.
+def test_a_bracketed_group_becomes_the_metrics_it_stood_for():
+    # The detector is right there in the sentence, so repeating it inside the
+    # bracket would only stutter; the metrics are what the ids were hiding.
     request = _request(regressions=(
         _fact("r1", detector="IDEA_o2_v01", metric="sim_time_s"),
         _fact("r2", detector="IDEA_o2_v01", metric="wall_time_s"),
@@ -423,24 +422,27 @@ def test_an_id_the_sentence_can_spare_is_dropped():
         r1=90, r2=88,
     ))]).attribute(request)
     assert attribution.summary == (
-        "The steps in IDEA_o2_v01 are a decrease in simulation time."
+        "The steps in IDEA_o2_v01 (sim_time_s and wall_time_s) are a decrease "
+        "in simulation time."
     )
 
 
-def test_an_id_carrying_the_sentence_is_named_instead_of_deleted():
-    # Dropping it here would delete the subject; the reader gets the identity
-    # they would otherwise have had to look up.
+def test_an_id_is_never_deleted_out_of_the_sentence_it_carries():
+    # "Only (r1, r2) regressed" is not an appositive — dropping the bracket
+    # would leave "Only regressed", which is not what the model said. No regex
+    # can tell the two apart, so nothing is ever cut.
     request = _request(regressions=(
         _fact("r1", detector="IDEA_o2_v01", metric="sim_time_s"),
-        _fact("r2", detector="IDEA_o2_v01", metric="wall_time_s",
+        _fact("r2", detector="ALLEGRO_o1_v03", metric="wall_time_s",
               label="without_HCAL"),
     ))
     attribution = _attributor([_completion(_reply(
-        "r1 is the only row this PR reaches; [r2] is unrelated.", r1=90, r2=4,
+        "Only (r1, r2) regressed. r1 is the one this PR reaches.", r1=90, r2=88,
     ))]).attribute(request)
     assert attribution.summary == (
-        "IDEA_o2_v01 sim_time_s is the only row this PR reaches; "
-        "IDEA_o2_v01 without_HCAL wall_time_s is unrelated."
+        "Only (IDEA_o2_v01 sim_time_s and ALLEGRO_o1_v03 without_HCAL "
+        "wall_time_s) regressed. IDEA_o2_v01 sim_time_s is the one this PR "
+        "reaches."
     )
 
 

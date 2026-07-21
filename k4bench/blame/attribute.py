@@ -553,9 +553,8 @@ _RESPONSE_INSTRUCTION = (
 )
 
 #: The scope sentence closing :data:`_RESPONSE_INSTRUCTION`. Which rows to
-#: answer for is the one thing a follow-up round changes about the ask, and it
-#: is stated once, here, rather than added as a second instruction contradicting
-#: a standing "score every regression listed above".
+#: answer for is the one thing a follow-up round changes about the ask, so it is
+#: swapped here — one sentence saying it, never two disagreeing.
 _SCORE_ALL = "Score every regression listed above and invent none."
 _SCORE_ONLY = (
     "Score ONLY the ids listed as unanswered above — leave every other id out — "
@@ -868,13 +867,9 @@ def build_user_prompt(
     the whole substance of this stage, and a comment nobody can reconstruct the
     input of is not reviewable.
 
-    *only_ids* narrows what is *asked for* without narrowing what is *shown*:
-    :meth:`OpenAICompatAttributor._complete` re-asks for the rows a reply left
-    out, and a follow-up built from those rows alone would be a different
-    question — "is this PR responsible for this regression", asked row by row,
-    with the cross-configuration evidence that is the whole point of this pass
-    deleted from the prompt. So the window stays whole and only the answer is
-    scoped."""
+    *only_ids* narrows what is *asked for* without narrowing what is *shown* —
+    the whole window stays in the prompt. See
+    :meth:`OpenAICompatAttributor._complete`, its only caller, for why."""
     window = request.onset_release
     if request.base_release:
         window = f"{request.base_release} → {request.onset_release}"
@@ -932,8 +927,9 @@ def _unanswered_instruction(only_ids: Sequence[str]) -> list[str]:
 
 # ── Defensive response parsing ────────────────────────────────────────────────
 
-#: A bracket holding nothing but row ids — ``"(r316, r317 and r318)"``, with the
-#: space before it, so the whole thing can go rather than leave an empty pair.
+#: A bracket holding nothing but row ids — ``"(r316, r317 and r318)"``. The
+#: space before it is part of the match, so the replacement owns its own
+#: spacing.
 _ID_GROUP = re.compile(
     r"\s*[(\[]\s*(?:r\d+)(?:\s*(?:,|;|/|&|and|·)\s*r\d+)*\s*[)\]]",
     re.IGNORECASE,
@@ -949,10 +945,16 @@ def _without_row_ids(
     comment can recognise. The prompt asks for prose without them; this is what
     makes it true.
 
-    A bracketed group hanging off a phrase that already names the thing — "the
-    steps in IDEA_o2_v01 (r316, r317)" — is dropped. Anywhere else the id is
-    carrying the sentence ("r316 is the only row this PR reaches"), so it is
-    replaced by its configuration and metric rather than deleted.
+    Every id is *replaced*, never deleted. Telling an appositive — "the steps in
+    IDEA_o2_v01 (r316, r317)" — from a group carrying its own sentence — "Only
+    (r316, r317) regressed" — takes more grammar than a regex has, and guessing
+    wrong turns the second into "Only regressed", which no longer says what the
+    model said. Repetitive prose is a much smaller failure than altered meaning.
+
+    What varies is only how much of the identity is worth repeating: a group
+    whose detector the sentence has just named is expanded to bare metric names,
+    which is what makes the common appositive read naturally instead of stuttering
+    the detector three times.
 
     Ids from *this window* only: one that matches no offered row cannot be
     resolved, and a guessed expansion would be worse than the bare token.
@@ -965,12 +967,13 @@ def _without_row_ids(
         ids = [i.lower() for i in _ID_TOKEN.findall(match.group())]
         if any(i not in known for i in ids):
             return match.group()  # not ours to resolve; leave it exactly as-is
-        # An appositive only if something precedes it to be in apposition *to*;
-        # opening a clause, the group is the subject and must be named, not cut.
-        before = summary[:match.start()].rstrip()
-        if before and (before[-1].isalnum() or before[-1] in ")]"):
-            return ""
-        return " " + _join([_fact_phrase(known[i]) for i in ids])
+        before = summary[:match.start()]
+        names = [
+            known[i].metric if _names_detector(before, known[i]) else
+            _fact_phrase(known[i])
+            for i in ids
+        ]
+        return " (" + _join(names) + ")"
 
     cleaned = _ID_GROUP.sub(_rewrite_group, summary)
     cleaned = _ID_TOKEN.sub(
@@ -978,9 +981,6 @@ def _without_row_ids(
         if m.group().lower() in known else m.group(),
         cleaned,
     )
-    # Dropping a parenthetical can leave a space stranded in front of the
-    # punctuation that followed it.
-    cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
     cleaned = " ".join(cleaned.split())
     if cleaned != summary:
         _log.info(
@@ -988,6 +988,17 @@ def _without_row_ids(
             "mean nothing to a reader of the comment", slug or "?",
         )
     return cleaned
+
+
+#: How far back a bracket's own clause is taken to reach, for deciding whether
+#: the detector has just been named. Long enough for "the steps in IDEA_o2_v01",
+#: short enough that a detector named two sentences ago does not count.
+_NEARBY_CHARS = 60
+
+
+def _names_detector(before: str, fact: RegressionFact) -> bool:
+    """Whether the text just before a bracket already names its detector."""
+    return fact.detector in before[-_NEARBY_CHARS:]
 
 
 def _join(names: list[str]) -> str:
@@ -999,8 +1010,8 @@ def _join(names: list[str]) -> str:
 
 def _fact_phrase(fact: RegressionFact) -> str:
     """A regression named the way the comment's reader meets it elsewhere — its
-    detector and metric, with the configuration label only when the detector
-    runs more than one and the label is what tells them apart."""
+    detector and metric, with the benchmark configuration in between when it is
+    not the default one, since that is then part of what identifies the row."""
     where = fact.detector
     if fact.label and fact.label != "baseline":
         where += f" {fact.label}"

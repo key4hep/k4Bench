@@ -86,10 +86,10 @@ Three rules bound it:
   zero, and the headline counts only what the review itself scored.
 
     Those ids never appear in the comment. They are a handle between the prompt
-    and the parser, and nothing on a pull request page defines them — so a
-    summary that reaches for one ("the steps in IDEA_o2_v01 (r316, r317)") has
-    the reference dropped where the sentence can spare it, and replaced by the
-    configuration and metric it names where it cannot.
+    and the parser, and nothing on a pull request page defines them, so a summary
+    that reaches for one is rewritten into the identities it stands for: "the
+    steps in IDEA_o2_v01 (r316, r317)" is published as "the steps in IDEA_o2_v01
+    (sim_time_s and wall_time_s)".
 - **Honest failure.** With no model configured at all, the comment renders from
   the per-configuration scores — the whole of what this bot did before this pass
   existed, and a coherent mode in its own right. But when a reviewer *is*
@@ -196,15 +196,9 @@ Under the table, when the window carried more regressions than it shows, **one
 line counts them and links into the dashboard**. The likelihood ranking answers
 "did my change do this?", but a window can carry a regression that moved further
 than anything near the top of it — and the dashboard is where the whole set can
-be read in whatever ordering a reader wants.
-
-What that line promises depends on what one dashboard view can hold, which is
-one detector, platform and sample at a time. A window inside a single
-configuration is genuinely one click away, and the line says "view all N". A
-window spanning several says so instead — how many configurations it covers, and
-that the link opens the leading one for the reader to re-scope from. A "view all"
-pointing at a view holding a fraction of them would be a promise the dashboard
-cannot keep.
+be read in whatever ordering a reader wants. The link opens the leading row's
+configuration, which is as much as one dashboard view shows; a window spanning
+several is re-scoped from there.
 
 There is **no Platform column** while the suite builds on a single platform; that
 is a rendering switch only, and platform remains part of every row's identity,

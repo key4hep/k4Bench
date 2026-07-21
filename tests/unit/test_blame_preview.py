@@ -146,6 +146,51 @@ def test_two_previews_of_one_window_do_not_overwrite_each_other(preview, wired, 
     assert "window=2026-06-24..2026-06-25" in comment.marker
 
 
+def test_a_rerendered_preview_updates_even_though_the_facts_are_the_same(
+    preview, monkeypatch
+):
+    # Production compares the hidden facts digest so a reworded summary of the
+    # same regressions re-notifies nobody. A preview iterates on exactly that
+    # wording against deliberately unchanged facts, so it compares bodies
+    # instead — otherwise improving the renderer would leave the test comment
+    # showing the old one. Runs the real upsert, not a stub of it.
+    from k4bench.blame import publish as publish_mod
+    from k4bench.blame.comment import PRComment
+    from k4bench.blame.github import IssueComment
+
+    marker = "<!-- k4bench-blame-comment:v1 window=2026-06-24..2026-06-25 -->"
+    digest = "<!-- k4bench-blame-facts:abc123 -->"
+    rendered = PRComment(
+        repo="key4hep/k4geo", number=607, marker=marker,
+        body=f"{marker}\n{digest}\nthe newly worded body", score=91.0,
+        facts_digest="abc123",
+    )
+    posted = preview._redirect(rendered, "key4hep/k4Bench", 106)
+    already_there = IssueComment(
+        42, posted.body.replace("the newly worded body", "an older wording"),
+        author="k4bench-bot",
+    )
+    updated: list[tuple[int, str]] = []
+    monkeypatch.setattr(publish_mod, "authenticated_login", lambda _c: "k4bench-bot")
+    monkeypatch.setattr(
+        publish_mod, "list_issue_comments", lambda *_a: [already_there]
+    )
+    monkeypatch.setattr(
+        publish_mod, "update_issue_comment",
+        lambda _c, _r, cid, body: updated.append((cid, body)) or "https://x",
+    )
+    result = publish_mod.publish(object(), [posted])
+    assert result.updated == ["key4hep/k4Bench#106"]
+    assert "the newly worded body" in updated[0][1]
+
+    # …and a preview that really is identical still performs no write.
+    monkeypatch.setattr(
+        publish_mod, "list_issue_comments",
+        lambda *_a: [IssueComment(42, posted.body, author="k4bench-bot")],
+    )
+    assert publish_mod.publish(object(), [posted]).unchanged == ["key4hep/k4Bench#106"]
+
+
 # ── A preview is a preview of *production* ────────────────────────────────────
 
 def test_no_llm_configured_is_an_error_not_a_different_comment(
