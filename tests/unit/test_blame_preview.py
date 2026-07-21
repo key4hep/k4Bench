@@ -65,9 +65,10 @@ def wired(monkeypatch, preview):
         repo, number = "key4hep/k4geo", 607
 
     monkeypatch.setattr(comment_mod, "select", lambda *_a, **_k: [_Plan()])
+    marker = "<!-- k4bench-blame-comment:v1 window=2026-06-24..2026-06-25 -->"
     rendered = PRComment(
-        repo="key4hep/k4geo", number=607, marker="<!-- m -->",
-        body="the rendered body naming key4hep/k4geo#607", score=91.0,
+        repo="key4hep/k4geo", number=607, marker=marker,
+        body=f"{marker}\nthe rendered body naming key4hep/k4geo#607", score=91.0,
     )
     monkeypatch.setattr(
         comment_mod, "build_comments", lambda *_a, **_k: [rendered]
@@ -127,10 +128,22 @@ def test_post_writes_and_redirects_the_body_untouched(preview, wired, llm):
     assert call["dry_run"] is False
     (comment,) = call["comments"]
     assert (comment.repo, comment.number) == ("key4hep/k4Bench", 106)
-    assert comment.body == "the rendered body naming key4hep/k4geo#607"
-    # The marker is the window's, not the target's, so a re-run edits this same
-    # comment rather than stacking a second one.
-    assert comment.marker == "<!-- m -->"
+    assert comment.body.endswith("the rendered body naming key4hep/k4geo#607")
+
+
+def test_two_previews_of_one_window_do_not_overwrite_each_other(preview, wired, llm):
+    # On a real pull request the window is the identity; on a shared test PR it
+    # is not — two source PRs from the same night share a window, and a
+    # window-only key would make the second preview edit the first away.
+    assert preview.main([
+        "--post", "--post-to", "key4hep/k4Bench#106", "--token", "t",
+    ]) == 0
+    (comment,) = wired[0]["comments"]
+    assert "preview-of=key4hep/k4geo#607" in comment.marker
+    # The upsert only recognises a marker on the body's first line, so the body
+    # carries the same re-keying — and a re-run still edits its own comment.
+    assert comment.body.startswith(comment.marker + "\n")
+    assert "window=2026-06-24..2026-06-25" in comment.marker
 
 
 # ── A preview is a preview of *production* ────────────────────────────────────

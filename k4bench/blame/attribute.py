@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from dataclasses import dataclass, field
 from collections.abc import Sequence
 from typing import Literal, Protocol
@@ -545,6 +546,10 @@ _RESPONSE_INSTRUCTION = (
     'these regressions this pull request is responsible for and why, naming the '
     'cross-configuration evidence that decided it>", "attributions": [{"id": '
     '"<the id given above>", "likelihood": <0-100>}]}. '
+    # The summary is quoted into a pull-request comment, where nothing defines
+    # the ids.
+    "In the summary, refer to regressions by their detector, sample and metric "
+    "— never by id: it is read by people who never see these ids. "
 )
 
 #: The scope sentence closing :data:`_RESPONSE_INSTRUCTION`. Which rows to
@@ -927,6 +932,80 @@ def _unanswered_instruction(only_ids: Sequence[str]) -> list[str]:
 
 # ── Defensive response parsing ────────────────────────────────────────────────
 
+#: A bracket holding nothing but row ids — ``"(r316, r317 and r318)"``, with the
+#: space before it, so the whole thing can go rather than leave an empty pair.
+_ID_GROUP = re.compile(
+    r"\s*[(\[]\s*(?:r\d+)(?:\s*(?:,|;|/|&|and|·)\s*r\d+)*\s*[)\]]",
+    re.IGNORECASE,
+)
+#: A bare id anywhere else. Bounded both sides so ``v1r2`` and ``r2d2`` survive.
+_ID_TOKEN = re.compile(r"(?<![0-9A-Za-z_])r\d+(?![0-9A-Za-z_])", re.IGNORECASE)
+
+
+def _without_row_ids(
+    summary: str, facts: Sequence[RegressionFact], *, slug: str = ""
+) -> str:
+    """*summary* with the prompt's row ids rewritten into names a reader of the
+    comment can recognise. The prompt asks for prose without them; this is what
+    makes it true.
+
+    A bracketed group hanging off a phrase that already names the thing — "the
+    steps in IDEA_o2_v01 (r316, r317)" — is dropped. Anywhere else the id is
+    carrying the sentence ("r316 is the only row this PR reaches"), so it is
+    replaced by its configuration and metric rather than deleted.
+
+    Ids from *this window* only: one that matches no offered row cannot be
+    resolved, and a guessed expansion would be worse than the bare token.
+    """
+    known = {fact.id.lower(): fact for fact in facts}
+    if not known or not _ID_TOKEN.search(summary):
+        return summary
+
+    def _rewrite_group(match: re.Match) -> str:
+        ids = [i.lower() for i in _ID_TOKEN.findall(match.group())]
+        if any(i not in known for i in ids):
+            return match.group()  # not ours to resolve; leave it exactly as-is
+        # An appositive only if something precedes it to be in apposition *to*;
+        # opening a clause, the group is the subject and must be named, not cut.
+        before = summary[:match.start()].rstrip()
+        if before and (before[-1].isalnum() or before[-1] in ")]"):
+            return ""
+        return " " + _join([_fact_phrase(known[i]) for i in ids])
+
+    cleaned = _ID_GROUP.sub(_rewrite_group, summary)
+    cleaned = _ID_TOKEN.sub(
+        lambda m: _fact_phrase(known[m.group().lower()])
+        if m.group().lower() in known else m.group(),
+        cleaned,
+    )
+    # Dropping a parenthetical can leave a space stranded in front of the
+    # punctuation that followed it.
+    cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+    cleaned = " ".join(cleaned.split())
+    if cleaned != summary:
+        _log.info(
+            "attribute: %s — rewrote row ids out of the review's summary; they "
+            "mean nothing to a reader of the comment", slug or "?",
+        )
+    return cleaned
+
+
+def _join(names: list[str]) -> str:
+    """``"a"`` / ``"a and b"`` / ``"a, b and c"`` — an id list read out loud."""
+    if len(names) <= 2:
+        return " and ".join(names)
+    return ", ".join(names[:-1]) + f" and {names[-1]}"
+
+
+def _fact_phrase(fact: RegressionFact) -> str:
+    """A regression named the way the comment's reader meets it elsewhere — its
+    detector and metric, with the configuration label only when the detector
+    runs more than one and the label is what tells them apart."""
+    where = fact.detector
+    if fact.label and fact.label != "baseline":
+        where += f" {fact.label}"
+    return f"{where} {fact.metric}"
+
 def _parse_likelihoods(
     data: dict, known: set[str], *, slug: str = ""
 ) -> dict[str, float]:
@@ -989,12 +1068,16 @@ def _parse_attribution(
     data = extract_json(content)
     if not isinstance(data, dict):
         return None
+    facts = _attributed_facts(request)
     likelihoods = _parse_likelihoods(
-        data, {f.id for f in _attributed_facts(request)}, slug=request.slug
+        data, {f.id for f in facts}, slug=request.slug
     )
     if not likelihoods:
         return None
-    summary = one_line(data.get("summary"), _MAX_SUMMARY_CHARS)
+    summary = _without_row_ids(
+        one_line(data.get("summary"), _MAX_SUMMARY_CHARS), facts,
+        slug=request.slug,
+    )
     if not summary:
         # The scores without the narrative would be a table of numbers with no
         # stated reasoning, in a comment posted to someone else's repository.

@@ -404,6 +404,63 @@ def test_the_summary_is_flattened_and_capped():
     assert len(attribution.summary) == attr_mod._MAX_SUMMARY_CHARS
 
 
+# ── The summary is read by people who never saw the prompt ────────────────────
+
+def test_the_prompt_asks_for_prose_without_row_ids():
+    assert "never by id" in build_user_prompt(_request())
+
+
+def test_an_id_the_sentence_can_spare_is_dropped():
+    # "the steps in IDEA_o2_v01 (r316, r317)" — the prose already names the
+    # thing, and the bracket is a reference to a document the reader of the
+    # comment has never seen.
+    request = _request(regressions=(
+        _fact("r1", detector="IDEA_o2_v01", metric="sim_time_s"),
+        _fact("r2", detector="IDEA_o2_v01", metric="wall_time_s"),
+    ))
+    attribution = _attributor([_completion(_reply(
+        "The steps in IDEA_o2_v01 (r1, r2) are a decrease in simulation time.",
+        r1=90, r2=88,
+    ))]).attribute(request)
+    assert attribution.summary == (
+        "The steps in IDEA_o2_v01 are a decrease in simulation time."
+    )
+
+
+def test_an_id_carrying_the_sentence_is_named_instead_of_deleted():
+    # Dropping it here would delete the subject; the reader gets the identity
+    # they would otherwise have had to look up.
+    request = _request(regressions=(
+        _fact("r1", detector="IDEA_o2_v01", metric="sim_time_s"),
+        _fact("r2", detector="IDEA_o2_v01", metric="wall_time_s",
+              label="without_HCAL"),
+    ))
+    attribution = _attributor([_completion(_reply(
+        "r1 is the only row this PR reaches; [r2] is unrelated.", r1=90, r2=4,
+    ))]).attribute(request)
+    assert attribution.summary == (
+        "IDEA_o2_v01 sim_time_s is the only row this PR reaches; "
+        "IDEA_o2_v01 without_HCAL wall_time_s is unrelated."
+    )
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "The v1r2 tag and the r2d2 sample are untouched.",
+        "Row r99 is not from this window.",
+        "ALLEGRO moved and IDEA did not.",
+    ],
+)
+def test_prose_that_only_looks_like_an_id_is_left_alone(summary):
+    # Only ids this window actually offered are resolvable; anything else is
+    # left exactly as written rather than expanded into a guess.
+    attribution = _attributor([
+        _completion(_reply(summary, r1=90))
+    ]).attribute(_request())
+    assert attribution.summary == summary
+
+
 # ── Every failure is the same decline ─────────────────────────────────────────
 
 def test_scores_without_a_narrative_are_declined(caplog):

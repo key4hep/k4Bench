@@ -84,6 +84,12 @@ Three rules bound it:
   which ids to answer for. A row still unanswered after that keeps its
   per-configuration score, and the comment says so: an unanswered row is not a
   zero, and the headline counts only what the review itself scored.
+
+    Those ids never appear in the comment. They are a handle between the prompt
+    and the parser, and nothing on a pull request page defines them — so a
+    summary that reaches for one ("the steps in IDEA_o2_v01 (r316, r317)") has
+    the reference dropped where the sentence can spare it, and replaced by the
+    configuration and metric it names where it cannot.
 - **Honest failure.** With no model configured at all, the comment renders from
   the per-configuration scores — the whole of what this bot did before this pass
   existed, and a coherent mode in its own right. But when a reviewer *is*
@@ -187,10 +193,18 @@ row nobody scored — a regression this pull request was not even a candidate fo
 says "not scored" rather than 0%, which would claim a judgement no model made.
 
 Under the table, when the window carried more regressions than it shows, **one
-line counts them and links all of them in the dashboard**. The likelihood ranking
-answers "did my change do this?", but a window can carry a regression that moved
-further than anything near the top of it — and the dashboard is where the
-complete set, in whatever ordering a reader wants, is one click away.
+line counts them and links into the dashboard**. The likelihood ranking answers
+"did my change do this?", but a window can carry a regression that moved further
+than anything near the top of it — and the dashboard is where the whole set can
+be read in whatever ordering a reader wants.
+
+What that line promises depends on what one dashboard view can hold, which is
+one detector, platform and sample at a time. A window inside a single
+configuration is genuinely one click away, and the line says "view all N". A
+window spanning several says so instead — how many configurations it covers, and
+that the link opens the leading one for the reader to re-scope from. A "view all"
+pointing at a view holding a fraction of them would be a promise the dashboard
+cannot keep.
 
 There is **no Platform column** while the suite builds on a single platform; that
 is a rendering switch only, and platform remains part of every row's identity,

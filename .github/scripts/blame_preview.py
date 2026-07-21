@@ -13,6 +13,9 @@ same renderer. The one thing it changes is *where* the finished comment lands:
 exactly as it was rendered for ``--only`` — so the comment on the test PR reads,
 links and cross-references as though it were posted on the real one. The bot, in
 other words, *thinks* it is commenting on ``--only``; only the write target moves.
+The redirected comment is keyed on the window *and* the source pull request, so
+previews of two different PRs from the same night sit side by side on the test PR
+while a re-run of either edits its own comment in place (see :func:`_redirect`).
 
 Everything downstream of the data source is production code:
 
@@ -90,6 +93,30 @@ def _parse_pr(value: str) -> tuple[str, int]:
         return repo, int(number)
     except ValueError:
         raise argparse.ArgumentTypeError(f"not a pull-request number: {number!r}") from None
+
+
+def _redirect(comment, repo: str, number: int):
+    """*comment* addressed to ``repo#number``, body untouched but re-keyed.
+
+    The body is left exactly as rendered — it still names ``--only`` everywhere,
+    which is the point of the redirect — while the hidden marker gains the source
+    pull request. Production keys a comment on the change window alone, because
+    on the real pull request the window *is* the identity. On a shared test pull
+    request it is not: two source PRs from the same night carry the same window,
+    and the window-only key would make previewing the second silently edit away
+    the preview of the first. Keying on both keeps them side by side while a
+    re-run of the same preview still edits its own comment in place.
+
+    The marker has to be the body's first line for the upsert to recognise it
+    (``publish._upsert``), so both copies move together.
+    """
+    if (repo, number) == (comment.repo, comment.number):
+        return comment
+    marker = comment.marker.replace(
+        " -->", f" preview-of={comment.repo}#{comment.number} -->"
+    )
+    body = comment.body.replace(comment.marker, marker, 1)
+    return replace(comment, repo=repo, number=number, marker=marker, body=body)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -283,12 +310,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    # Redirect the finished comment to the test PR, body untouched: it still
-    # names --only everywhere, so the reviewer sees exactly what would land there.
-    # The marker is keyed on the change window, not the PR, so a re-run edits this
-    # same comment on the test PR instead of posting a second one.
     redirected = [
-        replace(comment, repo=post_repo, number=post_number) for comment in comments
+        _redirect(comment, post_repo, post_number) for comment in comments
     ]
 
     dry_run = not args.post

@@ -1097,7 +1097,7 @@ def test_the_alert_counts_the_rows_over_the_configured_threshold():
         attributor=_FakeAttributor(scores),
     )[0].body
     alert = _row(body, "nightly benchmarks confirmed")
-    assert "2 of 4 regressions it scored are attributed to it at 80% or above" in alert
+    assert "2 of the 4 regressions it scored are attributed to it at 80% or above" in alert
     assert "the highest at 95%" in alert
 
     # The threshold is whatever the config set, never a hardcoded 80.
@@ -1106,7 +1106,7 @@ def test_the_alert_counts_the_rows_over_the_configured_threshold():
         policy=_policy(min_score=90), attributor=_FakeAttributor(scores),
     )[0].body
     alert = _row(body, "nightly benchmarks confirmed")
-    assert "1 of 4 regressions it scored is attributed to it at 90% or above" in alert
+    assert "1 of the 4 regressions it scored is attributed to it at 90% or above" in alert
 
 
 def test_the_alert_does_not_credit_the_reviewer_with_the_rankers_scores():
@@ -1121,8 +1121,29 @@ def test_the_alert_does_not_credit_the_reviewer_with_the_rankers_scores():
     )[0].body
     alert = _row(body, "nightly benchmarks confirmed")
     assert "The AI reviewer estimates" in alert
-    assert "2 of 2 regressions it scored" in alert
-    assert "The remaining 2 regressions in this window keep the first pass's state" in alert
+    assert "2 of the 2 regressions it scored" in alert
+    assert (
+        "The remaining 2 regressions keep the first pass's ranker score, "
+        "2 of them at 80% or above (highest 91%)."
+    ) in alert
+
+
+def test_a_review_that_clears_a_row_does_not_claim_a_likely_contributor():
+    # The partial-disagreement case: the review answered one row and put it at
+    # 20%, and the comment survives only because another row still carries the
+    # ranker's 91%. "The AI reviewer estimates this PR is a likely contributor:
+    # 0 of 1 it scored" would contradict itself and credit the wrong model.
+    reviewed = _verdict(metric="reviewed_metric")
+    skipped = _verdict(metric="skipped_metric")
+    body = _comments(
+        _report(reviewed, skipped), _blame([reviewed, skipped], [_candidate()]),
+        attributor=_FakeAttributor({"r2": 20.0}, summary="This PR does not fit."),
+    )[0].body
+    alert = _row(body, "nightly benchmarks confirmed")
+    assert "likely contributor" not in alert
+    assert "The AI reviewer scored 1 regression and put none at 80% or above " \
+           "(highest 20%)." in alert
+    assert "The remaining regression keeps the first pass's ranker score of 91%." in alert
 
 
 @pytest.mark.parametrize(

@@ -1220,11 +1220,15 @@ def _alert(
     one that decided this comment exists at all, and a reader who thinks it is
     set wrong can go and see what it is set to.
 
-    The estimate is only ever made in one voice. Whoever is named holds *all* of
-    the numbers behind it: the reviewer's counts cover the rows the review
-    actually answered, and rows left at their first-pass score are counted apart
-    as the remainder rather than folded in under the reviewer's name
-    (:func:`_scored`).
+    Every number is attributed to whoever produced it (:func:`_scored`). A
+    partial review is the case that makes this matter: the reviewer answers one
+    row at 20%, the comment survives on another row the ranker left at 91%, and
+    a headline reading "the AI reviewer estimates this PR is a likely
+    contributor: 0 of 1 it scored is at 80% or above" would be self-contradictory
+    *and* credited to the wrong model. So the reviewer's rows and the rows still
+    carrying a first-pass score are counted in separate clauses, and "likely
+    contributor" is claimed only by a model whose own scores actually reach the
+    threshold.
 
     A window nothing was scored against says nothing in the second sentence
     rather than reaching for a number — the rows are still real, and the table
@@ -1239,25 +1243,80 @@ def _alert(
         f"k4Bench's nightly benchmarks confirmed {what} this PR's change window."
     )
     reviewed, carried = _scored(rows, attribution)
-    likelihoods = reviewed or carried
-    if not likelihoods:
+    if not reviewed and not carried:
         return f"> [!WARNING]\n> {measured}"
-    who = "AI reviewer" if reviewed else "AI ranker"
-    over = sum(1 for likelihood in likelihoods if likelihood >= min_score)
-    verb = "is" if over == 1 else "are"
-    estimate = (
-        f" The {who} estimates this PR is a likely contributor: "
-        f"{over} of {_count(len(likelihoods), 'regression')} it scored {verb} "
-        f"attributed to it at {_pct(min_score)} or above, the highest at "
-        f"{_pct(max(likelihoods))}."
-    )
-    rest = len(rows) - len(likelihoods)
-    if rest:
-        estimate += (
-            f" The remaining {_count(rest, 'regression')} in this window "
-            f"{'keeps' if rest == 1 else 'keep'} the first pass's state."
+    clauses = []
+    if reviewed:
+        clauses.append(_reviewer_clause(reviewed, min_score=min_score))
+    if carried:
+        clauses.append(
+            _ranker_clause(carried, min_score=min_score, after_review=bool(reviewed))
         )
-    return f"> [!WARNING]\n> {measured}{estimate}"
+    return f"> [!WARNING]\n> {measured} {' '.join(clauses)}"
+
+
+def _reviewer_clause(reviewed: list[float], *, min_score: float) -> str:
+    """What the cross-configuration review found, in its own voice.
+
+    "A likely contributor" is a claim about *these* scores, so a review that put
+    nothing at or above the threshold does not make it — it reports what it
+    found, and any surviving claim is left to the clause that earns it."""
+    over = sum(1 for likelihood in reviewed if likelihood >= min_score)
+    scored = _count(len(reviewed), "regression")
+    highest = _pct(max(reviewed))
+    if not over:
+        return (
+            f"The AI reviewer scored {scored} and put none at "
+            f"{_pct(min_score)} or above (highest {highest})."
+        )
+    verb = "is" if over == 1 else "are"
+    return (
+        f"The AI reviewer estimates this PR is a likely contributor: {over} of "
+        f"the {scored} it scored {verb} attributed to it at {_pct(min_score)} "
+        f"or above, the highest at {highest}."
+    )
+
+
+def _ranker_clause(
+    carried: list[float], *, min_score: float, after_review: bool
+) -> str:
+    """What the per-configuration pass scored, in *its* voice.
+
+    Two shapes, because the rows mean different things in each. Alone, this is
+    the whole estimate — the mode the bot runs in with no reviewer configured.
+    After a review, these are the leftovers the review never answered, and the
+    clause says so: a reader seeing two counts over one table needs to know why
+    they do not add up to it."""
+    over = sum(1 for likelihood in carried if likelihood >= min_score)
+    scored = _count(len(carried), "regression")
+    highest = _pct(max(carried))
+    if after_review:
+        if len(carried) == 1:
+            # One row's "highest" is just that row's score; the count and the
+            # reach would be three ways of saying the same number.
+            return (
+                f"The remaining regression keeps the first pass's ranker score "
+                f"of {highest}."
+            )
+        reach = (
+            f"{over} of them at {_pct(min_score)} or above"
+            if over else f"none at {_pct(min_score)} or above"
+        )
+        return (
+            f"The remaining {scored} keep the first pass's ranker score, "
+            f"{reach} (highest {highest})."
+        )
+    if not over:
+        return (
+            f"The AI ranker scored {scored} and put none at {_pct(min_score)} "
+            f"or above (highest {highest})."
+        )
+    verb = "is" if over == 1 else "are"
+    return (
+        f"The AI ranker estimates this PR is a likely contributor: {over} of "
+        f"{scored} {verb} attributed to it at {_pct(min_score)} or above, the "
+        f"highest at {highest}."
+    )
 
 
 def _scored(
@@ -1265,18 +1324,15 @@ def _scored(
 ) -> tuple[list[float], list[float]]:
     """``(what the review scored, what only the first pass scored)``.
 
-    The two are never mixed into one count. Every row's *effective* likelihood is
-    the review's where it gave one and the ranker's where it did not
-    (:func:`_likelihood`), which is right for the table and for the withdrawal
-    gate — but a headline that says "the AI reviewer estimates 430 of 600" while
-    some of those 430 came from the per-configuration pass is attributing a
-    judgement to a model that never made it. A wide window makes that routine
-    rather than rare: everything past :data:`~k4bench.blame.attribute._MAX_ATTRIBUTED_ROWS`
-    is first-pass-only by construction.
+    The table and the withdrawal gate read a row's *effective* likelihood
+    (:func:`_likelihood`); the alert cannot, because a count is worthless without
+    knowing whose judgement it holds. On a wide window the split is routine
+    rather than rare — everything past
+    :data:`~k4bench.blame.attribute._MAX_ATTRIBUTED_ROWS` is first-pass-only by
+    construction.
 
-    Rows with no likelihood at all — the ``not_candidate`` state, or nothing
-    scored either pass — appear in neither list; they are counted only as the
-    remainder the alert declines to claim anything about."""
+    Rows with no likelihood at all (``not_candidate``, or unscored by both
+    passes) appear in neither list — the alert claims nothing about them."""
     reviewed: list[float] = []
     carried: list[float] = []
     for row in rows:
