@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+"""
+Render one PR-blame comment from **real EOS data** and, optionally, post it to a
+*different* pull request so it can be reviewed in place before the bot is pointed
+at the repository it really names.
+
+This is a previewing tool, not part of the nightly job. It answers a single
+question — "what would the bot post on pull request X for the regression window
+attributed to it?" — using the report and blame sidecar already on WebEOS, the
+same cross-configuration review the nightly ``blame_comment`` step runs, and the
+same renderer. The one thing it changes is *where* the finished comment lands:
+``--post-to`` redirects the upsert to a test pull request while the body is left
+exactly as it was rendered for ``--only`` — so the comment on the test PR reads,
+links and cross-references as though it were posted on the real one. The bot, in
+other words, *thinks* it is commenting on ``--only``; only the write target moves.
+
+Everything downstream of the data source is production code:
+
+* :func:`k4bench.blame.comment.select` decides the target is comment-worthy
+  (allowlisted repo, merged, ranked, at or above the threshold) from the real
+  sidecar — nothing here lowers that bar;
+* :func:`k4bench.blame.comment.build_comments` runs the real
+  :mod:`k4bench.blame.attribute` review, configured by the same ``K4BENCH_LLM_*``
+  environment as the nightly job, over the real candidates' diffs;
+* :func:`k4bench.blame.publish.publish` performs the upsert, so a re-run edits the
+  comment it already placed on the test PR rather than stacking a second one.
+
+Because it exercises the real review, it needs the same secrets the nightly job
+does: ``K4BENCH_LLM_URL`` / ``K4BENCH_LLM_MODEL`` / ``K4BENCH_LLM_API_KEY`` for
+the review, ``GITHUB_TOKEN`` (``--read-token``) to fetch the candidates' diffs,
+and — to actually post — ``K4BENCH_PR_COMMENT_TOKEN`` (``--token``) carrying
+``pull-requests: write`` on the **``--post-to`` repository**, not on the one the
+comment names. Without a write token (or with ``--dry-run``) the rendered comment
+is logged and nothing is written, which is the ordinary way to eyeball it first.
+
+The defaults reproduce the worked example this tool was written for — the
+detector-dimension change in ``key4hep/k4geo#607``, whose 2026-06-24 → 2026-06-25
+window a detector-removal sweep confirmed across 318 configurations — posted onto
+``key4hep/k4Bench#106`` for review. Point ``--night`` / ``--only`` / ``--post-to``
+elsewhere for any other window.
+"""
+from __future__ import annotations
+
+import argparse
+import importlib
+import logging
+import os
+import sys
+from dataclasses import replace
+from pathlib import Path
+
+# Executing a file below ``.github/scripts`` otherwise puts that directory—not
+# the checkout root—first on sys.path. Prefer the mounted checkout over a stale
+# k4bench installation in long-lived CI/dev virtual environments.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+try:
+    sys.path.remove(str(_REPO_ROOT))
+except ValueError:
+    pass
+sys.path.insert(0, str(_REPO_ROOT))
+
+# The diff-fetch and config-loading helpers the nightly commenter uses, reused
+# verbatim so this preview fetches diffs and reads the allowlist exactly as
+# production does (rate-limit latching included). The script's own directory is
+# first on sys.path, so the sibling imports by module name.
+_blame_comment = importlib.import_module("blame_comment")
+
+_log = logging.getLogger(__name__)
+
+_DEFAULT_DATA_URL = "https://k4bench-data.web.cern.ch"
+_DEFAULT_DASHBOARD_URL = "https://k4bench-dashboard.app.cern.ch"
+
+
+def _parse_pr(value: str) -> tuple[str, int]:
+    """``owner/repo#123`` -> ``("owner/repo", 123)``; anything else is an error.
+
+    Both ``--only`` and ``--post-to`` are pull-request references, and a typo in
+    either points the tool at the wrong repository — the one class of mistake a
+    write tool must refuse rather than guess through."""
+    repo, sep, number = value.partition("#")
+    if not sep or repo.count("/") != 1 or repo.startswith("/") or repo.endswith("/"):
+        raise argparse.ArgumentTypeError(f"not an owner/repo#number reference: {value!r}")
+    try:
+        return repo, int(number)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a pull-request number: {number!r}") from None
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--night", default="2026-06-27",
+        help="Report night to read from EOS (default: 2026-06-27)",
+    )
+    parser.add_argument(
+        "--only", type=_parse_pr, default=("key4hep/k4geo", 607),
+        metavar="OWNER/REPO#N",
+        help="Render only the comment for this pull request "
+             "(default: key4hep/k4geo#607)",
+    )
+    parser.add_argument(
+        "--post-to", type=_parse_pr, default=("key4hep/k4Bench", 106),
+        metavar="OWNER/REPO#N",
+        help="Post the rendered comment here instead of on --only; the body is "
+             "unchanged, so it still names --only (default: key4hep/k4Bench#106)",
+    )
+    parser.add_argument(
+        "--data-url", default=os.environ.get("K4BENCH_DATA_URL", _DEFAULT_DATA_URL),
+        help="WebEOS base URL the report and blame sidecar are read from "
+             "(default: $K4BENCH_DATA_URL or the production data host)",
+    )
+    parser.add_argument(
+        "--config", default=".github/blame-comments.yml",
+        help="Repository allowlist and thresholds "
+             "(default: .github/blame-comments.yml)",
+    )
+    parser.add_argument(
+        "--dashboard-url",
+        default=os.environ.get("K4BENCH_DASHBOARD_URL", _DEFAULT_DASHBOARD_URL),
+        help="Dashboard base URL for the comment's deep links "
+             "(default: $K4BENCH_DASHBOARD_URL or the production dashboard)",
+    )
+    parser.add_argument(
+        "--token", default=os.environ.get("K4BENCH_PR_COMMENT_TOKEN"),
+        help="GitHub token with pull-requests:write on the --post-to repo "
+             "(default: $K4BENCH_PR_COMMENT_TOKEN); without one this is a dry run",
+    )
+    parser.add_argument(
+        "--read-token", default=os.environ.get("GITHUB_TOKEN"),
+        help="Read-only GitHub token used to fetch the candidates' diffs for the "
+             "cross-configuration review (default: $GITHUB_TOKEN); without one "
+             "the review still runs, on paths and titles alone",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        default=bool(os.environ.get("K4BENCH_PR_COMMENT_DRY_RUN")),
+        help="Log the exact comment instead of posting it "
+             "(also set by a non-empty $K4BENCH_PR_COMMENT_DRY_RUN)",
+    )
+    parser.add_argument(
+        "--min-score", type=float, default=None,
+        help="Override the config's likelihood threshold for this run",
+    )
+    args = parser.parse_args(argv)
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", force=True,
+    )
+
+    from k4bench.blame.attribute import attributor_from_env
+    from k4bench.blame.comment import (
+        CommentConfigError,
+        CommentStormError,
+        build_comments,
+        select,
+    )
+    from k4bench.blame.github import GitHubClient
+    from k4bench.blame.models import BlameReport, BlameSchemaError
+    from k4bench.blame.publish import publish
+    from k4bench.regression.render import from_json
+    from k4bench.remote import fetch_blame, fetch_report
+
+    only_repo, only_number = args.only
+    post_repo, post_number = args.post_to
+
+    try:
+        policy = _blame_comment._load_policy(
+            Path(args.config), {"min_score": args.min_score, "max_comments": None}
+        )
+    except CommentConfigError as exc:
+        print(f"ERROR: bad comment config {args.config}: {exc}", file=sys.stderr)
+        return 1
+    if only_repo.lower() not in policy.repos:
+        # The renderer only ever selects an allowlisted repo, so a --only outside
+        # the allowlist can never produce a comment; say so plainly rather than
+        # let it look like the data simply held nothing.
+        print(
+            f"ERROR: {only_repo} is not in {args.config}'s allowlist, so no comment "
+            f"can be rendered for it — add it there (or pick a --only that is enabled)",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Read the report and its sidecar straight from EOS: this is the same data
+    # the dashboard and the nightly commenter see, so the preview rests on real
+    # measurements rather than a hand-built fixture.
+    raw_report = fetch_report(args.data_url, args.night)
+    if raw_report is None:
+        print(
+            f"ERROR: no report at {args.data_url}/_reports/{args.night}/report.json",
+            file=sys.stderr,
+        )
+        return 1
+    raw_blame = fetch_blame(args.data_url, args.night)
+    if raw_blame is None:
+        print(
+            f"ERROR: no blame sidecar for {args.night} — that night attributed no "
+            "confirmed regression, so there is nothing to comment on",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        report = from_json(raw_report)
+        blame = BlameReport.from_json(raw_blame)
+    except (BlameSchemaError, ValueError, TypeError, KeyError) as exc:
+        print(f"ERROR: unreadable report/blame for {args.night}: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        plans = select(report, blame, policy)
+    except CommentStormError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    plans = [p for p in plans if p.repo.lower() == only_repo.lower() and p.number == only_number]
+    if not plans:
+        print(
+            f"No comment for {only_repo}#{only_number} on {args.night}: it did not "
+            f"clear {policy.min_score:g}% for any confirmed regression that night",
+            file=sys.stderr,
+        )
+        return 1
+
+    attributor = attributor_from_env()
+    if attributor is None:
+        _log.warning(
+            "blame_preview: no K4BENCH_LLM_* configured — rendering from the "
+            "per-configuration scores, without the cross-configuration review the "
+            "real comment would carry"
+        )
+    comments = build_comments(
+        plans,
+        attributor=attributor,
+        patch_for=_blame_comment._patch_source(args.read_token) if attributor else None,
+        dashboard_url=args.dashboard_url,
+        min_score=policy.min_score,
+    )
+    if not comments:
+        print(
+            f"No comment for {only_repo}#{only_number} on {args.night}: the "
+            "cross-configuration review either cleared it below the threshold or "
+            "could not be obtained (see the log above)",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Redirect the finished comment to the test PR, body untouched: it still
+    # names --only everywhere, so the reviewer sees exactly what would land there.
+    # The marker is keyed on the change window, not the PR, so a re-run edits this
+    # same comment on the test PR instead of posting a second one.
+    redirected = [
+        replace(comment, repo=post_repo, number=post_number) for comment in comments
+    ]
+
+    dry_run = args.dry_run or not args.token
+    if dry_run and not args.dry_run:
+        _log.warning(
+            "blame_preview: no K4BENCH_PR_COMMENT_TOKEN — dry run, nothing posted"
+        )
+    _log.info(
+        "blame_preview: rendered the comment for %s#%s; %s onto %s#%s",
+        only_repo, only_number,
+        "would post" if dry_run else "posting",
+        post_repo, post_number,
+    )
+    result = publish(GitHubClient(token=args.token), redirected, dry_run=dry_run)
+    print(f"blame preview ({only_repo}#{only_number} -> {post_repo}#{post_number}): {result.summary}")
+    return 1 if result.failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -60,7 +60,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal, Protocol
 
 from k4bench.blame.llm import (
@@ -364,7 +364,7 @@ _SUBJECT_DIFF_FLOOR = 12000
 
 #: Display/prompt bounds. Rows beyond the cap keep their per-configuration score
 #: rather than going unscored, and competitors are cut by strength first.
-_MAX_ATTRIBUTED_ROWS = 60
+_MAX_ATTRIBUTED_ROWS = 500
 #: Public, because the caller must cut the field to this *before* fetching a diff
 #: for each competitor (:func:`k4bench.blame.comment._attribution_request`) —
 #: fetching a hundred patches to prompt with thirty is a hundred GitHub round
@@ -372,6 +372,11 @@ _MAX_ATTRIBUTED_ROWS = 60
 MAX_COMPETITORS = 30
 _MAX_FILES_LISTED = 12
 _MAX_OUTCOMES_LISTED = 40
+
+#: Follow-up rounds re-asking for offered rows a reply left unanswered. Each
+#: round costs a full request, so this is small; a model that has skipped the
+#: same row twice is refusing it, not forgetting it.
+_MAX_COMPLETION_ROUNDS = 2
 
 #: The summary is a short paragraph, not a sentence, so the output allowance
 #: starts higher than the ranker's per-row figure and still scales with rows.
@@ -424,7 +429,84 @@ class OpenAICompatAttributor:
                 "cross-configuration review; response prefix=%r",
                 request.slug, finish_reason, content[:500],
             )
-        return attribution
+            return None
+        return self._complete(request, attribution)
+
+    def _complete(
+        self, request: AttributionRequest, attribution: Attribution
+    ) -> Attribution:
+        """Re-ask for the offered rows the reply left unanswered.
+
+        A model handed a wide window reliably scores nearly all of it and then
+        drops a handful — not because those rows are hard, but because it stopped
+        enumerating. Those rows would otherwise fall back to their first-pass
+        score and be disclaimed in the comment, which reads as a weaker review
+        than actually happened. So the gap is asked again, in follow-up rounds
+        carrying the *same* full context with only the missing rows listed, and
+        merged into the first reply's likelihoods; the summary always stays the
+        first round's, since that is the one written against the whole window.
+
+        Best-effort throughout: a round that fails, declines, or answers nothing
+        new stops the loop and keeps what is already scored. Bounded by
+        :data:`_MAX_COMPLETION_ROUNDS` and by requiring strict progress, so a
+        model that simply refuses a row costs a fixed number of calls, never a
+        spin."""
+        offered = {fact.id: fact for fact in _attributed_facts(request)}
+        likelihoods = dict(attribution.likelihoods)
+        for _round in range(_MAX_COMPLETION_ROUNDS):
+            missing = [offered[i] for i in offered if i not in likelihoods]
+            if not missing:
+                break
+            # The ids are named, not just counted: the same row going unanswered
+            # every night points at that row, while a different one each time is
+            # the model losing count over a long enumeration. The two call for
+            # opposite investigations and the count alone cannot tell them apart.
+            _log.info(
+                "attribute: %s — re-asking for %d unanswered row(s) of %d: %s",
+                request.slug, len(missing), len(offered),
+                ", ".join(
+                    f"{f.id} ({f.detector} {f.label} {f.metric})"
+                    for f in missing[:5]
+                ) + (f", … (+{len(missing) - 5} more)" if len(missing) > 5 else ""),
+            )
+            follow_up = replace(request, regressions=tuple(missing))
+            try:
+                content, _finish = self.client.complete(
+                    _SYSTEM_PROMPT,
+                    build_user_prompt(follow_up),
+                    max_output_tokens=min(
+                        MAX_OUTPUT_TOKENS,
+                        _OUTPUT_TOKENS_BASE + _OUTPUT_TOKENS_PER_ROW * len(missing),
+                    ),
+                )
+            except Exception as exc:
+                _log.warning(
+                    "attribute: %s — follow-up for %d unanswered row(s) failed "
+                    "(%s); keeping what is scored",
+                    request.slug, len(missing), exc,
+                )
+                break
+            data = extract_json(content)
+            more = (
+                _parse_likelihoods(data, {f.id for f in missing}, slug=request.slug)
+                if isinstance(data, dict) else {}
+            )
+            if not more:
+                _log.warning(
+                    "attribute: %s — follow-up answered none of the %d "
+                    "unanswered row(s); keeping what is scored",
+                    request.slug, len(missing),
+                )
+                break
+            likelihoods.update(more)
+        still_missing = len(offered) - len(likelihoods)
+        if still_missing:
+            _log.warning(
+                "attribute: %s — %d row(s) left unscored after %d follow-up "
+                "round(s); they keep their first-pass state",
+                request.slug, still_missing, _MAX_COMPLETION_ROUNDS,
+            )
+        return Attribution(summary=attribution.summary, likelihoods=likelihoods)
 
 
 def attributor_from_env() -> Attributor | None:
@@ -794,6 +876,50 @@ def build_user_prompt(request: AttributionRequest) -> str:
 
 # ── Defensive response parsing ────────────────────────────────────────────────
 
+def _parse_likelihoods(
+    data: dict, known: set[str], *, slug: str = ""
+) -> dict[str, float]:
+    """The ``attributions`` rows of a reply, keyed by id and filtered to *known*.
+
+    Only-echo lives here: an id the prompt did not offer is a guess, and a guess
+    about an unreviewed row is exactly what this pipeline must not publish. Shape
+    drift — not an object, a row missing ``id``, a ``likelihood`` that is not a
+    number — skips that row rather than raising.
+
+    Every way a row is dropped is *counted and logged*, because all of them look
+    identical downstream: the row simply has no score, and "the model never
+    mentioned it", "it answered with prose", and "it echoed the same id twice"
+    are three different problems with the same symptom."""
+    rows = data.get("attributions")
+    if not isinstance(rows, list):
+        return {}
+    likelihoods: dict[str, float] = {}
+    malformed = unknown_id = unreadable = duplicate = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            malformed += 1
+            continue
+        row_id = row.get("id")
+        if row_id is None or str(row_id) not in known:
+            unknown_id += 1
+            continue
+        score = parse_score(row.get("likelihood"))
+        if score is None:
+            unreadable += 1
+            continue  # unreadable likelihood: reject the row, don't publish 0%
+        if str(row_id) in likelihoods:
+            duplicate += 1
+        likelihoods[str(row_id)] = score
+    if malformed or unknown_id or unreadable or duplicate:
+        _log.warning(
+            "attribute: %s — reply carried %d row(s), %d usable: %d malformed, "
+            "%d unknown id, %d unreadable likelihood, %d duplicate id",
+            slug or "?", len(rows), len(likelihoods),
+            malformed, unknown_id, unreadable, duplicate,
+        )
+    return likelihoods
+
+
 def _parse_attribution(
     content: str, request: AttributionRequest
 ) -> Attribution | None:
@@ -809,26 +935,12 @@ def _parse_attribution(
     committed to would be the confident wrong answer this pipeline exists to
     avoid.
     """
-    known = {fact.id for fact in _attributed_facts(request)}
     data = extract_json(content)
     if not isinstance(data, dict):
         return None
-    rows = data.get("attributions")
-    if not isinstance(rows, list):
-        return None
-
-    likelihoods: dict[str, float] = {}
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        row_id = row.get("id")
-        if row_id is None or str(row_id) not in known:
-            continue  # only-echo: never score a row the input didn't hold
-        score = parse_score(row.get("likelihood"))
-        if score is None:
-            continue  # unreadable likelihood: reject the row, don't publish 0%
-        likelihoods[str(row_id)] = score
-
+    likelihoods = _parse_likelihoods(
+        data, {f.id for f in _attributed_facts(request)}, slug=request.slug
+    )
     if not likelihoods:
         return None
     summary = one_line(data.get("summary"), _MAX_SUMMARY_CHARS)

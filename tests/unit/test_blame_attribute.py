@@ -324,11 +324,56 @@ def test_a_row_past_the_prompt_cap_cannot_be_scored_either():
     assert set(attribution.likelihoods) == {offered}
 
 
-def test_a_row_the_model_skipped_is_simply_absent_not_zero():
-    # The caller falls back to that row's per-configuration score; publishing a
-    # zero the model never committed to would invert its meaning.
+def test_a_row_the_model_skipped_is_re_asked_and_merged():
+    # A model handed a wide window drops rows by stopping early, not because
+    # those rows are hard — so the gap is asked again and folded into the first
+    # reply, whose summary (written against the whole window) is the one kept.
     request = _request(regressions=(_fact("r1"), _fact("r2")))
-    attribution = _attributor([_completion(_reply(r1=88))]).attribute(request)
+    attribution = _attributor([
+        _completion(_reply("ALLEGRO moved and IDEA did not.", r1=88)),
+        _completion(_reply("a second summary, discarded", r2=42)),
+    ]).attribute(request)
+    assert attribution.likelihoods == {"r1": 88.0, "r2": 42.0}
+    assert attribution.summary == "ALLEGRO moved and IDEA did not."
+
+
+def test_the_follow_up_asks_only_about_the_rows_left_unanswered():
+    request = _request(regressions=(
+        _fact("r1", metric="answered_metric"),
+        _fact("r2", metric="skipped_metric"),
+    ))
+    attributor = _attributor([
+        _completion(_reply(r1=88)),
+        _completion(_reply(r2=42)),
+    ])
+    attributor.attribute(request)
+    second = attributor.client.session.calls[1].json["messages"][-1]["content"]
+    assert "skipped_metric" in second
+    assert "answered_metric" not in second
+
+
+def test_a_row_the_follow_up_never_answers_is_absent_not_zero():
+    # Publishing a zero the model never committed to would invert its meaning;
+    # the caller falls back to that row's per-configuration score instead. The
+    # rounds are bounded, so a refused row costs a fixed number of calls.
+    request = _request(regressions=(_fact("r1"), _fact("r2")))
+    attributor = _attributor(
+        [_completion(_reply(r1=88))]
+        + [_completion(_reply(r1=88)) for _ in range(attr_mod._MAX_COMPLETION_ROUNDS)]
+    )
+    attribution = attributor.attribute(request)
+    assert attribution.likelihoods == {"r1": 88.0}
+    # One initial call, then a single follow-up: a round answering nothing new
+    # stops the loop rather than spinning to the bound.
+    assert len(attributor.client.session.calls) == 2
+
+
+def test_a_failing_follow_up_keeps_what_was_already_scored():
+    request = _request(regressions=(_fact("r1"), _fact("r2")))
+    attribution = _attributor([
+        _completion(_reply(r1=88)),
+        requests.ConnectionError("boom"),
+    ]).attribute(request)
     assert attribution.likelihoods == {"r1": 88.0}
 
 

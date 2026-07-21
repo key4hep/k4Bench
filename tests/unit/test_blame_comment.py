@@ -179,6 +179,12 @@ def _row(body: str, needle: str) -> str:
     return next(line for line in body.splitlines() if needle in line)
 
 
+def _row_of(lines: list[str], needle: str) -> str:
+    """The first of *lines* carrying *needle* — for assertions that mean one
+    table row and must not match a link elsewhere in the body."""
+    return next(line for line in lines if needle in line)
+
+
 def _table_rows(body: str) -> list[str]:
     # A row opens with its metric cell, linked (``| [`wall_time_s`][r1] |``)
     # when the dashboard is configured and bare when it is not.
@@ -607,29 +613,52 @@ def test_a_row_the_review_skipped_keeps_its_per_configuration_score():
     assert "91%" in _row(body, "b_metric")
 
 
-def test_only_the_first_rows_are_visible_and_the_rest_fold_away():
+def test_the_visible_table_shows_its_top_rows_and_links_the_rest():
     verdicts = [_verdict(metric=f"m{i}", pct=(20 - i) / 100) for i in range(8)]
     body = _comments(_report(*verdicts), _blame(verdicts, [_candidate()]))[0].body
-    head, _, tail = body.partition("<details>")
-    assert len(_table_rows(head)) == 5
-    assert "3 further regressions in this window" in tail
-    assert len(_table_rows(tail)) == 3
+    # Five rows, and one line pointing at the complete set.
+    assert len(_table_rows(body)) == 5
+    assert f"View all 8 regressions in the [dashboard ↗]({_DASH}" in body
+
+
+def test_a_row_below_the_cut_is_reachable_even_when_it_moved_furthest():
+    # The likelihood table can lead with modest movements the review rated highly
+    # while a far larger step ranks lower and never reaches the visible five. The
+    # comment does not paste it — the dashboard link is the whole answer to "what
+    # else is in there", and it counts what it is hiding.
+    small = [_verdict(metric=f"small{i}", pct=0.05) for i in range(6)]
+    big = _verdict(metric="huge_but_unlikely", pct=0.80)
+    # fact ids ride identity order: huge_but_unlikely leads it, the rest follow.
+    scores = {"r1": 40.0}  # r1 == huge_but_unlikely (sorts first by metric name)
+    scores.update({f"r{i}": 95.0 for i in range(2, 8)})
+    body = _comments(_report(*small, big), _blame([*small, big], [_candidate()]),
+                     attributor=_FakeAttributor(scores))[0].body
+    assert "huge_but_unlikely" not in body        # not in the visible five
+    assert "View all 7 regressions in the [dashboard ↗](" in body
+
+
+def test_no_overflow_line_when_every_regression_is_already_shown():
+    # A window whose regressions all fit in the table has nothing left to point
+    # at, and must not invite a reader to go and see the rows it just showed.
+    verdicts = [_verdict(metric=f"m{i}", pct=(20 - i) / 100) for i in range(3)]
+    body = _comments(_report(*verdicts), _blame(verdicts, [_candidate()]))[0].body
+    assert "View all" not in body
 
 
 def test_a_detector_sweeps_worth_of_rows_still_fits_in_a_github_comment():
     # A detector-removal sweep confirms one row per removed sub-detector: a real
     # night has carried 318. Pasting them all is both unreadable and, past
     # GitHub's 65,536-character limit, *rejected outright* — the comment would
-    # simply fail to post. The folded rows are capped and the rest counted.
+    # simply fail to post. The table is capped and the rest counted in one line.
     verdicts = [
         _verdict(metric=f"m{i % 4}", label=f"without_Sub{i}", pct=(300 - i) / 1000)
         for i in range(318)
     ]
     comment = _comments(_report(*verdicts), _blame(verdicts, [_candidate()]))[0]
     assert len(comment.body) < 65_536
-    assert len(_table_rows(comment.body)) == 30      # 5 visible + 25 folded
-    assert "313 further regressions in this window" in comment.body
-    assert "…and 288 more regressions, in the dashboard._" in comment.body
+    # Five rows in the table, and all 318 one click away.
+    assert len(_table_rows(comment.body)) == 5
+    assert f"View all 318 regressions in the [dashboard ↗]({_DASH}" in comment.body
 
 
 def test_the_urls_live_in_reference_definitions_not_in_the_rows():
@@ -642,11 +671,13 @@ def test_the_urls_live_in_reference_definitions_not_in_the_rows():
     assert _row(body, "peak_rss_mb").count(_DASH) == 0
     assert body.count(f"[r1]: {_DASH}") == 1
     assert body.count(f"[r2]: {_DASH}") == 1
-    assert body.count(_DASH) == 3        # two row links + the package diff
+    # Two row definitions, and — with both rows shown — no overflow link.
+    assert body.count(_DASH) == 2
 
     many = [_verdict(metric=f"m{i}", pct=(300 - i) / 1000) for i in range(40)]
     body = _comments(_report(*many), _blame(many, [_candidate()]))[0].body
-    assert body.count(f"]: {_DASH}") == 30      # 5 visible + 25 folded, no more
+    # Only the rows the table actually renders carry a definition.
+    assert body.count(f"]: {_DASH}") == 5
 
 
 def test_the_table_hides_the_platform_column_while_one_platform_is_built():
@@ -767,19 +798,18 @@ def test_one_packages_status_can_differ_between_platforms():
     assert "- k4geo [ADDED]" in build_user_prompt(request)
 
 
-def test_a_window_spanning_platforms_links_each_platforms_package_diff():
-    # One link labelled "every package that changed" that opens one platform's
-    # view would claim more than the view shows.
+def test_the_overflow_link_names_the_dashboard_and_not_one_platforms_view():
+    # A dashboard view is one configuration at a time, so a window spanning
+    # platforms still gets one link — and the label claims no more than "the
+    # dashboard", which is true of whichever view it opens.
     dbg = "x86_64-almalinux9-gcc14.2.0-dbg"
-    opt = _verdict(platform=_PLAT)
-    debug = _verdict(platform=dbg)
-    body = _comments(_report(opt, debug), _blame([opt, debug], [_candidate()]))[0].body
-    assert body.count("Every package that changed across this window on ") == 2
-    assert f"platform={_PLAT}" in body and f"platform={dbg}" in body
-
-    # One platform keeps the plain sentence.
-    body = _comments(_report(opt), _blame([opt], [_candidate()]))[0].body
-    assert "[Every package that changed across this window](" in body
+    verdicts = [
+        _verdict(metric=f"m{i}", platform=plat, pct=(20 - i) / 100)
+        for plat in (_PLAT, dbg) for i in range(3)
+    ]
+    body = _comments(_report(*verdicts), _blame(verdicts, [_candidate()]))[0].body
+    assert body.count("in the [dashboard ↗](") == 1
+    assert "every package" not in body.lower()
 
 
 def test_each_row_links_to_its_own_regression_in_the_dashboard():
@@ -815,10 +845,11 @@ def test_a_regression_with_no_onset_identity_is_not_pinned():
     ) is None
 
 
-def test_the_window_wide_package_diff_is_the_only_link_left_over():
-    v = _verdict()
-    body = _comments(_report(v), _blame([v], [_candidate()]))[0].body
-    assert body.count("Where to look") == 1
+def test_the_window_wide_view_is_linked_once_under_the_table():
+    verdicts = [_verdict(metric=f"m{i}", pct=(20 - i) / 100) for i in range(8)]
+    body = _comments(_report(*verdicts), _blame(verdicts, [_candidate()]))[0].body
+    assert body.count("in the [dashboard ↗](") == 1
+    assert body.index("View all") > body.index("Regressions in this")
     assert "&to=2026-07-04" in body
     # Nothing that varies from night to night: no report-night query param and
     # no CI-run URL, either of which would edit a standing comment every night.
@@ -832,7 +863,7 @@ def test_the_old_two_section_layout_is_gone():
     body = _comments(_report(allegro, idea), _blame([allegro, idea], [_candidate()]))[0].body
     assert "Also affected in this window" not in body
     assert "What moved" not in body
-    assert body.count("Regressions reviewed against this pull request") == 1
+    assert body.count("Regressions in this window") == 1
 
 
 # ── The claim, and the withdrawal gate ────────────────────────────────────────
@@ -887,8 +918,8 @@ def test_a_partial_review_says_how_much_of_the_table_it_speaks_for():
     blame = _blame_of((a, [_candidate(score=91.0)]), (b, [_candidate(score=88.0)]))
     attributor = _FakeAttributor({"r2": 20.0}, summary="This PR does not fit.")
     body = _comments(_report(a, b), blame, attributor=attributor)[0].body
-    assert "This assessment covers 1 regression of 2" in body
-    assert "not part of it" in body
+    assert "This assessment covers 1 regression of the 2 shown" in body
+    assert "keeps its first-pass state" in body
 
 
 def test_a_review_that_answered_everything_adds_no_coverage_caveat():
@@ -988,8 +1019,20 @@ def test_the_competing_field_is_gathered_across_the_whole_window():
         _report(allegro, idea),
         _blame_of((allegro, [_candidate(), weak]), (idea, [_candidate(), strong])),
     )[0].body
-    summary = _row(body, "<summary>")
+    summary = _row(body, "Other pull requests")
     assert "1 candidate" in summary and "highest 64%" in summary
+
+
+def test_the_competing_field_is_collapsed_into_a_disclosure():
+    # The competing field sits behind a disclosure whose summary carries the count
+    # and the strongest competing score without being opened.
+    v = _verdict()
+    other = _candidate(number=1180, repo="key4hep/DD4hep", score=64.0, title="Field map")
+    body = _comments(_report(v), _blame([v], [_candidate(), other]))[0].body
+    summary = _row(body, "Other pull requests in this window")
+    assert summary.startswith("<summary>")
+    assert "1 candidate" in summary and "highest 64%" in summary
+    assert f"DD4hep#{_ZWSP}1180" in body
 
 
 def test_competing_candidates_are_named_but_never_referenced():
@@ -1014,6 +1057,48 @@ def test_a_hash_in_external_prose_references_nothing():
     assert "#45" not in body and f"#{_ZWSP}45" in body
 
 
+def test_the_alert_carries_the_strongest_likelihood_and_names_the_model():
+    # The alert is what a reader who opens nothing else sees, so the estimate
+    # must arrive there wearing a percentage and attributed to a model — and to
+    # the *right* model: the review's score outranks the ranker's 91%.
+    v = _verdict()
+    body = _comments(
+        _report(v), _blame([v], [_candidate()]),
+        attributor=_FakeAttributor({"r1": 84.0}),
+    )[0].body
+    alert = _row(body, "nightly benchmarks confirmed")
+    assert "The AI reviewer estimates this PR is a likely contributor" in alert
+    assert "the highest at 84%" in alert
+    # With no review configured the number is the ranker's, and says so.
+    body = _comments(_report(v), _blame([v], [_candidate()]))[0].body
+    alert = _row(body, "nightly benchmarks confirmed")
+    assert "The AI ranker estimates" in alert
+    assert "the highest at 91%" in alert
+
+
+def test_the_alert_counts_the_rows_over_the_configured_threshold():
+    # Reach, not just the peak: one row at 95% out of four reads very
+    # differently from all four, and the alert is where that is decided.
+    over = [_verdict(metric=f"hot{i}") for i in range(2)]
+    under = [_verdict(metric=f"cool{i}") for i in range(2)]
+    scores = {"r3": 95.0, "r4": 88.0, "r1": 40.0, "r2": 12.0}
+    body = _comments(
+        _report(*over, *under), _blame([*over, *under], [_candidate()]),
+        attributor=_FakeAttributor(scores),
+    )[0].body
+    alert = _row(body, "nightly benchmarks confirmed")
+    assert "2 of 4 regressions are attributed to it at 80% or above" in alert
+    assert "the highest at 95%" in alert
+
+    # The threshold is whatever the config set, never a hardcoded 80.
+    body = _comments(
+        _report(*over, *under), _blame([*over, *under], [_candidate()]),
+        policy=_policy(min_score=90), attributor=_FakeAttributor(scores),
+    )[0].body
+    alert = _row(body, "nightly benchmarks confirmed")
+    assert "1 of 4 regressions is attributed to it at 90% or above" in alert
+
+
 @pytest.mark.parametrize(
     ("runner_up", "expected"),
     [
@@ -1028,6 +1113,16 @@ def test_a_close_ranking_admits_it_is_a_weak_preference(runner_up, expected):
     body = _comments(_report(v), _blame([v], [_candidate(), other]))[0].body
     assert expected in body
     assert "weak preference" in body
+
+
+def test_the_weak_preference_qualifier_sits_with_the_claim_it_qualifies():
+    # It qualifies the accusation, so it has to reach the reader before the
+    # tables — not down beside the competing field, which is the last thing in
+    # the comment and collapsed besides.
+    v = _verdict()
+    other = _candidate(number=1180, repo="key4hep/DD4hep", score=86.0)
+    body = _comments(_report(v), _blame([v], [_candidate(), other]))[0].body
+    assert body.index("weak preference") < body.index("Regressions in this window")
 
 
 def test_a_ranking_that_ran_against_this_pr_says_which_way_it_ran():
@@ -1072,7 +1167,7 @@ def test_body_names_a_human_to_contact():
     # dependent on anyone watching the thread they would otherwise reply in.
     v = _verdict()
     body = _comments(_report(v), _blame([v], [_candidate()]))[0].body
-    assert "any questions to [jbeirer@cern.ch](mailto:jbeirer@cern.ch)" in body
+    assert "questions or feedback: [jbeirer@cern.ch](mailto:jbeirer@cern.ch)" in body
 
 
 def test_body_says_so_when_nothing_else_was_in_the_frame():
@@ -1085,7 +1180,7 @@ def test_body_renders_without_a_dashboard_url():
     # Offline/local rendering must still produce a usable comment.
     v = _verdict()
     body = _comments(_report(v), _blame([v], [_candidate()]), dashboard_url=None)[0].body
-    assert "Where to look" not in body
+    assert "change-window analysis" not in body
     assert "91%" in body
     assert "ALLEGRO_o1_v03" in body  # the row still names its detector, unlinked
 
@@ -1177,7 +1272,7 @@ def test_external_prose_cannot_carry_an_active_link():
     assert f"www{_ZWSP}.evil.example" in body
     # The bot's *own* links — the dashboard views it renders itself — are
     # untouched: only quoted, externally-authored prose is defanged.
-    assert f"]({_DASH}" in body
+    assert f"]: {_DASH}" in body
     # The only live HTML comments are the bot's own hidden lines; the one
     # smuggled into the reason is broken by the same zero-width space.
     assert body.count("<!--") == 2 and body.startswith("<!--")
@@ -1505,11 +1600,13 @@ def test_an_unscored_row_renders_as_unscored_rather_than_zero_percent():
     body = _comments(_report(allegro, idea), blame)[0].body
     # The row says *why* there is no number, since that reason argues for the
     # reader: this change is not in the range behind that regression.
-    attribution_cell = _row(body, "IDEA_o1_v03").rsplit("|", 2)[1].strip()
-    assert attribution_cell == "_not a candidate_"
-    assert "92%" in _row(body, "ALLEGRO_o1_v03")
-    # The claim leads the table; the unscored evidence follows it.
+    # Read from the table itself: the primary dashboard link above it names a
+    # detector in its href too, and it is not what this asserts about.
     rows = _table_rows(body)
+    attribution_cell = _row_of(rows, "IDEA_o1_v03").rsplit("|", 2)[1].strip()
+    assert attribution_cell == "_not a candidate_"
+    assert "92%" in _row_of(rows, "ALLEGRO_o1_v03")
+    # The claim leads the table; the unscored evidence follows it.
     assert "ALLEGRO_o1_v03" in rows[0] and "IDEA_o1_v03" in rows[1]
 
 
