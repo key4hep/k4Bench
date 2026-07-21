@@ -79,7 +79,11 @@ Three rules bound it:
 
 - **Only-echo.** A regression id the request did not contain is dropped, so a
   regression the model invented cannot reach a comment. A row it simply omitted
-  keeps its per-configuration score — an unanswered row is not a zero.
+  is asked again — in a follow-up that still carries the whole window, since the
+  cross-configuration pattern is what decides that row too, and narrows only
+  which ids to answer for. A row still unanswered after that keeps its
+  per-configuration score, and the comment says so: an unanswered row is not a
+  zero, and the headline counts only what the review itself scored.
 - **Honest failure.** With no model configured at all, the comment renders from
   the per-configuration scores — the whole of what this bot did before this pass
   existed, and a coherent mode in its own right. But when a reviewer *is*

@@ -27,17 +27,23 @@ Everything downstream of the data source is production code:
 
 Because it exercises the real review, it needs the same secrets the nightly job
 does: ``K4BENCH_LLM_URL`` / ``K4BENCH_LLM_MODEL`` / ``K4BENCH_LLM_API_KEY`` for
-the review, ``GITHUB_TOKEN`` (``--read-token``) to fetch the candidates' diffs,
-and — to actually post — ``K4BENCH_PR_COMMENT_TOKEN`` (``--token``) carrying
-``pull-requests: write`` on the **``--post-to`` repository**, not on the one the
-comment names. Without a write token (or with ``--dry-run``) the rendered comment
-is logged and nothing is written, which is the ordinary way to eyeball it first.
+the review — without them the run *fails* rather than silently previewing a
+comment production would not post, unless ``--ranker-only`` asks for exactly that
+fallback — and ``GITHUB_TOKEN`` (``--read-token``) to fetch the candidates'
+diffs.
+
+**Writing is opt-in twice.** A run without ``--post`` renders and logs the
+comment and writes nothing, whatever tokens happen to be in the environment;
+``--post`` additionally requires an explicit ``--post-to OWNER/REPO#N`` and a
+``K4BENCH_PR_COMMENT_TOKEN`` (``--token``) carrying ``pull-requests: write`` on
+the **``--post-to`` repository**, not on the one the comment names. There is no
+default write target: the one irreversible thing this tool does lands in someone
+else's pull request, and it is always named out loud.
 
 The defaults reproduce the worked example this tool was written for — the
 detector-dimension change in ``key4hep/k4geo#607``, whose 2026-06-24 → 2026-06-25
-window a detector-removal sweep confirmed across 318 configurations — posted onto
-``key4hep/k4Bench#106`` for review. Point ``--night`` / ``--only`` / ``--post-to``
-elsewhere for any other window.
+window a detector-removal sweep confirmed across 318 configurations. Point
+``--night`` / ``--only`` elsewhere for any other window.
 """
 from __future__ import annotations
 
@@ -101,10 +107,17 @@ def main(argv: list[str] | None = None) -> int:
              "(default: key4hep/k4geo#607)",
     )
     parser.add_argument(
-        "--post-to", type=_parse_pr, default=("key4hep/k4Bench", 106),
+        "--post-to", type=_parse_pr, default=None,
         metavar="OWNER/REPO#N",
-        help="Post the rendered comment here instead of on --only; the body is "
-             "unchanged, so it still names --only (default: key4hep/k4Bench#106)",
+        help="With --post, write the rendered comment here instead of onto "
+             "--only; the body is unchanged, so it still names --only. No "
+             "default: a write target is always named explicitly",
+    )
+    parser.add_argument(
+        "--post", action="store_true",
+        help="Actually create or edit the comment on --post-to. Without this "
+             "the run is a dry run and writes nothing, however many tokens are "
+             "in the environment",
     )
     parser.add_argument(
         "--data-url", default=os.environ.get("K4BENCH_DATA_URL", _DEFAULT_DATA_URL),
@@ -125,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--token", default=os.environ.get("K4BENCH_PR_COMMENT_TOKEN"),
         help="GitHub token with pull-requests:write on the --post-to repo "
-             "(default: $K4BENCH_PR_COMMENT_TOKEN); without one this is a dry run",
+             "(default: $K4BENCH_PR_COMMENT_TOKEN); required by --post",
     )
     parser.add_argument(
         "--read-token", default=os.environ.get("GITHUB_TOKEN"),
@@ -134,16 +147,28 @@ def main(argv: list[str] | None = None) -> int:
              "the review still runs, on paths and titles alone",
     )
     parser.add_argument(
-        "--dry-run", action="store_true",
-        default=bool(os.environ.get("K4BENCH_PR_COMMENT_DRY_RUN")),
-        help="Log the exact comment instead of posting it "
-             "(also set by a non-empty $K4BENCH_PR_COMMENT_DRY_RUN)",
+        "--ranker-only", action="store_true",
+        help="Render without the cross-configuration review, from the "
+             "per-configuration scores alone — for exercising that fallback "
+             "renderer on purpose. Otherwise a missing K4BENCH_LLM_* "
+             "configuration is an error, not a quietly different comment",
     )
     parser.add_argument(
         "--min-score", type=float, default=None,
         help="Override the config's likelihood threshold for this run",
     )
     args = parser.parse_args(argv)
+    # Writing is opt-in twice over — the flag and an explicit target — because
+    # everything else about this tool is safe to run on a whim, and the one thing
+    # that is not lands in someone else's pull request. A token sitting in the
+    # environment is not consent to use it.
+    if args.post and args.post_to is None:
+        parser.error("--post needs an explicit --post-to OWNER/REPO#N target")
+    if args.post and not args.token:
+        parser.error(
+            "--post needs a write token: pass --token or set "
+            "$K4BENCH_PR_COMMENT_TOKEN (pull-requests:write on --post-to)"
+        )
 
     logging.basicConfig(
         level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", force=True,
@@ -163,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
     from k4bench.remote import fetch_blame, fetch_report
 
     only_repo, only_number = args.only
-    post_repo, post_number = args.post_to
+    post_repo, post_number = args.post_to or args.only
 
     try:
         policy = _blame_comment._load_policy(
@@ -222,12 +247,25 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    attributor = attributor_from_env()
-    if attributor is None:
+    attributor = None if args.ranker_only else attributor_from_env()
+    if attributor is None and not args.ranker_only:
+        # A preview whose one promise is "this is what production would post"
+        # must not quietly render a different comment. Without the review the
+        # body has a different assessment, different scores and a different
+        # withdrawal outcome — production might post nothing at all here.
+        print(
+            "ERROR: no K4BENCH_LLM_* configured, so the cross-configuration "
+            "review cannot run and this would not be the comment production "
+            "posts — set K4BENCH_LLM_URL/_MODEL/_API_KEY, or pass --ranker-only "
+            "to preview the no-reviewer fallback on purpose",
+            file=sys.stderr,
+        )
+        return 1
+    if args.ranker_only:
         _log.warning(
-            "blame_preview: no K4BENCH_LLM_* configured — rendering from the "
-            "per-configuration scores, without the cross-configuration review the "
-            "real comment would carry"
+            "blame_preview: --ranker-only — rendering from the per-configuration "
+            "scores, without the cross-configuration review a configured "
+            "production run would carry"
         )
     comments = build_comments(
         plans,
@@ -253,11 +291,7 @@ def main(argv: list[str] | None = None) -> int:
         replace(comment, repo=post_repo, number=post_number) for comment in comments
     ]
 
-    dry_run = args.dry_run or not args.token
-    if dry_run and not args.dry_run:
-        _log.warning(
-            "blame_preview: no K4BENCH_PR_COMMENT_TOKEN — dry run, nothing posted"
-        )
+    dry_run = not args.post
     _log.info(
         "blame_preview: rendered the comment for %s#%s; %s onto %s#%s",
         only_repo, only_number,

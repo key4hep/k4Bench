@@ -60,7 +60,8 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
+from collections.abc import Sequence
 from typing import Literal, Protocol
 
 from k4bench.blame.llm import (
@@ -442,9 +443,14 @@ class OpenAICompatAttributor:
         enumerating. Those rows would otherwise fall back to their first-pass
         score and be disclaimed in the comment, which reads as a weaker review
         than actually happened. So the gap is asked again, in follow-up rounds
-        carrying the *same* full context with only the missing rows listed, and
-        merged into the first reply's likelihoods; the summary always stays the
-        first round's, since that is the one written against the whole window.
+        carrying the *whole* window — every regression, every clean control,
+        every competitor — and narrowing only the *answer* to the missing ids
+        (``only_ids`` in :func:`build_user_prompt`). Showing the model just the
+        unanswered rows would ask a different question than the one this pass
+        exists for: an ALLEGRO row is judged by whether IDEA moved with it, and a
+        follow-up that has dropped IDEA cannot see that. The replies are merged
+        into the first round's likelihoods; the summary always stays the first
+        round's, since that is the one written against the whole window.
 
         Best-effort throughout: a round that fails, declines, or answers nothing
         new stops the loop and keeps what is already scored. Bounded by
@@ -453,10 +459,12 @@ class OpenAICompatAttributor:
         spin."""
         offered = {fact.id: fact for fact in _attributed_facts(request)}
         likelihoods = dict(attribution.likelihoods)
-        for _round in range(_MAX_COMPLETION_ROUNDS):
+        rounds = 0
+        for _ in range(_MAX_COMPLETION_ROUNDS):
             missing = [offered[i] for i in offered if i not in likelihoods]
             if not missing:
                 break
+            rounds += 1
             # The ids are named, not just counted: the same row going unanswered
             # every night points at that row, while a different one each time is
             # the model losing count over a long enumeration. The two call for
@@ -469,11 +477,12 @@ class OpenAICompatAttributor:
                     for f in missing[:5]
                 ) + (f", … (+{len(missing) - 5} more)" if len(missing) > 5 else ""),
             )
-            follow_up = replace(request, regressions=tuple(missing))
             try:
                 content, _finish = self.client.complete(
                     _SYSTEM_PROMPT,
-                    build_user_prompt(follow_up),
+                    build_user_prompt(
+                        request, only_ids=[f.id for f in missing]
+                    ),
                     max_output_tokens=min(
                         MAX_OUTPUT_TOKENS,
                         _OUTPUT_TOKENS_BASE + _OUTPUT_TOKENS_PER_ROW * len(missing),
@@ -502,9 +511,13 @@ class OpenAICompatAttributor:
         still_missing = len(offered) - len(likelihoods)
         if still_missing:
             _log.warning(
+                # The rounds actually *attempted*, not the cap: a loop that
+                # stopped after one failed round and one that spent its whole
+                # budget are different faults, and reading the cap back would
+                # report them identically.
                 "attribute: %s — %d row(s) left unscored after %d follow-up "
                 "round(s); they keep their first-pass state",
-                request.slug, still_missing, _MAX_COMPLETION_ROUNDS,
+                request.slug, still_missing, rounds,
             )
         return Attribution(summary=attribution.summary, likelihoods=likelihoods)
 
@@ -532,7 +545,16 @@ _RESPONSE_INSTRUCTION = (
     'these regressions this pull request is responsible for and why, naming the '
     'cross-configuration evidence that decided it>", "attributions": [{"id": '
     '"<the id given above>", "likelihood": <0-100>}]}. '
-    "Score every regression listed above and invent none."
+)
+
+#: The scope sentence closing :data:`_RESPONSE_INSTRUCTION`. Which rows to
+#: answer for is the one thing a follow-up round changes about the ask, and it
+#: is stated once, here, rather than added as a second instruction contradicting
+#: a standing "score every regression listed above".
+_SCORE_ALL = "Score every regression listed above and invent none."
+_SCORE_ONLY = (
+    "Score ONLY the ids listed as unanswered above — leave every other id out — "
+    "and invent none."
 )
 
 
@@ -831,13 +853,23 @@ def _competitor_lines(competitors: list[CompetingPR], budgets: list[int]) -> lis
     return lines
 
 
-def build_user_prompt(request: AttributionRequest) -> str:
+def build_user_prompt(
+    request: AttributionRequest, *, only_ids: Sequence[str] = ()
+) -> str:
     """The user message: the window, what regressed, what did not, what changed in
     the release, the pull request under review, and the rest of the field.
 
     Public so a caller can log or snapshot exactly what was asked — the prompt is
     the whole substance of this stage, and a comment nobody can reconstruct the
-    input of is not reviewable."""
+    input of is not reviewable.
+
+    *only_ids* narrows what is *asked for* without narrowing what is *shown*:
+    :meth:`OpenAICompatAttributor._complete` re-asks for the rows a reply left
+    out, and a follow-up built from those rows alone would be a different
+    question — "is this PR responsible for this regression", asked row by row,
+    with the cross-configuration evidence that is the whole point of this pass
+    deleted from the prompt. So the window stays whole and only the answer is
+    scoped."""
     window = request.onset_release
     if request.base_release:
         window = f"{request.base_release} → {request.onset_release}"
@@ -869,9 +901,28 @@ def build_user_prompt(request: AttributionRequest) -> str:
         f"Decide, for each regression id above, how likely it is that "
         f"{request.slug} caused it — judging what this diff can actually reach "
         f"against which configurations moved and which did not.",
-        _RESPONSE_INSTRUCTION,
+        *_unanswered_instruction(only_ids),
+        _RESPONSE_INSTRUCTION + (_SCORE_ONLY if only_ids else _SCORE_ALL),
     ]
     return "\n".join(parts)
+
+
+def _unanswered_instruction(only_ids: Sequence[str]) -> list[str]:
+    """The line that turns the full prompt into a request for a few rows.
+
+    Placed after the decision instruction and before the response format, so it
+    reads as a narrowing of what to *return* rather than of what to weigh — the
+    paragraphs above still say to judge the window as a whole, and they must keep
+    meaning that."""
+    if not only_ids:
+        return []
+    return [
+        "",
+        "Your earlier reply already scored the rest of this window. Re-read all "
+        "of the above as evidence — the cross-configuration pattern is still what "
+        "decides these rows — but answer only for the ids left unanswered: "
+        f"{', '.join(only_ids)}.",
+    ]
 
 
 # ── Defensive response parsing ────────────────────────────────────────────────

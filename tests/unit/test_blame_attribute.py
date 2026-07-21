@@ -337,7 +337,10 @@ def test_a_row_the_model_skipped_is_re_asked_and_merged():
     assert attribution.summary == "ALLEGRO moved and IDEA did not."
 
 
-def test_the_follow_up_asks_only_about_the_rows_left_unanswered():
+def test_the_follow_up_keeps_the_window_and_narrows_only_the_answer():
+    # The whole point of this pass is judging a row against what the other
+    # configurations did, so a follow-up still carries every regression and every
+    # clean control — it just says which ids to answer for.
     request = _request(regressions=(
         _fact("r1", metric="answered_metric"),
         _fact("r2", metric="skipped_metric"),
@@ -349,7 +352,11 @@ def test_the_follow_up_asks_only_about_the_rows_left_unanswered():
     attributor.attribute(request)
     second = attributor.client.session.calls[1].json["messages"][-1]["content"]
     assert "skipped_metric" in second
-    assert "answered_metric" not in second
+    assert "answered_metric" in second
+    assert "answer only for the ids left unanswered: r2" in second
+    # …and the standing "score every regression listed above" is gone, rather
+    # than left contradicting the narrowed ask.
+    assert "Score every regression listed above" not in second
 
 
 def test_a_row_the_follow_up_never_answers_is_absent_not_zero():

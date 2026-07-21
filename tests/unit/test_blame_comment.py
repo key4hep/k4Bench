@@ -798,18 +798,28 @@ def test_one_packages_status_can_differ_between_platforms():
     assert "- k4geo [ADDED]" in build_user_prompt(request)
 
 
-def test_the_overflow_link_names_the_dashboard_and_not_one_platforms_view():
+def test_the_overflow_line_does_not_promise_a_view_the_dashboard_cannot_show():
     # A dashboard view is one configuration at a time, so a window spanning
-    # platforms still gets one link — and the label claims no more than "the
-    # dashboard", which is true of whichever view it opens.
+    # platforms gets one link and says what it opens — "view all N" there would
+    # send a reader to a view holding a fraction of them without warning.
     dbg = "x86_64-almalinux9-gcc14.2.0-dbg"
     verdicts = [
         _verdict(metric=f"m{i}", platform=plat, pct=(20 - i) / 100)
         for plat in (_PLAT, dbg) for i in range(3)
     ]
     body = _comments(_report(*verdicts), _blame(verdicts, [_candidate()]))[0].body
-    assert body.count("in the [dashboard ↗](") == 1
+    assert body.count("dashboard ↗](") == 1
+    assert "across 2 configurations" in body
+    assert "open the leading one in the dashboard" in body
+    assert "View all" not in body
     assert "every package" not in body.lower()
+
+
+def test_a_single_configuration_overflow_does_open_all_of_them():
+    # Where one view *can* hold the whole window, the line says so plainly.
+    verdicts = [_verdict(metric=f"m{i}", pct=(20 - i) / 100) for i in range(8)]
+    body = _comments(_report(*verdicts), _blame(verdicts, [_candidate()]))[0].body
+    assert "View all 8 regressions in the [dashboard ↗](" in body
 
 
 def test_each_row_links_to_its_own_regression_in_the_dashboard():
@@ -1087,7 +1097,7 @@ def test_the_alert_counts_the_rows_over_the_configured_threshold():
         attributor=_FakeAttributor(scores),
     )[0].body
     alert = _row(body, "nightly benchmarks confirmed")
-    assert "2 of 4 regressions are attributed to it at 80% or above" in alert
+    assert "2 of 4 regressions it scored are attributed to it at 80% or above" in alert
     assert "the highest at 95%" in alert
 
     # The threshold is whatever the config set, never a hardcoded 80.
@@ -1096,7 +1106,23 @@ def test_the_alert_counts_the_rows_over_the_configured_threshold():
         policy=_policy(min_score=90), attributor=_FakeAttributor(scores),
     )[0].body
     alert = _row(body, "nightly benchmarks confirmed")
-    assert "1 of 4 regressions is attributed to it at 90% or above" in alert
+    assert "1 of 4 regressions it scored is attributed to it at 90% or above" in alert
+
+
+def test_the_alert_does_not_credit_the_reviewer_with_the_rankers_scores():
+    # A partial reply leaves rows at their per-configuration score. Those rows
+    # still show a percentage in the table, but the headline must not count them
+    # under the reviewer's name — the reviewer never spoke about them.
+    reviewed = [_verdict(metric=f"seen{i}") for i in range(2)]
+    skipped = [_verdict(metric=f"unseen{i}") for i in range(2)]
+    body = _comments(
+        _report(*reviewed, *skipped), _blame([*reviewed, *skipped], [_candidate()]),
+        attributor=_FakeAttributor({"r1": 95.0, "r2": 88.0}),
+    )[0].body
+    alert = _row(body, "nightly benchmarks confirmed")
+    assert "The AI reviewer estimates" in alert
+    assert "2 of 2 regressions it scored" in alert
+    assert "The remaining 2 regressions in this window keep the first pass's state" in alert
 
 
 @pytest.mark.parametrize(

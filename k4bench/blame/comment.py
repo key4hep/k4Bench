@@ -1220,6 +1220,12 @@ def _alert(
     one that decided this comment exists at all, and a reader who thinks it is
     set wrong can go and see what it is set to.
 
+    The estimate is only ever made in one voice. Whoever is named holds *all* of
+    the numbers behind it: the reviewer's counts cover the rows the review
+    actually answered, and rows left at their first-pass score are counted apart
+    as the remainder rather than folded in under the reviewer's name
+    (:func:`_scored`).
+
     A window nothing was scored against says nothing in the second sentence
     rather than reaching for a number — the rows are still real, and the table
     is where their states are spelled out."""
@@ -1232,21 +1238,56 @@ def _alert(
     measured = (
         f"k4Bench's nightly benchmarks confirmed {what} this PR's change window."
     )
-    likelihoods = [
-        likelihood for row in rows
-        if (likelihood := _likelihood(row, attribution)) is not None
-    ]
+    reviewed, carried = _scored(rows, attribution)
+    likelihoods = reviewed or carried
     if not likelihoods:
         return f"> [!WARNING]\n> {measured}"
-    who = "AI reviewer" if attribution is not None else "AI ranker"
+    who = "AI reviewer" if reviewed else "AI ranker"
     over = sum(1 for likelihood in likelihoods if likelihood >= min_score)
     verb = "is" if over == 1 else "are"
     estimate = (
         f" The {who} estimates this PR is a likely contributor: "
-        f"{over} of {_count(len(rows), 'regression')} {verb} attributed to it "
-        f"at {_pct(min_score)} or above, the highest at {_pct(max(likelihoods))}."
+        f"{over} of {_count(len(likelihoods), 'regression')} it scored {verb} "
+        f"attributed to it at {_pct(min_score)} or above, the highest at "
+        f"{_pct(max(likelihoods))}."
     )
+    rest = len(rows) - len(likelihoods)
+    if rest:
+        estimate += (
+            f" The remaining {_count(rest, 'regression')} in this window "
+            f"{'keeps' if rest == 1 else 'keep'} the first pass's state."
+        )
     return f"> [!WARNING]\n> {measured}{estimate}"
+
+
+def _scored(
+    rows: list[RegressionRow], attribution: Attribution | None
+) -> tuple[list[float], list[float]]:
+    """``(what the review scored, what only the first pass scored)``.
+
+    The two are never mixed into one count. Every row's *effective* likelihood is
+    the review's where it gave one and the ranker's where it did not
+    (:func:`_likelihood`), which is right for the table and for the withdrawal
+    gate — but a headline that says "the AI reviewer estimates 430 of 600" while
+    some of those 430 came from the per-configuration pass is attributing a
+    judgement to a model that never made it. A wide window makes that routine
+    rather than rare: everything past :data:`~k4bench.blame.attribute._MAX_ATTRIBUTED_ROWS`
+    is first-pass-only by construction.
+
+    Rows with no likelihood at all — the ``not_candidate`` state, or nothing
+    scored either pass — appear in neither list; they are counted only as the
+    remainder the alert declines to claim anything about."""
+    reviewed: list[float] = []
+    carried: list[float] = []
+    for row in rows:
+        likelihood = _likelihood(row, attribution)
+        if likelihood is None:
+            continue
+        if attribution is not None and row.fact_id in attribution.likelihoods:
+            reviewed.append(likelihood)
+        else:
+            carried.append(likelihood)
+    return reviewed, carried
 
 
 def _window_line(plan: CommentPlan) -> str:
@@ -1502,12 +1543,38 @@ def _overflow_line(
     every re-sorting of it, so the line points there. Only the destination is
     linked — the words naming it, plus the arrow that conventionally means "this
     opens somewhere else" — so the count reads as prose and the click target is
-    the thing being opened."""
+    the thing being opened.
+
+    What the line *promises* is bounded by what the destination can do. The
+    dashboard shows one detector, platform and sample at a time — its Stack
+    Changes tab is scoped by the sidebar — so a window spanning several
+    configurations has no single view holding all of it, and the link opens the
+    leading row's. The wording says so rather than offering "view all N" against
+    a view that shows a fraction of them: a reader who has to re-scope should
+    learn that here, not after the click."""
     if shown >= len(rows):
         return None
     href = _window_href(plan, rows, dashboard_url)
-    where = f"[dashboard ↗]({href})" if href else "dashboard"
-    return f"View all {_count(len(rows), 'regression')} in the {where}"
+    total = _count(len(rows), "regression")
+    if not href:
+        # Nothing to link: the count is still worth stating, and where the full
+        # set lives is true whether or not this comment can point at it.
+        return f"View all {total} in the dashboard"
+    scopes = {_configuration(row) for row in rows}
+    if len(scopes) == 1:
+        return f"View all {total} in the [dashboard ↗]({href})"
+    return (
+        f"This window holds {total} across {_count(len(scopes), 'configuration')} "
+        f"— [open the leading one in the dashboard ↗]({href}) and re-scope there "
+        "for the others"
+    )
+
+
+def _configuration(row: RegressionRow) -> tuple[str, str, str]:
+    """The dashboard scope a row lives in — one detector, platform and sample,
+    which is as much as one dashboard view can show at once."""
+    v = row.verdict
+    return (v.detector, v.platform, v.sample)
 
 
 def _others_section(plan: CommentPlan) -> str:
