@@ -33,7 +33,7 @@ jobs:
         with:
           fetch-depth: 0  # full history so setuptools-scm can derive the real version
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
