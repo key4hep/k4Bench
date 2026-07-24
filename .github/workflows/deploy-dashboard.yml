@@ -76,7 +76,7 @@ jobs:
           persist-credentials: false
 
       - name: Install oc CLI
-        uses: redhat-actions/openshift-tools-installer@v1
+        uses: redhat-actions/openshift-tools-installer@v2
         with:
           oc: latest
 
