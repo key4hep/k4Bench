@@ -2,7 +2,7 @@ name: Nightly Benchmark
 
 on:
   schedule:
-    - cron: '0 20 * * *'  # 22:00 CEST (00:00 UTC+2) every night
+    - cron: '0 0 * * *'  # 01:00 CET (00:00 UTC) every night
   workflow_dispatch:
 
 permissions:
