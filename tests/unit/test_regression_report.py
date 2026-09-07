@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from datetime import date, timedelta
 from pathlib import Path
@@ -25,6 +26,7 @@ from k4bench.regression.report_builder import (
     RUN_METRICS,
     RUN_VALUE_METRICS,
     _failed_config_verdicts,
+    _region_window,
     _with_region_deltas,
     build_nightly_report_local,
     group_report_from_run_dirs,
@@ -1168,3 +1170,30 @@ def test_two_windows_inside_one_release_get_their_own_region_deltas(tmp_path):
     }
     assert [(d.base, d.onset) for d in by_metric["wall_time_s"]] == [(1.0, 5.0)]
     assert [(d.base, d.onset) for d in by_metric["median_time_s"]] == [(5.0, 20.0)]
+
+
+def test_one_cross_release_window_is_computed_once_for_every_metric(tmp_path):
+    # Two metrics that stepped across one release boundary have one answer
+    # between them: the ends are whole releases, and the runs that happen to
+    # bound each metric's window do not narrow them. Keyed on the runs as well,
+    # the identical decomposition would be loaded and computed twice.
+    run_dirs = (
+        _write_region_run(tmp_path, "2026-07-14", "2026-07-14", 1.0),
+        _write_region_run(tmp_path, "2026-07-15", "2026-07-14", 3.0),
+        _write_region_run(tmp_path, "2026-07-18", "2026-07-18", 10.0),
+    )
+    verdicts = []
+    for metric, base_run in (("wall_time_s", "2026-07-14"), ("median_time_s", "2026-07-15")):
+        v = _region_verdict(metric, base_run, "2026-07-18")
+        verdicts.append(dataclasses.replace(
+            v, last_accepted_run_date="2026-07-14", onset_run_date="2026-07-18",
+        ))
+    group = RunGroupReport(
+        detector="DET", platform=_PLAT, sample="single_e",
+        k4h_release="key4hep-2026-07-18", run_date="2026-07-18",
+        run_id="2026-07-18", verdicts=verdicts,
+    )
+    assert len({_region_window(v) for v in verdicts}) == 1
+    for v in _with_region_deltas(group, run_dirs).verdicts:
+        # Both ends pool their whole release: base is the median of 1.0 and 3.0.
+        assert [(d.base, d.onset) for d in v.region_deltas] == [(2.0, 10.0)]
