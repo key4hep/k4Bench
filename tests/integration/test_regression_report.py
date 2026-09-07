@@ -20,14 +20,22 @@ _SCRIPTS = Path(__file__).resolve().parents[2] / ".github" / "scripts"
 _SCRIPT = _SCRIPTS / "regression_report.py"
 _BLAME_SCRIPT = _SCRIPTS / "blame_report.py"
 _PLAT = "x86_64-almalinux9-gcc14.2.0-opt"
+_LIVE_PLAT = "x86_64-almalinux9-gcc15.2.0-opt"  # not in PLATFORM_RETIREMENTS
 _STACK = "key4hep-2026-01-01"
 _GEOMETRY = "FCCee/DET/compact/d.xml"
 
 
-def _write_run(run_dir: Path, night: str, wall_time_s: float, stack: str = _STACK) -> None:
+_RUN = "https://github.com/key4hep/k4Bench/actions/runs"
+
+
+def _write_run(
+    run_dir: Path, night: str, wall_time_s: float, stack: str = _STACK,
+    run_url: str | None = None, platform: str = _PLAT,
+) -> None:
     run_dir.mkdir(parents=True)
     (run_dir / "run_info.json").write_text(json.dumps({
-        "date": night, "platform": _PLAT, "k4h_release": stack, "sample": "single_e",
+        "date": night, "platform": platform, "k4h_release": stack, "sample": "single_e",
+        **({"github_run_url": run_url} if run_url else {}),
     }))
     (run_dir / "baseline_results.csv").write_text(
         "label,returncode,n_events,wall_time_s,peak_rss_mb,user_cpu_s,events_per_sec\n"
@@ -74,6 +82,91 @@ def test_regression_report_cli_reports_an_outage_night(tmp_path):
         "no run uploaded for 2026-01-13 (latest is 2026-01-12)"
     ]
     assert "no run uploaded for 2026-01-13" in (out_dir / "report.md").read_text()
+
+
+def _write_history(
+    data_dir: Path, walls: list[float], last: date, run_url: str, platform: str = _PLAT,
+) -> None:
+    """One triple, one run a night ending on *last*; the newest names *run_url*."""
+    d0 = last - timedelta(days=len(walls) - 1)
+    for i, wall in enumerate(walls):
+        night = (d0 + timedelta(days=i)).isoformat()
+        stack = f"key4hep-{night}"
+        _write_run(data_dir / "DET" / platform / stack / "single_e" / night, night, wall,
+                   stack=stack, run_url=run_url if i == len(walls) - 1 else None,
+                   platform=platform)
+
+
+def _run_cli(tmp_path: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(_SCRIPT),
+         "--data-dir", str(tmp_path / "data"), "--output-dir", str(tmp_path / "out"),
+         *args],
+        capture_output=True, text=True,
+    )
+
+
+def test_regression_report_cli_covers_the_fanout_that_uploaded(tmp_path):
+    # The healthy night: the newest run names the fan-out asking for the report,
+    # so the report is that night's, unchanged and undated by any `night` key.
+    _write_history(tmp_path / "data", [100.0] * 12, date.fromisoformat("2026-01-12"),
+                   run_url=f"{_RUN}/900")
+    result = _run_cli(tmp_path, "--fanout-run-id", "900")
+    assert result.returncode == 0, result.stderr
+
+    data = json.loads((tmp_path / "out" / "report.json").read_text())
+    assert "night" not in data
+    assert data["summary"]["report_night"] == "2026-01-12"
+    group, = data["groups"]
+    assert group["job_failures"] == []
+
+
+def test_regression_report_cli_reports_a_fanout_that_uploaded_nothing(tmp_path):
+    # The nightly decision this CLI makes for the workflow: the fan-out that
+    # asked for the report made none of its runs, so the report is rebuilt for
+    # tonight as an outage — the step last night carried is not re-sent. Tonight
+    # is the real clock, so the history ends yesterday on a platform that is not
+    # retired, as a real outage's would.
+    walls = [100.0] * 10 + [120.0, 120.5]
+    yesterday = date.today() - timedelta(days=1)
+    _write_history(tmp_path / "data", walls, yesterday, run_url=f"{_RUN}/900",
+                   platform=_LIVE_PLAT)
+    result = _run_cli(tmp_path, "--fanout-run-id", "901")
+    assert result.returncode == 0, result.stderr
+    assert "run 901 uploaded no run" in result.stderr
+
+    today = date.today().isoformat()
+    data = json.loads((tmp_path / "out" / "report.json").read_text())
+    assert data["night"] == today
+    assert data["summary"]["report_night"] == today
+    assert data["summary"]["n_regressions"] == 0
+    assert data["summary"]["has_alertable"] is True
+    group, = data["groups"]
+    assert group["verdicts"] == []
+    assert group["job_failures"] == [
+        f"no run uploaded for {today} (latest is {yesterday.isoformat()})"
+    ]
+
+
+def test_regression_report_cli_publishes_nothing_when_tonight_is_already_reported(tmp_path):
+    # A fan-out that uploaded nothing on a day whose runs are already on EOS
+    # (another dispatch made them): nothing new to say, and mislabelling the
+    # day's report as this fan-out's would republish it. No report, non-zero.
+    _write_history(tmp_path / "data", [100.0] * 12, date.today(), run_url=f"{_RUN}/900")
+    result = _run_cli(tmp_path, "--fanout-run-id", "901")
+    assert result.returncode != 0
+    assert "is not newer than the newest run on EOS" in result.stderr
+    assert not (tmp_path / "out").exists()
+
+
+def test_regression_report_cli_rejects_a_malformed_night(tmp_path):
+    # Nights are compared as strings, so `2026-1-13` would both sort after
+    # `2026-01-12` and name a new EOS directory; only the canonical form passes.
+    _write_history(tmp_path / "data", [100.0] * 12, date.fromisoformat("2026-01-12"),
+                   run_url=f"{_RUN}/900")
+    result = _run_cli(tmp_path, "--night", "2026-1-13")
+    assert result.returncode == 2
+    assert "is not a YYYY-MM-DD night" in result.stderr
 
 
 def test_regression_report_cli_local_mode(tmp_path):

@@ -693,7 +693,7 @@ def _outage_group(url: str | None) -> RunGroupReport:
     )
 
 
-def test_report_covers_run_matches_on_the_run_id_alone(tmp_path):
+def test_report_covers_run_matches_on_the_run_id_alone():
     # One group naming the run is enough, and the URL around the id is
     # presentation: a re-run link or a stray slash still names the same batch.
     report = NightlyReport(

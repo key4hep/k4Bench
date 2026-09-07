@@ -79,20 +79,21 @@ jobs:
   # ── Nightly regression report over the full EOS history ────────────────────
   # Runs through a failed fan-out, so a crashed detector job still produces a
   # FAILURE verdict (its missing upload is the signal) instead of the report
-  # vanishing. A fan-out that never started is a different case: the report night
-  # is the newest run date found on EOS, so building a report for a night with no
-  # runs would re-send last night's verdicts as if they were tonight's — hence
-  # the `skipped` test. `failure` is not that case and must still report: it
-  # covers both a partial failure and a fan-out where every job died, which
-  # uploads nothing and looks the same from EOS. `fanout_run_id` tells the two
-  # apart — the benchmark jobs record this run in run_info.json, so a report
-  # naming none of its runs is one this run did not measure, and the report job
-  # reports tonight's outage instead of republishing last night. The job body
-  # lives in the reusable regression-report.yml, which is also
-  # workflow_dispatch-able for a manual, on-demand send.
+  # vanishing. The report night is the newest run date found on EOS, so a
+  # fan-out that uploaded nothing — every job died, or none started because
+  # `discover` or `resolve-release` failed — would otherwise re-send last
+  # night's verdicts as if they were tonight's. `fanout_run_id` prevents that:
+  # the benchmark jobs record this run in run_info.json, so a report naming none
+  # of its runs is one this run did not measure, and the report job reports
+  # tonight's outage instead. A scheduled night therefore always reports, even
+  # one whose fan-out never started. A manual dispatch whose fan-out never
+  # started is the operator's own doing (a mistyped release, say) and stays
+  # silent rather than mailing the e-group an outage. The job body lives in the
+  # reusable regression-report.yml, which is also workflow_dispatch-able for a
+  # manual, on-demand send.
   regression-report:
     needs: benchmark
-    if: ${{ !cancelled() && needs.benchmark.result != 'skipped' }}
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || needs.benchmark.result != 'skipped') }}
     uses: ./.github/workflows/regression-report.yml
     with:
       fanout_run_id: ${{ github.run_id }}

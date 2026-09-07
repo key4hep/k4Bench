@@ -210,11 +210,30 @@ def test_an_outage_nights_report_night_survives_the_json_roundtrip():
         )],
     )
     data = to_json(report)
+    assert data["night"] == "2026-01-14"
     assert data["summary"]["report_night"] == "2026-01-14"
 
     rebuilt = from_json(json.loads(json.dumps(data)))
     assert rebuilt.report_night == "2026-01-14"
     assert rebuilt.has_alertable
+
+
+def test_a_healthy_nights_report_carries_no_night_key():
+    # The key is the outage marker: present only when it *is* the report's
+    # date. A healthy night is dated by its newest run, and an empty key would
+    # read as a claim about the night.
+    report = NightlyReport(
+        generated_at="2026-01-13T06:00:00+00:00",
+        groups=[RunGroupReport(
+            detector="DET", platform="PLAT", sample="single_e",
+            k4h_release="key4hep-2026-01-01", run_date="2026-01-13",
+            run_id="2026-01-13",
+        )],
+    )
+    data = to_json(report)
+    assert "night" not in data
+    assert data["summary"]["report_night"] == "2026-01-13"
+    assert from_json(json.loads(json.dumps(data))).report_night == "2026-01-13"
 
 
 def test_summary_splits_new_and_reconfirmed():
