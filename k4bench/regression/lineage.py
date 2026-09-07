@@ -11,7 +11,7 @@ a cold start: a new platform's first
 :data:`~k4bench.regression.engine.MIN_BASELINE_RUNS` nights have no baseline to
 be judged against.
 
-A platform may therefore name a *predecessor* whose measurements it borrows as
+A platform may therefore name a *predecessor* whose settled level it borrows as
 baseline points only, while it has too few of its own. One-way and one hop; the
 new platform keeps its own directory, metadata, provenance and history, and no
 verdict is ever issued for a borrowed point.
@@ -49,11 +49,14 @@ def baseline_predecessor(platform: str) -> str | None:
 
 @dataclass(frozen=True)
 class BaselineSeed:
-    """One series' inherited baseline points, and the platform they came from.
+    """One series' inherited history, and the platform it came from.
 
     *history* has the columns :func:`~k4bench.regression.engine.evaluate_series`
     walks (``run_id``, ``run_date``, ``value``, ``reliable``) — the predecessor
-    platform's rows for the same series.
+    platform's rows for the same series. The whole history is handed over rather
+    than a slice of it: the engine walks it to find the level the predecessor
+    had settled on, which a slice taken here could not tell apart from a step it
+    had just confirmed.
     """
 
     platform: str

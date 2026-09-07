@@ -125,13 +125,15 @@ directly comparable, and history keeps both:
   stays readable; it simply stops growing.
 
     A new series would also mean no baseline for its first week, so the LCG
-    platform *seeds* its baseline from the Spack platform's tail
-    (`k4bench/regression/lineage.py`). Those points are never judged and are
-    never the new platform's verdicts, they never postdate the night they help
-    judge, and each of the new platform's own nights evicts one of them until
-    none are left. A shift caused by the migration is reported as one ordinary
-    step (watch, then regression), naming the borrowed platform in
-    `baseline_inherited_from`.
+    platform *seeds* its baseline from the level the Spack platform had settled
+    on (`k4bench/regression/lineage.py`) — its history is walked, and the
+    baseline that walk ends on is what carries over, so a step the Spack
+    platform had confirmed and accepted is not reported a second time. Those
+    points are never judged and are never the new platform's verdicts, they
+    never postdate the night they help judge, and each of the new platform's own
+    nights evicts one of them until none are left. A shift caused by the
+    migration is reported as one ordinary step (watch, then regression), naming
+    the borrowed platform in `baseline_inherited_from`.
 
     The same file dates the Spack platform's **retirement**. From that night on
     no run is expected from it, so it drops out of the report instead of
