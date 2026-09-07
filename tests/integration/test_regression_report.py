@@ -42,6 +42,40 @@ def _write_run(run_dir: Path, night: str, wall_time_s: float, stack: str = _STAC
     }))
 
 
+def test_regression_report_cli_reports_an_outage_night(tmp_path):
+    # The night a fan-out uploads nothing: the newest run on EOS is still the
+    # previous night's, so the CLI is told the night and reports every triple
+    # as a run that never arrived — not last night's verdicts a second time.
+    walls = [100.0] * 10 + [120.0, 120.5]  # a step the outage must not re-send
+    d0 = date.fromisoformat("2026-01-01")
+    for i, wall in enumerate(walls):
+        night = (d0 + timedelta(days=i)).isoformat()
+        stack = f"key4hep-{night}"
+        _write_run(tmp_path / "data" / "DET" / _PLAT / stack / "single_e" / night,
+                   night, wall, stack=stack)
+
+    out_dir = tmp_path / "out"
+    result = subprocess.run(
+        [sys.executable, str(_SCRIPT),
+         "--data-dir", str(tmp_path / "data"), "--output-dir", str(out_dir),
+         "--night", "2026-01-13"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    data = json.loads((out_dir / "report.json").read_text())
+    assert data["night"] == "2026-01-13"
+    assert data["summary"]["report_night"] == "2026-01-13"
+    assert data["summary"]["n_regressions"] == 0
+    assert data["summary"]["has_alertable"] is True
+    group, = data["groups"]
+    assert group["verdicts"] == []
+    assert group["job_failures"] == [
+        "no run uploaded for 2026-01-13 (latest is 2026-01-12)"
+    ]
+    assert "no run uploaded for 2026-01-13" in (out_dir / "report.md").read_text()
+
+
 def test_regression_report_cli_local_mode(tmp_path):
     # 10 steady nights, then a persisting +20% step on the last two → one
     # confirmed wall-time regression in tonight's report.

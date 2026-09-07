@@ -932,6 +932,7 @@ def build_nightly_report(
     *,
     fetch_window_runs: int = FETCH_WINDOW_RUNS,
     as_of: str | None = None,
+    night: str | None = None,
 ) -> NightlyReport:
     """Build the cross-detector report for the most recent nightly.
 
@@ -947,7 +948,9 @@ def build_nightly_report(
 
     *as_of* truncates every triple's history to runs on or before that night
     (see :func:`build_group_report`), making the report night the newest run
-    ≤ *as_of* — the historical-backfill seam.
+    ≤ *as_of* — the historical-backfill seam. *night* reports a night newer
+    than every run found, as one missing run per triple (see
+    :func:`_finalize_report`) — the outage seam.
     """
     groups: list[RunGroupReport] = []
     for detector in list_detectors(data_url):
@@ -969,7 +972,7 @@ def build_nightly_report(
                 if group is not None:
                     groups.append(group)
 
-    return _finalize_report(groups)
+    return _finalize_report(groups, night=night)
 
 
 def build_nightly_report_local(
@@ -977,11 +980,13 @@ def build_nightly_report_local(
     *,
     fetch_window_runs: int = FETCH_WINDOW_RUNS,
     as_of: str | None = None,
+    night: str | None = None,
 ) -> NightlyReport:
     """Like :func:`build_nightly_report`, but over a local directory tree with
     the same ``{detector}/{platform}/{stack}/{sample}/{date}`` layout as EOS
     (used by the integration test and for offline dry-runs; no network).
-    *as_of* truncates each sample's runs the same way."""
+    *as_of* truncates each sample's runs the same way, and *night* reports an
+    outage night the same way."""
     root = Path(data_dir)
     groups: list[RunGroupReport] = []
 
@@ -1020,7 +1025,7 @@ def build_nightly_report_local(
                 )
                 if group is not None:
                     groups.append(group)
-    return _finalize_report(groups)
+    return _finalize_report(groups, night=night)
 
 
 def _batch_key(run_url: str) -> str:
@@ -1076,24 +1081,56 @@ def _same_batch(group: RunGroupReport, batch: set[str], age_days: int) -> bool:
     return age_days <= SAME_BATCH_LAG_DAYS
 
 
-def _finalize_report(groups: list[RunGroupReport]) -> NightlyReport:
+def report_covers_run(report: NightlyReport, run_id: str) -> bool:
+    """Whether *run_id*'s benchmark jobs produced any of this report's runs.
+
+    The question a nightly's report job has to answer before publishing: a
+    fan-out where every job failed uploads nothing, and the newest run on EOS
+    is then still the previous night's — a report built from it would republish
+    and re-mail verdicts that night already sent. One group naming the run is
+    enough, whatever its date: a batch is stamped per job start, so its own
+    runs can straddle midnight.
+
+    Compares run ids rather than URLs, so a re-run's ``/attempts/2`` suffix
+    still matches (see :func:`_batch_key`).
+    """
+    if not run_id:
+        return False
+    keys = {_batch_key(g.github_run_url) for g in report.groups if g.github_run_url}
+    return any(k.rpartition("/actions/runs/")[2] == run_id for k in keys)
+
+
+def _finalize_report(
+    groups: list[RunGroupReport], *, night: str | None = None,
+) -> NightlyReport:
     """Resolve the report night and turn stale triples into missing-run
     failures (or drop them as retired past the grace period).
 
     Triples that ran in the report night's own batch are reported as they are
     even when dated earlier (see :func:`_same_batch`): they belong to this
-    night, and their verdicts are this night's news."""
+    night, and their verdicts are this night's news.
+
+    *night* names the night to report when it is newer than every run found —
+    a night whose benchmarking uploaded nothing, whose news is exactly that.
+    Every triple is then a missing run, and the lag fallback of
+    :func:`_same_batch` is off: with no run of its own the night names no CI
+    run, and adopting last night's runs into a batch that produced nothing
+    would report their verdicts a second time under tonight's date. A *night*
+    that is not newer is ignored; a report covers the runs it holds."""
+    forced = False
     if groups:
-        report_night = max(g.run_date for g in groups)
-        night = pd.Timestamp(report_night)
+        newest = max(g.run_date for g in groups)
+        forced = night is not None and night > newest
+        report_night = night if forced else newest
+        night_ts = pd.Timestamp(report_night)
         batch = _batch_keys(groups, report_night)
         kept: list[RunGroupReport] = []
         for g in groups:
             if g.run_date == report_night:
                 kept.append(g)
                 continue
-            age_days = (night - pd.Timestamp(g.run_date)).days
-            if _same_batch(g, batch, age_days):
+            age_days = (night_ts - pd.Timestamp(g.run_date)).days
+            if not forced and _same_batch(g, batch, age_days):
                 # Say which of the two answers this is. A CI run match is a
                 # fact about where the measurement came from; the date fallback
                 # is an assumption, and a report that blurs them is claiming
@@ -1138,4 +1175,5 @@ def _finalize_report(groups: list[RunGroupReport]) -> NightlyReport:
     return NightlyReport(
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         groups=groups,
+        night=night if forced else "",
     )

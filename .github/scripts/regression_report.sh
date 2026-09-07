@@ -5,7 +5,9 @@
 # dashboard's Regressions tab) and emails the CERN e-group when the report is
 # alertable. Runs after every benchmark job of the nightly workflow — also on
 # partial failures, so a crashed detector job surfaces as a FAILURE verdict
-# (via its missing run) instead of vanishing.
+# (via its missing run) instead of vanishing, and also on a fan-out that
+# uploaded nothing at all, which step 4b turns into an outage report for
+# tonight rather than a second copy of last night's.
 #
 # Required env vars (set by the workflow):
 #   K4BENCH_DATA_URL              — WebEOS base URL of the benchmark data (also
@@ -13,6 +15,10 @@
 #   X509_USER_CERT, X509_USER_KEY — EOS service certificate paths
 #   GITHUB_RUN_URL                — link back to this Actions run
 # Optional:
+#   K4BENCH_FANOUT_RUN_ID         — CI run of the benchmark fan-out this report
+#                                   must cover (set by nightly.yml; empty on a
+#                                   manual dispatch, which rebuilds whatever
+#                                   EOS holds)
 #   K4BENCH_REGRESSION_EGROUP     — e-group recipient (email skipped when empty)
 #   K4BENCH_REGRESSION_FROM       — sender address    (email skipped when empty)
 #   K4BENCH_DASHBOARD_URL         — dashboard link used in the email body
@@ -92,14 +98,73 @@ pip install --quiet "pyyaml>=6.0,<6.1" \
 echo "::endgroup::"
 
 # ── 4. Build the report ───────────────────────────────────────────────────────
+build_report() {
+    python .github/scripts/regression_report.py \
+        --data-url "${K4BENCH_DATA_URL}" \
+        --cache-dir "${RUNNER_TEMP:-/tmp}/k4bench_cache" \
+        --output-dir report "$@"
+}
+report_summary() {
+    python -c 'import json,sys; print(json.load(open("report/report.json"))["summary"][sys.argv[1]])' "$1"
+}
+
 echo "::group::4. Build the report"
-python .github/scripts/regression_report.py \
-    --data-url "${K4BENCH_DATA_URL}" \
-    --cache-dir "${RUNNER_TEMP:-/tmp}/k4bench_cache" \
-    --output-dir report
-NIGHT="$(python -c 'import json; print(json.load(open("report/report.json"))["summary"]["report_night"])')"
+build_report
+NIGHT="$(report_summary report_night)"
 [[ -n "${NIGHT}" ]] || { echo "ERROR: report has no report_night (no data on EOS?)" >&2; exit 1; }
 echo "::endgroup::"
+
+# ── 4b. Cover the fan-out that asked for this report ──────────────────────────
+# K4BENCH_FANOUT_RUN_ID is set by nightly.yml alone, and names the run its
+# benchmark jobs recorded in run_info.json — one run id for the night, since a
+# reusable workflow runs inside its caller's run. A fan-out where *every* job
+# failed uploads nothing at all; the newest run on EOS is then still last
+# night's, and publishing that report would overwrite it and mail the e-group
+# its verdicts a second time. The night is forced forward instead, so the
+# report says what actually happened: no run uploaded for tonight, for every
+# triple. A partial failure needs none of this — one surviving upload names the
+# run, and the missing ones are already reported per triple. A manual dispatch
+# passes no run id and keeps rebuilding whatever EOS holds, which is its
+# purpose.
+if [[ -n "${K4BENCH_FANOUT_RUN_ID:-}" ]]; then
+    echo "::group::4b. Fan-out coverage"
+    # A crashed interpreter must not read as an uncovered report, so the answer
+    # comes back as a word: `set -e` fails the assignment on anything else, and
+    # the job goes red with nothing published. `python -c` puts the working
+    # directory — the checkout — first on sys.path, so this reads the same
+    # k4bench the build above did.
+    COVERAGE="$(python -c 'import json; from k4bench.regression.render import from_json; from k4bench.regression.report_builder import report_covers_run; import sys; print("covered" if report_covers_run(from_json(json.load(open("report/report.json"))), sys.argv[1]) else "uncovered")' "${K4BENCH_FANOUT_RUN_ID}")"
+    if [[ "${COVERAGE}" == "covered" ]]; then
+        echo "Report ${NIGHT} covers run ${K4BENCH_FANOUT_RUN_ID}."
+    else
+        # The same command, on the same runner-local clock, that stamps a run
+        # directory in nightly_benchmark.sh — so an outage night is labelled by
+        # the convention the runs themselves follow.
+        TONIGHT="$(date +%Y-%m-%d)"
+        echo "Run ${K4BENCH_FANOUT_RUN_ID} uploaded no run: reporting ${TONIGHT} as an outage instead of republishing ${NIGHT}." >&2
+        # Refusing beats mislabelling: a night that is not newer than the
+        # newest run on EOS is not this fan-out's night, and nothing here can
+        # tell whose it is.
+        [[ "${TONIGHT}" > "${NIGHT}" ]] || {
+            echo "ERROR: tonight (${TONIGHT}) is not newer than the newest run on EOS (${NIGHT}) — publishing nothing." >&2
+            exit 1
+        }
+        build_report --night "${TONIGHT}"
+        NIGHT="$(report_summary report_night)"
+        [[ "${NIGHT}" == "${TONIGHT}" ]] || {
+            echo "ERROR: outage report is dated ${NIGHT}, expected ${TONIGHT} — publishing nothing." >&2
+            exit 1
+        }
+        # Past MISSING_RUN_GRACE_DAYS every triple is dropped as retired, and
+        # an empty report is not alertable — it would mail an all-clear in the
+        # middle of an outage. Fail loudly instead.
+        [[ "$(report_summary n_detectors)" -gt 0 ]] || {
+            echo "ERROR: outage report for ${TONIGHT} holds no run group at all — publishing nothing." >&2
+            exit 1
+        }
+    fi
+    echo "::endgroup::"
+fi
 
 # ── 5. Upload report.json to EOS ──────────────────────────────────────────────
 echo "::group::5. Upload to EOS"

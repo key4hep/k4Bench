@@ -427,7 +427,10 @@ def from_json(data: dict) -> NightlyReport:
             github_run_url=g.get("github_run_url"),
             geometry_path=str(g.get("geometry_path") or ""),
         ))
-    return NightlyReport(generated_at=data.get("generated_at", ""), groups=groups)
+    return NightlyReport(
+        generated_at=data.get("generated_at", ""), groups=groups,
+        night=str(data.get("night") or ""),
+    )
 
 
 # Compatibility shims for callers that imported the old public renderer path.

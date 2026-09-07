@@ -11,6 +11,16 @@ name: Regression Report
 
 on:
   workflow_call:
+    inputs:
+      fanout_run_id:
+        description: >-
+          CI run of the benchmark fan-out this report must cover. A run that
+          uploaded nothing (every job failed) reports tonight as an outage
+          instead of republishing the newest night on EOS. Empty: publish
+          whatever EOS holds.
+        required: false
+        type: string
+        default: ''
   workflow_dispatch:
 
 # Serialise every run of this workflow (nightly call and manual dispatch alike).
@@ -69,6 +79,9 @@ jobs:
           K4BENCH_REGRESSION_FROM:   ${{ vars.K4BENCH_REGRESSION_FROM }}
           K4BENCH_DASHBOARD_URL:     ${{ vars.K4BENCH_DASHBOARD_URL }}
           GITHUB_RUN_URL:            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # Unset on a manual dispatch, where rebuilding the newest night on
+          # EOS is the point rather than a symptom.
+          K4BENCH_FANOUT_RUN_ID:     ${{ inputs.fanout_run_id }}
           # Enables the best-effort blame sidecar's PR resolution. The built-in
           # token reads the public Key4hep repos at 1000 req/hr — a night touches
           # only tens of calls — and blame is fully isolated, so an absent or
@@ -129,6 +142,7 @@ jobs:
             -e K4BENCH_DATA_URL -e K4BENCH_REGRESSION_EGROUP \
             -e K4BENCH_REGRESSION_FROM -e K4BENCH_DASHBOARD_URL \
             -e GITHUB_RUN_URL -e GITHUB_TOKEN \
+            -e K4BENCH_FANOUT_RUN_ID \
             -e K4BENCH_LLM_URL -e K4BENCH_LLM_MODEL -e K4BENCH_LLM_API_KEY \
             -e K4BENCH_LLM_SUMMARY_MODEL \
             -e K4BENCH_LLM_MAX_TOKENS -e K4BENCH_LLM_HISTORICAL_DIFFS \

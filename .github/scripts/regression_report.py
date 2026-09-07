@@ -16,6 +16,10 @@ alert delivery is gated on report.json's ``summary`` block by the workflow.
 ``--as-of`` rebuilds a *past* night instead of the newest one, truncating every
 series to runs on or before it. That is how a report is regenerated after the
 judging rules change: the same runs, walked by today's engine.
+
+``--night`` reports a night *newer* than every run on EOS, as one missing run
+per triple. That is a night whose benchmarking uploaded nothing at all: without
+it the report would carry the previous night's date and verdicts again.
 """
 from __future__ import annotations
 
@@ -62,13 +66,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--output-dir", default=".", help="Where report.json/report.md are written",
     )
-    parser.add_argument(
+    night_source = parser.add_mutually_exclusive_group()
+    night_source.add_argument(
         "--as-of",
         help="Judge the history as it stood on this night (YYYY-MM-DD): every "
              "series is truncated to runs on or before it, and the report night "
              "becomes the newest run that survives. Rebuilds a past night's "
              "report exactly as that night would have built it; omit for the "
              "nightly CI case, which judges everything uploaded so far",
+    )
+    night_source.add_argument(
+        "--night",
+        help="Report this night (YYYY-MM-DD) even though no run carries it: "
+             "every triple becomes a missing run for it. For a night whose "
+             "benchmarking uploaded nothing. Ignored when a run is dated on or "
+             "after it — a report covers the runs it holds",
     )
     args = parser.parse_args(argv)
 
@@ -82,10 +94,12 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.data_dir:
-        report = build_nightly_report_local(args.data_dir, as_of=args.as_of)
+        report = build_nightly_report_local(
+            args.data_dir, as_of=args.as_of, night=args.night,
+        )
     elif args.data_url:
         report = build_nightly_report(
-            args.data_url, args.cache_dir, as_of=args.as_of,
+            args.data_url, args.cache_dir, as_of=args.as_of, night=args.night,
         )
     else:
         parser.error("either --data-url (or $K4BENCH_DATA_URL) or --data-dir is required")
