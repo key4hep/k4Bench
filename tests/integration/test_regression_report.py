@@ -169,6 +169,25 @@ def test_regression_report_cli_rejects_a_malformed_night(tmp_path):
     assert "is not a YYYY-MM-DD night" in result.stderr
 
 
+def test_regression_report_cli_refuses_a_fanout_id_from_the_environment_with_as_of(tmp_path):
+    # argparse's exclusive group sees only flags actually given, and the run id
+    # also arrives via $K4BENCH_FANOUT_RUN_ID. Unchecked, a backfill's --as-of
+    # inside the CI container would find the truncated history uncovered and
+    # publish today as an outage.
+    _write_history(tmp_path / "data", [100.0] * 12, date.fromisoformat("2026-01-12"),
+                   run_url=f"{_RUN}/900")
+    result = subprocess.run(
+        [sys.executable, str(_SCRIPT),
+         "--data-dir", str(tmp_path / "data"), "--output-dir", str(tmp_path / "out"),
+         "--as-of", "2026-01-10"],
+        capture_output=True, text=True,
+        env={**os.environ, "K4BENCH_FANOUT_RUN_ID": "901"},
+    )
+    assert result.returncode == 2
+    assert "cannot be combined with --as-of or --night" in result.stderr
+    assert not (tmp_path / "out").exists()
+
+
 def test_regression_report_cli_local_mode(tmp_path):
     # 10 steady nights, then a persisting +20% step on the last two → one
     # confirmed wall-time regression in tonight's report.

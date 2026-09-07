@@ -162,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
              "benchmarking uploaded nothing. Ignored when a run is dated on or "
              "after it — a report covers the runs it holds",
     )
-    night_source.add_argument(
+    parser.add_argument(
         "--fanout-run-id",
         default=os.environ.get("K4BENCH_FANOUT_RUN_ID") or None,
         help="Actions run id of the benchmark fan-out this report must cover "
@@ -172,6 +172,15 @@ def main(argv: list[str] | None = None) -> int:
              "code is non-zero. Omit for a manual rebuild of whatever EOS holds",
     )
     args = parser.parse_args(argv)
+    # Not in the exclusive group above: argparse checks only flags actually
+    # given, and this one also arrives through the environment. Left unchecked,
+    # a backfill's `--as-of` inside the CI container would truncate the history,
+    # find the run uncovered, and publish today as an outage.
+    if args.fanout_run_id and (args.as_of or args.night):
+        parser.error(
+            "--fanout-run-id (or $K4BENCH_FANOUT_RUN_ID) cannot be combined "
+            "with --as-of or --night"
+        )
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
