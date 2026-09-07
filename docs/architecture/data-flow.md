@@ -90,9 +90,14 @@ and publishes it into its on-disk cache atomically, so concurrent reruns never
 see a half-written run.
 
 The `regression-report` job (`.github/scripts/regression_report.{py,sh}`) runs
-after every benchmark job with `if: always()`, so a crashed detector job still
-surfaces in the report — its missing upload *is* the failure signal. It reuses
-the same pure building blocks as the dashboard (`k4bench.remote` for
+after the benchmark fan-out, so a crashed detector job still surfaces in the
+report — its missing upload *is* the failure signal. A fan-out where *every*
+job failed, or that never started, uploads nothing at all and would otherwise
+republish the previous night, so `nightly.yml` passes its own Actions run id:
+a report naming none of that run's measurements is reported as tonight's
+outage instead (see
+[File formats → The night a report covers](../reference/file-formats.md#the-night-a-report-covers-reportjson)).
+It reuses the same pure building blocks as the dashboard (`k4bench.remote` for
 discovery/download, `k4bench.analysis.trend` for aggregation,
 `k4bench.results.reliability_evidence` for the per-run reliability verdict) and
 adds the step detector in `k4bench/regression/engine.py`. The precomputed

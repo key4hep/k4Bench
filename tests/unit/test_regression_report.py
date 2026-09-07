@@ -17,6 +17,7 @@ from k4bench.regression.lineage import BASELINE_PREDECESSORS, PLATFORM_RETIREMEN
 from k4bench.regression.models import (
     Direction,
     MetricVerdict,
+    NightlyReport,
     RunGroupReport,
     Severity,
     Unjudged,
@@ -31,6 +32,7 @@ from k4bench.regression.report_builder import (
     build_nightly_report_local,
     group_report_from_run_dirs,
     predecessor_runs,
+    report_covers_run,
     unjudged_value_verdicts,
 )
 
@@ -672,6 +674,100 @@ def test_a_different_ci_batch_past_the_grace_period_is_retired(tmp_path):
         _write_run(_local_tree(tmp_path, "DET_B", "single_e") / night,
                    night=night, github_run_url=f"{_RUN}/700")
     report = build_nightly_report_local(str(tmp_path))
+
+    assert set(report.by_detector()) == {"DET_A"}
+
+
+# ── Outage nights ─────────────────────────────────────────────────────────────
+#
+# A fan-out where every job failed uploads nothing, so the newest run on EOS is
+# still the previous night's. The night is then named explicitly and reported as
+# what it was: no run, anywhere.
+
+
+def _outage_group(url: str | None) -> RunGroupReport:
+    return RunGroupReport(
+        detector="DET", platform=_PLAT, sample="single_e",
+        k4h_release="key4hep-2026-01-13", run_date="2026-01-13",
+        run_id="2026-01-13", github_run_url=url,
+    )
+
+
+def test_report_covers_run_matches_on_the_run_id_alone():
+    # One group naming the run is enough, and the URL around the id is
+    # presentation: a re-run link or a stray slash still names the same batch.
+    report = NightlyReport(
+        generated_at="2026-01-13T06:00:00+00:00",
+        groups=[_outage_group(f"{_RUN}/899"), _outage_group(f"{_RUN}/900/attempts/2")],
+    )
+    assert report_covers_run(report, "900")
+    assert report_covers_run(report, "899")
+    assert not report_covers_run(report, "901")
+    assert not report_covers_run(report, "")
+
+
+def test_report_covers_run_is_false_when_no_run_is_recorded():
+    # Nights predating github_run_url cannot answer the question, and a report
+    # that cannot show the run did not show it.
+    report = NightlyReport(
+        generated_at="2026-01-13T06:00:00+00:00", groups=[_outage_group(None)],
+    )
+    assert not report_covers_run(report, "900")
+
+
+def test_an_outage_night_reports_every_triple_as_a_missing_run(tmp_path):
+    _make_history(_local_tree(tmp_path, "DET_A", "single_e"), [100.0] * 13,
+                  per_night={12: {"github_run_url": f"{_RUN}/900"}})
+    _make_history(_local_tree(tmp_path, "DET_B", "single_e"), [100.0] * 13,
+                  per_night={12: {"github_run_url": f"{_RUN}/900"}})
+    report = build_nightly_report_local(str(tmp_path), night="2026-01-14")
+
+    assert report.report_night == "2026-01-14"
+    assert len(report.groups) == 2
+    for group in report.groups:
+        assert group.verdicts == []
+        assert "no run uploaded for 2026-01-14" in group.job_failures[0]
+    assert report.has_alertable
+
+
+def test_an_outage_night_does_not_adopt_last_nights_runs(tmp_path):
+    # The whole point: last night's batch is a night behind, records no CI run,
+    # and carries a step. Taken as tonight's batch by the date fallback it would
+    # mail those verdicts a second time under tonight's date.
+    walls = [100.0] * 11 + [120.0, 120.5]
+    _make_history(_local_tree(tmp_path, "DET_A", "single_e"), walls)
+    report = build_nightly_report_local(str(tmp_path), night="2026-01-14")
+
+    group, = report.groups
+    assert group.run_date == "2026-01-13"
+    assert group.verdicts == []
+    assert group.notes == []
+    assert "no run uploaded for 2026-01-14" in group.job_failures[0]
+    assert report.regressions == []
+
+
+@pytest.mark.parametrize("night", ["2026-01-13", "2026-01-12"])
+def test_a_night_no_newer_than_the_newest_run_is_ignored(tmp_path, night):
+    # A report covers the runs it holds. Naming the night they already carry —
+    # or an older one — changes nothing, so a manual rebuild cannot suppress a
+    # night's own verdicts by mislabelling it.
+    walls = [100.0] * 11 + [120.0, 120.5]
+    _make_history(_local_tree(tmp_path, "DET_A", "single_e"), walls)
+    report = build_nightly_report_local(str(tmp_path), night=night)
+
+    assert report.report_night == "2026-01-13"
+    group, = report.groups
+    assert group.job_failures == []
+    assert any(v.metric == "wall_time_s" for v in group.regressions)
+
+
+def test_an_outage_night_still_retires_a_long_dead_triple(tmp_path):
+    # Age is measured from the report night like any other night, so a triple
+    # stale past MISSING_RUN_GRACE_DAYS is retired rather than alerted on.
+    _make_history(_local_tree(tmp_path, "DET_A", "single_e"), [100.0] * 13)
+    for night in _nights(2, start="2025-12-01"):
+        _write_run(_local_tree(tmp_path, "DET_C", "single_e") / night, night=night)
+    report = build_nightly_report_local(str(tmp_path), night="2026-01-14")
 
     assert set(report.by_detector()) == {"DET_A"}
 

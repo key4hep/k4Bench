@@ -194,6 +194,48 @@ def test_every_run_group_field_survives_the_json_roundtrip():
     assert restored == group
 
 
+def test_an_outage_nights_report_night_survives_the_json_roundtrip():
+    # A night that produced no run of its own is named by the report, not
+    # derived from it, so the reader has to carry the name across the file —
+    # otherwise the dashboard and the blame sidecar file it under the run it
+    # holds instead of the night it covers.
+    report = NightlyReport(
+        generated_at="2026-01-14T06:00:00+00:00",
+        night="2026-01-14",
+        groups=[RunGroupReport(
+            detector="DET", platform="PLAT", sample="single_e",
+            k4h_release="key4hep-2026-01-01", run_date="2026-01-13",
+            run_id="2026-01-13",
+            job_failures=["no run uploaded for 2026-01-14 (latest is 2026-01-13)"],
+        )],
+    )
+    data = to_json(report)
+    assert data["night"] == "2026-01-14"
+    assert data["summary"]["report_night"] == "2026-01-14"
+
+    rebuilt = from_json(json.loads(json.dumps(data)))
+    assert rebuilt.report_night == "2026-01-14"
+    assert rebuilt.has_alertable
+
+
+def test_a_healthy_nights_report_carries_no_night_key():
+    # The key is the outage marker: present only when it *is* the report's
+    # date. A healthy night is dated by its newest run, and an empty key would
+    # read as a claim about the night.
+    report = NightlyReport(
+        generated_at="2026-01-13T06:00:00+00:00",
+        groups=[RunGroupReport(
+            detector="DET", platform="PLAT", sample="single_e",
+            k4h_release="key4hep-2026-01-01", run_date="2026-01-13",
+            run_id="2026-01-13",
+        )],
+    )
+    data = to_json(report)
+    assert "night" not in data
+    assert data["summary"]["report_night"] == "2026-01-13"
+    assert from_json(json.loads(json.dumps(data))).report_night == "2026-01-13"
+
+
 def test_summary_splits_new_and_reconfirmed():
     # A confirmed verdict whose first confirmation was an earlier night of the
     # same release is Reconfirmed; a fresh one is New. The JSON summary carries

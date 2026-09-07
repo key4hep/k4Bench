@@ -285,6 +285,11 @@ def to_json(report: NightlyReport) -> dict:
     re-deriving anything.
     """
     data = _sanitize(dataclasses.asdict(report))
+    if not report.night:
+        # Present only on an outage night, where it *is* the report's date;
+        # everywhere else the newest run date is the answer, and an empty key
+        # would read as a claim.
+        del data["night"]
     data["summary"] = {
         "report_night":     report.report_night,
         "n_detectors":      len(report.by_detector()),
@@ -427,7 +432,10 @@ def from_json(data: dict) -> NightlyReport:
             github_run_url=g.get("github_run_url"),
             geometry_path=str(g.get("geometry_path") or ""),
         ))
-    return NightlyReport(generated_at=data.get("generated_at", ""), groups=groups)
+    return NightlyReport(
+        generated_at=data.get("generated_at", ""), groups=groups,
+        night=str(data.get("night") or ""),
+    )
 
 
 # Compatibility shims for callers that imported the old public renderer path.

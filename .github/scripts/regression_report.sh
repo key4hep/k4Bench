@@ -5,7 +5,9 @@
 # dashboard's Regressions tab) and emails the CERN e-group when the report is
 # alertable. Runs after every benchmark job of the nightly workflow — also on
 # partial failures, so a crashed detector job surfaces as a FAILURE verdict
-# (via its missing run) instead of vanishing.
+# (via its missing run) instead of vanishing, and also on a fan-out that
+# uploaded nothing at all, which the report script turns into an outage report
+# for tonight rather than a second copy of last night's.
 #
 # Required env vars (set by the workflow):
 #   K4BENCH_DATA_URL              — WebEOS base URL of the benchmark data (also
@@ -13,6 +15,10 @@
 #   X509_USER_CERT, X509_USER_KEY — EOS service certificate paths
 #   GITHUB_RUN_URL                — link back to this Actions run
 # Optional:
+#   K4BENCH_FANOUT_RUN_ID         — Actions run of the benchmark fan-out this
+#                                   report must cover (set by nightly.yml; empty
+#                                   on a manual dispatch, which rebuilds
+#                                   whatever EOS holds)
 #   K4BENCH_REGRESSION_EGROUP     — e-group recipient (email skipped when empty)
 #   K4BENCH_REGRESSION_FROM       — sender address    (email skipped when empty)
 #   K4BENCH_DASHBOARD_URL         — dashboard link used in the email body
@@ -92,6 +98,10 @@ pip install --quiet "pyyaml>=6.0,<6.1" \
 echo "::endgroup::"
 
 # ── 4. Build the report ───────────────────────────────────────────────────────
+# K4BENCH_FANOUT_RUN_ID, when set, is read by the script itself: a report
+# holding none of that run's uploads is last night's again, and the script
+# either reports tonight as an outage or exits non-zero with nothing written,
+# so nothing below publishes.
 echo "::group::4. Build the report"
 python .github/scripts/regression_report.py \
     --data-url "${K4BENCH_DATA_URL}" \

@@ -199,6 +199,16 @@ same window replaces the same file and a standing comment's link keeps working
 — see
 [PR comments → Reproducing the measurement](../user-guide/features/pr-comments.md#reproducing-the-measurement).
 
+### The night a report covers (`report.json`)
+
+`_reports/{YYYY-MM-DD}/` is named for the night the report covers, and
+`summary.report_night` repeats it. That is normally the newest run date the
+report holds. A night whose benchmarking uploaded *nothing* — every job of the
+fan-out failed — has no run to be named after, so its report carries the night
+in a top-level `night` key instead and reports one
+`no run uploaded for {night}` job failure per triple. The key is absent on
+every other night, where the newest run date is the answer.
+
 ### Metric history on confirmed verdicts (`report.json`)
 
 Every **confirmed** verdict in `report.json` carries a bounded `history`: a tail

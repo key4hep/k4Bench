@@ -446,6 +446,11 @@ class NightlyReport:
 
     generated_at: str
     groups: list[RunGroupReport] = field(default_factory=list)
+    #: The night this report covers when that is *not* the newest run it holds
+    #: — a night whose benchmarking uploaded nothing at all, reported as one
+    #: missing run per triple. Empty on every report whose night is its own
+    #: newest run, which is every healthy night.
+    night: str = ""
 
     @property
     def regressions(self) -> list[MetricVerdict]:
@@ -485,8 +490,14 @@ class NightlyReport:
 
     @property
     def report_night(self) -> str:
-        """The nightly date this report covers (newest run across groups)."""
-        return max((g.run_date for g in self.groups), default="")
+        """The nightly date this report covers.
+
+        The newest run across the groups, except on a night that produced no
+        run of its own: ``night`` then names the night and every group is a
+        missing run (see
+        ``k4bench.regression.report_builder._finalize_report``).
+        """
+        return self.night or max((g.run_date for g in self.groups), default="")
 
     def by_detector(self) -> dict[str, list[RunGroupReport]]:
         """Group the run groups by detector (a detector can have several
