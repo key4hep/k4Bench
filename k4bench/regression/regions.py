@@ -9,14 +9,15 @@ form is already measured — it has simply never been read by anything that
 attributes a regression.
 
 This module reads it: for one benchmark configuration and one change window, how
-each region's per-event time differs between the two releases the change entered
-between. It judges nothing (the engine has already decided *that* the metric
+each region's per-event time differs between the two ends the change entered
+between — the two releases, or the window's two runs when one release holds
+both. It judges nothing (the engine has already decided *that* the metric
 stepped) and it introduces no thresholds of its own; it reports the
 decomposition, largest movement first, and leaves the reading to whoever asked.
 
 Two costs shape the implementation. Region files are per *configuration* and hold
 per-event arrays, so loading a whole trend window across every label is
-expensive — this loads exactly the two releases of one window, for one label, and
+expensive — this loads exactly the two ends of one window, for one label, and
 only when something actually regressed there. And a release that recorded no
 region file is *absent*, never zero: a region that appears on one side of a
 window only is a real event (a detector added, removed or renamed) and must stay
@@ -139,12 +140,21 @@ def _dirs_by_release(run_dirs: Sequence[str]) -> dict[str, list[Path]]:
     return grouped
 
 
+def _run_dir_named(run_dirs: Sequence[Path], run_id: str | None) -> Path | None:
+    """The one directory in *run_dirs* that is the run *run_id*, if it is there."""
+    if not run_id:
+        return None
+    return next((d for d in run_dirs if d.name == str(run_id)), None)
+
+
 def region_deltas(
     run_dirs: Sequence[str],
     *,
     label: str,
     base_release: str,
     onset_release: str,
+    base_run_id: str | None = None,
+    onset_run_id: str | None = None,
     limit: int = MAX_REGIONS,
     judgeable_configs: set[tuple[str, str]] | None = None,
 ) -> tuple[RegionDelta, ...]:
@@ -156,11 +166,26 @@ def region_deltas(
     the missing side as zero) would report every region of the detector as newly
     appearing. When *judgeable_configs* is supplied, failed or orphaned
     config-nights absent from that set are gaps and do not enter release medians.
+
+    A window whose ends name one release is two runs of that release, and
+    *base_run_id* / *onset_run_id* are what tell them apart — the same pair the
+    verdict, the email's window token and the blame range are identified by. The
+    ends are then those two runs rather than the release's pool, because one
+    pool measured against itself is not a comparison and would report every
+    region as having stood still. Without a resolvable run on each side there is
+    again nothing to compare, and the answer is ``()``.
     """
     grouped = _dirs_by_release(run_dirs)
     base_dirs, onset_dirs = grouped.get(base_release, []), grouped.get(onset_release, [])
     if not base_dirs or not onset_dirs:
         return ()
+
+    if base_release == onset_release:
+        base_dir = _run_dir_named(base_dirs, base_run_id)
+        onset_dir = _run_dir_named(onset_dirs, onset_run_id)
+        if base_dir is None or onset_dir is None or base_dir == onset_dir:
+            return ()
+        base_dirs, onset_dirs = [base_dir], [onset_dir]
 
     base = _release_medians(base_dirs, label, judgeable_configs)
     onset = _release_medians(onset_dirs, label, judgeable_configs)

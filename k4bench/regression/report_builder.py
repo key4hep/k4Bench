@@ -34,6 +34,7 @@ from k4bench.analysis.trend import (
     build_results_trend,
     parse_run_dir,
 )
+from k4bench.blame.models import rank_group_key
 from k4bench.regression.engine import (
     BASELINE_WINDOW_RUNS,
     evaluate_series,
@@ -814,6 +815,21 @@ def _group_report_from_frames(
     return group
 
 
+def _region_window(verdict: MetricVerdict) -> tuple:
+    """The window a region decomposition is computed and cached under.
+
+    The configuration, then the window identity the whole attribution system
+    shares (:func:`k4bench.blame.models.rank_group_key`): run ids join the key
+    for a same-release window, whose two runs are the only thing telling it from
+    another window inside that release, and nowhere else — a cross-release
+    window pools whole releases, so two metrics that stepped across it have one
+    answer between them and re-deriving that rule here is how this and the
+    sidecar drift apart. The detector/platform/sample prefix is dropped: this
+    key is only ever compared within one run group.
+    """
+    return (verdict.label, *rank_group_key(verdict)[3:])
+
+
 def _with_region_deltas(
     group: RunGroupReport,
     run_dirs: tuple[str, ...],
@@ -829,12 +845,15 @@ def _with_region_deltas(
     Deliberately narrow, because region files are per configuration and hold
     per-event arrays: only ``CONFIRMED`` verdicts, only the ``time`` family
     (region data is per-event time and says nothing about a memory step), only
-    the two releases of that verdict's own window, and one computation per
+    the two ends of that verdict's own window, and one computation per
     ``(label, window)`` however many metrics share it. On the overwhelming
     majority of nights nothing is confirmed and this does no I/O at all.
+
+    Windows are identified by :func:`_region_window`, so two of them inside one
+    release keep their own decompositions instead of one answering for the other.
     """
     windows = {
-        (v.label, v.last_accepted_run_date, v.onset_run_date)
+        _region_window(v)
         for v in group.verdicts
         if v.severity is Severity.CONFIRMED
         and v.metric_family == "time"
@@ -846,15 +865,14 @@ def _with_region_deltas(
         window: region_deltas(
             run_dirs, label=window[0],
             base_release=window[1], onset_release=window[2],
+            base_run_id=window[3], onset_run_id=window[4],
             judgeable_configs=judgeable_configs,
         )
         for window in windows
     }
     group.verdicts = [
         dataclasses.replace(v, region_deltas=deltas)
-        if (deltas := computed.get(
-            (v.label, v.last_accepted_run_date, v.onset_run_date)
-        )) else v
+        if (deltas := computed.get(_region_window(v))) else v
         for v in group.verdicts
     ]
     return group
