@@ -951,6 +951,65 @@ def test_seed_keeps_only_the_window_it_can_fill():
     assert verdicts[0].baseline_median == pytest.approx(100.0, abs=0.1)
 
 
+#: A predecessor that stepped 100 → 130 and confirmed it four nights before the
+#: migration — recently enough that the level it left behind is still inside a
+#: baseline window of the handover.
+_RECENTLY_STEPPED = _STEADY + _STEADY + [130.0, 130.4, 129.8, 130.2]
+
+
+def test_seed_is_the_level_the_predecessor_settled_on():
+    # The predecessor confirmed the step to 130 and re-anchored on it, so 130 is
+    # the accepted normal handed over — a successor measuring it has not moved.
+    verdicts = evaluate_series(
+        _history([130.1, 129.9, 130.3], start="2026-02-01"),
+        series=_TIME, baseline_seed=_seed(_RECENTLY_STEPPED),
+    )
+    assert _severities(verdicts) == [Severity.OK] * 3
+    assert all(
+        v.baseline_median == pytest.approx(130.0, abs=0.5) for v in verdicts
+    )
+    assert all(v.baseline_inherited_from == _OLD_PLATFORM for v in verdicts)
+
+
+def test_a_migration_that_undoes_the_predecessors_step_is_still_caught():
+    # The successor lands back on the level the predecessor left behind. Against
+    # the accepted level that is a move like any other, so it is judged like
+    # any other.
+    verdicts = evaluate_series(
+        _history([100.1, 99.9], start="2026-02-01"),
+        series=_TIME, baseline_seed=_seed(_RECENTLY_STEPPED),
+    )
+    assert _severities(verdicts) == [Severity.WATCH, Severity.CONFIRMED]
+    assert verdicts[-1].direction is Direction.DOWN
+    assert verdicts[-1].pct_change == pytest.approx(-0.23, abs=0.02)
+
+
+def test_a_migration_step_onto_a_recent_one_confirms_at_its_true_size():
+    # Two steps in a row: the predecessor's, then the migration's. The second is
+    # measured from where the first left the series, not from before both.
+    verdicts = evaluate_series(
+        _history([160.0, 160.5], start="2026-02-01"),
+        series=_TIME, baseline_seed=_seed(_RECENTLY_STEPPED),
+    )
+    assert _severities(verdicts) == [Severity.WATCH, Severity.CONFIRMED]
+    assert verdicts[-1].direction is Direction.UP
+    assert verdicts[-1].pct_change == pytest.approx(0.235, abs=0.02)
+
+
+def test_an_inherited_short_segment_keeps_judging_rather_than_going_blind():
+    # The predecessor's accepted segment is shorter than a full window, so the
+    # successor continues the re-anchor the predecessor started instead of
+    # falling back into the cold start the seed exists to remove.
+    verdict = evaluate_series(
+        _history([130.1], start="2026-02-01"),
+        series=_TIME, baseline_seed=_seed(_RECENTLY_STEPPED),
+    )[0]
+    assert verdict.severity is Severity.OK
+    assert verdict.unjudged is None
+    assert verdict.reanchor_run_date == "2025-12-22"   # the predecessor's change-point
+    assert verdict.baseline_mad > 0     # the predecessor's pre-change spread
+
+
 def test_no_seed_is_the_unchanged_cold_start():
     plain = evaluate_series(_history(_STEADY), series=_TIME)
     empty = evaluate_series(

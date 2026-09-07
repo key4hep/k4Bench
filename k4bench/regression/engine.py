@@ -70,10 +70,12 @@ so every gate errs toward *not* flagging:
    attribute it with.
 
 A platform migration is the one case where part of the baseline comes from
-somewhere else: a young platform may be seeded with a *predecessor* platform's
-tail (see :mod:`k4bench.regression.lineage`). Seed points are baseline evidence
-only — never judged — and are evicted one by one as the platform's own nights
-arrive, so it is judged against itself alone within a window.
+somewhere else: a young platform may be seeded with the baseline a *predecessor*
+platform's own walk ended on (see :mod:`k4bench.regression.lineage`) — the level
+that platform had settled on, so a change it already confirmed and re-anchored
+against is not handed over as unfinished business. Seed points are baseline
+evidence only — never judged — and are evicted one by one as the platform's own
+nights arrive, so it is judged against itself alone within a window.
 
 Every series reaching this engine is a measurement: what a configuration
 recorded, judged against its own history. A night where every configuration of
@@ -92,6 +94,7 @@ from __future__ import annotations
 
 import math
 from collections import deque
+from dataclasses import dataclass
 from itertools import groupby
 
 import numpy as np
@@ -215,35 +218,59 @@ def release_key(run_date, run_id) -> str:
     return _fmt_date(run_date) or str(run_id)
 
 
-def _seed_values(seed: pd.DataFrame, *, before, before_run) -> list[float]:
-    """Usable predecessor values preceding both release and measurement cutoffs.
+@dataclass(frozen=True)
+class _BaselineState:
+    """Where a walk left its baseline: the level in force and its provenance.
 
-    Cut there because platforms can run in parallel: a seed point measured
-    *after* the night it helps judge would leak the future into that verdict,
-    and into the WATCH/CONFIRMED state that follows from it. Without a usable
-    date on either side nothing can be shown to predate anything, so nothing is
-    inherited. Filtered as the walk filters the series' own nights, and capped
-    at one baseline window — the tail, nearest the migration.
+    *values* are the window the next night would be judged against, *anchor_date*
+    the release whose confirmed change the window is re-anchoring onto (``None``
+    when no change-point is being settled), and *anchor_mad* the pre-change
+    spread that stands in as the noise proxy while that segment is short.
+    """
+
+    values: tuple[float, ...]
+    anchor_date: str | None
+    anchor_mad: float
+
+
+_EMPTY_STATE = _BaselineState(values=(), anchor_date=None, anchor_mad=0.0)
+
+
+def _seed_state(
+    seed: pd.DataFrame, *, series: SeriesId, before, before_run,
+) -> _BaselineState:
+    """The predecessor's baseline as its own walk left it at the migration.
+
+    Only rows preceding both the release and the measurement cutoff are read,
+    because platforms can run in parallel: a seed point measured *after* the
+    night it helps judge would leak the future into that verdict, and into the
+    WATCH/CONFIRMED state that follows from it. Without a usable date on either
+    side nothing can be shown to predate anything, so nothing is inherited.
+
+    Those rows are then walked exactly as the successor's own history is. What
+    the predecessor's baseline holds at the end is the level it had *settled
+    on*: a change it confirmed has already re-anchored that window onto the new
+    level, so a step the predecessor detected, confirmed and accepted is handed
+    over as the accepted normal rather than as news. It is the walk that
+    separates the two, and only the walk can: a step confirmed less than
+    :data:`BASELINE_WINDOW_RUNS` nights before the handover is still, by count
+    alone, indistinguishable from the noise around a level that never moved.
     """
     dates = pd.to_datetime(seed["run_date"], errors="coerce")
     measured = pd.to_datetime(seed["run_id"], errors="coerce")
     if pd.isna(before) or pd.isna(before_run):
-        return []
+        return _EMPTY_STATE
     # An old release rerun after the successor started is still future data.
     ordered = seed[
         dates.notna() & (dates < before)
         & measured.notna() & (measured < before_run)
-    ].sort_values(
-        ["run_date", "run_id"], kind="stable",
-    )
-    values = [
-        float(row.value)
-        for row in ordered.itertuples(index=False)
-        if row.reliable is not False
-        and row.value is not None
-        and not (isinstance(row.value, float) and math.isnan(row.value))
     ]
-    return values[-BASELINE_WINDOW_RUNS:]
+    if ordered.empty:
+        return _EMPTY_STATE
+    # The walk filters unreliable and missing values itself, so the frame goes
+    # in as measured; its verdicts are discarded, since a seed point is
+    # baseline evidence for the successor and never a night of its own.
+    return _walk(ordered, series=series)[1]
 
 
 def evaluate_series(
@@ -266,9 +293,12 @@ def evaluate_series(
       excluding it would starve baselines on histories without machine info —
       the same policy as the dashboard's reliability filter.
 
-    *baseline_seed* is the optional tail of a *predecessor* platform's history
-    for this same series (see :mod:`k4bench.regression.lineage`), filling the
-    baseline window while the platform is too young to have one of its own.
+    *baseline_seed* is the optional history of a *predecessor* platform for this
+    same series (see :mod:`k4bench.regression.lineage`), filling the baseline
+    window while the platform is too young to have one of its own. It is walked
+    the same way this history is, and what enters the window is the baseline
+    that walk ended on — the level in force at the migration, together with the
+    change-point it was still settling onto, if any (see :func:`_seed_state`).
     Seed points produce no verdict, are not part of the returned series, and
     must predate both the first release and the first measurement they help
     judge. They are evicted one at a time as the platform's own values arrive — gone after
@@ -341,6 +371,21 @@ def evaluate_series(
     and the sibling metrics of one run group, which usually step together,
     keep agreeing on one window instead of fanning out over their own noise.
     """
+    return _walk(history, series=series, baseline_seed=baseline_seed)[0]
+
+
+def _walk(
+    history: pd.DataFrame,
+    *,
+    series: SeriesId,
+    baseline_seed: BaselineSeed | None = None,
+) -> tuple[list[MetricVerdict], _BaselineState]:
+    """The walk behind :func:`evaluate_series`, plus the baseline it ends on.
+
+    The trailing state is what a successor platform inherits (see
+    :func:`_seed_state`); every caller judging a series wants the verdicts and
+    reaches this through :func:`evaluate_series`.
+    """
     floor = EFFECT_FLOOR[series.metric_family]
     abs_delta_floor = ABS_DELTA_FLOOR.get(series.metric_family, 0.0)
 
@@ -349,13 +394,16 @@ def evaluate_series(
     #: platform's own values in the normal way — the deque is the handover.
     baseline: deque[tuple[float, bool]] = deque(maxlen=BASELINE_WINDOW_RUNS)
     seed_platform: str | None = None
+    seed_state = _EMPTY_STATE
     if baseline_seed is not None:
         measured = pd.to_datetime(df["run_id"], errors="coerce")
-        baseline.extend((value, True) for value in _seed_values(
+        seed_state = _seed_state(
             baseline_seed.history,
+            series=series,
             before=pd.to_datetime(df["run_date"], errors="coerce").min(),
             before_run=measured.min() if measured.notna().all() else pd.NaT,
-        ))
+        )
+        baseline.extend((value, True) for value in seed_state.values)
         seed_platform = baseline_seed.platform
     pending: Direction | None = None
     pending_run: tuple[str, str] | None = None   # the WATCH night's identity (the onset)
@@ -370,8 +418,14 @@ def evaluate_series(
     last_absent: dict[Direction, tuple[str, str] | None] = {
         Direction.UP: None, Direction.DOWN: None,
     }
-    anchor_date: str | None = None      # date of the last confirmed change-point
-    anchor_mad: float = 0.0             # pre-change spread, proxy while re-anchoring
+    # Carried over with the seed: an inherited window that is still settling
+    # onto a confirmed change keeps being judged as the predecessor judged it —
+    # against the short segment's median, with the pre-change spread as the
+    # noise proxy — rather than falling back into the cold start the seed
+    # exists to remove. A pending WATCH is not carried: two strikes have to be
+    # consecutive nights of one platform.
+    anchor_date: str | None = seed_state.anchor_date
+    anchor_mad: float = seed_state.anchor_mad
     verdicts: list[MetricVerdict] = []
 
     def _verdict(row, **kw) -> MetricVerdict:
@@ -650,4 +704,8 @@ def evaluate_series(
             # carries into the next release.
             baseline.extend((value, False) for value in release_values)
 
-    return verdicts
+    return verdicts, _BaselineState(
+        values=tuple(value for value, _ in baseline),
+        anchor_date=anchor_date,
+        anchor_mad=anchor_mad,
+    )
