@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from k4bench.regression.regions import MAX_REGIONS, region_deltas
 
 
@@ -213,3 +215,80 @@ def test_the_list_is_bounded_by_the_largest_movements(tmp_path):
     )
     assert len(deltas) == MAX_REGIONS
     assert deltas[0].region == f"REGION_{MAX_REGIONS + 3}"  # the biggest mover
+
+
+# ── Same-release windows ──────────────────────────────────────────────────────
+
+def test_two_runs_of_one_release_are_compared_against_each_other(tmp_path):
+    # The engine's two-strike rule confirms a step within one release: one night
+    # flags, the next re-measures the same software state and confirms. Both
+    # ends of that window key on the same release, so the release's pool is the
+    # same set on both sides and measuring it against itself would report every
+    # region as having stood still. The runs are what tell the ends apart.
+    dirs = [
+        _write_run(tmp_path, "2026-07-14", "2026-07-14", {"HCAL": 0.30, "ECAL": 1.00}),
+        _write_run(tmp_path, "2026-07-15", "2026-07-14", {"HCAL": 4.50, "ECAL": 1.01}),
+    ]
+    deltas = region_deltas(
+        dirs, label="baseline",
+        base_release="2026-07-14", onset_release="2026-07-14",
+        base_run_id="2026-07-14", onset_run_id="2026-07-15",
+    )
+    assert [d.region for d in deltas] == ["HCAL", "ECAL"]
+    assert deltas[0].base == 0.30 and deltas[0].onset == 4.50
+    assert deltas[0].delta == pytest.approx(4.20)
+    assert deltas[1].delta == pytest.approx(0.01)
+
+
+def test_a_same_release_window_without_runs_yields_nothing(tmp_path):
+    # A report predating run-id capture names such a window by its releases
+    # alone, which cannot say which two nights it spans. That is a window whose
+    # ends are unknown, not one where every region held still.
+    dirs = [
+        _write_run(tmp_path, "2026-07-14", "2026-07-14", {"HCAL": 0.30}),
+        _write_run(tmp_path, "2026-07-15", "2026-07-14", {"HCAL": 4.50}),
+    ]
+    assert region_deltas(
+        dirs, label="baseline",
+        base_release="2026-07-14", onset_release="2026-07-14",
+    ) == ()
+    # Likewise a run that is not in this corpus: one end is unmeasured.
+    assert region_deltas(
+        dirs, label="baseline",
+        base_release="2026-07-14", onset_release="2026-07-14",
+        base_run_id="2026-07-13", onset_run_id="2026-07-15",
+    ) == ()
+
+
+def test_a_same_release_window_whose_ends_are_one_run_yields_nothing(tmp_path):
+    # One night against itself is not a comparison, and every delta it produced
+    # would be exactly zero — the reading "nothing moved anywhere in the
+    # detector", stated about a window that was never measured across.
+    dirs = [
+        _write_run(tmp_path, "2026-07-14", "2026-07-14", {"HCAL": 0.30}),
+        _write_run(tmp_path, "2026-07-15", "2026-07-14", {"HCAL": 4.50}),
+    ]
+    assert region_deltas(
+        dirs, label="baseline",
+        base_release="2026-07-14", onset_release="2026-07-14",
+        base_run_id="2026-07-15", onset_run_id="2026-07-15",
+    ) == ()
+
+
+def test_a_cross_release_window_still_pools_every_night_of_its_ends(tmp_path):
+    # Runs are how a same-release window's ends are told apart; they must not
+    # narrow a cross-release one, whose ends are whole releases however many
+    # nights measured them.
+    dirs = [
+        _write_run(tmp_path, "2026-07-14", "2026-07-14", {"HCAL": 1.00}),
+        _write_run(tmp_path, "2026-07-15", "2026-07-14", {"HCAL": 3.00}),
+        _write_run(tmp_path, "2026-07-18", "2026-07-18", {"HCAL": 10.00}),
+    ]
+    deltas = region_deltas(
+        dirs, label="baseline",
+        base_release="2026-07-14", onset_release="2026-07-18",
+        base_run_id="2026-07-15", onset_run_id="2026-07-18",
+    )
+    # The base is the median of both nights of its release (2.0), not the run
+    # named as the window's end (3.0).
+    assert [(d.region, d.base, d.onset) for d in deltas] == [("HCAL", 2.0, 10.0)]

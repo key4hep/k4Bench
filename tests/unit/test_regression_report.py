@@ -13,12 +13,19 @@ import pandas as pd
 
 from k4bench.regression.engine import BASELINE_WINDOW_RUNS
 from k4bench.regression.lineage import BASELINE_PREDECESSORS, PLATFORM_RETIREMENTS
-from k4bench.regression.models import Direction, Severity, Unjudged
+from k4bench.regression.models import (
+    Direction,
+    MetricVerdict,
+    RunGroupReport,
+    Severity,
+    Unjudged,
+)
 from k4bench.regression.report_builder import (
     EVENT_METRICS,
     RUN_METRICS,
     RUN_VALUE_METRICS,
     _failed_config_verdicts,
+    _with_region_deltas,
     build_nightly_report_local,
     group_report_from_run_dirs,
     predecessor_runs,
@@ -1099,3 +1106,65 @@ def test_local_report_seeds_the_successor_platform(tmp_path):
     assert report.report_night < PLATFORM_RETIREMENTS[_OLD_PLAT]
     assert old.regressions == []
     assert old.job_failures
+
+
+# ── Region decomposition is attached per window, not per release pair ─────────
+
+def _write_region_run(root: Path, night: str, release: str, hcal: float) -> str:
+    """One run of *release* whose only region carries *hcal* seconds per event."""
+    run_dir = root / night
+    run_dir.mkdir(parents=True)
+    (run_dir / "run_info.json").write_text(json.dumps({
+        "date": night, "platform": _PLAT, "sample": "single_e",
+        "k4h_release": f"key4hep-{release}", "k4h_release_date": release,
+    }))
+    (run_dir / "baseline_regions.json").write_text(json.dumps({
+        "event_numbers": [0, 1, 2],
+        "event_wall_seconds": [9.9, hcal, hcal],
+        "event_region_sum_seconds": [9.9, hcal, hcal],
+        "event_unaccounted_seconds": [0.0, 0.0, 0.0],
+        "indexed_top_level_detectors": ["HCAL"],
+        "at_location_seconds": [{"HCAL": 99.0}, {"HCAL": hcal}, {"HCAL": hcal}],
+        "by_birth_seconds": [{"HCAL": hcal} for _ in range(3)],
+    }))
+    return str(run_dir)
+
+
+def _region_verdict(metric: str, base_run: str, onset_run: str) -> MetricVerdict:
+    return MetricVerdict(
+        detector="DET", platform=_PLAT, sample="single_e", label="baseline",
+        metric_family="time", metric=metric, sub_detector=None,
+        run_id="2026-07-16", run_date="2026-07-14",
+        value=1.0, baseline_median=1.0, baseline_mad=0.1,
+        pct_change=0.5, z_score=9.0,
+        severity=Severity.CONFIRMED, direction=Direction.UP, reason="stepped",
+        onset_run_id=onset_run, onset_run_date="2026-07-14",
+        last_accepted_run_id=base_run, last_accepted_run_date="2026-07-14",
+    )
+
+
+def test_two_windows_inside_one_release_get_their_own_region_deltas(tmp_path):
+    # One release can hold several change windows, told apart only by their
+    # runs. Keyed on the release pair alone the first computed would answer for
+    # every one of them, describing a movement between two nights it never
+    # measured across.
+    run_dirs = (
+        _write_region_run(tmp_path, "2026-07-14", "2026-07-14", 1.0),
+        _write_region_run(tmp_path, "2026-07-15", "2026-07-14", 5.0),
+        _write_region_run(tmp_path, "2026-07-16", "2026-07-14", 20.0),
+    )
+    group = RunGroupReport(
+        detector="DET", platform=_PLAT, sample="single_e",
+        k4h_release="key4hep-2026-07-14", run_date="2026-07-14",
+        run_id="2026-07-16",
+        verdicts=[
+            _region_verdict("wall_time_s", "2026-07-14", "2026-07-15"),
+            _region_verdict("median_time_s", "2026-07-15", "2026-07-16"),
+        ],
+    )
+    by_metric = {
+        v.metric: v.region_deltas
+        for v in _with_region_deltas(group, run_dirs).verdicts
+    }
+    assert [(d.base, d.onset) for d in by_metric["wall_time_s"]] == [(1.0, 5.0)]
+    assert [(d.base, d.onset) for d in by_metric["median_time_s"]] == [(5.0, 20.0)]

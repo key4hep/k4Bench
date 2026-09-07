@@ -829,12 +829,17 @@ def _with_region_deltas(
     Deliberately narrow, because region files are per configuration and hold
     per-event arrays: only ``CONFIRMED`` verdicts, only the ``time`` family
     (region data is per-event time and says nothing about a memory step), only
-    the two releases of that verdict's own window, and one computation per
+    the two ends of that verdict's own window, and one computation per
     ``(label, window)`` however many metrics share it. On the overwhelming
     majority of nights nothing is confirmed and this does no I/O at all.
+
+    A window is keyed by its runs as well as its releases: one release can hold
+    several windows, and keyed on the release pair alone one of them would
+    answer for another whose ends are different runs entirely.
     """
     windows = {
-        (v.label, v.last_accepted_run_date, v.onset_run_date)
+        (v.label, v.last_accepted_run_date, v.onset_run_date,
+         v.last_accepted_run_id, v.onset_run_id)
         for v in group.verdicts
         if v.severity is Severity.CONFIRMED
         and v.metric_family == "time"
@@ -846,15 +851,17 @@ def _with_region_deltas(
         window: region_deltas(
             run_dirs, label=window[0],
             base_release=window[1], onset_release=window[2],
+            base_run_id=window[3], onset_run_id=window[4],
             judgeable_configs=judgeable_configs,
         )
         for window in windows
     }
     group.verdicts = [
         dataclasses.replace(v, region_deltas=deltas)
-        if (deltas := computed.get(
-            (v.label, v.last_accepted_run_date, v.onset_run_date)
-        )) else v
+        if (deltas := computed.get((
+            v.label, v.last_accepted_run_date, v.onset_run_date,
+            v.last_accepted_run_id, v.onset_run_id,
+        ))) else v
         for v in group.verdicts
     ]
     return group
