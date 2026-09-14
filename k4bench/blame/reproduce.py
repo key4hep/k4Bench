@@ -187,8 +187,14 @@ def facts_from(
         "platform": str(getattr(verdict, "platform", "")),
         "sample": str(getattr(verdict, "sample", "")),
     }
-    for info in (base_info, onset_info):
-        if any(str(info.get(key, "")) != value for key, value in expected.items()):
+    # A window opened on a replaced platform has its base (or onset) run there.
+    platforms = (
+        str(getattr(verdict, "last_accepted_platform", None) or expected["platform"]),
+        str(getattr(verdict, "onset_platform", None) or expected["platform"]),
+    )
+    for info, platform in zip((base_info, onset_info), platforms):
+        wanted = {**expected, "platform": platform}
+        if any(str(info.get(key, "")) != value for key, value in wanted.items()):
             return None
 
     base_release = _release(base_info)

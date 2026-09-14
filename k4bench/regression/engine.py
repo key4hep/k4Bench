@@ -69,13 +69,9 @@ so every gate errs toward *not* flagging:
    change arriving in the same window keeps a bounded onset window to
    attribute it with.
 
-A platform migration is the one case where part of the baseline comes from
-somewhere else: a young platform may be seeded with the baseline a *predecessor*
-platform's own walk ended on (see :mod:`k4bench.regression.lineage`) — the level
-that platform had settled on, so a change it already confirmed and re-anchored
-against is not handed over as unfinished business. Seed points are baseline
-evidence only — never judged — and are evicted one by one as the platform's own
-nights arrive, so it is judged against itself alone within a window.
+A platform that succeeds another continues its series: the report assembly puts
+the predecessor's nights in front of the history this engine walks (see
+:mod:`k4bench.regression.lineage`), so a migration is judged like any other step.
 
 Every series reaching this engine is a measurement: what a configuration
 recorded, judged against its own history. A night where every configuration of
@@ -94,13 +90,11 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from dataclasses import dataclass
 from itertools import groupby
 
 import numpy as np
 import pandas as pd
 
-from k4bench.regression.lineage import BaselineSeed
 from k4bench.regression.models import (
     Direction,
     MetricVerdict,
@@ -154,6 +148,30 @@ ABS_DELTA_FLOOR: dict[str, float] = {
     "time":        0.010,   # seconds
     "memory":      16.0,    # MB
 }
+
+
+#: Trailing reliable measurements the night-to-night noise floor
+#: (:func:`night_to_night_spread`) is read from. Unlike the baseline window it is
+#: never cleared by a re-anchor. Seven values give six differences, so one step
+#: among them cannot move their median.
+NOISE_WINDOW_RUNS = MIN_BASELINE_RUNS
+
+
+def night_to_night_spread(values) -> float:
+    """How much *values* move from one measurement to the next, as a standard
+    deviation: the scaled median absolute successive difference.
+
+    A single step between two levels is one large difference among small ones,
+    so it barely registers here, while a baseline window straddling the step
+    would read it as spread. A series that hops between levels every few nights
+    has large differences throughout, and this is what stops such a series from
+    being judged against the spread of whichever level it last settled on.
+    ``0.0`` below three values.
+    """
+    x = np.asarray(values, dtype=float)
+    if len(x) < 3:
+        return 0.0
+    return MAD_NORMAL_CONSISTENCY * float(np.median(np.abs(np.diff(x)))) / math.sqrt(2)
 
 
 def robust_baseline(values: np.ndarray) -> tuple[float, float]:
@@ -218,66 +236,10 @@ def release_key(run_date, run_id) -> str:
     return _fmt_date(run_date) or str(run_id)
 
 
-@dataclass(frozen=True)
-class _BaselineState:
-    """Where a walk left its baseline: the level in force and its provenance.
-
-    *values* are the window the next night would be judged against, *anchor_date*
-    the release whose confirmed change the window is re-anchoring onto (``None``
-    when no change-point is being settled), and *anchor_mad* the pre-change
-    spread that stands in as the noise proxy while that segment is short.
-    """
-
-    values: tuple[float, ...]
-    anchor_date: str | None
-    anchor_mad: float
-
-
-_EMPTY_STATE = _BaselineState(values=(), anchor_date=None, anchor_mad=0.0)
-
-
-def _seed_state(
-    seed: pd.DataFrame, *, series: SeriesId, before, before_run,
-) -> _BaselineState:
-    """The predecessor's baseline as its own walk left it at the migration.
-
-    Only rows preceding both the release and the measurement cutoff are read,
-    because platforms can run in parallel: a seed point measured *after* the
-    night it helps judge would leak the future into that verdict, and into the
-    WATCH/CONFIRMED state that follows from it. Without a usable date on either
-    side nothing can be shown to predate anything, so nothing is inherited.
-
-    Those rows are then walked exactly as the successor's own history is. What
-    the predecessor's baseline holds at the end is the level it had *settled
-    on*: a change it confirmed has already re-anchored that window onto the new
-    level, so a step the predecessor detected, confirmed and accepted is handed
-    over as the accepted normal rather than as news. It is the walk that
-    separates the two, and only the walk can: a step confirmed less than
-    :data:`BASELINE_WINDOW_RUNS` nights before the handover is still, by count
-    alone, indistinguishable from the noise around a level that never moved.
-    """
-    dates = pd.to_datetime(seed["run_date"], errors="coerce")
-    measured = pd.to_datetime(seed["run_id"], errors="coerce")
-    if pd.isna(before) or pd.isna(before_run):
-        return _EMPTY_STATE
-    # An old release rerun after the successor started is still future data.
-    ordered = seed[
-        dates.notna() & (dates < before)
-        & measured.notna() & (measured < before_run)
-    ]
-    if ordered.empty:
-        return _EMPTY_STATE
-    # The walk filters unreliable and missing values itself, so the frame goes
-    # in as measured; its verdicts are discarded, since a seed point is
-    # baseline evidence for the successor and never a night of its own.
-    return _walk(ordered, series=series)[1]
-
-
 def evaluate_series(
     history: pd.DataFrame,
     *,
     series: SeriesId,
-    baseline_seed: BaselineSeed | None = None,
 ) -> list[MetricVerdict]:
     """Chronologically evaluate one metric history and return its verdict series.
 
@@ -292,20 +254,6 @@ def evaluate_series(
       *unknown* verdict (no machine info) is not evidence of contention, and
       excluding it would starve baselines on histories without machine info —
       the same policy as the dashboard's reliability filter.
-
-    *baseline_seed* is the optional history of a *predecessor* platform for this
-    same series (see :mod:`k4bench.regression.lineage`), filling the baseline
-    window while the platform is too young to have one of its own. It is walked
-    the same way this history is, and what enters the window is the baseline
-    that walk ended on — the level in force at the migration, together with the
-    change-point it was still settling onto, if any (see :func:`_seed_state`).
-    Seed points produce no verdict, are not part of the returned series, and
-    must predate both the first release and the first measurement they help
-    judge. They are evicted one at a time as the platform's own values arrive — gone after
-    :data:`BASELINE_WINDOW_RUNS` of them, or at once when a confirmed change
-    re-anchors the baseline. A migration step is therefore judged like any
-    other step, and the verdicts judged against a seeded window say so in
-    ``baseline_inherited_from``.
 
     The unit of change is the **release**: nights sharing a ``run_date`` are
     repeat measurements of one software state, and all engine state transitions
@@ -371,40 +319,14 @@ def evaluate_series(
     and the sibling metrics of one run group, which usually step together,
     keep agreeing on one window instead of fanning out over their own noise.
     """
-    return _walk(history, series=series, baseline_seed=baseline_seed)[0]
-
-
-def _walk(
-    history: pd.DataFrame,
-    *,
-    series: SeriesId,
-    baseline_seed: BaselineSeed | None = None,
-) -> tuple[list[MetricVerdict], _BaselineState]:
-    """The walk behind :func:`evaluate_series`, plus the baseline it ends on.
-
-    The trailing state is what a successor platform inherits (see
-    :func:`_seed_state`); every caller judging a series wants the verdicts and
-    reaches this through :func:`evaluate_series`.
-    """
     floor = EFFECT_FLOOR[series.metric_family]
     abs_delta_floor = ABS_DELTA_FLOOR.get(series.metric_family, 0.0)
 
     df = history.sort_values(["run_date", "run_id"], kind="stable")
-    #: ``(value, inherited)`` per point: seeded points are evicted by this
-    #: platform's own values in the normal way — the deque is the handover.
-    baseline: deque[tuple[float, bool]] = deque(maxlen=BASELINE_WINDOW_RUNS)
-    seed_platform: str | None = None
-    seed_state = _EMPTY_STATE
-    if baseline_seed is not None:
-        measured = pd.to_datetime(df["run_id"], errors="coerce")
-        seed_state = _seed_state(
-            baseline_seed.history,
-            series=series,
-            before=pd.to_datetime(df["run_date"], errors="coerce").min(),
-            before_run=measured.min() if measured.notna().all() else pd.NaT,
-        )
-        baseline.extend((value, True) for value in seed_state.values)
-        seed_platform = baseline_seed.platform
+    baseline: deque[float] = deque(maxlen=BASELINE_WINDOW_RUNS)
+    #: The newest reliable values in night order, re-anchor or not: what the
+    #: noise floor is read from.
+    recent: deque[float] = deque(maxlen=NOISE_WINDOW_RUNS)
     pending: Direction | None = None
     pending_run: tuple[str, str] | None = None   # the WATCH night's identity (the onset)
     #: Per direction, the newest reliable judged night that measured the series
@@ -418,14 +340,8 @@ def _walk(
     last_absent: dict[Direction, tuple[str, str] | None] = {
         Direction.UP: None, Direction.DOWN: None,
     }
-    # Carried over with the seed: an inherited window that is still settling
-    # onto a confirmed change keeps being judged as the predecessor judged it —
-    # against the short segment's median, with the pre-change spread as the
-    # noise proxy — rather than falling back into the cold start the seed
-    # exists to remove. A pending WATCH is not carried: two strikes have to be
-    # consecutive nights of one platform.
-    anchor_date: str | None = seed_state.anchor_date
-    anchor_mad: float = seed_state.anchor_mad
+    anchor_date: str | None = None      # date of the last confirmed change-point
+    anchor_mad: float = 0.0             # pre-change spread, proxy while re-anchoring
     verdicts: list[MetricVerdict] = []
 
     def _verdict(row, **kw) -> MetricVerdict:
@@ -454,11 +370,8 @@ def _walk(
         df.itertuples(index=False), key=_segment_key,
     ):
         # The baseline cannot move inside a release (judged values enter it at
-        # the boundary below), so its window is resolved once, here. Seeded
-        # points are evicted one at a time by this platform's own values —
-        # the deque is the handover, and a re-anchor clears them outright.
-        window = np.asarray([value for value, _ in baseline], dtype=float)
-        inherited = any(seeded for _, seeded in baseline)
+        # the boundary below), so its window is resolved once, here.
+        window = np.asarray(baseline, dtype=float)
 
         # Per-release state, reset at every boundary.
         # snapshot: (med, mad, reanchoring, n_base)
@@ -523,6 +436,12 @@ def _walk(
                     mad = anchor_mad
                 else:
                     med, mad = robust_baseline(window)
+                # Never narrower than the series actually moves night to
+                # night. A window's spread only describes the level it holds,
+                # and a re-anchor keeps the previous level's spread in force; a
+                # series that keeps hopping between levels would otherwise
+                # confirm every hop against the quiet of the last one.
+                mad = max(mad, night_to_night_spread(recent))
                 snapshot = (med, mad, reanchoring, len(window))
 
             med, mad, reanchoring, n_base = snapshot
@@ -665,7 +584,6 @@ def _walk(
                 # Set on every severity judged against it: a series settling onto
                 # a new level is not a control whatever tonight's verdict says.
                 reanchor_run_date=anchor_date if reanchoring else None,
-                baseline_inherited_from=seed_platform if inherited else None,
             ))
             release_values.append(x)
             release_last_reliable = _identity(row)
@@ -674,6 +592,7 @@ def _walk(
 
         # Release boundary: the only place baseline state moves for judged
         # nights.
+        recent.extend(release_values)
         if release_windows and snapshot is not None:
             # A change-point: the new level is the normal one from here on.
             # Re-anchor the window on the release's values so the old median
@@ -683,7 +602,7 @@ def _walk(
             # night, and the level moves far more than the noise does.
             anchor_mad = snapshot[1]
             baseline.clear()
-            baseline.extend((value, False) for value in release_values)
+            baseline.extend(release_values)
             anchor_date = release_date
             pending = pending_run = None
             # Re-anchoring redefines the accepted level as the post-change
@@ -702,10 +621,6 @@ def _walk(
             # baseline in night order (a WATCH value included — one outlier
             # cannot move a 14-point median), and a still-pending WATCH
             # carries into the next release.
-            baseline.extend((value, False) for value in release_values)
+            baseline.extend(release_values)
 
-    return verdicts, _BaselineState(
-        values=tuple(value for value, _ in baseline),
-        anchor_date=anchor_date,
-        anchor_mad=anchor_mad,
-    )
+    return verdicts

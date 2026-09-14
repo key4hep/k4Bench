@@ -2396,12 +2396,12 @@ def _reproducer_for(
         return None
     try:
         base_info = run_info_for(
-            verdict.detector, verdict.platform,
+            verdict.detector, verdict.base_platform,
             f"key4hep-{verdict.last_accepted_run_date}", verdict.sample,
             verdict.last_accepted_run_id,
         )
         onset_info = run_info_for(
-            verdict.detector, verdict.platform,
+            verdict.detector, verdict.onset_run_platform,
             f"key4hep-{verdict.onset_run_date}", verdict.sample,
             verdict.onset_run_id,
         )

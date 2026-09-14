@@ -68,7 +68,7 @@ def classify(verdict: MetricVerdict) -> WindowKind:
         return WindowKind.NONE
     if baseline is None:
         return WindowKind.OPEN
-    if baseline == onset:
+    if baseline == onset and verdict.base_platform == verdict.onset_run_platform:
         return WindowKind.SAME_STACK
     if baseline > onset:
         # Baseline newer than onset is impossible from the engine; treat a

@@ -33,7 +33,7 @@ from k4bench.regression.render import to_json  # noqa: E402
 
 _DASHBOARD_DIR = Path(__file__).resolve().parents[2] / "dashboard"
 
-PLAT = "x86_64-almalinux9-gcc14.2.0-opt"
+PLAT = "x86_64-el9-gcc16-opt"
 NIGHT = "2026-07-10"
 STACK = f"key4hep-{NIGHT}"
 

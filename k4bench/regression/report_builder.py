@@ -41,11 +41,7 @@ from k4bench.regression.engine import (
     release_key,
 )
 from k4bench.regression.history import history_tail, host_facts, release_points
-from k4bench.regression.lineage import (
-    BaselineSeed,
-    baseline_predecessor,
-    platform_retired,
-)
+from k4bench.regression.lineage import predecessor_of, successors_of
 from k4bench.regression.models import (
     MISSING_RUN_FAILURE,
     REPORTED_ONLY_REASON,
@@ -164,25 +160,27 @@ def _series_history(
 
 @dataclasses.dataclass(frozen=True)
 class PredecessorRuns:
-    """One run group's predecessor-platform frames, for baseline seeding only.
+    """One run group's predecessor-platform frames, whose series this group's
+    series continue (see :mod:`k4bench.regression.lineage`).
 
-    Kept apart from the group's own frames rather than concatenated into them:
+    Kept apart from the group's own frames and joined per metric series only:
     everything else read off those frames — tonight's release, the CI run, the
     config roster, failures, region timings — is a statement about *this*
-    platform, which a borrowed row would answer wrongly.
+    platform, which a predecessor row would answer wrongly.
     """
 
     platform: str
     results_df: pd.DataFrame | None
     event_df: pd.DataFrame | None
     reliability: dict[str, bool | None]
+    hosts: dict[str, HostFact] = dataclasses.field(default_factory=dict)
 
 
 def predecessor_runs(platform: str, run_dirs: tuple[str, ...]) -> PredecessorRuns | None:
     """Build :class:`PredecessorRuns` from the predecessor's run directories.
 
     Failed configs are dropped as they are for the group's own runs: a gap must
-    not seed a baseline any more than it may enter one.
+    not enter a continued series any more than the group's own.
     """
     if not run_dirs:
         return None
@@ -194,30 +192,68 @@ def predecessor_runs(platform: str, run_dirs: tuple[str, ...]) -> PredecessorRun
         results_df=judgeable_config_rows(results_df, results_df),
         event_df=judgeable_config_rows(event_df, results_df),
         reliability=run_reliability_map(results_df, machine_df),
+        hosts=host_facts(machine_df),
     )
 
 
-def _baseline_seed(
+def _continued_history(
+    own: pd.DataFrame,
     predecessor: PredecessorRuns | None,
     df: pd.DataFrame | None,
     label: str,
     metric: str,
-) -> BaselineSeed | None:
-    """The predecessor's history for one series, or ``None`` when it has none.
+) -> pd.DataFrame:
+    """*own* history with the predecessor's matching series in front of it.
 
-    Matched on ``(label, metric)``: a config the predecessor never ran has
-    nothing to lend, and another config's history would be a fabricated
-    baseline rather than a borrowed one.
+    Matched on ``(label, metric)``: a config the predecessor never ran has no
+    history to continue, and another config's would be a fabricated one.
+
+    Only predecessor nights that precede the successor's first on both dates
+    are kept. A release date names a different build on each platform, and the
+    engine pools every night sharing one as repeat measurements of the same
+    software. A measurement taken after the successor started — an old release
+    rerun on the replaced platform — would change verdicts already issued.
     """
     if predecessor is None or df is None or df.empty or metric not in df.columns:
-        return None
+        return own
     mask = df["label"] == label
     if not mask.any():
-        return None
-    return BaselineSeed(
-        platform=predecessor.platform,
-        history=_series_history(df, mask, metric, predecessor.reliability),
-    )
+        return own
+    before = _series_history(df, mask, metric, predecessor.reliability)
+    first_release = pd.to_datetime(own["run_date"], errors="coerce").min()
+    first_run = pd.to_datetime(own["run_id"], errors="coerce").min()
+    if pd.isna(first_release) or pd.isna(first_run):
+        return own
+    releases = pd.to_datetime(before["run_date"], errors="coerce")
+    runs = pd.to_datetime(before["run_id"], errors="coerce")
+    before = before[
+        releases.notna() & (releases < first_release)
+        & runs.notna() & (runs < first_run)
+    ]
+    if before.empty:
+        return own
+    return pd.concat([before, own], ignore_index=True)
+
+
+def _with_endpoint_platforms(
+    verdict: MetricVerdict,
+    own_runs: set[str],
+    predecessor: PredecessorRuns | None,
+) -> MetricVerdict:
+    """*verdict* naming the replaced platform on a window end measured there.
+
+    A continued series only ever holds the predecessor's runs and the group's
+    own, so a window end that is not one of the group's own runs is the
+    predecessor's.
+    """
+    if predecessor is None:
+        return verdict
+    changes = {}
+    if verdict.last_accepted_run_id and verdict.last_accepted_run_id not in own_runs:
+        changes["last_accepted_platform"] = predecessor.platform
+    if verdict.onset_run_id and verdict.onset_run_id not in own_runs:
+        changes["onset_platform"] = predecessor.platform
+    return dataclasses.replace(verdict, **changes) if changes else verdict
 
 
 def unjudged_value_verdicts(
@@ -335,10 +371,11 @@ def evaluate_group_series(
     dashboard drill-down and the retrospective threshold validation consume
     the whole walk.
 
-    *predecessor* (from :func:`predecessor_runs`) is the older platform this
-    one seeds its baseline from while it is too young to have one; every series
-    takes the matching series out of it. Omitted — the normal case — each
-    series is judged against its own history alone.
+    *predecessor* (from :func:`predecessor_runs`) is the replaced platform this
+    one succeeds: each series is walked with the predecessor's matching series in
+    front of it, so a migration step is judged like any other. Only verdicts for
+    this group's own runs are returned. Omitted — the normal case — each series
+    is its own history alone.
 
     *hosts* (from :func:`~k4bench.regression.history.host_facts`) names the
     machine behind each run, and only reaches the history tails attached to
@@ -351,8 +388,10 @@ def evaluate_group_series(
     """
     out: dict[SeriesId, list[MetricVerdict]] = {}
 
+    all_hosts = {**(predecessor.hosts if predecessor else {}), **(hosts or {})}
+
     def _walk(
-        df: pd.DataFrame, metrics: dict[str, str], seed_df: pd.DataFrame | None,
+        df: pd.DataFrame, metrics: dict[str, str], before_df: pd.DataFrame | None,
     ) -> None:
         labels = sorted(df["label"].dropna().unique())
 
@@ -362,13 +401,18 @@ def evaluate_group_series(
             for label in labels:
                 name = str(label)
                 sid = SeriesId(detector, platform, sample, name, family, metric)
-                history = _series_history(df, df["label"] == label, metric, reliability)
-                verdicts = evaluate_series(
-                    history, series=sid,
-                    baseline_seed=_baseline_seed(predecessor, seed_df, name, metric),
+                own = _series_history(df, df["label"] == label, metric, reliability)
+                history = _continued_history(own, predecessor, before_df, name, metric)
+                verdicts = _with_history(
+                    history, evaluate_series(history, series=sid), all_hosts,
                 )
+                own_runs = set(own["run_id"])
+                verdicts = [
+                    _with_endpoint_platforms(v, own_runs, predecessor)
+                    for v in verdicts if v.run_id in own_runs
+                ]
                 if verdicts:
-                    out[sid] = _with_history(history, verdicts, hosts or {})
+                    out[sid] = verdicts
 
     if results_df is not None and not results_df.empty:
         _walk(
@@ -636,7 +680,7 @@ def build_group_report(
     )
     if not run_dirs:
         return None
-    predecessor = baseline_predecessor(platform)
+    predecessor = predecessor_of(platform)
     return group_report_from_run_dirs(
         detector, platform, sample, run_dirs,
         predecessor=None if predecessor is None else partial(
@@ -787,16 +831,6 @@ def _group_report_from_frames(
         tonight=tonight, already=already,
     ))
 
-    if inherited := sorted({
-        v.baseline_inherited_from for v in group.verdicts
-        if v.baseline_inherited_from
-    }):
-        group.notes.append(
-            f"baseline seeded from {', '.join(inherited)} — this platform's "
-            "baseline window still holds measurements of the platform it "
-            "replaced; its own runs replace them one at a time"
-        )
-
     if reliability.get(tonight) is False:
         group.notes.append(
             "tonight's run failed the host reliability check — "
@@ -889,12 +923,10 @@ def group_report_from_run_dirs(
     """Build one triple's report from already-local run directories (ordered
     oldest → newest; each directory's name is its nightly date).
 
-    *predecessor* lends baseline points to a platform too young to have its
-    own; it never contributes a verdict, a release, a failure or a timing. It
-    is loaded for every replay: group run counts cannot say whether each
-    series has enough usable points from earlier releases, or whether its
-    detection state depends on the seed. The engine replaces inherited points
-    as each series fills its own baseline window.
+    *predecessor* loads the platform this one replaced, whose series
+    this group's continue; it never contributes a verdict, a release, a failure
+    or a timing. It is loaded for every replay, because a series' detection
+    state can depend on the nights it continues however long ago they were.
     """
     if not run_dirs:
         return None
@@ -906,14 +938,14 @@ def group_report_from_run_dirs(
     event_df = build_event_timing_trend(run_dirs)
     machine_df = build_machine_info_trend(run_dirs)
     reliability = run_reliability_map(results_df, machine_df)
-    seed = predecessor() if predecessor is not None else None
+    before = predecessor() if predecessor is not None else None
     group = _group_report_from_frames(
         detector, platform, sample,
         results_df=results_df, event_df=event_df,
         reliability=reliability, tonight=tonight,
         hosts=host_facts(machine_df),
         configured_labels=tonight_meta["configured_labels"],
-        predecessor=seed,
+        predecessor=before,
     )
     if group is None:
         return None
@@ -999,7 +1031,7 @@ def build_nightly_report_local(
     for det_dir in sorted(p for p in root.iterdir() if p.is_dir()):
         if det_dir.name.startswith(("_", ".")):
             continue
-        # Every platform first: a young one seeds from a predecessor's runs.
+        # Every platform first: a successor continues its predecessor's runs.
         per_platform: dict[str, dict[str, list[Path]]] = {}
         for plat_dir in sorted(p for p in det_dir.iterdir() if p.is_dir()):
             # Collect each sample's run dirs across all stacks.
@@ -1012,15 +1044,15 @@ def build_nightly_report_local(
             per_platform[plat_dir.name] = per_sample
 
         for platform, per_sample in per_platform.items():
-            predecessor = baseline_predecessor(platform)
+            predecessor = predecessor_of(platform)
             for sample, run_paths in sorted(per_sample.items()):
-                seed_dirs = _window(
+                predecessor_dirs = _window(
                     per_platform.get(predecessor, {}).get(sample, [])
                 ) if predecessor is not None else ()
                 group = group_report_from_run_dirs(
                     det_dir.name, platform, sample, _window(run_paths),
                     predecessor=None if predecessor is None else partial(
-                        predecessor_runs, predecessor, seed_dirs,
+                        predecessor_runs, predecessor, predecessor_dirs,
                     ),
                 )
                 if group is not None:
@@ -1124,6 +1156,7 @@ def _finalize_report(
         report_night = night if forced else newest
         night_ts = pd.Timestamp(report_night)
         batch = _batch_keys(groups, report_night)
+        reported = {(g.detector, g.platform, g.sample) for g in groups}
         kept: list[RunGroupReport] = []
         for g in groups:
             if g.run_date == report_night:
@@ -1148,10 +1181,16 @@ def _finalize_report(
                 )
                 kept.append(g)
                 continue
-            if platform_retired(g.platform, report_night):
+            if any(
+                (g.detector, successor, g.sample) in reported
+                for successor in successors_of(g.platform)
+            ):
+                # Its successor has run, so nothing expects this platform to.
+                # Before that night a backfill still reports a night it missed.
                 _log.info(
-                    "_finalize_report: dropping %s/%s/%s — platform retired "
-                    "(last run %s)", g.detector, g.platform, g.sample, g.run_date,
+                    "_finalize_report: dropping %s/%s/%s — replaced by a platform "
+                    "that has run (last run %s)",
+                    g.detector, g.platform, g.sample, g.run_date,
                 )
                 continue
             if age_days > MISSING_RUN_GRACE_DAYS:

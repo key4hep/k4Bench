@@ -290,12 +290,24 @@ class MetricVerdict:
     #:
     #: ``None`` on reports written before this field existed.
     reanchor_run_date: str | None = None
-    #: The *predecessor* platform whose measurements seeded the baseline this
-    #: verdict was judged against (see :mod:`k4bench.regression.lineage`), or
-    #: ``None`` when the baseline is this platform's own — the normal case, and
-    #: every legacy report. A yardstick measured by a different compiler is
-    #: exactly the kind of thing that explains a step, so it is recorded.
-    baseline_inherited_from: str | None = None
+    #: The platform the window's base run (``last_accepted_run_id``) and onset
+    #: run (``onset_run_id``) were measured on, when that is not this verdict's
+    #: own platform — a series continuing a replaced platform's history (see
+    #: :mod:`k4bench.regression.lineage`) can open a window on the old platform.
+    #: Provenance for that end lives under the old platform. ``None`` means the
+    #: verdict's own platform, and on every report written before these existed.
+    last_accepted_platform: str | None = None
+    onset_platform: str | None = None
+
+    @property
+    def base_platform(self) -> str:
+        """The platform the window's base run was measured on."""
+        return self.last_accepted_platform or self.platform
+
+    @property
+    def onset_run_platform(self) -> str:
+        """The platform the window's onset run was measured on."""
+        return self.onset_platform or self.platform
 
     @property
     def flagged(self) -> bool:

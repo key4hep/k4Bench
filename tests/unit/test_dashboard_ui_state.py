@@ -127,23 +127,9 @@ _OLD = "x86_64-almalinux9-gcc14.2.0-opt"
 _NEW = "x86_64-el9-gcc16-opt"
 
 
-def test_a_retired_platform_does_not_become_the_default():
-    from k4bench.regression.lineage import PLATFORM_RETIREMENTS
-
-    ordered = ui_chrome.order_platforms(
-        [_OLD, _NEW], today=PLATFORM_RETIREMENTS[_OLD],
-    )
-    assert ordered == [_NEW, _OLD]
+def test_a_replaced_platform_does_not_become_the_default():
+    assert ui_chrome.order_platforms([_OLD, _NEW]) == [_NEW, _OLD]
 
 
-def test_a_platform_retired_later_still_leads_before_its_date():
-    from k4bench.regression.lineage import PLATFORM_RETIREMENTS
-
-    assert ui_chrome.order_platforms([_NEW, _OLD], today="2020-01-01") == [_OLD, _NEW]
-    assert PLATFORM_RETIREMENTS[_OLD] > "2020-01-01"
-
-
-def test_platforms_without_retirements_stay_alphabetical():
-    assert ui_chrome.order_platforms(
-        ["b-plat", "a-plat"], today="2026-09-03",
-    ) == ["a-plat", "b-plat"]
+def test_platforms_nothing_replaced_stay_alphabetical():
+    assert ui_chrome.order_platforms(["b-plat", "a-plat"]) == ["a-plat", "b-plat"]

@@ -53,7 +53,7 @@ from remote_cache import (
 )
 from k4bench.blame.models import BlameReport, BlameSchemaError, rank_group_key
 from k4bench.provenance.diff import diff_packages
-from k4bench.regression.lineage import platform_retired
+from k4bench.regression.lineage import successors_of
 from tabs import _blame
 from tabs._night_picker import render_night_picker
 from tabs._regression_flags import (
@@ -279,14 +279,37 @@ def _candidate_nights(
     dateset = set(dates)
     nights = {d for d in run_dates if d in dateset}
     newest_any = max(d for ds in stacks_dates.values() for d in ds)
-    if max(run_dates) == newest_any and not platform_retired(platform, max(dates)):
+    latest = max(dates)
+    if max(run_dates) == newest_any and not _replaced_by(
+        data_url, detector, platform, sample, latest,
+    ):
         # Active release: also offer the latest report, so a night that
         # benchmarked nothing for this release (a missing-run failure) stays
         # visible even though it isn't one of the release's own run dates.
-        nights.add(max(dates))
+        nights.add(latest)
     if not nights:
         return None, True, stacks_dates
     return sorted(nights, reverse=True), True, stacks_dates
+
+
+def _replaced_by(
+    data_url: str, detector: str, platform: str, sample: str, night: str,
+) -> bool:
+    """Whether a platform that replaced *platform* had run *sample* by *night* —
+    the condition under which the report stops expecting *platform* to run.
+
+    A listing that cannot be fetched counts as not replaced: offering a night
+    that turns out to hold nothing for this platform costs less than hiding a
+    missing-run failure.
+    """
+    for successor in successors_of(platform):
+        try:
+            listing = _cached_list_run_dates(data_url, detector, successor, sample)
+        except requests.RequestException:
+            continue
+        if any(d <= night for ds in listing.values() for d in ds):
+            return True
+    return False
 
 
 def _attribution_reports(
@@ -566,9 +589,14 @@ def _render_banner(group: RunGroupReport) -> None:
 def _window_changes(data_url: str, verdict: MetricVerdict) -> list | None:
     """Changed packages across a confirmed regression's bounded blame window,
     or ``None`` when either release's provenance is missing (aged off CVMFS, or
-    a release benchmarked before capture)."""
-    base = packages_for_release(data_url, verdict.platform, verdict.last_accepted_run_date)
-    head = packages_for_release(data_url, verdict.platform, verdict.onset_run_date)
+    a release benchmarked before capture). Each end is read under the platform
+    it ran on, which differs across a platform migration."""
+    base = packages_for_release(
+        data_url, verdict.base_platform, verdict.last_accepted_run_date,
+    )
+    head = packages_for_release(
+        data_url, verdict.onset_run_platform, verdict.onset_run_date,
+    )
     if not base or not head:
         return None
     return diff_packages(base, head)
@@ -632,11 +660,18 @@ def _render_blame_card(data_url: str, attribution: _WindowAttribution) -> None:
                 f"**{len(changes)} package(s) moved:** " + _blame.changes_summary(changes)
             )
         render_candidate_ranking(v, attribution.blame, show_empty=True)
-        st.link_button(
-            "🔍 Open in Stack Changes →",
-            deep_link(detector=v.detector, platform=v.platform, sample=v.sample,
-                      head_release=onset, base_release=baseline),
-        )
+        if v.base_platform != v.onset_run_platform:
+            # Stack Changes compares two releases of one platform.
+            st.caption(
+                f"This window spans a platform switch: "
+                f"`{v.base_platform}` → `{v.onset_run_platform}`."
+            )
+        else:
+            st.link_button(
+                "🔍 Open in Stack Changes →",
+                deep_link(detector=v.detector, platform=v.platform, sample=v.sample,
+                          head_release=onset, base_release=baseline),
+            )
 
 
 def _window_label(attribution: _WindowAttribution) -> str:

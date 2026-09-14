@@ -118,28 +118,23 @@ Runs recorded from a Spack release and runs recorded from an LCG view are not
 directly comparable, and history keeps both:
 
 - **Platform.** The EOS path segment moved from
-  `x86_64-almalinux9-gcc14.2.0-opt` to `x86_64-el9-gcc16-opt`. Since results are
-  filed under `{detector}/{platform}/...`, the LCG series is a new series rather
-  than a continuation of the old one — which is what stops a compiler change
-  from being reported as a regression in every metric at once. The old tree
-  stays readable; it simply stops growing.
+  `x86_64-almalinux9-gcc14.2.0-opt` to `x86_64-el9-gcc16-opt`. Results are
+  filed under `{detector}/{platform}/...`, so the LCG platform has its own tree,
+  metadata and report; the old tree stays readable and simply stops growing.
 
-    A new series would also mean no baseline for its first week, so the LCG
-    platform *seeds* its baseline from the level the Spack platform had settled
-    on (`k4bench/regression/lineage.py`) — its history is walked, and the
-    baseline that walk ends on is what carries over, so a step the Spack
-    platform had confirmed and accepted is not reported a second time. Those
-    points are never judged and are never the new platform's verdicts, they
-    never postdate the night they help judge, and each of the new platform's own
-    nights evicts one of them until none are left. A shift caused by the
-    migration is reported as one ordinary step (watch, then regression), naming
-    the borrowed platform in `baseline_inherited_from`.
+    For regression detection the LCG platform's metric series *continue* the
+    Spack platform's (`k4bench/regression/lineage.py`): the Spack nights come
+    first in the history each series is judged against, as ordinary baseline
+    points. A shift caused by the migration is therefore reported once, like any
+    other step (watch, then regression), with a window from the last Spack run to
+    the first LCG one, and the baseline re-anchors on the new level. Spack
+    releases dated on or after the first LCG release are left out, since the two
+    stacks publish different builds under the same date.
 
-    The same file dates the Spack platform's **retirement**. From that night on
-    no run is expected from it, so it drops out of the report instead of
-    failing with *no run uploaded* every night until the grace period expires.
-    Earlier nights are unaffected, so a backfill still reports a night that
-    platform really did miss.
+    Once the LCG platform has run, the Spack platform is no longer expected:
+    it drops out of the report instead of failing with *no run uploaded* every
+    night until the grace period expires. A backfill of a night before the first
+    LCG run still reports a night the Spack platform really did miss.
 - **Package names.** LCG spells them as upstream does (`DD4hep`, `fcc_config`)
   where Spack lower-cased and hyphenated them (`dd4hep`, `fcc-config`).
 - **Commit length.** LCG records the abbreviated sha (`9e2047a`) where Spack

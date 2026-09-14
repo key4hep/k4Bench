@@ -215,8 +215,10 @@ def build_blame_report(
     for v in verdicts:
         verdicts_by_rank_group.setdefault(rank_group_key(v), []).append(v)
 
-    diff_cache: dict[tuple[str, str, str], list[PackageChange] | None] = {}
-    unchanged_cache: dict[tuple[str, str, str], int] = {}
+    #: Keyed ``(base platform, base release, onset platform, onset release)``:
+    #: a window opened on a replaced platform reads its base end there.
+    diff_cache: dict[tuple[str, str, str, str], list[PackageChange] | None] = {}
+    unchanged_cache: dict[tuple[str, str, str, str], int] = {}
     resolution_cache: dict[tuple[str, str, str], RepoResolution] = {}
     #: The harness's own movement, resolved once per rank group and keyed like
     #: :data:`verdicts_by_rank_group` (:func:`rank_group_key`) — which is what
@@ -258,7 +260,7 @@ def build_blame_report(
         different answers and stay different all the way to the prompt."""
         if not base or base >= onset:
             return None
-        key = (platform, base, onset)
+        key = (platform, base, platform, onset)
         if key not in diff_cache:
             diff_cache[key], unchanged_cache[key] = _diff_window(
                 packages_for_release, *key
@@ -399,7 +401,7 @@ def build_blame_report(
         return evidence
 
     def historical_index(
-        rank_verdicts: list[MetricVerdict], window: tuple[str, str | None, str]
+        rank_verdicts: list[MetricVerdict], window: tuple[str, str | None, str, str]
     ) -> HistoricalIndex | None:
         """The older boundaries this rank group may ask to read, or ``None``.
 
@@ -411,7 +413,7 @@ def build_blame_report(
         under two different rules."""
         if not historical_diffs or github is None:
             return None
-        platform, base, onset = window
+        _, base, platform, onset = window
         index = build_index(
             [
                 (v.platform, [point.run_date for point in v.history])
@@ -429,14 +431,17 @@ def build_blame_report(
 
     entries: list[BlameEntry] = []
     for v in verdicts:
-        window = (v.platform, v.last_accepted_run_date, v.onset_run_date)
+        window = (
+            v.base_platform, v.last_accepted_run_date,
+            v.onset_run_platform, v.onset_run_date,
+        )
         if window not in diff_cache:
-            if window[1] == window[2]:
+            if window[0] == window[2] and window[1] == window[3]:
                 # A same-release window: both runs sourced the same immutable
                 # stack, so the upstream diff is ``[]`` *by construction* — no
                 # provenance read can change that answer, and an unreadable
                 # package map costs only the unchanged count, never the entry.
-                packages = packages_for_release(v.platform, v.onset_run_date)
+                packages = packages_for_release(v.onset_run_platform, v.onset_run_date)
                 diff_cache[window] = []
                 unchanged_cache[window] = len(packages) if packages else 0
             else:
@@ -632,11 +637,17 @@ def _harness_change(
             base_id, onset_id,
         )
         return None
+    # Each end is read under the platform it ran on: a window opened on a
+    # replaced platform keeps its base run's provenance there.
+    base_end = next(m for m in verdicts if m.last_accepted_run_id == base_id)
+    onset_end = next(m for m in verdicts if m.onset_run_id == onset_id)
     base = k4bench_commit_for_run(
-        v.detector, v.platform, v.last_accepted_run_date, v.sample, base_id
+        v.detector, base_end.base_platform, base_end.last_accepted_run_date,
+        v.sample, base_id,
     )
     onset = k4bench_commit_for_run(
-        v.detector, v.platform, v.onset_run_date, v.sample, onset_id
+        v.detector, onset_end.onset_run_platform, onset_end.onset_run_date,
+        v.sample, onset_id,
     )
     if base is None or onset is None:
         return None
@@ -689,14 +700,19 @@ def _harness_candidate_signal(files: tuple[str, ...]) -> bool:
 
 
 def _diff_window(
-    packages_for_release: PackagesForRelease, platform: str, base: str, onset: str
+    packages_for_release: PackagesForRelease,
+    base_platform: str, base: str, onset_platform: str, onset: str,
 ) -> tuple[list[PackageChange] | None, int]:
     """The changed packages and unchanged count for one window, or ``(None, 0)``
-    when either release's provenance is unavailable."""
-    base_pkgs = packages_for_release(platform, base)
-    head_pkgs = packages_for_release(platform, onset)
+    when either release's provenance is unavailable. Each end is read under the
+    platform it was measured on."""
+    base_pkgs = packages_for_release(base_platform, base)
+    head_pkgs = packages_for_release(onset_platform, onset)
     if not base_pkgs or not head_pkgs:
-        _log.info("blame: no provenance for %s %s..%s", platform, base, onset)
+        _log.info(
+            "blame: no provenance for %s %s..%s %s",
+            base_platform, base, onset_platform, onset,
+        )
         return None, 0
     return diff_packages(base_pkgs, head_pkgs), len(unchanged_packages(base_pkgs, head_pkgs))
 
