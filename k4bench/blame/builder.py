@@ -248,7 +248,7 @@ def build_blame_report(
     rate_limited = False
 
     def changed_packages(
-        platform: str, base: str | None, onset: str
+        platform: str, base: str | None, onset: str, base_platform: str | None = None,
     ) -> list[PackageChange] | None:
         """The tracked packages that moved across one release boundary, or
         ``None`` when that boundary's provenance could not be read.
@@ -257,20 +257,25 @@ def build_blame_report(
         ask exactly the same question of exactly the same data, and a boundary
         that is a history step for one metric is the change window of another.
         ``[]`` (the stack stood still) and ``None`` (nobody could look) are
-        different answers and stay different all the way to the prompt."""
+        different answers and stay different all the way to the prompt.
+
+        *platform* measured *onset*; *base_platform* measured *base* when that
+        was a different platform."""
         if not base or base >= onset:
             return None
-        key = (platform, base, platform, onset)
+        key = (base_platform or platform, base, platform, onset)
         if key not in diff_cache:
             diff_cache[key], unchanged_cache[key] = _diff_window(
                 packages_for_release, *key
             )
         return diff_cache[key]
 
-    def changed_count(platform: str, base: str | None, onset: str) -> int | None:
+    def changed_count(
+        platform: str, base: str | None, onset: str, base_platform: str | None = None,
+    ) -> int | None:
         """How many tracked packages moved across one boundary — the number the
         history table states, and the one a metric's own noise is read against."""
-        changes = changed_packages(platform, base, onset)
+        changes = changed_packages(platform, base, onset, base_platform)
         return None if changes is None else len(changes)
 
     #: What the historical retrieval cost, for the operator: reads that reached
@@ -305,7 +310,8 @@ def build_blame_report(
         for selection in request.selections:
             boundary = selection.boundary
             changes = changed_packages(
-                boundary.platform, boundary.base_release, boundary.onset_release
+                boundary.platform, boundary.base_release, boundary.onset_release,
+                boundary.base_platform,
             )
             if changes is None:
                 return HistoricalEvidence(
@@ -413,14 +419,18 @@ def build_blame_report(
         under two different rules."""
         if not historical_diffs or github is None:
             return None
-        _, base, platform, onset = window
+        base_platform, base, platform, onset = window
         index = build_index(
             [
-                (v.platform, [point.run_date for point in v.history])
+                (
+                    v.platform,
+                    [point.run_date for point in v.history],
+                    [point.platform for point in v.history],
+                )
                 for v in rank_verdicts
             ],
             changed_packages=changed_packages,
-            exclude={(platform, base or "", onset)},
+            exclude={(base_platform, base or "", platform, onset)},
         )
         # The index is the offer; the provider is how it is redeemed. Built
         # apart so the offer stays a pure function of provenance the report
@@ -876,7 +886,7 @@ def _rank_group(
     rank_cache: dict[RankGroupKey, RankResult],
     *,
     outcomes: tuple,
-    changed_count: Callable[[str, str | None, str], int | None],
+    changed_count: Callable[..., int | None],
     n_unchanged: int = 0,
     geometry_path: str = "",
     history: HistoricalIndex | None = None,
@@ -942,7 +952,7 @@ def _run_ranker(
     texts: dict[tuple[str, int], PRText],
     *,
     outcomes: tuple,
-    changed_count: Callable[[str, str | None, str], int | None],
+    changed_count: Callable[..., int | None],
     n_unchanged: int = 0,
     geometry_path: str = "",
     history: HistoricalIndex | None = None,
@@ -970,7 +980,7 @@ def _run_ranker(
 
 def _packages_changed(
     verdict: MetricVerdict,
-    changed_count: Callable[[str, str | None, str], int | None],
+    changed_count: Callable[..., int | None],
 ) -> dict[str, int | None]:
     """``release -> tracked packages that moved entering it`` across one
     verdict's history tail.
@@ -983,12 +993,17 @@ def _packages_changed(
     """
     changed: dict[str, int | None] = {}
     previous: str | None = None
+    previous_platform: str | None = None
     for point in verdict.history:
+        platform = point.platform or verdict.platform
         changed[point.run_date] = (
-            changed_count(verdict.platform, previous, point.run_date)
+            changed_count(
+                platform, previous, point.run_date,
+                None if previous_platform == platform else previous_platform,
+            )
             if previous else None
         )
-        previous = point.run_date
+        previous, previous_platform = point.run_date, platform
     return changed
 
 
@@ -998,7 +1013,7 @@ def _rank_request(
     texts: dict[tuple[str, int], PRText],
     *,
     outcomes: tuple,
-    changed_count: Callable[[str, str | None, str], int | None],
+    changed_count: Callable[..., int | None],
     n_unchanged: int = 0,
     geometry_path: str = "",
     history: HistoricalIndex | None = None,

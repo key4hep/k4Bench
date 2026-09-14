@@ -31,6 +31,7 @@ from k4bench.regression.report_builder import (
     _with_region_deltas,
     build_nightly_report_local,
     group_report_from_run_dirs,
+    PredecessorRuns,
     predecessor_runs,
     report_covers_run,
     unjudged_value_verdicts,
@@ -1089,6 +1090,9 @@ def test_a_migration_step_is_bounded_by_the_predecessors_last_night(tmp_path):
     assert wall.onset_run_id == "2026-01-11"
     assert wall.last_accepted_run_id == "2026-01-10"
     assert (wall.base_platform, wall.onset_run_platform) == (_OLD_PLAT, _NEW_PLAT)
+    assert [(p.run_date, p.platform) for p in wall.history][-3:] == [
+        ("2026-01-10", _OLD_PLAT), ("2026-01-11", None), ("2026-01-12", None),
+    ]
     assert [p.run_date for p in wall.history][-3:] == [
         "2026-01-10", "2026-01-11", "2026-01-12",
     ]
@@ -1327,3 +1331,51 @@ def test_one_cross_release_window_is_computed_once_for_every_metric(tmp_path):
     for v in _with_region_deltas(group, run_dirs).verdicts:
         # Both ends pool their whole release: base is the median of 1.0 and 3.0.
         assert [(d.base, d.onset) for d in v.region_deltas] == [(2.0, 10.0)]
+
+
+def test_a_window_opening_on_the_replaced_platform_keeps_its_region_deltas(tmp_path):
+    # The base run lives in the predecessor's tree. Each end reads only its own
+    # release there, so the predecessor's night published under the successor's
+    # first release date never pools with it.
+    old_dirs = (
+        _write_region_run(tmp_path / "old", "2026-07-13", "2026-07-13", 1.0),
+        _write_region_run(tmp_path / "old", "2026-07-14", "2026-07-14", 50.0),
+    )
+    new_dirs = (_write_region_run(tmp_path / "new", "2026-07-15", "2026-07-14", 3.0),)
+    verdict = dataclasses.replace(
+        _region_verdict("wall_time_s", "2026-07-13", "2026-07-15"),
+        platform=_NEW_PLAT, run_id="2026-07-15",
+        last_accepted_run_date="2026-07-13", last_accepted_platform=_OLD_PLAT,
+    )
+    group = RunGroupReport(
+        detector="DET", platform=_NEW_PLAT, sample="single_e",
+        k4h_release="key4hep-2026-07-14", run_date="2026-07-14",
+        run_id="2026-07-15", verdicts=[verdict],
+    )
+    predecessor = PredecessorRuns(
+        platform=_OLD_PLAT, results_df=None, event_df=None, reliability={},
+        run_dirs=old_dirs,
+    )
+
+    without = _with_region_deltas(dataclasses.replace(group), new_dirs).verdicts[0]
+    assert without.region_deltas == ()
+    with_predecessor = _with_region_deltas(group, new_dirs, predecessor=predecessor)
+    deltas = with_predecessor.verdicts[0].region_deltas
+    assert [(d.base, d.onset) for d in deltas] == [(1.0, 3.0)]
+
+
+def test_a_seed_change_across_the_migration_is_noted(tmp_path):
+    # The window's base run is the predecessor's; its seed is read from there.
+    _migration_tree(tmp_path, new_walls=[120.0, 120.5])
+    for night in _nights(2, start="2026-01-11"):
+        info_path = tmp_path / "DET" / _NEW_PLAT / _STACK / "single_e" / night / "run_info.json"
+        info = json.loads(info_path.read_text())
+        info["random_seed"] = 42
+        info_path.write_text(json.dumps(info))
+    group = group_report_from_run_dirs(
+        "DET", _NEW_PLAT, "single_e", _new_platform_runs(tmp_path),
+        predecessor=lambda: _old_platform_runs(tmp_path),
+    )
+    assert any(
+        "2026-01-10 → 2026-01-11 spans a ddsim seed change" in note for note in group.notes
+    )

@@ -180,6 +180,11 @@ class HistoricalBoundary:
     base_release: str
     onset_release: str
     packages: tuple[HistoricalPackage, ...] = ()
+    #: The platform that measured ``base_release`` when it is not ``platform``
+    #: (the onset's) — the boundary where a series continues a replaced
+    #: platform's history, or one inside that older history. ``None`` means the
+    #: same platform.
+    base_platform: str | None = None
     provenance_read: bool = True
     #: How many packages moved across this boundary in total, before
     #: :data:`MAX_INDEX_PACKAGES` cut the listing. Carried so the prompt can say
@@ -344,23 +349,28 @@ class HistoricalIndex:
 # ── Building the index, without touching the network ──────────────────────────
 
 def build_index(
-    tails: list[tuple[str, list[str]]],
+    tails: list[tuple],
     *,
     changed_packages,
-    exclude: set[tuple[str, str, str]] = frozenset(),
+    exclude: set[tuple] = frozenset(),
 ) -> HistoricalIndex:
     """Describe the older release boundaries in *tails*, newest last.
 
     *tails* is ``[(platform, [release, …]), …]`` — one metric's history tail per
-    entry, oldest release first, as the verdicts carry them. Adjacent releases
-    form a boundary; *exclude* holds ``(platform, base, onset)`` triples that must
-    not be offered, which is how the **current** regression window is kept out:
+    entry, oldest release first, as the verdicts carry them — optionally with a
+    third element listing, per release, the platform that measured it (``None``
+    for *platform*), for a series continuing a replaced platform's history.
+    Adjacent releases form a boundary; *exclude* holds ``(platform, base,
+    onset)`` triples, or ``(base platform, base, onset platform, onset)`` for a
+    boundary across platforms, that must not be offered, which is how the
+    **current** regression window is kept out:
     its packages are already in the prompt as scored candidates, and offering
     them again as "history" would invite the model to reason about the same pull
     requests twice under two different rules.
 
     *changed_packages* is ``(platform, base, onset) -> list[PackageChange] | None``
-    — the builder's already-memoized release diff. ``None`` (provenance could not
+    — the builder's already-memoized release diff — called with a
+    ``base_platform`` keyword when the base release was measured elsewhere. ``None`` (provenance could not
     be read) produces a described but not requestable boundary rather than an
     empty package list: "we could not look" and "nothing moved" are opposite
     evidence, and this whole module is downstream of that distinction.
@@ -374,23 +384,34 @@ def build_index(
     No GitHub call is made here, and none can be: every fact comes from the
     provenance the report build already read.
     """
-    seen: dict[tuple[str, str, str], HistoricalBoundary] = {}
-    for platform, releases in tails:
-        for base, onset in zip(releases, releases[1:]):
-            key = (platform, base, onset)
+    excluded = {key if len(key) == 4 else (key[0], key[1], key[0], key[2]) for key in exclude}
+    seen: dict[tuple[str, str, str, str], HistoricalBoundary] = {}
+    for tail in tails:
+        platform, releases = tail[0], tail[1]
+        measured_on = [p or platform for p in tail[2]] if len(tail) > 2 else (
+            [platform] * len(releases)
+        )
+        for i, (base, onset) in enumerate(zip(releases, releases[1:])):
+            base_platform, onset_platform = measured_on[i], measured_on[i + 1]
+            key = (base_platform, base, onset_platform, onset)
             if not base or not onset or base >= onset:
                 continue
-            if key in exclude or key in seen:
+            if key in excluded or key in seen:
                 continue
-            changes = changed_packages(platform, base, onset)
+            changes = (
+                changed_packages(onset_platform, base, onset)
+                if base_platform == onset_platform else
+                changed_packages(onset_platform, base, onset, base_platform=base_platform)
+            )
             seen[key] = HistoricalBoundary(
                 id="",  # assigned below, once the order is settled
-                platform=platform,
+                platform=onset_platform,
                 base_release=base,
                 onset_release=onset,
                 packages=() if changes is None else _packages(changes),
                 provenance_read=changes is not None,
                 packages_total=0 if changes is None else len(changes),
+                base_platform=None if base_platform == onset_platform else base_platform,
             )
     # Newest last, so the ids read forward in time and the cap keeps the recent
     # history — the part a step is actually compared against.
@@ -406,6 +427,7 @@ def build_index(
                 packages=b.packages,
                 provenance_read=b.provenance_read,
                 packages_total=b.packages_total,
+                base_platform=b.base_platform,
             )
             for index, b in enumerate(kept, start=1)
         ),

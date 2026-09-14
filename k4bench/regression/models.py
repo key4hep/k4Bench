@@ -201,6 +201,10 @@ class ReleasePoint:
     severity: Severity = Severity.UNKNOWN
     direction: Direction = Direction.NONE
     hosts: tuple[HostFact, ...] = ()
+    #: The platform that measured this release when it is not the verdict's own
+    #: — a series continuing a replaced platform's history (see
+    #: :mod:`k4bench.regression.lineage`). ``None`` means the verdict's platform.
+    platform: str | None = None
 
 
 @dataclass(frozen=True)

@@ -14,7 +14,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -55,7 +55,7 @@ from k4bench.regression.models import (
     Severity,
     Unjudged,
 )
-from k4bench.regression.regions import region_deltas
+from k4bench.regression.regions import dirs_by_release, region_deltas
 from k4bench.remote import (
     fetch_runs_windowed,
     list_detectors,
@@ -174,6 +174,29 @@ class PredecessorRuns:
     event_df: pd.DataFrame | None
     reliability: dict[str, bool | None]
     hosts: dict[str, HostFact] = dataclasses.field(default_factory=dict)
+    #: The run directories the frames were built from, for evidence read per
+    #: run rather than from the frames (region timings).
+    run_dirs: tuple[str, ...] = ()
+
+
+def _preceding_rows(
+    df: pd.DataFrame | None, date_column: str, own: pd.DataFrame | None, own_date_column: str,
+) -> pd.DataFrame | None:
+    """Rows of a predecessor frame measured before the successor's first night,
+    on both the release date and the run date — the same cutoff a continued
+    series applies (see :func:`_continued_history`)."""
+    if df is None or df.empty or own is None or own.empty:
+        return None
+    first_release = pd.to_datetime(own[own_date_column], errors="coerce").min()
+    first_run = pd.to_datetime(own["run_id"], errors="coerce").min()
+    if pd.isna(first_release) or pd.isna(first_run):
+        return None
+    releases = pd.to_datetime(df[date_column], errors="coerce")
+    runs = pd.to_datetime(df["run_id"], errors="coerce")
+    return df[
+        releases.notna() & (releases < first_release)
+        & runs.notna() & (runs < first_run)
+    ]
 
 
 def predecessor_runs(platform: str, run_dirs: tuple[str, ...]) -> PredecessorRuns | None:
@@ -193,6 +216,7 @@ def predecessor_runs(platform: str, run_dirs: tuple[str, ...]) -> PredecessorRun
         event_df=judgeable_config_rows(event_df, results_df),
         reliability=run_reliability_map(results_df, machine_df),
         hosts=host_facts(machine_df),
+        run_dirs=tuple(run_dirs),
     )
 
 
@@ -219,20 +243,15 @@ def _continued_history(
     mask = df["label"] == label
     if not mask.any():
         return own
-    before = _series_history(df, mask, metric, predecessor.reliability)
-    first_release = pd.to_datetime(own["run_date"], errors="coerce").min()
-    first_run = pd.to_datetime(own["run_id"], errors="coerce").min()
-    if pd.isna(first_release) or pd.isna(first_run):
+    before = _preceding_rows(
+        _series_history(df, mask, metric, predecessor.reliability), "run_date",
+        own, "run_date",
+    )
+    if before is None or before.empty:
         return own
-    releases = pd.to_datetime(before["run_date"], errors="coerce")
-    runs = pd.to_datetime(before["run_id"], errors="coerce")
-    before = before[
-        releases.notna() & (releases < first_release)
-        & runs.notna() & (runs < first_run)
-    ]
-    if before.empty:
-        return own
-    return pd.concat([before, own], ignore_index=True)
+    return pd.concat(
+        [before.assign(platform=predecessor.platform), own], ignore_index=True,
+    )
 
 
 def _with_endpoint_platforms(
@@ -839,7 +858,18 @@ def _group_report_from_frames(
 
     if seed_note := _random_seed_note(results_df, tonight):
         group.notes.append(seed_note)
-    group.notes.extend(_windows_spanning_a_seed_change(group.verdicts, results_df))
+    # A window continuing the replaced platform's history opens on one of its
+    # runs, so its seeds have to be read alongside this platform's.
+    preceding = _preceding_rows(
+        predecessor.results_df if predecessor is not None else None, "x_date",
+        results_df, "x_date",
+    )
+    seed_frame = (
+        pd.concat([preceding, results_df], ignore_index=True)
+        if preceding is not None and not preceding.empty and results_df is not None
+        else results_df
+    )
+    group.notes.extend(_windows_spanning_a_seed_change(group.verdicts, seed_frame))
 
     group.verdicts.extend(config_failures)
     group.job_failures.extend(
@@ -868,6 +898,7 @@ def _with_region_deltas(
     group: RunGroupReport,
     run_dirs: tuple[str, ...],
     judgeable_configs: set[tuple[str, str]] | None = None,
+    predecessor: PredecessorRuns | None = None,
 ) -> RunGroupReport:
     """*group* with each confirmed **timing** regression told where inside the
     detector its step landed (:mod:`k4bench.regression.regions`).
@@ -885,24 +916,47 @@ def _with_region_deltas(
 
     Windows are identified by :func:`_region_window`, so two of them inside one
     release keep their own decompositions instead of one answering for the other.
+
+    A window whose base run was measured on the *predecessor* platform (a series
+    continuing its history) reads that end from the predecessor's run
+    directories. Each end contributes only its own release's directories, so a
+    release date both platforms published under never pools two builds.
     """
-    windows = {
-        _region_window(v)
-        for v in group.verdicts
-        if v.severity is Severity.CONFIRMED
-        and v.metric_family == "time"
-        and v.last_accepted_run_date and v.onset_run_date
-    }
-    if not windows:
+    crossing: dict[tuple, bool] = {}
+    for v in group.verdicts:
+        if (
+            v.severity is Severity.CONFIRMED and v.metric_family == "time"
+            and v.last_accepted_run_date and v.onset_run_date
+        ):
+            crossing[_region_window(v)] = v.base_platform != v.onset_run_platform
+    if not crossing:
         return group
+    if predecessor is not None and any(crossing.values()):
+        own_by_release = dirs_by_release(run_dirs)
+        predecessor_by_release = dirs_by_release(predecessor.run_dirs)
+        first_run = min((Path(d).name for d in run_dirs), default="")
+        if judgeable_configs is not None:
+            judgeable_configs = judgeable_configs | judgeable_config_keys(
+                predecessor.results_df
+            )
+
+    def dirs_for(window: tuple, crosses: bool) -> Sequence[str]:
+        if not crosses or predecessor is None:
+            return run_dirs
+        base_dirs = [
+            str(d) for d in predecessor_by_release.get(window[1], [])
+            if d.name < first_run
+        ]
+        return base_dirs + [str(d) for d in own_by_release.get(window[2], [])]
+
     computed = {
         window: region_deltas(
-            run_dirs, label=window[0],
+            dirs_for(window, crosses), label=window[0],
             base_release=window[1], onset_release=window[2],
             base_run_id=window[3], onset_run_id=window[4],
             judgeable_configs=judgeable_configs,
         )
-        for window in windows
+        for window, crosses in crossing.items()
     }
     group.verdicts = [
         dataclasses.replace(v, region_deltas=deltas)
@@ -954,7 +1008,7 @@ def group_report_from_run_dirs(
     if not group.k4h_release:
         group.k4h_release = tonight_meta["k4h_release"] or ""
     return _with_region_deltas(
-        group, run_dirs, judgeable_config_keys(results_df),
+        group, run_dirs, judgeable_config_keys(results_df), predecessor=before,
     )
 
 

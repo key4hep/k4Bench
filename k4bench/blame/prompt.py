@@ -797,6 +797,10 @@ def historical_offer_lines(
     ]
     for boundary in boundaries:
         window = f"{boundary.base_release} → {boundary.onset_release}"
+        if boundary.base_platform:
+            window += (
+                f" (platform switch: {boundary.base_platform} → {boundary.platform})"
+            )
         if not boundary.provenance_read:
             lines.append(
                 f"  - [{boundary.id}] {window}: the release diff for this "

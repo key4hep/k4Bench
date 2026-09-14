@@ -368,6 +368,7 @@ def _history(raw: object) -> tuple[ReleasePoint, ...]:
                 severity=Severity(item.get("severity", Severity.UNKNOWN.value)),
                 direction=Direction(item.get("direction", Direction.NONE.value)),
                 hosts=_hosts(item.get("hosts")),
+                platform=str(item["platform"]) if item.get("platform") else None,
             ))
         except (TypeError, ValueError):
             continue

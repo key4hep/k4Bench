@@ -27,13 +27,10 @@ def test_an_unmapped_platform_has_neither_predecessor_nor_successor():
     assert not is_replaced("aarch64-el9-gcc16-opt")
 
 
-def test_a_chain_of_migrations_resolves_exactly_one_link(monkeypatch):
-    monkeypatch.setitem(PLATFORM_SUCCESSORS, "gcc16", "gcc14")
-    monkeypatch.setitem(PLATFORM_SUCCESSORS, "gcc17", "gcc16")
-    assert predecessor_of("gcc17") == "gcc16"
-    assert predecessor_of("gcc16") == "gcc14"
-    assert successors_of("gcc14") == ("gcc16",)
-    assert is_replaced("gcc16") and not is_replaced("gcc17")
+def test_succession_does_not_chain():
+    # A successor continues its predecessor's own runs only; a predecessor that
+    # had itself replaced a platform would pass on a history cut short.
+    assert not set(PLATFORM_SUCCESSORS) & set(PLATFORM_SUCCESSORS.values())
 
 
 def test_no_platform_replaces_itself():

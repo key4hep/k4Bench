@@ -15,6 +15,13 @@ successor keeps its own directory, metadata, provenance and report.
 A replaced platform is not expected to run once its successor has: its absence
 from a report is silence rather than a missing-run failure, and it sorts after
 the platforms still running.
+
+Succession is one hop and chains are not allowed: a successor continues its
+predecessor's own runs only, so a platform that replaced another and is itself
+replaced would hand its successor a history cut short at its own first night.
+When the next platform replaces the current one, remove the current one's own
+entry before adding the new one; a later replay of the current platform's
+first nights then judges them cold.
 """
 
 from __future__ import annotations
@@ -30,11 +37,7 @@ PLATFORM_SUCCESSORS: dict[str, str] = {
 
 
 def predecessor_of(platform: str) -> str | None:
-    """The platform *platform* replaced, or ``None``.
-
-    One hop: a successor continues its direct predecessor only, whose own
-    history already begins where that predecessor stopped benchmarking.
-    """
+    """The platform *platform* replaced, or ``None``."""
     predecessor = PLATFORM_SUCCESSORS.get(platform)
     return None if predecessor == platform else predecessor
 
