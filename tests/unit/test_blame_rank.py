@@ -804,3 +804,15 @@ def test_a_harness_move_with_no_surviving_candidate_is_still_stated():
 
 def test_no_harness_movement_leaves_the_prompt_silent_about_it():
     assert "benchmark harness" not in _build_user_prompt(_request())
+
+
+def test_the_ranker_is_told_when_the_window_spans_a_platform_switch():
+    old, new = "x86_64-almalinux9-gcc14.2.0-opt", "x86_64-el9-gcc16-opt"
+    request = dataclasses.replace(
+        _request(), platform=new, base_platform=old, onset_platform=None,
+    )
+    prompt = _build_user_prompt(request)
+    assert f"Window base measured on: {old}" in prompt
+    assert f"Window onset measured on: {new}" in prompt
+    assert "This window spans a platform switch" in prompt
+    assert "platform switch" not in _build_user_prompt(_request())

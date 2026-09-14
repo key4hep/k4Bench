@@ -20,7 +20,7 @@ _SCRIPTS = Path(__file__).resolve().parents[2] / ".github" / "scripts"
 _SCRIPT = _SCRIPTS / "regression_report.py"
 _BLAME_SCRIPT = _SCRIPTS / "blame_report.py"
 _PLAT = "x86_64-almalinux9-gcc14.2.0-opt"
-_LIVE_PLAT = "x86_64-almalinux9-gcc15.2.0-opt"  # not in PLATFORM_RETIREMENTS
+_LIVE_PLAT = "x86_64-almalinux9-gcc15.2.0-opt"  # not in PLATFORM_SUCCESSORS
 _STACK = "key4hep-2026-01-01"
 _GEOMETRY = "FCCee/DET/compact/d.xml"
 

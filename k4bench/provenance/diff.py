@@ -65,6 +65,39 @@ class PackageChange:
         return repo.compare_url(self.base_commit, self.head_commit)
 
 
+def _package_key(name: str) -> str:
+    """A package name as both stacks can agree on it.
+
+    Spack lower-cases and hyphenates (``dd4hep``, ``fcc-config``,
+    ``k4projecttemplate``) where LCG spells names as upstream does (``DD4hep``,
+    ``fcc_config``, ``k4_project_template``); a window spanning a platform
+    migration compares one of each."""
+    return name.lower().replace("-", "").replace("_", "")
+
+
+def _same_commit(a: str | None, b: str | None) -> bool:
+    """Whether two recorded commits name the same revision. Spack records the
+    full sha and LCG an abbreviated one, so a prefix match is the same commit."""
+    if not a or not b:
+        return a == b
+    return a.startswith(b) or b.startswith(a)
+
+
+def _paired(base: dict, head: dict) -> list[tuple[str, dict | None, dict | None]]:
+    """``(name, base entry, head entry)`` per package across both maps, matched
+    on :func:`_package_key` and named as the head spells it."""
+    base_by_key = {_package_key(name): name for name in base}
+    head_by_key = {_package_key(name): name for name in head}
+    return [
+        (
+            head_by_key.get(key) or base_by_key[key],
+            base.get(base_by_key[key]) if key in base_by_key else None,
+            head.get(head_by_key[key]) if key in head_by_key else None,
+        )
+        for key in set(base_by_key) | set(head_by_key)
+    ]
+
+
 def diff_packages(base: dict, head: dict) -> list[PackageChange]:
     """Packages that differ between two ``k4h_packages`` maps.
 
@@ -73,11 +106,10 @@ def diff_packages(base: dict, head: dict) -> list[PackageChange]:
     result means the two stacks are identical — see the module docstring.
     """
     changes: list[PackageChange] = []
-    for name in sorted(set(base) | set(head)):
-        before, after = base.get(name), head.get(name)
+    for name, before, after in _paired(base, head):
         base_commit = (before or {}).get("commit")
         head_commit = (after or {}).get("commit")
-        if base_commit == head_commit:
+        if _same_commit(base_commit, head_commit):
             continue
         # Prefer the head's metadata: it describes the stack as it is now.
         meta = after or before or {}
@@ -99,6 +131,7 @@ def unchanged_packages(base: dict, head: dict) -> list[str]:
     reader needs to size the diff, but eleven identical rows are not.
     """
     return sorted(
-        name for name in set(base) & set(head)
-        if (base[name] or {}).get("commit") == (head[name] or {}).get("commit")
+        name for name, before, after in _paired(base, head)
+        if before is not None and after is not None
+        and _same_commit((before or {}).get("commit"), (after or {}).get("commit"))
     )

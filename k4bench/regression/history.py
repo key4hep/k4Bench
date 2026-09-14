@@ -110,6 +110,9 @@ def release_points(
     the verdicts alone would silently drop those releases from the tail, which
     reads as a stack that was never benchmarked.
 
+    An optional ``platform`` column names the platform behind rows a series
+    continued from a replaced platform; their points carry it.
+
     *hosts* (from :func:`host_facts`) names the machine behind each ``run_id``,
     so the tail can show a change of benchmark host next to the change in the
     number. Omit it and the points simply carry no host.
@@ -131,9 +134,14 @@ def release_points(
     recorded: dict[str, list[float]] = {}
     dates: dict[str, str] = {}
     ran_on: dict[str, dict[HostFact, None]] = {}
+    #: A continued series marks the rows its predecessor platform measured.
+    platforms: dict[str, str] = {}
     for row in ordered.itertuples(index=False):
         key = release_key(row.run_date, row.run_id)
         dates.setdefault(key, key)
+        platform = getattr(row, "platform", None)
+        if isinstance(platform, str) and platform:
+            platforms.setdefault(key, platform)
         value = _finite(row.value)
         recorded.setdefault(key, [])
         if value is not None:
@@ -172,6 +180,7 @@ def release_points(
             severity=worst.severity if worst is not None else Severity.UNKNOWN,
             direction=worst.direction if worst is not None else Direction.NONE,
             hosts=tuple(ran_on.get(key, {})),
+            platform=platforms.get(key),
         ))
     return tuple(points)
 

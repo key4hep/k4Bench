@@ -126,3 +126,27 @@ def test_diff_tolerates_missing_commits():
     assert diff_packages({}, {}) == []
     changes = diff_packages({"x": {}}, {"x": _pkg("a" * 40)})
     assert changes[0].status == ADDED
+
+
+def test_stacks_spelling_packages_and_shas_differently_diff_by_revision():
+    # Spack lower-cases and hyphenates names and records full shas; LCG spells
+    # names as upstream does and records abbreviated ones.
+    spack = {
+        "dd4hep": {"commit": "c880d07" + "0" * 33},
+        "fcc-config": {"commit": "1312733" + "0" * 33},
+        "k4projecttemplate": {"commit": "b640970" + "0" * 33},
+        "delphes": {"commit": "692c65b" + "0" * 33},
+    }
+    lcg = {
+        "DD4hep": {"commit": "b30b104"},
+        "fcc_config": {"commit": "1312733"},
+        "k4_project_template": {"commit": "b640970"},
+        "Garfield++": {"commit": "e77d590"},
+    }
+    changes = {c.name: c.status for c in diff_packages(spack, lcg)}
+    assert changes == {"DD4hep": "changed", "Garfield++": "added", "delphes": "removed"}
+    assert unchanged_packages(spack, lcg) == ["fcc_config", "k4_project_template"]
+
+
+def test_an_empty_commit_is_not_a_prefix_of_every_commit():
+    assert [c.name for c in diff_packages({"a": {"commit": ""}}, {"a": {"commit": "abc"}})] == ["a"]

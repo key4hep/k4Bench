@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import date, timedelta
 
 import numpy as np
@@ -9,12 +10,11 @@ import pandas as pd
 import pytest
 
 from k4bench.regression.engine import (
-    BASELINE_WINDOW_RUNS,
     MIN_BASELINE_RUNS,
     evaluate_series,
+    night_to_night_spread,
     robust_baseline,
 )
-from k4bench.regression.lineage import BaselineSeed
 from k4bench.regression.models import Direction, SeriesId, Severity, Unjudged
 
 _TIME = SeriesId(
@@ -671,7 +671,6 @@ def test_reanchor_bounds_from_the_confirmed_level_not_a_trailing_dip():
     rows = _steady_rows() + [
         ("2026-02-11", "2026-02-11", 120.0),   # release R: WATCH UP
         ("2026-02-12", "2026-02-11", 120.5),   # CONFIRMED UP
-        ("2026-02-13", "2026-02-11", 80.0),    # WATCH DOWN
         ("2026-02-14", "2026-02-11", 120.2),   # repeat CONFIRMED UP — the new level
         ("2026-02-15", "2026-02-11", 80.2),    # dips again, closing the release
         ("2026-02-16", "2026-02-16", 80.1),    # release S: the step persists
@@ -806,215 +805,71 @@ def test_a_quiet_seed_change_costs_no_sensitivity():
     assert _severities(verdicts[-2:]) == [Severity.OK, Severity.OK]
 
 
-# ── Inherited baselines across a platform migration ───────────────────────────
+# ── Night-to-night noise floor ───────────────────────────────────────────────
 #
-# A new platform's first MIN_BASELINE_RUNS nights would be unjudged — a week
-# blind, right where a stack change is most likely to have moved something.
-# Seeded with the predecessor's tail, they are judged normally.
+# A window's spread describes the level it holds. A series that keeps hopping
+# between levels must not have every hop judged against the quiet of the last.
 
-_OLD_PLATFORM = "x86_64-almalinux9-gcc14.2.0-opt"
-
-
-def _seed(values, reliable=None, start="2025-12-01") -> BaselineSeed:
-    """The predecessor platform's history for this series, in engine shape."""
-    return BaselineSeed(
-        platform=_OLD_PLATFORM,
-        history=_history(values, reliable=reliable, start=start),
+def test_night_to_night_spread_reads_a_step_as_one_move_and_hopping_as_noise():
+    steady = [100.0, 100.4, 99.6, 100.2, 99.8, 100.3, 99.7]
+    one_step = steady[:4] + [v + 20.0 for v in steady[4:]]
+    hopping = [100.0, 120.0, 100.3, 119.8, 99.9, 120.2, 100.1]
+    assert night_to_night_spread(one_step) == pytest.approx(
+        night_to_night_spread(steady), rel=0.25,
     )
+    assert night_to_night_spread(hopping) > 10.0
+    assert night_to_night_spread([100.0, 120.0]) == 0.0
 
 
-def test_seeded_platform_is_judged_from_its_first_night():
-    verdicts = evaluate_series(
-        _history([100.1, 99.9], start="2026-02-01"),
-        series=_TIME, baseline_seed=_seed(_STEADY),
+#: CLD_o2_v08 baseline peak RSS (MB) across the Spack → LCG switch: flat on the
+#: old stack, then hopping between levels on identical new-stack builds.
+_SWITCH_ROWS = [
+    (f"2026-08-{d:02d}", f"2026-08-{d:02d}", v) for d, v in zip(
+        range(20, 32),
+        [1667.7, 1663.5, 1668.4, 1666.5, 1670.1, 1668.1,
+         1665.6, 1670.3, 1672.5, 1671.1, 1669.4, 1671.4],
     )
-    assert _severities(verdicts) == [Severity.OK, Severity.OK]
-    assert all(v.baseline_median == pytest.approx(100.0, abs=0.1) for v in verdicts)
-    assert all(v.baseline_inherited_from == _OLD_PLATFORM for v in verdicts)
+] + [
+    ("2026-09-01", "2026-09-01", 1668.6),
+    ("2026-09-02", "2026-09-02", 1671.0),
+    ("2026-09-03", "2026-09-03", 1669.7),
+    ("2026-09-06", "2026-09-04", 1787.7),
+    ("2026-09-07", "2026-09-07", 1787.5),
+    ("2026-09-08", "2026-09-08", 1670.2),
+    ("2026-09-09", "2026-09-08", 1485.4),
+    ("2026-09-10", "2026-09-08", 1788.4),
+    ("2026-09-11", "2026-09-11", 1654.9),
+    ("2026-09-12", "2026-09-11", 1664.5),
+    ("2026-09-13", "2026-09-12", 1786.3),
+    ("2026-09-14", "2026-09-14", 1430.8),
+]
+
+_MEMORY = dataclasses.replace(_TIME, metric_family="memory", metric="peak_rss_mb")
 
 
-def test_seed_points_are_never_judged():
-    # The seed produces no verdict, so the migration cannot re-report the old
-    # platform's nights as the new platform's news.
-    verdicts = evaluate_series(
-        _history([100.1, 99.9], start="2026-02-01"),
-        series=_TIME, baseline_seed=_seed(_STEADY),
-    )
-    seed_nights = {v.run_id for v in evaluate_series(_history(_STEADY), series=_TIME)}
-    assert len(verdicts) == 2
-    assert not ({v.run_id for v in verdicts} & seed_nights)
+def test_a_series_that_keeps_hopping_goes_quiet_once_its_hops_are_seen():
+    verdicts = {v.run_id: v for v in evaluate_series(
+        _release_rows(_SWITCH_ROWS), series=_MEMORY,
+    )}
+    switch = verdicts["2026-09-07"]
+    assert (switch.severity, switch.direction) == (Severity.CONFIRMED, Direction.UP)
+    assert _window(switch) == ("2026-09-03", "2026-09-06")
+    later = [v for rid, v in verdicts.items() if rid >= "2026-09-11"]
+    assert later and all(v.severity is Severity.OK for v in later)
+    assert all(v.baseline_mad > 100.0 for v in later)
 
 
-def test_migration_step_is_watch_then_confirmed():
-    # The whole point: a stack change that moved a metric reads as a normal
-    # step on the normal schedule instead of vanishing into a blind week.
-    verdicts = evaluate_series(
-        _history([120.0, 120.5], start="2026-02-01"),
-        series=_TIME, baseline_seed=_seed(_STEADY),
-    )
-    assert _severities(verdicts) == [Severity.WATCH, Severity.CONFIRMED]
-    assert verdicts[-1].direction is Direction.UP
-    assert verdicts[-1].pct_change == pytest.approx(0.205, abs=0.01)
-    assert verdicts[-1].onset_run_id == verdicts[0].run_id
-    assert verdicts[-1].baseline_inherited_from == _OLD_PLATFORM
-
-
-def test_confirmed_migration_step_reanchors_onto_the_new_platform():
-    # Re-anchoring re-seats the baseline on this platform's own values, so the
-    # seed is gone from the night after the confirmation.
-    new_level = [120.0, 120.5, 120.1, 119.8, 120.2]
-    verdicts = evaluate_series(
-        _history(new_level, start="2026-02-01"),
-        series=_TIME, baseline_seed=_seed(_STEADY),
-    )
-    assert _severities(verdicts) == [Severity.WATCH, Severity.CONFIRMED] + [
-        Severity.OK
-    ] * 3
-    assert all(v.baseline_inherited_from is None for v in verdicts[2:])
-    assert all(v.baseline_median == pytest.approx(120.0, abs=0.5) for v in verdicts[2:])
-
-
-def test_seed_hands_over_one_point_at_a_time():
-    # A migration that moved the level by less than the effect floor: nothing
-    # is flagged, so nothing re-anchors and the handover is the deque's alone —
-    # one seeded point evicted per night of the platform's own, never a jump
-    # from a full mixed window to a handful of native observations.
-    own = [v + 3.0 for v in _STEADY + _STEADY[:6]]
-    verdicts = evaluate_series(
-        _history(own, start="2026-02-01"),
-        series=_TIME, baseline_seed=_seed((_STEADY + _STEADY)[:BASELINE_WINDOW_RUNS]),
-    )
-    assert all(v.severity is Severity.OK for v in verdicts)
-    inherited = [v.baseline_inherited_from for v in verdicts]
-    assert inherited[:BASELINE_WINDOW_RUNS] == [_OLD_PLATFORM] * BASELINE_WINDOW_RUNS
-    assert inherited[BASELINE_WINDOW_RUNS:] == [None] * (
-        len(own) - BASELINE_WINDOW_RUNS
-    )
-    # The centre migrates with it, rather than stepping on the handover night.
-    assert verdicts[0].baseline_median == pytest.approx(100.0, abs=0.1)
-    assert verdicts[BASELINE_WINDOW_RUNS // 2].baseline_median == pytest.approx(
-        101.5, abs=0.6
-    )
-    assert verdicts[-1].baseline_median == pytest.approx(103.0, abs=0.1)
-
-
-@pytest.mark.parametrize("rerun", [False, True])
-def test_a_parallel_predecessor_cannot_leak_the_future(rerun):
-    # Two platforms benchmarked side by side. The predecessor's nights from
-    # after the successor started are not evidence about the successor's
-    # earlier nights, and must reach neither their baseline nor the
-    # WATCH/CONFIRMED state that follows from it.
-    own = _history(_STEADY + [120.0, 120.5], start="2026-01-28")
-    before_start = _history(_STEADY, start="2026-01-18")   # ends 2026-01-27
-
-    def judged(parallel_level):
-        parallel = _history([parallel_level] * 12, start="2026-01-28")
-        if rerun:
-            # An older release rerun alongside the successor still measures
-            # the future, even though its release date precedes the migration.
-            parallel["run_date"] = pd.Timestamp("2026-01-27")
-        return evaluate_series(own, series=_TIME, baseline_seed=BaselineSeed(
-            _OLD_PLATFORM, pd.concat([before_start, parallel], ignore_index=True),
-        ))
-
-    quiet, wild = judged(100.0), judged(500.0)
-    assert quiet == wild
-    # …and the seed was doing its job in both: judged from night one, and the
-    # migration step still confirms on the normal schedule.
-    assert quiet[0].baseline_inherited_from == _OLD_PLATFORM
-    assert _severities(quiet[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
-
-
-def test_seed_skips_unreliable_and_missing_nights():
-    # Filtered as the platform's own history is; the five usable points left
-    # are short of a baseline, so judging waits.
-    reliable = [True] * 5 + [False] * 5
-    values = list(_STEADY[:9]) + [float("nan")]
-    verdicts = evaluate_series(
-        _history([100.1], start="2026-02-01"),
-        series=_TIME, baseline_seed=_seed(values, reliable=reliable),
-    )
-    assert verdicts[0].severity is Severity.UNKNOWN
-    assert verdicts[0].unjudged is Unjudged.INSUFFICIENT_HISTORY
-    assert "only 5 reliable baseline runs" in verdicts[0].reason
-
-
-def test_seed_keeps_only_the_window_it_can_fill():
-    # The old platform ran at half the level until a fortnight before the
-    # migration: only its tail is kept, or every night here would flag.
-    long_history = [50.0] * 40 + (_STEADY + _STEADY)[:BASELINE_WINDOW_RUNS]
-    verdicts = evaluate_series(
-        _history([100.1], start="2026-02-01"),
-        series=_TIME, baseline_seed=_seed(long_history),
-    )
-    assert verdicts[0].severity is Severity.OK
-    assert verdicts[0].baseline_median == pytest.approx(100.0, abs=0.1)
-
-
-#: A predecessor that stepped 100 → 130 and confirmed it four nights before the
-#: migration — recently enough that the level it left behind is still inside a
-#: baseline window of the handover.
-_RECENTLY_STEPPED = _STEADY + _STEADY + [130.0, 130.4, 129.8, 130.2]
-
-
-def test_seed_is_the_level_the_predecessor_settled_on():
-    # The predecessor confirmed the step to 130 and re-anchored on it, so 130 is
-    # the accepted normal handed over — a successor measuring it has not moved.
-    verdicts = evaluate_series(
-        _history([130.1, 129.9, 130.3], start="2026-02-01"),
-        series=_TIME, baseline_seed=_seed(_RECENTLY_STEPPED),
-    )
-    assert _severities(verdicts) == [Severity.OK] * 3
-    assert all(
-        v.baseline_median == pytest.approx(130.0, abs=0.5) for v in verdicts
-    )
-    assert all(v.baseline_inherited_from == _OLD_PLATFORM for v in verdicts)
-
-
-def test_a_migration_that_undoes_the_predecessors_step_is_still_caught():
-    # The successor lands back on the level the predecessor left behind. Against
-    # the accepted level that is a move like any other, so it is judged like
-    # any other.
-    verdicts = evaluate_series(
-        _history([100.1, 99.9], start="2026-02-01"),
-        series=_TIME, baseline_seed=_seed(_RECENTLY_STEPPED),
-    )
-    assert _severities(verdicts) == [Severity.WATCH, Severity.CONFIRMED]
-    assert verdicts[-1].direction is Direction.DOWN
-    assert verdicts[-1].pct_change == pytest.approx(-0.23, abs=0.02)
-
-
-def test_a_migration_step_onto_a_recent_one_confirms_at_its_true_size():
-    # Two steps in a row: the predecessor's, then the migration's. The second is
-    # measured from where the first left the series, not from before both.
-    verdicts = evaluate_series(
-        _history([160.0, 160.5], start="2026-02-01"),
-        series=_TIME, baseline_seed=_seed(_RECENTLY_STEPPED),
-    )
-    assert _severities(verdicts) == [Severity.WATCH, Severity.CONFIRMED]
-    assert verdicts[-1].direction is Direction.UP
-    assert verdicts[-1].pct_change == pytest.approx(0.235, abs=0.02)
-
-
-def test_an_inherited_short_segment_keeps_judging_rather_than_going_blind():
-    # The predecessor's accepted segment is shorter than a full window, so the
-    # successor continues the re-anchor the predecessor started instead of
-    # falling back into the cold start the seed exists to remove.
-    verdict = evaluate_series(
-        _history([130.1], start="2026-02-01"),
-        series=_TIME, baseline_seed=_seed(_RECENTLY_STEPPED),
-    )[0]
-    assert verdict.severity is Severity.OK
-    assert verdict.unjudged is None
-    assert verdict.reanchor_run_date == "2025-12-22"   # the predecessor's change-point
-    assert verdict.baseline_mad > 0     # the predecessor's pre-change spread
-
-
-def test_no_seed_is_the_unchanged_cold_start():
-    plain = evaluate_series(_history(_STEADY), series=_TIME)
-    empty = evaluate_series(
-        _history(_STEADY), series=_TIME,
-        baseline_seed=BaselineSeed(_OLD_PLATFORM, _history([])),
-    )
-    assert _severities(empty) == _severities(plain)
-    assert all(v.baseline_inherited_from is None for v in empty)
+def test_a_watch_on_the_replaced_platforms_last_night_does_not_confirm_on_the_successor():
+    # The old platform's last night trips; the migration then genuinely moves
+    # the new platform to the same level. Two strikes must come from one
+    # platform, so the successor watches, then confirms, and its window runs
+    # from the old platform to the new.
+    old = "x86_64-almalinux9-gcc14.2.0-opt"
+    history = _history(_STEADY + [120.0, 120.0, 120.5])
+    history["platform"] = [old] * (len(_STEADY) + 1) + [None, None]
+    verdicts = evaluate_series(history, series=_TIME)
+    last_old, first_new, second_new = verdicts[-3:]
+    assert last_old.severity is Severity.WATCH
+    assert (first_new.severity, second_new.severity) == (Severity.WATCH, Severity.CONFIRMED)
+    assert second_new.onset_run_id == first_new.run_id
+    assert second_new.last_accepted_run_id == verdicts[len(_STEADY) - 1].run_id

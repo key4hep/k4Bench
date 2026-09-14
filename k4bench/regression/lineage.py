@@ -1,85 +1,55 @@
-"""How platforms relate to each other over a migration.
+"""Which platforms replace which.
 
-Two independent facts, deliberately kept apart: which platform a young one may
-seed its baseline from, and when a platform stops being expected to run. A
-predecessor is not necessarily retired — a future migration may keep both
-compilers running in parallel — so neither map may be inferred from the other.
+Regression history is scoped to ``(detector, platform, sample)``: results are
+filed per platform, and a platform is an identity, not a label for "the current
+one". Two platforms benchmarked side by side are therefore two independent
+series, and need nothing from this module.
 
-Regression history is scoped to ``(detector, platform, sample)`` and stays that
-way — a platform is an identity, not a label for "the current one". The cost is
-a cold start: a new platform's first
-:data:`~k4bench.regression.engine.MIN_BASELINE_RUNS` nights have no baseline to
-be judged against.
+A platform that *replaces* another names it here. Its series then continue the
+predecessor's: the predecessor's nights come first in the history the engine
+walks, as ordinary baseline points, so a shift caused by the migration is judged
+like any other step — watch, then regression, with a window bounded by the
+predecessor's last night — and the baseline re-anchors onto the new level. The
+successor keeps its own directory, metadata, provenance and report.
 
-A platform may therefore name a *predecessor* whose settled level it borrows as
-baseline points only, while it has too few of its own. One-way and one hop; the
-new platform keeps its own directory, metadata, provenance and history, and no
-verdict is ever issued for a borrowed point.
+A replaced platform is not expected to run once its successor has: its absence
+from a report is silence rather than a missing-run failure, and it sorts after
+the platforms still running.
+
+Succession is one hop and chains are not allowed: a successor continues its
+predecessor's own runs only, so a platform that replaced another and is itself
+replaced would hand its successor a history cut short at its own first night.
+When the next platform replaces the current one, remove the current one's own
+entry before adding the new one; a later replay of the current platform's
+first nights then judges them cold.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-import pandas as pd
-
-# ── Baseline inheritance ─────────────────────────────────────────────────────
-
-#: ``{platform: the platform it may seed its baseline from}``.
-#: Retain entries for historical replay: even after inherited points leave a
-#: series' baseline window, its detection state can depend on the seeded start.
-BASELINE_PREDECESSORS: dict[str, str] = {
+#: ``{platform: the platform it replaced}``. Retain entries for historical
+#: replay: a successor's early verdicts were judged against its predecessor's
+#: nights.
+PLATFORM_SUCCESSORS: dict[str, str] = {
     # The nightly moved from the Key4hep Spack stack to the LCG devkey-head
     # views: same machines, same benchmarks, new compiler (gcc 14.2 → 16).
     "x86_64-el9-gcc16-opt": "x86_64-almalinux9-gcc14.2.0-opt",
 }
 
 
-def baseline_predecessor(platform: str) -> str | None:
-    """The platform *platform* may seed its baseline from, or ``None``.
-
-    One hop: a predecessor's own predecessor is not reached, since a seed has
-    to be a series measured on comparable software. A chain in the map is
-    legal and expected — ``gcc17 → gcc16 → gcc14`` resolves gcc17 to gcc16 and
-    stops, and the older entry stays for backfills of gcc16's own early nights.
-    """
-    predecessor = BASELINE_PREDECESSORS.get(platform)
+def predecessor_of(platform: str) -> str | None:
+    """The platform *platform* replaced, or ``None``."""
+    predecessor = PLATFORM_SUCCESSORS.get(platform)
     return None if predecessor == platform else predecessor
 
 
-@dataclass(frozen=True)
-class BaselineSeed:
-    """One series' inherited history, and the platform it came from.
-
-    *history* has the columns :func:`~k4bench.regression.engine.evaluate_series`
-    walks (``run_id``, ``run_date``, ``value``, ``reliable``) — the predecessor
-    platform's rows for the same series. The whole history is handed over rather
-    than a slice of it: the engine walks it to find the level the predecessor
-    had settled on, which a slice taken here could not tell apart from a step it
-    had just confirmed.
-    """
-
-    platform: str
-    history: pd.DataFrame
+def successors_of(platform: str) -> tuple[str, ...]:
+    """The platforms that replaced *platform*, name-ascending."""
+    return tuple(sorted(
+        successor for successor, predecessor in PLATFORM_SUCCESSORS.items()
+        if predecessor == platform and successor != platform
+    ))
 
 
-# ── Retirement ───────────────────────────────────────────────────────────────
-
-#: ``{platform: the date it stopped being benchmarked}``, ISO ``YYYY-MM-DD``.
-#: From that night on a report no longer expects the platform to have run, so
-#: its absence is silence rather than a failure. Dated rather than a plain flag
-#: so a historical backfill of an earlier night still expects it, and still
-#: reports a night it really did miss.
-PLATFORM_RETIREMENTS: dict[str, str] = {
-    # k4Bench retires its Spack nightly on September 5, after the upstream cutover.
-    "x86_64-almalinux9-gcc14.2.0-opt": "2026-09-05",
-}
-
-
-def platform_retired(platform: str, night: str) -> bool:
-    """Whether *platform* had stopped being benchmarked by *night*.
-
-    Both dates are ISO ``YYYY-MM-DD``, which compares correctly as text.
-    """
-    retired_on = PLATFORM_RETIREMENTS.get(platform)
-    return bool(retired_on and night >= retired_on)
+def is_replaced(platform: str) -> bool:
+    """Whether some platform has replaced *platform*."""
+    return bool(successors_of(platform))

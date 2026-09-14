@@ -322,9 +322,9 @@ _UNJUDGED_FIELDS = {"unjudged"}
 #: The release a still-provisional baseline is re-anchoring onto, so a reader
 #: can tell "has not moved again" from "did not move" without parsing `reason`.
 _REANCHOR_FIELDS = {"reanchor_run_date"}
-#: The predecessor platform a young platform borrowed its baseline from across
-#: a migration, so a reader can see the yardstick was measured elsewhere.
-_LINEAGE_FIELDS = {"baseline_inherited_from"}
+#: The platform each window end was measured on, when a series continues a
+#: replaced platform's history.
+_ENDPOINT_PLATFORM_FIELDS = {"last_accepted_platform", "onset_platform"}
 #: The verdict schema a reader deployed before these features knew about. The
 #: compatibility contract is that the new fields are *purely additive* to this
 #: set — anything else (a renamed or dropped field) breaks an old reader in a
@@ -348,7 +348,7 @@ def test_new_report_is_additive_over_the_pre_window_schema():
             assert v.keys() == (
                 _PRE_WINDOW_FIELDS | _WINDOW_FIELDS | _REPEAT_FIELDS
                 | _HISTORY_FIELDS | _UNJUDGED_FIELDS | _REANCHOR_FIELDS
-                | _LINEAGE_FIELDS
+                | _ENDPOINT_PLATFORM_FIELDS
             )
             old_view = {k: val for k, val in v.items() if k in _PRE_WINDOW_FIELDS}
             MetricVerdict(**{
@@ -356,6 +356,17 @@ def test_new_report_is_additive_over_the_pre_window_schema():
                 "severity": Severity(old_view["severity"]),
                 "direction": Direction(old_view["direction"]),
             })
+
+
+def test_a_report_carrying_the_retired_inherited_baseline_field_still_loads():
+    # Reports written while a successor platform borrowed its predecessor's
+    # baseline recorded where it came from; that field no longer exists.
+    data = to_json(_full_report())
+    plain = from_json(json.loads(json.dumps(data)))
+    for g in data["groups"]:
+        for v in g["verdicts"]:
+            v["baseline_inherited_from"] = "x86_64-almalinux9-gcc14.2.0-opt"
+    assert from_json(json.loads(json.dumps(data))) == plain
 
 
 def test_unjudged_cause_survives_json_roundtrip():

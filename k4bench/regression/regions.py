@@ -117,7 +117,7 @@ def _release_medians(
     }
 
 
-def _dirs_by_release(run_dirs: Sequence[str]) -> dict[str, list[Path]]:
+def dirs_by_release(run_dirs: Sequence[str]) -> dict[str, list[Path]]:
     """Group run directories by the release they measured, keyed exactly as the
     engine keys releases (:func:`~k4bench.regression.engine.release_key`), so a
     window's ends match the verdict that named them."""
@@ -175,7 +175,7 @@ def region_deltas(
     region as having stood still. Without a resolvable run on each side there is
     again nothing to compare, and the answer is ``()``.
     """
-    grouped = _dirs_by_release(run_dirs)
+    grouped = dirs_by_release(run_dirs)
     base_dirs, onset_dirs = grouped.get(base_release, []), grouped.get(onset_release, [])
     if not base_dirs or not onset_dirs:
         return ()

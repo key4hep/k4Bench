@@ -4513,3 +4513,38 @@ def test_the_dd4hep_lifecycle_keeps_its_leading_finding_across_three_nights():
         assert f"report={night}" in body
     assert len(comment_mod._decoded_retained(body)) <= 20
     assert len(body.encode()) < 65_536
+
+
+def test_a_window_across_a_platform_migration_is_named_as_one_in_the_review():
+    # The release diff of a window whose base ran on the replaced platform
+    # belongs to neither platform alone, and the migration itself is a cause the
+    # review has to weigh.
+    old, new = "x86_64-almalinux9-gcc14.2.0-opt", "x86_64-el9-gcc16-opt"
+    migration = replace(_verdict(platform=new), last_accepted_platform=old)
+    blame = BlameReport(
+        generated_at="x", report_night="2026-07-05",
+        entries=(_entry_with(migration, ["k4geo"], n_unchanged=56),),
+    )
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(_report(migration), blame, attributor=attributor)
+    request = attributor.requests[0]
+    assert list(request.packages_by_platform) == [f"{old} → {new}"]
+    assert request.platform_switches == ((old, new),)
+    prompt = build_user_prompt(request)
+    assert "This window spans a platform switch" in prompt
+    assert f"release window on {old} → {new} (1 of 57 tracked)" in prompt
+
+
+def test_a_migration_row_links_to_the_regressions_view_not_a_one_platform_stack_diff():
+    # Stack Changes compares two releases of one platform; a window whose base
+    # ran on the replaced platform cannot be shown there.
+    old, new = "x86_64-almalinux9-gcc14.2.0-opt", "x86_64-el9-gcc16-opt"
+    migration = replace(_verdict(platform=new), last_accepted_platform=old)
+    assert regression_href(
+        _DASH, verdict=migration, base_release="2026-07-03", onset_release="2026-07-04",
+    ) is None
+    body = _comments(_report(migration), _blame([migration], [_candidate()]))[0].body
+    label = _row(body, f"`{migration.metric}`").split("][")[1].split("]")[0]
+    definition = _row(body, f"[{label}]: ")
+    assert "tab=Regressions" in definition
+    assert "tab=Stack+Changes" not in body

@@ -1559,3 +1559,84 @@ def test_an_lcg_window_reaches_the_comment_policy(monkeypatch):
     policy = CommentPolicy.from_config(_LCG_ALLOWLIST)
     candidate, = entry.candidates
     assert policy.allows(candidate)
+
+
+# ── A window opened on a replaced platform ───────────────────────────────────
+
+_NEW_PLAT = "x86_64-el9-gcc16-opt"
+
+
+def test_a_migration_window_reads_each_end_under_the_platform_it_ran_on(monkeypatch):
+    # The successor's series continues the replaced platform's, so its base run
+    # was measured there. Both provenance lookups and the harness lookup must
+    # go to the platform that holds each run, or the window cannot be read.
+    migration = dataclasses.replace(
+        _verdict(), platform=_NEW_PLAT, last_accepted_platform=_PLAT,
+    )
+    provenance = _provenance({
+        # Spack spelling and full shas on the old stack, LCG's on the new one.
+        (_PLAT, "2026-07-03"): {
+            "k4geo": _pkgs("a" * 40), "dd4hep": _pkgs("d" * 40),
+        },
+        (_NEW_PLAT, "2026-07-04"): {
+            "k4geo": _pkgs("c" * 7), "DD4hep": _pkgs("d" * 7),
+        },
+    })
+    harness_calls = []
+
+    def harness(detector, platform, release, sample, run_id):
+        harness_calls.append((platform, release, run_id))
+        return ("1" * 40, None) if platform == _PLAT else ("2" * 40, None)
+
+    _stub_resolve(monkeypatch, lambda client, slug, base, head: RepoResolution(candidates=[
+        CandidatePR(repo=slug, number=10, title="t", author="a", url="u",
+                    files=("src/x.cpp",), additions=5, deletions=1),
+    ]))
+    report = NightlyReport(generated_at="", groups=[RunGroupReport(
+        detector="ALLEGRO_o1_v03", platform=_NEW_PLAT, sample="single_e",
+        k4h_release="key4hep-2026-07-05", run_date="2026-07-05", run_id="2026-07-05",
+        verdicts=[migration],
+    )])
+    ranker = _FakeRanker()
+    blame = build_blame_report(
+        report, packages_for_release=provenance,
+        k4bench_commit_for_run=harness, github=GitHubClient(), ranker=ranker,
+    )
+
+    assert (ranker.requests[0].base_platform, ranker.requests[0].onset_platform) == (
+        _PLAT, None,
+    )
+    assert len(blame.entries) == 1
+    entry = blame.entries[0]
+    assert sorted(r.package for r in entry.repos) == ["k4bench", "k4geo"]
+    assert entry.n_unchanged == 1   # DD4hep at the same commit, spelled two ways
+    assert sorted(harness_calls) == [
+        (_PLAT, "2026-07-03", "2026-07-03"), (_NEW_PLAT, "2026-07-04", "2026-07-04"),
+    ]
+
+
+def test_a_migration_history_counts_changes_on_the_platform_that_measured_each_release(
+    monkeypatch,
+):
+    history = (
+        ReleasePoint(run_date="2026-07-01", value=100.0, platform=_PLAT),
+        ReleasePoint(run_date="2026-07-03", value=100.0, platform=_PLAT),
+        ReleasePoint(run_date="2026-07-04", value=120.0),
+    )
+    migration = dataclasses.replace(
+        _verdict(), platform=_NEW_PLAT, last_accepted_platform=_PLAT, history=history,
+    )
+    provenance = _provenance({
+        (_PLAT, "2026-07-01"): {"k4geo": _pkgs("0" * 40), "dd4hep": _pkgs("d" * 40)},
+        (_PLAT, "2026-07-03"): {"k4geo": _pkgs("a" * 40), "dd4hep": _pkgs("d" * 40)},
+        (_NEW_PLAT, "2026-07-04"): {"k4geo": _pkgs("c" * 7), "DD4hep": _pkgs("d" * 7)},
+    })
+    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+    report = NightlyReport(generated_at="", groups=[RunGroupReport(
+        detector="ALLEGRO_o1_v03", platform=_NEW_PLAT, sample="single_e",
+        k4h_release="key4hep-2026-07-05", run_date="2026-07-05", run_id="2026-07-05",
+        verdicts=[migration],
+    )])
+    blame = build_blame_report(report, packages_for_release=provenance, github=GitHubClient())
+
+    assert blame.entries[0].boundary_changes == {"2026-07-03": 1, "2026-07-04": 1}

@@ -238,6 +238,23 @@ def platform_line(platform: str, *, prefix: str = "- Platform: ") -> str:
     )
 
 
+def platform_switch_lines(base_platform: str, onset_platform: str) -> list[str]:
+    """The window spans a platform migration: its base was measured on one build
+    platform and its onset on another.
+
+    Stated as its own fact, next to the window, because the migration is a cause
+    in its own right — a new compiler and a rebuilt stack underneath every
+    candidate — and a model shown only the packages that moved would weigh them
+    as the sole explanation."""
+    return [
+        platform_line(base_platform, prefix="- Window base measured on: "),
+        platform_line(onset_platform, prefix="- Window onset measured on: "),
+        "- This window spans a platform switch: the compiler and the whole "
+        "software stack were rebuilt between its two ends. The switch alone can "
+        "explain the step; judge every candidate against that possibility.",
+    ]
+
+
 #: Severity as the prompts say it. ``UNKNOWN`` is spelled out rather than
 #: abbreviated: a release nobody could judge is the single most misreadable row
 #: in a history, and "not judged" cannot be mistaken for a clean one.
@@ -285,11 +302,12 @@ def _history_rows(history: MetricHistory) -> list[str]:
         elif point.release == history.onset_release:
             marker = "  <- the step appeared here"
         value = "—" if point.value is None else f"{point.value:.4g}"
+        where = f"  [measured on {point.platform}]" if point.platform else ""
         rows.append(
             f"    {point.release}  {value:>10}  "
             f"{pct_phrase(history.pct_of_baseline(point.value)):>8}  "
             f"{_SEVERITY_WORD.get(point.severity, point.severity):<10}  "
-            f"{_nights(point):<22}  {_packages(point)}{marker}"
+            f"{_nights(point):<22}  {_packages(point)}{where}{marker}"
         )
     return rows
 
@@ -305,6 +323,13 @@ def _history_readings(history: MetricHistory) -> list[str]:
     normal state on the night a regression is confirmed.
     """
     lines = []
+    if any(point.platform for point in history.points):
+        lines.append(
+            "    Releases marked [measured on …] were benchmarked on a different "
+            "build platform (another compiler and software stack) that this "
+            "series replaced; a level change where the platform changes is not a "
+            "change inside the stack."
+        )
     band = history.noise_band
     if band is not None:
         lines.append(
@@ -797,6 +822,10 @@ def historical_offer_lines(
     ]
     for boundary in boundaries:
         window = f"{boundary.base_release} → {boundary.onset_release}"
+        if boundary.base_platform:
+            window += (
+                f" (platform switch: {boundary.base_platform} → {boundary.platform})"
+            )
         if not boundary.provenance_read:
             lines.append(
                 f"  - [{boundary.id}] {window}: the release diff for this "

@@ -96,6 +96,9 @@ class HistoryPoint:
     direction: str = "NONE"
     hosts: tuple[HostFact, ...] = ()
     packages_changed: int | None = None
+    #: The replaced build platform that measured this release, when it is not
+    #: the series' own (see :attr:`~k4bench.regression.models.ReleasePoint.platform`).
+    platform: str | None = None
 
     @property
     def flagged(self) -> bool:
@@ -206,6 +209,9 @@ class MetricHistory:
         for earlier, later in zip(self.points, self.points[1:]):
             if (
                 later.packages_changed == 0
+                # A boundary where the build platform changed is not identical
+                # software, whatever the package list says.
+                and earlier.platform == later.platform
                 and earlier.judged and later.judged
                 and earlier.value is not None and later.value is not None
             ):
@@ -341,6 +347,7 @@ def _point(point: ReleasePoint, packages_changed: int | None) -> HistoryPoint:
         direction=point.direction.value,
         hosts=point.hosts,
         packages_changed=packages_changed,
+        platform=point.platform,
     )
 
 

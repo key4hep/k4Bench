@@ -772,3 +772,27 @@ class TestDuplicateAnalogues:
         duplicated = [_pr(number=n) for n in range(MAX_PRS)] * 2
         evidence = cap_evidence(duplicated)
         assert evidence.complete and len(evidence.prs) == MAX_PRS
+
+
+def test_a_tail_continuing_a_replaced_platform_reads_each_boundary_where_it_ran():
+    old, new = "x86_64-almalinux9-gcc14.2.0-opt", "x86_64-el9-gcc16-opt"
+    asked = []
+
+    def changed(platform, base, onset, base_platform=None):
+        asked.append((base_platform or platform, base, platform, onset))
+        return [_change("k4geo")]
+
+    index = build_index(
+        [(new, ["2026-09-02", "2026-09-03", "2026-09-04", "2026-09-07"],
+          [old, old, None, None])],
+        changed_packages=changed,
+    )
+    assert asked == [
+        (old, "2026-09-02", old, "2026-09-03"),
+        (old, "2026-09-03", new, "2026-09-04"),
+        (new, "2026-09-04", new, "2026-09-07"),
+    ]
+    crossing = index.boundaries[1]
+    assert (crossing.base_platform, crossing.platform) == (old, new)
+    assert index.boundaries[0].base_platform is None
+    assert "platform switch" in "\n".join(historical_offer_lines(index.boundaries))
