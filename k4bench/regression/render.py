@@ -238,8 +238,12 @@ def regression_href(
     reads back (``PARAM_REG_*``); a mismatch here loses the selection silently.
     Returns ``None`` when the verdict carries no onset identity — the tab needs
     one to tell two onsets of the same release apart, and a link that would
-    quietly select the wrong step is worse than the unpinned one.
+    quietly select the wrong step is worse than the unpinned one. Also ``None``
+    for a window measured across a platform migration: Stack Changes compares
+    two releases of one platform, and the base release is not on this one.
     """
+    if verdict.base_platform != verdict.onset_run_platform:
+        return None
     base = stack_changes_href(
         dashboard_url,
         detector=verdict.detector, platform=verdict.platform,

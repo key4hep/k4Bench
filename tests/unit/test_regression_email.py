@@ -1002,3 +1002,20 @@ def test_a_same_release_deep_link_carries_the_run_window():
     review = hrefs["Review these 1 regression"]
     # The token the dashboard reads back for *this* window, runs included.
     assert "window=2026-06-27..2026-06-27%402026-06-27..2026-06-28" in review
+
+
+def test_a_migration_window_is_not_linked_to_a_one_platform_stack_diff():
+    # Stack Changes compares two releases of one platform; the base of this
+    # window ran on the platform the series replaced.
+    v = _windowed(
+        first_confirmed_run_id="2026-06-27",
+        last_accepted_platform="x86_64-almalinux9-gcc14.2.0-opt",
+        platform="x86_64-el9-gcc16-opt",
+    )
+    group = _group(v, platform="x86_64-el9-gcc16-opt")
+    for body in (
+        to_html(_report(group), dashboard_url="https://dash.example/"),
+        to_markdown(_report(group), dashboard_url="https://dash.example/"),
+    ):
+        assert "tab=Stack+Changes" not in body
+        assert "tab=Regressions" in body

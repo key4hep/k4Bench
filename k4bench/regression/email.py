@@ -421,7 +421,11 @@ def _window_href(
 
 
 def _stack_changes_href(dashboard_url: str | None, section) -> str | None:
-    """The Stack Changes view for a window section's exact release window."""
+    """The Stack Changes view for a window section's exact release window, or
+    ``None`` for a window measured across a platform migration — that view
+    compares two releases of one platform."""
+    if any(v.base_platform != v.onset_run_platform for v in section.verdicts):
+        return None
     return stack_changes_href(
         dashboard_url,
         detector=section.detector, platform=section.platform,

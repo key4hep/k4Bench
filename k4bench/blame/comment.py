@@ -3775,6 +3775,13 @@ def _package_diff_line(plan: CommentPlan, dashboard_url: str | None) -> str | No
     platforms = sorted({row.verdict.platform for row in plan.rows})
     links = []
     for platform in platforms:
+        if any(
+            row.verdict.base_platform != row.verdict.onset_run_platform
+            for row in plan.rows if row.verdict.platform == platform
+        ):
+            # Stack Changes compares releases of one platform; migration
+            # rows already link to their window in the Regressions view.
+            continue
         lead = min(
             (row.verdict for row in plan.rows if row.verdict.platform == platform),
             key=_verdict_identity,
