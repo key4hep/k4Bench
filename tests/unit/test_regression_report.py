@@ -1098,6 +1098,23 @@ def test_a_migration_step_is_bounded_by_the_predecessors_last_night(tmp_path):
     ]
 
 
+def test_a_watch_on_the_replaced_platforms_last_night_does_not_open_the_window(tmp_path):
+    _migration_tree(tmp_path, new_walls=[120.0, 120.5])
+    last_old = tmp_path / "DET" / _OLD_PLAT / _STACK / "single_e" / "2026-01-10"
+    results = pd.read_csv(last_old / "baseline_results.csv")
+    results["wall_time_s"], results["user_cpu_s"] = 120.0, 118.0
+    results.to_csv(last_old / "baseline_results.csv", index=False)
+
+    group = group_report_from_run_dirs(
+        "DET", _NEW_PLAT, "single_e", _new_platform_runs(tmp_path),
+        predecessor=lambda: _old_platform_runs(tmp_path),
+    )
+    wall = next(v for v in group.regressions if v.metric == "wall_time_s")
+    assert wall.onset_run_id == "2026-01-11"
+    assert wall.last_accepted_run_id == "2026-01-09"
+    assert (wall.base_platform, wall.onset_run_platform) == (_OLD_PLAT, _NEW_PLAT)
+
+
 def test_a_new_platform_without_its_predecessor_is_still_cold(tmp_path):
     # The control for the two above: without the predecessor the same two
     # nights are unjudged, which is what a cold platform switch costs.

@@ -1060,6 +1060,8 @@ def _rank_request(
         detector=v.detector, platform=v.platform, sample=v.sample,
         base_release=v.last_accepted_run_date,
         onset_release=v.onset_run_date,
+        base_platform=v.last_accepted_platform,
+        onset_platform=v.onset_platform,
         candidates=candidates,
         outcomes=outcomes,
         n_unchanged=n_unchanged,

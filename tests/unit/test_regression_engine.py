@@ -857,3 +857,19 @@ def test_a_series_that_keeps_hopping_goes_quiet_once_its_hops_are_seen():
     later = [v for rid, v in verdicts.items() if rid >= "2026-09-11"]
     assert later and all(v.severity is Severity.OK for v in later)
     assert all(v.baseline_mad > 100.0 for v in later)
+
+
+def test_a_watch_on_the_replaced_platforms_last_night_does_not_confirm_on_the_successor():
+    # The old platform's last night trips; the migration then genuinely moves
+    # the new platform to the same level. Two strikes must come from one
+    # platform, so the successor watches, then confirms, and its window runs
+    # from the old platform to the new.
+    old = "x86_64-almalinux9-gcc14.2.0-opt"
+    history = _history(_STEADY + [120.0, 120.0, 120.5])
+    history["platform"] = [old] * (len(_STEADY) + 1) + [None, None]
+    verdicts = evaluate_series(history, series=_TIME)
+    last_old, first_new, second_new = verdicts[-3:]
+    assert last_old.severity is Severity.WATCH
+    assert (first_new.severity, second_new.severity) == (Severity.WATCH, Severity.CONFIRMED)
+    assert second_new.onset_run_id == first_new.run_id
+    assert second_new.last_accepted_run_id == verdicts[len(_STEADY) - 1].run_id

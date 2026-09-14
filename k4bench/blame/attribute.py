@@ -94,6 +94,7 @@ from k4bench.blame.prompt import (
     measurement_phrase,
     outcome_lines,
     platform_line,
+    platform_switch_lines,
     region_lines,
     sample_line,
     window_phrase,
@@ -277,6 +278,11 @@ class AttributionRequest:
     #: exactly this window was not read. Stated in the prompt, because a silent
     #: omission would read as "nothing changed there".
     packages_unavailable_on: tuple[str, ...] = ()
+    #: ``(base platform, onset platform)`` for each platform migration some row's
+    #: window was measured across. The migration is a cause in its own right, and
+    #: its release diff is labelled ``"<base> → <onset>"`` in
+    #: :attr:`packages_by_platform`.
+    platform_switches: tuple[tuple[str, str], ...] = ()
     #: The older-boundary pull requests the *first* pass asked to read before it
     #: produced the score that selected this comment
     #: (:mod:`k4bench.blame.history`), re-fetched from the sidecar's persisted
@@ -810,7 +816,10 @@ def _package_lines(request: AttributionRequest) -> list[str]:
         unchanged = request.unchanged_by_platform.get(platform, 0)
         if not packages and not unchanged:
             continue
-        where = f" on {platform}" if len(platforms) > 1 else ""
+        crossing = any(
+            platform == f"{base} → {onset}" for base, onset in request.platform_switches
+        )
+        where = f" on {platform}" if len(platforms) > 1 or crossing else ""
         lines += [
             "",
             f"Packages that changed across the release window{where} "
@@ -949,6 +958,11 @@ def build_user_prompt(
 
     parts = [
         f"Change window: {window} (Key4hep release dates).",
+        *(
+            line
+            for base, onset in request.platform_switches
+            for line in platform_switch_lines(base, onset)
+        ),
         "",
         *_regression_lines(request),
         *_history_lines(request),

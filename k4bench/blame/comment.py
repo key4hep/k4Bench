@@ -1612,6 +1612,10 @@ class CommentPlan:
     #: :attr:`packages_unavailable_on` can name them rather than let the prompt
     #: read as though those platforms had nothing to report.
     platforms_seen: set[str] = field(default_factory=set)
+    #: ``(base platform, onset platform)`` for every row whose window was
+    #: measured across a platform migration. Its release diff is then filed
+    #: under :func:`_window_platform`, never under either platform alone.
+    platform_switches: set[tuple[str, str]] = field(default_factory=set)
     #: ``(repo, number) -> reference`` for the older-boundary pull requests the
     #: first pass read before scoring this window
     #: (:class:`~k4bench.blame.models.HistoricalRef`). De-duplicated across
@@ -1950,7 +1954,10 @@ def _collect_window(confirmed: list[_Confirmed], plan: CommentPlan) -> None:
         # unattributable window) had no release diff read for it either, and is
         # exactly the kind of gap :attr:`CommentPlan.packages_unavailable_on`
         # exists to name.
-        plan.platforms_seen.add(verdict.platform)
+        platform = _window_platform(verdict)
+        plan.platforms_seen.add(platform)
+        if verdict.base_platform != verdict.onset_run_platform:
+            plan.platform_switches.add((verdict.base_platform, verdict.onset_run_platform))
         if entry is not None:
             # Only an entry measuring *this comment's* window describes this
             # comment's release diff. A row can enter the window on a narrower
@@ -1959,7 +1966,7 @@ def _collect_window(confirmed: list[_Confirmed], plan: CommentPlan) -> None:
             # set — and a "N of M tracked" denominator — that no provenance
             # read ever produced.
             if (entry.base_release, entry.onset_release) == window:
-                _record_packages(plan, entry, verdict.platform)
+                _record_packages(plan, entry, platform)
                 # Same window rule as the packages, and for the same reason: only
                 # an entry that examined *this* window read the historical
                 # evidence this comment's first-pass score rests on. An entry
@@ -2063,6 +2070,15 @@ def _scope_label(entry: BlameEntry) -> str:
 
 def _candidate_rank(candidate: CandidatePR) -> tuple[bool, float]:
     return (candidate.ranked, candidate.score)
+
+
+def _window_platform(verdict: MetricVerdict) -> str:
+    """The provenance a verdict's window diff was read from: its own platform,
+    or ``"<base> → <onset>"`` for a window measured across a platform migration,
+    whose diff belongs to neither platform alone."""
+    if verdict.base_platform != verdict.onset_run_platform:
+        return f"{verdict.base_platform} → {verdict.onset_run_platform}"
+    return verdict.onset_run_platform
 
 
 def _record_packages(plan: CommentPlan, entry: BlameEntry, platform: str) -> None:
@@ -2572,6 +2588,7 @@ def _attribution_request(
         packages_by_platform=plan.packages_by_platform,
         unchanged_by_platform=dict(plan.unchanged),
         packages_unavailable_on=plan.packages_unavailable_on,
+        platform_switches=tuple(sorted(plan.platform_switches)),
         # Resolved above, and allowed to raise: the review must see the same
         # historical evidence the first pass did, or it must not happen at all.
         historical=historical,

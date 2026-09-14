@@ -1588,17 +1588,24 @@ def test_a_migration_window_reads_each_end_under_the_platform_it_ran_on(monkeypa
         harness_calls.append((platform, release, run_id))
         return ("1" * 40, None) if platform == _PLAT else ("2" * 40, None)
 
-    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+    _stub_resolve(monkeypatch, lambda client, slug, base, head: RepoResolution(candidates=[
+        CandidatePR(repo=slug, number=10, title="t", author="a", url="u",
+                    files=("src/x.cpp",), additions=5, deletions=1),
+    ]))
     report = NightlyReport(generated_at="", groups=[RunGroupReport(
         detector="ALLEGRO_o1_v03", platform=_NEW_PLAT, sample="single_e",
         k4h_release="key4hep-2026-07-05", run_date="2026-07-05", run_id="2026-07-05",
         verdicts=[migration],
     )])
+    ranker = _FakeRanker()
     blame = build_blame_report(
         report, packages_for_release=provenance,
-        k4bench_commit_for_run=harness, github=GitHubClient(),
+        k4bench_commit_for_run=harness, github=GitHubClient(), ranker=ranker,
     )
 
+    assert (ranker.requests[0].base_platform, ranker.requests[0].onset_platform) == (
+        _PLAT, None,
+    )
     assert len(blame.entries) == 1
     entry = blame.entries[0]
     assert sorted(r.package for r in entry.repos) == ["k4bench", "k4geo"]

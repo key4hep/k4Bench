@@ -4513,3 +4513,23 @@ def test_the_dd4hep_lifecycle_keeps_its_leading_finding_across_three_nights():
         assert f"report={night}" in body
     assert len(comment_mod._decoded_retained(body)) <= 20
     assert len(body.encode()) < 65_536
+
+
+def test_a_window_across_a_platform_migration_is_named_as_one_in_the_review():
+    # The release diff of a window whose base ran on the replaced platform
+    # belongs to neither platform alone, and the migration itself is a cause the
+    # review has to weigh.
+    old, new = "x86_64-almalinux9-gcc14.2.0-opt", "x86_64-el9-gcc16-opt"
+    migration = replace(_verdict(platform=new), last_accepted_platform=old)
+    blame = BlameReport(
+        generated_at="x", report_night="2026-07-05",
+        entries=(_entry_with(migration, ["k4geo"], n_unchanged=56),),
+    )
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(_report(migration), blame, attributor=attributor)
+    request = attributor.requests[0]
+    assert list(request.packages_by_platform) == [f"{old} → {new}"]
+    assert request.platform_switches == ((old, new),)
+    prompt = build_user_prompt(request)
+    assert "This window spans a platform switch" in prompt
+    assert f"release window on {old} → {new} (1 of 57 tracked)" in prompt

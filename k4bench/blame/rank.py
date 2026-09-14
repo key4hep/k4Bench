@@ -81,6 +81,7 @@ from k4bench.blame.prompt import (
     measurement_phrase,
     outcome_lines,
     platform_line,
+    platform_switch_lines,
     region_lines,
     sample_line,
     window_phrase,
@@ -166,6 +167,11 @@ class RankRequest:
     base_release: str | None
     onset_release: str
     candidates: tuple[RankCandidate, ...] = ()
+    #: The build platforms the window's base and onset runs were measured on,
+    #: when either is not ``platform`` — a series continuing a replaced
+    #: platform's history. ``None`` means ``platform``.
+    base_platform: str | None = None
+    onset_platform: str | None = None
     #: Tracked packages that did **not** move across this window. The other half
     #: of the diff, and the half that bounds the search: "three of twenty-one
     #: moved" tells the model the cause is in those three or in something
@@ -709,12 +715,18 @@ def _run_context_lines(request: RankRequest) -> str:
     ranked in its own call, and a terse header is too easy to under-weight
     against a large diff — the answer must be about *this* run, not the most
     prominent detector in the diff."""
+    base_platform = request.base_platform or request.platform
+    onset_platform = request.onset_platform or request.platform
     lines = [
         f"- Detector: {request.detector}",
         sample_line(request.sample),
         platform_line(request.platform),
         f"- Release window: "
         f"{window_phrase(request.base_release, request.onset_release)}",
+        *(
+            platform_switch_lines(base_platform, onset_platform)
+            if base_platform != onset_platform else ()
+        ),
         *_step_lines(request),
         *_history_lines(request),
     ]

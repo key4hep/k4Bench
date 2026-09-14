@@ -269,7 +269,9 @@ def evaluate_series(
     is independent evidence against a machine fluke; a clean night clears an
     unconfirmed WATCH). Unreliable runs are skipped entirely — they neither
     confirm nor reset a pending WATCH, since there is no evidence either way
-    for that night. Returns the full verdict series (the dashboard
+    for that night. An optional ``platform`` column marks rows a continued
+    history took from a replaced platform; a pending WATCH never carries across
+    a change of it. Returns the full verdict series (the dashboard
     drill-down shades from it); callers wanting "tonight's" verdict take the
     last element.
 
@@ -366,6 +368,11 @@ def evaluate_series(
     def _segment_key(row) -> str:
         return release_key(row.run_date, row.run_id)
 
+    # Which platform measured the previous row, for a history that continues a
+    # replaced platform's (an optional ``platform`` column; empty on the
+    # series' own rows).
+    previous_platform: object = object()
+
     for release_date, group in groupby(
         df.itertuples(index=False), key=_segment_key,
     ):
@@ -389,6 +396,14 @@ def evaluate_series(
         release_last_at_new_level: tuple[str, str] | None = None
 
         for row in group:
+            platform = getattr(row, "platform", None)
+            platform = platform if isinstance(platform, str) and platform else None
+            if platform != previous_platform:
+                # Two strikes must come from one platform: a WATCH the replaced
+                # platform set on its last night would otherwise confirm on the
+                # successor's first and open the window before the switch.
+                pending = pending_run = None
+                previous_platform = platform
             if row.reliable is False:
                 continue  # no evidence for this night: skip, don't touch `pending`
             x = row.value

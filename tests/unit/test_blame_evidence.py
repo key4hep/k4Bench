@@ -11,6 +11,8 @@ is not a configuration that stayed flat.
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from k4bench.blame.evidence import (
@@ -20,6 +22,7 @@ from k4bench.blame.evidence import (
     outcomes_for_window,
     steps_in_window,
 )
+from k4bench.blame.prompt import history_block
 from k4bench.regression.models import (
     Direction,
     HostFact,
@@ -441,3 +444,30 @@ def test_an_onset_with_no_release_before_it_claims_nothing():
         _point("2026-07-18", 18.0, severity="CONFIRMED", hosts=(HostFact("bench01"),)),
     ])
     assert history.host_change_at_onset is None
+
+
+def test_a_boundary_where_the_build_platform_changed_is_not_a_noise_measurement():
+    # No tracked package moved, but the compiler and stack did.
+    migrated = _history((
+        dataclasses.replace(_point("2026-07-14", 12.0), platform=_PLAT),
+        _point("2026-07-18", 14.0, packages=0),
+    ))
+    assert migrated.quiet_boundaries == 0
+    assert migrated.quiet_boundary_move is None
+
+
+def test_history_points_keep_the_platform_that_measured_them():
+    verdict = MetricVerdict(
+        detector="DET", platform="x86_64-el9-gcc16-opt", sample="s", label="baseline",
+        metric_family="time", metric="wall_time_s", sub_detector=None,
+        run_id="2026-07-18", run_date="2026-07-18", value=14.0,
+        baseline_median=12.0, baseline_mad=0.06, pct_change=0.17, z_score=30.0,
+        severity=Severity.CONFIRMED, direction=Direction.UP, reason="step",
+        history=(
+            ReleasePoint(run_date="2026-07-14", value=12.0, platform=_PLAT),
+            ReleasePoint(run_date="2026-07-18", value=14.0),
+        ),
+    )
+    history = history_from_verdict(verdict)
+    assert [p.platform for p in history.points] == [_PLAT, None]
+    assert f"[measured on {_PLAT}]" in "\n".join(history_block(history))
