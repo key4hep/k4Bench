@@ -183,6 +183,28 @@ only** (the default) or **All runs**. Palette, style cycling, opacity
 and line smoothing sit in this tab's [Display options](#display-options)
 popover, alongside the pills on the same row.
 
+Below the figure, a collapsed **Measurement stability** table answers "how much
+does this metric normally move from run to run?" for peak virtual memory and
+peak RSS. The Event Memory tab's historical view has the same table for mean
+anonymous, total and file-backed RSS and anonymous RSS growth (MB/event), and
+plots that growth rate as its own panel. Each row gives two readings per config:
+
+- **Repeat-measurement spread (same release)** — the typical change between
+  consecutive runs of the *same* Key4hep release, over the latest 14 such pairs
+  in the window, with the number of pairs used. Those runs measured identical
+  software, so this is measurement noise alone. It reads N/A when fewer than 3
+  same-release pairs exist, and never falls back to the other column.
+- **Recent movement (all runs, incl. software changes)** — the same statistic
+  over the last 7 runs regardless of release: the noise floor the regression
+  engine applies, which also contains real software changes.
+
+Both are the scaled median absolute successive difference (robust, so one
+isolated step barely moves it), shown in the metric's unit and, for levels and
+peaks, as a percentage of the median. Runs failing the host-reliability check
+are always left out, whichever runs the selector shows, and missing values are
+gaps, never zeros. Neither reading is an uncertainty or confidence interval, and
+neither is stored: both are recomputed from the window on every render.
+
 !!! tip "Warmup is excluded"
     Trend and summary statistics drop event 0 (warmup), matching the
     [analysis convention](analysis.md#warmup-events).

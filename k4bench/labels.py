@@ -175,6 +175,7 @@ METRIC_LABELS: dict[str, str] = {
     "peak_vmem_mb": "Peak virtual memory",
     "mean_rss_anon_mb": "Mean event anonymous RSS",
     "mean_rss_file_mb": "Mean event file-backed RSS",
+    "rss_anon_slope_mb_per_event": "Anonymous RSS growth per event",
     "mean_rss_mb": "Mean event RSS",
     "mean_time_s": "Mean event time",
     "median_time_s": "Median event time",

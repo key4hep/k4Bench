@@ -83,6 +83,7 @@ _METRIC_UNIT_KINDS: dict[str, str] = {
     "peak_vmem_mb": "memory_mb",
     "mean_rss_anon_mb": "memory_mb",
     "mean_rss_file_mb": "memory_mb",
+    "rss_anon_slope_mb_per_event": "mb_per_event",
     "cpu_efficiency": "percent",
     "mean_time_s": "seconds",
     "median_time_s": "seconds",
@@ -134,6 +135,8 @@ def _fmt_value(metric: str, value: float | None) -> str:
         return f"{value * 100:.1f}%"
     if kind == "memory_mb":
         return f"{value / 1024:.2f} GB" if abs(value) >= 1024 else f"{_fmt(value)} MB"
+    if kind == "mb_per_event":
+        return f"{_fmt(value)} MB/event"
     if kind == "int":
         return f"{int(round(value))}"
     return _fmt(value)

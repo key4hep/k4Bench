@@ -19,6 +19,7 @@ from ui_utils import (
     _legend_below,
     _opacity_control,
     _palette_control,
+    _render_stability_expander,
     _smooth_lines_control,
     _style_cycling_control,
     _style_cycling_flags,
@@ -37,6 +38,9 @@ _METRICS = [
     ("peak_vmem_mb", "Peak virtual memory (MB)"),
     ("involuntary_ctx_switches", "Involuntary Context Switches"),
 ]
+
+#: Memory metrics whose run-to-run movement is reported under the figure.
+_STABILITY_METRICS = ["peak_vmem_mb", "peak_rss_mb"]
 
 #: Plotted panels that carry a regression flag, mapped to the metric whose
 #: verdict supplies it. Throughput has none of
@@ -459,4 +463,11 @@ def _trends_body(
     _render_timeseries(
         df, labels, palette, line_shape, alpha, use_dash, use_marker,
         severity, show_confirmed, show_watch, failed_runs,
+    )
+
+    # Every successful run, before the same-tag collapse, which would discard
+    # the same-release repeats the stability table is built from. Unreliable
+    # runs are dropped inside regardless of the toggle.
+    _render_stability_expander(
+        judgeable_runs, _STABILITY_METRICS, reliability, key="trends_stability",
     )

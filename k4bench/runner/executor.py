@@ -37,6 +37,7 @@ import subprocess
 from pathlib import Path
 from collections import deque
 
+from k4bench.plugin.event_schema import validate_event_schema
 from k4bench.plugin.runtime import setup_plugin_environment
 from k4bench.results.model import RunResult
 from k4bench.runner.parser import parse_time_output
@@ -220,13 +221,18 @@ def run_ddsim(
 
 
 def _read_peak_vmem_mb(path: Path) -> float | None:
-    """Read the plugin's optional high-water mark, tolerating incomplete output."""
+    """Read the plugin's optional high-water mark, tolerating incomplete output
+    and schema versions this k4bench cannot read."""
     try:
         with path.open() as stream:
             raw = json.load(stream)
     except (OSError, ValueError):
         return None
     if not isinstance(raw, dict):
+        return None
+    try:
+        validate_event_schema(raw, source=path)
+    except ValueError:
         return None
     value = raw.get("peak_vmem_mb")
     if isinstance(value, bool) or not isinstance(value, (int, float)):

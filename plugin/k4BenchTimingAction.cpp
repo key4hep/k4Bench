@@ -38,6 +38,10 @@ namespace dd4hep
   namespace sim
   {
 
+    // Version of the JSON format written below, not of the software. Must match
+    // EVENT_SCHEMA_VERSION in k4bench/plugin/event_schema.py.
+    static constexpr int kEventSchemaVersion = 1;
+
     // ---------------------------------------------------------------------------
     // Read current RSS and its components from /proc/self/status (Linux only)
     // ---------------------------------------------------------------------------
@@ -224,6 +228,7 @@ namespace dd4hep
         }
 
         out << "{\n";
+        out << "  \"schema_version\": " << kEventSchemaVersion << ",\n";
         const long vmpeak = read_vmpeak_kb();
         out << "  \"peak_vmem_mb\": " << std::fixed << std::setprecision(3)
             << (vmpeak < 0 ? -1.0 : vmpeak / 1024.0) << ",\n";

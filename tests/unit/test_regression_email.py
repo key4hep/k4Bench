@@ -313,6 +313,9 @@ def test_friendly_names_units_and_unknown_fallback():
     assert _fmt_value("cpu_efficiency", 0.873) == "87.3%"
     assert _fmt_value("peak_rss_mb", 512.0) == "512 MB"
     assert _fmt_value("mean_rss_mb", 2100.0) == "2.05 GB"
+    # A growth rate is never rescaled to GB, however large.
+    assert _fmt_value("rss_anon_slope_mb_per_event", 0.0125) == "0.0125 MB/event"
+    assert _fmt_value("rss_anon_slope_mb_per_event", 2048.0) == "2048 MB/event"
     # Unknown metric: raw name for the label, plain numeric formatter for value.
     assert _metric_label(_v(metric="future_metric_x")) == "future_metric_x"
     assert _fmt_value("future_metric_x", 3.14159) == "3.142"

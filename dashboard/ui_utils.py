@@ -21,7 +21,7 @@ from plotly.subplots import make_subplots
 from k4bench.analysis.plots import BinCountOptions, event_bin_options
 from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
 from k4bench.analysis.plots._utils import _default_baseline
-from stats import select_top_n_by_ratio
+from stats import build_stability_table, select_top_n_by_ratio
 
 
 # ── Data-validation helpers ────────────────────────────────────────────────────
@@ -715,6 +715,7 @@ _METRIC_UNITS = {
     "peak_vmem_mb": "MB",
     "mean_rss_anon_mb": "MB",
     "mean_rss_file_mb": "MB",
+    "rss_anon_slope_mb_per_event": "MB/event",
     "cpu_efficiency": "",
     "mean_time_s": "s",
     "median_time_s": "s",
@@ -817,6 +818,40 @@ def _legend_below(
 
 # ── Shared historical-trends renderer ─────────────────────────────────────────
 
+def _render_stability_expander(
+    df: pd.DataFrame | None,
+    metrics: list[str],
+    reliability: dict[str, bool | None] | None,
+    *,
+    key: str,
+) -> None:
+    """Collapsed per-config table of how much *metrics* move between runs.
+
+    *df* must still hold every run (before any one-point-per-tag collapse):
+    the same-release repeats the headline column is built from are exactly the
+    runs such a collapse drops. Nothing renders when none of *metrics* is in
+    *df*, so old data without them shows no empty box. Display-only; nothing
+    here is written back to results or reports.
+    """
+    if not _is_valid_df(df):
+        return
+    table = build_stability_table(
+        df, {m: _METRIC_UNITS.get(m, "") for m in metrics}, reliability,
+    )
+    if table.empty:
+        return
+    with st.expander("Measurement stability", expanded=False, key=key):
+        st.caption(
+            "**Repeat-measurement spread**: typical change between consecutive "
+            "reliable runs of the *same* Key4hep release, over the latest 14 such "
+            "pairs in the trend window — measurement noise only. **Recent "
+            "movement**: the same statistic over the last 7 reliable runs "
+            "regardless of release, so it also contains real software changes. "
+            "Neither is an uncertainty or a confidence interval."
+        )
+        st.dataframe(table, width="stretch")
+
+
 def _render_historical_trends(
     trend_df: pd.DataFrame,
     filtered_labels: list[str],
@@ -829,6 +864,7 @@ def _render_historical_trends(
     no_data_msg: str = "",
     display_options_slot=None,
     error_sources: dict[str, tuple[str, str]] | None = None,
+    units: dict[str, str] | None = None,
 ) -> None:
     """Render historical statistics in a grid of up to three columns.
 
@@ -862,6 +898,9 @@ def _render_historical_trends(
         Optional mapping from statistic column to (standard deviation, event
         count) columns. When supplied, unlisted statistics have no error bars.
         Otherwise all statistics use ``std_col`` and ``n_col_candidates``.
+    units :
+        Optional per-statistic hover unit, for a panel whose unit is not
+        ``unit`` (e.g. a slope in MB/event on a memory tab).
     """
     # ── Display options ───────────────────────────────────────────────────────
     # The opacity slider is keyed ``…_line_alpha`` rather than ``…_alpha``: the
@@ -969,7 +1008,7 @@ def _render_historical_trends(
                     hovertemplate=(
                         f"<b>{cfg_label}</b><br>"
                         "Tag: %{customdata[1]} (%{x|%Y-%m-%d})<br>"
-                        f"{stat_label}: %{{y:.4g}} {unit}<br>"
+                        f"{stat_label}: %{{y:.4g}} {(units or {}).get(stat_col, unit)}<br>"
                         "CI run: %{customdata[0]}<extra></extra>"
                     ),
                 ),

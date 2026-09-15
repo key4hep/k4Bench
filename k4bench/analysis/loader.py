@@ -9,6 +9,8 @@ from typing import TypeVar
 
 import pandas as pd
 
+from k4bench.plugin.event_schema import validate_event_schema
+
 
 # Internal row provenance used only when result files with and without a
 # ``returncode`` column are combined.  Without it, pandas represents both an
@@ -269,6 +271,14 @@ def load_event_timing(
         ``rss_end_mb``, ``rss_delta_mb``. Newer files also supply
         ``rss_anon_begin_mb``, ``rss_anon_end_mb``, ``rss_file_end_mb``;
         each optional column is added only when its key is present.
+
+    Raises
+    ------
+    ValueError
+        For a malformed or unsupported ``schema_version``
+        (:func:`~k4bench.plugin.event_schema.validate_event_schema`), missing
+        required keys, or mismatched array lengths. A file without
+        ``schema_version`` is the legacy unversioned format and loads as usual.
     """
     log_dir = Path(log_dir)
     _suffix = "_events.json"
@@ -292,6 +302,7 @@ def load_event_timing(
             continue
         with path.open() as f:
             raw = json.load(f)
+        validate_event_schema(raw, source=path)
         _required = ["event_numbers", "event_times_s", "event_rss_begin_mb", "event_rss_end_mb"]
         _missing = [k for k in _required if k not in raw]
         if _missing:

@@ -171,7 +171,62 @@ def night_to_night_spread(values) -> float:
     x = np.asarray(values, dtype=float)
     if len(x) < 3:
         return 0.0
-    return MAD_NORMAL_CONSISTENCY * float(np.median(np.abs(np.diff(x)))) / math.sqrt(2)
+    return _successive_difference_spread(np.diff(x))
+
+
+def _successive_difference_spread(diffs) -> float:
+    """Scaled median absolute difference between successive measurements, as a
+    per-measurement standard deviation (a difference of two draws has √2 times
+    the spread of one)."""
+    return MAD_NORMAL_CONSISTENCY * float(np.median(np.abs(diffs))) / math.sqrt(2)
+
+
+#: Same-release differences below which :func:`repeat_measurement_spread` gives
+#: no estimate, matching the three values :func:`night_to_night_spread` needs.
+MIN_REPEAT_DIFFERENCES = 3
+
+
+def repeat_measurement_spread(
+    values, releases, max_differences: int = BASELINE_WINDOW_RUNS,
+) -> tuple[float, float, int] | None:
+    """Measurement noise of a chronological series, from repeat measurements of
+    one release only.
+
+    Nights sharing a release re-measure the same software (see gate 5 above),
+    so the difference between two consecutive runs of one release is noise and
+    nothing else. Only those differences are pooled; a step between releases,
+    which may be a genuine software change, never enters. The latest
+    *max_differences* are kept and scaled like :func:`night_to_night_spread`.
+
+    *values* and *releases* are parallel and already in run order, restricted
+    to the runs that should count (reliable, finite). Returns ``(spread,
+    median of the values the differences came from, number of differences)``,
+    or ``None`` below :data:`MIN_REPEAT_DIFFERENCES`.
+    """
+    x = np.asarray(values, dtype=float)
+    rel = list(releases)
+    pairs = [k for k in range(1, len(x)) if rel[k] == rel[k - 1]]
+    pairs = pairs[-max_differences:]
+    if len(pairs) < MIN_REPEAT_DIFFERENCES:
+        return None
+    later = np.asarray(pairs)
+    diffs = x[later] - x[later - 1]
+    used = np.unique(np.concatenate([later, later - 1]))
+    return _successive_difference_spread(diffs), float(np.median(x[used])), len(pairs)
+
+
+def recent_movement(values, window: int = NOISE_WINDOW_RUNS) -> tuple[float, float] | None:
+    """``(night_to_night_spread, median)`` of the last *window* values of a
+    chronological series, or ``None`` below three values.
+
+    Across releases, so unlike :func:`repeat_measurement_spread` it contains
+    real software changes as well as noise; it is the engine's noise floor as
+    applied, not a measurement of stability.
+    """
+    x = np.asarray(values, dtype=float)[-window:]
+    if len(x) < 3:
+        return None
+    return night_to_night_spread(x), float(np.median(x))
 
 
 def robust_baseline(values: np.ndarray) -> tuple[float, float]:

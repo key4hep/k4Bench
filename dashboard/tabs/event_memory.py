@@ -15,6 +15,7 @@ from ui_utils import (
     _is_valid_df,
     _PALETTES,
     _render_historical_trends,
+    _render_stability_expander,
     _view_control_row,
 )
 
@@ -27,6 +28,15 @@ _HIST_STATS = [
     ("mean_rss_anon_mb", "Mean anonymous RSS (MB)"),
     ("std_rss_anon_mb", "Anonymous RSS std dev (MB)"),
     ("mean_rss_file_mb", "Mean file-backed RSS (MB)"),
+    ("rss_anon_slope_mb_per_event", "Anonymous RSS growth (MB/event)"),
+]
+
+#: Metrics whose run-to-run movement the historical view reports.
+_STABILITY_METRICS = [
+    "mean_rss_anon_mb",
+    "mean_rss_mb",
+    "mean_rss_file_mb",
+    "rss_anon_slope_mb_per_event",
 ]
 
 # Each statistic uses its own component's spread and valid event count.
@@ -136,6 +146,7 @@ def _render_historical(
         st.info("No historical event memory data in the selected window.")
         return
 
+    all_runs_df = trend_event_df
     trend_event_df = render_reliability_filter(
         trend_event_df, reliability, key="evt_memory_hist_exclude_unreliable",
         slot=reliability_slot,
@@ -156,9 +167,14 @@ def _render_historical(
         n_col_candidates=["n_events_rss", "n_events"],
         error_sources=_HIST_ERROR_SOURCES,
         unit="MB",
+        units={"rss_anon_slope_mb_per_event": "MB/event"},
         key_prefix="evt_memory_hist",
         no_data_msg="No event memory trend data in the selected window.",
         display_options_slot=display_options_slot,
+    )
+    # Unreliable runs are dropped inside regardless of the toggle above.
+    _render_stability_expander(
+        all_runs_df, _STABILITY_METRICS, reliability, key="evt_memory_hist_stability",
     )
 
 

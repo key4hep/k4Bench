@@ -65,6 +65,51 @@ def upper_trimmed_mean(times: np.ndarray, fraction: float = TRIM_FRACTION) -> fl
     return float(kept.mean())
 
 
+#: Valid post-warm-up samples below which :func:`theil_sen_slope` gives no
+#: slope: with fewer points one noisy sample decides a large share of the pairs.
+MIN_SLOPE_EVENTS = 5
+
+#: Samples above which :func:`theil_sen_slope` thins its input first. All
+#: pairwise slopes of this many points are ~1.1M values; every nightly
+#: benchmark stays below it and is estimated exactly.
+MAX_SLOPE_EVENTS = 1500
+
+
+def theil_sen_slope(x, y) -> float | None:
+    """Median of the pairwise slopes ``(y_j - y_i) / (x_j - x_i)`` over ``i < j``.
+
+    The Theil–Sen estimator: robust to roughly 29% outlying points, where
+    least squares or ``last - first`` follow a single noisy sample. Pairs with
+    equal ``x`` carry no slope and are skipped; non-finite points are dropped.
+
+    Above :data:`MAX_SLOPE_EVENTS` points, the estimate is taken over
+    :data:`MAX_SLOPE_EVENTS` evenly spaced points (first and last included) in
+    ``x`` order, each keeping its own ``x``. The cost is then bounded for any
+    input size and the result stays deterministic.
+
+    Returns ``None`` below :data:`MIN_SLOPE_EVENTS` finite points or when no
+    pair has distinct ``x``.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    finite = np.isfinite(x) & np.isfinite(y)
+    x, y = x[finite], y[finite]
+    n = len(x)
+    if n < MIN_SLOPE_EVENTS:
+        return None
+    order = np.argsort(x, kind="stable")
+    x, y = x[order], y[order]
+    if n > MAX_SLOPE_EVENTS:
+        keep = np.unique(np.linspace(0, n - 1, MAX_SLOPE_EVENTS).round().astype(int))
+        x, y = x[keep], y[keep]
+    i, j = np.triu_indices(len(x), k=1)
+    dx = x[j] - x[i]
+    distinct = dx != 0
+    if not distinct.any():
+        return None
+    return float(np.median((y[j] - y[i])[distinct] / dx[distinct]))
+
+
 def _parse_configured_labels(info: dict) -> list[str] | None:
     """Validate and deduplicate the optional benchmark configuration roster."""
     raw = info.get("configured_labels")
@@ -300,6 +345,13 @@ def build_event_timing_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
     typical event, unmoved by how heavy this run's slow tail happened to be. It
     is absent (NaN) for a config with too few events to support it.
 
+    Where the event file records anonymous RSS, ``rss_anon_slope_mb_per_event``
+    is the :func:`theil_sen_slope` of the valid (non-negative) post-warm-up
+    ``rss_anon_end_mb`` samples against their event numbers, in MB/event. It
+    indicates memory growth across the run, which a leak or other accumulating
+    state can cause; it is not proof of either. It is absent (NaN) below
+    :data:`MIN_SLOPE_EVENTS` valid samples.
+
     Returns a long-form DataFrame with those columns plus
         run_id, run_date, k4h_release_date, k4h_release, label
     or ``None`` if no data could be loaded. ``run_id`` lets callers join each row
@@ -367,6 +419,11 @@ def build_event_timing_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
                     row["mean_rss_anon_mb"] = float(r.mean())
                     row["median_rss_anon_mb"] = float(r.median())
                     row["std_rss_anon_mb"] = float(r.std()) if nr > 1 else 0.0
+                # Slope against the event number, so a dropped sample leaves a
+                # gap in x rather than pulling later events one step earlier.
+                slope = theil_sen_slope(df_ev.loc[r.index, "event_number"], r)
+                if slope is not None:
+                    row["rss_anon_slope_mb_per_event"] = slope
             if "rss_file_end_mb" in df_ev.columns:
                 r = df_ev["rss_file_end_mb"].dropna()
                 r = r[r >= 0]

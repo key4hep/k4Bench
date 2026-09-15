@@ -132,11 +132,14 @@ REPORTED_ONLY_METRICS: dict[str, str] = {
     "peak_rss_mb": "memory",
 }
 
-#: Residency diagnostics recorded without entering the regression engine:
-#: CVMFS publishes can evict the file-backed pages mid-run.
+#: Event metrics recorded without entering the regression engine. Total and
+#: file-backed RSS are residency diagnostics: CVMFS publishes can evict the
+#: file-backed pages mid-run. ``rss_anon_slope_mb_per_event`` is a memory-growth
+#: indicator collecting history before a judgement policy is chosen for it.
 EVENT_REPORTED_ONLY_METRICS: dict[str, str] = {
     "mean_rss_mb": "memory",
     "mean_rss_file_mb": "memory",
+    "rss_anon_slope_mb_per_event": "memory",
 }
 
 #: Every run-level metric whose value is recorded, judged or not.
@@ -154,6 +157,10 @@ _REPORTED_ONLY_REASONS = {
     ),
     "mean_rss_file_mb": (
         "recorded but not judged — CVMFS publishes can evict file-backed pages mid-run"
+    ),
+    "rss_anon_slope_mb_per_event": (
+        "recorded but not judged — growth indicator gathering history before a "
+        "judgement policy is set"
     ),
 }
 
