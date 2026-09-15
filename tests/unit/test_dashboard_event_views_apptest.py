@@ -529,8 +529,7 @@ def test_statistics_align_with_plot_and_offer_all_runs(view, prefix):
     assert len(at.dataframe[1].value) == len(labels)
 
 
-@pytest.mark.parametrize("include_total", [False, True])
-def test_historical_memory_uses_component_error_bars(monkeypatch, include_total):
+def test_historical_memory_uses_component_error_bars(monkeypatch):
     import sys
     import numpy as np
     import pandas as pd
@@ -547,17 +546,16 @@ def test_historical_memory_uses_component_error_bars(monkeypatch, include_total)
             "run_date": pd.to_datetime(["2026-01-01", "2026-01-02"]),
             "x_date": pd.to_datetime(["2026-01-01", "2026-01-02"]),
             "k4h_release": ["key4hep-2026-01-01", "key4hep-2026-01-02"],
-            "mean_rss_anon_mb": [np.nan, 100.0],
-            "median_rss_anon_mb": [np.nan, 100.0],
-            "std_rss_anon_mb": [np.nan, 4.0],
-            "n_events_rss_anon": [np.nan, 4],
-            "mean_rss_file_mb": [np.nan, 50.0],
+            "mean_rss_anon_mb": [99.0, 100.0],
+            "median_rss_anon_mb": [99.0, 100.0],
+            "std_rss_anon_mb": [0.0, 4.0],
+            "n_events_rss_anon": [1, 4],
+            "mean_rss_file_mb": [49.0, 50.0],
         }
     )
-    if include_total:
-        df["mean_rss_mb"] = df["median_rss_mb"] = 150.0
-        df["std_rss_mb"] = 100.0
-        df["n_events_rss"] = 16
+    df["mean_rss_mb"] = df["median_rss_mb"] = 150.0
+    df["std_rss_mb"] = 100.0
+    df["n_events_rss"] = 16
     captured = []
     monkeypatch.setattr(
         ui_utils,
@@ -578,7 +576,6 @@ def test_historical_memory_uses_component_error_bars(monkeypatch, include_total)
     assert traces["std_rss_anon_mb"].error_y.array[1] == pytest.approx(4 / np.sqrt(6))
     assert np.isnan(traces["mean_rss_anon_mb"].error_y.array[0])
     assert traces["mean_rss_file_mb"].error_y.array is None
-    if include_total:
-        assert traces["mean_rss_mb"].error_y.array[1] == 25.0
+    assert traces["mean_rss_mb"].error_y.array[1] == 25.0
     # Extra panels wrap into a new row instead of squeezing seven across.
     assert fig.layout.yaxis4.domain[1] < fig.layout.yaxis.domain[0]

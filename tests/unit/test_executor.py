@@ -276,7 +276,7 @@ def test_peak_vmem_from_plugin_reaches_results_csv(tmp_path, payload, expected):
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
     path = log_dir / "test_events.json"
-    # An old file must not be reused when the new process fails to write one.
+    # Each execution must discard leftover output before collecting its own metrics.
     path.write_text('{"peak_vmem_mb": 9999}')
     proc = MagicMock(stdout=iter([]), returncode=0)
 

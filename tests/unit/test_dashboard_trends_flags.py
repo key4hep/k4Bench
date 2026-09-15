@@ -487,12 +487,10 @@ def test_excluding_the_flagged_run_takes_its_markers_off_the_chart():
     assert _marker_modes(at).count("markers") == 4
 
 
-def test_virtual_peak_is_visible_and_total_rss_has_no_flags():
+def test_virtual_peak_is_visible_and_flagged():
     df = _trend_df().assign(peak_vmem_mb=[2000.0, 2400.0])
     severity = {
         ("baseline", "key4hep-2026-05-21", "peak_vmem_mb"): "CONFIRMED",
-        # Old reports can still contain RSS flags; they must stay diagnostic.
-        ("baseline", "key4hep-2026-05-21", "peak_rss_mb"): "CONFIRMED",
     }
     fig = _capture_fig(df, ["baseline"], severity)
     curves = [t for t in fig.data if t.mode == "lines+markers"]

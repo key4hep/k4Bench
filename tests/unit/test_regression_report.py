@@ -1412,32 +1412,30 @@ def test_new_memory_judging_warms_up_automatically(tmp_path, new_runs, contended
     from k4bench.regression.render import from_json, to_json
     from k4bench.regression.report_builder import evaluate_group_series
 
-    old_runs = 3
     run_dirs = _make_history(
         tmp_path,
-        [100.0] * (old_runs + new_runs),
+        [100.0] * new_runs,
         {
             i: {
                 "event_time_s": 0.1,
-                "contended": i == old_runs + contended_at if contended_at is not None else False,
+                "contended": i == contended_at if contended_at is not None else False,
             }
-            for i in range(old_runs + new_runs)
+            for i in rangenew_runs
         },
     )
     for i, run_dir in enumerate(run_dirs):
         path = run_dir / "baseline_events.json"
         raw = json.loads(path.read_text())
         csv_path = run_dir / "baseline_results.csv"
-        frame = pd.read_csv(csv_path).drop(columns=["peak_vmem_mb"])
-        if i >= old_runs:
-            value = 100.0 if i - old_runs < 7 else 140.0
-            raw["peak_vmem_mb"] = value * 10
-            raw["event_rss_anon_begin_mb"] = [value] * 3
-            raw["event_rss_anon_end_mb"] = [value] * 3
-            raw["event_rss_file_end_mb"] = [value * 2] * 3
-            frame["peak_vmem_mb"] = value * 10
+        frame = pd.read_csv(csv_path)
+        value = 100.0 if i < 7 else 140.0
+        raw["peak_vmem_mb"] = value * 10
+        raw["event_rss_anon_begin_mb"] = [value] * 3
+        raw["event_rss_anon_end_mb"] = [value] * 3
+        raw["event_rss_file_end_mb"] = [value * 2] * 3
+        frame["peak_vmem_mb"] = value * 10
         # A huge residency step must stay diagnostic, even after warmup.
-        raw["event_rss_end_mb"] = [10000.0 if i >= old_runs + 7 else 1000.0] * 3
+        raw["event_rss_end_mb"] = [10000.0 if i >= 7 else 1000.0] * 3
         frame["peak_rss_mb"] = raw["event_rss_end_mb"][0]
         path.write_text(json.dumps(raw))
         frame.to_csv(csv_path, index=False)

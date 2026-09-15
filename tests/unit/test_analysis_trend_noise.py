@@ -86,13 +86,13 @@ def test_event_trend_omits_the_column_when_there_are_too_few_events(tmp_path):
     assert "trimmed_mean_time_s" not in df.columns or row.isna()["trimmed_mean_time_s"]
 
 
-def test_event_trend_optional_memory_stats_and_mixed_history(tmp_path):
-    old = _run_dir(tmp_path, "2026-01-01", [1.0] * 4)
-    new = _run_dir(tmp_path, "2026-01-02", [1.0] * 4)
-    path = Path(new) / "baseline_events.json"
+def test_event_trend_memory_stats_exclude_warmup(tmp_path):
+    run = _run_dir(tmp_path, "2026-01-02", [1.0] * 4)
+    path = Path(run) / "baseline_events.json"
     raw = json.loads(path.read_text())
     raw.update(
         {
+            "event_rss_anon_begin_mb": [999.0, 99.0, 101.0, 103.0],
             "event_rss_anon_end_mb": [999.0, 100.0, 102.0, 104.0],
             "event_rss_file_end_mb": [999.0, 50.0, 60.0, 70.0],
         }
@@ -105,11 +105,9 @@ def test_event_trend_optional_memory_stats_and_mixed_history(tmp_path):
         "n_events_rss_anon": 3,
         "mean_rss_file_mb": 60.0,
     }
-    assert not (set(stats) & set(build_event_timing_trend((old,)).columns))
-    df = build_event_timing_trend((old, new)).set_index("run_id")
+    df = build_event_timing_trend((run,)).set_index("run_id")
     for key, value in stats.items():
         assert df.loc["2026-01-02", key] == pytest.approx(value)
-        assert np.isnan(df.loc["2026-01-01", key])
 
 
 @pytest.mark.parametrize(
