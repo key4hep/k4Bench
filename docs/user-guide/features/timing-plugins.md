@@ -90,15 +90,27 @@ it. No later code or configuration change is required to start judging.
 `peak_rss_mb`, `mean_rss_mb` and `mean_rss_file_mb` remain reported-only
 diagnostics, including after the new baselines are ready.
 
+From the anonymous-RSS samples the trend summary also derives
+`rss_anon_slope_mb_per_event`, a robust (Theil–Sen) slope of anonymous RSS
+against event number, in MB/event. It complements the level (`mean_rss_anon_mb`)
+and the peak (`peak_vmem_mb`) by showing whether memory grows as events are
+processed — which can reveal a leak or other accumulating state, but does not
+prove one. It is computed offline in Python, so the plugin does no extra work,
+and it is reported-only until its history shows how stable it is.
+
 The Run Trends tab exposes the virtual peak and the Event Memory tab shows
-anonymous and file-backed RSS. Use the collected history to check virtual-peak
-repeatability on the same stack and sensitivity to geometry changes; baseline
-warmup alone does not establish either property.
+anonymous and file-backed RSS and the growth rate. Use the collected history to
+check virtual-peak repeatability on the same stack and sensitivity to geometry
+changes; baseline warmup alone does not establish either property. Both views
+have a **Run-to-run variability** table that reports the spread between runs
+of the same Key4hep release (see the
+[dashboard guide](dashboard.md#trends-tab)).
 
 ### Output → `<label>_events.json`
 Parallel arrays: `event_numbers`, `event_times_s`, `event_rss_begin_mb`,
 `event_rss_end_mb`, `event_rss_anon_begin_mb`, `event_rss_anon_end_mb`, and
-`event_rss_file_end_mb`, plus the run-level scalar `peak_vmem_mb`. The executor
+`event_rss_file_end_mb`, plus the run-level scalar `peak_vmem_mb` and the
+format's `schema_version` (currently `1`; absent in older, unversioned files). The executor
 copies the scalar into the results CSV. The arrays are loaded by
 [`load_event_timing`](../../reference/api/analysis/loader.md) into a DataFrame
 with an added `rss_delta_mb` column. The new keys are optional on read, so

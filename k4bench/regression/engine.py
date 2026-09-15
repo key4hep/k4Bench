@@ -171,7 +171,69 @@ def night_to_night_spread(values) -> float:
     x = np.asarray(values, dtype=float)
     if len(x) < 3:
         return 0.0
-    return MAD_NORMAL_CONSISTENCY * float(np.median(np.abs(np.diff(x)))) / math.sqrt(2)
+    return _successive_difference_spread(np.diff(x))
+
+
+def _successive_difference_spread(diffs) -> float:
+    """Scaled median absolute difference between successive measurements, as a
+    per-measurement standard deviation (a difference of two draws has √2 times
+    the spread of one)."""
+    return MAD_NORMAL_CONSISTENCY * float(np.median(np.abs(diffs))) / math.sqrt(2)
+
+
+#: Same-release differences (so at least four runs) below which
+#: :func:`same_release_spread` gives no estimate. Deliberately stricter
+#: than :func:`night_to_night_spread`, which accepts three values (two
+#: differences): with fewer pairs one noisy repeat decides the median.
+MIN_SAME_RELEASE_DIFFERENCES = 3
+
+
+def same_release_spread(
+    values, releases, max_differences: int = BASELINE_WINDOW_RUNS,
+) -> tuple[float, float, int] | None:
+    """Run-to-run variability of a chronological series with Key4hep stack
+    changes excluded: only differences between consecutive runs of one release.
+
+    Nights sharing a release re-measure the same Key4hep stack (see gate 5
+    above), so a step between releases, which may be a genuine stack change,
+    never enters. This is *not* pure measurement noise: consecutive runs of one
+    release are routinely benchmarked by different k4Bench commits (see
+    :mod:`k4bench.blame.builder`), so a harness, plugin or configuration change
+    between them counts here too. A noise-only estimate would additionally need
+    pairs with identical benchmark provenance. The latest *max_differences* are
+    kept and scaled like :func:`night_to_night_spread`.
+
+    *values* and *releases* are parallel and already in run order, restricted
+    to the runs that should count (reliable, finite). Returns ``(spread,
+    median of the values the differences came from, number of differences)``,
+    or ``None`` below :data:`MIN_SAME_RELEASE_DIFFERENCES`.
+    """
+    x = np.asarray(values, dtype=float)
+    rel = list(releases)
+    pairs = [k for k in range(1, len(x)) if rel[k] == rel[k - 1]]
+    pairs = pairs[-max_differences:]
+    if len(pairs) < MIN_SAME_RELEASE_DIFFERENCES:
+        return None
+    later = np.asarray(pairs)
+    diffs = x[later] - x[later - 1]
+    used = np.unique(np.concatenate([later, later - 1]))
+    return _successive_difference_spread(diffs), float(np.median(x[used])), len(pairs)
+
+
+def recent_movement(values, window: int = NOISE_WINDOW_RUNS) -> tuple[float, float] | None:
+    """``(night_to_night_spread, median)`` of the last *window* values of a
+    series in run order, or ``None`` below three values.
+
+    A descriptive reading of recent all-run movement: across releases, so
+    unlike :func:`same_release_spread` it also contains Key4hep stack
+    changes. It is not the noise floor :func:`evaluate_series` applied
+    to the newest values — the walk reads its window before adding the release
+    under judgement, whereas this includes that release.
+    """
+    x = np.asarray(values, dtype=float)[-window:]
+    if len(x) < 3:
+        return None
+    return night_to_night_spread(x), float(np.median(x))
 
 
 def robust_baseline(values: np.ndarray) -> tuple[float, float]:

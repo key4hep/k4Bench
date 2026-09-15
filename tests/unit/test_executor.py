@@ -267,6 +267,9 @@ class TestVerboseReturncode:
         ('{"peak_vmem_mb": true}', None),
         ('{"peak_vmem_mb": "invalid"}', None),
         ("[]", None),
+        ('{"schema_version": 1, "peak_vmem_mb": 2048.25}', 2048.25),
+        ('{"schema_version": 2, "peak_vmem_mb": 2048.25}', None),
+        ('{"schema_version": true, "peak_vmem_mb": 2048.25}', None),
     ],
 )
 def test_peak_vmem_from_plugin_reaches_results_csv(tmp_path, payload, expected):

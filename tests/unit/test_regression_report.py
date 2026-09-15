@@ -24,6 +24,7 @@ from k4bench.regression.models import (
 )
 from k4bench.regression.report_builder import (
     EVENT_METRICS,
+    EVENT_REPORTED_ONLY_METRICS,
     RUN_METRICS,
     RUN_VALUE_METRICS,
     _failed_config_verdicts,
@@ -1471,3 +1472,58 @@ def test_new_memory_judging_warms_up_automatically(tmp_path, new_runs, contended
     metrics = {sid.metric for sid in judged}
     assert not ({"peak_rss_mb", "mean_rss_mb", "mean_rss_file_mb"} & metrics)
     assert {"peak_vmem_mb", "mean_rss_anon_mb"} <= metrics
+
+
+def test_anon_rss_growth_is_recorded_but_never_judged(tmp_path):
+    from k4bench.analysis.trend import build_event_timing_trend, build_results_trend
+    from k4bench.regression.render import from_json, to_json
+    from k4bench.regression.report_builder import evaluate_group_series
+
+    slope = "rss_anon_slope_mb_per_event"
+    assert slope in EVENT_REPORTED_ONLY_METRICS
+    assert slope not in EVENT_METRICS
+
+    run_dirs = _make_history(tmp_path, [100.0] * 10)
+    n_events = 8
+    for i, run_dir in enumerate(run_dirs):
+        # Flat for the baseline nights, then a steep persistent growth: enough
+        # history that a judged metric would be evaluated rather than warming up.
+        growth = 0.0 if i < 7 else 50.0
+        (run_dir / "baseline_events.json").write_text(json.dumps({
+            "schema_version": 1,
+            "event_numbers": list(range(n_events)),
+            "event_times_s": [0.1] * n_events,
+            "event_rss_begin_mb": [1000.0] * n_events,
+            "event_rss_end_mb": [1000.0] * n_events,
+            "event_rss_anon_end_mb": [100.0 + growth * k for k in range(n_events)],
+        }))
+
+    paths = tuple(str(d) for d in run_dirs)
+    group = group_report_from_run_dirs("DET", _PLAT, "single_e", paths)
+    report = from_json(to_json(NightlyReport(generated_at="now", groups=[group])))
+    verdict = next(v for v in report.groups[0].verdicts if v.metric == slope)
+    assert verdict.value == pytest.approx(50.0)
+    assert verdict.severity is Severity.UNKNOWN
+    assert verdict.unjudged is Unjudged.REPORTED_ONLY
+    assert verdict.baseline_median is None
+    assert not any(v.metric == slope for v in report.groups[0].regressions)
+
+    judged = evaluate_group_series(
+        detector="DET",
+        platform=_PLAT,
+        sample="single_e",
+        results_df=build_results_trend(paths),
+        event_df=build_event_timing_trend(paths),
+        reliability={d.name: True for d in run_dirs},
+    )
+    assert slope not in {sid.metric for sid in judged}
+
+
+def test_stability_is_never_serialized():
+    # Measurement stability depends on the dashboard's window, so it is derived
+    # at render time and has no field in results or reports.
+    from k4bench.results.model import RunResult
+
+    fields = {f.name for f in dataclasses.fields(RunResult)}
+    fields |= {f.name for f in dataclasses.fields(MetricVerdict)}
+    assert not {name for name in fields if "spread" in name or "stabil" in name}

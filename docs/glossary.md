@@ -12,6 +12,13 @@ Ablation
 :   A region-timing [attribution](#attribution) view: stepping time charged to
     the detector the step is **physically in**. Contrast [`by_birth`](#by_birth).
 
+Anonymous RSS growth
+:   `rss_anon_slope_mb_per_event`: the robust (Theil–Sen) slope of anonymous RSS
+    against event number within one run, in MB/event, with event 0 excluded.
+    A memory-growth indicator — a leak is one possible cause, not a conclusion.
+    Reported, not judged. See
+    [File formats → events JSON](reference/file-formats.md#events-json).
+
 Attribution { #attribution }
 :   Assigning measured time to a subdetector. The region plugin attributes to the
     top-level DD4hep [DetElement](#detelement) a step belongs to.
@@ -104,6 +111,14 @@ RSS
 RunResult
 :   The dataclass holding one run's metrics; serialised to the results CSV. See
     [`results.model`](reference/api/results/model.md).
+
+Same-release spread
+:   The typical change between consecutive runs of the same Key4hep release, so
+    Key4hep stack changes are excluded. It is not measurement noise alone: runs
+    of one release can come from different k4Bench commits, whose harness,
+    plugin or configuration changes also count. Shown in the dashboard's
+    Run-to-run variability tables next to the all-runs *recent movement*; see
+    [Dashboard → Trends tab](user-guide/features/dashboard.md#trends-tab).
 
 Sample
 :   In the nightly CI, a named physics configuration for a detector (e.g.

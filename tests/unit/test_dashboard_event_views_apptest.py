@@ -553,6 +553,7 @@ def test_historical_memory_uses_component_error_bars(monkeypatch):
             "mean_rss_file_mb": [49.0, 50.0],
             "std_rss_file_mb": [0.0, 6.0],
             "n_events_rss_file": [1, 9],
+            "rss_anon_slope_mb_per_event": [0.0, 0.01],
         }
     )
     df["mean_rss_mb"] = df["median_rss_mb"] = 150.0
@@ -580,5 +581,9 @@ def test_historical_memory_uses_component_error_bars(monkeypatch):
     assert traces["mean_rss_file_mb"].error_y.array[1] == pytest.approx(2.0)
     assert np.isnan(traces["mean_rss_file_mb"].error_y.array[0])
     assert traces["mean_rss_mb"].error_y.array[1] == 25.0
+    # The growth panel has no per-event spread to draw and its own unit.
+    assert traces["rss_anon_slope_mb_per_event"].error_y.array is None
+    assert "MB/event" in traces["rss_anon_slope_mb_per_event"].hovertemplate
+    assert "MB/event" not in traces["mean_rss_anon_mb"].hovertemplate
     # Extra panels wrap into a new row instead of squeezing seven across.
     assert fig.layout.yaxis4.domain[1] < fig.layout.yaxis.domain[0]

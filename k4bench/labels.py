@@ -157,46 +157,6 @@ def compact_sample(sample: str) -> str:
     return pretty_sample(sample)
 
 
-#: Human-readable name per measured column, for row labels, panel titles, table
-#: cells and the e-group mail. Sentence case, so a caller can drop one straight
-#: into a title or a list item without recasing it.
-#:
-#: Covers what the regression report judges plus the derived host evidence the
-#: dashboard plots (``cpu_efficiency``) and the columns only the analysis
-#: figures use (``output_size_mb``, ``events_per_sec``, ``sys_cpu_s``). An
-#: unrecognized future column falls back to its raw name rather than failing.
-#: Memory labels distinguish virtual size, anonymous RSS and file-backed RSS.
-METRIC_LABELS: dict[str, str] = {
-    "wall_time_s": "Wall time",
-    "user_cpu_s": "User CPU time",
-    "sys_cpu_s": "System CPU time",
-    "cpu_efficiency": "CPU efficiency",
-    "peak_rss_mb": "Peak RSS",
-    "peak_vmem_mb": "Peak virtual memory",
-    "mean_rss_anon_mb": "Mean event anonymous RSS",
-    "mean_rss_file_mb": "Mean event file-backed RSS",
-    "mean_rss_mb": "Mean event RSS",
-    "mean_time_s": "Mean event time",
-    "median_time_s": "Median event time",
-    "trimmed_mean_time_s": "Trimmed mean event time",
-    "output_size_mb": "Output size",
-    "events_per_sec": "Throughput",
-    "returncode": "Return code",
-}
-
-
-def pretty_metric(metric: str, sub_detector: str | None = None) -> str:
-    """Human-readable metric name, suffixed with the sub-detector for a
-    region-level row, e.g. ``("mean_rss_mb", "EMEC_turbine")`` ->
-    ``Mean event RSS · EMEC_turbine``.
-
-    The sub-detector keeps its raw name: it is a DD4hep DetElement identifier,
-    which is what the dashboard labels the series with and what someone
-    searching the geometry types."""
-    name = METRIC_LABELS.get(metric, metric)
-    return f"{name} · {sub_detector}" if sub_detector else name
-
-
 #: Prefix every Key4hep release tag carries, both on EOS and in the sidebar.
 #: Public because the dashboard composes directory names with it as well as
 #: stripping it for display, and one literal has to serve both directions.

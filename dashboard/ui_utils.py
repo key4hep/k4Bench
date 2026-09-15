@@ -21,7 +21,9 @@ from plotly.subplots import make_subplots
 from k4bench.analysis.plots import BinCountOptions, event_bin_options
 from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
 from k4bench.analysis.plots._utils import _default_baseline
-from stats import select_top_n_by_ratio
+from k4bench.metrics import metric_unit
+from k4bench.regression.engine import BASELINE_WINDOW_RUNS, NOISE_WINDOW_RUNS
+from stats import build_stability_table, select_top_n_by_ratio
 
 
 # ── Data-validation helpers ────────────────────────────────────────────────────
@@ -702,27 +704,6 @@ def _histogram_display_controls(
     )
 
 
-# ── Metric metadata ────────────────────────────────────────────────────────────
-# Shared by metric plots across the dashboard. This covers the report's
-# run/event metrics plus derived host evidence such as ``cpu_efficiency``, which
-# Machine Info and Trends display but the regression report does not judge.
-
-#: Unit suffix per metric for axis titles (empty for dimensionless ratios).
-_METRIC_UNITS = {
-    "wall_time_s": "s",
-    "user_cpu_s": "s",
-    "peak_rss_mb": "MB",
-    "peak_vmem_mb": "MB",
-    "mean_rss_anon_mb": "MB",
-    "mean_rss_file_mb": "MB",
-    "cpu_efficiency": "",
-    "mean_time_s": "s",
-    "median_time_s": "s",
-    "trimmed_mean_time_s": "s",
-    "mean_rss_mb": "MB",
-}
-
-
 _DASHES  = ["solid", "dash", "dot", "dashdot"]
 _SYMBOLS = ["circle", "square", "diamond", "cross",
             "triangle-up", "star", "pentagon", "hexagon"]
@@ -817,6 +798,46 @@ def _legend_below(
 
 # ── Shared historical-trends renderer ─────────────────────────────────────────
 
+def _render_stability_expander(
+    df: pd.DataFrame | None,
+    metrics: list[str],
+    reliability: dict[str, bool | None] | None,
+    *,
+    key: str,
+) -> None:
+    """Collapsed per-config table of how much *metrics* move between runs.
+
+    *df* must still hold every run (before any one-point-per-tag collapse):
+    the same-release repeats the headline column is built from are exactly the
+    runs such a collapse drops. Nothing renders when none of *metrics* is in
+    *df*, so old data without them shows no empty box. Display-only; nothing
+    here is written back to results or reports.
+    """
+    if not _is_valid_df(df):
+        return
+    table = build_stability_table(
+        df, {m: metric_unit(m) for m in metrics}, reliability,
+    )
+    if table.empty:
+        return
+    with st.expander("Run-to-run variability", expanded=False, key=key):
+        st.caption(
+            "**Same-release spread**: typical change between consecutive reliable "
+            "runs of the *same* Key4hep release, over the last "
+            f"{BASELINE_WINDOW_RUNS} such pairs in the trend window. Stack changes "
+            "are excluded, but not k4Bench-side changes: runs of one release can "
+            "come from different k4Bench commits, so it can contain harness, "
+            "plugin or configuration changes as well as measurement noise. "
+            "**Recent movement**: the "
+            f"same statistic over the last {NOISE_WINDOW_RUNS} reliable runs "
+            "regardless of release, so it also contains stack changes. "
+            "Runs are ordered by release date, then run, as the regression engine "
+            "orders them: a later rerun of an old release counts with that release. "
+            "Neither is an uncertainty or a confidence interval."
+        )
+        st.dataframe(table, width="stretch")
+
+
 def _render_historical_trends(
     trend_df: pd.DataFrame,
     filtered_labels: list[str],
@@ -829,6 +850,7 @@ def _render_historical_trends(
     no_data_msg: str = "",
     display_options_slot=None,
     error_sources: dict[str, tuple[str, str]] | None = None,
+    units: dict[str, str] | None = None,
 ) -> None:
     """Render historical statistics in a grid of up to three columns.
 
@@ -862,6 +884,9 @@ def _render_historical_trends(
         Optional mapping from statistic column to (standard deviation, event
         count) columns. When supplied, unlisted statistics have no error bars.
         Otherwise all statistics use ``std_col`` and ``n_col_candidates``.
+    units :
+        Optional per-statistic hover unit, for a panel whose unit is not
+        ``unit`` (e.g. a slope in MB/event on a memory tab).
     """
     # ── Display options ───────────────────────────────────────────────────────
     # The opacity slider is keyed ``…_line_alpha`` rather than ``…_alpha``: the
@@ -969,7 +994,7 @@ def _render_historical_trends(
                     hovertemplate=(
                         f"<b>{cfg_label}</b><br>"
                         "Tag: %{customdata[1]} (%{x|%Y-%m-%d})<br>"
-                        f"{stat_label}: %{{y:.4g}} {unit}<br>"
+                        f"{stat_label}: %{{y:.4g}} {(units or {}).get(stat_col, unit)}<br>"
                         "CI run: %{customdata[0]}<extra></extra>"
                     ),
                 ),

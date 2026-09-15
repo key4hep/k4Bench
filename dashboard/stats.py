@@ -1,7 +1,22 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pandas as pd
+
+from k4bench.metrics import metric_label
+from k4bench.regression.engine import recent_movement, same_release_spread
+
+#: Stability table column holding the same-release repeat spread.
+SAME_RELEASE_SPREAD_COL = "Same-release spread (stack changes excluded)"
+
+#: Stability table column holding the all-runs movement.
+MOVEMENT_COL = "Recent movement (all runs, incl. stack changes)"
+
+#: Metrics whose typical value sits near zero, where a spread relative to the
+#: median would be meaningless.
+_ABSOLUTE_ONLY = {"rss_anon_slope_mb_per_event"}
 
 
 def build_event_stats_table(
@@ -100,3 +115,72 @@ def style_stats_table(stats_df: pd.DataFrame) -> pd.io.formats.style.Styler:
         fmt["Ratio to baseline"] = "{:.3f}"
 
     return stats_df[visible_cols].style.format(fmt)
+
+
+def _fmt_spread(metric: str, spread: float, median: float, unit: str) -> str:
+    text = f"{spread:.3g} {unit}".rstrip()
+    if metric not in _ABSOLUTE_ONLY and math.isfinite(median) and median != 0:
+        text += f" ({spread / abs(median) * 100:.2g}%)"
+    return text
+
+
+def build_stability_table(
+    df: pd.DataFrame,
+    metrics: dict[str, str],
+    reliability: dict[str, bool | None] | None,
+) -> pd.DataFrame:
+    """How much each ``(config, metric)`` moves between runs, for display only.
+
+    *metrics* maps each metric column to its display unit; columns absent from
+    *df* are skipped. Per config, rows are put in the regression engine's order
+    (release date, then run id — so a later rerun of an old release sits with
+    that release, not at the end), runs the reliability map marks unreliable are
+    dropped whatever the page's exclusion toggle says, and missing values are
+    dropped so an absent night is a gap rather than a zero. Two readings follow:
+
+    - the same-release spread
+      (:func:`~k4bench.regression.engine.same_release_spread`), from
+      consecutive runs of the *same* release only — stack changes excluded,
+      but harness changes and noise included;
+    - the recent movement (:func:`~k4bench.regression.engine.recent_movement`),
+      over the last runs in that order regardless of release — also including
+      stack changes. Descriptive only: it includes the newest release, which
+      the engine's own noise floor for that release does not.
+
+    Either reads ``N/A`` when the history is too short; a zero is never shown in
+    place of a missing estimate. Returns an empty frame when no metric is
+    present.
+    """
+    present = [m for m in metrics if m in df.columns]
+    if not present or df.empty:
+        return pd.DataFrame()
+    reliability = reliability or {}
+    ordered = df.sort_values(["x_date", "run_id"], kind="stable")
+    ordered = ordered[[reliability.get(str(r)) is not False for r in ordered["run_id"]]]
+
+    rows = []
+    for label in sorted(ordered["label"].dropna().unique()):
+        cfg = ordered[ordered["label"] == label]
+        for metric in present:
+            series = cfg[["x_date", metric]].dropna()
+            if series.empty:
+                continue
+            values = series[metric].to_numpy(dtype=float)
+            unit = metrics[metric]
+            repeat = same_release_spread(values, series["x_date"].tolist())
+            movement = recent_movement(values)
+            rows.append({
+                "Config": str(label),
+                "Metric": metric_label(metric),
+                SAME_RELEASE_SPREAD_COL: (
+                    f"{_fmt_spread(metric, repeat[0], repeat[1], unit)} · {repeat[2]} pairs"
+                    if repeat is not None else "N/A — too few same-release repeats"
+                ),
+                MOVEMENT_COL: (
+                    _fmt_spread(metric, *movement, unit)
+                    if movement is not None else "N/A"
+                ),
+            })
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).set_index("Config")

@@ -7,6 +7,7 @@ from plotly.subplots import make_subplots
 
 from k4bench.analysis.loader import failed_config_mask, with_cpu_efficiency
 from k4bench.analysis.plots._theme import _TEMPLATE
+from k4bench.metrics import metric_title
 from k4bench.regression.render import from_json
 from remote_cache import _cached_fetch_reports
 from tabs._regression_flags import SEVERITY_RANK, add_severity_markers, render_flag_pills
@@ -19,6 +20,7 @@ from ui_utils import (
     _legend_below,
     _opacity_control,
     _palette_control,
+    _render_stability_expander,
     _smooth_lines_control,
     _style_cycling_control,
     _style_cycling_flags,
@@ -28,15 +30,18 @@ from ui_utils import (
 
 _METRICS = [
     # Row 1 — performance: how fast, how many events, how efficiently
-    ("wall_time_s", "Wall Time (s)"),
-    ("events_per_sec", "Throughput (ev/s)"),
-    ("cpu_efficiency", "CPU Efficiency"),
+    ("wall_time_s", metric_title("wall_time_s")),
+    ("events_per_sec", metric_title("events_per_sec")),
+    ("cpu_efficiency", metric_title("cpu_efficiency")),
     # Row 2 — resources: CPU, memory, OS pressure
-    ("user_cpu_s", "User CPU (s)"),
-    ("peak_rss_mb", "Peak RSS (MB)"),
-    ("peak_vmem_mb", "Peak virtual memory (MB)"),
-    ("involuntary_ctx_switches", "Involuntary Context Switches"),
+    ("user_cpu_s", metric_title("user_cpu_s")),
+    ("peak_rss_mb", metric_title("peak_rss_mb")),
+    ("peak_vmem_mb", metric_title("peak_vmem_mb")),
+    ("involuntary_ctx_switches", metric_title("involuntary_ctx_switches")),
 ]
+
+#: Memory metrics whose run-to-run movement is reported under the figure.
+_STABILITY_METRICS = ["peak_vmem_mb", "peak_rss_mb"]
 
 #: Plotted panels that carry a regression flag, mapped to the metric whose
 #: verdict supplies it. Throughput has none of
@@ -459,4 +464,11 @@ def _trends_body(
     _render_timeseries(
         df, labels, palette, line_shape, alpha, use_dash, use_marker,
         severity, show_confirmed, show_watch, failed_runs,
+    )
+
+    # Every successful run, before the same-tag collapse, which would discard
+    # the same-release repeats the stability table is built from. Unreliable
+    # runs are dropped inside regardless of the toggle.
+    _render_stability_expander(
+        judgeable_runs, _STABILITY_METRICS, reliability, key="trends_stability",
     )

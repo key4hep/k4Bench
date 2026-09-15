@@ -523,3 +523,35 @@ def test_peak_vmem_csv_is_numeric_with_missing_and_invalid_values(tmp_path):
     assert df["peak_vmem_mb"].dtype == "float64"
     assert df.loc["valid", "peak_vmem_mb"] == 2048.25
     assert df.loc[["bad", "missing"], "peak_vmem_mb"].isna().all()
+
+
+def test_event_schema_version_does_not_change_the_frame(tmp_path):
+    legacy_dir, versioned_dir = tmp_path / "legacy", tmp_path / "v1"
+    for run_dir in (legacy_dir, versioned_dir):
+        run_dir.mkdir()
+        _write_event_json(run_dir / "baseline_events.json", n_events=3)
+    path = versioned_dir / "baseline_events.json"
+    raw = json.loads(path.read_text())
+    assert "schema_version" not in raw
+    path.write_text(json.dumps({"schema_version": 1, **raw}))
+
+    legacy = load_event_timing(legacy_dir)["baseline"]
+    versioned = load_event_timing(versioned_dir)["baseline"]
+    pd.testing.assert_frame_equal(legacy, versioned)
+
+
+@pytest.mark.parametrize("version", [2, True, "1"])
+def test_event_file_with_unreadable_schema_version_is_refused(tmp_path, version):
+    path = tmp_path / "baseline_events.json"
+    _write_event_json(path, n_events=3)
+    raw = json.loads(path.read_text())
+    path.write_text(json.dumps({**raw, "schema_version": version}))
+    with pytest.raises(ValueError, match="schema_version"):
+        load_event_timing(tmp_path)
+
+
+@pytest.mark.parametrize("root", ["42", '"schema_version"', "[1, 2]"])
+def test_event_file_with_non_object_root_is_refused(tmp_path, root):
+    (tmp_path / "baseline_events.json").write_text(root)
+    with pytest.raises(ValueError, match="root must be an object"):
+        load_event_timing(tmp_path)

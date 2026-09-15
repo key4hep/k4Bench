@@ -58,6 +58,7 @@ DataFrame per run label and adds an RSS-delta column. Event 0 is a
 
 | Key | Shape | Meaning |
 | --- | --- | --- |
+| `schema_version` | integer, optional | version of this JSON format (currently `1`); absent in files written before versioning |
 | `event_numbers` | array | event IDs |
 | `event_times_s` | array | event wall time in seconds |
 | `event_rss_begin_mb`, `event_rss_end_mb` | arrays | total RSS before/after each event |
@@ -74,10 +75,33 @@ new keys retain the original five DataFrame columns; optional arrays add
 The scalar is a run-level result, not an event column.
 Normal shutdown writes it even when the event arrays are empty.
 
+**Schema version.** The plugin writes `"schema_version": 1` as the first key,
+including when no event completed. The number describes the JSON format, not
+the software release. A file without the key is the *legacy unversioned* event
+format and loads exactly as before. A present value must be a plain integer:
+a string, boolean, float or value below 1 is refused as malformed, and a version
+newer than the reading k4bench supports is refused rather than parsed as a
+format it may not be. Both refusals raise `ValueError`, which trend builds treat
+as an unreadable run and skip; the runner leaves `peak_vmem_mb` empty for such a
+file. Additive, optional keys do not require a new version; a change that
+alters the meaning or shape of an existing key does.
+
+**Anonymous RSS growth.** The trend summary derives
+`rss_anon_slope_mb_per_event` from `event_rss_anon_end_mb`: the Theil–Sen slope
+(median of all pairwise slopes) of the valid samples against their event
+numbers, in MB/event. Event 0 is excluded as warmup, negative (failed `/proc`)
+and missing samples are ignored, and at least 5 valid samples are required —
+otherwise the value is absent, not zero. Above 1500 samples the estimate is
+taken over 1500 evenly spaced samples, keeping cost bounded and the result
+deterministic. A positive slope indicates that anonymous memory grew while
+events were processed, which a leak or other accumulating state can cause; it
+is not proof of either. The metric is reported-only until enough history exists
+to choose a judgement policy for it.
+
 `peak_vmem_mb` and `mean_rss_anon_mb` enter regression judging automatically
 once the engine has sufficient baseline history for each metric. Total RSS
 (`peak_rss_mb`, `mean_rss_mb`) and file-backed RSS (`mean_rss_file_mb`) remain
-reported-only diagnostics.
+reported-only diagnostics, as does the growth rate `rss_anon_slope_mb_per_event`.
 
 ## regions JSON
 
@@ -290,7 +314,9 @@ that explains why no judgement was made:
   duplicates a measurement another metric already judges (`user_cpu_s` tracks
   `wall_time_s`) or because its value is not reproducible enough to judge
   (`peak_rss_mb`, `mean_rss_mb` and `mean_rss_file_mb` count file-backed pages,
-  which a CVMFS publish can evict from a running process).
+  which a CVMFS publish can evict from a running process), or because it is
+  still collecting the history a judgement policy needs
+  (`rss_anon_slope_mb_per_event`).
 
 The field is `null` on judged verdicts. Older reports may omit it entirely, and
 readers must also tolerate values introduced by newer writers that they do not

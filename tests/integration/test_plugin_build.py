@@ -67,6 +67,8 @@ def test_event_plugin_writes_memory_json_without_simulation(tmp_path, n_events):
     import os
     import shutil
 
+    from k4bench.plugin.event_schema import EVENT_SCHEMA_VERSION
+
     compiler = shutil.which("c++")
     if compiler is None:
         pytest.skip("C++ compiler unavailable")
@@ -168,6 +170,8 @@ int main(int argc, char** argv) {
         text=True,
     )
     raw = json.loads(output.read_text())
+    assert next(iter(raw)) == "schema_version"
+    assert raw.pop("schema_version") == EVENT_SCHEMA_VERSION
     sampled_peak_kb = int(result.stdout)
     assert sampled_peak_kb >= 128 * 1024
     assert raw.pop("peak_vmem_mb") >= sampled_peak_kb / 1024 - 0.001
