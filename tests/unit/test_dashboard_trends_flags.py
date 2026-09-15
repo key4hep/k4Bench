@@ -294,22 +294,25 @@ def _app(
     # release, different run dates — what the dedup below collapses to a point.
     tags = (["2026-05-21", "2026-05-21"] if same_tag
             else ["2026-05-20", "2026-05-21"])
-    df = _pd.DataFrame({
-        "label": ["baseline", "baseline"],
-        "run_id": ["2026-05-20", "2026-05-21"],
-        "returncode": [
-            139 if failed and failed_first else 0,
-            139 if failed and not failed_first else 0,
-        ],
-        "run_date": _pd.to_datetime(["2026-05-20", "2026-05-21"]),
-        "x_date": _pd.to_datetime(tags),
-        "k4h_release": [f"key4hep-{t}" for t in tags],
-        "wall_time_s": [5.0, 6.0],
-        "user_cpu_s": [4.0, 4.2],
-        "peak_rss_mb": [1000.0, 1100.0],
-        "events_per_sec": [2.0, 2.0],
-        "involuntary_ctx_switches": [10, 12],
-    })
+    df = _pd.DataFrame(
+        {
+            "label": ["baseline", "baseline"],
+            "run_id": ["2026-05-20", "2026-05-21"],
+            "returncode": [
+                139 if failed and failed_first else 0,
+                139 if failed and not failed_first else 0,
+            ],
+            "run_date": _pd.to_datetime(["2026-05-20", "2026-05-21"]),
+            "x_date": _pd.to_datetime(tags),
+            "k4h_release": [f"key4hep-{t}" for t in tags],
+            "wall_time_s": [5.0, 6.0],
+            "user_cpu_s": [4.0, 4.2],
+            "peak_rss_mb": [1000.0, 1100.0],
+            "peak_vmem_mb": [1000.0, 1100.0],
+            "events_per_sec": [2.0, 2.0],
+            "involuntary_ctx_switches": [10, 12],
+        }
+    )
     _trends.render(
         df, reliability=reliability or {},
         data_url="https://x.invalid", detector="CLD",
@@ -424,21 +427,37 @@ def test_same_tag_rerun_flags_the_release_on_its_plotted_point():
     # same value/severity pairing ReleasePoint makes. What must not happen is a
     # marker floating off the point: it belongs at the plotted coordinates.
     reports = {
-        "2026-05-20": to_json(NightlyReport(generated_at="", groups=[
-            _group("2026-05-20", [_verdict("peak_rss_mb", Severity.CONFIRMED)],
-                   k4h_release="key4hep-2026-05-21"),
-        ])),
-        "2026-05-21": to_json(NightlyReport(generated_at="", groups=[
-            _group("2026-05-21", [_verdict("peak_rss_mb", Severity.OK)],
-                   k4h_release="key4hep-2026-05-21"),
-        ])),
+        "2026-05-20": to_json(
+            NightlyReport(
+                generated_at="",
+                groups=[
+                    _group(
+                        "2026-05-20",
+                        [_verdict("peak_vmem_mb", Severity.CONFIRMED)],
+                        k4h_release="key4hep-2026-05-21",
+                    ),
+                ],
+            )
+        ),
+        "2026-05-21": to_json(
+            NightlyReport(
+                generated_at="",
+                groups=[
+                    _group(
+                        "2026-05-21",
+                        [_verdict("peak_vmem_mb", Severity.OK)],
+                        k4h_release="key4hep-2026-05-21",
+                    ),
+                ],
+            )
+        ),
     }
     at = _run(reports, same_tag=True)
     specs = [json.loads(c.proto.spec) for c in at.get("plotly_chart")]
     markers = [
         t for spec in specs for t in spec["data"] if t.get("mode") == "markers"
     ]
-    # peak_rss_mb rings only its own panel: one halo + one badge, both on the
+    # peak_vmem_mb rings only its own panel: one halo + one badge, both on the
     # single collapsed point — the newest run's value, at the tag's date.
     assert len(markers) == 2
     for t in markers:
@@ -466,3 +485,16 @@ def test_excluding_the_flagged_run_takes_its_markers_off_the_chart():
     runs.set_value("All runs").run()
     assert not at.exception, at.exception
     assert _marker_modes(at).count("markers") == 4
+
+
+def test_virtual_peak_is_visible_and_flagged():
+    df = _trend_df().assign(peak_vmem_mb=[2000.0, 2400.0])
+    severity = {
+        ("baseline", "key4hep-2026-05-21", "peak_vmem_mb"): "CONFIRMED",
+    }
+    fig = _capture_fig(df, ["baseline"], severity)
+    curves = [t for t in fig.data if t.mode == "lines+markers"]
+    assert any(list(t.y) == [2000.0, 2400.0] for t in curves)
+    markers = [t for t in fig.data if t.mode == "markers"]
+    assert len(markers) == 2
+    assert all(list(t.y) == [2400.0] for t in markers)

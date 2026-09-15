@@ -88,8 +88,8 @@ You'll find, per run label: a `.log`, a `_results.csv`, and (if the plugins
 loaded) `_events.json` and `_regions.json`. A results CSV is a single row:
 
 ```text
-label,returncode,n_events,wall_time_raw,wall_time_s,user_cpu_s,sys_cpu_s,peak_rss_mb,major_page_faults,voluntary_ctx_switches,involuntary_ctx_switches,output_size_mb,events_per_sec
-baseline,0,500,1:21.20,81.2,47.3,3.18,2095.4,4,28341,9812,9.21,6.16
+label,returncode,n_events,wall_time_raw,wall_time_s,user_cpu_s,sys_cpu_s,peak_rss_mb,peak_vmem_mb,major_page_faults,voluntary_ctx_switches,involuntary_ctx_switches,output_size_mb,events_per_sec
+baseline,0,500,1:21.20,81.2,47.3,3.18,2095.4,3412.8,4,28341,9812,9.21,6.16
 ```
 
 Each column maps to a field of [`RunResult`](../reference/api/results/model.md);

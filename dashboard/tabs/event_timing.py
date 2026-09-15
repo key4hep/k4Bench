@@ -19,12 +19,6 @@ from ui_utils import (
 )
 
 
-_STAT_COLS = {
-    "Mean":   "mean_time_s",
-    "Median": "median_time_s",
-    "P95":    "p95_time_s",
-}
-
 _HIST_STATS = [
     ("median_time_s", "Median time (s)"),
     ("mean_time_s",   "Mean time (s)"),

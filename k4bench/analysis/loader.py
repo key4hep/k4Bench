@@ -220,8 +220,13 @@ def load_results(log_dir: str | Path, labels: list[str] | None = None) -> pd.Dat
     df = pd.concat(frames, ignore_index=True)
 
     float_cols = [
-        "wall_time_s", "user_cpu_s", "sys_cpu_s",
-        "peak_rss_mb", "output_size_mb", "events_per_sec",
+        "wall_time_s",
+        "user_cpu_s",
+        "sys_cpu_s",
+        "peak_rss_mb",
+        "peak_vmem_mb",
+        "output_size_mb",
+        "events_per_sec",
     ]
     int_cols = [
         "returncode", "n_events",
@@ -261,7 +266,9 @@ def load_event_timing(
     dict[str, pd.DataFrame]
         Maps label → DataFrame with columns
         ``event_number``, ``event_time_s``, ``rss_begin_mb``,
-        ``rss_end_mb``, ``rss_delta_mb``.
+        ``rss_end_mb``, ``rss_delta_mb``. Newer files also supply
+        ``rss_anon_begin_mb``, ``rss_anon_end_mb``, ``rss_file_end_mb``;
+        each optional column is added only when its key is present.
     """
     log_dir = Path(log_dir)
     _suffix = "_events.json"
@@ -289,7 +296,12 @@ def load_event_timing(
         _missing = [k for k in _required if k not in raw]
         if _missing:
             raise ValueError(f"{path} missing keys: {_missing}")
-        lengths = {k: len(raw[k]) for k in _required}
+        optional = {
+            "event_rss_anon_begin_mb": "rss_anon_begin_mb",
+            "event_rss_anon_end_mb": "rss_anon_end_mb",
+            "event_rss_file_end_mb": "rss_file_end_mb",
+        }
+        lengths = {k: len(raw[k]) for k in [*_required, *optional] if k in raw}
         if len(set(lengths.values())) > 1:
             raise ValueError(f"{path} has mismatched array lengths: {lengths}")
         df = pd.DataFrame(
@@ -301,6 +313,9 @@ def load_event_timing(
             }
         )
         df["rss_delta_mb"] = df["rss_end_mb"] - df["rss_begin_mb"]
+        for key, column in optional.items():
+            if key in raw:
+                df[column] = raw[key]
         out[label] = df
 
     return out

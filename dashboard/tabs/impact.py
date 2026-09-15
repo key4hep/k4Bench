@@ -43,7 +43,8 @@ class _MetricSpec:
 # always means that the alternative improved relative to the selected baseline.
 _METRICS = (
     _MetricSpec("wall_time_s", "s", True, "Wall", True),
-    _MetricSpec("peak_rss_mb", "MB", True, "Memory", True),
+    _MetricSpec("peak_vmem_mb", "MB", True, "Virtual", True),
+    _MetricSpec("peak_rss_mb", "MB", True, "RSS", True),
     _MetricSpec("user_cpu_s", "s", True, "CPU", True),
     _MetricSpec("output_size_mb", "MB", True, "Output", True),
     _MetricSpec("events_per_sec", "ev/s", False, "Throughput"),

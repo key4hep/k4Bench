@@ -196,3 +196,18 @@ def test_labels_is_a_leaf_module():
         for alias in node.names
     }
     assert not [name for name in imported if name.startswith("k4bench")]
+
+
+@pytest.mark.parametrize(
+    "metric, expected",
+    [
+        ("peak_vmem_mb", "Peak virtual memory"),
+        ("mean_rss_anon_mb", "Mean event anonymous RSS"),
+        ("mean_rss_file_mb", "Mean event file-backed RSS"),
+    ],
+)
+def test_new_memory_labels_and_email_units(metric, expected):
+    from k4bench.regression.email import _METRIC_UNIT_KINDS
+
+    assert pretty_metric(metric) == expected
+    assert _METRIC_UNIT_KINDS[metric] == "memory_mb"

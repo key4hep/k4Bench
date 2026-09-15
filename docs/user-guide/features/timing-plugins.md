@@ -1,7 +1,8 @@
 # Timing plugins
 
-The run-level metrics (wall time, RSS) come from `/usr/bin/time -v` and need
-nothing extra. For a finer view — *per event* and *per subdetector* — k4Bench
+Run-level wall time and peak RSS come from `/usr/bin/time -v` and need
+nothing extra. The virtual-memory peak comes from the event plugin. For a
+finer view — *per event* and *per subdetector* — k4Bench
 ships two optional C++ DDG4 plugins that instrument Geant4 from the inside.
 
 They live in `plugin/` (`k4BenchTimingAction.cpp`,
@@ -66,14 +67,42 @@ which case yours wins:
 ## Per-event timing (`k4BenchTimingAction`)
 
 ### What it measures
-For every event: wall time (monotonic `steady_clock`) and RSS sampled from
-`/proc/self/status` before and after the event.
+For every event: wall time (monotonic `steady_clock`), total RSS and anonymous
+RSS (`RssAnon`) sampled from `/proc/self/status` before and after the event,
+plus file-backed RSS (`RssFile`) at event end. Each boundary uses one pass over
+the status file. At shutdown the plugin reads `VmPeak`, the kernel-maintained
+virtual-size high-water mark, including initialisation up to that read.
+Allocations after that callback are outside this measurement. Normal shutdown
+writes the scalar even when no events completed; crashes may leave it unavailable.
+Only completed events are included in the arrays.
+
+`peak_rss_mb` and `mean_rss_mb` include file-backed pages that a CVMFS publish
+can evict mid-run. Virtual size is independent of page residency. Anonymous
+RSS measures resident anonymous memory without the CVMFS file-cache eviction
+signal, but can still change through swapping or reclamation. Its event mean
+measures a memory level, not a leak rate or total allocated bytes.
+
+Regression judging uses `peak_vmem_mb` and `mean_rss_anon_mb`. The engine
+automatically reports insufficient history until each series has at least
+seven usable baseline measurements from earlier releases. This typically
+takes about a week of nightlies; missing or unreliable measurements can delay
+it. No later code or configuration change is required to start judging.
+`peak_rss_mb`, `mean_rss_mb` and `mean_rss_file_mb` remain reported-only
+diagnostics, including after the new baselines are ready.
+
+The Run Trends tab exposes the virtual peak and the Event Memory tab shows
+anonymous and file-backed RSS. Use the collected history to check virtual-peak
+repeatability on the same stack and sensitivity to geometry changes; baseline
+warmup alone does not establish either property.
 
 ### Output → `<label>_events.json`
 Parallel arrays: `event_numbers`, `event_times_s`, `event_rss_begin_mb`,
-`event_rss_end_mb`. Loaded by
+`event_rss_end_mb`, `event_rss_anon_begin_mb`, `event_rss_anon_end_mb`, and
+`event_rss_file_end_mb`, plus the run-level scalar `peak_vmem_mb`. The executor
+copies the scalar into the results CSV. The arrays are loaded by
 [`load_event_timing`](../../reference/api/analysis/loader.md) into a DataFrame
-with an added `rss_delta_mb` column. Schema:
+with an added `rss_delta_mb` column. The new keys are optional on read, so
+historical files keep loading with their original column set. Schema:
 [File formats → events.json](../../reference/file-formats.md#events-json).
 
 ### Output path

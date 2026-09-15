@@ -53,3 +53,133 @@ def test_plugin_library_is_a_regular_file(built_plugin):
     lib_dir = find_plugin_lib_dir()
     so_files = list(lib_dir.glob("libk4BenchTimingAction.so*"))
     assert so_files and all(f.is_file() for f in so_files)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("n_events", [0, 3])
+def test_event_plugin_writes_memory_json_without_simulation(tmp_path, n_events):
+    """Exercise the real callbacks/writer with minimal DDG4 interfaces.
+
+    No geometry or ddsim run is needed. The real-library tests above verify
+    compatibility with DDG4; this harness checks /proc reads and JSON syntax.
+    """
+    import json
+    import os
+    import shutil
+
+    compiler = shutil.which("c++")
+    if compiler is None:
+        pytest.skip("C++ compiler unavailable")
+    headers = {
+        "G4Event.hh": """
+#pragma once
+class G4Event {
+  int id;
+public:
+  explicit G4Event(int value) : id(value) {}
+  int GetEventID() const { return id; }
+};
+""",
+        "DDG4/Geant4Context.h": """
+#pragma once
+namespace dd4hep { namespace sim { struct Geant4Context {}; } }
+""",
+        "DDG4/Geant4EventAction.h": """
+#pragma once
+#include <string>
+#include <G4Event.hh>
+#include <DDG4/Geant4Context.h>
+namespace dd4hep { namespace sim {
+class Geant4EventAction {
+public:
+  Geant4EventAction(Geant4Context*, const std::string&) {}
+  virtual ~Geant4EventAction() = default;
+  virtual void begin(const G4Event*) {}
+  virtual void end(const G4Event*) {}
+};
+} }
+""",
+        "DD4hep/Printout.h": """
+#pragma once
+namespace dd4hep {
+enum { INFO, ERROR };
+template <typename... Args> void printout(Args...) {}
+}
+""",
+        "DDG4/Factories.h": "#define DECLARE_GEANT4ACTION(name)\n",
+    }
+    for name, content in headers.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    source = tmp_path / "sanity.cpp"
+    source.write_text("""
+#include "k4BenchTimingAction.cpp"
+#include <sys/mman.h>
+#include <iostream>
+int main(int argc, char** argv) {
+  if (argc != 2) return 3;
+  const int n_events = std::atoi(argv[1]);
+  // A transient virtual mapping before event processing must survive in VmPeak.
+  constexpr std::size_t bytes = 128 * 1024 * 1024;
+  void* mapping = mmap(nullptr, bytes, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (mapping == MAP_FAILED) return 1;
+  const long peak = dd4hep::sim::read_vmpeak_kb();
+  if (munmap(mapping, bytes) != 0) return 2;
+  {
+    dd4hep::sim::k4BenchTimingAction action(nullptr, "sanity");
+    for (int i = 0; i < n_events; ++i) {
+      G4Event event(i);
+      action.begin(&event);
+      action.end(&event);
+    }
+    // Shutdown during a begun event must not leave unequal array lengths.
+    G4Event unfinished(n_events);
+    action.begin(&unfinished);
+  }
+  std::cout << peak;
+}
+""")
+    executable = tmp_path / "sanity"
+    env = {**os.environ, "CCACHE_DISABLE": "1"}
+    subprocess.run(
+        [
+            compiler,
+            "-std=c++17",
+            "-I",
+            str(tmp_path),
+            "-I",
+            str(_find_plugin_root()),
+            str(source),
+            "-o",
+            str(executable),
+        ],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    output = tmp_path / "sanity_events.json"
+    result = subprocess.run(
+        [str(executable), str(n_events)],
+        env={**env, "K4BENCH_EVENT_JSON": str(output)},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    raw = json.loads(output.read_text())
+    sampled_peak_kb = int(result.stdout)
+    assert sampled_peak_kb >= 128 * 1024
+    assert raw.pop("peak_vmem_mb") >= sampled_peak_kb / 1024 - 0.001
+    assert set(raw) == {
+        "event_numbers",
+        "event_times_s",
+        "event_rss_begin_mb",
+        "event_rss_end_mb",
+        "event_rss_anon_begin_mb",
+        "event_rss_anon_end_mb",
+        "event_rss_file_end_mb",
+    }
+    assert {len(values) for values in raw.values()} == {n_events}
+    assert raw["event_numbers"] == list(range(n_events))
+    assert all(value >= 0 for values in raw.values() for value in values)

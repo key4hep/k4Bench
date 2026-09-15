@@ -467,3 +467,59 @@ class TestLoadRegionTiming:
             df = entry[key]
             assert "GhostDet" in df.columns, f"GhostDet missing from {key}"
             assert (df["GhostDet"] == 0.0).all(), f"GhostDet not zero in {key}"
+
+
+def test_event_memory_columns(tmp_path):
+    keys = ["event_rss_anon_begin_mb", "event_rss_anon_end_mb", "event_rss_file_end_mb"]
+    path = tmp_path / "baseline_events.json"
+    _write_event_json(path, n_events=3)
+    raw = json.loads(path.read_text())
+    raw["peak_vmem_mb"] = 2048.0
+    raw.update({key: [100.0, 101.0, 102.0] for key in keys})
+    path.write_text(json.dumps(raw))
+    df = load_event_timing(tmp_path)["baseline"]
+    assert set(df.columns) == {
+        "event_number",
+        "event_time_s",
+        "rss_begin_mb",
+        "rss_end_mb",
+        "rss_delta_mb",
+        *(key.removeprefix("event_") for key in keys),
+    }
+    for key in keys:
+        assert df[key.removeprefix("event_")].tolist() == raw[key]
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "event_rss_anon_begin_mb",
+        "event_rss_anon_end_mb",
+        "event_rss_file_end_mb",
+    ],
+)
+def test_event_memory_length_mismatch(tmp_path, key):
+    path = tmp_path / "baseline_events.json"
+    _write_event_json(path, n_events=3)
+    raw = json.loads(path.read_text())
+    for column in ("event_rss_anon_begin_mb", "event_rss_anon_end_mb", "event_rss_file_end_mb"):
+        raw[column] = [100.0] * 3
+    raw[key] = [100.0, 101.0]
+    path.write_text(json.dumps(raw))
+    with pytest.raises(ValueError, match="mismatched array lengths"):
+        load_event_timing(tmp_path)
+
+
+def test_peak_vmem_csv_is_numeric_with_missing_and_invalid_values(tmp_path):
+    _write_results_csv(
+        tmp_path,
+        [
+            {**_minimal_row("valid"), "peak_vmem_mb": "2048.25"},
+            {**_minimal_row("bad"), "peak_vmem_mb": "unavailable"},
+            {**_minimal_row("missing"), "peak_vmem_mb": None},
+        ],
+    )
+    df = load_results(tmp_path).set_index("label")
+    assert df["peak_vmem_mb"].dtype == "float64"
+    assert df.loc["valid", "peak_vmem_mb"] == 2048.25
+    assert df.loc[["bad", "missing"], "peak_vmem_mb"].isna().all()

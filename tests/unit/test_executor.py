@@ -11,6 +11,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from k4bench.runner.executor import _build_command, run_ddsim
 
 XML = Path("/geo/ALLEGRO_o1_v03.xml")
@@ -248,3 +250,57 @@ class TestVerboseReturncode:
         """Non-verbose path (communicate) must also populate returncode."""
         result = self._run(tmp_path, verbose=False)
         assert result.returncode is not None
+
+
+@pytest.mark.parametrize(
+    "payload, expected",
+    [
+        ('{"peak_vmem_mb": 2048.25}', 2048.25),
+        ('{"peak_vmem_mb": 2048}', 2048.0),
+        ("{}", None),
+        (None, None),
+        ('{"peak_vmem_mb":', None),
+        ('{"peak_vmem_mb": null}', None),
+        ('{"peak_vmem_mb": -1}', None),
+        ('{"peak_vmem_mb": NaN}', None),
+        ('{"peak_vmem_mb": Infinity}', None),
+        ('{"peak_vmem_mb": true}', None),
+        ('{"peak_vmem_mb": "invalid"}', None),
+        ("[]", None),
+    ],
+)
+def test_peak_vmem_from_plugin_reaches_results_csv(tmp_path, payload, expected):
+    from k4bench.analysis.loader import load_results
+    from k4bench.results.reporter import save_csv
+
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    path = log_dir / "test_events.json"
+    # Each execution must discard leftover output before collecting its own metrics.
+    path.write_text('{"peak_vmem_mb": 9999}')
+    proc = MagicMock(stdout=iter([]), returncode=0)
+
+    def finish():
+        assert not path.exists()
+        if payload is not None:
+            path.write_text(payload)
+
+    proc.wait.side_effect = finish
+    with (
+        patch("k4bench.runner.executor.subprocess.Popen", return_value=proc),
+        patch("k4bench.runner.executor.setup_plugin_environment", return_value=True),
+    ):
+        result = run_ddsim(
+            xml_path=XML,
+            label="test",
+            n_events=2,
+            output_file=tmp_path / "out.root",
+            log_dir=log_dir,
+        )
+    assert result.peak_vmem_mb == expected
+    save_csv([result], log_dir)
+    df = load_results(log_dir)
+    if expected is None:
+        assert df["peak_vmem_mb"].isna().all()
+    else:
+        assert df["peak_vmem_mb"].iloc[0] == expected

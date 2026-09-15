@@ -37,6 +37,7 @@ the authoritative list. The headline columns:
 | `wall_time_s` | s | elapsed wall clock |
 | `user_cpu_s`, `sys_cpu_s` | s | CPU times |
 | `peak_rss_mb` | MB | peak resident memory |
+| `peak_vmem_mb` | MB | virtual-size high-water mark (`VmPeak`), copied from the event plugin JSON; empty when unavailable |
 | `output_size_mb` | MB | size of the EDM4hep ROOT output |
 | `events_per_sec` | ev/s | throughput |
 
@@ -44,13 +45,39 @@ Metric fields can be empty when `/usr/bin/time -v` output can't be parsed (e.g.
 a crashed run). [`load_results`](api/analysis/loader.md) reads these into a
 DataFrame with appropriate numeric types.
 
+`peak_rss_mb` and the event summary `mean_rss_mb` include file-backed pages
+that a CVMFS publish can evict mid-run. They therefore depend on page residency.
+
 ## events JSON
 
-Written by the event timing plugin: parallel arrays, one entry per event —
+Written by the event timing plugin: parallel arrays, one entry per completed event —
 event numbers, per-event wall time (seconds), and RSS (MB) sampled at the start
 and end of each event. [`load_event_timing`](api/analysis/loader.md) returns a
 DataFrame per run label and adds an RSS-delta column. Event 0 is a
 [warmup outlier](../user-guide/features/analysis.md#warmup-events).
+
+| Key | Shape | Meaning |
+| --- | --- | --- |
+| `event_numbers` | array | event IDs |
+| `event_times_s` | array | event wall time in seconds |
+| `event_rss_begin_mb`, `event_rss_end_mb` | arrays | total RSS before/after each event |
+| `peak_vmem_mb` | scalar, optional | kernel virtual-size high-water mark up to the plugin shutdown read (includes initialisation) |
+| `event_rss_anon_begin_mb`, `event_rss_anon_end_mb` | arrays, optional | anonymous resident memory before/after each event (`RssAnon`) |
+| `event_rss_file_end_mb` | array, optional | file-backed resident memory after each event (`RssFile`) |
+
+All memory values use kB / 1024, following the existing MB convention.
+Failed `/proc` reads produce negative values. The runner leaves an unavailable
+virtual peak empty in the CSV; new event summaries exclude negative samples.
+Every array present must have the same length. Historical files without the
+new keys retain the original five DataFrame columns; optional arrays add
+`rss_anon_begin_mb`, `rss_anon_end_mb` and `rss_file_end_mb` only when present.
+The scalar is a run-level result, not an event column.
+Normal shutdown writes it even when the event arrays are empty.
+
+`peak_vmem_mb` and `mean_rss_anon_mb` enter regression judging automatically
+once the engine has sufficient baseline history for each metric. Total RSS
+(`peak_rss_mb`, `mean_rss_mb`) and file-backed RSS (`mean_rss_file_mb`) remain
+reported-only diagnostics.
 
 ## regions JSON
 
@@ -259,8 +286,11 @@ that explains why no judgement was made:
 
 - `insufficient_history` — too few settled baseline runs were available;
 - `unreliable_host` — the run failed the host-reliability check; or
-- `reported_only` — the metric duplicates a measurement that another metric
-  already judges and is therefore never judged by design.
+- `reported_only` — the metric is never judged by design, either because it
+  duplicates a measurement another metric already judges (`user_cpu_s` tracks
+  `wall_time_s`) or because its value is not reproducible enough to judge
+  (`peak_rss_mb`, `mean_rss_mb` and `mean_rss_file_mb` count file-backed pages,
+  which a CVMFS publish can evict from a running process).
 
 The field is `null` on judged verdicts. Older reports may omit it entirely, and
 readers must also tolerate values introduced by newer writers that they do not

@@ -100,14 +100,15 @@ MISSING_RUN_GRACE_DAYS = 7
 #: :mod:`k4bench.results.reliability`) rather than a benchmark regression
 #: metric, so it is neither judged nor recorded in the nightly report.
 RUN_METRICS: dict[str, str] = {
-    "wall_time_s":     "time",
-    "peak_rss_mb":     "memory",
+    "wall_time_s": "time",
+    "peak_vmem_mb": "memory",
 }
 
 #: Per-event summary metrics evaluated per config. ``p95_time_s``,
 #: ``p95_rss_mb`` and ``max_rss_mb`` are dropped: noisy tail order-statistics
 #: over a few hundred events that add detection overhead without much signal
-#: beyond ``mean``/``median`` (time) and run-level ``peak_rss_mb`` (memory).
+#: beyond ``mean``/``median`` (time). Total RSS remains a residency diagnostic;
+#: anonymous RSS tracks event memory without CVMFS file-cache evictions.
 #:
 #: ``trimmed_mean_time_s`` is the mean of the events left after the slowest 5%
 #: are dropped (:func:`k4bench.analysis.trend.upper_trimmed_mean`) — a view of
@@ -115,10 +116,10 @@ RUN_METRICS: dict[str, str] = {
 #: replacing it, because the tail it drops is where a tail-confined regression
 #: would appear first.
 EVENT_METRICS: dict[str, str] = {
-    "mean_time_s":         "time",
-    "median_time_s":       "time",
+    "mean_time_s": "time",
+    "median_time_s": "time",
     "trimmed_mean_time_s": "time",
-    "mean_rss_mb":         "memory",
+    "mean_rss_anon_mb": "memory",
 }
 
 #: Metrics recorded in the report but never judged. ``user_cpu_s`` tracks
@@ -128,10 +129,33 @@ EVENT_METRICS: dict[str, str] = {
 #: two *stop* agreeing is worth being able to look up.
 REPORTED_ONLY_METRICS: dict[str, str] = {
     "user_cpu_s": "time",
+    "peak_rss_mb": "memory",
+}
+
+#: Residency diagnostics recorded without entering the regression engine:
+#: CVMFS publishes can evict the file-backed pages mid-run.
+EVENT_REPORTED_ONLY_METRICS: dict[str, str] = {
+    "mean_rss_mb": "memory",
+    "mean_rss_file_mb": "memory",
 }
 
 #: Every run-level metric whose value is recorded, judged or not.
 RUN_VALUE_METRICS: dict[str, str] = {**RUN_METRICS, **REPORTED_ONLY_METRICS}
+
+#: Every event-level metric whose value is recorded, judged or not.
+EVENT_VALUE_METRICS: dict[str, str] = {**EVENT_METRICS, **EVENT_REPORTED_ONLY_METRICS}
+
+_REPORTED_ONLY_REASONS = {
+    "peak_rss_mb": (
+        "recorded but not judged — includes file-backed pages that CVMFS publishes can evict"
+    ),
+    "mean_rss_mb": (
+        "recorded but not judged — includes file-backed pages that CVMFS publishes can evict"
+    ),
+    "mean_rss_file_mb": (
+        "recorded but not judged — CVMFS publishes can evict file-backed pages mid-run"
+    ),
+}
 
 
 def _reliable_column(run_ids: pd.Series, reliability: dict[str, bool | None]) -> list:
@@ -291,7 +315,8 @@ def unjudged_value_verdicts(
     must not pollute baselines or flags), so their metrics get no verdict and
     their values would never reach the report the dashboard's Overview tab
     reads — leaving that tab unable to plot them even with "Exclude unreliable
-    runs" off. And :data:`REPORTED_ONLY_METRICS` are never judged on any night
+    runs" off. And :data:`REPORTED_ONLY_METRICS` and
+    :data:`EVENT_REPORTED_ONLY_METRICS` are never judged on any night
     by design, but are still worth being able to look up.
 
     Either way this records tonight's raw value for every ``(label, metric)``
@@ -312,27 +337,40 @@ def unjudged_value_verdicts(
                 val = row[metric].iloc[0]
                 if pd.isna(val) or not math.isfinite(float(val)):
                     continue
-                out.append(MetricVerdict(
-                    detector=detector, platform=platform, sample=sample,
-                    label=str(label), metric_family=family, metric=metric,
-                    sub_detector=None, run_id=tonight, run_date=tonight,
-                    value=float(val), baseline_median=None, baseline_mad=None,
-                    pct_change=None, z_score=None,
-                    severity=Severity.UNKNOWN, direction=Direction.NONE,
-                    unjudged=(
-                        Unjudged.REPORTED_ONLY
-                        if metric in REPORTED_ONLY_METRICS else
-                        Unjudged.UNRELIABLE_HOST
-                    ),
-                    reason=(
-                        REPORTED_ONLY_REASON
-                        if metric in REPORTED_ONLY_METRICS else
-                        UNRELIABLE_HOST_REASON
-                    ),
-                ))
+                reported_only = (
+                    metric in REPORTED_ONLY_METRICS or metric in EVENT_REPORTED_ONLY_METRICS
+                )
+                out.append(
+                    MetricVerdict(
+                        detector=detector,
+                        platform=platform,
+                        sample=sample,
+                        label=str(label),
+                        metric_family=family,
+                        metric=metric,
+                        sub_detector=None,
+                        run_id=tonight,
+                        run_date=tonight,
+                        value=float(val),
+                        baseline_median=None,
+                        baseline_mad=None,
+                        pct_change=None,
+                        z_score=None,
+                        severity=Severity.UNKNOWN,
+                        direction=Direction.NONE,
+                        unjudged=(
+                            Unjudged.REPORTED_ONLY if reported_only else Unjudged.UNRELIABLE_HOST
+                        ),
+                        reason=(
+                            _REPORTED_ONLY_REASONS.get(metric, REPORTED_ONLY_REASON)
+                            if reported_only
+                            else UNRELIABLE_HOST_REASON
+                        ),
+                    )
+                )
 
     _emit(results_df, RUN_VALUE_METRICS)
-    _emit(event_df, EVENT_METRICS)
+    _emit(event_df, EVENT_VALUE_METRICS)
     return out
 
 

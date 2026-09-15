@@ -21,12 +21,14 @@ Per-event timing
 When available, the k4Bench C++ timing plugin is loaded
 automatically as a DDG4 event action. The plugin writes
 per-event timing metrics to JSON files inside the log directory.
-These profiling artifacts are intentionally kept separate from
-:class:`RunResult`, which only stores run-level benchmark metrics.
+Per-event arrays stay in these profiling artifacts. The plugin's run-level
+virtual-memory peak is copied into :class:`RunResult`.
 """
 
 from __future__ import annotations
 
+import json
+import math
 import os
 import shlex
 import shutil
@@ -173,6 +175,7 @@ def run_ddsim(
         raise
 
     metrics = parse_time_output("".join(time_output_lines))
+    peak_vmem_mb = _read_peak_vmem_mb(event_json_path)
 
     output_size_mb: float | None = None
 
@@ -190,6 +193,9 @@ def run_ddsim(
     if metrics["wall_time_raw"] is None or metrics["peak_rss_mb"] is None:
         _warn_unparsed(label, log_path)
 
+    if plugin_available and proc.returncode == 0 and peak_vmem_mb is None:
+        _warn_missing_instrumentation(label, event_json_path)
+
     return RunResult(
         label=label,
         returncode=proc.returncode,
@@ -199,6 +205,7 @@ def run_ddsim(
         user_cpu_s=metrics["user_cpu_s"],
         sys_cpu_s=metrics["sys_cpu_s"],
         peak_rss_mb=metrics["peak_rss_mb"],
+        peak_vmem_mb=peak_vmem_mb,
         major_page_faults=metrics["major_page_faults"],
         voluntary_ctx_switches=metrics["voluntary_ctx_switches"],
         involuntary_ctx_switches=metrics["involuntary_ctx_switches"],
@@ -210,6 +217,23 @@ def run_ddsim(
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+
+def _read_peak_vmem_mb(path: Path) -> float | None:
+    """Read the plugin's optional high-water mark, tolerating incomplete output."""
+    try:
+        with path.open() as stream:
+            raw = json.load(stream)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    value = raw.get("peak_vmem_mb")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value) or value < 0:
+        return None
+    return float(value)
 
 
 def _has_action(args: list[str], action_name: str) -> bool:
@@ -279,6 +303,22 @@ def _build_command(
         )
 
     return f"{source_line}" f"{gnu_time} -v ddsim \\\n" f"    {all_args}"
+
+
+def _warn_missing_instrumentation(label: str, event_json_path: Path) -> None:
+    """Warn that the event plugin was set up but left no usable output.
+
+    Both judged memory metrics are read from this file, so a run that loses it
+    still succeeds while contributing no memory judgement at all — a state
+    worth distinguishing from a run whose memory simply did not move.
+    """
+
+    print(
+        f"  WARNING [{label}]: "
+        f"timing-plugin output is missing or unusable.\n"
+        f"           Expected {event_json_path}; this run contributes "
+        f"no judged memory metrics."
+    )
 
 
 def _warn_unparsed(label: str, log_path: Path) -> None:
