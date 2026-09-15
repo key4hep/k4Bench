@@ -1056,18 +1056,18 @@ def test_baseline_label_matches_benchmark():
     assert ov._BASELINE_LABEL == BASELINE_LABEL == "baseline"
 
 
-def test_metric_labels_cover_report_and_dashboard_metrics():
-    # Every metric the report records needs a label and unit. CPU efficiency is
-    # also covered because host-oriented dashboard views plot that derived
-    # evidence even though the regression report deliberately omits it.
+def test_selectable_metrics_are_recorded_by_the_report():
+    # Names and units come from k4bench.metrics (see test_metrics.py); what
+    # this tab owns is which recorded metrics it offers.
     report_metrics = set(RUN_VALUE_METRICS) | set(EVENT_VALUE_METRICS)
-    dashboard_metrics = report_metrics | {"cpu_efficiency"}
-    # Names are shared with the mail and the analysis figures, so that
-    # vocabulary also covers columns this tab never plots; it has to *cover*
-    # these, not match them. The units are this tab's own and still do.
-    assert dashboard_metrics <= set(ov.METRIC_LABELS)
-    assert set(ov._METRIC_UNITS) == dashboard_metrics
     assert set(ov._METRIC_ORDER) <= report_metrics
+
+
+def test_memory_panels_are_shown_in_gigabytes():
+    assert ov._metric_title("peak_vmem_mb") == "Peak virtual memory (GB)"
+    assert ov._metric_title("wall_time_s") == "Wall time (s)"
+    # The flag chart draws the report's own MB numbers.
+    assert ov._flag_axis_title(_verdict(metric="peak_vmem_mb", metric_family="memory")) == "Peak virtual memory (MB)"
 
 
 def test_report_roundtrip_preserves_reliable_flag():

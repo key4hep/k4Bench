@@ -5,7 +5,7 @@ import math
 import numpy as np
 import pandas as pd
 
-from k4bench.labels import METRIC_LABELS
+from k4bench.metrics import metric_label
 from k4bench.regression.engine import recent_movement, same_release_spread
 
 #: Stability table column holding the same-release repeat spread.
@@ -171,7 +171,7 @@ def build_stability_table(
             movement = recent_movement(values)
             rows.append({
                 "Config": str(label),
-                "Metric": METRIC_LABELS.get(metric, metric),
+                "Metric": metric_label(metric),
                 SAME_RELEASE_SPREAD_COL: (
                     f"{_fmt_spread(metric, repeat[0], repeat[1], unit)} · {repeat[2]} pairs"
                     if repeat is not None else "N/A — too few same-release repeats"

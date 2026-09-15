@@ -54,9 +54,8 @@ from k4bench.regression.models import (
     Unjudged,
     unjudged_cause,
 )
-from k4bench.labels import (
-    METRIC_LABELS, pretty_metric, pretty_platform, pretty_sample,
-)
+from k4bench.labels import pretty_platform, pretty_sample
+from k4bench.metrics import METRICS, metric_label, pretty_metric
 from k4bench.regression.render import (
     _dashboard_link,
     _detector_badge,
@@ -69,32 +68,8 @@ from k4bench.regression.render import (
 
 # ── Friendly metric names, units and value formatting ─────────────────────────
 
-#: ``metric -> unit-kind``, which drives :func:`_fmt_value`. The names these
-#: metrics are *called* live in :data:`k4bench.labels.METRIC_LABELS`, shared
-#: with the dashboard so the mail and the page it links to do not disagree
-#: about what a column is named. Covers every metric ``report_builder``
-#: currently evaluates; an unknown future metric falls back to its raw name and
-#: the plain numeric formatter rather than failing (see :func:`_metric_label` /
-#: :func:`_fmt_value`).
-_METRIC_UNIT_KINDS: dict[str, str] = {
-    "wall_time_s": "seconds",
-    "user_cpu_s": "seconds",
-    "peak_rss_mb": "memory_mb",
-    "peak_vmem_mb": "memory_mb",
-    "mean_rss_anon_mb": "memory_mb",
-    "mean_rss_file_mb": "memory_mb",
-    "rss_anon_slope_mb_per_event": "mb_per_event",
-    "cpu_efficiency": "percent",
-    "mean_time_s": "seconds",
-    "median_time_s": "seconds",
-    "trimmed_mean_time_s": "seconds",
-    "mean_rss_mb": "memory_mb",
-    "returncode": "int",
-}
-
-
 def _metric_label(v: MetricVerdict) -> str:
-    """A verdict's metric name — :func:`k4bench.labels.pretty_metric` reached
+    """A verdict's metric name — :func:`k4bench.metrics.pretty_metric` reached
     through the verdict (``Mean event RSS · EMEC_turbine``). Unknown metrics
     keep their raw column name."""
     return pretty_metric(v.metric, v.sub_detector)
@@ -107,7 +82,7 @@ def _html_metric_and_config(v: MetricVerdict) -> str:
     ``no_VertexBarrel_assembly`` stay on one line instead of breaking at
     an arbitrary character and becoming hard to copy or compare.
     """
-    parts = [_esc(METRIC_LABELS.get(v.metric, v.metric))]
+    parts = [_esc(metric_label(v.metric))]
     if v.sub_detector:
         parts.append(
             f'<span style="white-space:nowrap;">{_esc(v.sub_detector)}</span>'
@@ -119,8 +94,9 @@ def _html_metric_and_config(v: MetricVerdict) -> str:
 
 
 def _fmt_value(metric: str, value: float | None) -> str:
-    """A metric's current/baseline value with a labelled unit. Unknown metrics
-    use the plain 4-significant-figure formatter."""
+    """A metric's current/baseline value with a labelled unit, as the metric's
+    :class:`~k4bench.metrics.MetricSpec` describes it. Unknown metrics use the
+    plain 4-significant-figure formatter."""
     if value is None:
         return "—"
     try:
@@ -128,18 +104,16 @@ def _fmt_value(metric: str, value: float | None) -> str:
             return "—"
     except TypeError:
         return "—"
-    kind = _METRIC_UNIT_KINDS.get(metric, "raw")
-    if kind == "seconds":
-        return f"{_fmt(value)} s"
-    if kind == "percent":
+    spec = METRICS.get(metric)
+    if spec is None:
+        return _fmt(value)
+    if spec.kind == "ratio":
         return f"{value * 100:.1f}%"
-    if kind == "memory_mb":
-        return f"{value / 1024:.2f} GB" if abs(value) >= 1024 else f"{_fmt(value)} MB"
-    if kind == "mb_per_event":
-        return f"{_fmt(value)} MB/event"
-    if kind == "int":
+    if spec.kind == "megabytes" and abs(value) >= 1024:
+        return f"{value / 1024:.2f} GB"
+    if spec.kind == "count":
         return f"{int(round(value))}"
-    return _fmt(value)
+    return f"{_fmt(value)} {spec.unit}".rstrip()
 
 
 # ── Dates ─────────────────────────────────────────────────────────────────────

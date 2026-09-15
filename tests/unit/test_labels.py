@@ -17,12 +17,10 @@ from k4bench import labels
 from k4bench.labels import (
     BASELINE_LABEL,
     INCLUDE_PREFIX,
-    METRIC_LABELS,
     RELEASE_PREFIX,
     REMOVAL_PREFIX,
     compact_sample,
     describe_platform,
-    pretty_metric,
     pretty_platform,
     pretty_release,
     pretty_sample,
@@ -96,26 +94,6 @@ def test_compact_samples_are_shorter_than_the_full_form():
 @pytest.mark.parametrize("sample", ["", "whatever", "single_mu-", "p8_ee_Zbb"])
 def test_unrecognized_samples_stay_raw_in_the_compact_form_too(sample):
     assert compact_sample(sample) == sample
-
-
-# ── Metrics ───────────────────────────────────────────────────────────────────
-
-def test_metric_names_are_sentence_case():
-    # Callers drop these straight into titles and list items. Three of them used
-    # to keep a lower-case copy and capitalize it back on every use.
-    for name in METRIC_LABELS.values():
-        assert name[:1] == name[:1].upper()
-
-
-def test_a_region_level_metric_carries_its_sub_detector():
-    assert pretty_metric("mean_rss_mb", "EMEC_turbine") == (
-        "Mean event RSS · EMEC_turbine"
-    )
-    assert pretty_metric("mean_rss_mb") == "Mean event RSS"
-
-
-def test_an_unknown_metric_keeps_its_raw_column_name():
-    assert pretty_metric("some_future_column") == "some_future_column"
 
 
 # ── Platforms ─────────────────────────────────────────────────────────────────
@@ -196,18 +174,3 @@ def test_labels_is_a_leaf_module():
         for alias in node.names
     }
     assert not [name for name in imported if name.startswith("k4bench")]
-
-
-@pytest.mark.parametrize(
-    "metric, expected",
-    [
-        ("peak_vmem_mb", "Peak virtual memory"),
-        ("mean_rss_anon_mb", "Mean event anonymous RSS"),
-        ("mean_rss_file_mb", "Mean event file-backed RSS"),
-    ],
-)
-def test_new_memory_labels_and_email_units(metric, expected):
-    from k4bench.regression.email import _METRIC_UNIT_KINDS
-
-    assert pretty_metric(metric) == expected
-    assert _METRIC_UNIT_KINDS[metric] == "memory_mb"

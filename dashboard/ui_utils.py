@@ -21,6 +21,7 @@ from plotly.subplots import make_subplots
 from k4bench.analysis.plots import BinCountOptions, event_bin_options
 from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
 from k4bench.analysis.plots._utils import _default_baseline
+from k4bench.metrics import metric_unit
 from k4bench.regression.engine import BASELINE_WINDOW_RUNS, NOISE_WINDOW_RUNS
 from stats import build_stability_table, select_top_n_by_ratio
 
@@ -703,28 +704,6 @@ def _histogram_display_controls(
     )
 
 
-# ── Metric metadata ────────────────────────────────────────────────────────────
-# Shared by metric plots across the dashboard. This covers the report's
-# run/event metrics plus derived host evidence such as ``cpu_efficiency``, which
-# Machine Info and Trends display but the regression report does not judge.
-
-#: Unit suffix per metric for axis titles (empty for dimensionless ratios).
-_METRIC_UNITS = {
-    "wall_time_s": "s",
-    "user_cpu_s": "s",
-    "peak_rss_mb": "MB",
-    "peak_vmem_mb": "MB",
-    "mean_rss_anon_mb": "MB",
-    "mean_rss_file_mb": "MB",
-    "rss_anon_slope_mb_per_event": "MB/event",
-    "cpu_efficiency": "",
-    "mean_time_s": "s",
-    "median_time_s": "s",
-    "trimmed_mean_time_s": "s",
-    "mean_rss_mb": "MB",
-}
-
-
 _DASHES  = ["solid", "dash", "dot", "dashdot"]
 _SYMBOLS = ["circle", "square", "diamond", "cross",
             "triangle-up", "star", "pentagon", "hexagon"]
@@ -837,7 +816,7 @@ def _render_stability_expander(
     if not _is_valid_df(df):
         return
     table = build_stability_table(
-        df, {m: _METRIC_UNITS.get(m, "") for m in metrics}, reliability,
+        df, {m: metric_unit(m) for m in metrics}, reliability,
     )
     if table.empty:
         return

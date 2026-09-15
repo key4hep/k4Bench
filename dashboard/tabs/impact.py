@@ -16,38 +16,50 @@ import streamlit as st
 
 from k4bench.analysis.loader import failed_config_mask
 from k4bench.analysis.plots._theme import _TEMPLATE
-from k4bench.labels import BASELINE_LABEL, METRIC_LABELS, REMOVAL_PREFIX
+from k4bench.labels import BASELINE_LABEL, REMOVAL_PREFIX
+from k4bench.metrics import METRICS
 from ui_chrome import _drop_stale_selection
 
 
 @dataclass(frozen=True)
 class _MetricSpec:
-    """One supported metric and every display/scoring rule it needs."""
+    """One metric this chart ranks by.
+
+    Its name, unit and direction are the metric's own
+    (:data:`k4bench.metrics.METRICS`), so this chart cannot drift from the mail
+    and the tables. ``selector_label`` and ``headline`` stay here: those are
+    this chart's control words and layout, not facts about the metric.
+    """
 
     column: str
-    unit: str
-    lower_is_better: bool
     selector_label: str
     headline: bool = False
 
     @property
     def label(self) -> str:
-        """The metric's name, from the vocabulary the rest of k4Bench uses.
-        Derived rather than stored so this chart cannot drift from the mail and
-        the tables. ``selector_label`` stays its own thing: those are the short
-        words a chart's control needs, not names for the same metric."""
-        return METRIC_LABELS.get(self.column, self.column)
+        return METRICS[self.column].label
+
+    @property
+    def unit(self) -> str:
+        return METRICS[self.column].unit
+
+    @property
+    def lower_is_better(self) -> bool:
+        direction = METRICS[self.column].lower_is_better
+        if direction is None:
+            raise ValueError(f"{self.column} has no better direction to rank by")
+        return direction
 
 
 # One source of truth keeps the direction invariant intact: positive impact
 # always means that the alternative improved relative to the selected baseline.
 _METRICS = (
-    _MetricSpec("wall_time_s", "s", True, "Wall", True),
-    _MetricSpec("peak_vmem_mb", "MB", True, "Virtual", True),
-    _MetricSpec("peak_rss_mb", "MB", True, "RSS", True),
-    _MetricSpec("user_cpu_s", "s", True, "CPU", True),
-    _MetricSpec("output_size_mb", "MB", True, "Output", True),
-    _MetricSpec("events_per_sec", "ev/s", False, "Throughput"),
+    _MetricSpec("wall_time_s", "Wall", True),
+    _MetricSpec("peak_vmem_mb", "Virtual", True),
+    _MetricSpec("peak_rss_mb", "RSS", True),
+    _MetricSpec("user_cpu_s", "CPU", True),
+    _MetricSpec("output_size_mb", "Output", True),
+    _MetricSpec("events_per_sec", "Throughput"),
 )
 _METRICS_BY_COLUMN = {metric.column: metric for metric in _METRICS}
 

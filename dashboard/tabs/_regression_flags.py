@@ -23,7 +23,8 @@ import streamlit as st
 
 from k4bench.blame.models import RANKING_DISCLOSURE, BlameReport, CandidatePR
 from k4bench.regression.models import Direction, MetricVerdict, Severity
-from k4bench.labels import compact_sample, pretty_metric as _pretty_metric
+from k4bench.labels import compact_sample
+from k4bench.metrics import pretty_metric as _pretty_metric
 from k4bench.regression.render import _badge, _fmt, _fmt_pct
 from ui_utils import _to_rgba
 
@@ -214,7 +215,7 @@ def attention_key(v: MetricVerdict) -> tuple:
 
 
 def pretty_metric(v: MetricVerdict) -> str:
-    """A verdict's metric name — :func:`k4bench.labels.pretty_metric` reached
+    """A verdict's metric name — :func:`k4bench.metrics.pretty_metric` reached
     through the verdict, which is what every caller in the dashboard holds
     (``Wall time · VertexBarrel``)."""
     return _pretty_metric(v.metric, v.sub_detector)

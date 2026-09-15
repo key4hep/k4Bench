@@ -34,7 +34,8 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
-from k4bench.labels import BASELINE_LABEL, METRIC_LABELS
+from k4bench.labels import BASELINE_LABEL
+from k4bench.metrics import is_megabytes, metric_label, metric_title
 from k4bench.regression.engine import Z_THRESHOLD
 from k4bench.regression.models import NightlyReport, RunGroupReport, Severity
 from k4bench.regression.render import _detector_badge, from_json
@@ -55,7 +56,6 @@ from tabs._reliability import render_reliability_scope
 from ui_chrome import EXAMPLE_DETECTORS, seed_query_param
 from ui_utils import (
     _DASHES,
-    _METRIC_UNITS,
     _PALETTES,
     _PALETTE_NAMES,
     _SYMBOLS,
@@ -114,19 +114,10 @@ _FRAME_COLUMNS = [
 _VERSION_RE = re.compile(r"^(?P<family>.+?)(?P<variant>(?:_o\d+)?(?:_v\d+)?)$")
 
 
-def _metric_unit(metric: str) -> str:
-    """Display unit for *metric* — memory is shown in GB (the raw columns are
-    MB; see :func:`_to_display_units`), everything else keeps its stored unit."""
-    if metric in _MEMORY_METRICS:
-        return "GB"
-    return _METRIC_UNITS.get(metric, "")
-
-
 def _metric_title(metric: str) -> str:
-    """Human-readable panel/axis title with units, e.g. ``Wall time (s)``."""
-    name = METRIC_LABELS.get(metric, metric)
-    unit = _metric_unit(metric)
-    return f"{name} ({unit})" if unit else name
+    """Human-readable panel/axis title with units, e.g. ``Wall time (s)``.
+    Sizes stored in MB are shown in GB (see :func:`_to_display_units`)."""
+    return metric_title(metric, "GB" if is_megabytes(metric) else None)
 
 
 def _trend_y_title(metric: str, relative: bool) -> str:
@@ -134,7 +125,7 @@ def _trend_y_title(metric: str, relative: bool) -> str:
     the detector's first plotted night."""
     if not relative:
         return _metric_title(metric)
-    return f"{METRIC_LABELS.get(metric, metric)} (% of first night)"
+    return f"{metric_label(metric)} (% of first night)"
 
 
 # ── Pure data shaping (no Streamlit — the unit-test surface) ──────────────────
@@ -697,16 +688,16 @@ def _detector_legend_columns(
 # ── The combined figure ────────────────────────────────────────────────────────
 
 def _to_display_units(wide: pd.DataFrame, hist: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Copies of the frames with memory converted MB → GB for display; the
+    """Copies of the frames with MB sizes converted to GB for display; the
     stored columns stay MB (the reports' native unit) so the pure data helpers
     and the regression engine's numbers remain directly comparable."""
     wide = wide.copy()
-    for metric in _MEMORY_METRICS:
-        if metric in wide.columns:
+    for metric in wide.columns:
+        if is_megabytes(metric):
             wide[metric] = wide[metric] / 1024.0
     if not hist.empty:
         hist = hist.copy()
-        mem_rows = hist["metric"].isin(_MEMORY_METRICS)
+        mem_rows = hist["metric"].map(is_megabytes).astype(bool)
         hist.loc[mem_rows, "value"] = hist.loc[mem_rows, "value"] / 1024.0
     return wide, hist
 
@@ -1035,9 +1026,7 @@ def _flag_axis_title(verdict) -> str:
     """Axis title in the report's *stored* units (MB for memory): the flag
     trend draws the verdict's own baseline band, so the axis must match those
     raw numbers rather than the GB display the figure panels use."""
-    name = METRIC_LABELS.get(verdict.metric, verdict.metric)
-    unit = _METRIC_UNITS.get(verdict.metric, "")
-    return f"{name} ({unit})" if unit else name
+    return metric_title(verdict.metric)
 
 
 def _flag_trend_figure(

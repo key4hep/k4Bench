@@ -31,14 +31,15 @@ from k4bench.analysis.loader import (
 from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
 from k4bench.regression.engine import Z_THRESHOLD
 from k4bench.regression.models import MetricVerdict, Severity
-from k4bench.labels import METRIC_LABELS, pretty_sample
+from k4bench.labels import pretty_sample
+from k4bench.metrics import metric_title
 from k4bench.regression.render import _metric_name
 from k4bench.regression.report_builder import EVENT_VALUE_METRICS, RUN_VALUE_METRICS
 from k4bench.results.reliability_evidence import run_reliability_map
 from tabs import _blame
 from tabs._regression_flags import add_severity_markers, metric_option
 from tabs._reliability import resolve_reliability_filter
-from ui_utils import _is_valid_df, _METRIC_UNITS, _to_rgba
+from ui_utils import _is_valid_df, _to_rgba
 
 #: Fill for the accepted-baseline band, shared by every metric drill-down.
 _BASELINE_FILL = "rgba(31,119,180,0.08)"
@@ -133,9 +134,7 @@ def _series_key(verdict: MetricVerdict) -> str:
 
 
 def _yaxis_label(item: MetricVerdict) -> str:
-    name = METRIC_LABELS.get(item.metric, item.metric)
-    unit = _METRIC_UNITS.get(item.metric, "")
-    return f"{name} ({unit})" if unit else name
+    return metric_title(item.metric)
 
 
 def _release_window_pairs(

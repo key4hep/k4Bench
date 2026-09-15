@@ -9,16 +9,14 @@ import plotly.colors as pc
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from ._theme import _METRIC_UNITS, _TEMPLATE
+from k4bench.metrics import METRICS, metric_title
+
+from ._theme import _TEMPLATE
 from ._utils import _default_baseline, _detector_title, _ensure_df, _matches_baseline
 
-_LOWER_IS_BETTER = {"wall_time_s", "peak_rss_mb", "peak_vmem_mb", "user_cpu_s"}
-
 _OVERVIEW_METRICS = [
-    ("wall_time_s",    f"Wall Time {_METRIC_UNITS['wall_time_s']}"),
-    ("peak_rss_mb",    f"Peak RSS {_METRIC_UNITS['peak_rss_mb']}"),
-    ("user_cpu_s",     f"User CPU {_METRIC_UNITS['user_cpu_s']}"),
-    ("events_per_sec", f"Throughput {_METRIC_UNITS['events_per_sec']}"),
+    (metric, metric_title(metric))
+    for metric in ("wall_time_s", "peak_rss_mb", "user_cpu_s", "events_per_sec")
 ]
 
 
@@ -141,7 +139,8 @@ def plot_run_overview(
         # Gradient: green (best) → yellow → red (worst), ranked per metric.
         col_series = df.set_index("label")[col]
         n_valid = int(col_series.notna().sum())
-        ranks = col_series.rank(ascending=(col in _LOWER_IS_BETTER), na_option="keep")
+        lower_is_better = METRICS[col].lower_is_better if col in METRICS else False
+        ranks = col_series.rank(ascending=bool(lower_is_better), na_option="keep")
         denom = max(n_valid - 1, 1)
         sample_pts = []
         for lbl in run_labels:

@@ -175,6 +175,18 @@ def test_event_memory_history_renders_stability_on_old_and_new_data(with_new_met
     assert "Mean event RSS" in metrics
     assert (new <= metrics) is with_new_metrics
     assert bool(new & metrics) is with_new_metrics
+    # Units come from the dashboard's shared unit table, so a metric missing
+    # there would render as a bare number.
+    table = at.dataframe[0].value.set_index("Metric")
+    for column in (SAME_RELEASE_SPREAD_COL, MOVEMENT_COL):
+        assert " MB (" in table.loc["Mean event RSS", column]
+        if with_new_metrics:
+            assert " MB (" in table.loc["Mean event anonymous RSS", column]
+            assert (
+                table.loc["Anonymous RSS growth per event", column]
+                .split(" · ")[0]
+                .endswith(" MB/event")
+            )
 
 
 def _trends_app(dashboard_dir, with_vmem):
