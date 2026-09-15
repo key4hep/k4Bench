@@ -1,10 +1,16 @@
-"""The measured columns k4Bench records and what is intrinsic to each.
+"""The metrics k4Bench shares across views, and what is intrinsic to each.
 
-One :class:`MetricSpec` per column holds what does not depend on who displays
+Scope: every metric the regression report records, plus those a shared view
+(dashboard tab, e-group mail, analysis figure) names, formats or ranks. It is
+not an exhaustive schema of the results files: raw diagnostics that no shared
+view displays (e.g. ``major_page_faults``, ``voluntary_ctx_switches``) and
+view-local derived statistics (e.g. Event Memory's ``median_rss_mb``) are not
+listed, and fall back to their raw name like any unknown column.
+
+One :class:`MetricSpec` per metric holds what does not depend on who displays
 it: the human name, the stored unit, how a value of it reads (a memory size, a
-fraction, a count) and which direction is better. The dashboard, the e-group
-mail, the analysis figures and the regression report all read these facts
-from here, so a new metric is named and unit-labelled once.
+fraction, a count) and which direction is better. The consumers above read
+these facts from here, so a metric they share is named and unit-labelled once.
 
 Decisions that belong to one view or one policy stay with that view or policy:
 which metrics are judged or reported-only and their regression family

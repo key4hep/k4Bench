@@ -39,24 +39,31 @@ def test_metrics_is_a_leaf_module():
     assert not [name for name in imported if name.startswith("k4bench")]
 
 
-def test_every_recorded_or_displayed_metric_is_described():
-    # One registry instead of per-view tables: anything the report records,
-    # or a dashboard view plots, ranks or tabulates, must be named here.
-    if str(_DASHBOARD_DIR) not in sys.path:
-        sys.path.insert(0, str(_DASHBOARD_DIR))
-    pytest.importorskip("streamlit")
-    from tabs import event_memory, impact, trends
-
+def test_report_and_analysis_metrics_are_registered():
+    # The registry's scope (see the module docstring): the report's metrics and
+    # those shared views display — not every raw results column.
     from k4bench.analysis.plots.overview import _OVERVIEW_METRICS
 
-    displayed = (
+    shared = (
         set(RUN_VALUE_METRICS)
         | set(EVENT_VALUE_METRICS)
-        | {column for column, _ in trends._METRICS}
+        | {column for column, _ in _OVERVIEW_METRICS}
+    )
+    assert shared <= set(METRICS), sorted(shared - set(METRICS))
+
+
+def test_dashboard_metrics_are_registered():
+    # Metrics the dashboard tabs plot, rank or tabulate by name and unit.
+    pytest.importorskip("streamlit")
+    if str(_DASHBOARD_DIR) not in sys.path:
+        sys.path.insert(0, str(_DASHBOARD_DIR))
+    from tabs import event_memory, impact, trends
+
+    displayed = (
+        {column for column, _ in trends._METRICS}
         | set(trends._STABILITY_METRICS)
         | set(event_memory._STABILITY_METRICS)
         | {metric.column for metric in impact._METRICS}
-        | {column for column, _ in _OVERVIEW_METRICS}
     )
     assert displayed <= set(METRICS), sorted(displayed - set(METRICS))
 
