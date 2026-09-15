@@ -596,6 +596,25 @@ class TestPlotRunOverview:
         with pytest.raises(ValueError, match="not found"):
             plot_run_overview(df, relative=True, baseline_label="nonexistent")
 
+    def test_lower_virtual_memory_ranks_as_better(self):
+        """The colour gradient ranks each metric by direction, and virtual
+        memory is a judged memory metric: less of it has to read as better."""
+        import plotly.colors as pc
+
+        df = pd.DataFrame({
+            "label": ["lean", "heavy"],
+            "peak_vmem_mb": [1000.0, 2000.0],
+        })
+        fig = plot_run_overview(
+            df,
+            metrics=[("peak_vmem_mb", "Peak virtual memory (MB)")],
+            relative=False,
+        )
+        colors = {trace.y[0]: trace.marker.color for trace in fig.data}
+        best, worst = pc.sample_colorscale("RdYlGn", [1.0, 0.0])
+        assert colors["lean"] == best
+        assert colors["heavy"] == worst
+
 
 # ---------------------------------------------------------------------------
 # plot_region_timing helpers

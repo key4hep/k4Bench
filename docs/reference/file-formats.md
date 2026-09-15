@@ -286,8 +286,11 @@ that explains why no judgement was made:
 
 - `insufficient_history` — too few settled baseline runs were available;
 - `unreliable_host` — the run failed the host-reliability check; or
-- `reported_only` — the metric duplicates a measurement that another metric
-  already judges and is therefore never judged by design.
+- `reported_only` — the metric is never judged by design, either because it
+  duplicates a measurement another metric already judges (`user_cpu_s` tracks
+  `wall_time_s`) or because its value is not reproducible enough to judge
+  (`peak_rss_mb`, `mean_rss_mb` and `mean_rss_file_mb` count file-backed pages,
+  which a CVMFS publish can evict from a running process).
 
 The field is `null` on judged verdicts. Older reports may omit it entirely, and
 readers must also tolerate values introduced by newer writers that they do not

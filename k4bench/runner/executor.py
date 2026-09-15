@@ -193,6 +193,9 @@ def run_ddsim(
     if metrics["wall_time_raw"] is None or metrics["peak_rss_mb"] is None:
         _warn_unparsed(label, log_path)
 
+    if plugin_available and proc.returncode == 0 and peak_vmem_mb is None:
+        _warn_missing_instrumentation(label, event_json_path)
+
     return RunResult(
         label=label,
         returncode=proc.returncode,
@@ -300,6 +303,22 @@ def _build_command(
         )
 
     return f"{source_line}" f"{gnu_time} -v ddsim \\\n" f"    {all_args}"
+
+
+def _warn_missing_instrumentation(label: str, event_json_path: Path) -> None:
+    """Warn that the event plugin was set up but left no usable output.
+
+    Both judged memory metrics are read from this file, so a run that loses it
+    still succeeds while contributing no memory judgement at all — a state
+    worth distinguishing from a run whose memory simply did not move.
+    """
+
+    print(
+        f"  WARNING [{label}]: "
+        f"timing-plugin output is missing or unusable.\n"
+        f"           Expected {event_json_path}; this run contributes "
+        f"no judged memory metrics."
+    )
 
 
 def _warn_unparsed(label: str, log_path: Path) -> None:

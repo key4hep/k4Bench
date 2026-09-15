@@ -17,6 +17,7 @@ PALETTE = _PALETTE
 _METRIC_UNITS: dict[str, str] = {
     "wall_time_s":    "(s)",
     "peak_rss_mb":    "(MB)",
+    "peak_vmem_mb":   "(MB)",
     "user_cpu_s":     "(s)",
     "sys_cpu_s":      "(s)",
     "events_per_sec": "(ev/s)",

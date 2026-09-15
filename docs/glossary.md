@@ -95,8 +95,11 @@ Patching
 
 RSS
 :   Resident Set Size — the physical memory a process holds. Peak RSS (from
-    `time -v`) is k4Bench's memory metric; the event plugin also samples it
-    per event.
+    `time -v`) and its per-event samples are recorded as diagnostics but not
+    judged, because resident memory includes file-backed pages that a CVMFS
+    publish can evict mid-run. The judged memory metrics are the virtual-size
+    high-water mark and the per-event mean of anonymous RSS, both from the
+    event plugin.
 
 RunResult
 :   The dataclass holding one run's metrics; serialised to the results CSV. See

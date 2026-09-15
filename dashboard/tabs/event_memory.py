@@ -30,7 +30,6 @@ _HIST_STATS = [
 ]
 
 # Each statistic uses its own component's spread and valid event count.
-# File-backed RSS has no recorded spread, so it has no error bars.
 _HIST_ERROR_SOURCES = {
     **{f"{stat}_rss_mb": ("std_rss_mb", "n_events_rss") for stat in ("median", "mean", "std")},
     **{

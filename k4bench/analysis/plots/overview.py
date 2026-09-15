@@ -12,7 +12,7 @@ from plotly.subplots import make_subplots
 from ._theme import _METRIC_UNITS, _TEMPLATE
 from ._utils import _default_baseline, _detector_title, _ensure_df, _matches_baseline
 
-_LOWER_IS_BETTER = {"wall_time_s", "peak_rss_mb", "user_cpu_s"}
+_LOWER_IS_BETTER = {"wall_time_s", "peak_rss_mb", "peak_vmem_mb", "user_cpu_s"}
 
 _OVERVIEW_METRICS = [
     ("wall_time_s",    f"Wall Time {_METRIC_UNITS['wall_time_s']}"),
