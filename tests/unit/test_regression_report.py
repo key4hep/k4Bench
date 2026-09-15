@@ -1420,7 +1420,7 @@ def test_new_memory_judging_warms_up_automatically(tmp_path, new_runs, contended
                 "event_time_s": 0.1,
                 "contended": i == contended_at if contended_at is not None else False,
             }
-            for i in rangenew_runs
+            for i in range(new_runs)
         },
     )
     for i, run_dir in enumerate(run_dirs):
