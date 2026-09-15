@@ -19,18 +19,25 @@ from ui_utils import (
 )
 
 
-_STAT_COLS = {
-    "Mean":   "mean_rss_mb",
-    "Median": "median_rss_mb",
-    "P95":    "p95_rss_mb",
-    "Max":    "max_rss_mb",
-}
-
 _HIST_STATS = [
     ("median_rss_mb", "Median RSS (MB)"),
-    ("mean_rss_mb",   "Mean RSS (MB)"),
-    ("std_rss_mb",    "Std dev (MB)"),
+    ("mean_rss_mb", "Mean RSS (MB)"),
+    ("std_rss_mb", "Std dev (MB)"),
+    ("median_rss_anon_mb", "Median anonymous RSS (MB)"),
+    ("mean_rss_anon_mb", "Mean anonymous RSS (MB)"),
+    ("std_rss_anon_mb", "Anonymous RSS std dev (MB)"),
+    ("mean_rss_file_mb", "Mean file-backed RSS (MB)"),
 ]
+
+# Each statistic uses its own component's spread and valid event count.
+# File-backed RSS has no recorded spread, so it has no error bars.
+_HIST_ERROR_SOURCES = {
+    **{f"{stat}_rss_mb": ("std_rss_mb", "n_events_rss") for stat in ("median", "mean", "std")},
+    **{
+        f"{stat}_rss_anon_mb": ("std_rss_anon_mb", "n_events_rss_anon")
+        for stat in ("median", "mean", "std")
+    },
+}
 
 #: Sub-views, in dispatch order; the first is the fallback when the tab has no
 #: history to offer.
@@ -87,6 +94,21 @@ def _render_current_run(
     else:
         st.info("No valid statistics available (missing or empty data).")
 
+    for column, title in (
+        ("rss_anon_end_mb", "Anonymous RSS"),
+        ("rss_file_end_mb", "File-backed RSS"),
+    ):
+        component_data = {
+            label: df[df[column] >= 0] for label, df in event_data.items() if column in df.columns
+        }
+        if component_data:
+            component_stats = build_event_stats_table(
+                component_data, display_labels, column, "MB", baseline_label, True
+            )
+            if not component_stats.empty:
+                st.caption(title)
+                st.dataframe(style_stats_table(component_stats), width="stretch")
+
     if set(display_labels) != set(current_labels):
         with st.expander(f"All configurations ({len(current_labels)})"):
             all_stats = build_event_stats_table(
@@ -102,7 +124,7 @@ def _render_historical(
     reliability_slot=None,
     display_options_slot=None,
 ) -> None:
-    """Render the historical event memory trends view (3-panel: Median | Mean | Std)."""
+    """Render historical RSS trends, including the optional anon/file split."""
     if not _is_valid_df(trend_event_df):
         st.info(
             "No event memory trend data in the selected window. "
@@ -127,9 +149,12 @@ def _render_historical(
         return
 
     _render_historical_trends(
-        trend_event_df, avail_labels, present_stats,
+        trend_event_df,
+        avail_labels,
+        present_stats,
         std_col="std_rss_mb",
         n_col_candidates=["n_events_rss", "n_events"],
+        error_sources=_HIST_ERROR_SOURCES,
         unit="MB",
         key_prefix="evt_memory_hist",
         no_data_msg="No event memory trend data in the selected window.",

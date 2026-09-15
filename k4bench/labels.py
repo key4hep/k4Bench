@@ -165,21 +165,23 @@ def compact_sample(sample: str) -> str:
 #: dashboard plots (``cpu_efficiency``) and the columns only the analysis
 #: figures use (``output_size_mb``, ``events_per_sec``, ``sys_cpu_s``). An
 #: unrecognized future column falls back to its raw name rather than failing.
-#: Memory metrics are named for RSS, the thing actually recorded, rather than
-#: the vaguer "memory".
+#: Memory labels distinguish virtual size, anonymous RSS and file-backed RSS.
 METRIC_LABELS: dict[str, str] = {
-    "wall_time_s":         "Wall time",
-    "user_cpu_s":          "User CPU time",
-    "sys_cpu_s":           "System CPU time",
-    "cpu_efficiency":      "CPU efficiency",
-    "peak_rss_mb":         "Peak RSS",
-    "mean_rss_mb":         "Mean event RSS",
-    "mean_time_s":         "Mean event time",
-    "median_time_s":       "Median event time",
+    "wall_time_s": "Wall time",
+    "user_cpu_s": "User CPU time",
+    "sys_cpu_s": "System CPU time",
+    "cpu_efficiency": "CPU efficiency",
+    "peak_rss_mb": "Peak RSS",
+    "peak_vmem_mb": "Peak virtual memory",
+    "mean_rss_anon_mb": "Mean event anonymous RSS",
+    "mean_rss_file_mb": "Mean event file-backed RSS",
+    "mean_rss_mb": "Mean event RSS",
+    "mean_time_s": "Mean event time",
+    "median_time_s": "Median event time",
     "trimmed_mean_time_s": "Trimmed mean event time",
-    "output_size_mb":      "Output size",
-    "events_per_sec":      "Throughput",
-    "returncode":          "Return code",
+    "output_size_mb": "Output size",
+    "events_per_sec": "Throughput",
+    "returncode": "Return code",
 }
 
 

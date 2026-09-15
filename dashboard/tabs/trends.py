@@ -28,25 +28,26 @@ from ui_utils import (
 
 _METRICS = [
     # Row 1 — performance: how fast, how many events, how efficiently
-    ("wall_time_s",               "Wall Time (s)"),
-    ("events_per_sec",            "Throughput (ev/s)"),
-    ("cpu_efficiency",            "CPU Efficiency"),
+    ("wall_time_s", "Wall Time (s)"),
+    ("events_per_sec", "Throughput (ev/s)"),
+    ("cpu_efficiency", "CPU Efficiency"),
     # Row 2 — resources: CPU, memory, OS pressure
-    ("user_cpu_s",                "User CPU (s)"),
-    ("peak_rss_mb",               "Peak RSS (MB)"),
-    ("involuntary_ctx_switches",  "Involuntary Context Switches"),
+    ("user_cpu_s", "User CPU (s)"),
+    ("peak_rss_mb", "Peak RSS (MB)"),
+    ("peak_vmem_mb", "Peak virtual memory (MB)"),
+    ("involuntary_ctx_switches", "Involuntary Context Switches"),
 ]
 
 #: Plotted panels that carry a regression flag, mapped to the metric whose
-#: verdict supplies it. Three borrow their own verdict; throughput has none of
+#: verdict supplies it. Throughput has none of
 #: its own — it is exactly ``n_events / wall_time_s`` (see the note on
 #: ``report_builder.RUN_METRICS``), so a throughput regression *is* a wall-time
 #: regression inverted, and it borrows ``wall_time_s``'s verdict. CPU efficiency
 #: and context switches aren't judged nightly, so they never ring a point.
 _FLAG_SOURCE_METRIC = {
-    "wall_time_s":    "wall_time_s",
-    "user_cpu_s":     "user_cpu_s",
-    "peak_rss_mb":    "peak_rss_mb",
+    "wall_time_s": "wall_time_s",
+    "user_cpu_s": "user_cpu_s",
+    "peak_vmem_mb": "peak_vmem_mb",
     "events_per_sec": "wall_time_s",
 }
 

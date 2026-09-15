@@ -358,6 +358,20 @@ def build_event_timing_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
                     row["p95_rss_mb"]    = float(r.quantile(0.95))
                     row["max_rss_mb"]    = float(r.max())
                     row["std_rss_mb"]    = float(r.std()) if nr > 1 else 0.0
+            if "rss_anon_end_mb" in df_ev.columns:
+                r = df_ev["rss_anon_end_mb"].dropna()
+                r = r[r >= 0]  # Negative samples indicate a failed /proc read.
+                nr = len(r)
+                if nr:
+                    row["n_events_rss_anon"] = nr
+                    row["mean_rss_anon_mb"] = float(r.mean())
+                    row["median_rss_anon_mb"] = float(r.median())
+                    row["std_rss_anon_mb"] = float(r.std()) if nr > 1 else 0.0
+            if "rss_file_end_mb" in df_ev.columns:
+                r = df_ev["rss_file_end_mb"].dropna()
+                r = r[r >= 0]
+                if len(r):
+                    row["mean_rss_file_mb"] = float(r.mean())
             rows.append(row)
 
     if not rows:

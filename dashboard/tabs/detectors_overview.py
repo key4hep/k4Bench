@@ -76,7 +76,7 @@ _BASELINE_LABEL = BASELINE_LABEL
 #: is the default). All are lower-is-better.
 _TIME_METRICS = ["mean_time_s", "median_time_s", "trimmed_mean_time_s",
                  "wall_time_s", "user_cpu_s"]
-_MEMORY_METRICS = ["mean_rss_mb", "peak_rss_mb"]
+_MEMORY_METRICS = ["mean_rss_anon_mb", "peak_vmem_mb", "mean_rss_mb", "peak_rss_mb"]
 _METRIC_ORDER: list[str] = [*_TIME_METRICS, *_MEMORY_METRICS]
 
 #: Cap on report fetches when the sidebar provides no trend window (e.g. a
@@ -1830,11 +1830,21 @@ def render(
                          "initialization.",
                 )
                 seed_query_param("det_ov_mem_metric", "mmetric", _MEMORY_METRICS)
+                if "det_ov_mem_metric" not in st.session_state:
+                    memory_rows = hist_rows if view == "Performance Trends" else snap_rows
+                    available = set(memory_rows["metric"])
+                    st.session_state["det_ov_mem_metric"] = next(
+                        (metric for metric in _MEMORY_METRICS if metric in available),
+                        _MEMORY_METRICS[0],
+                    )
                 mem_metric = st.selectbox(
-                    "Memory", _MEMORY_METRICS, key="det_ov_mem_metric",
-                    format_func=_metric_title, width=210,
-                    help="Mean event RSS is the per-event average; peak RSS is "
-                         "the run's high-water mark.",
+                    "Memory",
+                    _MEMORY_METRICS,
+                    key="det_ov_mem_metric",
+                    format_func=_metric_title,
+                    width=210,
+                    help="Anonymous RSS is averaged over events. Virtual peak includes "
+                    "initialisation. Total RSS metrics remain residency diagnostics.",
                 )
                 if view == "Performance Trends":
                     scale = st.segmented_control(

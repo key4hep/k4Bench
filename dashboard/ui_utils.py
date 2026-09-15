@@ -709,14 +709,17 @@ def _histogram_display_controls(
 
 #: Unit suffix per metric for axis titles (empty for dimensionless ratios).
 _METRIC_UNITS = {
-    "wall_time_s":         "s",
-    "user_cpu_s":          "s",
-    "peak_rss_mb":         "MB",
-    "cpu_efficiency":      "",
-    "mean_time_s":         "s",
-    "median_time_s":       "s",
+    "wall_time_s": "s",
+    "user_cpu_s": "s",
+    "peak_rss_mb": "MB",
+    "peak_vmem_mb": "MB",
+    "mean_rss_anon_mb": "MB",
+    "mean_rss_file_mb": "MB",
+    "cpu_efficiency": "",
+    "mean_time_s": "s",
+    "median_time_s": "s",
     "trimmed_mean_time_s": "s",
-    "mean_rss_mb":         "MB",
+    "mean_rss_mb": "MB",
 }
 
 
@@ -825,8 +828,9 @@ def _render_historical_trends(
     key_prefix: str,
     no_data_msg: str = "",
     display_options_slot=None,
+    error_sources: dict[str, tuple[str, str]] | None = None,
 ) -> None:
-    """Render a multi-panel (Median | Mean | Std) historical trend figure.
+    """Render historical statistics in a grid of up to three columns.
 
     Shared implementation for the Event Timing and Event Memory historical
     sub-views.  Both tabs have an identical figure structure; only the column
@@ -854,6 +858,10 @@ def _render_historical_trends(
         Placeholder for the Display options trigger, reserved by the tab on the
         row that carries its View selector, so the popover sits in the same
         place in this view as in the tab's current-run view.
+    error_sources :
+        Optional mapping from statistic column to (standard deviation, event
+        count) columns. When supplied, unlisted statistics have no error bars.
+        Otherwise all statistics use ``std_col`` and ``n_col_candidates``.
     """
     # ── Display options ───────────────────────────────────────────────────────
     # The opacity slider is keyed ``…_line_alpha`` rather than ``…_alpha``: the
@@ -886,11 +894,14 @@ def _render_historical_trends(
     tick_labels  = [pd.Timestamp(d).strftime("%Y-%m-%d") for d in unique_dates]
 
     # ── Figure ────────────────────────────────────────────────────────────────
+    n_cols = min(3, len(stats_spec))
+    n_rows = math.ceil(len(stats_spec) / n_cols)
     fig = make_subplots(
-        rows=1,
-        cols=len(stats_spec),
-        shared_xaxes=True,
+        rows=n_rows,
+        cols=n_cols,
+        shared_xaxes="all",
         horizontal_spacing=0.06,
+        vertical_spacing=0.12 if n_rows > 1 else 0.0,
         subplot_titles=[lbl for _, lbl in stats_spec],
     )
 
@@ -910,27 +921,26 @@ def _render_historical_trends(
         k4h_release  = cfg_df.get("k4h_release", pd.Series(["unknown"] * len(cfg_df))).fillna("unknown")
         custom       = list(zip(run_date_str, k4h_release))
 
-        # Error bars — SEM for each panel
-        n_col   = next((c for c in n_col_candidates if c in cfg_df.columns), None)
-        has_err = std_col in cfg_df.columns and n_col is not None
-        if has_err:
-            std  = cfg_df[std_col].to_numpy()
-            n    = cfg_df[n_col].to_numpy()
-            # n=1  → SEM of mean/median is undefined (need ≥2 events)
-            # n≤2  → SEM of std is undefined  (need ≥3 events for unbiased estimate)
-            valid_mean   = n > 1
-            valid_std    = n > 2
-            sem_mean     = np.where(valid_mean, std / np.sqrt(n), np.nan)
-            sem_median   = np.where(valid_mean, std * np.sqrt(np.pi / 2) / np.sqrt(n), np.nan)
-            sem_std      = np.where(valid_std,  std / np.sqrt(2 * (n - 1)), np.nan)
-            sem_by_panel = [sem_median.tolist(), sem_mean.tolist(), sem_std.tolist()]
-        else:
-            sem_by_panel = [None, None, None]
-
         for col_idx, (stat_col, stat_label) in enumerate(stats_spec):
             if stat_col not in cfg_df.columns:
                 continue
-            sem   = sem_by_panel[col_idx] if col_idx < len(sem_by_panel) else None
+            n_col = next((c for c in n_col_candidates if c in cfg_df.columns), None)
+            source = error_sources.get(stat_col) if error_sources is not None else (std_col, n_col)
+            sem = None
+            if source is not None and all(c in cfg_df.columns for c in source):
+                std = cfg_df[source[0]].to_numpy(dtype=float)
+                n = cfg_df[source[1]].to_numpy(dtype=float)
+                statistic = stat_col.partition("_")[0]
+                valid = n > (2 if statistic == "std" else 1)
+                sem = np.full(len(n), np.nan)
+                if statistic == "std":
+                    sem[valid] = std[valid] / np.sqrt(2 * (n[valid] - 1))
+                elif statistic in ("mean", "median"):
+                    sem[valid] = std[valid] / np.sqrt(n[valid])
+                    if statistic == "median":
+                        sem *= np.sqrt(np.pi / 2)
+                else:
+                    sem = None
             err_y = None
             if sem is not None:
                 err_y = dict(
@@ -951,8 +961,9 @@ def _render_historical_trends(
                     legendgroup=cfg_label,
                     showlegend=(col_idx == 0),
                     line=dict(color=line_color, width=2, dash=dash),
-                    marker=dict(size=7, color=marker_color, symbol=symbol,
-                                line=dict(color=color, width=1.5)),
+                    marker=dict(
+                        size=7, color=marker_color, symbol=symbol, line=dict(color=color, width=1.5)
+                    ),
                     error_y=err_y,
                     customdata=custom,
                     hovertemplate=(
@@ -962,7 +973,8 @@ def _render_historical_trends(
                         "CI run: %{customdata[0]}<extra></extra>"
                     ),
                 ),
-                row=1, col=col_idx + 1,
+                row=col_idx // n_cols + 1,
+                col=col_idx % n_cols + 1,
             )
 
     fig.update_xaxes(
@@ -976,7 +988,7 @@ def _render_historical_trends(
 
     # ── Legend & margins ──────────────────────────────────────────────────────
     # tick_clearance=75: rotated (-30°) date ticks + "Key4hep Nightly Tag" title.
-    _PLOT_H   = 380
+    _PLOT_H = 380 * n_rows
     _T_MARGIN = 40
     _legend, _B_MARGIN = _legend_below(
         _PLOT_H, len(filtered_labels), t_margin=_T_MARGIN, tick_clearance=75,

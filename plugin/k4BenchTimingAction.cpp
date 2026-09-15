@@ -5,6 +5,7 @@
 // The plugin is intentionally lightweight:
 // - Measures per-event wall time using a monotonic clock
 // - Samples RSS memory before/after each event
+// - Reads the kernel virtual-size high-water mark at shutdown
 // - Writes JSON metrics at shutdown
 //
 // Output path is controlled via:
@@ -38,30 +39,60 @@ namespace dd4hep
   {
 
     // ---------------------------------------------------------------------------
-    // Read current RSS from /proc/self/status (Linux only)
+    // Read current RSS and its components from /proc/self/status (Linux only)
     // ---------------------------------------------------------------------------
 
-    static long read_rss_kb()
+    struct RssValues
     {
+      long total{-1};
+      long anon{-1};
+      long file{-1};
+    };
+
+    static RssValues read_rss_kb()
+    {
+      RssValues values;
       std::ifstream status("/proc/self/status");
-
-      if (!status.is_open())
-      {
-        return -1;
-      }
-
+      std::string key;
       std::string line;
 
       while (std::getline(status, line))
       {
-        if (line.rfind("VmRSS:", 0) == 0)
+        std::istringstream iss(line);
+        long kb;
+        if (iss >> key >> kb)
         {
-          std::istringstream iss(line.substr(6));
+          if (key == "VmRSS:")
+          {
+            values.total = kb;
+          }
+          else if (key == "RssAnon:")
+          {
+            values.anon = kb;
+          }
+          else if (key == "RssFile:")
+          {
+            values.file = kb;
+          }
+        }
+      }
+
+      return values;
+    }
+
+    static long read_vmpeak_kb()
+    {
+      std::ifstream status("/proc/self/status");
+      std::string line;
+
+      while (std::getline(status, line))
+      {
+        if (line.rfind("VmPeak:", 0) == 0)
+        {
+          std::istringstream iss(line.substr(7));
 
           long kb = -1;
-          iss >> kb;
-
-          return kb;
+          return (iss >> kb) ? kb : -1;
         }
       }
 
@@ -83,11 +114,15 @@ namespace dd4hep
 
       TimePoint m_eventStart;
       long m_rssBegin{-1};
+      long m_rssAnonBegin{-1};
 
       std::vector<int> m_eventNumbers;
       std::vector<double> m_eventTimes;
       std::vector<long> m_rssBeginValues;
       std::vector<long> m_rssEndValues;
+      std::vector<long> m_rssAnonBeginValues;
+      std::vector<long> m_rssAnonEndValues;
+      std::vector<long> m_rssFileEndValues;
 
     public:
       k4BenchTimingAction(
@@ -105,6 +140,9 @@ namespace dd4hep
         m_eventTimes.reserve(reserveSize);
         m_rssBeginValues.reserve(reserveSize);
         m_rssEndValues.reserve(reserveSize);
+        m_rssAnonBeginValues.reserve(reserveSize);
+        m_rssAnonEndValues.reserve(reserveSize);
+        m_rssFileEndValues.reserve(reserveSize);
 
         printout(
             INFO,
@@ -118,22 +156,28 @@ namespace dd4hep
         writeResults();
       }
 
-      void begin(const G4Event *event) override
+      void begin(const G4Event * /* event */) override
       {
-        m_rssBegin = read_rss_kb();
+        const auto rss = read_rss_kb();
+        m_rssBegin = rss.total;
+        m_rssAnonBegin = rss.anon;
         m_eventStart = Clock::now();
-        m_eventNumbers.push_back(event->GetEventID());
       }
 
-      void end(const G4Event * /* event */) override
+      void end(const G4Event *event) override
       {
         auto elapsed = Clock::now() - m_eventStart;
 
+        m_eventNumbers.push_back(event->GetEventID());
         m_eventTimes.push_back(
             std::chrono::duration<double>(elapsed).count());
 
+        const auto rss = read_rss_kb();
         m_rssBeginValues.push_back(m_rssBegin);
-        m_rssEndValues.push_back(read_rss_kb());
+        m_rssEndValues.push_back(rss.total);
+        m_rssAnonBeginValues.push_back(m_rssAnonBegin);
+        m_rssAnonEndValues.push_back(rss.anon);
+        m_rssFileEndValues.push_back(rss.file);
       }
 
     private:
@@ -165,11 +209,6 @@ namespace dd4hep
 
       void writeResults()
       {
-        if (m_eventTimes.empty())
-        {
-          return;
-        }
-
         std::ofstream out(
             m_outputFile,
             std::ios::out | std::ios::trunc);
@@ -185,11 +224,17 @@ namespace dd4hep
         }
 
         out << "{\n";
+        const long vmpeak = read_vmpeak_kb();
+        out << "  \"peak_vmem_mb\": " << std::fixed << std::setprecision(3)
+            << (vmpeak < 0 ? -1.0 : vmpeak / 1024.0) << ",\n";
 
         writeArray(out, "event_numbers", m_eventNumbers, 0);
         writeArray(out, "event_times_s", m_eventTimes, 6);
         writeArray(out, "event_rss_begin_mb", m_rssBeginValues, 3, 1.0 / 1024.0);
-        writeArray(out, "event_rss_end_mb", m_rssEndValues, 3, 1.0 / 1024.0, /*last=*/true);
+        writeArray(out, "event_rss_end_mb", m_rssEndValues, 3, 1.0 / 1024.0);
+        writeArray(out, "event_rss_anon_begin_mb", m_rssAnonBeginValues, 3, 1.0 / 1024.0);
+        writeArray(out, "event_rss_anon_end_mb", m_rssAnonEndValues, 3, 1.0 / 1024.0);
+        writeArray(out, "event_rss_file_end_mb", m_rssFileEndValues, 3, 1.0 / 1024.0, /*last=*/true);
 
         out << "}\n";
 

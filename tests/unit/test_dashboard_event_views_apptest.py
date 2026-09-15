@@ -13,7 +13,7 @@ from streamlit.testing.v1 import AppTest  # noqa: E402
 _DASHBOARD_DIR = Path(__file__).resolve().parents[2] / "dashboard"
 
 
-def _app(dashboard_dir, view, current_labels, n_events=200):
+def _app(dashboard_dir, view, current_labels, n_events=200, memory_split=False):
     import sys as _sys
     if dashboard_dir not in _sys.path:
         _sys.path.insert(0, dashboard_dir)
@@ -32,6 +32,9 @@ def _app(dashboard_dir, view, current_labels, n_events=200):
         "event_time_s": rng.normal(1.0, 0.1, n),
         "rss_end_mb": rng.normal(110.0, 5.0, n),
     })
+    if memory_split:
+        frame["rss_anon_end_mb"] = 80.0
+        frame["rss_file_end_mb"] = 30.0
     data = {label: frame.copy() for label in current_labels}
     tab = event_timing if view == "timing" else event_memory
 
@@ -87,6 +90,18 @@ def _widget_keys(at, prefix):
             if key.startswith(f"{prefix}_hist_"):
                 keys.add(key[len(prefix):])
     return keys
+
+
+def test_memory_components_are_visible_in_current_run():
+    at = AppTest.from_function(
+        _app,
+        args=(str(_DASHBOARD_DIR), "memory", ["baseline"], 5, True),
+        default_timeout=30,
+    ).run()
+    assert not at.exception, at.exception
+    assert len(at.dataframe) == 3
+    assert at.dataframe[1].value.loc["baseline", "Mean (MB)"] == 80.0
+    assert at.dataframe[2].value.loc["baseline", "Mean (MB)"] == 30.0
 
 
 @pytest.mark.parametrize(("view", "prefix"), [("timing", "evt_timing"), ("memory", "evt_memory")])
@@ -512,3 +527,58 @@ def test_statistics_align_with_plot_and_offer_all_runs(view, prefix):
     assert len(at.dataframe[0].value) == 1
     assert at.expander[0].label == f"All configurations ({len(labels)})"
     assert len(at.dataframe[1].value) == len(labels)
+
+
+@pytest.mark.parametrize("include_total", [False, True])
+def test_historical_memory_uses_component_error_bars(monkeypatch, include_total):
+    import sys
+    import numpy as np
+    import pandas as pd
+
+    if str(_DASHBOARD_DIR) not in sys.path:
+        sys.path.insert(0, str(_DASHBOARD_DIR))
+    import ui_utils
+    from tabs import event_memory
+
+    df = pd.DataFrame(
+        {
+            "label": ["baseline", "baseline"],
+            "run_id": ["2026-01-01", "2026-01-02"],
+            "run_date": pd.to_datetime(["2026-01-01", "2026-01-02"]),
+            "x_date": pd.to_datetime(["2026-01-01", "2026-01-02"]),
+            "k4h_release": ["key4hep-2026-01-01", "key4hep-2026-01-02"],
+            "mean_rss_anon_mb": [np.nan, 100.0],
+            "median_rss_anon_mb": [np.nan, 100.0],
+            "std_rss_anon_mb": [np.nan, 4.0],
+            "n_events_rss_anon": [np.nan, 4],
+            "mean_rss_file_mb": [np.nan, 50.0],
+        }
+    )
+    if include_total:
+        df["mean_rss_mb"] = df["median_rss_mb"] = 150.0
+        df["std_rss_mb"] = 100.0
+        df["n_events_rss"] = 16
+    captured = []
+    monkeypatch.setattr(
+        ui_utils,
+        "_display_options",
+        lambda *a, **kw: {
+            "palette": "Matplotlib",
+            "alpha": 0.75,
+            "style": "Colour only",
+        },
+    )
+    monkeypatch.setattr(event_memory, "render_reliability_filter", lambda frame, *a, **kw: frame)
+    monkeypatch.setattr(ui_utils.st, "plotly_chart", lambda fig, **kw: captured.append(fig))
+    event_memory._render_historical(df)
+    fig = captured[0]
+    traces = dict(zip((col for col, _ in event_memory._HIST_STATS if col in df), fig.data))
+    assert traces["mean_rss_anon_mb"].error_y.array[1] == pytest.approx(2.0)
+    assert traces["median_rss_anon_mb"].error_y.array[1] == pytest.approx(2 * np.sqrt(np.pi / 2))
+    assert traces["std_rss_anon_mb"].error_y.array[1] == pytest.approx(4 / np.sqrt(6))
+    assert np.isnan(traces["mean_rss_anon_mb"].error_y.array[0])
+    assert traces["mean_rss_file_mb"].error_y.array is None
+    if include_total:
+        assert traces["mean_rss_mb"].error_y.array[1] == 25.0
+    # Extra panels wrap into a new row instead of squeezing seven across.
+    assert fig.layout.yaxis4.domain[1] < fig.layout.yaxis.domain[0]

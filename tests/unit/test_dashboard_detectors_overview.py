@@ -29,7 +29,7 @@ from k4bench.regression.models import (  # noqa: E402
     Severity,
 )
 from k4bench.regression.report_builder import (  # noqa: E402
-    EVENT_METRICS,
+    EVENT_VALUE_METRICS,
     RUN_VALUE_METRICS,
 )
 
@@ -1060,7 +1060,7 @@ def test_metric_labels_cover_report_and_dashboard_metrics():
     # Every metric the report records needs a label and unit. CPU efficiency is
     # also covered because host-oriented dashboard views plot that derived
     # evidence even though the regression report deliberately omits it.
-    report_metrics = set(RUN_VALUE_METRICS) | set(EVENT_METRICS)
+    report_metrics = set(RUN_VALUE_METRICS) | set(EVENT_VALUE_METRICS)
     dashboard_metrics = report_metrics | {"cpu_efficiency"}
     # Names are shared with the mail and the analysis figures, so that
     # vocabulary also covers columns this tab never plots; it has to *cover*

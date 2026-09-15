@@ -56,7 +56,7 @@ def test_unjudged_value_verdicts_fills_only_missing_metrics():
     assert all(v.severity is Severity.UNKNOWN and v.value is not None for v in out)
     assert by_metric["user_cpu_s"].value == pytest.approx(90.0)
     assert by_metric["user_cpu_s"].unjudged is Unjudged.REPORTED_ONLY
-    assert by_metric["peak_rss_mb"].unjudged is Unjudged.UNRELIABLE_HOST
+    assert by_metric["peak_rss_mb"].unjudged is Unjudged.REPORTED_ONLY
 
 
 def test_run_and_event_metrics_are_disjoint():
@@ -131,9 +131,9 @@ def _write_run(
         user_cpu_s = float(overrides.get("user_cpu_s", label_wall * 0.98))
         sys_cpu_s = float(overrides.get("sys_cpu_s", 0.0))
         (run_dir / f"{label}_results.csv").write_text(
-            "label,returncode,n_events,wall_time_s,peak_rss_mb,user_cpu_s,"
+            "label,returncode,n_events,wall_time_s,peak_rss_mb,peak_vmem_mb,user_cpu_s,"
             "sys_cpu_s,events_per_sec\n"
-            f"{label},{label_returncode},10,{label_wall},1024.0,{user_cpu_s},"
+            f"{label},{label_returncode},10,{label_wall},1024.0,2048.0,{user_cpu_s},"
             f"{sys_cpu_s},{10.0 / label_wall}\n"
         )
         label_event_time = overrides.get("event_time_s", event_time_s)
@@ -1215,13 +1215,13 @@ def test_a_sparse_successor_series_is_still_judged(tmp_path, gap):
         if gap == "failed_config":
             results["returncode"] = 1
         else:
-            results["peak_rss_mb"] = float("nan")
+            results["peak_vmem_mb"] = float("nan")
         results.to_csv(results_path, index=False)
     group = group_report_from_run_dirs(
         "DET", _NEW_PLAT, "single_e", run_dirs,
         predecessor=lambda: _old_platform_runs(tmp_path),
     )
-    memory = next(v for v in group.verdicts if v.metric == "peak_rss_mb")
+    memory = next(v for v in group.verdicts if v.metric == "peak_vmem_mb")
     assert memory.severity is Severity.OK
 
 
@@ -1396,3 +1396,68 @@ def test_a_seed_change_across_the_migration_is_noted(tmp_path):
     assert any(
         "2026-01-10 → 2026-01-11 spans a ddsim seed change" in note for note in group.notes
     )
+
+
+@pytest.mark.parametrize("new_runs, contended_at, severity", [
+    (7, None, Severity.UNKNOWN),
+    (8, None, Severity.WATCH),
+    (9, None, Severity.CONFIRMED),
+    (8, 3, Severity.UNKNOWN),
+])
+def test_new_memory_judging_warms_up_automatically(tmp_path, new_runs, contended_at, severity):
+    from k4bench.analysis.trend import build_event_timing_trend, build_results_trend
+    from k4bench.regression.render import from_json, to_json
+    from k4bench.regression.report_builder import evaluate_group_series
+
+    old_runs = 3
+    run_dirs = _make_history(tmp_path, [100.0] * (old_runs + new_runs), {
+        i: {"event_time_s": 0.1, "contended": i == old_runs + contended_at
+            if contended_at is not None else False}
+        for i in range(old_runs + new_runs)
+    })
+    for i, run_dir in enumerate(run_dirs):
+        path = run_dir / "baseline_events.json"
+        raw = json.loads(path.read_text())
+        csv_path = run_dir / "baseline_results.csv"
+        frame = pd.read_csv(csv_path).drop(columns=["peak_vmem_mb"])
+        if i >= old_runs:
+            value = 100.0 if i - old_runs < 7 else 140.0
+            raw["peak_vmem_mb"] = value * 10
+            raw["event_rss_anon_begin_mb"] = [value] * 3
+            raw["event_rss_anon_end_mb"] = [value] * 3
+            raw["event_rss_file_end_mb"] = [value * 2] * 3
+            frame["peak_vmem_mb"] = value * 10
+        # A huge residency step must stay diagnostic, even after warmup.
+        raw["event_rss_end_mb"] = [10000.0 if i >= old_runs + 7 else 1000.0] * 3
+        frame["peak_rss_mb"] = raw["event_rss_end_mb"][0]
+        path.write_text(json.dumps(raw))
+        frame.to_csv(csv_path, index=False)
+
+    paths = tuple(str(d) for d in run_dirs)
+    group = group_report_from_run_dirs("DET", _PLAT, "single_e", paths)
+    report_path = tmp_path / "report.json"
+    report_path.write_text(json.dumps(to_json(NightlyReport(generated_at="now", groups=[group]))))
+    report = from_json(json.loads(report_path.read_text()))
+    verdicts = {v.metric: v for v in report.groups[0].verdicts}
+    for metric in ("peak_rss_mb", "mean_rss_mb", "mean_rss_file_mb"):
+        verdict = verdicts[metric]
+        assert verdict.value is not None
+        assert verdict.unjudged is Unjudged.REPORTED_ONLY
+        assert verdict.severity is Severity.UNKNOWN
+        assert verdict.baseline_median is None
+        assert "CVMFS" in verdict.reason
+    for metric in ("peak_vmem_mb", "mean_rss_anon_mb"):
+        verdict = verdicts[metric]
+        assert verdict.severity is severity
+        if severity is Severity.UNKNOWN:
+            assert verdict.unjudged is Unjudged.INSUFFICIENT_HISTORY
+        else:
+            assert verdict.baseline_median == (1000.0 if metric == "peak_vmem_mb" else 100.0)
+    judged = evaluate_group_series(
+        detector="DET", platform=_PLAT, sample="single_e",
+        results_df=build_results_trend(paths), event_df=build_event_timing_trend(paths),
+        reliability={d.name: True for d in run_dirs},
+    )
+    metrics = {sid.metric for sid in judged}
+    assert not ({"peak_rss_mb", "mean_rss_mb", "mean_rss_file_mb"} & metrics)
+    assert {"peak_vmem_mb", "mean_rss_anon_mb"} <= metrics
