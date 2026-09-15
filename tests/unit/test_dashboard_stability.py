@@ -10,10 +10,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-pytest.importorskip("streamlit")
-
-from streamlit.testing.v1 import AppTest  # noqa: E402
-
 _DASHBOARD_DIR = Path(__file__).resolve().parents[2] / "dashboard"
 if str(_DASHBOARD_DIR) not in sys.path:
     sys.path.insert(0, str(_DASHBOARD_DIR))
@@ -123,6 +119,12 @@ def test_frame_without_the_metrics_gives_an_empty_table():
 
 
 # ── rendering ────────────────────────────────────────────────────────────────
+#
+# Only these need Streamlit; the table builder above is plain pandas.
+
+
+def _app_test():
+    return pytest.importorskip("streamlit.testing.v1").AppTest
 
 
 def _memory_app(dashboard_dir, with_new_metrics):
@@ -157,11 +159,15 @@ def _memory_app(dashboard_dir, with_new_metrics):
 
 @pytest.mark.parametrize("with_new_metrics", [False, True])
 def test_event_memory_history_renders_stability_on_old_and_new_data(with_new_metrics):
-    at = AppTest.from_function(
-        _memory_app,
-        args=(str(_DASHBOARD_DIR), with_new_metrics),
-        default_timeout=30,
-    ).run()
+    at = (
+        _app_test()
+        .from_function(
+            _memory_app,
+            args=(str(_DASHBOARD_DIR), with_new_metrics),
+            default_timeout=30,
+        )
+        .run()
+    )
     assert not at.exception, at.exception
     assert [e.label for e in at.expander] == ["Measurement stability"]
     metrics = set(at.dataframe[0].value["Metric"])
@@ -209,11 +215,15 @@ def _trends_app(dashboard_dir, with_vmem):
 
 @pytest.mark.parametrize("with_vmem", [False, True])
 def test_run_trends_stability_uses_every_run_on_old_and_new_data(with_vmem):
-    at = AppTest.from_function(
-        _trends_app,
-        args=(str(_DASHBOARD_DIR), with_vmem),
-        default_timeout=30,
-    ).run()
+    at = (
+        _app_test()
+        .from_function(
+            _trends_app,
+            args=(str(_DASHBOARD_DIR), with_vmem),
+            default_timeout=30,
+        )
+        .run()
+    )
     assert not at.exception, at.exception
     assert [e.label for e in at.expander] == ["Measurement stability"]
     table = at.dataframe[0].value.set_index("Metric")

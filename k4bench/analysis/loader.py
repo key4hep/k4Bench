@@ -275,7 +275,8 @@ def load_event_timing(
     Raises
     ------
     ValueError
-        For a malformed or unsupported ``schema_version``
+        For a JSON root that is not an object, a malformed or unsupported
+        ``schema_version``
         (:func:`~k4bench.plugin.event_schema.validate_event_schema`), missing
         required keys, or mismatched array lengths. A file without
         ``schema_version`` is the legacy unversioned format and loads as usual.

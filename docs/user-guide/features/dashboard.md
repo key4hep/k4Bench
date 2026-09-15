@@ -190,13 +190,18 @@ anonymous, total and file-backed RSS and anonymous RSS growth (MB/event), and
 plots that growth rate as its own panel. Each row gives two readings per config:
 
 - **Repeat-measurement spread (same release)** — the typical change between
-  consecutive runs of the *same* Key4hep release, over the latest 14 such pairs
+  consecutive runs of the *same* Key4hep release, over the last 14 such pairs
   in the window, with the number of pairs used. Those runs measured identical
   software, so this is measurement noise alone. It reads N/A when fewer than 3
   same-release pairs exist, and never falls back to the other column.
 - **Recent movement (all runs, incl. software changes)** — the same statistic
-  over the last 7 runs regardless of release: the noise floor the regression
-  engine applies, which also contains real software changes.
+  over the last 7 runs regardless of release, so it also contains real software
+  changes. It describes recent movement; it is not the exact noise floor the
+  regression engine applied to the newest release, which is computed before that
+  release's own runs are added.
+
+"Last" follows the regression engine's order — release date, then run — not
+wall-clock time: a later rerun of an old release is counted with that release.
 
 Both are the scaled median absolute successive difference (robust, so one
 isolated step barely moves it), shown in the metric's unit and, for levels and

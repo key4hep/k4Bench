@@ -133,7 +133,8 @@ def build_stability_table(
 
     *metrics* maps each metric column to its display unit; columns absent from
     *df* are skipped. Per config, rows are put in the regression engine's order
-    (release date, then run id), runs the reliability map marks unreliable are
+    (release date, then run id — so a later rerun of an old release sits with
+    that release, not at the end), runs the reliability map marks unreliable are
     dropped whatever the page's exclusion toggle says, and missing values are
     dropped so an absent night is a gap rather than a zero. Two readings follow:
 
@@ -141,7 +142,9 @@ def build_stability_table(
       (:func:`~k4bench.regression.engine.repeat_measurement_spread`), from
       consecutive runs of the *same* release only — measurement noise;
     - the recent movement (:func:`~k4bench.regression.engine.recent_movement`),
-      over the latest runs regardless of release — noise plus software change.
+      over the last runs in that order regardless of release — noise plus
+      software change. Descriptive only: it includes the newest release, which
+      the engine's own noise floor for that release does not.
 
     Either reads ``N/A`` when the history is too short; a zero is never shown in
     place of a missing estimate. Returns an empty frame when no metric is

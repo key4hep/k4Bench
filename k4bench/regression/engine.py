@@ -181,8 +181,10 @@ def _successive_difference_spread(diffs) -> float:
     return MAD_NORMAL_CONSISTENCY * float(np.median(np.abs(diffs))) / math.sqrt(2)
 
 
-#: Same-release differences below which :func:`repeat_measurement_spread` gives
-#: no estimate, matching the three values :func:`night_to_night_spread` needs.
+#: Same-release differences (so at least four runs) below which
+#: :func:`repeat_measurement_spread` gives no estimate. Deliberately stricter
+#: than :func:`night_to_night_spread`, which accepts three values (two
+#: differences): with fewer pairs one noisy repeat decides the median.
 MIN_REPEAT_DIFFERENCES = 3
 
 
@@ -217,11 +219,13 @@ def repeat_measurement_spread(
 
 def recent_movement(values, window: int = NOISE_WINDOW_RUNS) -> tuple[float, float] | None:
     """``(night_to_night_spread, median)`` of the last *window* values of a
-    chronological series, or ``None`` below three values.
+    series in run order, or ``None`` below three values.
 
-    Across releases, so unlike :func:`repeat_measurement_spread` it contains
-    real software changes as well as noise; it is the engine's noise floor as
-    applied, not a measurement of stability.
+    A descriptive reading of recent all-run movement: across releases, so
+    unlike :func:`repeat_measurement_spread` it contains real software changes
+    as well as noise. It is not the noise floor :func:`evaluate_series` applied
+    to the newest values — the walk reads its window before adding the release
+    under judgement, whereas this includes that release.
     """
     x = np.asarray(values, dtype=float)[-window:]
     if len(x) < 3:

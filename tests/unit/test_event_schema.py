@@ -31,6 +31,12 @@ def test_future_version_is_refused_rather_than_misread():
         validate_event_schema({"schema_version": EVENT_SCHEMA_VERSION + 1})
 
 
+@pytest.mark.parametrize("raw", [42, "schema_version", ["schema_version"], None])
+def test_non_object_root_is_refused_as_value_error(raw):
+    with pytest.raises(ValueError, match="root must be an object"):
+        validate_event_schema(raw)
+
+
 def test_source_names_the_file():
     with pytest.raises(ValueError, match="^/runs/x_events.json: "):
         validate_event_schema({"schema_version": 99}, source="/runs/x_events.json")

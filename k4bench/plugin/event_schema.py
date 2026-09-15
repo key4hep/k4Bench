@@ -15,17 +15,21 @@ from pathlib import Path
 EVENT_SCHEMA_VERSION = 1
 
 
-def validate_event_schema(raw: Mapping, *, source: str | Path | None = None) -> None:
+def validate_event_schema(raw: object, *, source: str | Path | None = None) -> None:
     """Raise ``ValueError`` unless *raw* is an event file this k4bench can read.
+
+    *raw* is the parsed JSON document; a root that is not an object is refused.
 
     An absent ``schema_version`` is accepted as the legacy unversioned format.
     A present one must be a plain ``int`` (``bool`` and ``float`` are refused)
     between 1 and :data:`EVENT_SCHEMA_VERSION`; a newer version is refused
     rather than parsed as a format it may not be.
     """
+    where = f"{source}: " if source is not None else ""
+    if not isinstance(raw, Mapping):
+        raise ValueError(f"{where}event JSON root must be an object")
     if "schema_version" not in raw:
         return
-    where = f"{source}: " if source is not None else ""
     version = raw["schema_version"]
     if type(version) is not int or version < 1:
         raise ValueError(f"{where}malformed schema_version {version!r}")

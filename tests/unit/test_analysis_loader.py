@@ -548,3 +548,10 @@ def test_event_file_with_unreadable_schema_version_is_refused(tmp_path, version)
     path.write_text(json.dumps({**raw, "schema_version": version}))
     with pytest.raises(ValueError, match="schema_version"):
         load_event_timing(tmp_path)
+
+
+@pytest.mark.parametrize("root", ["42", '"schema_version"', "[1, 2]"])
+def test_event_file_with_non_object_root_is_refused(tmp_path, root):
+    (tmp_path / "baseline_events.json").write_text(root)
+    with pytest.raises(ValueError, match="root must be an object"):
+        load_event_timing(tmp_path)

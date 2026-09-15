@@ -843,10 +843,12 @@ def _render_stability_expander(
     with st.expander("Measurement stability", expanded=False, key=key):
         st.caption(
             "**Repeat-measurement spread**: typical change between consecutive "
-            "reliable runs of the *same* Key4hep release, over the latest 14 such "
+            "reliable runs of the *same* Key4hep release, over the last 14 such "
             "pairs in the trend window — measurement noise only. **Recent "
             "movement**: the same statistic over the last 7 reliable runs "
             "regardless of release, so it also contains real software changes. "
+            "Runs are ordered by release date, then run, as the regression engine "
+            "orders them: a later rerun of an old release counts with that release. "
             "Neither is an uncertainty or a confidence interval."
         )
         st.dataframe(table, width="stretch")
