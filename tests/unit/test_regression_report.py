@@ -1398,23 +1398,32 @@ def test_a_seed_change_across_the_migration_is_noted(tmp_path):
     )
 
 
-@pytest.mark.parametrize("new_runs, contended_at, severity", [
-    (7, None, Severity.UNKNOWN),
-    (8, None, Severity.WATCH),
-    (9, None, Severity.CONFIRMED),
-    (8, 3, Severity.UNKNOWN),
-])
+@pytest.mark.parametrize(
+    "new_runs, contended_at, severity",
+    [
+        (7, None, Severity.UNKNOWN),
+        (8, None, Severity.WATCH),
+        (9, None, Severity.CONFIRMED),
+        (8, 3, Severity.UNKNOWN),
+    ],
+)
 def test_new_memory_judging_warms_up_automatically(tmp_path, new_runs, contended_at, severity):
     from k4bench.analysis.trend import build_event_timing_trend, build_results_trend
     from k4bench.regression.render import from_json, to_json
     from k4bench.regression.report_builder import evaluate_group_series
 
     old_runs = 3
-    run_dirs = _make_history(tmp_path, [100.0] * (old_runs + new_runs), {
-        i: {"event_time_s": 0.1, "contended": i == old_runs + contended_at
-            if contended_at is not None else False}
-        for i in range(old_runs + new_runs)
-    })
+    run_dirs = _make_history(
+        tmp_path,
+        [100.0] * (old_runs + new_runs),
+        {
+            i: {
+                "event_time_s": 0.1,
+                "contended": i == old_runs + contended_at if contended_at is not None else False,
+            }
+            for i in range(old_runs + new_runs)
+        },
+    )
     for i, run_dir in enumerate(run_dirs):
         path = run_dir / "baseline_events.json"
         raw = json.loads(path.read_text())
@@ -1454,8 +1463,11 @@ def test_new_memory_judging_warms_up_automatically(tmp_path, new_runs, contended
         else:
             assert verdict.baseline_median == (1000.0 if metric == "peak_vmem_mb" else 100.0)
     judged = evaluate_group_series(
-        detector="DET", platform=_PLAT, sample="single_e",
-        results_df=build_results_trend(paths), event_df=build_event_timing_trend(paths),
+        detector="DET",
+        platform=_PLAT,
+        sample="single_e",
+        results_df=build_results_trend(paths),
+        event_df=build_event_timing_trend(paths),
         reliability={d.name: True for d in run_dirs},
     )
     metrics = {sid.metric for sid in judged}
