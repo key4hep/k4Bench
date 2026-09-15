@@ -112,11 +112,12 @@ that happens.
 
 ### Config Impact tab
 
-The four summary cards name the alternative configuration with the largest
-estimated impact on wall time, peak memory, user CPU and output size. Pick a
-metric to open its horizontal ranking: the selected baseline is the zero line,
-better-than-baseline changes extend right in blue, and worse changes extend left
-in orange. Positive has the same meaning for every metric — less
+The five summary cards name the alternative configuration with the largest
+estimated impact on wall time, peak virtual memory, peak RSS, user CPU and
+output size. Pick a metric to open its horizontal ranking: the selected
+baseline is the zero line, better-than-baseline changes extend right in blue,
+and worse changes extend left in orange. Positive has the same meaning for
+every metric — less
 time/memory/CPU/output, or more throughput. The default **Full detector**
 (`baseline`) comparison is the usual subdetector-removal study; the wording
 remains baseline-relative if you select another reference. Throughput remains
@@ -172,9 +173,10 @@ on the lines, and nights it flagged but hasn't confirmed are ringed as ⚠️ wa
 points — both on by default, each behind its own toggle. It's the same
 Confirmed/Watch toggle and marker language as the Overview tab, so a flag here
 means exactly what it means there. Flags appear on the metrics the engine judges
-(wall time, user CPU, peak RSS) plus throughput, which borrows the wall-time
+(wall time, peak virtual memory) plus throughput, which borrows the wall-time
 verdict since throughput is exactly `n_events / wall_time_s` (the same
-regression, inverted); CPU efficiency and context switches carry none. Runs that
+regression, inverted); user CPU, peak RSS, CPU efficiency and context switches
+are recorded only and carry none. Runs that
 failed the host-reliability check are excluded by default with the same
 **Runs · ⚠ N unreliable** selector as every other historical view: **Reliable
 only** (the default) or **All runs**. Palette, style cycling, opacity
@@ -525,8 +527,10 @@ at narrower dashboard widths.
   — a detector that has been missing for a few nights is shown at the night it
   really last ran, not at wherever the window happens to end. Both coordinates
   always come from one run, reruns of a nightly tag included. The metric selectors
-  offer mean/median event time, wall time or user CPU for time; mean event RSS
-  or peak RSS for memory (shown in GB), are shared with the trends view, and
+  offer mean/median/trimmed-mean event time, wall time or user CPU for time;
+  mean event anonymous RSS, peak virtual memory, mean event RSS, peak RSS or
+  mean event file-backed RSS for memory (shown in GB), are shared with the
+  trends view, and
   the selection is shareable via `?tmetric=`/`?mmetric=`;
 - **Regression Status** — since the Regressions tab is scoped to one
   detector, the **cross-detector regression picture lives here**: a **report

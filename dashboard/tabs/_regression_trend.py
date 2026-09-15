@@ -33,7 +33,7 @@ from k4bench.regression.engine import Z_THRESHOLD
 from k4bench.regression.models import MetricVerdict, Severity
 from k4bench.labels import METRIC_LABELS, pretty_sample
 from k4bench.regression.render import _metric_name
-from k4bench.regression.report_builder import EVENT_METRICS, RUN_VALUE_METRICS
+from k4bench.regression.report_builder import EVENT_VALUE_METRICS, RUN_VALUE_METRICS
 from k4bench.results.reliability_evidence import run_reliability_map
 from tabs import _blame
 from tabs._regression_flags import add_severity_markers, metric_option
@@ -216,7 +216,7 @@ def _metric_history(
         results_df, cached_load_trend_machine_info(run_dirs),
     )
 
-    if verdict.metric in EVENT_METRICS:
+    if verdict.metric in EVENT_VALUE_METRICS:
         df = cached_load_trend_event_timing(run_dirs)
         if not _is_valid_df(df):
             return None

@@ -370,8 +370,11 @@ def build_event_timing_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
             if "rss_file_end_mb" in df_ev.columns:
                 r = df_ev["rss_file_end_mb"].dropna()
                 r = r[r >= 0]
-                if len(r):
+                nr = len(r)
+                if nr:
+                    row["n_events_rss_file"] = nr
                     row["mean_rss_file_mb"] = float(r.mean())
+                    row["std_rss_file_mb"] = float(r.std()) if nr > 1 else 0.0
             rows.append(row)
 
     if not rows:

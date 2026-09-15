@@ -137,8 +137,9 @@ def setup_plugin_environment(
         subprocess.SubprocessError,
     ) as exc:
         print(
-            f"NOTE: k4Bench timing plugins unavailable "
-            f"({exc}); continuing without per-event timing."
+            f"NOTE: k4Bench timing plugins unavailable ({exc}); continuing "
+            f"without per-event timing and without the virtual-peak and "
+            f"anonymous-RSS measurements the regression engine judges."
         )
 
         return False

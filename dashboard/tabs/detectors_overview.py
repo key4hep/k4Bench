@@ -76,7 +76,8 @@ _BASELINE_LABEL = BASELINE_LABEL
 #: is the default). All are lower-is-better.
 _TIME_METRICS = ["mean_time_s", "median_time_s", "trimmed_mean_time_s",
                  "wall_time_s", "user_cpu_s"]
-_MEMORY_METRICS = ["mean_rss_anon_mb", "peak_vmem_mb", "mean_rss_mb", "peak_rss_mb"]
+_MEMORY_METRICS = ["mean_rss_anon_mb", "peak_vmem_mb", "mean_rss_mb", "peak_rss_mb",
+                   "mean_rss_file_mb"]
 _METRIC_ORDER: list[str] = [*_TIME_METRICS, *_MEMORY_METRICS]
 
 #: Cap on report fetches when the sidebar provides no trend window (e.g. a

@@ -37,6 +37,7 @@ _HIST_ERROR_SOURCES = {
         f"{stat}_rss_anon_mb": ("std_rss_anon_mb", "n_events_rss_anon")
         for stat in ("median", "mean", "std")
     },
+    "mean_rss_file_mb": ("std_rss_file_mb", "n_events_rss_file"),
 }
 
 #: Sub-views, in dispatch order; the first is the fallback when the tab has no

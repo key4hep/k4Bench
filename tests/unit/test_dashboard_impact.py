@@ -50,6 +50,7 @@ def test_successful_rows_excludes_failed_and_missing_returncodes():
 def _comparison_frames():
     raw = pd.DataFrame({
         "wall_time_s": [10.0, 8.0, 11.0],
+        "peak_vmem_mb": [2000.0, 1800.0, 2100.0],
         "peak_rss_mb": [1000.0, 900.0, 1050.0],
         "user_cpu_s": [9.0, 7.0, 9.9],
         "output_size_mb": [100.0, 50.0, 110.0],
@@ -69,7 +70,9 @@ def test_metric_specs_are_unique_complete_and_directionally_explicit():
     assert all(type(metric.lower_is_better) is bool for metric in impact._METRICS)
     assert {
         metric.column for metric in impact._METRICS if metric.lower_is_better
-    } == {"wall_time_s", "peak_rss_mb", "user_cpu_s", "output_size_mb"}
+    } == {
+        "wall_time_s", "peak_vmem_mb", "peak_rss_mb", "user_cpu_s", "output_size_mb",
+    }
 
 
 def test_impact_percentages_normalise_direction_across_metrics():
