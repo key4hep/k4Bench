@@ -100,12 +100,6 @@ Patching
 :   An x86_64 instruction reading the CPU timestamp counter, used by the region
     plugin as a low-overhead timer (falls back to `steady_clock` elsewhere).
 
-Repeat-measurement spread
-:   The typical change between consecutive runs of the same Key4hep release —
-    measurement noise with software changes excluded. Shown in the dashboard's
-    Measurement stability tables next to the all-runs *recent movement*; see
-    [Dashboard → Trends tab](user-guide/features/dashboard.md#trends-tab).
-
 RSS
 :   Resident Set Size — the physical memory a process holds. Peak RSS (from
     `time -v`) and its per-event samples are recorded as diagnostics but not
@@ -117,6 +111,14 @@ RSS
 RunResult
 :   The dataclass holding one run's metrics; serialised to the results CSV. See
     [`results.model`](reference/api/results/model.md).
+
+Same-release spread
+:   The typical change between consecutive runs of the same Key4hep release, so
+    Key4hep stack changes are excluded. It is not measurement noise alone: runs
+    of one release can come from different k4Bench commits, whose harness,
+    plugin or configuration changes also count. Shown in the dashboard's
+    Run-to-run variability tables next to the all-runs *recent movement*; see
+    [Dashboard → Trends tab](user-guide/features/dashboard.md#trends-tab).
 
 Sample
 :   In the nightly CI, a named physics configuration for a detector (e.g.

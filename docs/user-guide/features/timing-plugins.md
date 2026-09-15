@@ -102,8 +102,8 @@ The Run Trends tab exposes the virtual peak and the Event Memory tab shows
 anonymous and file-backed RSS and the growth rate. Use the collected history to
 check virtual-peak repeatability on the same stack and sensitivity to geometry
 changes; baseline warmup alone does not establish either property. Both views
-have a **Measurement stability** table that reports the repeat-measurement
-spread from runs of the same release (see the
+have a **Run-to-run variability** table that reports the spread between runs
+of the same Key4hep release (see the
 [dashboard guide](dashboard.md#trends-tab)).
 
 ### Output → `<label>_events.json`

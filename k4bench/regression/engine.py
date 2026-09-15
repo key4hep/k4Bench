@@ -182,34 +182,37 @@ def _successive_difference_spread(diffs) -> float:
 
 
 #: Same-release differences (so at least four runs) below which
-#: :func:`repeat_measurement_spread` gives no estimate. Deliberately stricter
+#: :func:`same_release_spread` gives no estimate. Deliberately stricter
 #: than :func:`night_to_night_spread`, which accepts three values (two
 #: differences): with fewer pairs one noisy repeat decides the median.
-MIN_REPEAT_DIFFERENCES = 3
+MIN_SAME_RELEASE_DIFFERENCES = 3
 
 
-def repeat_measurement_spread(
+def same_release_spread(
     values, releases, max_differences: int = BASELINE_WINDOW_RUNS,
 ) -> tuple[float, float, int] | None:
-    """Measurement noise of a chronological series, from repeat measurements of
-    one release only.
+    """Run-to-run variability of a chronological series with Key4hep stack
+    changes excluded: only differences between consecutive runs of one release.
 
-    Nights sharing a release re-measure the same software (see gate 5 above),
-    so the difference between two consecutive runs of one release is noise and
-    nothing else. Only those differences are pooled; a step between releases,
-    which may be a genuine software change, never enters. The latest
-    *max_differences* are kept and scaled like :func:`night_to_night_spread`.
+    Nights sharing a release re-measure the same Key4hep stack (see gate 5
+    above), so a step between releases, which may be a genuine stack change,
+    never enters. This is *not* pure measurement noise: consecutive runs of one
+    release are routinely benchmarked by different k4Bench commits (see
+    :mod:`k4bench.blame.builder`), so a harness, plugin or configuration change
+    between them counts here too. A noise-only estimate would additionally need
+    pairs with identical benchmark provenance. The latest *max_differences* are
+    kept and scaled like :func:`night_to_night_spread`.
 
     *values* and *releases* are parallel and already in run order, restricted
     to the runs that should count (reliable, finite). Returns ``(spread,
     median of the values the differences came from, number of differences)``,
-    or ``None`` below :data:`MIN_REPEAT_DIFFERENCES`.
+    or ``None`` below :data:`MIN_SAME_RELEASE_DIFFERENCES`.
     """
     x = np.asarray(values, dtype=float)
     rel = list(releases)
     pairs = [k for k in range(1, len(x)) if rel[k] == rel[k - 1]]
     pairs = pairs[-max_differences:]
-    if len(pairs) < MIN_REPEAT_DIFFERENCES:
+    if len(pairs) < MIN_SAME_RELEASE_DIFFERENCES:
         return None
     later = np.asarray(pairs)
     diffs = x[later] - x[later - 1]
@@ -222,8 +225,8 @@ def recent_movement(values, window: int = NOISE_WINDOW_RUNS) -> tuple[float, flo
     series in run order, or ``None`` below three values.
 
     A descriptive reading of recent all-run movement: across releases, so
-    unlike :func:`repeat_measurement_spread` it contains real software changes
-    as well as noise. It is not the noise floor :func:`evaluate_series` applied
+    unlike :func:`same_release_spread` it also contains Key4hep stack
+    changes. It is not the noise floor :func:`evaluate_series` applied
     to the newest values — the walk reads its window before adding the release
     under judgement, whereas this includes that release.
     """

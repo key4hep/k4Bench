@@ -21,6 +21,7 @@ from plotly.subplots import make_subplots
 from k4bench.analysis.plots import BinCountOptions, event_bin_options
 from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
 from k4bench.analysis.plots._utils import _default_baseline
+from k4bench.regression.engine import BASELINE_WINDOW_RUNS, NOISE_WINDOW_RUNS
 from stats import build_stability_table, select_top_n_by_ratio
 
 
@@ -840,13 +841,17 @@ def _render_stability_expander(
     )
     if table.empty:
         return
-    with st.expander("Measurement stability", expanded=False, key=key):
+    with st.expander("Run-to-run variability", expanded=False, key=key):
         st.caption(
-            "**Repeat-measurement spread**: typical change between consecutive "
-            "reliable runs of the *same* Key4hep release, over the last 14 such "
-            "pairs in the trend window — measurement noise only. **Recent "
-            "movement**: the same statistic over the last 7 reliable runs "
-            "regardless of release, so it also contains real software changes. "
+            "**Same-release spread**: typical change between consecutive reliable "
+            "runs of the *same* Key4hep release, over the last "
+            f"{BASELINE_WINDOW_RUNS} such pairs in the trend window. Stack changes "
+            "are excluded, but not k4Bench-side changes: runs of one release can "
+            "come from different k4Bench commits, so it can contain harness, "
+            "plugin or configuration changes as well as measurement noise. "
+            "**Recent movement**: the "
+            f"same statistic over the last {NOISE_WINDOW_RUNS} reliable runs "
+            "regardless of release, so it also contains stack changes. "
             "Runs are ordered by release date, then run, as the regression engine "
             "orders them: a later rerun of an old release counts with that release. "
             "Neither is an uncertainty or a confidence interval."

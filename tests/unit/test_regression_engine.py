@@ -15,7 +15,7 @@ from k4bench.regression.engine import (
     evaluate_series,
     night_to_night_spread,
     recent_movement,
-    repeat_measurement_spread,
+    same_release_spread,
     robust_baseline,
 )
 from k4bench.regression.models import Direction, SeriesId, Severity, Unjudged
@@ -891,46 +891,46 @@ def _two_nights_per_release(values):
     return [f"r{k // 2}" for k in range(len(values))]
 
 
-def test_repeat_spread_is_small_for_stable_repeats_and_larger_for_noisy_ones():
+def test_same_release_spread_is_small_for_stable_repeats_and_larger_for_noisy_ones():
     stable = [100.0, 100.1, 100.0, 99.9, 100.1, 100.0, 99.9, 100.0]
     noisy = [100.0, 104.0, 100.0, 96.0, 101.0, 105.0, 99.0, 95.0]
-    small = repeat_measurement_spread(stable, _two_nights_per_release(stable))
-    large = repeat_measurement_spread(noisy, _two_nights_per_release(noisy))
+    small = same_release_spread(stable, _two_nights_per_release(stable))
+    large = same_release_spread(noisy, _two_nights_per_release(noisy))
     assert small is not None and large is not None
     assert small[2] == large[2] == 4
     assert small[0] < 0.2 < 3.0 < large[0]
 
 
-def test_repeat_spread_ignores_a_step_between_releases():
+def test_same_release_spread_ignores_a_step_between_releases():
     # Every release re-measures exactly; the software moves 20% at r2. Only the
     # all-runs movement may see that change.
     values = [100.0, 100.0, 100.0, 100.0, 120.0, 120.0, 120.0, 120.0, 100.0, 100.0]
     releases = ["r0", "r0", "r1", "r1", "r2", "r2", "r3", "r3", "r4", "r4"]
-    spread, _median, n = repeat_measurement_spread(values, releases)
+    spread, _median, n = same_release_spread(values, releases)
     assert spread == 0.0 and n == 5
     movement, _ = recent_movement([100.0, 120.0, 100.0, 120.0, 100.0, 120.0, 100.0])
     assert movement > 10.0
 
 
-def test_repeat_spread_is_not_dominated_by_one_outlier_repeat():
+def test_same_release_spread_is_not_dominated_by_one_outlier_repeat():
     values = [100.0, 100.2, 100.0, 99.8, 100.0, 100.2, 100.0, 150.0, 100.0, 99.8]
-    spread, median, _ = repeat_measurement_spread(values, _two_nights_per_release(values))
+    spread, median, _ = same_release_spread(values, _two_nights_per_release(values))
     assert spread < 0.5
     assert median == pytest.approx(100.0)
 
 
-def test_repeat_spread_is_unavailable_without_enough_same_release_pairs():
+def test_same_release_spread_is_unavailable_without_enough_same_release_pairs():
     values = [100.0, 101.0, 102.0, 103.0, 104.0, 105.0]
-    assert repeat_measurement_spread(values, [f"r{k}" for k in range(6)]) is None
-    assert repeat_measurement_spread(values[:4], _two_nights_per_release(values[:4])) is None
+    assert same_release_spread(values, [f"r{k}" for k in range(6)]) is None
+    assert same_release_spread(values[:4], _two_nights_per_release(values[:4])) is None
 
 
-def test_repeat_spread_uses_only_the_latest_differences():
+def test_same_release_spread_uses_only_the_latest_differences():
     # Old wildly-differing pairs age out once 14 newer same-release pairs exist.
     old = [100.0, 150.0] * 5
     new = [100.0, 100.0] * 14
     values = old + new
-    spread, _, n = repeat_measurement_spread(values, _two_nights_per_release(values))
+    spread, _, n = same_release_spread(values, _two_nights_per_release(values))
     assert n == 14 and spread == 0.0
 
 

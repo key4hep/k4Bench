@@ -6,13 +6,13 @@ import numpy as np
 import pandas as pd
 
 from k4bench.labels import METRIC_LABELS
-from k4bench.regression.engine import recent_movement, repeat_measurement_spread
+from k4bench.regression.engine import recent_movement, same_release_spread
 
 #: Stability table column holding the same-release repeat spread.
-REPEAT_SPREAD_COL = "Repeat-measurement spread (same release)"
+SAME_RELEASE_SPREAD_COL = "Same-release spread (stack changes excluded)"
 
 #: Stability table column holding the all-runs movement.
-MOVEMENT_COL = "Recent movement (all runs, incl. software changes)"
+MOVEMENT_COL = "Recent movement (all runs, incl. stack changes)"
 
 #: Metrics whose typical value sits near zero, where a spread relative to the
 #: median would be meaningless.
@@ -138,12 +138,13 @@ def build_stability_table(
     dropped whatever the page's exclusion toggle says, and missing values are
     dropped so an absent night is a gap rather than a zero. Two readings follow:
 
-    - the repeat-measurement spread
-      (:func:`~k4bench.regression.engine.repeat_measurement_spread`), from
-      consecutive runs of the *same* release only — measurement noise;
+    - the same-release spread
+      (:func:`~k4bench.regression.engine.same_release_spread`), from
+      consecutive runs of the *same* release only — stack changes excluded,
+      but harness changes and noise included;
     - the recent movement (:func:`~k4bench.regression.engine.recent_movement`),
-      over the last runs in that order regardless of release — noise plus
-      software change. Descriptive only: it includes the newest release, which
+      over the last runs in that order regardless of release — also including
+      stack changes. Descriptive only: it includes the newest release, which
       the engine's own noise floor for that release does not.
 
     Either reads ``N/A`` when the history is too short; a zero is never shown in
@@ -166,12 +167,12 @@ def build_stability_table(
                 continue
             values = series[metric].to_numpy(dtype=float)
             unit = metrics[metric]
-            repeat = repeat_measurement_spread(values, series["x_date"].tolist())
+            repeat = same_release_spread(values, series["x_date"].tolist())
             movement = recent_movement(values)
             rows.append({
                 "Config": str(label),
                 "Metric": METRIC_LABELS.get(metric, metric),
-                REPEAT_SPREAD_COL: (
+                SAME_RELEASE_SPREAD_COL: (
                     f"{_fmt_spread(metric, repeat[0], repeat[1], unit)} · {repeat[2]} pairs"
                     if repeat is not None else "N/A — too few same-release repeats"
                 ),

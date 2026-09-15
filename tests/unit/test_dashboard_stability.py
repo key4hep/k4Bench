@@ -1,4 +1,4 @@
-"""Measurement-stability table shown under the memory trend figures
+"""Run-to-run variability table shown under the memory trend figures
 (:func:`stats.build_stability_table`) and its rendering on old and new data."""
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ _DASHBOARD_DIR = Path(__file__).resolve().parents[2] / "dashboard"
 if str(_DASHBOARD_DIR) not in sys.path:
     sys.path.insert(0, str(_DASHBOARD_DIR))
 
-from stats import MOVEMENT_COL, REPEAT_SPREAD_COL, build_stability_table  # noqa: E402
+from stats import MOVEMENT_COL, SAME_RELEASE_SPREAD_COL, build_stability_table  # noqa: E402
 
 
 def _frame(values, releases, *, label="baseline", metric="peak_vmem_mb") -> pd.DataFrame:
@@ -38,7 +38,7 @@ def test_stable_repeats_give_a_small_relative_spread():
     row = table.loc["baseline"]
     assert row["Metric"] == "Peak virtual memory"
     # Repeats differ by 0.4 MB: 1.4826 * 0.4 / sqrt(2) against a 2150 MB median.
-    assert row[REPEAT_SPREAD_COL] == "0.419 MB (0.02%) · 4 pairs"
+    assert row[SAME_RELEASE_SPREAD_COL] == "0.419 MB (0.02%) · 4 pairs"
     # The releases step by 100 MB, which only the all-runs movement contains.
     assert row[MOVEMENT_COL] == "52.4 MB (2.4%)"
 
@@ -63,7 +63,7 @@ def test_rows_are_put_in_engine_order_before_pairing():
         }
     )
     table = build_stability_table(frame, {"peak_vmem_mb": "MB"}, {})
-    assert table.loc["baseline", REPEAT_SPREAD_COL] == "1.05 MB (1%) · 3 pairs"
+    assert table.loc["baseline", SAME_RELEASE_SPREAD_COL] == "1.05 MB (1%) · 3 pairs"
 
 
 def test_unreliable_runs_and_missing_values_are_dropped_not_zeroed():
@@ -73,7 +73,7 @@ def test_unreliable_runs_and_missing_values_are_dropped_not_zeroed():
     table = build_stability_table(frame, {"peak_vmem_mb": "MB"}, reliability)
     # The NaN leaves release 01-01 with one run; the unreliable 5000 is gone, so
     # 01-04 has one too. Two same-release pairs remain: too few.
-    assert table.loc["baseline", REPEAT_SPREAD_COL] == "N/A — too few same-release repeats"
+    assert table.loc["baseline", SAME_RELEASE_SPREAD_COL] == "N/A — too few same-release repeats"
     assert table.loc["baseline", MOVEMENT_COL] == "0 MB (0%)"
 
 
@@ -81,7 +81,7 @@ def test_no_repeats_leaves_the_headline_unavailable_while_movement_shows():
     values = [100.0, 101.0, 99.0, 100.0]
     releases = ["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04"]
     table = build_stability_table(_frame(values, releases), {"peak_vmem_mb": "MB"}, {})
-    assert table.loc["baseline", REPEAT_SPREAD_COL].startswith("N/A")
+    assert table.loc["baseline", SAME_RELEASE_SPREAD_COL].startswith("N/A")
     assert table.loc["baseline", MOVEMENT_COL] != "N/A"
 
 
@@ -91,14 +91,14 @@ def test_too_little_history_is_na_never_zero():
         {"peak_vmem_mb": "MB"},
         {},
     )
-    assert table.loc["baseline", REPEAT_SPREAD_COL].startswith("N/A")
+    assert table.loc["baseline", SAME_RELEASE_SPREAD_COL].startswith("N/A")
     assert table.loc["baseline", MOVEMENT_COL] == "N/A"
 
 
 def test_zero_median_shows_no_percent():
     values = [0.0, 1.0, 0.0, -1.0, 0.0, 1.0, 0.0, -1.0]
     table = build_stability_table(_frame(values, _TWO_NIGHTS_EACH), {"peak_vmem_mb": "MB"}, {})
-    assert "%" not in table.loc["baseline", REPEAT_SPREAD_COL]
+    assert "%" not in table.loc["baseline", SAME_RELEASE_SPREAD_COL]
 
 
 def test_slope_spread_is_absolute_only():
@@ -109,7 +109,7 @@ def test_slope_spread_is_absolute_only():
         {metric: "MB/event"},
         {},
     )
-    cell = table.loc["baseline", REPEAT_SPREAD_COL]
+    cell = table.loc["baseline", SAME_RELEASE_SPREAD_COL]
     assert "MB/event" in cell and "%" not in cell
 
 
@@ -169,7 +169,7 @@ def test_event_memory_history_renders_stability_on_old_and_new_data(with_new_met
         .run()
     )
     assert not at.exception, at.exception
-    assert [e.label for e in at.expander] == ["Measurement stability"]
+    assert [e.label for e in at.expander] == ["Run-to-run variability"]
     metrics = set(at.dataframe[0].value["Metric"])
     new = {"Mean event anonymous RSS", "Anonymous RSS growth per event"}
     assert "Mean event RSS" in metrics
@@ -225,9 +225,9 @@ def test_run_trends_stability_uses_every_run_on_old_and_new_data(with_vmem):
         .run()
     )
     assert not at.exception, at.exception
-    assert [e.label for e in at.expander] == ["Measurement stability"]
+    assert [e.label for e in at.expander] == ["Run-to-run variability"]
     table = at.dataframe[0].value.set_index("Metric")
     assert ("Peak virtual memory" in table.index) is with_vmem
     # The plotted line collapses each tag to one run; the three same-release
     # pairs are still counted here.
-    assert table.loc["Peak RSS", REPEAT_SPREAD_COL].endswith("· 3 pairs")
+    assert table.loc["Peak RSS", SAME_RELEASE_SPREAD_COL].endswith("· 3 pairs")

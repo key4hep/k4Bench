@@ -183,19 +183,23 @@ only** (the default) or **All runs**. Palette, style cycling, opacity
 and line smoothing sit in this tab's [Display options](#display-options)
 popover, alongside the pills on the same row.
 
-Below the figure, a collapsed **Measurement stability** table answers "how much
+Below the figure, a collapsed **Run-to-run variability** table answers "how much
 does this metric normally move from run to run?" for peak virtual memory and
 peak RSS. The Event Memory tab's historical view has the same table for mean
 anonymous, total and file-backed RSS and anonymous RSS growth (MB/event), and
 plots that growth rate as its own panel. Each row gives two readings per config:
 
-- **Repeat-measurement spread (same release)** — the typical change between
+- **Same-release spread (stack changes excluded)** — the typical change between
   consecutive runs of the *same* Key4hep release, over the last 14 such pairs
-  in the window, with the number of pairs used. Those runs measured identical
-  software, so this is measurement noise alone. It reads N/A when fewer than 3
-  same-release pairs exist, and never falls back to the other column.
-- **Recent movement (all runs, incl. software changes)** — the same statistic
-  over the last 7 runs regardless of release, so it also contains real software
+  in the window, with the number of pairs used. Those runs share the Key4hep
+  stack, but not necessarily the k4Bench checkout: consecutive runs of one
+  release are routinely benchmarked by different k4Bench commits, so a harness,
+  plugin or configuration change between them counts here alongside measurement
+  noise. It is the closest the history gets to a noise estimate, not noise
+  alone. It reads N/A when fewer than 3 same-release pairs exist, and never
+  falls back to the other column.
+- **Recent movement (all runs, incl. stack changes)** — the same statistic
+  over the last 7 runs regardless of release, so it also contains Key4hep stack
   changes. It describes recent movement; it is not the exact noise floor the
   regression engine applied to the newest release, which is computed before that
   release's own runs are added.
