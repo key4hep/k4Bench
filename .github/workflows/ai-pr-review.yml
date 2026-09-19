@@ -71,6 +71,8 @@ jobs:
             -e 'litellm.force_streaming_api_base_substrings=["aigw.cern.ch"]' \
             -e config.output_run_details=true \
             -e LOG_SANE=1 \
+            -e github_action_config.auto_describe=false \
+            -e github_action_config.auto_improve=false \
             -e github_action_config.handle_push_trigger=true \
             -e 'github_action_config.push_commands=["/review"]' \
             "$CONTAINER_IMAGE"
