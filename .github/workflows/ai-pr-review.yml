@@ -3,6 +3,8 @@ name: AI PR Review
 on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
+  issue_comment:
+    types: [created]
 
 env:
   CONTAINER_IMAGE: docker.io/pragent/pr-agent@sha256:548b760b81ab4b3f729182428695ccc1194bbf87528c2b1e2b2b07e5223af7b6
@@ -13,16 +15,16 @@ permissions:
   issues: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   review:
-    # Fork and Dependabot events cannot use the Actions secret for CERN.
+    # Bots and forks cannot use the CERN secret; comment commands need a prior contribution.
     if: >
-      !github.event.pull_request.draft &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.actor != 'dependabot[bot]'
+      github.event.sender.type != 'Bot' && !github.event.pull_request.draft &&
+      (github.event.pull_request.head.repo.full_name == github.repository ||
+       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"]'), github.event.comment.author_association))
 
     runs-on: [self-hosted, fcc-ironic]
     timeout-minutes: 45
