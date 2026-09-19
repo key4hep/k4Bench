@@ -55,7 +55,7 @@ jobs:
             -e GITHUB_EVENT_PATH=/tmp/github-event.json \
             -e GITHUB_OUTPUT=/tmp/github-output \
             -e GITHUB_EVENT_NAME -e GITHUB_TOKEN \
-            -e GITHUB_ACTIONS=true \
+            -e GITHUB_ACTIONS=true -e CI=true \
             -e OPENAI__KEY \
             -e OPENAI__API_BASE=https://aigw.cern.ch/v1 \
             -e config.model=openai/GLM-5.2-NGT \
