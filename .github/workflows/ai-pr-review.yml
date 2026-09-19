@@ -1,0 +1,77 @@
+name: AI PR Review
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+env:
+  CONTAINER_IMAGE: docker.io/pragent/pr-agent@sha256:548b760b81ab4b3f729182428695ccc1194bbf87528c2b1e2b2b07e5223af7b6
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Fork and Dependabot events cannot use the Actions secret for CERN.
+    if: >
+      !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
+
+    runs-on: [self-hosted, fcc-ironic]
+    timeout-minutes: 45
+    continue-on-error: true
+
+    steps:
+      # Review policy and guidance are read from the default branch.
+      - name: PR Agent review
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI__KEY: ${{ secrets.CERN_AIGW_API_KEY }}
+        run: |
+          container_name="k4bench-pr-review-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          # Clean up on cancellation; --rm may already have removed it.
+          trap 'docker rm -f "$container_name" >/dev/null 2>&1 || true' EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+
+          # Use the image's working directory; PR context comes from GitHub.
+          docker run --rm --init --name "$container_name" \
+            --security-opt label=disable \
+            --volume "$GITHUB_EVENT_PATH":/tmp/github-event.json:ro \
+            --volume "$GITHUB_OUTPUT":/tmp/github-output \
+            --workdir /app \
+            -e GITHUB_EVENT_PATH=/tmp/github-event.json \
+            -e GITHUB_OUTPUT=/tmp/github-output \
+            -e GITHUB_EVENT_NAME -e GITHUB_TOKEN \
+            -e GITHUB_RUN_ID -e GITHUB_RUN_ATTEMPT \
+            -e GITHUB_REPOSITORY -e GITHUB_SERVER_URL \
+            -e GITHUB_ACTIONS=true -e CI=true \
+            -e OPENAI__KEY \
+            -e OPENAI__API_BASE=https://aigw.cern.ch/v1 \
+            -e config.model=openai/GLM-5.2-NGT \
+            -e 'config.fallback_models=["openai/GLM-5.2-NGT"]' \
+            -e config.custom_model_max_tokens=1048570 \
+            -e config.max_model_tokens=262144 \
+            -e config.max_output_tokens=16384 \
+            -e config.ai_timeout=900 \
+            -e config.num_retries=0 \
+            -e config.retry_same_model_on_timeout=false \
+            -e litellm.custom_llm_provider=openai \
+            -e litellm.force_streaming_custom_llm_provider=openai \
+            -e 'litellm.force_streaming_api_base_substrings=["aigw.cern.ch"]' \
+            -e config.output_run_details=true \
+            -e LOG_SANE=1 \
+            -e github_action_config.auto_review=true \
+            -e github_action_config.auto_describe=true \
+            -e github_action_config.auto_improve=true \
+            -e github_action_config.handle_push_trigger=true \
+            -e 'github_action_config.push_commands=["/review"]' \
+            "$CONTAINER_IMAGE"

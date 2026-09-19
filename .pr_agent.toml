@@ -1,0 +1,36 @@
+# PR-Agent settings for the AI PR Review workflow (.github/workflows/ai-pr-review.yml).
+# PR-Agent reads this file and the instruction file below from the default
+# branch; edits to those files take effect after merge. The model, endpoint,
+# credentials and event routing stay in the workflow, which pull_request
+# events read from the PR merge ref.
+
+[config]
+repo_context_files = [".github/ai-review-instructions.md"]
+repo_context_from_default_branch = true
+# A cancelled review must not leave a "Preparing review..." comment behind.
+publish_output_progress = false
+
+[pr_reviewer]
+num_max_findings = 5
+# Post findings on the diff lines they concern; anything that cannot be
+# anchored stays in the summary comment.
+inline_key_issues = true
+publish_output_no_suggestions = false
+require_estimate_effort_to_review = false
+enable_review_labels_effort = false
+enable_review_labels_security = false
+# Review larger diffs in bounded calls and disclose any remaining omissions.
+enable_large_pr_chunking = true
+max_number_of_calls = 3
+enable_review_coverage_footer = true
+
+# Kept short on purpose; the review policy lives in the instruction file.
+extra_instructions = """
+Apply the repository review guidance given in the instruction files.
+Report only concrete, high-confidence problems introduced by this pull request.
+"""
+
+[pr_code_suggestions]
+# The table stays the primary output; only high-scoring suggestions are also
+# posted as committable comments.
+dual_publishing_score_threshold = 8
