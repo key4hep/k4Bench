@@ -60,8 +60,8 @@ jobs:
             -e 'config.fallback_models=["openai/GLM-5.2-NGT"]' \
             -e config.custom_model_max_tokens=1048570 \
             -e config.max_model_tokens=262144 \
-            -e config.max_output_tokens=8192 \
-            -e config.ai_timeout=600 \
+            -e config.max_output_tokens=16384 \
+            -e config.ai_timeout=900 \
             -e config.num_retries=0 \
             -e config.retry_same_model_on_timeout=false \
             -e litellm.custom_llm_provider=openai \

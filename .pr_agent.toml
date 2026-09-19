@@ -29,3 +29,8 @@ extra_instructions = """
 Apply the repository review guidance given in the instruction files.
 Report only concrete, high-confidence problems introduced by this pull request.
 """
+
+[pr_code_suggestions]
+# The table stays the primary output; only high-scoring suggestions are also
+# posted as committable comments.
+dual_publishing_score_threshold = 8
