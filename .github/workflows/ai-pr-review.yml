@@ -52,13 +52,10 @@ jobs:
             --security-opt label=disable \
             --volume "$GITHUB_EVENT_PATH":/tmp/github-event.json:ro \
             --volume "$GITHUB_OUTPUT":/tmp/github-output \
-            --workdir /app \
             -e GITHUB_EVENT_PATH=/tmp/github-event.json \
             -e GITHUB_OUTPUT=/tmp/github-output \
             -e GITHUB_EVENT_NAME -e GITHUB_TOKEN \
-            -e GITHUB_RUN_ID -e GITHUB_RUN_ATTEMPT \
-            -e GITHUB_REPOSITORY -e GITHUB_SERVER_URL \
-            -e GITHUB_ACTIONS=true -e CI=true \
+            -e GITHUB_ACTIONS=true \
             -e OPENAI__KEY \
             -e OPENAI__API_BASE=https://aigw.cern.ch/v1 \
             -e config.model=openai/GLM-5.2-NGT \
@@ -74,9 +71,6 @@ jobs:
             -e 'litellm.force_streaming_api_base_substrings=["aigw.cern.ch"]' \
             -e config.output_run_details=true \
             -e LOG_SANE=1 \
-            -e github_action_config.auto_review=true \
-            -e github_action_config.auto_describe=true \
-            -e github_action_config.auto_improve=true \
             -e github_action_config.handle_push_trigger=true \
             -e 'github_action_config.push_commands=["/review"]' \
             "$CONTAINER_IMAGE"
