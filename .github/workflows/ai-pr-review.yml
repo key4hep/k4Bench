@@ -61,6 +61,9 @@ jobs:
             -e config.custom_model_max_tokens=1048570 \
             -e config.max_model_tokens=262144 \
             -e config.max_output_tokens=16384 \
+            -e config.ai_timeout=900 \
+            -e config.output_run_details=true \
+            -e LOG_SANE=1 \
             -e github_action_config.auto_review=true \
             -e github_action_config.auto_describe=true \
             -e github_action_config.auto_improve=true \
