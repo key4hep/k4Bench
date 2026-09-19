@@ -12,6 +12,9 @@ publish_output_progress = false
 
 [pr_reviewer]
 num_max_findings = 5
+# Post findings on the diff lines they concern; anything that cannot be
+# anchored stays in the summary comment.
+inline_key_issues = true
 publish_output_no_suggestions = false
 require_estimate_effort_to_review = false
 enable_review_labels_effort = false
