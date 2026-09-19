@@ -32,9 +32,10 @@ jobs:
       # Model, endpoint, credentials and event routing stay here; env wins
       # over a key also set in .pr_agent.toml.
       - name: PR Agent review
-        # Pin the runtime itself: the upstream action wraps a rolling image.
-        uses: docker://docker.io/pragent/pr-agent@sha256:548b760b81ab4b3f729182428695ccc1194bbf87528c2b1e2b2b07e5223af7b6
+        shell: bash
         env:
+          # Pin the runtime itself: the upstream action wraps a rolling image.
+          PR_AGENT_IMAGE: docker.io/pragent/pr-agent@sha256:548b760b81ab4b3f729182428695ccc1194bbf87528c2b1e2b2b07e5223af7b6
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
           OPENAI__API_BASE: "https://aigw.cern.ch/v1"
@@ -54,3 +55,35 @@ jobs:
           # synchronize uses push_commands, independently of auto_* above.
           github_action_config.handle_push_trigger: "true"
           github_action_config.push_commands: '["/review"]'
+        run: |
+          container_name="k4bench-pr-review-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          # Also remove the container if a newer commit cancels this run.
+          # --rm may already have removed it when the command completes.
+          trap 'docker rm -f "$container_name" >/dev/null 2>&1 || true' EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+
+          # PR-Agent reads the PR and its settings through GitHub's API.
+          # Starting in /app avoids probing a stale host checkout; disable
+          # SELinux label separation for the runner-owned event/output files.
+          docker run --rm --init --name "$container_name" \
+            --security-opt label=disable \
+            --workdir /app \
+            --volume "$GITHUB_EVENT_PATH":/tmp/github-event.json:ro \
+            --volume "$GITHUB_OUTPUT":/tmp/github-output \
+            -e GITHUB_EVENT_PATH=/tmp/github-event.json \
+            -e GITHUB_OUTPUT=/tmp/github-output \
+            -e GITHUB_EVENT_NAME -e GITHUB_TOKEN \
+            -e GITHUB_RUN_ID -e GITHUB_RUN_ATTEMPT \
+            -e GITHUB_REPOSITORY -e GITHUB_SERVER_URL \
+            -e GITHUB_ACTIONS=true -e CI=true \
+            -e OPENAI__API_BASE -e OPENAI__KEY \
+            -e config.model -e config.fallback_models \
+            -e config.custom_model_max_tokens -e config.max_model_tokens \
+            -e config.max_output_tokens \
+            -e github_action_config.auto_review \
+            -e github_action_config.auto_describe \
+            -e github_action_config.auto_improve \
+            -e github_action_config.handle_push_trigger \
+            -e github_action_config.push_commands \
+            "$PR_AGENT_IMAGE"
