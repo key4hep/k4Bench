@@ -33,7 +33,7 @@ jobs:
       # over a key also set in .pr_agent.toml.
       - name: PR Agent review
         # Pin the runtime itself: the upstream action wraps a rolling image.
-        uses: docker://pragent/pr-agent@sha256:548b760b81ab4b3f729182428695ccc1194bbf87528c2b1e2b2b07e5223af7b6
+        uses: docker://docker.io/pragent/pr-agent@sha256:548b760b81ab4b3f729182428695ccc1194bbf87528c2b1e2b2b07e5223af7b6
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
