@@ -17,17 +17,22 @@ permissions:
   issues: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number }}-${{ github.event.comment.id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   review:
-    # Bots and forks cannot use the CERN secret; comment commands need a prior contribution.
+    # Automatic runs: same-repo, non-draft PRs (forks and bots cannot use the CERN secret).
+    # Comment commands: a "/" command from someone with a prior contribution.
     if: >
-      github.event.sender.type != 'Bot' && !github.event.pull_request.draft &&
+      github.event.sender.type != 'Bot' &&
       (github.event.pull_request || github.event.issue.pull_request) &&
-      (github.event.pull_request.head.repo.full_name == github.repository ||
-       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"]'), github.event.comment.author_association))
+      ((!github.event.comment &&
+        !github.event.pull_request.draft &&
+        github.event.pull_request.head.repo.full_name == github.repository) ||
+       (github.event.comment &&
+        startsWith(github.event.comment.body, '/') &&
+        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"]'), github.event.comment.author_association)))
 
     runs-on: [self-hosted, fcc-ironic]
     timeout-minutes: 45
