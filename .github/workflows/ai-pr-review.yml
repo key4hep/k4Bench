@@ -1,0 +1,56 @@
+name: AI PR Review
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Fork and Dependabot events cannot use the Actions secret for CERN.
+    if: >
+      !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
+
+    runs-on: [self-hosted, fcc-ironic]
+    timeout-minutes: 30
+    continue-on-error: true
+
+    steps:
+      # Review behaviour (instructions, finding count, output policy) lives in
+      # .pr_agent.toml and .github/ai-review-instructions.md, both read from the
+      # default branch, so new guidance takes effect after it is merged.
+      # Model, endpoint, credentials and event routing stay here; env wins
+      # over a key also set in .pr_agent.toml.
+      - name: PR Agent review
+        # Pin the runtime itself: the upstream action wraps a rolling image.
+        uses: docker://pragent/pr-agent@sha256:548b760b81ab4b3f729182428695ccc1194bbf87528c2b1e2b2b07e5223af7b6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          OPENAI__API_BASE: "https://aigw.cern.ch/v1"
+          OPENAI__KEY: ${{ secrets.CERN_AIGW_API_KEY }}
+
+          config.model: "openai/GLM-5.2-NGT"
+          config.fallback_models: '["openai/GLM-5.2-NGT"]'
+          config.custom_model_max_tokens: "1048570"
+          # Bound each request below the model's full context window.
+          # Larger reviews use the chunking policy in .pr_agent.toml.
+          config.max_model_tokens: "262144"
+          config.max_output_tokens: "16384"
+
+          github_action_config.auto_review: "true"
+          github_action_config.auto_describe: "true"
+          github_action_config.auto_improve: "true"
+          # synchronize uses push_commands, independently of auto_* above.
+          github_action_config.handle_push_trigger: "true"
+          github_action_config.push_commands: '["/review"]'
