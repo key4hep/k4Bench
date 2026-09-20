@@ -1,14 +1,32 @@
 # PR-Agent settings for the AI PR Review workflow (.github/workflows/ai-pr-review.yml).
 # PR-Agent reads this file and the instruction file below from the default
-# branch; edits to those files take effect after merge. The model, endpoint,
-# credentials and event routing stay in the workflow, which pull_request
-# events read from the PR merge ref.
+# branch; edits to those files take effect after merge. The workflow keeps only
+# credentials, model selection, and bounded fallback execution.
 
 [config]
 repo_context_files = [".github/ai-review-instructions.md"]
 repo_context_from_default_branch = true
 # A cancelled review must not leave a "Preparing review..." comment behind.
 publish_output_progress = false
+# Both aigw models hold 1048570 input and 131072 output tokens. Reasoning can
+# consume the whole answer, so the full output budget is granted; the prompt
+# budget is capped separately and is not reduced by it.
+custom_model_max_tokens = 1048570
+max_model_tokens = 262144
+max_output_tokens = 131072
+ai_timeout = 900
+num_retries = 0
+retry_same_model_on_timeout = false
+# The workflow switches models/keys; the handler already retries API errors
+# (including empty answers) once. Do not add another same-model fallback.
+fallback_models = []
+output_run_details = true
+
+[litellm]
+# aigw answers non-streaming calls with an nginx 504.
+custom_llm_provider = "openai"
+force_streaming_custom_llm_provider = "openai"
+force_streaming_api_base_substrings = ["aigw.cern.ch"]
 
 [pr_reviewer]
 num_max_findings = 5
