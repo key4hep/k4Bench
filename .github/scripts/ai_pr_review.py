@@ -50,6 +50,8 @@ def run_review(event):
         command = handle_line_comments(event, command)
     pr = event.get("pull_request") or event["issue"]["pull_request"]
     get_settings().set("github.user_token", os.environ["GITHUB_TOKEN"])
+    # Importing pr_agent.servers.github_app switches the deployment type to "app".
+    get_settings().set("github.deployment_type", "user")
     get_settings().set("config.is_auto_command", not comment)
     # The pinned action runner ignores False for push/comment commands.
     return int(not asyncio.run(PRAgent().handle_request(pr["url"], command)))
