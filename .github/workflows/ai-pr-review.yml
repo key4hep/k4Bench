@@ -21,63 +21,64 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  review:
-    # Automatic runs: same-repo, non-draft PRs (forks and bots cannot use the CERN secret).
-    # Comment commands: a "/" command from someone with a prior contribution.
-    if: >
-      github.event.sender.type != 'Bot' &&
-      (github.event.pull_request || github.event.issue.pull_request) &&
-      ((!github.event.comment &&
-        !github.event.pull_request.draft &&
-        github.event.pull_request.head.repo.full_name == github.repository) ||
-       (github.event.comment &&
-        startsWith(github.event.comment.body, '/') &&
-        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"]'), github.event.comment.author_association)))
+  request:
+    if: github.event.sender.type != 'Bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      commands: ${{ steps.request.outputs.commands }}
+    steps:
+      - name: Check out review scripts
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
 
+      - name: Select commands
+        id: request
+        run: python3 .github/scripts/ai_pr_review.py --check
+
+  review:
+    name: ${{ matrix.command }}
+    needs: request
+    if: needs.request.outputs.commands != '[]'
     runs-on: [self-hosted, fcc-ironic]
-    timeout-minutes: 45
+    timeout-minutes: 60
     continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        command: ${{ fromJSON(needs.request.outputs.commands) }}
+
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR_AGENT_COMMAND: ${{ matrix.command }}
+      CONTAINER_NAME: k4bench-pr-review-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.command }}
 
     steps:
-      # Review policy and guidance are read from the default branch.
-      - name: PR Agent review
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OPENAI__KEY: ${{ secrets.CERN_AIGW_API_KEY }}
-        run: |
-          container_name="k4bench-pr-review-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          # Clean up on cancellation; --rm may already have removed it.
-          trap 'docker rm -f "$container_name" >/dev/null 2>&1 || true' EXIT
-          trap 'exit 130' INT
-          trap 'exit 143' TERM
+      - name: Check out review scripts
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
 
-          # Use the image's working directory; PR context comes from GitHub.
-          docker run --rm --init --name "$container_name" \
-            --security-opt label=disable \
-            --volume "$GITHUB_EVENT_PATH":/tmp/github-event.json:ro \
-            --volume "$GITHUB_OUTPUT":/tmp/github-output \
-            -e GITHUB_EVENT_PATH=/tmp/github-event.json \
-            -e GITHUB_OUTPUT=/tmp/github-output \
-            -e GITHUB_EVENT_NAME -e GITHUB_TOKEN \
-            -e GITHUB_ACTIONS=true -e CI=true \
-            -e OPENAI__KEY \
-            -e OPENAI__API_BASE=https://aigw.cern.ch/v1 \
-            -e config.model=openai/GLM-5.2-NGT \
-            -e 'config.fallback_models=["openai/GLM-5.2-NGT"]' \
-            -e config.custom_model_max_tokens=1048570 \
-            -e config.max_model_tokens=262144 \
-            -e config.max_output_tokens=32768 \
-            -e config.ai_timeout=900 \
-            -e config.num_retries=0 \
-            -e config.retry_same_model_on_timeout=false \
-            -e litellm.custom_llm_provider=openai \
-            -e litellm.force_streaming_custom_llm_provider=openai \
-            -e 'litellm.force_streaming_api_base_substrings=["aigw.cern.ch"]' \
-            -e config.output_run_details=true \
-            -e LOG_SANE=1 \
-            -e github_action_config.auto_describe=false \
-            -e github_action_config.auto_improve=false \
-            -e github_action_config.handle_push_trigger=true \
-            -e 'github_action_config.push_commands=["/review"]' \
-            "$CONTAINER_IMAGE"
+      - name: Run with Kimi K3
+        id: kimi
+        continue-on-error: true
+        env:
+          MODEL: openai/Kimi-K3-FLATIRON
+          OPENAI__KEY: ${{ secrets.CERN_AIGW_KIMI_API_KEY }}
+        run: bash .github/scripts/ai_pr_review.sh
+
+      - name: Run with GLM-5.2
+        if: steps.kimi.outcome == 'failure'
+        env:
+          MODEL: openai/GLM-5.2-NGT
+          OPENAI__KEY: ${{ secrets.CERN_AIGW_GLM_API_KEY }}
+        run: bash .github/scripts/ai_pr_review.sh
+
+      - name: Remove leftover containers
+        if: always()
+        run: docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
