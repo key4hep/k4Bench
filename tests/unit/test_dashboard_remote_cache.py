@@ -2,7 +2,8 @@
 
 ``st.cache_data`` keeps whatever a function returns, for every viewer, until its
 TTL runs out. These pin down that what a stalled server *failed* to return is
-never kept: the wrappers hand it back once and read it again on the next call.
+never kept: content is handed back once as far as it was read, discovery raises
+so its callers can fall back, and both are read again on the next call.
 
 All remote calls are stubbed; nothing touches the network.
 """
@@ -108,26 +109,33 @@ def test_report_listing_that_did_not_answer_is_not_cached(monkeypatch):
     assert remote_cache._cached_list_report_dates(BASE) == ["2026-09-24", "2026-09-23"]
 
 
-def test_partial_run_date_scan_is_read_again(monkeypatch):
-    complete = {"key4hep-2026-09-24": ["2026-09-24"], "key4hep-2026-09-23": ["2026-09-23"]}
-    partial = {"key4hep-2026-09-24": ["2026-09-24"]}
-    answers = iter([
-        remote.IncompleteFetch(partial, ["key4hep-2026-09-23: read timed out"]),
-        complete,
-    ])
+@pytest.mark.parametrize("name, wrapper, args", [
+    ("list_run_dates_all_stacks", "_cached_list_run_dates", (BASE, "DET", "PLAT", "single_e")),
+    ("scan_stack_samples", "_cached_scan_stack_samples", (BASE, "DET", "PLAT")),
+])
+def test_discovery_that_stopped_short_raises_and_is_read_again(monkeypatch, name, wrapper, args):
+    # A listing missing the newest release would make an older one look newest,
+    # and a scan missing one would drop a valid sidebar selection: the caller
+    # must see that it is incomplete, not a smaller answer.
+    complete = {"key4hep-2026-09-24": ["x"], "key4hep-2026-09-23": ["x"]}
+    calls = []
 
-    def list_run_dates_all_stacks(base_url, detector, platform, sample, *, strict=False):
-        assert strict, "the cached scan must run strict to see a stall"
-        answer = next(answers)
-        if isinstance(answer, Exception):
-            raise answer
-        return answer
+    def listing(*a, strict=False):
+        assert strict, "the cached listing must run strict to see a stall"
+        calls.append(a)
+        if len(calls) == 1:
+            raise remote.IncompleteFetch(
+                {"key4hep-2026-09-23": ["x"]}, ["key4hep-2026-09-24: read timed out"],
+            )
+        return complete
 
-    monkeypatch.setattr(remote, "list_run_dates_all_stacks", list_run_dates_all_stacks)
-    args = (BASE, "DET", "PLAT", "single_e")
-    assert remote_cache._cached_list_run_dates(*args) == partial
-    assert remote_cache._cached_list_run_dates(*args) == complete
-    assert remote_cache._cached_list_run_dates(*args) == complete  # cached now
+    monkeypatch.setattr(remote, name, listing)
+    cached = getattr(remote_cache, wrapper)
+    with pytest.raises(remote.IncompleteFetch):
+        cached(*args)
+    assert cached(*args) == complete
+    assert cached(*args) == complete
+    assert len(calls) == 2  # the complete answer was kept, the short one not
 
 
 def test_partial_trend_download_returns_the_runs_that_landed(monkeypatch):
@@ -148,7 +156,6 @@ def test_partial_trend_download_returns_the_runs_that_landed(monkeypatch):
 @pytest.mark.parametrize("name, wrapper, args", [
     ("fetch_blame", "_cached_fetch_blame", (BASE, "2026-09-24")),
     ("fetch_stack_packages", "_cached_fetch_stack_packages", (BASE, "DET", "PLAT", "S")),
-    ("scan_stack_samples", "_cached_scan_stack_samples", (BASE, "DET", "PLAT")),
 ])
 def test_other_wrappers_do_not_keep_a_stall(monkeypatch, name, wrapper, args):
     calls = []
@@ -166,3 +173,34 @@ def test_other_wrappers_do_not_keep_a_stall(monkeypatch, name, wrapper, args):
     assert cached(*args) == {"answered": True}
     assert cached(*args) == {"answered": True}
     assert len(calls) == 2
+
+
+def test_metric_drill_down_warns_when_its_run_history_stopped_short(monkeypatch):
+    # The chart's window is placed around the flagged run from this listing, so
+    # it must not be drawn from part of the releases.
+    from tabs import _regression_trend as trend
+
+    from k4bench.regression.models import Direction, MetricVerdict, Severity
+
+    verdict = MetricVerdict(
+        detector="ALLEGRO_o2_v01", platform="PLAT", sample="single_e", label="baseline",
+        metric_family="memory", metric="peak_vmem_mb", sub_detector=None,
+        run_id="2026-09-24", run_date="2026-09-24", value=5850.0,
+        baseline_median=6623.5, baseline_mad=0.3, pct_change=-0.117, z_score=-5216.0,
+        severity=Severity.WATCH, direction=Direction.DOWN, reason="step",
+    )
+
+    def listing(*_args):
+        raise remote.IncompleteFetch({}, ["key4hep-2026-09-24: read timed out"])
+
+    def downloads(*_args):
+        raise AssertionError("nothing may be downloaded from a partial listing")
+
+    warnings = []
+    monkeypatch.setattr(trend.st, "warning", lambda text, **_kw: warnings.append(text))
+    trend.render_metric_trend(
+        verdict, BASE, "/cache",
+        list_run_dates=listing, fetch_runs_windowed=downloads, widget_namespace="t",
+    )
+    assert len(warnings) == 1
+    assert "Could not list this metric's run history" in warnings[0]

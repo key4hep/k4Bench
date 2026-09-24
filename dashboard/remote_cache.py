@@ -6,11 +6,20 @@ its underlying ``k4bench.remote`` function lazily so importing this module is
 cheap.
 
 ``st.cache_data`` keeps whatever its function returns, for everyone, until the
-TTL runs out — and never an exception. So a call that can come back short
+TTL runs out — and never an exception. So every call that can come back short
 because WebEOS stalled runs its fetch with ``strict=True`` inside the cached
-function, and a thin uncached wrapper (:func:`_keep_complete`) hands the caller
-what was read without keeping it. The next rerun reads it again, rather than
-every viewer seeing a stall's gaps for an hour.
+function, and an incomplete result raises :class:`~k4bench.remote.IncompleteFetch`
+instead of being kept. The next rerun reads it again, rather than every viewer
+seeing a stall's gaps for an hour. What happens to the incomplete result depends
+on what it is:
+
+* **Discovery** — the release and run-date listings — raises to the caller.
+  Callers decide from these which release is newest and which selections are
+  valid, and a listing missing the newest release answers both wrongly; the
+  exception is a ``RequestException``, so their existing fallbacks apply.
+* **Content** — reports, run downloads, blame, stack provenance — is handed
+  back as far as it was read, uncached, with a notice (:func:`_keep_complete`).
+  A missing night or run leaves a gap on the page but decides nothing else.
 """
 from __future__ import annotations
 
@@ -24,9 +33,9 @@ _log = logging.getLogger(__name__)
 def _keep_complete(cached, *args):
     """Call the cached *cached*; return what an incomplete read got, uncached.
 
-    Tells the viewer with a toast, since the page is then drawn from less than
-    is on EOS: a missing run or night looks exactly like one that never
-    happened.
+    For content only (see the module docstring). Tells the viewer with a
+    toast, since the page is then drawn from less than is on EOS: a missing
+    run or night looks exactly like one that never happened.
     """
     from k4bench.remote import IncompleteFetch
 
@@ -56,31 +65,23 @@ def _cached_list_platforms(base_url: str, detector: str) -> list[str]:
 
 
 @st.cache_data(show_spinner="Scanning releases...", ttl=3600)
-def _scan_stack_samples(
+def _cached_scan_stack_samples(
     base_url: str, detector: str, platform: str
 ) -> dict[str, list[str]]:
+    """Raises :class:`~k4bench.remote.IncompleteFetch` rather than return a
+    scan missing a release: the sidebar would drop a selection that is valid."""
     from k4bench.remote import scan_stack_samples
     return scan_stack_samples(base_url, detector, platform, strict=True)
 
 
-def _cached_scan_stack_samples(
-    base_url: str, detector: str, platform: str
-) -> dict[str, list[str]]:
-    return _keep_complete(_scan_stack_samples, base_url, detector, platform)
-
-
 @st.cache_data(show_spinner="Scanning run dates...", ttl=600)
-def _list_run_dates(
-    base_url: str, detector: str, platform: str, sample: str
-) -> dict[str, list[str]]:
-    from k4bench.remote import list_run_dates_all_stacks
-    return list_run_dates_all_stacks(base_url, detector, platform, sample, strict=True)
-
-
 def _cached_list_run_dates(
     base_url: str, detector: str, platform: str, sample: str
 ) -> dict[str, list[str]]:
-    return _keep_complete(_list_run_dates, base_url, detector, platform, sample)
+    """Raises :class:`~k4bench.remote.IncompleteFetch` rather than return a
+    listing missing a release: callers read the newest release off it."""
+    from k4bench.remote import list_run_dates_all_stacks
+    return list_run_dates_all_stacks(base_url, detector, platform, sample, strict=True)
 
 
 @st.cache_data(show_spinner="Scanning Key4hep releases...", ttl=600)

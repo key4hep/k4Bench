@@ -56,11 +56,12 @@ _POOL_MAXSIZE = 8
 #: Retries for the WebEOS gateway's transient failures: a ``502``/``503``/
 #: ``504`` (the gateway gives up on a slow listing after 30 s, and the same
 #: listing is usually fast again soon after), a dropped connection, or a read
-#: that stalls past :data:`_TIMEOUT`. Three attempts in all, reads only (every
-#: call here is a GET). ``raise_on_status=False`` hands the last error response
-#: back, so ``raise_for_status`` still reports it.
+#: that stalls past :data:`_TIMEOUT`. One retry, reads only (every call here is
+#: a GET), so a request that never answers costs about two gateway timeouts —
+#: roughly a minute — before it fails. ``raise_on_status=False`` hands the last
+#: error response back, so ``raise_for_status`` still reports it.
 _RETRY = Retry(
-    total=2,
+    total=1,
     backoff_factor=0.5,
     status_forcelist=(502, 503, 504),
     allowed_methods=frozenset({"GET", "HEAD"}),
@@ -98,15 +99,19 @@ def _get_session() -> requests.Session:
     return session
 
 
-class IncompleteFetch(Exception):
+class IncompleteFetch(requests.RequestException):
     """A read that could not be completed because the server did not answer.
 
     Raised only to callers passing ``strict=True``. By default those functions
     skip what they could not read (logged) and return the rest, or ``None``;
-    :attr:`partial` is exactly that value, so a strict caller can still use it
-    while knowing not to keep it. The dashboard caches every result, and one
-    missing items only because WebEOS stalled must be read again, not
-    remembered as the answer.
+    :attr:`partial` is what had been read when the strict call stopped, so a
+    caller that can use an incomplete result still may — deliberately. The
+    dashboard caches every result, and one missing items only because WebEOS
+    stalled must be read again, not remembered as the answer.
+
+    A :class:`requests.RequestException`, so a caller that already falls back
+    on a failed request falls back on this too, rather than mistaking a partial
+    listing for a complete one.
     """
 
     def __init__(self, partial: object, failures: list[str]):
@@ -124,13 +129,32 @@ def _is_absent(exc: requests.RequestException) -> bool:
     return response is not None and response.status_code == 404
 
 
-def _is_transient(exc: BaseException) -> bool:
-    """True for a failure that may not happen on the next attempt: any request
-    error but a 404, and a local I/O error. An unsafe listing
-    (``ValueError``) will be just as unsafe next time."""
-    if isinstance(exc, requests.RequestException):
-        return not _is_absent(exc)
-    return isinstance(exc, OSError)
+def _list_each(
+    urls: dict[str, str], *, strict: bool, caller: str,
+) -> tuple[dict[str, list[str]], list[str]]:
+    """List every directory in *urls* (``{key: url}``), one after another.
+
+    Returns the listings that answered, keyed like *urls*, and a description
+    of each that failed without an answer. A 404 is left out quietly. With
+    *strict*, the walk stops at the first failure: the result is incomplete
+    either way, and on a degraded server every further listing could cost
+    another timeout. Sequential because a cold listing is generated no faster
+    when several are asked for at once.
+    """
+    found: dict[str, list[str]] = {}
+    failures: list[str] = []
+    for key, url in urls.items():
+        try:
+            found[key] = _list_subdirs(url)
+        except requests.RequestException as exc:
+            if _is_absent(exc):
+                _log.debug("%s: skipping %s — %s", caller, url, exc)
+                continue
+            _log.warning("%s: skipping %s — %s", caller, url, exc)
+            failures.append(f"{key}: {exc}")
+            if strict:
+                break
+    return found, failures
 
 
 def _list_subdirs(url: str) -> list[str]:
@@ -191,21 +215,16 @@ def scan_stack_samples(
     (one listing per stack) instead of twice. A sample may be added or dropped
     between Key4hep releases; callers derive the union and the per-sample stacks
     from this map. Stacks whose listing fails are skipped (logged); with
-    *strict*, a stack skipped for a transient failure raises
-    :class:`IncompleteFetch` carrying the rest.
+    *strict*, the first that fails without an answer stops the scan and raises
+    :class:`IncompleteFetch` carrying what was listed.
     """
-    stacks = _list_subdirs(f"{base_url.rstrip('/')}/{detector}/{platform}")
-    out: dict[str, list[str]] = {}
-    failures: list[str] = []
-    for stack in sorted(stacks, reverse=True):
-        try:
-            out[stack] = list_samples(base_url, detector, platform, stack)
-        except requests.RequestException as exc:
-            if _is_absent(exc):
-                _log.debug("scan_stack_samples: skipping stack %s — %s", stack, exc)
-                continue
-            _log.warning("scan_stack_samples: skipping stack %s — %s", stack, exc)
-            failures.append(f"{stack}: {exc}")
+    root = f"{base_url.rstrip('/')}/{detector}/{platform}"
+    stacks = sorted(_list_subdirs(root), reverse=True)
+    listed, failures = _list_each(
+        {stack: f"{root}/{stack}" for stack in stacks},
+        strict=strict, caller="scan_stack_samples",
+    )
+    out = {stack: sorted(samples) for stack, samples in listed.items()}
     if strict and failures:
         raise IncompleteFetch(out, failures)
     return out
@@ -239,27 +258,17 @@ def list_run_dates_all_stacks(
     run-date directory names are ``YYYY-MM-DD``, so the full set of available
     dates per stack is obtained cheaply; this populates the trend-window control
     and lets the caller download only the runs inside the selected window.
-    Stacks that do not contain *sample* (or whose listing fails) are skipped;
-    with *strict*, a stack skipped for a transient failure raises
-    :class:`IncompleteFetch` carrying the rest.
+    Stacks that do not contain *sample* (a 404) or whose listing fails are
+    skipped; with *strict*, the first that fails without an answer stops the
+    scan and raises :class:`IncompleteFetch` carrying what was listed.
     """
-    stacks = _list_subdirs(f"{base_url.rstrip('/')}/{detector}/{platform}")
-    out: dict[str, list[str]] = {}
-    failures: list[str] = []
-    for stack in stacks:
-        url = f"{base_url.rstrip('/')}/{detector}/{platform}/{stack}/{sample}"
-        try:
-            runs = _list_subdirs(url)
-        except requests.RequestException as exc:
-            if _is_absent(exc):
-                # The sample need not exist for every stack.
-                _log.debug("list_run_dates_all_stacks: skipping %s — %s", url, exc)
-                continue
-            _log.warning("list_run_dates_all_stacks: skipping %s — %s", url, exc)
-            failures.append(f"{stack}: {exc}")
-            continue
-        if runs:
-            out[stack] = sorted(runs)
+    root = f"{base_url.rstrip('/')}/{detector}/{platform}"
+    stacks = _list_subdirs(root)
+    listed, failures = _list_each(
+        {stack: f"{root}/{stack}/{sample}" for stack in stacks},
+        strict=strict, caller="list_run_dates_all_stacks",
+    )
+    out = {stack: sorted(runs) for stack, runs in listed.items() if runs}
     if strict and failures:
         raise IncompleteFetch(out, failures)
     return out
@@ -363,10 +372,16 @@ def fetch_runs_windowed(
     Each run is fetched at most once (see :func:`ensure_run_cached`); callers pass
     an already date-windowed *stacks_dates* so only in-window runs are downloaded.
     Runs that fail to download are logged and skipped rather than aborting the load.
-    With *strict*, a run skipped for a transient failure raises
-    :class:`IncompleteFetch` carrying the runs that did land — after every
-    download has finished, so those stay in the on-disk cache and a retry
-    fetches only what is missing.
+
+    With *strict*, no download starts after the first failure that makes the
+    result incomplete, and the call raises once those in flight have finished —
+    so every run that landed stays in the on-disk cache and a retry fetches
+    only what is missing. A run the server did not answer for raises
+    :class:`IncompleteFetch` carrying the runs that landed; a local error — the
+    cache directory full or unwritable — raises that ``OSError`` itself, since
+    it is neither EOS's fault nor fixed by asking EOS again. A run whose listing
+    names an unsafe file is skipped either way: it will be just as unsafe next
+    time.
 
     Thread count is Python's own default (no ``max_workers``; threads are
     created lazily, never more than there is work to do). The concurrency
@@ -379,6 +394,7 @@ def fetch_runs_windowed(
 
     results: list[dict] = []
     failures: list[str] = []
+    local_error: OSError | None = None
     with ThreadPoolExecutor() as pool:
         futures = {
             pool.submit(
@@ -388,15 +404,31 @@ def fetch_runs_windowed(
             for stack, date in tasks
         }
         for fut in as_completed(futures):
+            if fut.cancelled():
+                continue
             stack, date = futures[fut]
             try:
                 run_dir = fut.result()
-            except (requests.RequestException, ValueError, OSError) as exc:
+            # A RequestException is an OSError too, so it must be caught first.
+            except requests.RequestException as exc:
                 _log.warning("fetch_runs_windowed: failed %s/%s — %s", stack, date, exc)
-                if _is_transient(exc):
-                    failures.append(f"{stack}/{date}: {exc}")
+                if _is_absent(exc):
+                    continue
+                failures.append(f"{stack}/{date}: {exc}")
+            except ValueError as exc:
+                _log.warning("fetch_runs_windowed: failed %s/%s — %s", stack, date, exc)
                 continue
-            results.append({"stack": stack, "date": date, "run_dir": str(run_dir)})
+            except OSError as exc:
+                _log.warning("fetch_runs_windowed: failed %s/%s — %s", stack, date, exc)
+                local_error = local_error or exc
+            else:
+                results.append({"stack": stack, "date": date, "run_dir": str(run_dir)})
+                continue
+            if strict:
+                for other in futures:
+                    other.cancel()
+    if strict and local_error is not None:
+        raise local_error
     if strict and failures:
         raise IncompleteFetch(results, failures)
     return results
@@ -425,30 +457,28 @@ def fetch_stack_packages(
 
     ``None`` covers both "no run found" and "that run predates provenance
     capture": in either case the release's packages are unknown, which a caller
-    must not confuse with an empty stack. With *strict*, a ``None`` that a
-    transient failure may have caused raises :class:`IncompleteFetch` instead.
+    must not confuse with an empty stack. With *strict*, the first read the
+    server does not answer stops the walk and raises :class:`IncompleteFetch`
+    instead: the ``None`` it would otherwise end in might not be the answer.
     """
     root = f"{base_url.rstrip('/')}/{detector}/{platform}/{stack}"
-    failures: list[str] = []
 
-    def _unknown() -> None:
-        if strict and failures:
-            raise IncompleteFetch(None, failures)
+    def _stop_if_strict(where: str, exc: requests.RequestException) -> None:
+        if strict and not _is_absent(exc):
+            raise IncompleteFetch(None, [f"{where}: {exc}"]) from exc
 
     try:
         samples = sorted(_list_subdirs(root))
     except requests.RequestException as exc:
         _log.debug("fetch_stack_packages: no samples under %s — %s", root, exc)
-        if _is_transient(exc):
-            failures.append(f"{root}: {exc}")
-        return _unknown()
+        _stop_if_strict(root, exc)
+        return None
 
     for sample in samples:
         try:
             dates = sorted(_list_subdirs(f"{root}/{sample}"), reverse=True)
         except requests.RequestException as exc:
-            if _is_transient(exc):
-                failures.append(f"{root}/{sample}: {exc}")
+            _stop_if_strict(f"{root}/{sample}", exc)
             continue
         for date in dates:
             url = f"{root}/{sample}/{date}/run_info.json"
@@ -463,12 +493,11 @@ def fetch_stack_packages(
                 continue
             except requests.RequestException as exc:
                 _log.debug("fetch_stack_packages: %s — %s", url, exc)
-                if _is_transient(exc):
-                    failures.append(f"{url}: {exc}")
+                _stop_if_strict(url, exc)
                 continue
             if packages:
                 return packages
-    return _unknown()
+    return None
 
 
 def fetch_run_info(
