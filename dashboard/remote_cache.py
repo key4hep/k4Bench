@@ -118,12 +118,6 @@ def _cached_list_report_dates(base_url: str) -> list[str]:
     return list_report_dates(base_url)
 
 
-@st.cache_data(show_spinner="Fetching regression report...", ttl=3600)
-def _cached_fetch_report(base_url: str, date: str) -> dict | None:
-    from k4bench.remote import fetch_report
-    return fetch_report(base_url, date)
-
-
 @st.cache_data(show_spinner="Fetching blame...", ttl=600)
 def _fetch_blame(base_url: str, date: str) -> dict | None:
     from k4bench.remote import fetch_blame
