@@ -499,7 +499,15 @@ def _render_regressions_in_range(
     Each selector option carries the metric's own blame window so that a wide
     package range is never mistaken for that metric's attribution interval.
     """
-    dates = _cached_list_report_dates(data_url)
+    try:
+        dates = _cached_list_report_dates(data_url)
+    except Exception as err:
+        st.markdown("##### Regressions in this range")
+        st.warning(
+            f"Could not list the nightly reports on EOS: {err}. "
+            "Reload the page to try again."
+        )
+        return False
     # A regression confirms no earlier than its onset release, so only reports
     # on/after the older end can carry one whose onset is in range. Fetch the
     # cold window in parallel; one serial HTTP round-trip per historical night

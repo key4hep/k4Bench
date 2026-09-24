@@ -1055,3 +1055,30 @@ def test_malformed_latest_report_is_reported_not_raised():
     ).run()
     assert not at.exception, at.exception
     assert "2026-07-11" in "\n".join(str(w.value) for w in at.warning)
+
+
+def test_a_listing_that_did_not_answer_is_not_reported_as_no_reports():
+    # WebEOS now and then stalls one request. That says nothing about whether
+    # reports exist, so the homepage must not claim there are none yet.
+    def _stalled(dashboard_dir, window) -> None:
+        import sys as _sys
+        if dashboard_dir not in _sys.path:
+            _sys.path.insert(0, dashboard_dir)
+
+        from tabs import detectors_overview as ov
+
+        def _listing(url):
+            raise TimeoutError("read timed out")
+
+        ov._cached_list_report_dates = _listing
+        ov.render(
+            "https://example.invalid", "https://dash.invalid",
+            "PLAT", "single_e_10GeV", window,
+        )
+
+    at = AppTest.from_function(
+        _stalled, args=(str(_DASHBOARD_DIR), _WINDOW), default_timeout=30,
+    ).run()
+    assert not at.exception, at.exception
+    assert not any("No regression reports" in str(i.value) for i in at.info)
+    assert any("Could not list the nightly reports" in str(w.value) for w in at.warning)
