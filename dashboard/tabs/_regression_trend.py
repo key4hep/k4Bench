@@ -15,6 +15,7 @@ from collections.abc import Callable
 
 import pandas as pd
 import plotly.graph_objects as go
+import requests
 import streamlit as st
 
 from data import (
@@ -291,11 +292,30 @@ def render_metric_trend(
     reliability_slot=None,
 ) -> None:
     """Render the canonical one-metric regression evidence chart."""
-    history = _metric_history(
-        verdict, data_url, cache_dir,
-        list_run_dates=list_run_dates,
-        fetch_runs_windowed=fetch_runs_windowed,
-    )
+    try:
+        history = _metric_history(
+            verdict, data_url, cache_dir,
+            list_run_dates=list_run_dates,
+            fetch_runs_windowed=fetch_runs_windowed,
+        )
+    except requests.RequestException as err:
+        # Includes a run-date listing that stopped short: the chart's window
+        # is placed around the flagged run from that listing, so drawing it
+        # from part of the releases would place it wrongly.
+        st.warning(
+            f"Could not list this metric's run history on EOS: {err}. "
+            "Reload the page to try again."
+        )
+        return
+    except OSError as err:
+        # After RequestException, which is an OSError too: this is the
+        # dashboard's own run cache (full, unwritable), not EOS.
+        st.warning(
+            f"Could not store this metric's run history in the dashboard's "
+            f"local cache: {err}. This is a problem on the dashboard host, "
+            "not on EOS."
+        )
+        return
     if history is None:
         st.warning("No history could be loaded for this metric.")
         return

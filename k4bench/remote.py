@@ -30,11 +30,18 @@ from pathlib import Path
 from urllib.parse import unquote
 
 import requests
+from urllib3.util import Retry
 
 _log = logging.getLogger(__name__)
 
 _DIR_LINK_RE = re.compile(r'href="([^"/][^"]*/?)"', re.IGNORECASE)
-_TIMEOUT = 15
+
+#: ``(connect, read)`` seconds. The read limit sits above the WebEOS gateway's
+#: own 30 s: a directory listing sometimes takes 15–25 s to generate, for
+#: several requests in a row, while files still arrive in a tenth of a second
+#: — and a client that gives up first only retries into the same wait. Past
+#: 30 s the gateway answers ``504`` itself, which :data:`_RETRY` retries.
+_TIMEOUT = (10, 35)
 
 #: Ceiling on concurrent connections to the WebEOS host. A deliberate
 #: stability constant rather than a CPU- or task-count-derived guess (neither
@@ -46,9 +53,26 @@ _TIMEOUT = 15
 #: enforcing it.
 _POOL_MAXSIZE = 8
 
+#: Retries for the WebEOS gateway's transient failures: a ``502``/``503``/
+#: ``504`` (the gateway gives up on a slow listing after 30 s, and the same
+#: listing is usually fast again soon after), a dropped connection, or a read
+#: that stalls past :data:`_TIMEOUT`. One retry, reads only (every call here is
+#: a GET), so a request that never answers costs about two gateway timeouts —
+#: roughly a minute — before it fails. ``raise_on_status=False`` hands the last
+#: error response back, so ``raise_for_status`` still reports it.
+_RETRY = Retry(
+    total=1,
+    backoff_factor=0.5,
+    status_forcelist=(502, 503, 504),
+    allowed_methods=frozenset({"GET", "HEAD"}),
+    raise_on_status=False,
+)
+
 #: One adapter, shared by every thread's session (see :func:`_get_session`),
 #: so this is a real, process-wide cap rather than one per thread.
-_adapter = requests.adapters.HTTPAdapter(pool_maxsize=_POOL_MAXSIZE, pool_block=True)
+_adapter = requests.adapters.HTTPAdapter(
+    pool_maxsize=_POOL_MAXSIZE, pool_block=True, max_retries=_RETRY,
+)
 
 _thread_local = threading.local()
 
@@ -73,6 +97,64 @@ def _get_session() -> requests.Session:
         session.mount("http://", _adapter)
         _thread_local.session = session
     return session
+
+
+class IncompleteFetch(requests.RequestException):
+    """A read that could not be completed because the server did not answer.
+
+    Raised only to callers passing ``strict=True``. By default those functions
+    skip what they could not read (logged) and return the rest, or ``None``;
+    :attr:`partial` is what had been read when the strict call stopped, so a
+    caller that can use an incomplete result still may — deliberately. The
+    dashboard caches every result, and one missing items only because WebEOS
+    stalled must be read again, not remembered as the answer.
+
+    A :class:`requests.RequestException`, so a caller that already falls back
+    on a failed request falls back on this too, rather than mistaking a partial
+    listing for a complete one.
+    """
+
+    def __init__(self, partial: object, failures: list[str]):
+        shown = "; ".join(failures[:3])
+        more = f" (+{len(failures) - 3} more)" if len(failures) > 3 else ""
+        super().__init__(f"{len(failures)} read(s) failed: {shown}{more}")
+        self.partial = partial
+        self.failures = failures
+
+
+def _is_absent(exc: requests.RequestException) -> bool:
+    """True for a 404: the path does not exist, which is an answer. A timeout,
+    a dropped connection or a 5xx says nothing about what is there."""
+    response = getattr(exc, "response", None)
+    return response is not None and response.status_code == 404
+
+
+def _list_each(
+    urls: dict[str, str], *, strict: bool, caller: str,
+) -> tuple[dict[str, list[str]], list[str]]:
+    """List every directory in *urls* (``{key: url}``), one after another.
+
+    Returns the listings that answered, keyed like *urls*, and a description
+    of each that failed without an answer. A 404 is left out quietly. With
+    *strict*, the walk stops at the first failure: the result is incomplete
+    either way, and on a degraded server every further listing could cost
+    another timeout. Sequential because a cold listing is generated no faster
+    when several are asked for at once.
+    """
+    found: dict[str, list[str]] = {}
+    failures: list[str] = []
+    for key, url in urls.items():
+        try:
+            found[key] = _list_subdirs(url)
+        except requests.RequestException as exc:
+            if _is_absent(exc):
+                _log.debug("%s: skipping %s — %s", caller, url, exc)
+                continue
+            _log.warning("%s: skipping %s — %s", caller, url, exc)
+            failures.append(f"{key}: {exc}")
+            if strict:
+                break
+    return found, failures
 
 
 def _list_subdirs(url: str) -> list[str]:
@@ -124,7 +206,7 @@ def list_samples(base_url: str, detector: str, platform: str, stack: str) -> lis
 
 
 def scan_stack_samples(
-    base_url: str, detector: str, platform: str
+    base_url: str, detector: str, platform: str, *, strict: bool = False,
 ) -> dict[str, list[str]]:
     """Return ``{stack: [samples]}`` for *(detector, platform)*, newest stack first.
 
@@ -132,15 +214,19 @@ def scan_stack_samples(
     per-sample stack list, so the sidebar scans the release tree only once
     (one listing per stack) instead of twice. A sample may be added or dropped
     between Key4hep releases; callers derive the union and the per-sample stacks
-    from this map. Stacks whose listing fails are skipped (logged at debug).
+    from this map. Stacks whose listing fails are skipped (logged); with
+    *strict*, the first that fails without an answer stops the scan and raises
+    :class:`IncompleteFetch` carrying what was listed.
     """
-    stacks = _list_subdirs(f"{base_url.rstrip('/')}/{detector}/{platform}")
-    out: dict[str, list[str]] = {}
-    for stack in sorted(stacks, reverse=True):
-        try:
-            out[stack] = list_samples(base_url, detector, platform, stack)
-        except requests.RequestException as exc:
-            _log.debug("scan_stack_samples: skipping stack %s — %s", stack, exc)
+    root = f"{base_url.rstrip('/')}/{detector}/{platform}"
+    stacks = sorted(_list_subdirs(root), reverse=True)
+    listed, failures = _list_each(
+        {stack: f"{root}/{stack}" for stack in stacks},
+        strict=strict, caller="scan_stack_samples",
+    )
+    out = {stack: sorted(samples) for stack, samples in listed.items()}
+    if strict and failures:
+        raise IncompleteFetch(out, failures)
     return out
 
 
@@ -163,6 +249,8 @@ def list_run_dates_all_stacks(
     detector: str,
     platform: str,
     sample: str,
+    *,
+    strict: bool = False,
 ) -> dict[str, list[str]]:
     """Return ``{stack: [run_dates]}`` for *(detector, platform, sample)*.
 
@@ -170,19 +258,19 @@ def list_run_dates_all_stacks(
     run-date directory names are ``YYYY-MM-DD``, so the full set of available
     dates per stack is obtained cheaply; this populates the trend-window control
     and lets the caller download only the runs inside the selected window.
-    Stacks that do not contain *sample* (or whose listing fails) are skipped.
+    Stacks that do not contain *sample* (a 404) or whose listing fails are
+    skipped; with *strict*, the first that fails without an answer stops the
+    scan and raises :class:`IncompleteFetch` carrying what was listed.
     """
-    stacks = _list_subdirs(f"{base_url.rstrip('/')}/{detector}/{platform}")
-    out: dict[str, list[str]] = {}
-    for stack in stacks:
-        url = f"{base_url.rstrip('/')}/{detector}/{platform}/{stack}/{sample}"
-        try:
-            runs = _list_subdirs(url)
-        except requests.RequestException as exc:
-            _log.debug("list_run_dates_all_stacks: skipping %s — %s", url, exc)
-            continue  # sample may not exist for every stack
-        if runs:
-            out[stack] = sorted(runs)
+    root = f"{base_url.rstrip('/')}/{detector}/{platform}"
+    stacks = _list_subdirs(root)
+    listed, failures = _list_each(
+        {stack: f"{root}/{stack}/{sample}" for stack in stacks},
+        strict=strict, caller="list_run_dates_all_stacks",
+    )
+    out = {stack: sorted(runs) for stack, runs in listed.items() if runs}
+    if strict and failures:
+        raise IncompleteFetch(out, failures)
     return out
 
 
@@ -275,6 +363,8 @@ def fetch_runs_windowed(
     sample: str,
     stacks_dates: dict[str, list[str]],
     cache_root: str | None = None,
+    *,
+    strict: bool = False,
 ) -> list[dict]:
     """Fetch every ``(stack, date)`` in *stacks_dates* in parallel, returning a
     list of ``{"stack", "date", "run_dir"}`` for the runs successfully cached.
@@ -283,17 +373,32 @@ def fetch_runs_windowed(
     an already date-windowed *stacks_dates* so only in-window runs are downloaded.
     Runs that fail to download are logged and skipped rather than aborting the load.
 
-    Thread count is Python's own default (no ``max_workers``; threads are
-    created lazily, never more than there is work to do). The concurrency
-    ceiling lives one level down, in :data:`_POOL_MAXSIZE`'s connection pool
-    (see :func:`_get_session`) — threads beyond it just queue for a slot.
+    With *strict*, no download starts after the first failure that makes the
+    result incomplete, and the call raises once those in flight have finished —
+    so every run that landed stays in the on-disk cache and a retry fetches
+    only what is missing. A run the server did not answer for raises
+    :class:`IncompleteFetch` carrying the runs that landed; a local error — the
+    cache directory full or unwritable — raises that ``OSError`` itself, since
+    it is neither EOS's fault nor fixed by asking EOS again. A run whose listing
+    names an unsafe file is skipped either way: it will be just as unsafe next
+    time.
+
+    At most :data:`_POOL_MAXSIZE` downloads run at once — the connection
+    pool's own ceiling (see :func:`_get_session`). More workers would add no
+    throughput, only threads blocked waiting for a connection, and a blocked
+    worker's download already counts as started: it could no longer be
+    cancelled, and would run into the same failing server once a connection
+    freed up. Work beyond the ceiling therefore waits in the executor's queue,
+    where cancelling it stops it.
     """
     tasks = [(stack, date) for stack, dates in stacks_dates.items() for date in dates]
     if not tasks:
         return []
 
     results: list[dict] = []
-    with ThreadPoolExecutor() as pool:
+    failures: list[str] = []
+    local_error: OSError | None = None
+    with ThreadPoolExecutor(max_workers=_POOL_MAXSIZE) as pool:
         futures = {
             pool.submit(
                 ensure_run_cached,
@@ -302,13 +407,33 @@ def fetch_runs_windowed(
             for stack, date in tasks
         }
         for fut in as_completed(futures):
+            if fut.cancelled():
+                continue
             stack, date = futures[fut]
             try:
                 run_dir = fut.result()
-            except (requests.RequestException, ValueError, OSError) as exc:
+            # A RequestException is an OSError too, so it must be caught first.
+            except requests.RequestException as exc:
+                _log.warning("fetch_runs_windowed: failed %s/%s — %s", stack, date, exc)
+                if _is_absent(exc):
+                    continue
+                failures.append(f"{stack}/{date}: {exc}")
+            except ValueError as exc:
                 _log.warning("fetch_runs_windowed: failed %s/%s — %s", stack, date, exc)
                 continue
-            results.append({"stack": stack, "date": date, "run_dir": str(run_dir)})
+            except OSError as exc:
+                _log.warning("fetch_runs_windowed: failed %s/%s — %s", stack, date, exc)
+                local_error = local_error or exc
+            else:
+                results.append({"stack": stack, "date": date, "run_dir": str(run_dir)})
+                continue
+            if strict:
+                for other in futures:
+                    other.cancel()
+    if strict and local_error is not None:
+        raise local_error
+    if strict and failures:
+        raise IncompleteFetch(results, failures)
     return results
 
 
@@ -324,7 +449,7 @@ def list_stacks(base_url: str, detector: str, platform: str) -> list[str]:
 
 
 def fetch_stack_packages(
-    base_url: str, detector: str, platform: str, stack: str
+    base_url: str, detector: str, platform: str, stack: str, *, strict: bool = False,
 ) -> dict | None:
     """Return the ``k4h_packages`` map of a release, or ``None``.
 
@@ -335,19 +460,28 @@ def fetch_stack_packages(
 
     ``None`` covers both "no run found" and "that run predates provenance
     capture": in either case the release's packages are unknown, which a caller
-    must not confuse with an empty stack.
+    must not confuse with an empty stack. With *strict*, the first read the
+    server does not answer stops the walk and raises :class:`IncompleteFetch`
+    instead: the ``None`` it would otherwise end in might not be the answer.
     """
     root = f"{base_url.rstrip('/')}/{detector}/{platform}/{stack}"
+
+    def _stop_if_strict(where: str, exc: requests.RequestException) -> None:
+        if strict and not _is_absent(exc):
+            raise IncompleteFetch(None, [f"{where}: {exc}"]) from exc
+
     try:
         samples = sorted(_list_subdirs(root))
     except requests.RequestException as exc:
         _log.debug("fetch_stack_packages: no samples under %s — %s", root, exc)
+        _stop_if_strict(root, exc)
         return None
 
     for sample in samples:
         try:
             dates = sorted(_list_subdirs(f"{root}/{sample}"), reverse=True)
-        except requests.RequestException:
+        except requests.RequestException as exc:
+            _stop_if_strict(f"{root}/{sample}", exc)
             continue
         for date in dates:
             url = f"{root}/{sample}/{date}/run_info.json"
@@ -355,8 +489,14 @@ def fetch_stack_packages(
                 resp = _get_session().get(url, timeout=_TIMEOUT)
                 resp.raise_for_status()
                 packages = resp.json().get("k4h_packages")
-            except (requests.RequestException, ValueError) as exc:
+            except ValueError as exc:
+                # Malformed JSON (requests' decode error is also a
+                # RequestException, so this clause must come first).
                 _log.debug("fetch_stack_packages: %s — %s", url, exc)
+                continue
+            except requests.RequestException as exc:
+                _log.debug("fetch_stack_packages: %s — %s", url, exc)
+                _stop_if_strict(url, exc)
                 continue
             if packages:
                 return packages
@@ -418,28 +558,54 @@ def list_report_dates(base_url: str) -> list[str]:
 
     Reports live at ``{base_url}/_reports/{YYYY-MM-DD}/report.json``, written
     by the nightly ``regression-report`` CI job. An absent ``_reports/`` tree
-    (no report generated yet) is not an error — it returns an empty list.
+    (a 404: no report generated yet) is not an error — it returns an empty
+    list. Any other failure raises: a listing the server did not answer says
+    nothing about whether reports exist, and must not read as "none yet".
     """
     try:
         return sorted(_list_subdirs(f"{base_url.rstrip('/')}/_reports"), reverse=True)
     except requests.RequestException as exc:
+        if not _is_absent(exc):
+            raise
         _log.debug("list_report_dates: no _reports tree — %s", exc)
         return []
 
 
-def fetch_report(base_url: str, date: str) -> dict | None:
-    """Fetch and parse one nightly regression report, or ``None`` on failure."""
-    url = f"{base_url.rstrip('/')}/_reports/{date}/report.json"
+def _fetch_json(url: str, *, strict: bool, missing_is_normal: bool) -> dict | None:
+    """GET and parse *url*, or ``None`` when it is absent, malformed or — unless
+    *strict* — unreachable. *missing_is_normal* keeps an expected 404 at debug
+    level; every other failure is logged as a warning."""
     try:
         resp = _get_session().get(url, timeout=_TIMEOUT)
         resp.raise_for_status()
         return resp.json()
-    except (requests.RequestException, ValueError) as exc:
-        _log.warning("fetch_report: could not fetch %s — %s", url, exc)
+    except ValueError as exc:
+        # Malformed JSON (requests' decode error is also a RequestException,
+        # so this clause must come first): the file will not parse next time
+        # either.
+        _log.warning("could not parse %s — %s", url, exc)
+        return None
+    except requests.RequestException as exc:
+        if _is_absent(exc):
+            log = _log.debug if missing_is_normal else _log.warning
+            log("not found: %s — %s", url, exc)
+            return None
+        _log.warning("could not fetch %s — %s", url, exc)
+        if strict:
+            raise IncompleteFetch(None, [f"{url}: {exc}"]) from exc
         return None
 
 
-def fetch_blame(base_url: str, date: str) -> dict | None:
+def fetch_report(base_url: str, date: str, *, strict: bool = False) -> dict | None:
+    """Fetch and parse one nightly regression report, or ``None`` on failure.
+
+    With *strict*, a transient failure raises :class:`IncompleteFetch` instead
+    of returning ``None``."""
+    url = f"{base_url.rstrip('/')}/_reports/{date}/report.json"
+    return _fetch_json(url, strict=strict, missing_is_normal=False)
+
+
+def fetch_blame(base_url: str, date: str, *, strict: bool = False) -> dict | None:
     """Fetch and parse one night's blame sidecar, or ``None`` when absent.
 
     Blame lives beside the report at ``_reports/{date}/blame.json``, written
@@ -449,15 +615,11 @@ def fetch_blame(base_url: str, date: str) -> dict | None:
     Uses the same shared, connection-pooled session as every other WebEOS read
     (see :func:`_get_session`) rather than a bare ``requests.get``, so it shares
     the one real concurrency ceiling instead of opening its own connections.
+    With *strict*, a transient failure raises :class:`IncompleteFetch` instead
+    of returning ``None``.
     """
     url = f"{base_url.rstrip('/')}/_reports/{date}/blame.json"
-    try:
-        resp = _get_session().get(url, timeout=_TIMEOUT)
-        resp.raise_for_status()
-        return resp.json()
-    except (requests.RequestException, ValueError) as exc:
-        _log.debug("fetch_blame: no blame for %s — %s", date, exc)
-        return None
+    return _fetch_json(url, strict=strict, missing_is_normal=True)
 
 
 def ensure_latest_run_cached(

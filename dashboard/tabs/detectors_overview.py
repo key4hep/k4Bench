@@ -1560,7 +1560,14 @@ def render(
     it, but the mail covers every scope the night measured and must stay
     reachable — a scope with no data is often exactly when it is worth
     reading."""
-    dates = _cached_list_report_dates(data_url)
+    try:
+        dates = _cached_list_report_dates(data_url)
+    except Exception as err:
+        st.warning(
+            f"Could not list the nightly reports on EOS: {err}. "
+            "Reload the page to try again."
+        )
+        return
     if not dates:
         st.info(
             "No regression reports available yet. The nightly benchmark "

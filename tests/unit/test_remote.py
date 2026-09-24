@@ -66,6 +66,23 @@ def _use_session(monkeypatch, get) -> None:
     monkeypatch.setattr(remote, "_get_session", lambda: _StubSession(get))
 
 
+def _http_error(url: str, status: int) -> remote.requests.HTTPError:
+    """The error ``raise_for_status`` raises for *status*, response attached —
+    the only way :mod:`k4bench.remote` can tell a 404 from a stall."""
+    response = remote.requests.Response()
+    response.status_code = status
+    response.url = url
+    return remote.requests.HTTPError(f"{status} for {url}", response=response)
+
+
+def _not_found(url, timeout=None):
+    raise _http_error(url, 404)
+
+
+def _timed_out(url, timeout=None):
+    raise remote.requests.ReadTimeout(f"read timed out: {url}")
+
+
 def _apache_listing(names: list[str]) -> str:
     """Render an Apache-style directory listing the regex in remote.py parses."""
     rows = ['<a href="?C=N;O=D">Name</a>']  # a sort link, must be ignored
@@ -155,11 +172,22 @@ def test_list_report_dates_newest_first_and_empty_when_absent(monkeypatch):
     _use_session(monkeypatch, fake.get)
     assert remote.list_report_dates(BASE) == ["2026-05-22", "2026-05-21", "2026-05-20"]
 
-    def raise_404(url, timeout=None):
-        raise remote.requests.RequestException("404")
-
-    _use_session(monkeypatch, raise_404)
+    _use_session(monkeypatch, _not_found)
     assert remote.list_report_dates(BASE) == []  # no _reports tree yet: not an error
+
+
+@pytest.mark.parametrize("failure", ["timeout", "gateway"])
+def test_list_report_dates_raises_when_the_listing_does_not_answer(monkeypatch, failure):
+    # A stalled listing says nothing about whether reports exist. Returning []
+    # read as "no reports yet" on the dashboard, and was cached as that.
+    def get(url, timeout=None):
+        if failure == "timeout":
+            _timed_out(url)
+        raise _http_error(url, 504)
+
+    _use_session(monkeypatch, get)
+    with pytest.raises(remote.requests.RequestException):
+        remote.list_report_dates(BASE)
 
 
 def test_fetch_report_parses_json(monkeypatch):
@@ -174,6 +202,20 @@ def test_fetch_report_parses_json(monkeypatch):
 
     _use_session(monkeypatch, get)
     assert remote.fetch_report(BASE, "2026-05-22") == {"generated_at": "x", "groups": []}
+
+
+@pytest.mark.parametrize("fetch", [remote.fetch_report, remote.fetch_blame])
+def test_report_fetches_strict_raise_only_when_the_server_did_not_answer(monkeypatch, fetch):
+    _use_session(monkeypatch, _not_found)
+    assert fetch(BASE, "2026-05-22", strict=True) is None  # absent: an answer
+
+    _use_session(monkeypatch, lambda url, timeout=None: _FakeResponse(content=b"{not json"))
+    assert fetch(BASE, "2026-05-22", strict=True) is None  # malformed: no retry fixes it
+
+    _use_session(monkeypatch, _timed_out)
+    assert fetch(BASE, "2026-05-22") is None  # lenient: the CI email carries on
+    with pytest.raises(remote.IncompleteFetch):
+        fetch(BASE, "2026-05-22", strict=True)
 
 
 def test_list_stacks_newest_first(web):
@@ -208,11 +250,42 @@ def test_fetch_stack_packages_skips_a_run_it_cannot_parse(web):
 
 
 def test_fetch_stack_packages_none_when_the_release_is_absent(monkeypatch):
-    def _404(url, timeout=None):
-        raise remote.requests.RequestException("404")
-
-    _use_session(monkeypatch, _404)
+    _use_session(monkeypatch, _not_found)
     assert remote.fetch_stack_packages(BASE, "DET", "PLAT", "key4hep-1999-01-01") is None
+    # Absent is an answer, so a strict caller may keep it.
+    assert remote.fetch_stack_packages(
+        BASE, "DET", "PLAT", "key4hep-1999-01-01", strict=True
+    ) is None
+
+
+def test_fetch_stack_packages_strict_raises_when_a_stall_hid_the_answer(monkeypatch):
+    _use_session(monkeypatch, _timed_out)
+    assert remote.fetch_stack_packages(BASE, "DET", "PLAT", "key4hep-2026-05-20") is None
+    with pytest.raises(remote.IncompleteFetch) as caught:
+        remote.fetch_stack_packages(BASE, "DET", "PLAT", "key4hep-2026-05-20", strict=True)
+    assert caught.value.partial is None
+
+
+def test_fetch_stack_packages_strict_stops_at_the_first_stall(web, monkeypatch):
+    stalled = f"{BASE}/DET/PLAT/key4hep-2026-05-20/single_e/2026-05-21/run_info.json"
+    older = f"{BASE}/DET/PLAT/key4hep-2026-05-20/single_e/2026-05-20/run_info.json"
+
+    def get(url, timeout=None):
+        if url == stalled:
+            _timed_out(url)
+        return web.get(url, timeout=timeout)
+
+    _use_session(monkeypatch, get)
+    # Lenient walks on past the stall and finds an older run's answer…
+    assert remote.fetch_stack_packages(
+        BASE, "DET", "PLAT", "key4hep-2026-05-20"
+    ) == {"k4geo": {"commit": "a" * 40}}
+    # …strict stops there: on a degraded server every further read could cost
+    # another timeout, and the uncached call is simply asked again next time.
+    web.requested.clear()
+    with pytest.raises(remote.IncompleteFetch):
+        remote.fetch_stack_packages(BASE, "DET", "PLAT", "key4hep-2026-05-20", strict=True)
+    assert older not in web.requested
 
 
 def test_list_run_dates_all_stacks_lists_without_downloading_files(web):
@@ -226,18 +299,89 @@ def test_list_run_dates_all_stacks_lists_without_downloading_files(web):
 
 
 def test_list_run_dates_skips_stacks_missing_the_sample(web, monkeypatch):
-    import requests as real_requests
-
     orig_get = web.get
 
     def get(url, timeout=None):
         if url.rstrip("/").endswith("key4hep-2026-05-10/single_e"):
-            raise real_requests.RequestException("404")
+            raise _http_error(url, 404)
         return orig_get(url, timeout=timeout)
 
     _use_session(monkeypatch, get)
     out = remote.list_run_dates_all_stacks(BASE, "DET", "PLAT", "single_e")
     assert list(out) == ["key4hep-2026-05-20"]
+    # A missing sample is an answer, not a failure, even for a strict caller.
+    assert remote.list_run_dates_all_stacks(
+        BASE, "DET", "PLAT", "single_e", strict=True
+    ) == out
+
+
+def _stall_on(web, suffix):
+    """*web*'s GET, except that URLs ending in *suffix* time out."""
+    def get(url, timeout=None):
+        if url.rstrip("/").endswith(suffix):
+            _timed_out(url)
+        return web.get(url, timeout=timeout)
+    return get
+
+
+def test_list_run_dates_strict_raises_on_a_stalled_stack(web, monkeypatch):
+    _use_session(monkeypatch, _stall_on(web, "key4hep-2026-05-10/single_e"))
+    # Lenient (the nightly report builder): skip the stack and carry on.
+    lenient = remote.list_run_dates_all_stacks(BASE, "DET", "PLAT", "single_e")
+    assert list(lenient) == ["key4hep-2026-05-20"]
+    # Strict (the dashboard's cache): the same result, but flagged incomplete.
+    with pytest.raises(remote.IncompleteFetch) as caught:
+        remote.list_run_dates_all_stacks(BASE, "DET", "PLAT", "single_e", strict=True)
+    # What was listed before the scan stopped: never more than the lenient
+    # result, and never anything it would not have listed.
+    assert caught.value.partial.items() <= lenient.items()
+    assert len(caught.value.failures) == 1
+    # A request failure, so callers that fall back on one fall back on this.
+    assert isinstance(caught.value, remote.requests.RequestException)
+
+
+def test_scan_stack_samples_strict_raises_on_a_stalled_stack(web, monkeypatch):
+    _use_session(monkeypatch, _stall_on(web, "key4hep-2026-05-10"))
+    lenient = remote.scan_stack_samples(BASE, "DET", "PLAT")
+    assert lenient == {"key4hep-2026-05-20": ["single_e"]}
+    with pytest.raises(remote.IncompleteFetch) as caught:
+        remote.scan_stack_samples(BASE, "DET", "PLAT", strict=True)
+    assert caught.value.partial.items() <= lenient.items()
+
+
+def test_strict_listing_stops_at_the_first_stall(monkeypatch):
+    stacks = [f"key4hep-2026-05-{day:02d}" for day in range(1, 31)]
+    parent = f"{BASE}/DET/PLAT"
+    tree: dict[str, object] = {parent: [f"{s}/" for s in stacks]}
+    for stack in stacks:
+        tree[f"{parent}/{stack}/single_e"] = ["2026-05-01/"]
+    fake = FakeWeb(tree)
+    stalled = f"{stacks[0]}/single_e"
+    _use_session(monkeypatch, lambda url, timeout=None: (
+        _timed_out(url) if url.rstrip("/").endswith(stalled) else fake.get(url)
+    ))
+
+    with pytest.raises(remote.IncompleteFetch):
+        remote.list_run_dates_all_stacks(BASE, "DET", "PLAT", "single_e", strict=True)
+    # Nothing after the stall: on a degraded server each further listing could
+    # cost another minute. (The stalled listing never reaches the fake.)
+    assert fake.requested == [f"{parent}/"]
+
+    fake.requested.clear()
+    remote.list_run_dates_all_stacks(BASE, "DET", "PLAT", "single_e")
+    assert len(fake.requested) == 1 + (len(stacks) - 1)  # lenient lists the rest
+
+
+def test_scan_stack_samples_strict_skips_an_absent_stack(web, monkeypatch):
+    def get(url, timeout=None):
+        if url.rstrip("/").endswith("key4hep-2026-05-10"):
+            raise _http_error(url, 404)
+        return web.get(url, timeout=timeout)
+
+    _use_session(monkeypatch, get)
+    assert remote.scan_stack_samples(BASE, "DET", "PLAT", strict=True) == {
+        "key4hep-2026-05-20": ["single_e"],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -320,6 +464,107 @@ def test_fetch_runs_windowed_fetches_only_given_runs(web, tmp_path):
     assert not any("/single_e/2026-05-10" in u for u in web.requested)
 
 
+def test_fetch_runs_windowed_strict_raises_after_the_rest_landed(web, monkeypatch, tmp_path):
+    import time
+
+    stalled = "key4hep-2026-05-20/single_e/2026-05-21/baseline_results.csv"
+
+    def get(url, timeout=None):
+        if url.endswith(stalled):
+            time.sleep(0.2)  # the healthy run lands first
+            _timed_out(url)
+        return web.get(url, timeout=timeout)
+
+    _use_session(monkeypatch, get)
+    windowed = {"key4hep-2026-05-20": ["2026-05-20", "2026-05-21"]}
+    with pytest.raises(remote.IncompleteFetch) as caught:
+        remote.fetch_runs_windowed(
+            BASE, "DET", "PLAT", "single_e", windowed,
+            cache_root=str(tmp_path), strict=True,
+        )
+    # The run that landed is handed back and already sits in the on-disk
+    # cache, so a retry downloads only the one that stalled.
+    assert [r["date"] for r in caught.value.partial] == ["2026-05-20"]
+    assert Path(caught.value.partial[0]["run_dir"], ".complete").exists()
+
+    web.requested.clear()
+    _use_session(monkeypatch, web.get)
+    runs = remote.fetch_runs_windowed(
+        BASE, "DET", "PLAT", "single_e", windowed, cache_root=str(tmp_path), strict=True,
+    )
+    assert sorted(r["date"] for r in runs) == ["2026-05-20", "2026-05-21"]
+    assert not any("/single_e/2026-05-20" in u for u in web.requested)
+
+
+def test_fetch_runs_windowed_strict_starts_nothing_after_the_first_failure(monkeypatch):
+    # Only work still queued in the executor can be cancelled. With more
+    # workers than pooled connections, the surplus would count as started while
+    # blocked on a connection, and run into the failing server once one freed.
+    import threading
+    import time
+
+    dates = [f"2026-05-{day:02d}" for day in range(1, 31)]
+    started: list[str] = []
+    lock = threading.Lock()
+
+    def ensure_run_cached(base_url, detector, platform, stack, sample, date, cache_root):
+        with lock:
+            started.append(date)
+        if date == dates[0]:
+            _timed_out(f"{stack}/{date}")
+        time.sleep(0.2)  # the healthy downloads are still in flight
+        return f"/cache/{stack}/{date}"
+
+    monkeypatch.setattr(remote, "ensure_run_cached", ensure_run_cached)
+    with pytest.raises(remote.IncompleteFetch) as caught:
+        remote.fetch_runs_windowed(
+            BASE, "DET", "PLAT", "single_e", {"S": dates}, strict=True,
+        )
+    # What was in flight, plus at most the one the failed worker picked up
+    # before the rest was cancelled — not all 30.
+    assert len(started) <= remote._POOL_MAXSIZE + 1
+    assert len(caught.value.partial) == len(started) - 1
+
+
+def test_fetch_runs_windowed_strict_raises_a_local_error_as_itself(web, monkeypatch, tmp_path):
+    # A full or unwritable cache is not EOS's fault, and asking EOS again does
+    # not fix it: it must not surface as an incomplete remote read.
+    import errno
+
+    real = remote.ensure_run_cached
+
+    def ensure_run_cached(base_url, detector, platform, stack, sample, date, cache_root):
+        if date == "2026-05-21":
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real(base_url, detector, platform, stack, sample, date, cache_root)
+
+    monkeypatch.setattr(remote, "ensure_run_cached", ensure_run_cached)
+    windowed = {"key4hep-2026-05-20": ["2026-05-20", "2026-05-21"]}
+    with pytest.raises(OSError) as caught:
+        remote.fetch_runs_windowed(
+            BASE, "DET", "PLAT", "single_e", windowed, cache_root=str(tmp_path), strict=True,
+        )
+    assert not isinstance(caught.value, remote.IncompleteFetch)
+    assert caught.value.errno == errno.ENOSPC
+    # Lenient (the nightly report builder) still skips the run and carries on.
+    runs = remote.fetch_runs_windowed(
+        BASE, "DET", "PLAT", "single_e", windowed, cache_root=str(tmp_path),
+    )
+    assert [r["date"] for r in runs] == ["2026-05-20"]
+
+
+def test_fetch_runs_windowed_strict_does_not_flag_an_unsafe_listing(web, monkeypatch, tmp_path):
+    # An unsafe file name will be just as unsafe next time: skipped, but the
+    # result is complete as far as the server can make it.
+    run = f"{BASE}/DET/PLAT/key4hep-2026-05-20/single_e/2026-05-21"
+    web.tree[run] = ["%2e%2e%2fevil.csv"]
+    runs = remote.fetch_runs_windowed(
+        BASE, "DET", "PLAT", "single_e", {"key4hep-2026-05-20": ["2026-05-21"]},
+        cache_root=str(tmp_path), strict=True,
+    )
+    assert runs == []
+
+
 def test_fetch_runs_windowed_empty_returns_empty(web, tmp_path):
     assert remote.fetch_runs_windowed(
         BASE, "DET", "PLAT", "single_e", {}, cache_root=str(tmp_path)
@@ -374,6 +619,73 @@ def test_get_session_instances_share_the_one_pooled_adapter():
     mine = remote._get_session()
     assert mine.get_adapter("https://x") is other["session"].get_adapter("https://x")
     assert mine.get_adapter("https://x") is remote._adapter
+
+
+@pytest.fixture
+def local_server(monkeypatch):
+    """A real HTTP server on localhost, answering each GET with the next of the
+    responses a test queues: ``"stall"``, an HTTP status, or ``"ok"``. Returns
+    ``(base_url, queue, hits)``."""
+    import http.server
+    import threading
+    import time
+
+    for var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(remote, "_TIMEOUT", 0.3)
+    queue: list[object] = []
+    hits: list[str] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits.append(self.path)
+            answer = queue.pop(0) if queue else "ok"
+            try:
+                if answer == "stall":
+                    time.sleep(1.0)
+                    return
+                if answer != "ok":
+                    self.send_response(int(answer))
+                    self.end_headers()
+                    return
+                body = _apache_listing(["2026-09-24/", "2026-09-23/"]).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except OSError:
+                pass  # the client gave up on the stalled request
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.handle_error = lambda *args: None
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}", queue, hits
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize("first", ["stall", 504])
+def test_shared_adapter_retries_once(local_server, first):
+    # Through the real session: a stalled read or a gateway timeout is asked
+    # again, and the second answer is used.
+    base, queue, hits = local_server
+    queue.append(first)
+    assert remote.list_report_dates(base) == ["2026-09-24", "2026-09-23"]
+    assert len(hits) == 2
+
+
+def test_shared_adapter_gives_up_after_one_retry(local_server):
+    # Bounded: a request that never answers costs two attempts, not more.
+    base, queue, hits = local_server
+    queue.extend([504, 504, 504])
+    with pytest.raises(remote.requests.HTTPError):
+        remote.list_report_dates(base)
+    assert len(hits) == 2
 
 
 def test_shared_adapter_blocks_rather_than_opening_extra_connections():

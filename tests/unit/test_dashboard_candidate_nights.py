@@ -73,6 +73,29 @@ def test_an_older_release_never_offered_the_latest_report():
     assert _nights(_REPLACED, _BEFORE, stack=f"key4hep-{_RUNS[0]}") == [_RUNS[0]]
 
 
+def test_a_listing_missing_the_newest_release_falls_back_to_the_latest_report(monkeypatch):
+    # The newest release is the one whose listing stalled. Read as complete,
+    # the partial listing would make the selected older release look active and
+    # file the latest report under it; the listing failure's fallback applies
+    # instead, and says the night may not be the release's.
+    from k4bench.remote import IncompleteFetch
+
+    partial = {k: v for k, v in _STACKS_DATES.items() if k != _NEWEST_STACK}
+
+    def listing(url, det, plat, samp):
+        raise IncompleteFetch(partial, [f"{_NEWEST_STACK}: read timed out"])
+
+    monkeypatch.setattr(regressions, "_cached_list_run_dates", listing)
+    warned = []
+    monkeypatch.setattr(regressions.st, "warning", lambda text, **_kw: warned.append(text))
+    nights, is_release, stacks_dates = regressions._candidate_nights(
+        "https://example.invalid", "CLD", _REPLACED, "single_e",
+        f"key4hep-{_RUNS[-2]}", list(_REPORTS),
+    )
+    assert (nights, is_release, stacks_dates) == ([max(_REPORTS)], False, None)
+    assert warned
+
+
 def test_a_migration_cards_package_changes_read_each_end_on_its_own_platform(monkeypatch):
     from k4bench.regression.models import Direction, MetricVerdict, Severity
 
