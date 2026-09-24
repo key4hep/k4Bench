@@ -383,10 +383,13 @@ def fetch_runs_windowed(
     names an unsafe file is skipped either way: it will be just as unsafe next
     time.
 
-    Thread count is Python's own default (no ``max_workers``; threads are
-    created lazily, never more than there is work to do). The concurrency
-    ceiling lives one level down, in :data:`_POOL_MAXSIZE`'s connection pool
-    (see :func:`_get_session`) — threads beyond it just queue for a slot.
+    At most :data:`_POOL_MAXSIZE` downloads run at once — the connection
+    pool's own ceiling (see :func:`_get_session`). More workers would add no
+    throughput, only threads blocked waiting for a connection, and a blocked
+    worker's download already counts as started: it could no longer be
+    cancelled, and would run into the same failing server once a connection
+    freed up. Work beyond the ceiling therefore waits in the executor's queue,
+    where cancelling it stops it.
     """
     tasks = [(stack, date) for stack, dates in stacks_dates.items() for date in dates]
     if not tasks:
@@ -395,7 +398,7 @@ def fetch_runs_windowed(
     results: list[dict] = []
     failures: list[str] = []
     local_error: OSError | None = None
-    with ThreadPoolExecutor() as pool:
+    with ThreadPoolExecutor(max_workers=_POOL_MAXSIZE) as pool:
         futures = {
             pool.submit(
                 ensure_run_cached,

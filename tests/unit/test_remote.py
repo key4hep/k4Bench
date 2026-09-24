@@ -496,6 +496,36 @@ def test_fetch_runs_windowed_strict_raises_after_the_rest_landed(web, monkeypatc
     assert not any("/single_e/2026-05-20" in u for u in web.requested)
 
 
+def test_fetch_runs_windowed_strict_starts_nothing_after_the_first_failure(monkeypatch):
+    # Only work still queued in the executor can be cancelled. With more
+    # workers than pooled connections, the surplus would count as started while
+    # blocked on a connection, and run into the failing server once one freed.
+    import threading
+    import time
+
+    dates = [f"2026-05-{day:02d}" for day in range(1, 31)]
+    started: list[str] = []
+    lock = threading.Lock()
+
+    def ensure_run_cached(base_url, detector, platform, stack, sample, date, cache_root):
+        with lock:
+            started.append(date)
+        if date == dates[0]:
+            _timed_out(f"{stack}/{date}")
+        time.sleep(0.2)  # the healthy downloads are still in flight
+        return f"/cache/{stack}/{date}"
+
+    monkeypatch.setattr(remote, "ensure_run_cached", ensure_run_cached)
+    with pytest.raises(remote.IncompleteFetch) as caught:
+        remote.fetch_runs_windowed(
+            BASE, "DET", "PLAT", "single_e", {"S": dates}, strict=True,
+        )
+    # What was in flight, plus at most the one the failed worker picked up
+    # before the rest was cancelled — not all 30.
+    assert len(started) <= remote._POOL_MAXSIZE + 1
+    assert len(caught.value.partial) == len(started) - 1
+
+
 def test_fetch_runs_windowed_strict_raises_a_local_error_as_itself(web, monkeypatch, tmp_path):
     # A full or unwritable cache is not EOS's fault, and asking EOS again does
     # not fix it: it must not surface as an incomplete remote read.

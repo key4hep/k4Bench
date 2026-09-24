@@ -307,6 +307,15 @@ def render_metric_trend(
             "Reload the page to try again."
         )
         return
+    except OSError as err:
+        # After RequestException, which is an OSError too: this is the
+        # dashboard's own run cache (full, unwritable), not EOS.
+        st.warning(
+            f"Could not store this metric's run history in the dashboard's "
+            f"local cache: {err}. This is a problem on the dashboard host, "
+            "not on EOS."
+        )
+        return
     if history is None:
         st.warning("No history could be loaded for this metric.")
         return

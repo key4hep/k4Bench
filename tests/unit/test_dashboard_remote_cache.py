@@ -175,20 +175,24 @@ def test_other_wrappers_do_not_keep_a_stall(monkeypatch, name, wrapper, args):
     assert len(calls) == 2
 
 
-def test_metric_drill_down_warns_when_its_run_history_stopped_short(monkeypatch):
-    # The chart's window is placed around the flagged run from this listing, so
-    # it must not be drawn from part of the releases.
-    from tabs import _regression_trend as trend
-
+def _drill_down_verdict():
     from k4bench.regression.models import Direction, MetricVerdict, Severity
 
-    verdict = MetricVerdict(
+    return MetricVerdict(
         detector="ALLEGRO_o2_v01", platform="PLAT", sample="single_e", label="baseline",
         metric_family="memory", metric="peak_vmem_mb", sub_detector=None,
         run_id="2026-09-24", run_date="2026-09-24", value=5850.0,
         baseline_median=6623.5, baseline_mad=0.3, pct_change=-0.117, z_score=-5216.0,
         severity=Severity.WATCH, direction=Direction.DOWN, reason="step",
     )
+
+
+def test_metric_drill_down_warns_when_its_run_history_stopped_short(monkeypatch):
+    # The chart's window is placed around the flagged run from this listing, so
+    # it must not be drawn from part of the releases.
+    from tabs import _regression_trend as trend
+
+    verdict = _drill_down_verdict()
 
     def listing(*_args):
         raise remote.IncompleteFetch({}, ["key4hep-2026-09-24: read timed out"])
@@ -204,3 +208,28 @@ def test_metric_drill_down_warns_when_its_run_history_stopped_short(monkeypatch)
     )
     assert len(warnings) == 1
     assert "Could not list this metric's run history" in warnings[0]
+
+
+def test_metric_drill_down_warns_when_the_local_cache_fails(monkeypatch):
+    # A full or unwritable run cache propagates from the strict download as
+    # itself; the drill-down must say so rather than raise into the page, and
+    # must not blame EOS for it.
+    import errno
+
+    from tabs import _regression_trend as trend
+
+    def listing(*_args):
+        return {"key4hep-2026-09-24": ["2026-09-24"]}
+
+    def downloads(*_args):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    warnings = []
+    monkeypatch.setattr(trend.st, "warning", lambda text, **_kw: warnings.append(text))
+    trend.render_metric_trend(
+        _drill_down_verdict(), BASE, "/cache",
+        list_run_dates=listing, fetch_runs_windowed=downloads, widget_namespace="t",
+    )
+    assert len(warnings) == 1
+    assert "local cache" in warnings[0]
+    assert "No space left on device" in warnings[0]
