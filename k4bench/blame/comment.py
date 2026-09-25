@@ -91,6 +91,7 @@ from k4bench.blame.evidence import (
     outcomes_for_window,
     steps_in_window,
 )
+from k4bench.blame.github import FilePatch, diff_sample
 from k4bench.blame.history import MAX_COMMENT_ANALOGUES, HistoricalPR
 from k4bench.blame.models import (
     RANKING_DISCLOSURE,
@@ -99,6 +100,7 @@ from k4bench.blame.models import (
     CandidatePR,
     HistoricalRef,
 )
+from k4bench.blame.prompt import compact_dir, geometry_tree
 from k4bench.blame.reproduce import ReproducerFacts
 from k4bench.blame.reproduce import facts_from as reproducer_facts_from
 from k4bench.labels import compact_sample, pretty_platform
@@ -1630,6 +1632,11 @@ class CommentPlan:
     #: the cross-configuration review, so that both passes weigh the same
     #: material.
     historical: dict[tuple[str, int], HistoricalRef] = field(default_factory=dict)
+    #: The compact geometry files the rows' run groups load (see
+    #: :attr:`~k4bench.regression.models.RunGroupReport.geometry_path`), sorted.
+    #: Only :func:`select` can fill it, because only the report records them;
+    #: the review samples each diff with these directories first.
+    geometry_paths: tuple[str, ...] = ()
     selected: bool = False
 
     @property
@@ -1775,6 +1782,7 @@ def select(
         plan.report_night = report.report_night
         _collect_window(confirmed, plan)
         plan.outcomes = _outcomes_for(report, plan)
+        plan.geometry_paths = _geometry_paths_for(report, plan)
 
     ordered = sorted(plans, key=lambda p: (-p.top_score, p.repo, p.number))
     if len(ordered) > policy.max_comments:
@@ -1787,6 +1795,17 @@ def select(
             len(ordered), policy.max_comments, [p.target for p in ordered]
         )
     return ordered
+
+
+def _geometry_paths_for(report: NightlyReport, plan: CommentPlan) -> tuple[str, ...]:
+    """The compact files the run groups behind *plan*'s rows load, read off
+    the report the way the builder reads them for the first pass. Groups that
+    recorded none contribute nothing."""
+    scopes = plan.scopes
+    return tuple(sorted({
+        g.geometry_path for g in report.groups
+        if (g.detector, g.platform, g.sample) in scopes and g.geometry_path
+    }))
 
 
 def _confirmed_rows(report: NightlyReport) -> Iterator[tuple[MetricVerdict, str]]:
@@ -2139,6 +2158,13 @@ PatchFor = Callable[[str, int], str]
 #: whose prompts carry none.
 BodyFor = Callable[[str, int], str]
 
+#: And how it supplies one's per-file hunks — ``(repo, number) -> hunks``, empty
+#: when they could not be fetched — so the review can sample each diff with the
+#: rows' own geometry first (:func:`~k4bench.blame.github.diff_sample`). Optional
+#: like the others: without it, or with nothing returned, :data:`PatchFor`'s
+#: generic sample stands.
+FilesFor = Callable[[str, int], tuple[FilePatch, ...]]
+
 #: How a caller supplies one exact run's immutable metadata —
 #: ``(detector, platform, stack, sample, run_id) -> run_info``. Like the diff
 #: seams above it is injected so this module remains free of network I/O.
@@ -2157,6 +2183,7 @@ def build_comments(
     attributor: Attributor | None = None,
     patch_for: PatchFor | None = None,
     body_for: BodyFor | None = None,
+    files_for: FilesFor | None = None,
     run_info_for: RunInfoFor | None = None,
     reproducer_url_for: ReproducerUrlFor | None = None,
     dashboard_url: str | None = None,
@@ -2211,6 +2238,7 @@ def build_comments(
     for plan in plans:
         attribution, request = _review(
             plan, attributor=attributor, patch_for=patch_for, body_for=body_for,
+            files_for=files_for,
         )
         if attributor is not None and attribution is None:
             _log.warning(
@@ -2440,6 +2468,7 @@ def _review(
     attributor: Attributor | None,
     patch_for: PatchFor | None,
     body_for: BodyFor | None,
+    files_for: FilesFor | None = None,
 ) -> tuple[Attribution | None, AttributionRequest | None]:
     """One plan's cross-configuration review and the request it was made from.
 
@@ -2458,7 +2487,7 @@ def _review(
     fetch = patch_for or (lambda _repo, _number: "")
     body_fetch = body_for or (lambda _repo, _number: "")
     try:
-        request = _attribution_request(plan, fetch, body_fetch)
+        request = _attribution_request(plan, fetch, body_fetch, files_for)
     except Exception as exc:  # noqa: BLE001 — a diff fetch must not lose the comment
         _log.warning(
             "build_comments: %s — could not assemble the review request (%s); "
@@ -2554,15 +2583,33 @@ def _historical(
 
 
 def _attribution_request(
-    plan: CommentPlan, fetch: PatchFor, body_fetch: BodyFor
+    plan: CommentPlan,
+    fetch: PatchFor,
+    body_fetch: BodyFor,
+    files_fetch: FilesFor | None = None,
 ) -> AttributionRequest:
     """The whole window, as the reviewing model is shown it.
 
     The analogues are resolved *first*, before a single other fetch. They carry
     the only requirement here that can refuse the whole review, so a window that
     is going to be withheld should be withheld before it spends a round trip on
-    a diff nobody will read."""
+    a diff nobody will read.
+
+    The subject's and the competitors' diffs are sampled with the compact
+    directories of every row's run group first, then their geometry trees
+    (:func:`~k4bench.blame.github.diff_sample`), when *files_fetch* can supply
+    the hunks; otherwise *fetch*'s generic sample stands. The analogues keep the
+    generic sample: they are the first pass's evidence, read as it read them."""
     historical = _historical(plan, fetch, body_fetch)
+    own_dirs = tuple(sorted({compact_dir(p) for p in plan.geometry_paths} - {""}))
+    trees = tuple(sorted({geometry_tree(p) for p in plan.geometry_paths} - {""}))
+
+    def sampled(repo: str, number: int) -> str:
+        files = files_fetch(repo, number) if files_fetch is not None else ()
+        if not files:
+            return fetch(repo, number)
+        return diff_sample(files, own_dirs=own_dirs, trees=trees)
+
     return AttributionRequest(
         repo=plan.repo,
         number=plan.number,
@@ -2570,14 +2617,14 @@ def _attribution_request(
         base_release=plan.base_release,
         onset_release=plan.onset_release,
         files=plan.subject.files,
-        patch=fetch(plan.repo, plan.number),
+        patch=sampled(plan.repo, plan.number),
         body=body_fetch(plan.repo, plan.number),
         additions=plan.subject.additions,
         deletions=plan.subject.deletions,
         regressions=tuple(_fact(row) for row in plan.rows),
         outcomes=plan.outcomes,
         competitors=tuple(
-            _competitor(other, scope, fetch, body_fetch)
+            _competitor(other, scope, sampled, body_fetch)
             # Cut the field to what the prompt can actually carry *before*
             # fetching anything: the prompt keeps the strongest
             # `MAX_COMPETITORS` in this same order, so a window with a hundred

@@ -26,7 +26,8 @@ import math
 import statistics
 import textwrap
 
-from k4bench.blame.evidence import MetricHistory, ScopeOutcome
+from k4bench.blame.evidence import HostReading, MetricHistory, ScopeOutcome
+from k4bench.blame.github import path_under
 from k4bench.blame.history import (
     MAX_BOUNDARIES,
     MAX_DIFF_CHARS,
@@ -380,14 +381,59 @@ def _history_readings(history: MetricHistory) -> list[str]:
         lines.append(
             f"    The benchmark host changed exactly at the onset release: "
             f"{_host(previous)} -> {_host(now)}. A different machine can move a "
-            f"timing or memory metric on its own, independently of any code."
+            f"measurement on its own, independently of any code."
         )
+        seen = history.new_host_seen_at_old_level
+        if seen is not None:
+            host, release = seen
+            lines.append(
+                f"    But {_host_list((host,))} had already measured this series "
+                f"at its old level in release {release}, so that machine on its "
+                f"own does not produce the new level."
+            )
+    lines += _host_reading_lines(history.host_reading)
     return lines
+
+
+def _host_reading_lines(reading: HostReading | None) -> list[str]:
+    """The sentence each machine-level reading renders as, naming its machines."""
+    if reading is None:
+        return []
+    if reading.kind == "reproduced":
+        return [
+            f"    {_host_list(reading.moved)} measured both the release before "
+            f"the onset and the onset release, and moved with the step: "
+            f"switching machines does not explain it."
+        ]
+    if reading.kind == "confined":
+        return [
+            f"    {_host_list(reading.stayed)} measured both the release before "
+            f"the onset and the onset release, and stayed at the old level; the "
+            f"new level came only from {_host_list(reading.at_new)}; a machine "
+            f"effect is a live explanation."
+        ]
+    return [
+        f"    At the onset release {_host_list(reading.at_new)} measured the new "
+        f"level and {_host_list(reading.at_old)} the old one: identical software "
+        f"gave both levels; the host evidence is inconclusive."
+    ]
 
 
 def _host(host) -> str:
     cores = f", {host.cpu_cores} cores" if host.cpu_cores else ""
     return f"{host.name or 'unnamed host'}{cores}"
+
+
+def _host_list(hosts) -> str:
+    """``"fcc-ironic-01 (64 cores) and fcc-ironic-03 (64 cores)"``."""
+    names = [
+        f"{host.name or 'unnamed host'}"
+        + (f" ({host.cpu_cores} cores)" if host.cpu_cores else "")
+        for host in hosts
+    ]
+    if len(names) <= 1:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
 
 
 def history_block(history: MetricHistory | None, *, title: str = "") -> list[str]:
@@ -441,7 +487,20 @@ def history_clause(history: MetricHistory | None) -> str:
         )
     if history.host_change_at_onset is not None:
         bits.append("benchmark host changed at onset")
+        if history.new_host_seen_at_old_level is not None:
+            bits.append("new host had measured the old level before")
+    reading = history.host_reading
+    if reading is not None:
+        bits.append(_HOST_READING_CLAUSE[reading.kind])
     return "; ".join(bits)
+
+
+#: :func:`history_clause`'s words for each :class:`HostReading` kind.
+_HOST_READING_CLAUSE = {
+    "reproduced": "a host measuring both sides moved with the step",
+    "confined": "new level only on newly added host(s)",
+    "mixed": "hosts disagreed at onset (inconclusive)",
+}
 
 
 def region_lines(deltas: tuple[RegionDelta, ...]) -> list[str]:
@@ -582,7 +641,23 @@ def geometry_tree(xml_path: str) -> str:
     return "/".join(parts[:2]) + "/" if len(parts) >= 3 else ""
 
 
-def geometry_reach(files: tuple[str, ...], tree: str) -> str:
+def compact_dir(xml_path: str) -> str:
+    """The directory a run's compact file sits in —
+    ``FCCee/ALLEGRO/compact/ALLEGRO_o2_v01/ALLEGRO_o2_v01.xml`` →
+    ``FCCee/ALLEGRO/compact/ALLEGRO_o2_v01/``.
+
+    Narrower than :func:`geometry_tree` on purpose: the tree holds every variant
+    of a detector, while this directory holds the one the run loads — its
+    dimensions file above all. Empty when :func:`geometry_tree` is."""
+    parts = [p for p in (xml_path or "").split("/") if p]
+    return "/".join(parts[:-1]) + "/" if len(parts) >= 3 else ""
+
+
+#: Own-directory file names listed on the reach line before the rest are counted.
+_MAX_OWN_DIR_FILES_LISTED = 6
+
+
+def geometry_reach(files: tuple[str, ...], tree: str, own_dir: str = "") -> str:
     """One line on how much of a candidate's change lands in the geometry this
     run actually loads, or nothing at all.
 
@@ -592,16 +667,29 @@ def geometry_reach(files: tuple[str, ...], tree: str) -> str:
     material table that every detector loads without touching one detector's
     directory. Printing "touches nothing of this detector" would invite the model
     to acquit on a fact that does not mean that, which is a worse error than
-    saying nothing."""
+    saying nothing. The same holds one level down: the files in *own_dir*, the
+    compact directory this run loads, are named when there are any and the line
+    is silent about them otherwise."""
     if not tree:
         return ""
-    hits = [f for f in files if f.startswith(tree)]
+    hits = [f for f in files if path_under(f, tree)]
     if not hits:
         return ""
-    return (
+    line = (
         f"  reaches this run's geometry: {len(hits)} of {len(files)} changed "
         f"file(s) are under {tree}, which this detector loads"
     )
+    own = [f for f in files if path_under(f, own_dir)]
+    if own:
+        prefix = own_dir.rstrip("/") + "/"
+        names = format_files(
+            tuple(f.removeprefix(prefix) for f in own), _MAX_OWN_DIR_FILES_LISTED
+        )
+        line += (
+            f"; {len(own)} of them are in this run's own compact directory "
+            f"{prefix} ({names})"
+        )
+    return line
 
 
 def format_files(files: tuple[str, ...], limit: int) -> str:
@@ -676,6 +764,40 @@ def allocate_diff_budget(needs: list[int], total: int) -> list[int]:
             break  # everyone consumed a full share; nothing left to rebalance
         active = [i for i in active if i not in satisfied]
     return alloc
+
+
+#: What a candidate touching the run's own compact directory asks for first
+#: (:func:`allocate_favoured_diff_budget`): enough for a whole dimensions-file
+#: hunk, which is where one changed constant rebuilds a subdetector.
+FAVOURED_DIFF_REQUEST = 8000
+
+
+def allocate_favoured_diff_budget(
+    needs: list[int], favoured: list[bool], total: int
+) -> list[int]:
+    """:func:`allocate_diff_budget`, with the *favoured* items served first.
+
+    Two waterfills over the same *total*. First each favoured item asks for
+    ``min(need, FAVOURED_DIFF_REQUEST)`` out of a pool of half the total, so a
+    window with many favoured items still leaves the other half to everyone
+    else. Then **every** item — the favoured ones too, for what they still need —
+    shares whatever is left. Leaving the favoured out of the second round would
+    cap them at the request even in a quiet window where every diff fits whole.
+
+    Nothing is favoured: exactly :func:`allocate_diff_budget`. Everything fits:
+    everyone gets their whole diff, as there. In every case no item gets more
+    than it needs and the sum never exceeds *total*."""
+    first = allocate_diff_budget(
+        [
+            min(need, FAVOURED_DIFF_REQUEST) if favour else 0
+            for need, favour in zip(needs, favoured)
+        ],
+        total // 2,
+    )
+    second = allocate_diff_budget(
+        [need - got for need, got in zip(needs, first)], total - sum(first)
+    )
+    return [a + b for a, b in zip(first, second)]
 
 
 _BEGIN_DIFF = "----- BEGIN DIFF -----"

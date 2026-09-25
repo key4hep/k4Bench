@@ -11,7 +11,13 @@ import yaml
 from k4bench.blame import builder as builder_mod
 from k4bench.blame.builder import build_blame_report
 from k4bench.blame.comment import CommentPolicy
-from k4bench.blame.github import GitHubClient, RateLimitError, RepoResolution
+from k4bench.blame.github import (
+    FilePatch,
+    GitHubClient,
+    RateLimitError,
+    RepoResolution,
+    diff_sample,
+)
 from k4bench.blame.models import CandidatePR, StepAssessment
 from k4bench.blame.rank import Ranking, RankResult
 from k4bench.blame.rank import StepAssessment as RankStepAssessment
@@ -397,6 +403,62 @@ def test_rank_request_carries_every_metric_sharing_the_window(monkeypatch):
         report, packages_for_release=_MOVED, github=GitHubClient(), ranker=ranker,
     )
     assert [m.metric for m in ranker.requests[0].metrics] == ["wall_time_s", "peak_rss_mb"]
+
+
+def test_rank_request_samples_the_runs_own_compact_directory_first(monkeypatch):
+    # Alphabetically, CMakeLists and the other ALLEGRO variants spend the
+    # generic sample before the directory this run loads is reached at all.
+    own = "FCCee/ALLEGRO/compact/ALLEGRO_o1_v03/"
+    hunks = (
+        FilePatch("CMakeLists.txt", "%" * 4000),
+        FilePatch("FCCee/ALLEGRO/compact/ALLEGRO_o1_v01/DectDimensions.xml", "!" * 4000),
+        FilePatch("FCCee/ALLEGRO/compact/ALLEGRO_o1_v02/DectDimensions.xml", "!" * 4000),
+        FilePatch("FCCee/CLD/compact/CLD_o2_v07/x.xml", "@" * 4000),
+        FilePatch(own + "DectDimensions.xml", "+ SiWr_nLayers 1"),
+    )
+
+    def fake_resolve(client, slug, base, head):
+        return RepoResolution(
+            candidates=[
+                CandidatePR(repo=slug, number=10, title="t10", author="a", url="u10",
+                            files=tuple(h.path for h in hunks)),
+                CandidatePR(repo=slug, number=11, title="t11", author="a", url="u11"),
+            ],
+            patches={10: diff_sample(hunks), 11: "diff for 11"},
+            files={10: hunks},
+        )
+    _stub_resolve(monkeypatch, fake_resolve)
+    report = _report([_verdict()])
+    report.groups[0].geometry_path = own + "ALLEGRO_o1_v03.xml"
+    ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
+    build_blame_report(
+        report, packages_for_release=_MOVED, github=GitHubClient(), ranker=ranker,
+    )
+    subject, other = ranker.requests[0].candidates
+    assert "SiWr_nLayers" not in diff_sample(hunks)
+    headers = [line for line in subject.patch.splitlines() if line.startswith("--- ")]
+    assert headers == [
+        f"--- {own}DectDimensions.xml ---",
+        "--- FCCee/ALLEGRO/compact/ALLEGRO_o1_v01/DectDimensions.xml ---",
+        "--- FCCee/ALLEGRO/compact/ALLEGRO_o1_v02/DectDimensions.xml ---",
+        "--- CMakeLists.txt ---",
+    ]
+    # Without per-file hunks the generic sample stands.
+    assert other.patch == "diff for 11"
+
+
+def test_a_run_without_a_geometry_path_keeps_the_generic_sample(monkeypatch):
+    hunks = (FilePatch("b.cpp", "+b"), FilePatch("a.cpp", "+a"))
+    _stub_resolve(monkeypatch, lambda client, slug, base, head: RepoResolution(
+        candidates=[CandidatePR(repo=slug, number=10, title="t", author="a", url="u")],
+        patches={10: diff_sample(hunks)}, files={10: hunks},
+    ))
+    ranker = _FakeRanker({})
+    build_blame_report(
+        _report([_verdict()]), packages_for_release=_MOVED, github=GitHubClient(),
+        ranker=ranker,
+    )
+    assert ranker.requests[0].candidates[0].patch == diff_sample(hunks)
 
 
 def test_different_detectors_sharing_a_release_boundary_are_not_batched(monkeypatch):

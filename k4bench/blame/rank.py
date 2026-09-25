@@ -49,6 +49,7 @@ from k4bench.blame.history import (
     HistoricalRequestError,
     parse_request,
 )
+from k4bench.blame.github import path_under
 from k4bench.blame.llm import (
     MAX_OUTPUT_TOKENS,
     ChatClient,
@@ -66,8 +67,9 @@ from k4bench.blame.prompt import (
     NOISE_RULE,
     SCORE_BAND_RULE,
     UNTRUSTED_EVIDENCE_RULE,
-    allocate_diff_budget,
+    allocate_favoured_diff_budget,
     body_block,
+    compact_dir,
     diff_block,
     direction_phrase,
     format_files,
@@ -326,9 +328,11 @@ _SYSTEM_PROMPT = (
 #: Total *diff* budget (chars) across all candidates. Per-PR patches are
 #: already bounded in :mod:`k4bench.blame.github`; this is the backstop that
 #: keeps a wide window (many PRs) inside a small-context model by waterfilling
-#: the budget — every oversized diff shrinks evenly (see
-#: :func:`_allocate_diff_budget`), and file paths and titles always survive, so
-#: every PR is still scored, at worst from metadata.
+#: the budget — every oversized diff shrinks evenly, after the candidates
+#: touching the run's own compact directory are served first (see
+#: :func:`~k4bench.blame.prompt.allocate_favoured_diff_budget`), and file paths
+#: and titles always survive, so every PR is still scored, at worst from
+#: metadata.
 _MAX_PROMPT_CHARS = 45000
 _MAX_FILES_LISTED = 12
 _MAX_DESCRIPTION_CHARS = 200
@@ -734,7 +738,7 @@ def _run_context_lines(request: RankRequest) -> str:
 
 
 def _render_candidate(
-    candidate: RankCandidate, diff_budget: int, geometry: str = ""
+    candidate: RankCandidate, diff_budget: int, geometry: str = "", own_dir: str = ""
 ) -> str:
     """One PR's prompt block.
 
@@ -749,7 +753,7 @@ def _render_candidate(
         # lands in the geometry tree this detector actually loads. The model
         # would otherwise infer it from path names, which is where a
         # plausible-sounding wrong answer comes from.
-        reach = geometry_reach(candidate.files, geometry)
+        reach = geometry_reach(candidate.files, geometry, own_dir)
         if reach:
             lines.append(reach)
     lines += body_block(candidate.body, _MAX_BODY_CHARS)
@@ -811,8 +815,14 @@ def _build_user_prompt(
         "",
         "Candidate pull requests, grouped by package — score each on its own:",
     ]
-    budgets = allocate_diff_budget(
-        [len(c.patch) for c in request.candidates], _MAX_PROMPT_CHARS
+    # A candidate touching the compact directory this run loads is served
+    # first: its diff sample leads with that directory's hunks, and an even
+    # share on a wide window cuts them off before the line that matters.
+    own_dir = compact_dir(request.geometry_tree)
+    budgets = allocate_favoured_diff_budget(
+        [len(c.patch) for c in request.candidates],
+        [any(path_under(f, own_dir) for f in c.files) for c in request.candidates],
+        _MAX_PROMPT_CHARS,
     )
     budget_for = dict(zip(request.candidates, budgets))
 
@@ -827,7 +837,8 @@ def _build_user_prompt(
             parts.append(HARNESS_PACKAGE_NOTE)
         for candidate in candidates:
             parts.append(_render_candidate(
-                candidate, budget_for[candidate], geometry_tree(request.geometry_tree)
+                candidate, budget_for[candidate],
+                geometry_tree(request.geometry_tree), own_dir,
             ))
 
     # After the candidates, so the current window is read first and the older

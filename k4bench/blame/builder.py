@@ -47,6 +47,7 @@ from k4bench.blame.github import (
     PRText,
     RateLimitError,
     RepoResolution,
+    diff_sample,
     low_signal_path,
     resolve_repo_prs,
 )
@@ -67,7 +68,7 @@ from k4bench.blame.models import (
     StepAssessment,
     rank_group_key,
 )
-from k4bench.blame.prompt import HARNESS_PACKAGE
+from k4bench.blame.prompt import HARNESS_PACKAGE, compact_dir, geometry_tree
 from k4bench.blame.rank import (
     MetricStep,
     RankCandidate,
@@ -500,6 +501,7 @@ def build_blame_report(
                 texts[(pr.repo, pr.number)] = PRText(
                     patch=resolution.patches.get(pr.number, ""),
                     body=resolution.bodies.get(pr.number, ""),
+                    files=resolution.files.get(pr.number, ()),
                 )
 
         assessment: StepAssessment | None = None
@@ -1029,7 +1031,13 @@ def _rank_request(
 
     A verdict from a report written before histories were recorded simply
     carries none, and the prompt renders without that block — the ranking path
-    must not depend on a field a historical backfill cannot supply."""
+    must not depend on a field a historical backfill cannot supply.
+
+    Each candidate's diff sample reads this run's own compact directory first,
+    then its geometry tree (:func:`~k4bench.blame.github.diff_sample`): a pull
+    request touching several detector variants would otherwise spend its sample
+    on whichever sort first, and the variant this run loads could be missing
+    from it. Without per-file hunks, the generic sample stands."""
     v = verdicts[0]
     metrics = tuple(
         MetricStep(
@@ -1044,11 +1052,19 @@ def _rank_request(
         )
         for m in verdicts
     )
+    own_dirs = (compact_dir(geometry_path),)
+    trees = (geometry_tree(geometry_path),)
+
+    def patch(text: PRText) -> str:
+        if not text.files:
+            return text.patch
+        return diff_sample(text.files, own_dirs=own_dirs, trees=trees)
+
     candidates = tuple(
         RankCandidate(
             repo=pr.repo, number=pr.number, title=pr.title,
             files=pr.files,
-            patch=texts.get((pr.repo, pr.number), PRText()).patch,
+            patch=patch(texts.get((pr.repo, pr.number), PRText())),
             body=texts.get((pr.repo, pr.number), PRText()).body,
             additions=pr.additions, deletions=pr.deletions,
         )

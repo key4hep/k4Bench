@@ -17,6 +17,7 @@ import pytest
 
 from k4bench.blame.evidence import (
     HistoryPoint,
+    HostReading,
     MetricHistory,
     history_from_verdict,
     outcomes_for_window,
@@ -26,6 +27,7 @@ from k4bench.blame.prompt import history_block
 from k4bench.regression.models import (
     Direction,
     HostFact,
+    HostLevel,
     MetricVerdict,
     NightlyReport,
     ReleasePoint,
@@ -38,11 +40,17 @@ _PLAT = "x86_64-almalinux9-gcc14.2.0-opt"
 
 
 def _point(release, value, *, judged=True, severity="OK", packages=None,
-           hosts=()) -> HistoryPoint:
+           hosts=(), levels=None) -> HistoryPoint:
+    """*levels* maps a host to its own level; its hosts become the point's."""
+    if levels is not None:
+        hosts = tuple(levels)
     return HistoryPoint(
         release=release, value=value, n_runs=1, n_judged=1 if judged else 0,
         severity=severity, direction="NONE", hosts=hosts,
         packages_changed=packages,
+        host_levels=tuple(
+            HostLevel(host, level) for host, level in (levels or {}).items()
+        ),
     )
 
 
@@ -173,6 +181,139 @@ def test_rotating_container_ids_do_not_claim_the_host_changed():
     assert changed_hardware.host_change_at_onset == (
         old, HostFact("2034eae0e208", 128),
     )
+
+
+# ── What each machine measured ────────────────────────────────────────────────
+#
+# Numbers from the 09-25 ALLEGRO_o2_v01 VmPeak step: the baseline sat at 6620 MB
+# on fcc-ironic-01, and the onset release measured 5850 MB on both fcc-ironic-03
+# and fcc-ironic-01.
+
+_IRONIC01 = HostFact("fcc-ironic-01", 64)
+_IRONIC02 = HostFact("fcc-ironic-02", 64)
+_IRONIC03 = HostFact("fcc-ironic-03", 64)
+
+
+def _step(previous: dict, onset: dict, *, onset_value=5850.0, earlier=None):
+    """A two-release window, 09-23 -> 09-24, with the given per-host levels.
+    *earlier* adds a 09-10 release before it."""
+    points = []
+    if earlier is not None:
+        points.append(_point("2026-09-10", 6620.0, levels=earlier))
+    points += [
+        _point("2026-09-23", 6620.0, levels=previous),
+        _point("2026-09-24", onset_value, severity="CONFIRMED", levels=onset),
+    ]
+    return _history(points, base="2026-09-23", onset="2026-09-24", median=6620.0, mad=6.0)
+
+
+def test_a_machine_that_measured_both_releases_is_not_a_host_change():
+    # The 09-25 incident: the onset added fcc-ironic-03 beside fcc-ironic-01,
+    # and the old set comparison reported "01 -> 03" although 01 measured the
+    # new level too.
+    history = _step(
+        {_IRONIC01: 6620.0}, {_IRONIC03: 5850.0, _IRONIC01: 5850.0},
+    )
+    assert history.host_change_at_onset is None
+    assert history.host_reading == HostReading(
+        kind="reproduced", moved=(_IRONIC01,), at_new=(_IRONIC03, _IRONIC01),
+    )
+
+
+def test_a_step_only_a_new_machine_measured_is_confined_to_it():
+    history = _step(
+        {_IRONIC01: 6620.0}, {_IRONIC01: 6618.0, _IRONIC03: 5850.0},
+    )
+    assert history.host_change_at_onset is None
+    assert history.host_reading == HostReading(
+        kind="confined", stayed=(_IRONIC01,), at_new=(_IRONIC03,),
+        at_old=(_IRONIC01,),
+    )
+
+
+def test_a_new_machine_still_at_the_old_level_makes_the_reading_mixed():
+    # fcc-ironic-01 moved, but fcc-ironic-03 measured the same software at the
+    # old level: that is evidence against "reproduced", common host or not.
+    history = _step(
+        {_IRONIC01: 6620.0}, {_IRONIC01: 5850.0, _IRONIC03: 6615.0},
+    )
+    reading = history.host_reading
+    assert reading.kind == "mixed"
+    assert (reading.at_new, reading.at_old) == ((_IRONIC01,), (_IRONIC03,))
+
+
+def test_one_common_machine_moving_and_one_staying_is_mixed():
+    history = _step(
+        {_IRONIC01: 6620.0, _IRONIC02: 6622.0},
+        {_IRONIC01: 6619.0, _IRONIC02: 5850.0},
+    )
+    reading = history.host_reading
+    assert reading.kind == "mixed"
+    assert (reading.moved, reading.stayed) == ((_IRONIC02,), (_IRONIC01,))
+
+
+def test_a_level_exactly_halfway_is_undecided_and_the_reading_unknown():
+    # Step 12 -> 14: 13.0 is exactly half the step from both levels.
+    history = _history([
+        _point("2026-07-14", 12.0, levels={_IRONIC01: 12.0}),
+        _point("2026-07-18", 14.0, severity="CONFIRMED",
+               levels={_IRONIC01: 14.0, _IRONIC03: 13.0}),
+    ])
+    assert history._level_side(13.0) is None
+    assert history._level_side(13.01) == "new"
+    assert history._level_side(12.99) == "old"
+    assert history.host_reading is None
+
+
+def test_a_disjoint_change_of_machine_is_still_claimed_without_a_reading():
+    history = _step({_IRONIC01: 6620.0}, {_IRONIC03: 5850.0})
+    assert history.host_change_at_onset == (_IRONIC01, _IRONIC03)
+    assert history.host_reading is None
+    assert history.new_host_seen_at_old_level is None
+
+
+def test_a_new_machine_that_measured_the_old_level_before_is_counter_evidence():
+    history = _step(
+        {_IRONIC01: 6620.0}, {_IRONIC03: 5850.0}, earlier={_IRONIC03: 6617.0},
+    )
+    assert history.host_change_at_onset == (_IRONIC01, _IRONIC03)
+    assert history.new_host_seen_at_old_level == (_IRONIC03, "2026-09-10")
+
+
+def test_the_counter_evidence_needs_a_host_change_to_answer():
+    history = _step(
+        {_IRONIC01: 6620.0}, {_IRONIC01: 5850.0, _IRONIC03: 5850.0},
+        earlier={_IRONIC03: 6617.0},
+    )
+    assert history.host_change_at_onset is None
+    assert history.new_host_seen_at_old_level is None
+
+
+def test_an_old_report_with_overlapping_hosts_gives_no_reading_at_all():
+    # Reports written before per-host levels existed: the overlap no longer
+    # claims a change, and nothing is claimed in its place.
+    history = _history([
+        _point("2026-07-14", 12.0, hosts=(_IRONIC01,)),
+        _point("2026-07-18", 14.5, severity="CONFIRMED", hosts=(_IRONIC03, _IRONIC01)),
+    ])
+    assert history.host_change_at_onset is None
+    assert history.host_reading is None
+
+
+def test_rotating_container_ids_give_no_reading_either():
+    old, new = HostFact("de6b89cdaf2a", 64), HostFact("2034eae0e208", 64)
+    history = _step({old: 6620.0}, {new: 5850.0})
+    assert history.host_change_at_onset is None
+    assert history.host_reading is None
+
+
+def test_per_host_levels_reach_the_blame_view_from_a_verdict():
+    level = HostLevel(_IRONIC01, 5850.0)
+    verdict = _verdict(history=(
+        ReleasePoint("2026-07-18", 5850.0, 1, 1, Severity.CONFIRMED, Direction.DOWN,
+                     (_IRONIC01,), host_levels=(level,)),
+    ))
+    assert history_from_verdict(verdict).points[0].host_levels == (level,)
 
 
 # ── Building the view from a verdict ──────────────────────────────────────────

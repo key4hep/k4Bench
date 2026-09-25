@@ -123,6 +123,24 @@ class HostFact:
     cpu_cores: int | None = None
 
 
+@dataclass(frozen=True)
+class HostLevel:
+    """What one machine measured for a release: the median of its nights.
+
+    A release measured on two machines has one level but can hide two, and
+    "the step appeared when the fleet changed" is only a claim about the fleet if
+    the machine that measured both sides moved too. Keeping each machine's own
+    level is what lets a reader tell a step one host reproduced from one only a
+    newly added host produced.
+
+    ``value`` is never ``None``: a machine with no finite level for the release
+    is simply not listed, so "no measurement" has one representation.
+    """
+
+    host: HostFact
+    value: float
+
+
 #: The shape of the container nodenames written into legacy reports: 12 or 64
 #: lowercase hexadecimal characters, the short and long forms Docker and Podman
 #: use. Shape alone cannot identify a container — these are also valid, if very
@@ -191,7 +209,9 @@ class ReleasePoint:
 
     ``hosts`` names the machines that produced the release's nights (see
     :class:`HostFact`) — normally one, and more only when a release was measured
-    on several.
+    on several. ``host_levels`` is each of those machines' own level, chosen by
+    the same judged-first rule as ``value`` and listed in ``hosts`` order; it is
+    empty on reports written before it existed.
     """
 
     run_date: str
@@ -205,6 +225,7 @@ class ReleasePoint:
     #: — a series continuing a replaced platform's history (see
     #: :mod:`k4bench.regression.lineage`). ``None`` means the verdict's platform.
     platform: str | None = None
+    host_levels: tuple[HostLevel, ...] = ()
 
 
 @dataclass(frozen=True)

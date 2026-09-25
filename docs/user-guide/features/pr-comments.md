@@ -129,7 +129,8 @@ Three rules bound it:
 - **The step itself is judged first.** Both passes are shown each metric's own
   recent history — its release-by-release level, how much it moves across
   boundaries where *no tracked package changed at all*, whether the new level
-  held afterwards, whether the benchmark host changed at the onset, and where
+  held afterwards, whether the benchmark host changed at the onset (and, when a
+  machine measured both sides, whether it moved with the step), and where
   inside the detector the time went — and both are asked for a `step_assessment`
   before scoring anyone. Without a place to say "this movement is most likely
   noise", a model asked only to rank candidates can express that solely by

@@ -30,6 +30,7 @@ from k4bench.labels import pretty_platform, pretty_sample
 from k4bench.regression.models import (
     Direction,
     HostFact,
+    HostLevel,
     MetricVerdict,
     NightlyReport,
     RegionDelta,
@@ -347,6 +348,29 @@ def _hosts(raw: object) -> tuple[HostFact, ...]:
     return tuple(hosts)
 
 
+def _host_levels(raw: object) -> tuple[HostLevel, ...]:
+    """Each machine's own level for one release, rebuilt from JSON.
+
+    Read with the same tolerance as :func:`_hosts`: an entry whose host or value
+    cannot be read is dropped, and a missing key — every report written before
+    the field existed — reads as no per-machine levels at all, which the
+    evidence reader treats as "unknown", never as agreement."""
+    if not isinstance(raw, list):
+        return ()
+    levels = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        host = _hosts([item.get("host")])
+        try:
+            value = float(item["value"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if host and math.isfinite(value):
+            levels.append(HostLevel(host=host[0], value=value))
+    return tuple(levels)
+
+
 def _history(raw: object) -> tuple[ReleasePoint, ...]:
     """A verdict's release history, rebuilt from JSON.
 
@@ -373,6 +397,7 @@ def _history(raw: object) -> tuple[ReleasePoint, ...]:
                 direction=Direction(item.get("direction", Direction.NONE.value)),
                 hosts=_hosts(item.get("hosts")),
                 platform=str(item["platform"]) if item.get("platform") else None,
+                host_levels=_host_levels(item.get("host_levels")),
             ))
         except (TypeError, ValueError):
             continue

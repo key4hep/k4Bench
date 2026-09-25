@@ -262,16 +262,20 @@ of up to twelve *releases* (never nights — nights sharing a release are repeat
 measurements of one software state), oldest first, ending at the release that
 verdict judged. Each point records the release date, its level, how many nights
 it aggregates and how many of those the detector could actually judge, the
-severity and direction it was flagged with, and the machine(s) that ran it:
+severity and direction it was flagged with, the machine(s) that ran it, and each
+machine's own level:
 
 ```json
 "history": [
   {"run_date": "2026-07-03", "value": 100.2, "n_runs": 2, "n_judged": 2,
    "severity": "OK", "direction": "NONE",
    "hosts": [{"name": "bench01", "cpu_cores": 64}]},
-  {"run_date": "2026-07-04", "value": 120.4, "n_runs": 1, "n_judged": 1,
+  {"run_date": "2026-07-04", "value": 120.4, "n_runs": 2, "n_judged": 2,
    "severity": "CONFIRMED", "direction": "UP",
-   "hosts": [{"name": "bench01", "cpu_cores": 64}]}
+   "hosts": [{"name": "bench02", "cpu_cores": 64}, {"name": "bench01", "cpu_cores": 64}],
+   "host_levels": [
+     {"host": {"name": "bench02", "cpu_cores": 64}, "value": 120.3},
+     {"host": {"name": "bench01", "cpu_cores": 64}, "value": 120.5}]}
 ],
 "region_deltas": [
   {"region": "HCAL_barrel", "base": 0.31, "onset": 4.52, "delta": 4.21},
@@ -283,6 +287,13 @@ severity and direction it was flagged with, and the machine(s) that ran it:
 host, or a series still warming up — so its level must not be read as a flat
 night. A release that recorded nothing at all is simply absent: a gap is a gap,
 never a zero.
+
+`host_levels` is the median each machine measured for the release, by the same
+rule as `value`: when any night was judged, only judged nights count, so a
+machine whose nights were all unjudged has no entry. It is what lets attribution
+tell a step that a machine measuring both sides reproduced (above, bench01) from
+one only a newly added machine measured. Points written before the field existed
+carry none, and readers treat that as "unknown".
 
 The field exists for attribution. A step is only evidence that something changed
 if the series it came out of does not move that much by itself, and one number
@@ -422,7 +433,9 @@ The ranking stage is a **language model** that reads the metric that moved, its
 recent release-by-release history, where inside the detector the time went, the
 configurations that measured the same window without moving, how much of the
 tracked stack stood still, and each candidate PR's own description and code diff
-(descriptions and diffs both arrive fenced as untrusted data). It is
+(descriptions and diffs both arrive fenced as untrusted data). A diff is sampled
+with the run's own compact directory first, then its detector's geometry tree,
+and a candidate touching that directory is served its diff budget first. It is
 configured entirely by environment —
 `K4BENCH_LLM_URL`, `K4BENCH_LLM_MODEL`, `K4BENCH_LLM_API_KEY` and optional
 `K4BENCH_LLM_MAX_TOKENS` (any OpenAI-compatible `/chat/completions` endpoint;

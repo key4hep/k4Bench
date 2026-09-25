@@ -14,6 +14,7 @@ underneath it belongs to :mod:`k4bench.blame.llm` and is tested in
 from __future__ import annotations
 
 import dataclasses
+import random
 
 from types import SimpleNamespace
 
@@ -309,6 +310,64 @@ def test_allocate_diff_budget_waterfills():
     assert prompt_mod.allocate_diff_budget([10, 20], 100) == [10, 20]  # all fits
     assert prompt_mod.allocate_diff_budget([], 100) == []
     assert prompt_mod.allocate_diff_budget([50, 50], 0) == [0, 0]
+
+
+def test_the_favoured_budget_keeps_the_waterfills_guarantees():
+    rng = random.Random(20260925)
+    sizes = [0, 1, 50, 2000, 7999, 8000, 8001, 12014, 30000]
+    for _ in range(5000):
+        count = rng.randint(0, 25)
+        needs = [rng.choice(sizes) for _ in range(count)]
+        favoured = [rng.random() < 0.25 for _ in range(count)]
+        total = rng.choice([0, 7, 1000, 20000, 45000])
+        got = prompt_mod.allocate_favoured_diff_budget(needs, favoured, total)
+        even = prompt_mod.allocate_diff_budget(needs, total)
+        assert sum(got) <= total
+        assert all(0 <= share <= need for share, need in zip(got, needs))
+        # Favouring only ever costs the others: their clip stays a prefix of
+        # the one they would have had.
+        assert all(g <= e for g, e, f in zip(got, even, favoured) if not f)
+        if not any(favoured):
+            assert got == even
+        if sum(needs) <= total:
+            assert got == needs
+
+
+def test_many_favoured_candidates_share_half_the_budget_first():
+    # Four favoured asking 8000 each split the 22500 pool (5625 each), and then
+    # share the other half evenly with seventeen others (1071 each).
+    needs = [12014] * 4 + [12000] * 17
+    got = prompt_mod.allocate_favoured_diff_budget(needs, [True] * 4 + [False] * 17, 45000)
+    assert got == [5625 + 1071] * 4 + [1071] * 17
+
+
+def test_one_favoured_candidate_gets_its_request_before_the_even_share():
+    needs = [12014] + [12000] * 20
+    got = prompt_mod.allocate_favoured_diff_budget(needs, [True] + [False] * 20, 45000)
+    assert got[0] == prompt_mod.FAVOURED_DIFF_REQUEST + got[1]
+    assert set(got[1:]) == {(45000 - prompt_mod.FAVOURED_DIFF_REQUEST) // 21}
+
+
+def test_a_candidate_in_the_runs_own_compact_directory_is_served_first(monkeypatch):
+    monkeypatch.setattr(rank_mod, "_MAX_PROMPT_CHARS", 2000)
+    monkeypatch.setattr(prompt_mod, "FAVOURED_DIFF_REQUEST", 800)
+    own = "FCCee/ALLEGRO/compact/ALLEGRO_o2_v01/"
+    request = dataclasses.replace(
+        _request(candidates=(
+            RankCandidate(repo="key4hep/k4geo", number=1, title="other",
+                          files=("src/a.cpp",), patch="~" * 3000),
+            RankCandidate(repo="key4hep/k4geo", number=2, title="own",
+                          files=(own + "DectDimensions.xml",), patch="^" * 3000),
+            RankCandidate(repo="key4hep/k4geo", number=3, title="sibling",
+                          files=("FCCee/IDEA/compact/IDEA_o2_v01_CI/x.xml",),
+                          patch="=" * 3000),
+        )),
+        geometry_tree=own + "ALLEGRO_o2_v01.xml",
+    )
+    prompt = _build_user_prompt(request)
+    # 800 first, then a third of the remaining 1200 each.
+    assert prompt.count("^") == 800 + 400
+    assert prompt.count("~") == prompt.count("=") == 400
 
 
 # ── Parsing a good response ───────────────────────────────────────────────────
@@ -748,6 +807,26 @@ def test_a_candidate_touching_the_run_s_geometry_says_so():
     )
     prompt = rank_mod._build_user_prompt(request)
     assert "reaches this run's geometry: 1 of 2 changed file(s)" in prompt
+    assert "own compact directory" not in prompt
+
+
+def test_the_reach_line_names_the_files_in_the_runs_own_compact_directory():
+    own = "FCCee/ALLEGRO/compact/ALLEGRO_o2_v01/"
+    request = dataclasses.replace(
+        _request(candidates=(
+            RankCandidate(repo="key4hep/k4geo", number=612, title="Silicon wrapper",
+                          files=(own + "DectDimensions.xml", own + "display.xml",
+                                 "FCCee/ALLEGRO/compact/ALLEGRO_o1_v03/x.xml",
+                                 "CMakeLists.txt")),
+        )),
+        geometry_tree=own + "ALLEGRO_o2_v01.xml",
+    )
+    prompt = rank_mod._build_user_prompt(request)
+    assert (
+        "reaches this run's geometry: 3 of 4 changed file(s) are under "
+        "FCCee/ALLEGRO/, which this detector loads; 2 of them are in this run's "
+        f"own compact directory {own} (DectDimensions.xml, display.xml)"
+    ) in prompt
 
 
 def test_a_run_with_no_recorded_geometry_says_nothing_about_reach():

@@ -16,6 +16,7 @@ import math
 from k4bench.regression.models import (
     Direction,
     HostFact,
+    HostLevel,
     MetricVerdict,
     NightlyReport,
     RegionDelta,
@@ -473,6 +474,53 @@ def test_the_benchmark_host_survives_the_round_trip():
     restored = _round_trip(_confirmed_with_evidence())
     assert restored.history[0].hosts == (HostFact("bench01", 64),)
     assert restored.history[1].hosts == (HostFact("bench02", 128),)
+
+
+def test_per_host_levels_survive_the_round_trip():
+    # "fcc-ironic-01 reproduced the step" is only sayable if each machine's own
+    # level reaches the blame reader, and it reads report.json back.
+    verdict = _confirmed_with_evidence()
+    onset = dataclasses.replace(
+        verdict.history[1],
+        hosts=(HostFact("bench02", 128), HostFact("bench01", 64)),
+        host_levels=(
+            HostLevel(HostFact("bench02", 128), 14.5),
+            HostLevel(HostFact("bench01", 64), 14.7),
+        ),
+    )
+    verdict = dataclasses.replace(verdict, history=(verdict.history[0], onset))
+    data = json.loads(json.dumps(to_json(NightlyReport(
+        generated_at="x",
+        groups=[RunGroupReport(
+            detector="D", platform="P", sample="S", k4h_release="k",
+            run_date="2026-07-22", run_id="2026-07-22", verdicts=[verdict],
+        )],
+    ))))
+    restored = from_json(data).groups[0].verdicts[0]
+    assert restored.history[1].host_levels == onset.host_levels
+    assert restored.history[0].host_levels == ()
+
+
+def test_a_report_without_per_host_levels_reads_as_none():
+    data = to_json(NightlyReport(
+        generated_at="x",
+        groups=[RunGroupReport(
+            detector="D", platform="P", sample="S", k4h_release="k",
+            run_date="2026-07-22", run_id="2026-07-22",
+            verdicts=[_confirmed_with_evidence()],
+        )],
+    ))
+    history = data["groups"][0]["verdicts"][0]["history"]
+    for point in history:
+        del point["host_levels"]
+    history[1]["host_levels"] = [
+        {"host": {"name": "bench02", "cpu_cores": 128}, "value": None},
+        {"host": "not a host", "value": 14.6},
+        {"value": 14.6},
+    ]
+    restored = from_json(data).groups[0].verdicts[0]
+    assert restored.history[0].host_levels == ()
+    assert restored.history[1].host_levels == ()
 
 
 def test_a_null_benchmark_hostname_stays_unknown_after_the_round_trip():

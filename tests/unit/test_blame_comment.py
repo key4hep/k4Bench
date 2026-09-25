@@ -39,6 +39,7 @@ from k4bench.blame.comment import (
     window_from_marker,
 )
 from k4bench.blame.comment import CommentObservation
+from k4bench.blame.github import FilePatch
 from k4bench.blame.history import MAX_COMMENT_ANALOGUES
 from k4bench.blame.models import (
     BlameEntry,
@@ -195,13 +196,13 @@ def _plans(report, blame, policy=None):
 
 
 def _comments(report, blame, policy=None, *, attributor=None, patch_for=None,
-              body_for=None, run_info_for=None, reproducer_url_for=None,
-              dashboard_url=_DASH):
+              body_for=None, files_for=None, run_info_for=None,
+              reproducer_url_for=None, dashboard_url=_DASH):
     policy = policy or _policy()
     return build_comments(
         _plans(report, blame, policy),
         attributor=attributor, patch_for=patch_for, body_for=body_for,
-        run_info_for=run_info_for, reproducer_url_for=reproducer_url_for,
+        files_for=files_for, run_info_for=run_info_for, reproducer_url_for=reproducer_url_for,
         dashboard_url=dashboard_url, min_score=policy.min_score,
     )
 
@@ -605,6 +606,61 @@ def test_a_step_from_a_different_window_is_still_a_control():
     _comments(_report(allegro, idea_old), _blame([allegro], [_candidate()]),
               attributor=attributor)
     assert [o.detector for o in attributor.requests[0].outcomes] == ["IDEA_o1_v03"]
+
+
+_OWN = "FCCee/ALLEGRO/compact/ALLEGRO_o1_v03/"
+
+
+def _hunks(repo, number):
+    """Per-file hunks whose alphabetical order spends the sample elsewhere."""
+    return (
+        FilePatch("CMakeLists.txt", "%" * 4000),
+        FilePatch("FCCee/ALLEGRO/compact/ALLEGRO_o1_v01/Dims.xml", "!" * 4000),
+        FilePatch("FCCee/ALLEGRO/compact/ALLEGRO_o1_v02/Dims.xml", "!" * 4000),
+        FilePatch(_OWN + "DectDimensions.xml", f"+ {repo}#{number} SiWr_nLayers 1"),
+    )
+
+
+def test_a_plan_records_the_geometry_its_rows_run_groups_load():
+    v = _verdict()
+    with_path = _plans(
+        _report(v, geometry_path=_OWN + "ALLEGRO_o1_v03.xml"),
+        _blame([v], [_candidate()]),
+    )
+    assert with_path[0].geometry_paths == (_OWN + "ALLEGRO_o1_v03.xml",)
+    assert _plans(_report(v), _blame([v], [_candidate()]))[0].geometry_paths == ()
+
+
+def test_the_review_samples_every_diff_with_the_rows_own_geometry_first():
+    v = _verdict()
+    rival = _candidate(number=1180, repo="key4hep/DD4hep", score=64.0)
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(
+        _report(v, geometry_path=_OWN + "ALLEGRO_o1_v03.xml"),
+        _blame([v], [_candidate(), rival]),
+        attributor=attributor, patch_for=lambda _r, _n: "generic", files_for=_hunks,
+    )
+    request = attributor.requests[0]
+    for patch, key in (
+        (request.patch, "key4hep/k4geo#1234"),
+        (request.competitors[0].patch, "key4hep/DD4hep#1180"),
+    ):
+        assert patch.startswith(
+            f"--- {_OWN}DectDimensions.xml ---\n+ {key} SiWr_nLayers 1\n"
+            "--- FCCee/ALLEGRO/compact/ALLEGRO_o1_v01/Dims.xml ---"
+        )
+
+
+def test_the_review_keeps_the_generic_diff_without_hunks():
+    v = _verdict()
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(
+        _report(v, geometry_path=_OWN + "ALLEGRO_o1_v03.xml"),
+        _blame([v], [_candidate()]),
+        attributor=attributor, patch_for=lambda _r, _n: "generic",
+        files_for=lambda _r, _n: (),
+    )
+    assert attributor.requests[0].patch == "generic"
 
 
 def test_only_the_competitors_the_prompt_can_carry_are_fetched():
