@@ -95,6 +95,7 @@ from k4bench.blame.prompt import (
     outcome_lines,
     platform_line,
     platform_switch_lines,
+    region_clause,
     region_lines,
     sample_line,
     window_phrase,
@@ -724,6 +725,11 @@ def _regression_lines(request: AttributionRequest) -> list[str]:
             clause = history_clause(fact.history)
             if clause:
                 lines.append(f"      history: {clause}")
+            regions = region_clause(
+                fact.regions, fact.metric, fact.value, fact.baseline_median
+            )
+            if regions:
+                lines.append(f"      regions: {regions}")
     return lines
 
 
@@ -750,7 +756,10 @@ def _history_lines(request: AttributionRequest) -> list[str]:
             subject += f" [{fact.sub_detector}]"
         lines.append("")
         lines += history_block(fact.history, title=f"[{fact.id}] {subject} — ")
-        lines += region_lines(fact.regions)
+        lines += region_lines(
+            fact.regions, metric=fact.metric,
+            value=fact.value, baseline_median=fact.baseline_median,
+        )
     remaining = len(facts) - len(shown)
     if remaining > 0:
         lines.append(

@@ -131,7 +131,8 @@ Three rules bound it:
   boundaries where *no tracked package changed at all*, whether the new level
   held afterwards, whether the benchmark host changed at the onset (and, when a
   machine measured both sides, whether it moved with the step), and where
-  inside the detector the time went — and both are asked for a `step_assessment`
+  inside the detector the time went (and, for a per-event time, how much of the
+  step those regions account for) — and both are asked for a `step_assessment`
   before scoring anyone. Without a place to say "this movement is most likely
   noise", a model asked only to rank candidates can express that solely by
   scoring everybody low, which reads downstream exactly like "I looked and found

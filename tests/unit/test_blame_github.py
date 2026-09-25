@@ -689,3 +689,36 @@ def test_directory_membership_is_by_component_never_by_prefix():
     assert not path_under(f"{idea}_CI/IDEA_o2_v01_CI.xml", idea + "/")
     assert not path_under(f"{idea}/IDEA_o2_v01.xml", "")
     assert not path_under(idea, idea)  # a directory is not inside itself
+
+
+def test_several_own_directories_share_the_sample_instead_of_the_first_taking_it():
+    # A review spanning ALLEGRO and IDEA rows: both are a geometry that moved,
+    # and the one sorting second must not be left the scraps of the first.
+    allegro = "FCCee/ALLEGRO/compact/ALLEGRO_o2_v01/"
+    idea = "FCCee/IDEA/compact/IDEA_o2_v01/"
+    decisive = '+    <constant name="DCH_nLayers" value="100"/>'
+    files = [
+        FilePatch(allegro + "DectDimensions.xml", "#" * 10000),
+        FilePatch(idea + "IDEA_o2_v01.xml", "!" * 5000 + "\n" + decisive + "\n" + "!" * 4000),
+    ]
+    alone = diff_sample(files, own_dirs=(allegro,))
+    assert decisive not in alone  # one favoured directory spends the cap first
+    shared = diff_sample(files, own_dirs=(allegro, idea))
+    assert decisive in shared
+    assert shared.count("#") == gh_mod._MAX_PATCH_CHARS_PER_PR // 2
+    assert shared.endswith("… (truncated)")
+
+
+def test_a_small_own_directory_leaves_the_rest_of_the_share_to_the_others():
+    allegro = "FCCee/ALLEGRO/compact/ALLEGRO_o2_v01/"
+    idea = "FCCee/IDEA/compact/IDEA_o2_v01/"
+    files = [
+        FilePatch(allegro + "DectDimensions.xml", "#" * 11000, clipped=True),
+        FilePatch(idea + "small.xml", "!" * 1500),
+        FilePatch("FCCee/IDEA/shared.xml", "~" * 4000),
+    ]
+    sample = diff_sample(files, own_dirs=(allegro, idea), trees=("FCCee/IDEA/",))
+    assert sample.count("!") == 1500
+    assert sample.count("#") == gh_mod._MAX_OWN_DIR_PATCH_CHARS_PER_FILE
+    # What the own directories leave of the per-PR cap goes to the tree.
+    assert sample.count("~") == gh_mod._MAX_PATCH_CHARS_PER_PR - 1500 - 10000

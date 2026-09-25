@@ -895,3 +895,19 @@ def test_the_ranker_is_told_when_the_window_spans_a_platform_switch():
     assert f"Window onset measured on: {new}" in prompt
     assert "This window spans a platform switch" in prompt
     assert "platform switch" not in _build_user_prompt(_request())
+
+
+def test_a_per_event_step_says_how_much_of_it_the_regions_account_for():
+    prompt = _build_user_prompt(_request(metrics=(
+        MetricStep(metric="mean_time_s", metric_family="time", direction="DOWN",
+                   pct_change=-0.072, label="baseline", value=0.49,
+                   baseline_median=0.528,
+                   regions=(RegionDelta("TPC", 0.0808, 0.0804, -0.0004),)),
+        MetricStep(metric="wall_time_s", metric_family="time", direction="DOWN",
+                   pct_change=-0.071, label="baseline", value=517.7,
+                   baseline_median=557.5,
+                   regions=(RegionDelta("TPC", 0.0808, 0.0804, -0.0004),)),
+    )))
+    assert prompt.count(
+        "regions: the detector regions that moved most account for 1% of this step"
+    ) == 1

@@ -194,15 +194,19 @@ _IRONIC02 = HostFact("fcc-ironic-02", 64)
 _IRONIC03 = HostFact("fcc-ironic-03", 64)
 
 
-def _step(previous: dict, onset: dict, *, onset_value=5850.0, earlier=None):
+def _step(previous: dict, onset: dict, *, onset_value=5850.0, earlier=None,
+          judged=(True, True, True)):
     """A two-release window, 09-23 -> 09-24, with the given per-host levels.
-    *earlier* adds a 09-10 release before it."""
+    *earlier* adds a 09-10 release before it; *judged* says, oldest first,
+    which of the (up to three) releases were judged."""
+    earlier_judged, previous_judged, onset_judged = judged
     points = []
     if earlier is not None:
-        points.append(_point("2026-09-10", 6620.0, levels=earlier))
+        points.append(_point("2026-09-10", 6620.0, levels=earlier, judged=earlier_judged))
     points += [
-        _point("2026-09-23", 6620.0, levels=previous),
-        _point("2026-09-24", onset_value, severity="CONFIRMED", levels=onset),
+        _point("2026-09-23", 6620.0, levels=previous, judged=previous_judged),
+        _point("2026-09-24", onset_value, severity="CONFIRMED", levels=onset,
+               judged=onset_judged),
     ]
     return _history(points, base="2026-09-23", onset="2026-09-24", median=6620.0, mad=6.0)
 
@@ -305,6 +309,36 @@ def test_rotating_container_ids_give_no_reading_either():
     history = _step({old: 6620.0}, {new: 5850.0})
     assert history.host_change_at_onset is None
     assert history.host_reading is None
+
+
+def test_an_unjudged_release_before_the_onset_is_not_host_evidence():
+    # The release's levels are recorded, but the engine refused to read them —
+    # an unreliable host. They cannot testify that fcc-ironic-01 moved.
+    history = _step(
+        {_IRONIC01: 6620.0}, {_IRONIC01: 5850.0}, judged=(True, False, True),
+    )
+    assert history.host_reading is None
+
+
+def test_an_unjudged_earlier_release_is_not_counter_evidence():
+    history = _step(
+        {_IRONIC01: 6620.0}, {_IRONIC03: 5850.0}, earlier={_IRONIC03: 6617.0},
+        judged=(False, True, True),
+    )
+    assert history.host_change_at_onset == (_IRONIC01, _IRONIC03)
+    assert history.new_host_seen_at_old_level is None
+
+
+def test_unnamed_machines_cannot_establish_that_one_machine_measured_both_sides():
+    # Two runs that recorded a core count but no hostname compare equal without
+    # being known to be the same machine.
+    unnamed = HostFact("", 64)
+    history = _step({unnamed: 6620.0}, {unnamed: 5850.0})
+    assert history.host_reading is None
+    named_beside_it = _step({_IRONIC01: 6620.0}, {_IRONIC01: 5850.0, unnamed: 5851.0})
+    assert named_beside_it.host_reading is None
+    change = _step({_IRONIC01: 6620.0}, {unnamed: 5850.0}, earlier={unnamed: 6617.0})
+    assert change.new_host_seen_at_old_level is None
 
 
 def test_per_host_levels_reach_the_blame_view_from_a_verdict():

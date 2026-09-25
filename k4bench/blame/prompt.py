@@ -27,7 +27,7 @@ import statistics
 import textwrap
 
 from k4bench.blame.evidence import HostReading, MetricHistory, ScopeOutcome
-from k4bench.blame.github import path_under
+from k4bench.blame.github import allocate_diff_budget, path_under
 from k4bench.blame.history import (
     MAX_BOUNDARIES,
     MAX_DIFF_CHARS,
@@ -503,7 +503,59 @@ _HOST_READING_CLAUSE = {
 }
 
 
-def region_lines(deltas: tuple[RegionDelta, ...]) -> list[str]:
+#: Metrics measured per event, in seconds: the only steps in the same unit as a
+#: region's per-event time (:class:`~k4bench.regression.models.RegionDelta`).
+#: Wall time is per job, so a region's share of it cannot be read without the
+#: event count.
+PER_EVENT_TIME_METRICS = frozenset({"mean_time_s", "median_time_s", "trimmed_mean_time_s"})
+
+
+def region_share(
+    deltas: tuple[RegionDelta, ...],
+    metric: str,
+    value: float | None,
+    baseline_median: float | None,
+) -> tuple[float, float] | None:
+    """``(regions moved, step)``, both in s/event, or ``None``.
+
+    The first is the summed move of the regions carried on the verdict (the
+    ones that moved most); the second is the metric's own step from its
+    baseline. Only for a per-event time metric
+    (:data:`PER_EVENT_TIME_METRICS`), and only when both are known."""
+    if metric not in PER_EVENT_TIME_METRICS or not deltas:
+        return None
+    if value is None or baseline_median is None:
+        return None
+    step = value - baseline_median
+    moved = sum(delta.delta for delta in deltas)
+    if not math.isfinite(step) or not math.isfinite(moved) or step == 0:
+        return None
+    return moved, step
+
+
+def region_clause(
+    deltas: tuple[RegionDelta, ...],
+    metric: str,
+    value: float | None,
+    baseline_median: float | None,
+) -> str:
+    """:func:`region_share` as one clause for a metric's bullet —
+    ``"the detector regions that moved most account for 4% of this step"`` —
+    or ``""``."""
+    share = region_share(deltas, metric, value, baseline_median)
+    if share is None:
+        return ""
+    moved, step = share
+    return f"the detector regions that moved most account for {moved / step:.0%} of this step"
+
+
+def region_lines(
+    deltas: tuple[RegionDelta, ...],
+    *,
+    metric: str = "",
+    value: float | None = None,
+    baseline_median: float | None = None,
+) -> list[str]:
     """Where inside the detector a timing step landed.
 
     The single most mechanism-bearing fact the suite can offer: a step localised
@@ -512,7 +564,12 @@ def region_lines(deltas: tuple[RegionDelta, ...]) -> list[str]:
     readings send a reviewer to opposite diffs. A region measured on only one
     end of the window says so in words rather than as a number against zero,
     because "this region appeared" and "this region got slower" are different
-    events."""
+    events.
+
+    For a per-event time metric the lines end with how much of the metric's
+    own step the regions account for (:func:`region_share`). The regions only
+    measure Geant4 stepping, so a step they do not account for happened
+    outside it — a fact the individual region lines leave to arithmetic."""
     if not deltas:
         return []
     lines = [
@@ -533,6 +590,16 @@ def region_lines(deltas: tuple[RegionDelta, ...]) -> list[str]:
                 f"      {delta.region}: {delta.base:.4g} -> {delta.onset:.4g} "
                 f"s/event ({delta.delta:+.4g})"
             )
+    share = region_share(deltas, metric, value, baseline_median)
+    if share is not None:
+        moved, step = share
+        lines.append(
+            f"    Together these regions moved {moved:+.4g} s/event: "
+            f"{moved / step:.0%} of this metric's {step:+.4g} s/event step. Region "
+            f"time is Geant4 stepping through the detector (per-event medians, so "
+            f"the share is approximate); whatever the regions do not account for "
+            f"happened outside that stepping."
+        )
     return lines
 
 
@@ -739,31 +806,6 @@ def log_prompt_size(stage: str, prompt: str, *, detail: str = "") -> str:
             "%s: prompt %d chars (~%d tokens)%s", stage, chars, tokens, suffix
         )
     return prompt
-
-
-def allocate_diff_budget(needs: list[int], total: int) -> list[int]:
-    """Chars of diff each item may render, waterfilled from *total*.
-
-    When everything fits, everyone gets their full patch. Under pressure the
-    budget is shared evenly: small diffs stay whole and the largest ones split
-    the remainder — an item's *position* in the prompt never decides whether its
-    diff survives."""
-    alloc = [0] * len(needs)
-    remaining = total
-    active = [i for i, n in enumerate(needs) if n > 0]
-    while active and remaining >= len(active):
-        share = remaining // len(active)
-        satisfied = []
-        for i in active:
-            take = min(needs[i] - alloc[i], share)
-            alloc[i] += take
-            remaining -= take
-            if alloc[i] >= needs[i]:
-                satisfied.append(i)
-        if not satisfied:
-            break  # everyone consumed a full share; nothing left to rebalance
-        active = [i for i in active if i not in satisfied]
-    return alloc
 
 
 #: What a candidate touching the run's own compact directory asks for first

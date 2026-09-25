@@ -430,6 +430,31 @@ def path_under(path: str, directory: str) -> bool:
     return bool(inside) and len(parts) > len(inside) and parts[: len(inside)] == inside
 
 
+def allocate_diff_budget(needs: list[int], total: int) -> list[int]:
+    """Chars of diff each item may render, waterfilled from *total*.
+
+    When everything fits, everyone gets their full patch. Under pressure the
+    budget is shared evenly: small diffs stay whole and the largest ones split
+    the remainder — an item's *position* in the prompt never decides whether its
+    diff survives."""
+    alloc = [0] * len(needs)
+    remaining = total
+    active = [i for i, n in enumerate(needs) if n > 0]
+    while active and remaining >= len(active):
+        share = remaining // len(active)
+        satisfied = []
+        for i in active:
+            take = min(needs[i] - alloc[i], share)
+            alloc[i] += take
+            remaining -= take
+            if alloc[i] >= needs[i]:
+                satisfied.append(i)
+        if not satisfied:
+            break  # everyone consumed a full share; nothing left to rebalance
+        active = [i for i in active if i not in satisfied]
+    return alloc
+
+
 def _diff_priority(path: str) -> tuple:
     """Sort key deciding which hunks get the budget: code first, then everything
     else, ties broken by path so the order never depends on GitHub's."""
@@ -456,32 +481,65 @@ def diff_sample(
     (:attr:`PRText.patch`). The order matters because the per-PR cap is spent
     front to back: a pull request touching six detector variants spends it on
     the alphabetically first ones, and the variant this run loads can then be
-    missing from the sample altogether."""
+    missing from the sample altogether.
+
+    For the same reason, when several own directories have hunks — a review
+    spanning several detectors' rows — the per-PR cap is first shared between
+    them (:func:`allocate_diff_budget`): the directory that sorts first must not
+    take the allowance of one that sorts later, when both are a geometry that
+    moved."""
+
+    def owner(entry: FilePatch) -> int | None:
+        return next(
+            (i for i, d in enumerate(own_dirs) if path_under(entry.path, d)), None
+        )
 
     def reach(entry: FilePatch) -> int:
-        if any(path_under(entry.path, d) for d in own_dirs):
+        if owner(entry) is not None:
             return 0
         if any(path_under(entry.path, t) for t in trees):
             return 1
         return 2
 
+    ordered = sorted(files, key=lambda e: (reach(e), *_diff_priority(e.path)))
+    needs: dict[int, int] = {}
+    for entry in ordered:
+        if entry.text and (d := owner(entry)) is not None:
+            needs[d] = needs.get(d, 0) + min(
+                len(entry.text), _MAX_OWN_DIR_PATCH_CHARS_PER_FILE
+            )
+    allowance: dict[int, int] = {}
+    if len(needs) > 1:
+        allowance = dict(zip(
+            needs, allocate_diff_budget(list(needs.values()), _MAX_PATCH_CHARS_PER_PR)
+        ))
+
     chunks: list[str] = []
     used = 0
     truncated = False
-    for entry in sorted(files, key=lambda e: (reach(e), *_diff_priority(e.path))):
+    for entry in ordered:
         if not entry.text:
             continue
         if used >= _MAX_PATCH_CHARS_PER_PR:
             truncated = True
             continue
+        d = owner(entry)
         cap = (
-            _MAX_OWN_DIR_PATCH_CHARS_PER_FILE if reach(entry) == 0
+            _MAX_OWN_DIR_PATCH_CHARS_PER_FILE if d is not None
             else _MAX_PATCH_CHARS_PER_FILE
         )
-        clip = entry.text[:cap][: _MAX_PATCH_CHARS_PER_PR - used]
+        limit = _MAX_PATCH_CHARS_PER_PR - used
+        if d in allowance:
+            limit = min(limit, allowance[d])
+        if limit <= 0:
+            truncated = True
+            continue
+        clip = entry.text[:cap][:limit]
         truncated = truncated or entry.clipped or len(clip) < len(entry.text)
         chunks.append(f"--- {entry.path} ---\n{clip}")
         used += len(clip)
+        if d in allowance:
+            allowance[d] -= len(clip)
 
     text = "\n".join(chunks)
     if truncated and text:

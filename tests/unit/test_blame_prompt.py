@@ -19,6 +19,7 @@ from k4bench.blame.prompt import (
     history_clause,
     log_prompt_size,
     outcome_lines,
+    region_clause,
     region_lines,
 )
 from k4bench.regression.models import HostFact, HostLevel, RegionDelta
@@ -362,6 +363,39 @@ def test_a_region_measured_on_one_side_only_is_described_not_zeroed():
 
 def test_no_regions_render_nothing():
     assert region_lines(()) == []
+
+
+# The 09-25 ILD_FCCee_v02 baseline: the mean event time fell 0.038 s while the
+# regions that moved most fell 0.0014 s between them.
+_ILD_REGIONS = (
+    RegionDelta("TPC", 0.080841, 0.080419, -0.000422),
+    RegionDelta("InnerTrackers", 0.004302, 0.003937, -0.000365),
+    RegionDelta("EcalEndcap", 0.001837, 0.0015705, -0.0002665),
+    RegionDelta("EcalBarrel", 0.31856, 0.3183095, -0.0002505),
+    RegionDelta("unattributed", 0.000893, 0.0007835, -0.0001095),
+)
+
+
+def test_the_share_of_a_per_event_step_the_regions_account_for_is_stated():
+    lines = "\n".join(region_lines(
+        _ILD_REGIONS, metric="mean_time_s", value=0.4900, baseline_median=0.5280,
+    ))
+    assert "Together these regions moved -0.001414 s/event: 4% of this metric's -0.038 s/event step" in lines
+    assert "whatever the regions do not account for happened outside that stepping" in lines
+    assert region_clause(_ILD_REGIONS, "mean_time_s", 0.4900, 0.5280) == (
+        "the detector regions that moved most account for 4% of this step"
+    )
+
+
+def test_no_share_is_claimed_for_a_per_job_metric_or_an_unknown_step():
+    # Wall time is per job; regions are per event.
+    assert "Together" not in "\n".join(region_lines(
+        _ILD_REGIONS, metric="wall_time_s", value=517.7, baseline_median=557.5,
+    ))
+    assert region_clause(_ILD_REGIONS, "wall_time_s", 517.7, 557.5) == ""
+    assert region_clause(_ILD_REGIONS, "mean_time_s", None, 0.5280) == ""
+    assert region_clause(_ILD_REGIONS, "mean_time_s", 0.5280, 0.5280) == ""
+    assert region_clause((), "mean_time_s", 0.49, 0.5280) == ""
 
 
 # ── The pull request's own description ────────────────────────────────────────

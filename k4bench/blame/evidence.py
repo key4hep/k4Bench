@@ -390,6 +390,13 @@ class MetricHistory:
         release without per-machine levels, leaves the reading ``None`` rather
         than a guess — this evidence is allowed to say it does not know.
 
+        Both releases must have been judged. A release nobody could judge still
+        records per-machine levels, but the engine refused to read them, and an
+        unread level is not a measurement to compare against. Every machine must
+        also carry a name: two unnamed machines compare equal without being
+        known to be one machine, so they cannot testify that a machine measured
+        both sides.
+
         Every machine at the onset counts, not only those that measured both
         releases: a newly added machine still at the old level on identical
         software is already evidence against "the step reproduced".
@@ -398,7 +405,13 @@ class MetricHistory:
         if pair is None:
             return None
         onset, previous = pair
+        if not (onset.judged and previous.judged):
+            return None
         if not onset.host_levels or not previous.host_levels:
+            return None
+        if any(
+            not level.host.name for level in (*onset.host_levels, *previous.host_levels)
+        ):
             return None
         now = {level.host: self._level_side(level.value) for level in onset.host_levels}
         before = {
@@ -430,15 +443,22 @@ class MetricHistory:
         machine that measured the new level at onset had already measured this
         series at the old level, in *release* — the newest such sighting.
 
+        Only judged releases and named machines count, for the reasons
+        :attr:`host_reading` gives.
+
         ``None`` when there is no host change to answer, or no such sighting."""
         if self.host_change_at_onset is None:
             return None
         onset, _ = self._onset_and_previous
+        if not onset.judged:
+            return None
         at_new = [
             level.host for level in onset.host_levels
-            if self._level_side(level.value) == "new"
+            if level.host.name and self._level_side(level.value) == "new"
         ]
         for point in reversed(self.points[: self.points.index(onset)]):
+            if not point.judged:
+                continue
             for level in point.host_levels:
                 if level.host in at_new and self._level_side(level.value) == "old":
                     return level.host, point.release

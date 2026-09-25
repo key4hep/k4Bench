@@ -84,6 +84,7 @@ from k4bench.blame.prompt import (
     outcome_lines,
     platform_line,
     platform_switch_lines,
+    region_clause,
     region_lines,
     sample_line,
     window_phrase,
@@ -661,6 +662,11 @@ def _step_lines(request: RankRequest) -> list[str]:
         clause = history_clause(step.history)
         if clause:
             lines.append(f"      history: {clause}")
+        regions = region_clause(
+            step.regions, step.metric, step.value, step.baseline_median
+        )
+        if regions:
+            lines.append(f"      regions: {regions}")
     return lines
 
 
@@ -695,7 +701,10 @@ def _history_lines(request: RankRequest) -> list[str]:
             subject += f" [{step.sub_detector}]"
         lines.append("")
         lines += history_block(step.history, title=f"{subject} — ")
-        lines += region_lines(step.regions)
+        lines += region_lines(
+            step.regions, metric=step.metric,
+            value=step.value, baseline_median=step.baseline_median,
+        )
     remaining = sum(1 for step in ranked if step.history) - len(shown)
     if remaining > 0:
         # Never "with a similar history": nothing checks that, and the model
