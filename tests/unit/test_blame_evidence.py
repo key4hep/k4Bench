@@ -646,3 +646,22 @@ def test_history_points_keep_the_platform_that_measured_them():
     history = history_from_verdict(verdict)
     assert [p.platform for p in history.points] == [_PLAT, None]
     assert f"[measured on {_PLAT}]" in "\n".join(history_block(history))
+
+
+def test_the_host_spread_is_what_the_machines_disagree_by_on_one_release():
+    # 09-24 ran on fcc-ironic-03 and -01 at 5849 and 5851 MB: identical software,
+    # 2 MB apart on a 6620 MB baseline — what switching machines does to VmPeak.
+    history = _step({_IRONIC01: 6620.0}, {_IRONIC03: 5849.0, _IRONIC01: 5851.0})
+    spread, releases = history.host_spread
+    assert releases == 1
+    assert spread == pytest.approx(2.0 / 6620.0)
+
+
+def test_no_host_spread_without_a_release_measured_on_two_named_machines():
+    assert _step({_IRONIC01: 6620.0}, {_IRONIC01: 5850.0}).host_spread is None
+    unnamed = HostFact("", 64)
+    assert _step({_IRONIC01: 6620.0}, {_IRONIC01: 5850.0, unnamed: 5000.0}).host_spread is None
+    # An unjudged release's levels were never read, so they measure nothing.
+    unjudged = _step({_IRONIC01: 6620.0, _IRONIC03: 6000.0}, {_IRONIC01: 5850.0},
+                     judged=(True, False, True))
+    assert unjudged.host_spread is None

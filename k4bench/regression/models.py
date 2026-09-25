@@ -185,6 +185,80 @@ class RegionDelta:
 
 
 @dataclass(frozen=True)
+class LongEvent:
+    """One of the longest events at one end of a change window.
+
+    ``event`` is the event's number within its job, ``seconds`` its wall time,
+    and ``region``/``region_seconds`` the detector region that took the largest
+    share of it — empty and ``None`` when the run recorded no region for it.
+    """
+
+    event: int
+    seconds: float
+    region: str = ""
+    region_seconds: float | None = None
+
+
+@dataclass(frozen=True)
+class EventSample:
+    """The per-event wall times at one end of a change window, summarised.
+
+    Read from the per-event records of the region-timing plugin, warm-up event
+    excluded. A window end measured on several nights is summarised night by
+    night and the nights' figures are combined by their median, the way the
+    engine combines a release's nights; ``nights`` says how many there were.
+
+    ``stepping_mean`` is the mean per-event time spent in Geant4 stepping,
+    summed over *every* region the plugin charges (``unattributed`` included),
+    so ``mean - stepping_mean`` is the per-event time outside stepping.
+    ``mean_without_longest`` is the mean once the single longest event is left
+    out. ``longest`` lists the longest events, longest first; with a fixed
+    random seed the same event numbers recur on every night of one release.
+    """
+
+    nights: int
+    n_events: int
+    mean: float
+    median: float
+    stepping_mean: float | None = None
+    mean_without_longest: float | None = None
+    longest: tuple[LongEvent, ...] = ()
+
+
+@dataclass(frozen=True)
+class MatchedEvent:
+    """One event number's wall time at both ends of a window — ``None`` where
+    that end did not simulate it. With a fixed random seed an event is
+    simulated identically until the geometry or physics it meets changes, so
+    one event number taking a very different time at the two ends is an event
+    whose simulation changed."""
+
+    event: int
+    base: float | None
+    onset: float | None
+
+
+@dataclass(frozen=True)
+class EventProfile:
+    """How the distribution of per-event times differs between the two ends of
+    a timing step's window.
+
+    A mean over a few hundred events is a statistic about its slowest events
+    as much as about the typical one: a single event that takes tens of seconds
+    moves the mean of a thousand half-second events by several percent. This is
+    what tells a step in the typical event from one carried by a handful of
+    events, and a step inside detector stepping from one outside it.
+
+    ``matched`` follows every event among either end's longest to the other
+    end, longest first.
+    """
+
+    base: EventSample
+    onset: EventSample
+    matched: tuple[MatchedEvent, ...] = ()
+
+
+@dataclass(frozen=True)
 class ReleasePoint:
     """One Key4hep release in a metric's recent history.
 
@@ -297,6 +371,12 @@ class MetricVerdict:
     #: region data is per-event time, so it explains a time step and says nothing
     #: about a memory one — and empty when the run recorded no region timing.
     region_deltas: tuple[RegionDelta, ...] = ()
+    #: The per-event times at the two ends of this step's window (see
+    #: :class:`EventProfile`). Carried where :attr:`region_deltas` is — on
+    #: ``CONFIRMED`` timing verdicts whose window ends both recorded per-event
+    #: region timing — and ``None`` everywhere else, including every report
+    #: written before the field existed.
+    event_profile: EventProfile | None = None
     #: Why this verdict is ``UNKNOWN`` — ``None`` on every judged severity, and
     #: on reports that predate the field. Read it through
     #: :func:`unjudged_cause`, never directly: the reader has to cope with

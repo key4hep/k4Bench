@@ -58,6 +58,7 @@ the same and the consequences here are larger:
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import math
 import re
@@ -66,6 +67,7 @@ from collections.abc import Sequence
 from typing import Literal, Protocol
 
 from k4bench.blame.evidence import MetricHistory, ScopeOutcome
+from k4bench.blame.geometry import DetectorTouch
 from k4bench.blame.history import HistoricalPR
 from k4bench.blame.llm import (
     MAX_OUTPUT_TOKENS,
@@ -82,6 +84,7 @@ from k4bench.blame.prompt import (
     NOISE_RULE,
     SCORE_BAND_RULE,
     UNTRUSTED_EVIDENCE_RULE,
+    WEIGHING_RULE,
     allocate_diff_budget,
     body_block,
     diff_block,
@@ -95,11 +98,21 @@ from k4bench.blame.prompt import (
     outcome_lines,
     platform_line,
     platform_switch_lines,
-    region_clause,
     region_lines,
     sample_line,
     window_phrase,
 )
+from k4bench.blame.summary import (
+    EVIDENCE_HEADER,
+    SWEEP_METRICS,
+    other_scope_lines,
+    representative,
+    scope_evidence_lines,
+    scope_name,
+    sweep_table_lines,
+    touch_lines,
+)
+from k4bench.blame.sweep import ScopeSweep
 from k4bench.regression.models import RegionDelta
 
 _log = logging.getLogger(__name__)
@@ -222,6 +235,9 @@ class CompetingPR:
     #: The author's own account of the change — best-effort like ``patch``, and
     #: fenced as the untrusted prose it is.
     body: str = ""
+    #: The benchmarked detectors this competitor's files reach
+    #: (:func:`~k4bench.blame.geometry.detector_touches`).
+    touches: tuple[DetectorTouch, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -297,6 +313,14 @@ class AttributionRequest:
     #: before the window opened, they are never scored, never accused, and never
     #: rendered as candidates.
     historical: tuple[HistoricalPR, ...] = ()
+    #: Every scope in the night's report that measured this window
+    #: (:mod:`k4bench.blame.sweep`): the scopes with regressions, shown as whole
+    #: removal sweeps, and every other scope, shown as the controls they are.
+    #: Empty renders the regression rows and :attr:`outcomes` instead.
+    sweeps: tuple[ScopeSweep, ...] = ()
+    #: The benchmarked detectors the reviewed pull request's files reach, and
+    #: what it changes in each (:func:`~k4bench.blame.geometry.detector_touches`).
+    touches: tuple[DetectorTouch, ...] = ()
 
     @property
     def slug(self) -> str:
@@ -325,14 +349,37 @@ class StepAssessment:
 
 
 @dataclass(frozen=True)
+class ScopeJudgement:
+    """The review's reasoning about one scope, in the order it was asked for:
+    what moved and how, what the pull request changes that the scope loads,
+    what supports and what contradicts it, and the likelihood that follows.
+
+    Transient: the likelihood reaches the comment through
+    :attr:`Attribution.likelihoods`, and the rest is logged for whoever reviews
+    the comment — it is the reasoning, not the claim."""
+
+    scope_id: str
+    scope: tuple[str, str, str]
+    likelihood: float
+    reading: str = ""
+    mechanism: str = ""
+    supports: str = ""
+    contradicts: str = ""
+
+
+@dataclass(frozen=True)
 class Attribution:
     """The review's verdict: a likelihood per regression row, the narrative that
     explains the pattern behind them, and what it made of the movements
-    themselves."""
+    themselves.
+
+    The likelihoods are answered per scope and spread over its rows, with a
+    row's own answer where the review gave one (:attr:`scopes`)."""
 
     summary: str
     likelihoods: dict[str, float]  # RegressionFact.id -> 0-100
     assessment: StepAssessment | None = None
+    scopes: tuple[ScopeJudgement, ...] = ()
 
     @property
     def top_score(self) -> float:
@@ -366,37 +413,40 @@ class Attributor(Protocol):
 _SYSTEM_PROMPT = (
     "You review whether one merged pull request caused a set of software "
     "performance regressions measured by a nightly benchmark suite. You are given "
-    "the pull request's code diff; every confirmed regression in the release "
-    "window it shipped in, across several detectors, physics samples, build "
-    "platforms and benchmark configurations, each with the recent history of the "
-    "metric it belongs to; the configurations that measured the same window and "
-    "did NOT confirm a step; the packages that changed in the release; and every "
-    "other pull request that landed in the same window, with its diff. "
-    "Score each listed regression 0-100 for how likely THIS pull request caused "
-    "it, and write a short summary explaining the pattern behind your scores. "
-    "Reason across configurations — that is the point of this review. A change to "
-    "one detector's geometry or reconstruction should move that detector and not "
-    "the others; a change to shared infrastructure (framework, allocation, I/O, "
-    "logging, build flags) should move many of them at once. A step present in one "
-    "detector but absent in another that ran the same sample on the same platform "
-    "argues against a shared-infrastructure cause, and if the diff touches nothing "
-    "specific to the affected detector it argues against this pull request "
-    "entirely. A configuration that moved without confirming is weak agreement, "
-    "not disagreement. "
-    "Benchmark configurations labelled 'baseline' run the full detector; ones "
-    "labelled 'no_<X>' are the identical run with <X> removed. A step present "
-    "in baseline and absent in no_X places the cost inside X; a step present "
-    "in both is upstream of X. "
+    "an evidence summary computed from the measurements — for every benchmark "
+    "scope (detector, physics sample, build platform) with confirmed regressions "
+    "in the release window the pull request shipped in: its whole "
+    "detector-removal sweep, what moved and in what shape, the metrics' own "
+    "history and the machines that measured them; what the pull request's diff "
+    "changes in each benchmarked detector it reaches, and what those detectors "
+    "measured; and what every other benchmark did in the same window. Then the "
+    "details, the packages that changed in the release, the pull request's diff, "
+    "and every other pull request that landed in the same window, with its diff. "
+    "Judge each scope as a whole, 0-100 for how likely THIS pull request caused "
+    "its regressions, and give a row its own likelihood only where the evidence "
+    "for that row differs from the rest of its scope. Then write a short summary "
+    "explaining the pattern behind your scores. "
+    "Reason across scopes — that is the point of this review. A change to one "
+    "detector's geometry or reconstruction should move that detector and not the "
+    "others; a change to shared infrastructure (framework, allocation, I/O, "
+    "logging, build flags) should move many of them at once. A step present in "
+    "one detector but absent in another that ran the same sample on the same "
+    "platform argues against a shared-infrastructure cause, and if the diff "
+    "touches nothing specific to the affected detector it argues against this "
+    "pull request entirely. A configuration that moved without confirming is "
+    "weak agreement, not disagreement. "
     "Prefer a coherent story — the affected set matching what the diff can "
-    "actually reach — over scoring each row in isolation. If another pull request "
-    "in the window fits the evidence better, say so in the summary and name it as "
-    "owner/repo#number. Never write a URL. "
+    "actually reach — over scoring each row in isolation, and judge each scope on "
+    "its own evidence: what holds for one detector is not evidence about "
+    "another. If another pull request in the window fits the evidence better, "
+    "say so in the summary and name it as owner/repo#number. Never write a URL. "
     + NOISE_RULE
+    + WEIGHING_RULE
     + SCORE_BAND_RULE
     + ASSESSMENT_RULE
     + UNTRUSTED_EVIDENCE_RULE
-    + "Do not invent regressions: score only the ids you were given. "
-    "Output JSON only."
+    + "Do not invent scopes or regressions: answer only the scope and row ids "
+    "you were given. Output JSON only."
 )
 
 #: Total *diff* budget (chars) across the reviewed PR and every competitor. Wider
@@ -428,12 +478,11 @@ _MAX_OUTCOMES_LISTED = 40
 _MAX_SUBJECT_BODY_CHARS = 2000
 _MAX_COMPETITOR_BODY_CHARS = 400
 
-#: Rows given a *full* history table. Every row with a history already carries
-#: its one-line summary, so this is the depth-vs-width trade: eight tables (~6
-#: kB) show the model how these series behave, and the clauses carry that
-#: reading to the rest. The window's largest movements get them, since those are
-#: the rows a comment is written about.
-_MAX_HISTORY_BLOCKS = 8
+#: Rows given a *full* history table. Every scope's summary already states its
+#: representative metric's history, so the tables are detail: enough for the
+#: model to see how these series behave, for the window's largest movements,
+#: since those are the rows a comment is written about.
+_MAX_HISTORY_BLOCKS = 4
 
 #: Follow-up rounds re-asking for offered rows a reply left unanswered. Each
 #: round costs a full request, so this is small; a model that has skipped the
@@ -559,7 +608,10 @@ class OpenAICompatAttributor:
                 break
             data = extract_json(content)
             more = (
-                _parse_likelihoods(data, {f.id for f in missing}, slug=request.slug)
+                _parse_likelihoods(
+                    data, {f.id for f in missing}, slug=request.slug,
+                    scope_rows=_scope_rows(request),
+                )
                 if isinstance(data, dict) else {}
             )
             if not more:
@@ -581,13 +633,14 @@ class OpenAICompatAttributor:
                 "round(s); they keep their first-pass state",
                 request.slug, still_missing, rounds,
             )
-        # Summary and assessment both stay the first round's: they are readings
-        # of the whole window, and a follow-up round asks only for the rows that
-        # went unanswered.
+        # Summary, assessment and the scopes' reasoning all stay the first
+        # round's: they are readings of the whole window, and a follow-up round
+        # asks only for the rows that went unanswered.
         return Attribution(
             summary=attribution.summary,
             likelihoods=likelihoods,
             assessment=attribution.assessment,
+            scopes=attribution.scopes,
         )
 
 
@@ -625,23 +678,31 @@ def attributor_from_env() -> Attributor | None:
 _RESPONSE_INSTRUCTION = (
     'Respond with JSON only, no prose: {"step_assessment": {"verdict": '
     '"real_change" | "likely_noise" | "insufficient_evidence", "reason": "<one '
-    'sentence citing the histories>"}, "summary": "<2-4 sentences: which of '
-    'these regressions this pull request is responsible for and why, naming the '
-    'cross-configuration evidence that decided it>", "attributions": [{"id": '
-    '"<the id given above>", "likelihood": <0-100>}]}. '
+    'sentence citing the evidence>"}, "scopes": [{"scope": "<a scope id given '
+    'above, e.g. S1>", "reading": "<what moved in this scope and in what '
+    'shape>", "mechanism": "<what this pull request\'s diff changes that this '
+    'scope loads — or that it changes nothing it loads>", "supports": "<the '
+    'evidence for this pull request here>", "contradicts": "<the evidence '
+    'against it here — a detector it changed the same way that did not move, a '
+    'pattern its mechanism does not predict — or the empty string>", '
+    '"likelihood": <0-100>, "overrides": [{"id": "<a row id of this scope>", '
+    '"likelihood": <0-100>}]}], "summary": "<2-4 sentences: which of these '
+    'regressions this pull request is responsible for and why, naming the '
+    'cross-configuration evidence that decided it>"}. '
     # The summary is quoted into a pull-request comment, where nothing defines
     # the ids.
-    "In the summary, refer to regressions by their detector, sample and metric "
-    "— never by id: it is read by people who never see these ids. "
+    "Give a row an override only where its evidence differs from the rest of "
+    "its scope. In the summary, refer to regressions by their detector, sample "
+    "and metric — never by id: it is read by people who never see these ids. "
 )
 
 #: The scope sentence closing :data:`_RESPONSE_INSTRUCTION`. Which rows to
 #: answer for is the one thing a follow-up round changes about the ask, so it is
 #: swapped here — one sentence saying it, never two disagreeing.
-_SCORE_ALL = "Score every regression listed above and invent none."
+_SCORE_ALL = "Answer every scope listed above and invent none."
 _SCORE_ONLY = (
-    "Score ONLY the ids listed as unanswered above — leave every other id out — "
-    "and invent none."
+    "Answer ONLY for the rows listed as unanswered above — their scopes, or "
+    "overrides for those rows — leave every other scope out, and invent none."
 )
 
 
@@ -725,11 +786,6 @@ def _regression_lines(request: AttributionRequest) -> list[str]:
             clause = history_clause(fact.history)
             if clause:
                 lines.append(f"      history: {clause}")
-            regions = region_clause(
-                fact.regions, fact.metric, fact.value, fact.baseline_median
-            )
-            if regions:
-                lines.append(f"      regions: {regions}")
     return lines
 
 
@@ -756,16 +812,172 @@ def _history_lines(request: AttributionRequest) -> list[str]:
             subject += f" [{fact.sub_detector}]"
         lines.append("")
         lines += history_block(fact.history, title=f"[{fact.id}] {subject} — ")
-        lines += region_lines(
-            fact.regions, metric=fact.metric,
-            value=fact.value, baseline_median=fact.baseline_median,
-        )
+        lines += region_lines(fact.regions)
     remaining = len(facts) - len(shown)
     if remaining > 0:
         lines.append(
             f"  ({remaining} further scored row(s) have a history summarised in "
             f"one line above rather than shown in full.)"
         )
+    return lines
+
+
+def scope_ids(facts: Sequence[RegressionFact]) -> dict[tuple[str, str, str], str]:
+    """``scope -> "S1"…`` for the scopes of *facts*, in identity order — the
+    handles the model answers per scope with, reproducible from the facts
+    alone."""
+    scopes = sorted({(f.detector, f.platform, f.sample) for f in facts})
+    return {scope: f"S{index}" for index, scope in enumerate(scopes, start=1)}
+
+
+def _fact_scope(fact: RegressionFact) -> tuple[str, str, str]:
+    return (fact.detector, fact.platform, fact.sample)
+
+
+def _id_order(fact_id: str) -> tuple:
+    """``r2`` before ``r10``: ids read in the order they were assigned."""
+    digits = fact_id.lstrip("rR")
+    return (0, int(digits)) if digits.isdigit() else (1, fact_id)
+
+
+def _prior_summary(facts: Sequence[RegressionFact]) -> list[str]:
+    """What the first pass knew about the reviewed pull request across one
+    scope's rows: one line when they agree — rows of one rank group share one
+    ranking — and one line per distinct prior, counted, when they do not."""
+    groups: dict[tuple, list[RegressionFact]] = {}
+    for fact in facts:
+        score = None if fact.scope_score is None else round(fact.scope_score)
+        groups.setdefault((fact.scope_state, score, fact.scope_reason), []).append(fact)
+    if len(groups) == 1:
+        return [f"  - prior on every row: {_prior_phrase(facts[0])}"]
+    return [
+        f"  - prior on {len(rows)} row(s) ({', '.join(f.id for f in rows[:6])}"
+        f"{', …' if len(rows) > 6 else ''}): {_prior_phrase(rows[0])}"
+        for rows in groups.values()
+    ]
+
+
+def _with_ids(sweep: ScopeSweep, facts: Sequence[RegressionFact]) -> ScopeSweep:
+    """*sweep* with each confirmed regression's id on its table cell."""
+    ids = {(f.label, f.metric): f.id for f in facts if not f.sub_detector}
+    return dataclasses.replace(sweep, rows=tuple(
+        dataclasses.replace(row, cells=tuple(
+            dataclasses.replace(cell, fact_id=ids.get((row.label, cell.metric), ""))
+            for cell in row.cells
+        ))
+        for row in sweep.rows
+    ))
+
+
+def _unplaced(sweep: ScopeSweep | None, facts: Sequence[RegressionFact]) -> list[RegressionFact]:
+    """The rows a sweep table cannot show, which keep a line of their own."""
+    shown = {m for metrics in SWEEP_METRICS.values() for m in metrics}
+    if sweep is None:
+        return list(facts)
+    labels = {row.label for row in sweep.rows}
+    return [
+        f for f in facts
+        if f.sub_detector or f.metric not in shown or f.label not in labels
+    ]
+
+
+def _fact_line(fact: RegressionFact) -> list[str]:
+    subject = f"{fact.metric} ({fact.label})"
+    if fact.sub_detector:
+        subject += f" [{fact.sub_detector}]"
+    detail = measurement_phrase(fact.value, fact.baseline_median, fact.z_score)
+    lines = [
+        f"  - [{fact.id}] {subject} {fact.metric_family} "
+        f"{direction_phrase(fact.direction, fact.pct_change)}"
+        + (f" ({detail})" if detail else "")
+    ]
+    clause = history_clause(fact.history)
+    if clause:
+        lines.append(f"      history: {clause}")
+    return lines
+
+
+def _scope_blocks(request: AttributionRequest) -> list[str]:
+    """The evidence summary's part about the scopes under judgement: one block
+    per scope, with its id, its rows, the first pass's prior, and the readings
+    of its sweep, event records, history and machines."""
+    facts = _attributed_facts(request)
+    ids = scope_ids(facts)
+    sweeps = {sweep.scope: sweep for sweep in request.sweeps}
+    lines = [
+        "Scopes with confirmed regressions in this window — answer each as a "
+        "whole by its id:",
+    ]
+    for scope, sid in ids.items():
+        rows = [f for f in facts if _fact_scope(f) == scope]
+        sweep = sweeps.get(scope)
+        lines.append("")
+        row_ids = sorted((f.id for f in rows), key=_id_order)
+        lines.append(
+            f"[{sid}] {scope[0]} · {scope[2]} · {scope[1]} — {len(rows)} "
+            f"confirmed regression(s), ids {', '.join(row_ids[:8])}"
+            + (f", … (+{len(rows) - 8} more; each is marked in the sweep table below)"
+               if len(rows) > 8 else "")
+        )
+        lines += _prior_summary(rows)
+        if sweep is None:
+            continue
+        ranked = sorted(rows, key=_by_movement)
+        rep = representative(
+            sweep, [(f.label, f.metric, f) for f in ranked if f.history],
+        )
+        lines += scope_evidence_lines(
+            sweep,
+            history=rep[2].history if rep else None,
+            history_metric=rep[1] if rep else "",
+            history_label=rep[0] if rep else "baseline",
+        )
+    return lines
+
+
+def _summary_lines(request: AttributionRequest) -> list[str]:
+    """The evidence summary: what the pull request changes in benchmarked
+    geometry, every scope under judgement, and every other scope that measured
+    the window."""
+    by_detector: dict[str, list[ScopeSweep]] = {}
+    for sweep in request.sweeps:
+        by_detector.setdefault(sweep.detector, []).append(sweep)
+    lines = [EVIDENCE_HEADER, ""]
+    if request.touches:
+        lines.append(
+            f"What {request.slug} changes in the benchmarked detectors' geometry:"
+        )
+        lines += touch_lines(request.touches, by_detector)
+        lines.append("")
+    lines += _scope_blocks(request)
+    scored = set(scope_ids(_attributed_facts(request)))
+    other = other_scope_lines(request.sweeps, exclude=scored)
+    if other:
+        lines += ["", *other]
+    return lines
+
+
+def _sweep_detail_lines(request: AttributionRequest) -> list[str]:
+    """Every configuration of every scope under judgement, each confirmed
+    regression marked with its id — or, without sweeps, the regression rows
+    themselves."""
+    facts = _attributed_facts(request)
+    if not request.sweeps:
+        return _regression_lines(request)
+    sweeps = {sweep.scope: sweep for sweep in request.sweeps}
+    lines: list[str] = []
+    for scope, sid in scope_ids(facts).items():
+        rows = [f for f in facts if _fact_scope(f) == scope]
+        sweep = sweeps.get(scope)
+        lines.append("")
+        lines.append(f"[{sid}] {scope_name(sweep) if sweep else ' · '.join(scope)}:")
+        if sweep is not None:
+            lines += sweep_table_lines(_with_ids(sweep, rows))
+        unplaced = _unplaced(sweep, rows)
+        if unplaced:
+            lines.append("  Rows the table does not show:")
+            for fact in unplaced:
+                lines += _fact_line(fact)
     return lines
 
 
@@ -881,7 +1093,11 @@ def competitor_order(competitor: CompetingPR) -> tuple:
     )
 
 
-def _competitor_lines(competitors: list[CompetingPR], budgets: list[int]) -> list[str]:
+def _competitor_lines(
+    competitors: list[CompetingPR],
+    budgets: list[int],
+    by_detector: dict[str, list[ScopeSweep]] | None = None,
+) -> list[str]:
     """The rest of the window, each with the first pass's reading of it.
 
     This block is what turns "is this PR guilty?" into a question with an
@@ -928,6 +1144,8 @@ def _competitor_lines(competitors: list[CompetingPR], budgets: list[int]) -> lis
                 f"{competitor.scope_score:.0f}/100"
                 + (f" — {competitor.scope_reason}" if competitor.scope_reason else "")
             )
+        if competitor.touches:
+            lines += touch_lines(competitor.touches, by_detector or {})
         # The author's own material — description then diff — stays together and
         # last, after k4Bench's own account of the candidate.
         lines += body_block(competitor.body, _MAX_COMPETITOR_BODY_CHARS)
@@ -965,6 +1183,10 @@ def build_user_prompt(
         max(0, _MAX_DIFF_CHARS - subject_budget),
     )
 
+    by_detector: dict[str, list[ScopeSweep]] = {}
+    for sweep in request.sweeps:
+        by_detector.setdefault(sweep.detector, []).append(sweep)
+    size = f"+{request.additions}/-{request.deletions}"
     parts = [
         f"Change window: {window} (Key4hep release dates).",
         *(
@@ -972,22 +1194,36 @@ def build_user_prompt(
             for base, onset in request.platform_switches
             for line in platform_switch_lines(base, onset)
         ),
+        f"The pull request under review: {request.slug} — {request.title} ({size}).",
         "",
-        *_regression_lines(request),
+        *_summary_lines(request),
+        "",
+        "Details:",
+        *_sweep_detail_lines(request),
         *_history_lines(request),
-        *outcome_lines(request.outcomes, _MAX_OUTCOMES_LISTED),
+        *(
+            outcome_lines(request.outcomes, _MAX_OUTCOMES_LISTED)
+            if not request.sweeps else ()
+        ),
         *_package_lines(request),
+        # Diffs last, so no amount of code can push the evidence out of the
+        # model's reading.
         *_subject_lines(request, subject_budget),
-        *_competitor_lines(competitors, competitor_budgets),
+        *_competitor_lines(competitors, competitor_budgets, by_detector),
         # Last, and on their own budget: the analogues are background to the
         # window above, and the reviewed pull request and its competitors must
         # never lose a character of diff to them.
         *historical_lines(request.historical),
         "",
-        f"Decide, for each regression id above, how likely it is that "
-        f"{request.slug} caused it — judging what this diff can actually reach "
-        f"against which configurations moved and which did not.",
-        *_unanswered_instruction(only_ids),
+        f"Work in this order, scope by scope. From the evidence summary: what "
+        f"moved in this scope and in what shape — in the typical event, in a "
+        f"few long events, outside the event loop, in memory — and is it noise? "
+        f"What does {request.slug}'s diff change that this scope loads, does "
+        f"that mechanism predict what moved and what did not, here and in the "
+        f"other detectors it reaches, and what contradicts it? Then the "
+        f"likelihood that {request.slug} caused this scope's regressions, and "
+        f"an override for any row whose evidence differs from its scope's.",
+        *_unanswered_instruction(only_ids, request),
         _RESPONSE_INSTRUCTION + (_SCORE_ONLY if only_ids else _SCORE_ALL),
     ]
     return log_prompt_size(
@@ -1003,21 +1239,34 @@ def build_user_prompt(
     )
 
 
-def _unanswered_instruction(only_ids: Sequence[str]) -> list[str]:
+def _unanswered_instruction(
+    only_ids: Sequence[str], request: AttributionRequest | None = None,
+) -> list[str]:
     """The line that turns the full prompt into a request for a few rows.
 
     Placed after the decision instruction and before the response format, so it
     reads as a narrowing of what to *return* rather than of what to weigh — the
     paragraphs above still say to judge the window as a whole, and they must keep
-    meaning that."""
+    meaning that. The rows' scopes are named too, since a scope is how they are
+    answered."""
     if not only_ids:
         return []
+    scopes = ""
+    if request is not None:
+        facts = {f.id: f for f in _attributed_facts(request)}
+        ids = scope_ids(list(facts.values()))
+        named = sorted(
+            {ids[_fact_scope(facts[i])] for i in only_ids if i in facts},
+            key=lambda sid: int(sid[1:]),
+        )
+        if named:
+            scopes = f" (in scope(s) {', '.join(named)})"
     return [
         "",
         "Your earlier reply already scored the rest of this window. Re-read all "
         "of the above as evidence — the cross-configuration pattern is still what "
-        "decides these rows — but answer only for the ids left unanswered: "
-        f"{', '.join(only_ids)}.",
+        "decides these rows — but answer only for the ids left unanswered"
+        f"{scopes}: {', '.join(only_ids)}.",
     ]
 
 
@@ -1113,48 +1362,132 @@ def _fact_phrase(fact: RegressionFact) -> str:
         where += f" {fact.label}"
     return f"{where} {fact.metric}"
 
+def _scope_rows(request: AttributionRequest) -> dict[str, set[str]]:
+    """``scope id -> offered row ids`` — what a scope's answer applies to."""
+    facts = _attributed_facts(request)
+    ids = scope_ids(facts)
+    rows: dict[str, set[str]] = {sid: set() for sid in ids.values()}
+    for fact in facts:
+        rows[ids[_fact_scope(fact)]].add(fact.id)
+    return rows
+
+
 def _parse_likelihoods(
-    data: dict, known: set[str], *, slug: str = ""
+    data: dict,
+    known: set[str],
+    *,
+    slug: str = "",
+    scope_rows: dict[str, set[str]] | None = None,
 ) -> dict[str, float]:
-    """The ``attributions`` rows of a reply, keyed by id and filtered to *known*.
+    """The row likelihoods of a reply, keyed by id and filtered to *known*.
+
+    A reply answers per scope (``scopes``), and a scope's likelihood applies to
+    every offered row of it; a row's own answer — an ``overrides`` entry of its
+    scope, or an ``attributions`` row — takes precedence over its scope's. An
+    override naming a row of another scope is dropped, not moved: the model
+    placed it against the wrong evidence.
 
     Only-echo lives here: an id the prompt did not offer is a guess, and a guess
     about an unreviewed row is exactly what this pipeline must not publish. Shape
     drift — not an object, a row missing ``id``, a ``likelihood`` that is not a
-    number — skips that row rather than raising.
+    number — skips that entry rather than raising.
 
-    Every way a row is dropped is *counted and logged*, because all of them look
-    identical downstream: the row simply has no score, and "the model never
+    Every way an entry is dropped is *counted and logged*, because all of them
+    look identical downstream: the row simply has no score, and "the model never
     mentioned it", "it answered with prose", and "it echoed the same id twice"
-    are three different problems with the same symptom."""
-    rows = data.get("attributions")
-    if not isinstance(rows, list):
-        return {}
-    likelihoods: dict[str, float] = {}
-    malformed = unknown_id = unreadable = duplicate = 0
-    for row in rows:
+    are different problems with the same symptom."""
+    by_scope: dict[str, float] = {}
+    by_row: dict[str, float] = {}
+    counts = {"malformed": 0, "unknown id": 0, "unreadable likelihood": 0,
+              "duplicate id": 0, "unknown scope": 0, "override outside its scope": 0}
+    entries = 0
+
+    def row_score(row: object, allowed: set[str]) -> None:
+        nonlocal entries
+        entries += 1
         if not isinstance(row, dict):
-            malformed += 1
-            continue
+            counts["malformed"] += 1
+            return
         row_id = row.get("id")
         if row_id is None or str(row_id) not in known:
-            unknown_id += 1
-            continue
+            counts["unknown id"] += 1
+            return
+        if str(row_id) not in allowed:
+            counts["override outside its scope"] += 1
+            return
         score = parse_score(row.get("likelihood"))
         if score is None:
-            unreadable += 1
-            continue  # unreadable likelihood: reject the row, don't publish 0%
-        if str(row_id) in likelihoods:
-            duplicate += 1
-        likelihoods[str(row_id)] = score
-    if malformed or unknown_id or unreadable or duplicate:
+            counts["unreadable likelihood"] += 1
+            return
+        if str(row_id) in by_row:
+            counts["duplicate id"] += 1
+        by_row[str(row_id)] = score
+
+    scopes = data.get("scopes")
+    if isinstance(scopes, list):
+        for scope in scopes:
+            entries += 1
+            if not isinstance(scope, dict):
+                counts["malformed"] += 1
+                continue
+            sid = str(scope.get("scope") or "").strip()
+            rows = (scope_rows or {}).get(sid)
+            if rows is None:
+                counts["unknown scope"] += 1
+                continue
+            score = parse_score(scope.get("likelihood"))
+            if score is None:
+                counts["unreadable likelihood"] += 1
+            else:
+                for row_id in rows & known:
+                    by_scope[row_id] = score
+            overrides = scope.get("overrides")
+            if isinstance(overrides, list):
+                for override in overrides:
+                    row_score(override, rows & known)
+    rows = data.get("attributions")
+    if isinstance(rows, list):
+        for row in rows:
+            row_score(row, known)
+    likelihoods = {**by_scope, **by_row}
+    if any(counts.values()):
         _log.warning(
-            "attribute: %s — reply carried %d row(s), %d usable: %d malformed, "
-            "%d unknown id, %d unreadable likelihood, %d duplicate id",
-            slug or "?", len(rows), len(likelihoods),
-            malformed, unknown_id, unreadable, duplicate,
+            "attribute: %s — reply carried %d entr(ies), %d row(s) usable: %s",
+            slug or "?", entries, len(likelihoods),
+            ", ".join(f"{n} {what}" for what, n in counts.items() if n),
         )
     return likelihoods
+
+
+#: The longest clause kept from a scope's reasoning. It is logged, not
+#: published, and a clause longer than this is not the one sentence asked for.
+_MAX_REASONING_CHARS = 400
+
+
+def _parse_scopes(
+    data: dict, request: AttributionRequest,
+) -> tuple[ScopeJudgement, ...]:
+    """The reply's per-scope reasoning, for the offered scopes only."""
+    raw = data.get("scopes")
+    if not isinstance(raw, list):
+        return ()
+    by_id = {sid: scope for scope, sid in scope_ids(_attributed_facts(request)).items()}
+    judgements = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        sid = str(item.get("scope") or "").strip()
+        score = parse_score(item.get("likelihood"))
+        if sid not in by_id or score is None:
+            continue
+        judgements.append(ScopeJudgement(
+            scope_id=sid, scope=by_id[sid], likelihood=score,
+            reading=one_line(item.get("reading"), _MAX_REASONING_CHARS),
+            mechanism=one_line(item.get("mechanism"), _MAX_REASONING_CHARS),
+            supports=one_line(item.get("supports"), _MAX_REASONING_CHARS),
+            contradicts=one_line(item.get("contradicts"), _MAX_REASONING_CHARS),
+        ))
+    return tuple(judgements)
 
 
 def _parse_attribution(
@@ -1177,7 +1510,8 @@ def _parse_attribution(
         return None
     facts = _attributed_facts(request)
     likelihoods = _parse_likelihoods(
-        data, {f.id for f in facts}, slug=request.slug
+        data, {f.id for f in facts}, slug=request.slug,
+        scope_rows=_scope_rows(request),
     )
     if not likelihoods:
         return None
@@ -1211,8 +1545,19 @@ def _parse_attribution(
             request.slug, len(likelihoods),
         )
         return None
+    scopes = _parse_scopes(data, request)
+    for judgement in scopes:
+        _log.info(
+            "attribute: %s — %s %s: %.0f%% — reading: %s | mechanism: %s | "
+            "supports: %s | contradicts: %s",
+            request.slug, judgement.scope_id, " · ".join(judgement.scope),
+            judgement.likelihood, judgement.reading or "-",
+            judgement.mechanism or "-", judgement.supports or "-",
+            judgement.contradicts or "-",
+        )
     return Attribution(
         summary=summary, likelihoods=likelihoods, assessment=assessment,
+        scopes=scopes,
     )
 
 

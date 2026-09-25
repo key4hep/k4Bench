@@ -29,8 +29,12 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from k4bench.labels import pretty_platform, pretty_sample
 from k4bench.regression.models import (
     Direction,
+    EventProfile,
+    EventSample,
     HostFact,
     HostLevel,
+    LongEvent,
+    MatchedEvent,
     MetricVerdict,
     NightlyReport,
     RegionDelta,
@@ -426,6 +430,77 @@ def _region_deltas(raw: object) -> tuple[RegionDelta, ...]:
     return tuple(deltas)
 
 
+def _finite(raw: object) -> float | None:
+    """*raw* as a finite float, or ``None``."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _event_sample(raw: object) -> EventSample | None:
+    """One end of an event profile, or ``None`` when it cannot be read. The
+    count and the two central figures are required; everything else degrades
+    to unknown on its own."""
+    if not isinstance(raw, dict):
+        return None
+    mean, median = _finite(raw.get("mean")), _finite(raw.get("median"))
+    try:
+        nights, n_events = int(raw.get("nights") or 0), int(raw.get("n_events") or 0)
+    except (TypeError, ValueError):
+        return None
+    if mean is None or median is None or n_events <= 0:
+        return None
+    longest = []
+    for item in raw.get("longest") or ():
+        if not isinstance(item, dict):
+            continue
+        seconds = _finite(item.get("seconds"))
+        try:
+            event = int(item["event"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if seconds is None:
+            continue
+        longest.append(LongEvent(
+            event=event, seconds=seconds,
+            region=str(item.get("region") or ""),
+            region_seconds=_finite(item.get("region_seconds")),
+        ))
+    return EventSample(
+        nights=nights, n_events=n_events, mean=mean, median=median,
+        stepping_mean=_finite(raw.get("stepping_mean")),
+        mean_without_longest=_finite(raw.get("mean_without_longest")),
+        longest=tuple(longest),
+    )
+
+
+def _event_profile(raw: object) -> EventProfile | None:
+    """A verdict's event profile, rebuilt from JSON with the tolerance of
+    :func:`_region_deltas`: a profile missing either end is no profile, which
+    every reader treats as unknown."""
+    if not isinstance(raw, dict):
+        return None
+    base, onset = _event_sample(raw.get("base")), _event_sample(raw.get("onset"))
+    if base is None or onset is None:
+        return None
+    matched = []
+    for item in raw.get("matched") or ():
+        if not isinstance(item, dict):
+            continue
+        try:
+            event = int(item["event"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        matched.append(MatchedEvent(
+            event=event, base=_finite(item.get("base")), onset=_finite(item.get("onset")),
+        ))
+    return EventProfile(base=base, onset=onset, matched=tuple(matched))
+
+
 def _unjudged(raw: object) -> Unjudged | None:
     """Best-effort parser for an additive unjudged-cause value."""
     if raw is None:
@@ -448,6 +523,7 @@ def from_json(data: dict) -> NightlyReport:
                 "direction": Direction(v["direction"]),
                 "history": _history(v.get("history")),
                 "region_deltas": _region_deltas(v.get("region_deltas")),
+                "event_profile": _event_profile(v.get("event_profile")),
                 "unjudged": _unjudged(v.get("unjudged")),
             })
             for v in g.get("verdicts", [])

@@ -168,8 +168,10 @@ def test_prompt_asks_the_plausibility_question_about_this_run():
     # thing read before the model answers.
     prompt = _build_user_prompt(_request(sample="p8_ee_Zbb_ecm91"))
     question = prompt.rsplit("\n\n", 1)[-1]
-    assert "makes sense that this change affected" in question
-    assert "IDEA_o1_v03" in question and "p8_ee_Zbb_ecm91" in question
+    assert "what its diff changes that the IDEA_o1_v03 run" in question
+    assert "p8_ee_Zbb_ecm91" in question
+    # The movement is judged first, then each candidate's mechanism against it.
+    assert question.index("step_assessment") < question.index("for each pull")
 
 
 def test_prompt_allows_a_shared_infrastructure_answer():
@@ -840,7 +842,7 @@ def test_the_prompt_carries_the_region_breakdown_of_the_largest_movers():
                    pct_change=0.2, label="baseline", history=_history(),
                    regions=(RegionDelta("HCAL_barrel", 0.31, 4.52, 4.21),)),
     )))
-    assert "Where the change landed inside the detector" in prompt
+    assert "How the typical event's time moved per detector region" in prompt
     assert "HCAL_barrel: 0.31 -> 4.52 s/event (+4.21)" in prompt
 
 
@@ -897,17 +899,147 @@ def test_the_ranker_is_told_when_the_window_spans_a_platform_switch():
     assert "platform switch" not in _build_user_prompt(_request())
 
 
-def test_a_per_event_step_says_how_much_of_it_the_regions_account_for():
-    prompt = _build_user_prompt(_request(metrics=(
+# ── The evidence summary ──────────────────────────────────────────────────────
+
+def _sweep_fixture():
+    """ILD_FCCee_v02 and ILD_FCCee_v01 on 09-25, reduced: v02's baseline stepped
+    through a few long events, v01 received the same change and did not step."""
+    from k4bench.blame.sweep import scope_sweep
+    from k4bench.regression.models import (
+        Direction, MetricVerdict, RunGroupReport, Severity,
+    )
+
+    def v(detector, label, metric, pct, stepped=False):
+        s = Severity.CONFIRMED if stepped else Severity.OK
+        return MetricVerdict(
+            detector=detector, platform="x86_64-el9-gcc16-opt",
+            sample="single_e-_10GeV", label=label, metric_family="time",
+            metric=metric, sub_detector=None, run_id="2026-09-25",
+            run_date="2026-09-24", value=1 + pct, baseline_median=1.0,
+            baseline_mad=0.01, pct_change=pct, z_score=5.0, severity=s,
+            direction=Direction.DOWN if stepped else Direction.NONE, reason="",
+            onset_run_id="2026-09-24" if stepped else None,
+            onset_run_date="2026-09-24" if stepped else None,
+            last_accepted_run_id="2026-09-23" if stepped else None,
+            last_accepted_run_date="2026-09-23" if stepped else None,
+        )
+
+    def group(detector, verdicts):
+        return scope_sweep(RunGroupReport(
+            detector=detector, platform="x86_64-el9-gcc16-opt",
+            sample="single_e-_10GeV", k4h_release="key4hep-2026-09-24",
+            run_date="2026-09-25", run_id="2026-09-25", verdicts=verdicts,
+            reliable=True,
+            geometry_path=f"FCCee/ILD_FCCee/compact/{detector}/{detector}.xml",
+        ), base_release="2026-09-23", onset_release="2026-09-24")
+
+    v02 = group("ILD_FCCee_v02", [
+        v("ILD_FCCee_v02", "baseline", "mean_time_s", -0.072, stepped=True),
+        v("ILD_FCCee_v02", "baseline", "median_time_s", -0.012),
+        v("ILD_FCCee_v02", "baseline", "trimmed_mean_time_s", -0.013),
+        v("ILD_FCCee_v02", "no_Vertex", "mean_time_s", -0.010),
+    ])
+    v01 = group("ILD_FCCee_v01", [
+        v("ILD_FCCee_v01", "baseline", "mean_time_s", 0.016),
+        v("ILD_FCCee_v01", "baseline", "median_time_s", -0.008),
+    ])
+    return v02, v01
+
+
+def _summarised_request():
+    from k4bench.blame.geometry import DetectorTouch, FileChange
+    v02, v01 = _sweep_fixture()
+    change = FileChange(
+        path="ILD_FCCee_v02.xml",
+        includes_added=("../../../CLD/compact/CLD_o2_v09/Vertex_o4_v08_smallBP.xml",),
+        includes_removed=("../../../CLD/compact/CLD_o2_v07/Vertex_o4_v07_smallBP.xml",),
+    )
+    touches = tuple(
+        DetectorTouch(
+            detector=d, geometry_path=f"FCCee/ILD_FCCee/compact/{d}/{d}.xml",
+            own_dir=f"FCCee/ILD_FCCee/compact/{d}/",
+            own_files=(f"FCCee/ILD_FCCee/compact/{d}/{d}.xml",),
+            changes=(dataclasses.replace(change, path=f"{d}.xml"),),
+            same_as=(other,),
+        )
+        for d, other in (("ILD_FCCee_v01", "ILD_FCCee_v02"), ("ILD_FCCee_v02", "ILD_FCCee_v01"))
+    )
+    request = _request(detector="ILD_FCCee_v02", sample="single_e-_10GeV", candidates=(
+        RankCandidate(repo="key4hep/k4geo", number=612, title="Refactor the vertex",
+                      files=tuple(t.own_files[0] for t in touches),
+                      patch="@@\n+ include", touches=touches),
+        RankCandidate(repo="AIDASoft/DD4hep", number=20, title="Refactor the field",
+                      files=("core/field.cpp",), patch="@@\n- old code"),
+    ), metrics=(
         MetricStep(metric="mean_time_s", metric_family="time", direction="DOWN",
-                   pct_change=-0.072, label="baseline", value=0.49,
-                   baseline_median=0.528,
-                   regions=(RegionDelta("TPC", 0.0808, 0.0804, -0.0004),)),
-        MetricStep(metric="wall_time_s", metric_family="time", direction="DOWN",
-                   pct_change=-0.071, label="baseline", value=517.7,
-                   baseline_median=557.5,
-                   regions=(RegionDelta("TPC", 0.0808, 0.0804, -0.0004),)),
-    )))
-    assert prompt.count(
-        "regions: the detector regions that moved most account for 1% of this step"
-    ) == 1
+                   pct_change=-0.072, label="baseline"),
+    ))
+    return dataclasses.replace(request, sweep=v02, window_sweeps=(v01, v02))
+
+
+def test_the_evidence_summary_comes_first_and_the_diffs_last():
+    prompt = _build_user_prompt(_summarised_request())
+    summary = prompt.index("EVIDENCE SUMMARY")
+    table = prompt.index("All 2 configurations of ILD_FCCee_v02")
+    candidates = prompt.index("Candidate pull requests")
+    diff = prompt.index("----- BEGIN DIFF -----")
+    assert summary < table < candidates < diff
+    # The sweep replaces the bullets and the non-confirming list.
+    assert "Metrics that stepped across the window" not in prompt
+    assert "did NOT confirm a step" not in prompt
+
+
+def test_the_summary_says_the_typical_event_did_not_follow():
+    prompt = _build_user_prompt(_summarised_request())
+    head = prompt[:prompt.index("Details:")]
+    assert "a few long events carry it" in head
+    assert "median -1.2%, trimmed mean -1.3%" in head
+
+
+def test_a_candidate_making_the_same_change_elsewhere_names_that_detector_s_outcome():
+    prompt = _build_user_prompt(_summarised_request())
+    head = prompt[:prompt.index("Details:")]
+    assert (
+        "- Candidates whose changed files are in this detector's geometry:" in head
+    )
+    line = next(line for line in head.splitlines() if "key4hep/k4geo#612 changes" in line)
+    assert "include switched ../../../CLD/compact/CLD_o2_v07/Vertex_o4_v07_smallBP.xml" in line
+    assert (
+        "It makes the same change to ILD_FCCee_v01, which measured in this window — "
+        "single_e-_10GeV: no time step (mean event time +1.6% to +1.6% on 1 "
+        "configurations, baseline +1.6%)"
+    ) in line
+    # Only candidates that reach this geometry are named; DD4hep#20 is not.
+    assert "DD4hep#20" not in head
+    # The other scope that measured the window is listed as its own line.
+    assert "- ILD_FCCee_v01 · single_e-_10GeV (Single e⁻ · 10 GeV)" in head
+
+
+def test_the_candidate_block_carries_its_geometry_map():
+    prompt = _build_user_prompt(_summarised_request())
+    block = prompt[prompt.index("- #612 — "):prompt.index("## AIDASoft/DD4hep")]
+    assert "benchmarked geometry it reaches" in block
+    assert block.index("- ILD_FCCee_v02 — this run") < block.index("- ILD_FCCee_v01:")
+
+
+def test_the_evidence_reading_is_logged_and_never_stored(caplog):
+    reply = (
+        '{"evidence_reading": "One 35-second event carries the mean.", '
+        '"step_assessment": {"verdict": "likely_noise", "reason": "tail"}, '
+        '"rankings": [{"repo": "key4hep/k4geo", "pr": 10, "likelihood": 20, '
+        '"reason": "vertex include"}, {"repo": "AIDASoft/DD4hep", "pr": 20, '
+        '"likelihood": 5, "reason": "field code"}]}'
+    )
+    ranker = _ranker([_completion(reply)])
+    with caplog.at_level("INFO"):
+        result = ranker.rank(_request())
+    assert "evidence reading: One 35-second event carries the mean." in caplog.text
+    assert result.assessment.verdict == "likely_noise"
+    assert not hasattr(result, "reading")
+
+
+def test_the_system_prompt_carries_the_weighing_rules():
+    from k4bench.blame.prompt import WEIGHING_RULE
+    assert WEIGHING_RULE in rank_mod._SYSTEM_PROMPT
+    assert "Same change, different outcome" in WEIGHING_RULE
+    assert "only for a step in the typical event or in memory" in WEIGHING_RULE

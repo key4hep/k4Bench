@@ -10,6 +10,14 @@ The ranker never saw that line, and was told the benchmark host had changed:
 * #612's alphabetically first hunks (CMakeLists, the o1_v03 and o1_v04
   variants) spent its whole diff sample, so the o2_v01 hunk was dropped.
 
+The same window also confirmed ILD time steps, and #612 made the identical
+include switch to ILD_FCCee_v01 and ILD_FCCee_v02. Neither is a change in what an
+event costs: in both, the stepped configurations' median and trimmed mean held
+and one long event entered or left the fixed-seed sample (ILD_FCCee_v02's
+baseline lost a 35.5-second event); ILD_FCCee_v01's baseline did not move. The
+prompts must say all of that before any diff: the removal sweep as one picture,
+the long events, and ILD_FCCee_v01 as the detector that received the same change.
+
 Everything here goes through the public path production takes: report JSON
 through :func:`~k4bench.regression.render.from_json`, GitHub responses through
 the real :func:`~k4bench.blame.github.resolve_repo_prs`, the builder's own
@@ -26,6 +34,8 @@ from k4bench.blame.builder import build_blame_report
 from k4bench.blame.github import GitHubClient
 from k4bench.blame.rank import RankResult, _build_user_prompt
 from k4bench.regression.render import from_json
+
+_ILD = "FCCee/ILD_FCCee/compact/"
 
 _PLAT = "x86_64-almalinux9-gcc14.2.0-opt"
 _OWN = "FCCee/ALLEGRO/compact/ALLEGRO_o2_v01/"
@@ -70,7 +80,83 @@ def _report_json() -> dict:
             "k4h_release": "key4hep-2026-09-24", "run_date": "2026-09-25",
             "run_id": "2026-09-25", "verdicts": [verdict], "reliable": True,
             "geometry_path": _OWN + "ALLEGRO_o2_v01.xml",
-        }],
+        }, _ild_group("ILD_FCCee_v01", [
+            ("baseline", 0.016, -0.008, -0.002, False, None),
+            ("no_CompSol", 0.111, 0.009, 0.016, True, _profile(
+                (106, 6.42, "TPC"), (322, 51.65, "EcalBarrel"), 0.5635, 0.6276,
+                0.5576, 0.5765,
+            )),
+            ("no_HcalEndcap", -0.112, -0.013, -0.002, True, _profile(
+                (646, 41.65, "EcalBarrel"), (949, 5.11, "TPC"), 0.6222, 0.5570,
+                0.5808, 0.5528,
+            )),
+            *((f"no_Flat{i}", 0.01 * (i % 3 - 1), 0.0, 0.0, False, None) for i in range(6)),
+        ]), _ild_group("ILD_FCCee_v02", [
+            ("baseline", -0.072, -0.012, -0.013, True, _profile(
+                (37, 35.53, "SET"), (949, 8.81, "unattributed"), 0.5277, 0.4939,
+                0.4927, 0.4855,
+            )),
+            ("no_ScreenSol", -0.120, -0.011, -0.018, True, None),
+            ("no_TPC", 0.108, -0.007, -0.005, True, None),
+            ("no_LumiCal", -0.090, -0.011, -0.010, True, None),
+            ("no_Vertex", -0.018, -0.012, -0.016, False, None),
+            ("no_InnerTrackers", -0.010, -0.020, -0.019, False, None),
+        ])],
+    }
+
+
+def _profile(base_longest, onset_longest, base_mean, onset_mean, base_wo, onset_wo):
+    """An event profile: each end's longest event, mean and mean without it; the
+    median held and stepping carried the whole move."""
+    def sample(longest, mean, without):
+        event, seconds, region = longest
+        return {
+            "nights": 1, "n_events": 999, "mean": mean, "median": 0.43,
+            "stepping_mean": mean - 0.003, "mean_without_longest": without,
+            "longest": [{"event": event, "seconds": seconds, "region": region,
+                         "region_seconds": seconds * 0.9}],
+        }
+    return {
+        "base": sample(base_longest, base_mean, base_wo),
+        "onset": sample(onset_longest, onset_mean, onset_wo),
+    }
+
+
+def _ild_group(detector: str, rows) -> dict:
+    """One ILD scope: *rows* are ``(label, mean, median, trimmed, stepped,
+    profile)``; a stepped row confirms its mean and wall time."""
+    verdicts = []
+    for label, mean, median, trimmed, stepped, profile in rows:
+        for metric, pct in (
+            ("mean_time_s", mean), ("median_time_s", median),
+            ("trimmed_mean_time_s", trimmed), ("wall_time_s", mean),
+        ):
+            confirmed = stepped and metric in ("mean_time_s", "wall_time_s")
+            verdict = {
+                "detector": detector, "platform": _PLAT, "sample": "single_e-",
+                "label": label, "metric_family": "time", "metric": metric,
+                "sub_detector": None, "run_id": "2026-09-25", "run_date": "2026-09-24",
+                "value": 1 + pct, "baseline_median": 1.0, "baseline_mad": 0.01,
+                "pct_change": pct, "z_score": 7.0,
+                "severity": "CONFIRMED" if confirmed else "OK",
+                "direction": ("UP" if pct > 0 else "DOWN") if confirmed else "NONE",
+                "reason": "step" if confirmed else "within baseline variation",
+            }
+            if confirmed:
+                verdict.update({
+                    "onset_run_id": "2026-09-24", "onset_run_date": "2026-09-24",
+                    "last_accepted_run_id": "2026-09-23",
+                    "last_accepted_run_date": "2026-09-23",
+                    "first_confirmed_run_id": "2026-09-25",
+                })
+                if metric == "mean_time_s" and profile is not None:
+                    verdict["event_profile"] = profile
+            verdicts.append(verdict)
+    return {
+        "detector": detector, "platform": _PLAT, "sample": "single_e-",
+        "k4h_release": "key4hep-2026-09-24", "run_date": "2026-09-25",
+        "run_id": "2026-09-25", "verdicts": verdicts, "reliable": True,
+        "geometry_path": f"{_ILD}{detector}/{detector}.xml",
     }
 
 
@@ -145,7 +231,24 @@ def _k4geo_612() -> list[dict]:
          "patch": _hunk("idea", 400)},
         {"filename": "FCCee/IDEA/compact/IDEA_o2_v01_CI/IDEA_o2_v01_CI.xml",
          "patch": _hunk("idea ci", 400)},
+        {"filename": f"{_ILD}ILD_FCCee_v01/ILD_FCCee_v01.xml",
+         "patch": _ild_switch("vertex and lumiCal from CLD_02_v07")},
+        {"filename": f"{_ILD}ILD_FCCee_v02/ILD_FCCee_v02.xml",
+         "patch": _ild_switch("vertex, innerTracker and lumiCal from CLD_02_v07")},
     ]
+
+
+def _ild_switch(comment: str) -> str:
+    """#612's change to an ILD compact file: the vertex include switched and a
+    materials file added. The two variants' hunks differ only in a comment."""
+    return (
+        "@@ -13,6 +13,7 @@\n   <includes>\n"
+        '+    <gdmlFile  ref="../ILD_common_FCCee/materials.xml"/>\n'
+        "   </includes>\n@@ -69,9 +70,14 @@\n"
+        f"-  <!-- {comment} -->\n+  <!-- lumiCal from CLD_02_v07 -->\n"
+        '-  <include ref="../../../CLD/compact/CLD_o2_v07/Vertex_o4_v07_smallBP.xml"/>\n'
+        '+  <include ref="../../../CLD/compact/CLD_o2_v09/Vertex_o4_v08_smallBP.xml"/>'
+    )
 
 
 def _competitor(number: int) -> list[dict]:
@@ -176,7 +279,7 @@ class _CapturingRanker:
         return RankResult(rankings={})
 
 
-def _incident_prompt() -> str:
+def _incident_prompt(detector: str = "ALLEGRO_o2_v01") -> str:
     report = from_json(json.loads(json.dumps(_report_json())))
     github = GitHubClient(token="t", session=_GitHub({
         "key4hep/k4geo": {612: _k4geo_612()},
@@ -187,9 +290,16 @@ def _incident_prompt() -> str:
         report, packages_for_release=_provenance, github=github, ranker=ranker,
         historical_diffs=False,
     )
-    (request,) = ranker.requests
+    (request,) = [r for r in ranker.requests if r.detector == detector]
     assert len(request.candidates) == 21
     return _build_user_prompt(request)
+
+
+def _summary(prompt: str) -> str:
+    """Everything the model reads before the details and the diffs — the whole
+    prompt, when it has no such section."""
+    at = prompt.find("\nDetails:")
+    return prompt if at < 0 else prompt[:at]
 
 
 def _candidate_block(prompt: str, number: int) -> str:
@@ -214,10 +324,50 @@ def test_the_host_evidence_says_the_step_reproduced_on_the_same_machine():
 def test_the_decisive_hunk_of_k4geo_612_reaches_the_ranker():
     prompt = _incident_prompt()
     block = _candidate_block(prompt, 612)
-    assert f"own compact directory {_OWN} (DectDimensions.xml, display.xml)" in block
+    reach = next(line for line in block.splitlines() if "- ALLEGRO_o2_v01 — this run" in line)
+    assert f"its compact directory {_OWN} — DectDimensions.xml:" in reach
+    assert "; display.xml:" in reach
     assert block.index(f"--- {_OWN}DectDimensions.xml ---") < block.index(
         "--- FCCee/ALLEGRO/compact/ALLEGRO_o1_v03/DectDimensions.xml ---"
     )
     assert _SIWR in block
     # Favoured: it is served before the even share every competitor gets.
     assert len(block) > 3 * len(_candidate_block(prompt, 1500))
+
+
+def test_ild_v02_is_told_the_typical_event_held_and_one_long_event_carried_the_mean():
+    summary = _summary(_incident_prompt("ILD_FCCee_v02"))
+    assert "a few long events carry it" in summary
+    assert "median -1.2%, trimmed mean -1.3%" in summary
+    assert (
+        "baseline: longest event 35.5 s (event 37, 32.0 s of it in SET) at the "
+        "base, 8.8 s (event 949, 7.9 s of it in unattributed) at the onset"
+    ) in summary
+    assert "Geant4 stepping carries 100% of the mean's move" in summary
+
+
+def test_ild_v02_is_shown_its_removal_sweep_as_one_picture():
+    summary = _summary(_incident_prompt("ILD_FCCee_v02"))
+    assert "Against the direction of the rest: no_TPC +10.8%." in summary
+    assert "Without the step — judged and moved less than a third of it" in summary
+    assert "no_InnerTrackers -1.0%" in summary
+
+
+def test_the_612_block_names_ild_v01_as_a_detector_that_got_the_same_change():
+    summary = _summary(_incident_prompt("ILD_FCCee_v02"))
+    line = next(line for line in summary.splitlines() if "key4hep/k4geo#612 changes" in line)
+    assert (
+        "include switched ../../../CLD/compact/CLD_o2_v07/Vertex_o4_v07_smallBP.xml "
+        "→ ../../../CLD/compact/CLD_o2_v09/Vertex_o4_v08_smallBP.xml"
+    ) in line
+    assert "It makes the same change to ILD_FCCee_v01, which measured in this window" in line
+    assert "baseline +1.6% (not stepped)" in line
+    assert "isolated configurations on a flat baseline" in line
+
+
+def test_ild_v01_is_told_its_steps_are_isolated_and_opposite():
+    summary = _summary(_incident_prompt("ILD_FCCee_v01"))
+    assert "The baseline did not step: mean event time +1.6%." in summary
+    assert "They stepped in opposite directions." in summary
+    assert "These are isolated configurations on a baseline that did not move." in summary
+    assert "51.6 s (event 322" in summary

@@ -289,7 +289,7 @@ def test_a_very_wide_window_keeps_the_largest_movements():
 
 def test_the_system_prompt_names_the_cross_configuration_rules():
     system = attr_mod._SYSTEM_PROMPT
-    assert "Reason across configurations" in system
+    assert "Reason across scopes" in system
     assert "no_" in system          # the detector-removal sweep's meaning
     assert "owner/repo#number" in system  # how an alternative may be named
     assert "Never write a URL" in system
@@ -362,10 +362,10 @@ def test_the_follow_up_keeps_the_window_and_narrows_only_the_answer():
     second = attributor.client.session.calls[1].json["messages"][-1]["content"]
     assert "skipped_metric" in second
     assert "answered_metric" in second
-    assert "answer only for the ids left unanswered: r2" in second
-    # …and the standing "score every regression listed above" is gone, rather
-    # than left contradicting the narrowed ask.
-    assert "Score every regression listed above" not in second
+    assert "answer only for the ids left unanswered (in scope(s) S1): r2" in second
+    # …and the standing "answer every scope listed above" is gone, rather than
+    # left contradicting the narrowed ask.
+    assert "Answer every scope listed above" not in second
 
 
 def test_a_row_the_follow_up_never_answers_is_absent_not_zero():
@@ -715,3 +715,83 @@ def test_the_subject_diff_keeps_its_budget_beside_a_wall_of_analogues():
     ))
     assert "@@ subject diff" in prompt
     assert prompt.count("s" * 1000) >= 1
+
+
+# ── Per-scope answers ─────────────────────────────────────────────────────────
+
+def _scoped_request():
+    return _request(regressions=(
+        _fact("r1", detector="ALLEGRO_o2_v01", metric="peak_vmem_mb"),
+        _fact("r2", detector="ALLEGRO_o2_v01", metric="wall_time_s"),
+        _fact("r3", detector="ILD_FCCee_v01", metric="mean_time_s"),
+        _fact("r4", detector="ILD_FCCee_v02", metric="mean_time_s"),
+        _fact("r5", detector="ILD_FCCee_v02", metric="wall_time_s"),
+    ))
+
+
+def _scoped_reply(scopes, summary="ALLEGRO's memory fell with the wrapper."):
+    return json.dumps({
+        "step_assessment": {"verdict": "real_change", "reason": "memory held"},
+        "scopes": scopes, "summary": summary,
+    })
+
+
+def test_a_scope_answer_covers_every_row_of_its_scope():
+    attributor = _attributor([_completion(_scoped_reply([
+        {"scope": "S1", "likelihood": 94, "reading": "memory stepped everywhere",
+         "mechanism": "SiWr_nLayers 2 -> 1", "supports": "every config",
+         "contradicts": ""},
+        {"scope": "S2", "likelihood": 15},
+        {"scope": "S3", "likelihood": 30},
+    ]))])
+    attribution = attributor.attribute(_scoped_request())
+    assert attribution.likelihoods == {"r1": 94, "r2": 94, "r3": 15, "r4": 30, "r5": 30}
+    assert [(j.scope_id, j.scope[0], j.mechanism) for j in attribution.scopes] == [
+        ("S1", "ALLEGRO_o2_v01", "SiWr_nLayers 2 -> 1"),
+        ("S2", "ILD_FCCee_v01", ""),
+        ("S3", "ILD_FCCee_v02", ""),
+    ]
+
+
+def test_a_row_override_beats_its_scope_and_one_outside_it_is_dropped():
+    attributor = _attributor([_completion(_scoped_reply([
+        {"scope": "S1", "likelihood": 94,
+         "overrides": [{"id": "r2", "likelihood": 40}, {"id": "r4", "likelihood": 99}]},
+        {"scope": "S2", "likelihood": 15},
+        {"scope": "S3", "likelihood": 30},
+        {"scope": "S9", "likelihood": 99},
+    ]))])
+    attribution = attributor.attribute(_scoped_request())
+    # r4 belongs to S3: an override filed under S1 was placed against the wrong
+    # evidence and does not move; the invented S9 answers nothing.
+    assert attribution.likelihoods == {"r1": 94, "r2": 40, "r3": 15, "r4": 30, "r5": 30}
+
+
+def test_rows_answered_the_old_way_still_count():
+    attributor = _attributor([_completion(_reply(r1=90, r2=80, r3=10, r4=20, r5=20))])
+    attribution = attributor.attribute(_scoped_request())
+    assert attribution.likelihoods == {"r1": 90, "r2": 80, "r3": 10, "r4": 20, "r5": 20}
+
+
+def test_a_scope_the_reply_skipped_is_asked_again_by_its_scope():
+    attributor = _attributor([
+        _completion(_scoped_reply([
+            {"scope": "S1", "likelihood": 94}, {"scope": "S2", "likelihood": 15},
+        ])),
+        _completion(_scoped_reply([{"scope": "S3", "likelihood": 30}])),
+    ])
+    attribution = attributor.attribute(_scoped_request())
+    assert attribution.likelihoods["r4"] == 30 and attribution.likelihoods["r5"] == 30
+    second = attributor.client.session.calls[1].json["messages"][-1]["content"]
+    assert "answer only for the ids left unanswered (in scope(s) S3): r4, r5" in second
+
+
+def test_the_prompt_asks_per_scope_and_names_each_scope_s_rows():
+    prompt = build_user_prompt(_scoped_request())
+    assert "[S1] ALLEGRO_o2_v01 · p8_ee_Zbb_ecm91" in prompt
+    assert "2 confirmed regression(s), ids r1, r2" in prompt
+    assert "[S3] ILD_FCCee_v02 · p8_ee_Zbb_ecm91" in prompt
+    assert '"scopes": [{"scope": "<a scope id given above, e.g. S1>"' in prompt
+    assert "Answer every scope listed above and invent none." in prompt
+    # One prior line per scope when its rows agree.
+    assert prompt.count("prior on every row: ranked 91/100") == 3

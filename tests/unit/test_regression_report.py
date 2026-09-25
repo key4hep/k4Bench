@@ -1324,6 +1324,29 @@ def test_two_windows_inside_one_release_get_their_own_region_deltas(tmp_path):
     assert [(d.base, d.onset) for d in by_metric["median_time_s"]] == [(5.0, 20.0)]
 
 
+def test_a_memory_step_sharing_a_timing_window_carries_no_timing_evidence(tmp_path):
+    # Region data is per-event time: it explains a time step and says nothing
+    # about a memory step, even one confirmed across the very same window.
+    run_dirs = (
+        _write_region_run(tmp_path, "2026-07-14", "2026-07-14", 1.0),
+        _write_region_run(tmp_path, "2026-07-15", "2026-07-14", 5.0),
+    )
+    time_step = _region_verdict("wall_time_s", "2026-07-14", "2026-07-15")
+    memory_step = dataclasses.replace(
+        time_step, metric="peak_vmem_mb", metric_family="memory",
+    )
+    group = RunGroupReport(
+        detector="DET", platform=_PLAT, sample="single_e",
+        k4h_release="key4hep-2026-07-14", run_date="2026-07-14",
+        run_id="2026-07-15", verdicts=[time_step, memory_step],
+    )
+    time_after, memory_after = _with_region_deltas(group, run_dirs).verdicts
+    assert [(d.base, d.onset) for d in time_after.region_deltas] == [(1.0, 5.0)]
+    assert time_after.event_profile.base.mean == 1.0
+    assert time_after.event_profile.onset.mean == 5.0
+    assert memory_after.region_deltas == () and memory_after.event_profile is None
+
+
 def test_one_cross_release_window_is_computed_once_for_every_metric(tmp_path):
     # Two metrics that stepped across one release boundary have one answer
     # between them: the ends are whole releases, and the runs that happen to

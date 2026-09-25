@@ -314,6 +314,43 @@ comparison, and treating the missing side as zero would report the whole detecto
 as newly appearing. A region present on one end only keeps `null` on the other:
 it genuinely appeared or disappeared.
 
+Region times are per-event *medians*: they describe the typical event, and they
+cannot see a step carried by a handful of long events. `event_profile`, read from
+the same files, says which of the two a timing step is:
+
+```json
+"event_profile": {
+  "base":  {"nights": 1, "n_events": 999, "mean": 0.5277, "median": 0.4302,
+            "stepping_mean": 0.5248, "mean_without_longest": 0.4927,
+            "longest": [{"event": 37, "seconds": 35.53, "region": "SET",
+                         "region_seconds": 30.08}]},
+  "onset": {"nights": 2, "n_events": 999, "mean": 0.4939, "median": 0.4279,
+            "stepping_mean": 0.4909, "mean_without_longest": 0.4855,
+            "longest": [{"event": 949, "seconds": 8.81, "region": "unattributed",
+                         "region_seconds": 5.31}]},
+  "matched": [{"event": 37, "base": 35.53, "onset": 0.38},
+              {"event": 949, "base": 3.14, "onset": 8.81},
+              {"event": 240, "base": 3.71, "onset": 3.80}]
+}
+```
+
+Each end summarises its per-event wall times, warm-up event excluded: the mean
+and median, `stepping_mean` (time inside Geant4 stepping, summed over every
+region including `unattributed`, so `mean - stepping_mean` is the time outside
+it), the mean with the single longest event left out, and the longest events with
+the region that took most of each. An end measured on several nights is
+summarised night by night and the nights combined by their median. `matched`
+follows every one of those longest events to the other end: with a fixed random
+seed the same event number is the same event until the geometry or physics it
+meets changes, so an event whose time moved (37 above) is one whose simulation
+changed, and one that held (240) shows the rest of the sample did not. The example
+is ILD_FCCee_v02's baseline on 2026-09-25: its mean fell 6.4% while its median
+held, because one 35.5-second event left the sample.
+
+Both fields ride only on confirmed **timing** verdicts, `event_profile` only when
+both ends recorded per-event times, and reports written before it existed carry
+none — every reader treats a missing profile as unknown.
+
 ### Why a metric was not judged (`report.json`)
 
 Every verdict with `severity: "UNKNOWN"` may carry an `unjudged` discriminator

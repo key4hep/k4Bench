@@ -568,7 +568,7 @@ def test_a_partly_judged_configuration_is_offered_with_its_gap_stated():
     allegro = _verdict(detector="ALLEGRO_o1_v03")
     idea_ok = _verdict(detector="IDEA_o1_v03", metric="wall_time_s",
                        severity=Severity.OK)
-    idea_new = _verdict(detector="IDEA_o1_v03", metric="peak_rss_mb",
+    idea_new = _verdict(detector="IDEA_o1_v03", metric="peak_vmem_mb",
                         severity=Severity.UNKNOWN,
                         unjudged=Unjudged.INSUFFICIENT_HISTORY)
     attributor = _FakeAttributor({"r1": 90.0})
@@ -578,9 +578,10 @@ def test_a_partly_judged_configuration_is_offered_with_its_gap_stated():
     assert (outcome.detector, outcome.status, outcome.unjudged) == (
         "IDEA_o1_v03", "clean", 1,
     )
-    assert "recorded but not judged" in build_user_prompt(
-        attributor.requests[0]
-    )
+    prompt = build_user_prompt(attributor.requests[0])
+    idea = next(line for line in prompt.splitlines() if line.startswith("- IDEA_o1_v03"))
+    assert "no time step (wall time +20.0% to +20.0% on 1 configurations" in idea
+    assert "memory not judged" in idea
 
 
 def test_a_step_at_the_same_onset_is_not_a_control_whatever_its_base():
@@ -2635,11 +2636,12 @@ def test_two_rows_in_one_scope_keep_their_own_first_pass_priors():
 
     prompt = build_user_prompt(request)
     # Both priors are stated, each attached to its own row.
-    assert "prior: ranked 92/100" in prompt
-    assert "NOT among the candidates for this regression" in prompt
-    # One run-group heading, two rows, two priors — the grouping survives.
-    assert prompt.count("### ALLEGRO_o1_v03") == 1
-    assert prompt.count("      prior: ") == 2
+    assert "prior on 1 row(s) (r2): ranked 92/100 by the per-configuration pass" in prompt
+    assert "prior on 1 row(s) (r1): this pull request is NOT among the candidates" in prompt
+    # One scope, answered as a whole, whose two rows keep two priors.
+    assert prompt.count("[S1] ALLEGRO_o1_v03 · single_e-_10GeV") == 2  # summary, table
+    assert "[S2]" not in prompt
+    assert prompt.count("prior on ") == 2
 
 
 def test_every_prior_state_has_its_own_wording():
@@ -4604,3 +4606,88 @@ def test_a_migration_row_links_to_the_regressions_view_not_a_one_platform_stack_
     definition = _row(body, f"[{label}]: ")
     assert "tab=Regressions" in definition
     assert "tab=Stack+Changes" not in body
+
+
+# ── The review's removal sweeps and geometry map ──────────────────────────────
+
+_OWN = "FCCee/ALLEGRO/compact/ALLEGRO_o1_v03/"
+
+
+def test_select_hands_the_review_every_scope_that_measured_the_window():
+    allegro = _verdict(detector="ALLEGRO_o1_v03")
+    idea = _verdict(detector="IDEA_o1_v03", severity=Severity.OK)
+    (plan,) = _plans(
+        _report(allegro, idea, geometry_path=_OWN + "ALLEGRO_o1_v03.xml"),
+        _blame([allegro], [_candidate()]),
+    )
+    assert [sweep.detector for sweep in plan.sweeps] == ["ALLEGRO_o1_v03", "IDEA_o1_v03"]
+    assert plan.geometry["ALLEGRO_o1_v03"] == _OWN + "ALLEGRO_o1_v03.xml"
+
+
+def test_the_review_request_carries_what_each_pull_request_changes_in_benchmarked_geometry():
+    v = _verdict()
+    hunk = '@@ -1 +1 @@\n-  <constant name="nLayers" value="2"/>\n+  <constant name="nLayers" value="1"/>'
+    candidate = replace(_candidate(), files=(_OWN + "Dimensions.xml",))
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(
+        _report(v, geometry_path=_OWN + "ALLEGRO_o1_v03.xml"),
+        _blame([v], [candidate]), attributor=attributor,
+        files_for=lambda repo, number: (FilePatch(_OWN + "Dimensions.xml", hunk),),
+    )
+    (touch,) = attributor.requests[0].touches
+    assert touch.detector == "ALLEGRO_o1_v03"
+    assert touch.changes[0].constants_changed == (("nLayers", "2", "1"),)
+    assert "nLayers 2 → 1" in build_user_prompt(attributor.requests[0])
+
+
+def test_the_new_evidence_never_moves_the_facts_digest():
+    # A standing comment is edited only when its benchmark facts change. The
+    # geometry map, the removal sweeps and the per-event records are evidence
+    # for the review — putting any of them in the digest would edit and
+    # re-notify every open comment the night they first appear.
+    from k4bench.regression.models import EventProfile, EventSample
+
+    v = _verdict()
+    candidate = replace(_candidate(), files=(_OWN + "Dimensions.xml",))
+    hunk = '@@ -1 +1 @@\n-  <constant name="nLayers" value="2"/>\n+  <constant name="nLayers" value="1"/>'
+    plain = _comments(
+        _report(v, geometry_path=_OWN + "ALLEGRO_o1_v03.xml"),
+        _blame([v], [candidate]), attributor=_FakeAttributor({"r1": 90.0}),
+        patch_for=lambda repo, number: hunk,
+    )[0]
+    profiled = replace(v, event_profile=EventProfile(
+        base=EventSample(nights=1, n_events=999, mean=1.0, median=0.9),
+        onset=EventSample(nights=1, n_events=999, mean=1.2, median=0.9),
+    ))
+    enriched = _comments(
+        _report(profiled, geometry_path=_OWN + "ALLEGRO_o1_v03.xml"),
+        _blame([profiled], [candidate]), attributor=_FakeAttributor({"r1": 90.0}),
+        patch_for=lambda repo, number: hunk,
+        files_for=lambda repo, number: (FilePatch(_OWN + "Dimensions.xml", hunk),),
+    )[0]
+    assert enriched.facts_digest == plain.facts_digest
+
+
+def test_the_full_detector_leads_rows_the_review_scored_alike():
+    # A review scores a scope as a whole, so its rows tie; the baseline is the
+    # row the claim is measured against, not the removal configuration whose
+    # smaller denominator makes the same step a larger percentage.
+    baseline = _verdict(label="baseline", pct=-0.117)
+    removal = _verdict(label="no_EMEC_turbine", pct=-0.244)
+    comment = _comments(
+        _report(baseline, removal),
+        _blame([baseline, removal], [_candidate()]),
+        attributor=_FakeAttributor({"r1": 94.0, "r2": 94.0}),
+    )[0]
+    rows = _table_rows(comment.body)
+    assert "baseline" in rows[0] and "no_EMEC_turbine" in rows[1]
+
+
+def test_a_long_review_summary_is_cut_at_a_sentence_end():
+    from k4bench.blame.comment import _sentences
+    text = "First sentence states the claim. " * 30
+    clipped = _sentences(text, 200)
+    assert clipped.endswith("claim. …") and len(clipped) <= 202
+    assert _sentences("short.", 200) == "short."
+    # With no sentence end in reach, the plain clip still bounds it.
+    assert _sentences("x" * 500, 200).endswith("…")

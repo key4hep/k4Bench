@@ -14,7 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from k4bench.regression.regions import MAX_REGIONS, region_deltas
+from k4bench.regression.models import LongEvent, MatchedEvent
+from k4bench.regression.regions import MAX_REGIONS, region_deltas, region_evidence
 
 
 def _write_run(
@@ -292,3 +293,125 @@ def test_a_cross_release_window_still_pools_every_night_of_its_ends(tmp_path):
     # The base is the median of both nights of its release (2.0), not the run
     # named as the window's end (3.0).
     assert [(d.region, d.base, d.onset) for d in deltas] == [("HCAL", 2.0, 10.0)]
+
+
+# ── The per-event wall times at both ends ─────────────────────────────────────
+
+def _write_events_run(
+    root: Path, night: str, release: str, walls: list[float],
+    *, long_region: tuple[int, str, float] | None = None, outside: float = 0.003,
+) -> str:
+    """One run with per-event walls (event 0 first, the warm-up), each event's
+    stepping time its wall minus *outside*, and *long_region* charging most of
+    one event to one region."""
+    run_dir = root / night
+    run_dir.mkdir(parents=True)
+    (run_dir / "run_info.json").write_text(json.dumps({
+        "date": night, "platform": "x86_64-almalinux9-gcc14.2.0-opt",
+        "k4h_release": f"key4hep-{release}", "k4h_release_date": release,
+        "sample": "single_e",
+    }))
+    at_location = []
+    for event, wall in enumerate(walls):
+        regions = {"TPC": wall - outside, "SET": 0.0}
+        if long_region is not None and long_region[0] == event:
+            _event, region, seconds = long_region
+            regions = {"TPC": wall - outside - seconds, region: seconds}
+        at_location.append(regions)
+    (run_dir / "baseline_regions.json").write_text(json.dumps({
+        "event_numbers": list(range(len(walls))),
+        "event_wall_seconds": walls,
+        "event_region_sum_seconds": [w - outside for w in walls],
+        "event_unaccounted_seconds": [outside] * len(walls),
+        "indexed_top_level_detectors": ["TPC", "SET"],
+        "at_location_seconds": at_location,
+        "by_birth_seconds": at_location,
+    }))
+    return str(run_dir)
+
+
+def test_the_event_profile_names_the_long_event_that_carried_the_mean(tmp_path):
+    # The 09-25 ILD_FCCee_v02 shape: event 3 took 35.5 s at the base, most of it
+    # in SET, and is gone at the onset while the typical event held.
+    typical = [0.43, 0.44, 0.42, 0.45, 0.43, 0.44]
+    base_walls = [50.0, *typical[:3], 35.5, *typical[3:]]
+    onset_walls = [50.0, *typical[:3], 0.40, *typical[3:]]
+    dirs = [
+        _write_events_run(tmp_path, "2026-09-23", "2026-09-23", base_walls,
+                          long_region=(4, "SET", 30.1)),
+        _write_events_run(tmp_path, "2026-09-24", "2026-09-24", onset_walls),
+    ]
+    _deltas, profile = region_evidence(
+        dirs, label="baseline", base_release="2026-09-23", onset_release="2026-09-24",
+    )
+    base, onset = profile.base, profile.onset
+    assert base.nights == onset.nights == 1 and base.n_events == 7
+    assert base.longest[0] == LongEvent(event=4, seconds=35.5, region="SET",
+                                        region_seconds=pytest.approx(30.1))
+    assert onset.longest[0].seconds == 0.45
+    # The typical event held: the median moves by one place in a sorted sample.
+    assert (base.median, onset.median) == (0.44, 0.43)
+    assert base.mean == pytest.approx((sum(typical) + 35.5) / 7)
+    # Without the one long event the base is the typical sample again.
+    assert base.mean_without_longest == pytest.approx(sum(typical) / 6)
+    # Stepping is every region together; the rest is time outside it.
+    assert base.mean - base.stepping_mean == pytest.approx(0.003)
+
+
+def test_the_warm_up_event_never_counts_as_a_long_event(tmp_path):
+    dirs = [
+        _write_events_run(tmp_path, "2026-09-23", "2026-09-23", [99.0, 1.0, 2.0]),
+        _write_events_run(tmp_path, "2026-09-24", "2026-09-24", [99.0, 1.0, 3.0]),
+    ]
+    _deltas, profile = region_evidence(
+        dirs, label="baseline", base_release="2026-09-23", onset_release="2026-09-24",
+    )
+    assert [e.event for e in profile.base.longest] == [2, 1]
+    assert profile.base.mean == 1.5 and profile.onset.mean == 2.0
+
+
+def test_a_release_measured_on_several_nights_is_summarised_by_their_median(tmp_path):
+    # With a fixed seed each night simulates the same events: event 1 is the
+    # long one on every night, and its time is the median of its nights.
+    dirs = [
+        _write_events_run(tmp_path, "2026-09-23", "2026-09-23", [9.0, 30.0, 1.0, 1.0]),
+        _write_events_run(tmp_path, "2026-09-24", "2026-09-24", [9.0, 8.0, 1.0, 1.0]),
+        _write_events_run(tmp_path, "2026-09-25", "2026-09-24", [9.0, 9.0, 1.2, 1.2]),
+        _write_events_run(tmp_path, "2026-09-26", "2026-09-24", [9.0, 7.0, 1.1, 1.1]),
+    ]
+    _deltas, profile = region_evidence(
+        dirs, label="baseline", base_release="2026-09-23", onset_release="2026-09-24",
+    )
+    onset = profile.onset
+    assert onset.nights == 3
+    assert onset.longest[0] == LongEvent(event=1, seconds=8.0, region="TPC",
+                                         region_seconds=pytest.approx(7.997))
+    assert onset.median == 1.1  # the median of the nights' medians
+    assert onset.mean == pytest.approx((8.0 + 2.0) / 3)  # likewise their means
+
+
+def test_no_profile_without_both_ends(tmp_path):
+    dirs = [
+        _write_run(tmp_path, "2026-07-14", "2026-07-14", None),
+        _write_events_run(tmp_path, "2026-07-18", "2026-07-18", [9.0, 1.0, 1.0]),
+    ]
+    assert region_evidence(
+        dirs, label="baseline", base_release="2026-07-14", onset_release="2026-07-18",
+    ) == ((), None)
+
+
+def test_the_longest_events_are_followed_to_the_other_end(tmp_path):
+    # The same event numbers at both ends: event 1 changed from 35 s to 0.4 s,
+    # event 2 held — with a fixed seed, the sample is otherwise the same events.
+    dirs = [
+        _write_events_run(tmp_path, "2026-09-23", "2026-09-23", [9.0, 35.0, 3.7, 0.4]),
+        _write_events_run(tmp_path, "2026-09-24", "2026-09-24", [9.0, 0.4, 3.8, 8.8]),
+    ]
+    _deltas, profile = region_evidence(
+        dirs, label="baseline", base_release="2026-09-23", onset_release="2026-09-24",
+    )
+    assert profile.matched == (
+        MatchedEvent(event=1, base=35.0, onset=0.4),
+        MatchedEvent(event=3, base=0.4, onset=8.8),
+        MatchedEvent(event=2, base=3.7, onset=3.8),
+    )

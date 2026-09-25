@@ -763,6 +763,39 @@ def test_region_deltas_reach_the_ranker(monkeypatch):
     assert ranker.requests[0].metrics[0].regions[0].region == "HCAL_barrel"
 
 
+def test_the_ranker_is_handed_the_sweep_and_the_detectors_each_candidate_reaches(monkeypatch):
+    own = "FCCee/ALLEGRO/compact/ALLEGRO_o1_v03/"
+    hunk = '@@ -1 +1 @@\n-  <constant name="nLayers" value="2"/>\n+  <constant name="nLayers" value="1"/>'
+
+    def resolve(client, slug, base, head):
+        return RepoResolution(
+            candidates=[CandidatePR(repo=slug, number=10, title="t10", author="a",
+                                    url="u10", files=(own + "Dimensions.xml",))],
+            patches={10: hunk},
+            files={10: (FilePatch(own + "Dimensions.xml", hunk),)},
+        )
+
+    _stub_resolve(monkeypatch, resolve)
+    ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
+    report = _report_groups(
+        ("ALLEGRO_o1_v03", "single_e", [_verdict()]),
+        ("IDEA_o1_v03", "single_e", [_verdict(detector="IDEA_o1_v03",
+                                              severity=Severity.OK)]),
+    )
+    report.groups[0].geometry_path = own + "ALLEGRO_o1_v03.xml"
+    for group in report.groups:
+        group.reliable = True
+    build_blame_report(
+        report, packages_for_release=_MOVED, github=GitHubClient(), ranker=ranker,
+    )
+    (request,) = ranker.requests
+    assert request.sweep.detector == "ALLEGRO_o1_v03"
+    assert [s.detector for s in request.window_sweeps] == ["ALLEGRO_o1_v03", "IDEA_o1_v03"]
+    (touch,) = request.candidates[0].touches
+    assert touch.detector == "ALLEGRO_o1_v03"
+    assert touch.changes[0].constants_changed == (("nLayers", "2", "1"),)
+
+
 # ── On-demand historical evidence ─────────────────────────────────────────────
 
 _HISTORY_PROVENANCE = _provenance({

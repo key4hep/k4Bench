@@ -64,6 +64,7 @@ import hashlib
 import json
 import logging
 import math
+import re
 import zlib
 from base64 import b64decode, urlsafe_b64encode
 from binascii import Error as BinasciiError
@@ -91,6 +92,7 @@ from k4bench.blame.evidence import (
     outcomes_for_window,
     steps_in_window,
 )
+from k4bench.blame.geometry import benchmarked_geometry, detector_touches
 from k4bench.blame.github import FilePatch, diff_sample
 from k4bench.blame.history import MAX_COMMENT_ANALOGUES, HistoricalPR
 from k4bench.blame.models import (
@@ -103,6 +105,7 @@ from k4bench.blame.models import (
 from k4bench.blame.prompt import compact_dir, geometry_tree
 from k4bench.blame.reproduce import ReproducerFacts
 from k4bench.blame.reproduce import facts_from as reproducer_facts_from
+from k4bench.blame.sweep import ScopeSweep, window_sweeps
 from k4bench.labels import compact_sample, pretty_platform
 from k4bench.regression.models import MetricVerdict, NightlyReport
 from k4bench.regression.render import (
@@ -1475,7 +1478,8 @@ def _retained_window(row: RetainedRow) -> tuple[str, str]:
 
 def _retained_sort_key(row: RetainedRow) -> tuple:
     """The same shape :func:`_row_sort_key` produces, so current and retained
-    rows rank in one pool: likelihood first, movement second, identity last."""
+    rows rank in one pool: likelihood first, the baseline configuration before
+    the others, then movement, identity last."""
     likelihood = row.likelihood
     movement = (
         abs(row.pct)
@@ -1485,6 +1489,7 @@ def _retained_sort_key(row: RetainedRow) -> tuple:
     return (
         likelihood is None,
         -(likelihood if likelihood is not None else 0.0),
+        row.label != "baseline",
         -movement,
         *_retained_identity(row),
     )
@@ -1637,6 +1642,13 @@ class CommentPlan:
     #: Only :func:`select` can fill it, because only the report records them;
     #: the review samples each diff with these directories first.
     geometry_paths: tuple[str, ...] = ()
+    #: Every scope of the report that measured this window
+    #: (:func:`~k4bench.blame.sweep.window_sweeps`), and the compact file every
+    #: benchmarked detector loads: the removal sweeps and controls the review
+    #: is shown. Evidence for the review only — neither enters the facts
+    #: digest, which already covers the rows and outcomes they are built from.
+    sweeps: tuple[ScopeSweep, ...] = ()
+    geometry: dict[str, str] = field(default_factory=dict)
     selected: bool = False
 
     @property
@@ -1778,11 +1790,19 @@ def select(
         for verdict, stack in _confirmed_rows(report)
     ]
     plans = _targets(confirmed, policy)
+    geometry = benchmarked_geometry(report)
     for plan in plans:
         plan.report_night = report.report_night
         _collect_window(confirmed, plan)
         plan.outcomes = _outcomes_for(report, plan)
         plan.geometry_paths = _geometry_paths_for(report, plan)
+        plan.sweeps = window_sweeps(
+            report,
+            base_release=plan.base_release,
+            onset_release=plan.onset_release,
+            stacks={row.stack for row in plan.rows},
+        )
+        plan.geometry = dict(geometry)
 
     ordered = sorted(plans, key=lambda p: (-p.top_score, p.repo, p.number))
     if len(ordered) > policy.max_comments:
@@ -2603,12 +2623,25 @@ def _attribution_request(
     historical = _historical(plan, fetch, body_fetch)
     own_dirs = tuple(sorted({compact_dir(p) for p in plan.geometry_paths} - {""}))
     trees = tuple(sorted({geometry_tree(p) for p in plan.geometry_paths} - {""}))
+    hunks_read: dict[tuple[str, int], tuple[FilePatch, ...]] = {}
+
+    def hunks(repo: str, number: int) -> tuple[FilePatch, ...]:
+        if (repo, number) not in hunks_read:
+            hunks_read[(repo, number)] = (
+                tuple(files_fetch(repo, number) or ()) if files_fetch is not None else ()
+            )
+        return hunks_read[(repo, number)]
 
     def sampled(repo: str, number: int) -> str:
-        files = files_fetch(repo, number) if files_fetch is not None else ()
+        files = hunks(repo, number)
         if not files:
             return fetch(repo, number)
         return diff_sample(files, own_dirs=own_dirs, trees=trees)
+
+    def touches(candidate: CandidatePR):
+        return detector_touches(
+            candidate.files, hunks(candidate.repo, candidate.number), plan.geometry,
+        )
 
     return AttributionRequest(
         repo=plan.repo,
@@ -2624,7 +2657,9 @@ def _attribution_request(
         regressions=tuple(_fact(row) for row in plan.rows),
         outcomes=plan.outcomes,
         competitors=tuple(
-            _competitor(other, scope, sampled, body_fetch)
+            replace(
+                _competitor(other, scope, sampled, body_fetch), touches=touches(other),
+            )
             # Cut the field to what the prompt can actually carry *before*
             # fetching anything: the prompt keeps the strongest
             # `MAX_COMPETITORS` in this same order, so a window with a hundred
@@ -2639,6 +2674,8 @@ def _attribution_request(
         # Resolved above, and allowed to raise: the review must see the same
         # historical evidence the first pass did, or it must not happen at all.
         historical=historical,
+        sweeps=plan.sweeps,
+        touches=touches(plan.subject),
     )
 
 
@@ -2869,14 +2906,21 @@ def _score_source(
 
 
 def _row_sort_key(row: RegressionRow, attribution: Attribution | None) -> tuple:
-    """Most likely first, then the largest movement, then identity — so the
-    table is stable across nights and a re-render triggers no edit. Rows nobody
-    scored sort last: they are evidence about the window, not claims about this
-    pull request, and they must not head a table that reads top-down."""
+    """Most likely first, then the full detector before its removal
+    configurations, then the largest movement, then identity — so the table is
+    stable across nights and a re-render triggers no edit. Rows nobody scored
+    sort last: they are evidence about the window, not claims about this pull
+    request, and they must not head a table that reads top-down.
+
+    The baseline leads its ties because a review scores a scope as a whole, so
+    its rows share one likelihood, and the full detector is the configuration a
+    reader measures the claim against — a removal configuration's larger
+    percentage is often only a smaller denominator."""
     likelihood = _likelihood(row, attribution)
     return (
         likelihood is None,
         -(likelihood if likelihood is not None else 0.0),
+        row.verdict.label != "baseline",
         -_movement(row),
         *_row_identity(row),
     )
@@ -3285,7 +3329,7 @@ def _assessment(
     neither model explained itself: an unexplained score is not comment-worthy
     prose, and it already stands in the table."""
     if attribution is not None:
-        text = _one_line(attribution.summary, _MAX_SUMMARY_CHARS)
+        text = _sentences(attribution.summary, _MAX_SUMMARY_CHARS)
         if text:
             return (
                 f"\n> 🤖 **The AI reviewer's assessment:** {text}"
@@ -4230,6 +4274,22 @@ def _one_line(text: str, limit: int) -> str:
     if len(flat) <= limit:
         return flat
     return flat[: limit - 1].rstrip() + "…"
+
+
+def _sentences(text: str, limit: int) -> str:
+    """:func:`_one_line`, cut at the last sentence that fits rather than
+    mid-sentence — the review's summary is quoted as its reasoning, and a
+    clause broken off after a comma can say the opposite of the sentence it
+    came from. Falls back to the plain clip when not even one sentence fits."""
+    flat = _one_line(text, 10 * limit)
+    if len(flat) <= limit:
+        return flat
+    ends = [
+        m.end() for m in re.finditer(r"[.!?](?=\s)", flat[: limit - 1])
+    ]
+    if ends and ends[-1] >= limit // 3:
+        return flat[: ends[-1]] + " …"
+    return _one_line(text, limit)
 
 
 def _defang(text: str) -> str:

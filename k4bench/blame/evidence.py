@@ -437,6 +437,33 @@ class MetricHistory:
         )
 
     @property
+    def host_spread(self) -> tuple[float, int] | None:
+        """``(largest spread, releases)``: how far apart this series' machines
+        measured it on identical software, as a fraction of the baseline, and
+        how many releases that rests on — or ``None`` when no judged release in
+        the tail was measured on two or more named machines.
+
+        Machines benchmarking one release ran the same software, so what they
+        disagree by is what switching machines alone does to this metric: the
+        measured answer to "could the host explain this step", per series,
+        where a fleet-wide rule would be right for one metric and wrong for
+        another."""
+        if not self.baseline_median:
+            return None
+        spreads = []
+        for point in self.points:
+            levels = [
+                level.value for level in point.host_levels
+                if level.host.name and math.isfinite(level.value)
+            ]
+            if not point.judged or len(levels) < 2:
+                continue
+            spreads.append((max(levels) - min(levels)) / abs(self.baseline_median))
+        if not spreads:
+            return None
+        return max(spreads), len(spreads)
+
+    @property
     def new_host_seen_at_old_level(self) -> tuple[HostFact, str] | None:
         """``(machine, release)`` when the host change at onset
         (:attr:`host_change_at_onset`) has counter-evidence in the tail: a

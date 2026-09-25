@@ -19,7 +19,6 @@ from k4bench.blame.prompt import (
     history_clause,
     log_prompt_size,
     outcome_lines,
-    region_clause,
     region_lines,
 )
 from k4bench.regression.models import HostFact, HostLevel, RegionDelta
@@ -347,7 +346,7 @@ def test_regions_are_rendered_largest_movement_first():
         RegionDelta("HCAL_barrel", 0.31, 4.52, 4.21),
         RegionDelta("ECAL_barrel", 1.02, 1.03, 0.01),
     )))
-    assert "Where the change landed inside the detector" in lines
+    assert "How the typical event's time moved per detector region" in lines
     assert "HCAL_barrel: 0.31 -> 4.52 s/event (+4.21)" in lines
     assert lines.index("HCAL_barrel") < lines.index("ECAL_barrel")
 
@@ -365,37 +364,18 @@ def test_no_regions_render_nothing():
     assert region_lines(()) == []
 
 
-# The 09-25 ILD_FCCee_v02 baseline: the mean event time fell 0.038 s while the
-# regions that moved most fell 0.0014 s between them.
-_ILD_REGIONS = (
-    RegionDelta("TPC", 0.080841, 0.080419, -0.000422),
-    RegionDelta("InnerTrackers", 0.004302, 0.003937, -0.000365),
-    RegionDelta("EcalEndcap", 0.001837, 0.0015705, -0.0002665),
-    RegionDelta("EcalBarrel", 0.31856, 0.3183095, -0.0002505),
-    RegionDelta("unattributed", 0.000893, 0.0007835, -0.0001095),
-)
-
-
-def test_the_share_of_a_per_event_step_the_regions_account_for_is_stated():
-    lines = "\n".join(region_lines(
-        _ILD_REGIONS, metric="mean_time_s", value=0.4900, baseline_median=0.5280,
-    ))
-    assert "Together these regions moved -0.001414 s/event: 4% of this metric's -0.038 s/event step" in lines
-    assert "whatever the regions do not account for happened outside that stepping" in lines
-    assert region_clause(_ILD_REGIONS, "mean_time_s", 0.4900, 0.5280) == (
-        "the detector regions that moved most account for 4% of this step"
-    )
-
-
-def test_no_share_is_claimed_for_a_per_job_metric_or_an_unknown_step():
-    # Wall time is per job; regions are per event.
-    assert "Together" not in "\n".join(region_lines(
-        _ILD_REGIONS, metric="wall_time_s", value=517.7, baseline_median=557.5,
-    ))
-    assert region_clause(_ILD_REGIONS, "wall_time_s", 517.7, 557.5) == ""
-    assert region_clause(_ILD_REGIONS, "mean_time_s", None, 0.5280) == ""
-    assert region_clause(_ILD_REGIONS, "mean_time_s", 0.5280, 0.5280) == ""
-    assert region_clause((), "mean_time_s", 0.49, 0.5280) == ""
+def test_regions_say_they_describe_the_typical_event_and_not_its_longest():
+    # Region times are per-event medians. On 09-25 the ILD_FCCee_v02 mean fell
+    # 0.034 s/event because one 35.5-second event left the sample, while the
+    # regions' medians barely moved: comparing the two says nothing about time
+    # outside stepping, so no share is claimed.
+    lines = "\n".join(region_lines((
+        RegionDelta("TPC", 0.080841, 0.080419, -0.000422),
+        RegionDelta("EcalBarrel", 0.31856, 0.3183095, -0.0002505),
+    )))
+    assert "per-event medians" in lines
+    assert "the few longest events do not show here" in lines
+    assert "outside" not in lines
 
 
 # ── The pull request's own description ────────────────────────────────────────
@@ -490,13 +470,13 @@ def test_not_touching_it_is_not_rendered_as_exculpatory():
 
 def test_the_rules_offer_the_harness_change_as_an_alternative_explanation():
     # A step caused by the benchmark harness previously had nowhere to land but
-    # "the benchmark host changed" — the only alternative the rules offered —
-    # and came back likely_noise with a confident wrong story. Both shared
-    # rules must name the harness beside the host.
+    # the benchmark host — the only alternative the rules offered — and came
+    # back likely_noise with a confident wrong story. Both shared rules must
+    # name the harness beside the machines.
     from k4bench.blame.prompt import ASSESSMENT_RULE, NOISE_RULE
-    assert "benchmark host changed" in NOISE_RULE
+    assert "switching machines" in NOISE_RULE
     assert "benchmark harness itself changed" in NOISE_RULE
-    assert "benchmark host changed" in ASSESSMENT_RULE
+    assert "switching machines" in ASSESSMENT_RULE
     assert "benchmark harness itself" in ASSESSMENT_RULE
     # A harness-caused step is a real change to the measurement, not noise.
     assert "not noise" in ASSESSMENT_RULE
