@@ -18,6 +18,8 @@ from k4bench.blame.summary import (
     family_reading_lines,
     file_change_phrase,
     history_summary,
+    region_summary_lines,
+    scope_evidence_lines,
     scope_line,
     sweep_table_lines,
     touch_lines,
@@ -32,6 +34,7 @@ from k4bench.regression.models import (
     LongEvent,
     MatchedEvent,
     MetricVerdict,
+    RegionDelta,
     RunGroupReport,
     Severity,
 )
@@ -147,12 +150,17 @@ def test_the_reading_states_the_pattern_the_table_holds():
     assert "time: mean event time stepped on 3 of 4 judged configurations (2 down, 1 up)" in text
     assert "The baseline stepped: mean event time -7.2%." in text
     assert "Against the direction of the rest: no_TPC +10.8%." in text
-    assert "Without the step — judged and moved less than a third of it (1): no_Vertex -1.8%." in text
+    assert (
+        "Without the step — judged and moved less than a third of it in mean event "
+        "time (1): no_Vertex -1.8%."
+    ) in text
+    # Every configuration called a long-event step keeps the numbers that made it one.
     assert (
         "On 3 of 3 stepped configurations the typical event did not follow — the "
         "median and trimmed mean moved less than a third of the step, so a few long "
         "events carry it (e.g. baseline: mean event time -7.2%, median -1.2%, trimmed "
-        "mean -1.3%)."
+        "mean -1.3%); the others: no_TPC (mean +10.8%; median -0.7%, trimmed mean "
+        "-0.5%), no_LumiCal (mean -9.0%; median -1.1%, trimmed mean -1.0%)."
     ) in text
 
 
@@ -241,14 +249,20 @@ def test_the_history_summary_names_the_machines_and_what_switching_them_does():
         baseline_median=6620.0, baseline_mad=0.5,
         base_release="2026-09-23", onset_release="2026-09-24",
     )
-    text = "\n".join(history_summary(history, "peak_vmem_mb"))
-    assert "History of baseline's VmPeak: this series normally varies by ±0.0076%" in text
-    assert (
-        "Hosts: fcc-ironic-01 measured both the release before the onset and the "
-        "onset release and moved with the step; machines measuring the same "
-        "release differed by up to 0.03% on this series (2 release(s) measured on "
-        "several machines)."
-    ) in text
+    lines = history_summary(history, "peak_vmem_mb")
+    assert lines[0].startswith(
+        "History of baseline's VmPeak: this series normally varies by ±0.0076%"
+    )
+    assert lines[1:] == [
+        "fcc-ironic-01 (64 cores) measured both the release before the onset and "
+        "the onset release, and moved with the step: switching machines does not "
+        "explain it.",
+        "Each machine's own level (release before the onset → onset release; "
+        "baseline 6620): fcc-ironic-01 6621 → 5851; fcc-ironic-03 5849 (not in "
+        "the release before).",
+        "Machines measuring the same release differed by up to 0.03% on this "
+        "series (2 release(s) measured on several machines).",
+    ]
 
 
 def test_a_switched_include_is_paired_by_its_versioned_name():
@@ -322,8 +336,161 @@ def test_a_baseline_that_stepped_in_another_metric_is_not_called_a_mean_step():
         _v("baseline", "mean_time_s", 0.062),
         _v("no_SiWrB", "mean_time_s", 0.121, Severity.CONFIRMED),
     ])
-    text = "\n".join(family_reading_lines(sweep, "time"))
+    lines = family_reading_lines(sweep, "time")
+    assert lines[0] == (
+        "  - time: mean event time stepped on 1 of 2 judged configurations "
+        "(1 up): no_SiWrB +12.1%."
+    )
     assert (
-        "The baseline stepped in wall time +10.1%; its mean event time moved "
-        "+6.2% without confirming."
+        "  - wall time independently stepped on 1 additional configuration(s), "
+        "where mean event time did not step: baseline +10.1% (mean +6.2%)."
+    ) in lines
+    assert (
+        "  - The baseline's mean event time did not step (+6.2%), but it stepped "
+        "in wall time +10.1%."
+    ) in lines
+
+
+def _mixed():
+    # The baseline stepped in mean event time only, no_ECAL in wall time only,
+    # no_HCAL in neither.
+    return _sweep([
+        _v("baseline", "mean_time_s", +0.100, Severity.CONFIRMED),
+        _v("baseline", "median_time_s", +0.005),
+        _v("baseline", "trimmed_mean_time_s", +0.006),
+        _v("baseline", "wall_time_s", +0.020),
+        _v("no_ECAL", "mean_time_s", +0.010),
+        _v("no_ECAL", "median_time_s", +0.002),
+        _v("no_ECAL", "trimmed_mean_time_s", +0.003),
+        _v("no_ECAL", "wall_time_s", +0.120, Severity.CONFIRMED),
+        *_timing("no_HCAL", +0.005, +0.001, +0.002, +0.004),
+    ])
+
+
+def test_a_step_in_one_metric_is_never_reported_as_a_step_in_another():
+    sweep = _mixed()
+    lines = family_reading_lines(sweep, "time")
+    assert lines[0] == (
+        "  - time: mean event time stepped on 1 of 3 judged configurations "
+        "(1 up): baseline +10.0%."
+    )
+    assert lines[1] == (
+        "  - wall time independently stepped on 1 additional configuration(s), "
+        "where mean event time did not step: no_ECAL +12.0% (mean +1.0%)."
+    )
+    assert (
+        "  - Without the step — judged and moved less than a third of it in mean "
+        "event time (2): no_ECAL +1.0%, no_HCAL +0.5%."
+    ) in lines
+    # The shape is the baseline's alone: no_ECAL has no mean step to shape.
+    shape_line = next(line for line in lines if "typical event did not follow" in line)
+    assert "no_ECAL" not in shape_line
+    assert scope_line(sweep).endswith(
+        "mean event time stepped on 1 of 3 (0 down, 1 up; baseline +10.0%) — 1 "
+        "carried by a few long events (typical event unmoved), e.g. baseline (mean "
+        "+10.0%; median +0.5%, trimmed mean +0.6%); wall time independently "
+        "stepped on 1 more where mean event time did not; memory not judged."
+    )
+
+
+def test_a_row_whose_lead_metric_was_not_judged_says_so_beside_its_other_step():
+    sweep = _sweep([
+        _v("baseline", "mean_time_s", +0.100, Severity.CONFIRMED),
+        _v("no_X", "mean_time_s", None, Severity.UNKNOWN),
+        _v("no_X", "wall_time_s", +0.090, Severity.CONFIRMED),
+    ])
+    text = "\n".join(family_reading_lines(sweep, "time"))
+    assert "mean event time stepped on 1 of 1 judged configurations" in text
+    assert "no_X +9.0% (mean not judged)" in text
+
+
+def test_memory_is_not_claimed_to_be_machine_independent():
+    sweep = _sweep([
+        _v("baseline", "peak_vmem_mb", -0.117, Severity.CONFIRMED),
+        _v("no_A", "peak_vmem_mb", -0.110, Severity.CONFIRMED),
+    ])
+    text = "\n".join(family_reading_lines(sweep, "memory"))
+    assert (
+        "Memory is determined primarily by what the job loads rather than by a "
+        "few long events. Any machine dependence should be assessed from the "
+        "measured host evidence."
     ) in text
+    assert "does not depend on which machine" not in text
+
+
+# ── Region movements in the summary ───────────────────────────────────────────
+
+_REGIONS = (
+    RegionDelta("HCAL", 0.31, 0.452, 0.142),
+    RegionDelta("ECAL", 0.12, 0.126, 0.006),
+    RegionDelta("tracker", 0.05, 0.049, -0.001),
+    RegionDelta("muon", 0.02, 0.0205, 0.0005),
+)
+
+
+def test_the_summary_carries_the_largest_region_movements_of_each_timing_step():
+    sweep = _sweep([
+        _v("no_A", "mean_time_s", +0.110, Severity.CONFIRMED, region_deltas=_REGIONS),
+        _v("baseline", "mean_time_s", +0.100, Severity.CONFIRMED,
+           region_deltas=_REGIONS[:2] + (RegionDelta("LumiCal", None, 0.004, 0.004),)),
+        _v("no_B", "mean_time_s", +0.001),
+    ])
+    assert region_summary_lines(sweep) == [
+        "  - Largest typical-event region movements (per-event medians, s/event, "
+        "base → onset):",
+        "      baseline: HCAL +0.142; ECAL +0.006; LumiCal newly present (0.004).",
+        "      no_A: HCAL +0.142; ECAL +0.006; tracker -0.001.",
+    ]
+    # Medians do not add up, so no region is given a share of the step.
+    assert "%" not in "\n".join(region_summary_lines(sweep))
+    assert region_summary_lines(sweep)[1] in scope_evidence_lines(sweep)
+
+
+def test_each_shape_in_the_scope_line_carries_its_own_example():
+    # The baseline carries the long-event example, and the one configuration
+    # the typical event partly followed carries its own numbers.
+    line = scope_line(_sweep([
+        *_timing("baseline", -0.072, -0.012, -0.013, -0.071, stepped=True),
+        *_timing("no_TPC", +0.108, -0.007, -0.005, +0.100, stepped=True),
+        *_timing("no_Shell3", -0.073, -0.032, -0.026, -0.070, stepped=True),
+    ]))
+    assert (
+        "— 2 carried by a few long events (typical event unmoved), e.g. baseline "
+        "(mean -7.2%; median -1.2%, trimmed mean -1.3%); 1 partly in the typical "
+        "event, e.g. no_Shell3 (mean -7.3%; median -3.2%, trimmed mean -2.6%);"
+    ) in line
+
+
+def test_region_movements_of_a_step_in_another_metric_are_kept_too():
+    sweep = _sweep([
+        _v("baseline", "mean_time_s", +0.100, Severity.CONFIRMED),
+        _v("no_ECAL", "mean_time_s", +0.010),
+        _v("no_ECAL", "wall_time_s", +0.120, Severity.CONFIRMED, region_deltas=_REGIONS),
+    ])
+    assert region_summary_lines(sweep)[1:] == [
+        "      no_ECAL: HCAL +0.142; ECAL +0.006; tracker -0.001.",
+    ]
+
+
+def test_without_region_timing_the_summary_says_nothing_about_regions():
+    # Reports written before region timing reached verdicts, a memory-only
+    # step, and an unread scope all leave it out rather than imply flat regions.
+    old = _ild_v02()
+    assert region_summary_lines(old) == []
+    memory = _sweep([_v("baseline", "peak_vmem_mb", -0.117, Severity.CONFIRMED)])
+    assert region_summary_lines(memory) == []
+    unread = _sweep([
+        _v("baseline", "mean_time_s", +0.100, Severity.CONFIRMED, region_deltas=_REGIONS),
+    ], reliable=False)
+    assert not any("region" in line for line in scope_evidence_lines(unread))
+
+
+def test_a_step_of_unknown_size_is_counted_and_not_sized():
+    sweep = _sweep([
+        _v("baseline", "mean_time_s", +0.100, Severity.CONFIRMED),
+        _v("no_A", "mean_time_s", float("inf"), Severity.CONFIRMED),
+    ])
+    assert family_reading_lines(sweep, "time")[0] == (
+        "  - time: mean event time stepped on 2 of 2 judged configurations "
+        "(1 up, 1 of unknown size): baseline +10.0%, no_A."
+    )

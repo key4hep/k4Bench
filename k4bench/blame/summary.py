@@ -23,7 +23,7 @@ from collections.abc import Mapping, Sequence
 
 from k4bench.blame.evidence import MetricHistory
 from k4bench.blame.geometry import DetectorTouch, FileChange, geometry_tree
-from k4bench.blame.prompt import pct_phrase
+from k4bench.blame.prompt import host_sentences, pct_phrase
 from k4bench.blame.sweep import (
     ELSEWHERE,
     FAILED,
@@ -40,6 +40,7 @@ from k4bench.blame.sweep import (
     TimeShape,
 )
 from k4bench.labels import pretty_sample
+from k4bench.regression.models import RegionDelta
 
 #: How each metric is named to the model.
 METRIC_NAMES = {
@@ -184,7 +185,7 @@ def sweep_table_lines(
         keep |= {label for label, _r in reading.larger}
     keep |= {
         r.label for r in rows
-        if r.label == "baseline" or any(c.status == WATCH for c in r.cells)
+        if r.label == "baseline" or any(c.status in (STEPPED, WATCH) for c in r.cells)
     }
     shown = rows
     hidden: list[SweepRow] = []
@@ -244,30 +245,86 @@ def _move_of(sweep: ScopeSweep, label: str, metric: str) -> str:
     return f"{label} {_pct(cell.pct)}" if cell is not None and cell.pct is not None else label
 
 
-def _baseline_phrase(sweep: ScopeSweep, reading: FamilyReading, stepped: bool) -> str:
+def _baseline_phrase(sweep: ScopeSweep, reading: FamilyReading) -> str:
+    """What the baseline did in the lead metric, and in any other metric of
+    the family that stepped there — each named as itself."""
     name = METRIC_NAMES[reading.lead]
-    cell = reading.baseline
-    if cell is None:
+    row = sweep.row("baseline")
+    if row is None:
         return "There is no baseline configuration in this sweep."
-    if stepped:
-        if cell.status == STEPPED:
-            return f"The baseline stepped: {name} {_pct(cell.pct)}."
-        # The baseline stepped in another metric of the family than the one the
-        # family is read on: name what stepped, and what the lead metric did.
-        row = sweep.row("baseline")
-        others = [
-            f"{METRIC_NAMES[c.metric]} {_pct(c.pct)}" for c in row.cells
-            if c.metric in SWEEP_METRICS[reading.family] and c.status == STEPPED
-        ]
-        lead = (
-            f"its {name} moved {_pct(cell.pct)} without confirming"
-            if cell.comparable else f"its {name} was not judged"
+    cell = reading.baseline
+    if cell is not None and cell.status == STEPPED:
+        return f"The baseline stepped: {name} {_pct(cell.pct)}."
+    others = [
+        f"{METRIC_NAMES[c.metric]} {_pct(c.pct)}" for c in row.cells
+        if c.metric in SWEEP_METRICS[reading.family] and c.metric != reading.lead
+        and c.status == STEPPED
+    ]
+    if cell is None:
+        lead = f"The baseline has no {name} measurement"
+    elif not cell.comparable:
+        lead = f"The baseline's {name} was not judged ({cell.cause or cell.status})"
+    else:
+        word = "moved once without confirming" if cell.status == WATCH else "did not step"
+        if not others:
+            return f"The baseline {word}: {name} {_pct(cell.pct)}."
+        lead = f"The baseline's {name} {word} ({_pct(cell.pct)})"
+    if others:
+        return f"{lead}, but it stepped in {', '.join(others)}."
+    return f"{lead}."
+
+
+def _short(metric: str) -> str:
+    """``"mean"``, ``"median"``, ``"trimmed mean"``, ``"wall time"``, ``"VmPeak"``."""
+    return METRIC_NAMES[metric].replace(" event time", "")
+
+
+def _shape_item(label: str, shape: TimeShape) -> str:
+    """One configuration's shape as its numbers — ``"no_TPC (mean +10.8%;
+    median -0.7%, trimmed mean -0.5%)"``."""
+    views = ", ".join(
+        f"{_short(m)} {_pct(p)}" for m, p in shape.typical if m != shape.lead
+    )
+    return (
+        f"{label} ({_short(shape.lead)} {_pct(shape.lead_pct)}"
+        + (f"; {views}" if views else "") + ")"
+    )
+
+
+def _amount(cell: SweepCell, *, in_unit: bool) -> str:
+    """A cell's move in the metric's own unit when *in_unit*, else as a
+    percentage — the form the size ratios beside it were taken in."""
+    if in_unit and cell.delta is not None:
+        unit = "MB" if cell.metric.endswith("_mb") else "s"
+        return f"{cell.delta:+.3g} {unit}"
+    return _pct(cell.pct)
+
+
+def _relative_lines(
+    sweep: ScopeSweep, reading: FamilyReading, bullet: str,
+) -> list[str]:
+    """The configurations that moved less or more than the baseline, each with
+    its own move and the baseline's in the unit the ratio was taken in."""
+    base = reading.baseline
+    lines = []
+    for word, items in (("less", reading.smaller), ("more", reading.larger)):
+        if not items or base is None:
+            continue
+        parts = []
+        for label, ratio in items[:_MAX_NAMED]:
+            cell = sweep.row(label).cell(reading.lead)
+            in_unit = cell.delta is not None and bool(base.delta)
+            parts.append(f"{label} {_amount(cell, in_unit=in_unit)} ({ratio:.0%} of it)")
+        rest = len(items) - len(parts)
+        in_unit = base.delta is not None and all(
+            sweep.row(label).cell(reading.lead).delta is not None for label, _r in items
         )
-        return f"The baseline stepped in {', '.join(others)}; {lead}."
-    if not cell.comparable:
-        return f"The baseline's {name} was not judged ({cell.cause or cell.status})."
-    word = "moved once without confirming" if cell.status == WATCH else "did not step"
-    return f"The baseline {word}: {name} {_pct(cell.pct)}."
+        lines.append(
+            f"{bullet}Moved the same way but {word} than the baseline's "
+            f"{_amount(base, in_unit=in_unit)} in {METRIC_NAMES[reading.lead]}: "
+            + "; ".join(parts) + (f"; … (+{rest} more)" if rest > 0 else "") + "."
+        )
+    return lines
 
 
 def _shape_phrase(reading: FamilyReading) -> list[str]:
@@ -278,6 +335,11 @@ def _shape_phrase(reading: FamilyReading) -> list[str]:
     for label, shape in reading.shapes:
         by_kind.setdefault(shape.kind, []).append(label)
     total = len(reading.stepped)
+    shapes = dict(reading.shapes)
+
+    def items(labels: list[str]) -> str:
+        return _named([_shape_item(label, shapes[label]) for label in labels])
+
     lines = []
     tail = by_kind.get("tail", [])
     if tail:
@@ -286,41 +348,63 @@ def _shape_phrase(reading: FamilyReading) -> list[str]:
             next(s for _l, s in reading.shapes if s.kind == "tail"),
         )
         label = next(name for name, s in reading.shapes if s is example)
-        views = ", ".join(
-            f"{METRIC_NAMES[m].replace(' event time', '')} {_pct(p)}"
-            for m, p in example.typical
-        )
+        views = ", ".join(f"{_short(m)} {_pct(p)}" for m, p in example.typical)
+        rest = [name for name in tail if name != label]
         lines.append(
             f"On {len(tail)} of {total} stepped configurations the typical event "
             f"did not follow — the median and trimmed mean moved less than a third "
             f"of the step, so a few long events carry it (e.g. {label}: "
             f"{METRIC_NAMES[example.lead]} {_pct(example.lead_pct)}, {views})"
-            + (f": {_named(tail)}." if len(tail) < total else ".")
+            + (f"; the others: {items(rest)}." if rest else ".")
         )
     typical = by_kind.get("typical", [])
     if typical:
         lines.append(
             f"On {len(typical)} of {total} the typical event moved with the step "
-            f"(median and trimmed mean followed it): {_named(typical)}."
+            f"(median and trimmed mean followed it): {items(typical)}."
         )
     outside = by_kind.get("outside", [])
     if outside:
         lines.append(
             f"On {len(outside)} of {total} only the wall time stepped and the mean "
             f"event time did not follow — the step happened outside the event "
-            f"loop (initialisation or teardown): {_named(outside)}."
+            f"loop (initialisation or teardown): {items(outside)}."
         )
     mixed = by_kind.get("mixed", [])
     if mixed:
         lines.append(
             f"On {len(mixed)} of {total} the typical event moved partly: "
-            f"{_named(mixed)}."
+            f"{items(mixed)}."
         )
     unread = total - len(reading.shapes)
     if unread:
         lines.append(
             f"On {unread} of {total} no typical view was judged, so their shape "
             f"is unknown."
+        )
+    return lines
+
+
+def _also_lines(sweep: ScopeSweep, reading: FamilyReading) -> list[str]:
+    """Each other metric of the family that stepped where the lead did not,
+    with its own move and the lead's on the same configuration."""
+    name = METRIC_NAMES[reading.lead]
+    lines = []
+    for metric, labels in reading.also:
+        parts = []
+        for label in labels:
+            row = sweep.row(label)
+            cell, lead = row.cell(metric), row.cell(reading.lead)
+            beside = (
+                f"{_short(reading.lead)} {_pct(lead.pct)}"
+                if lead is not None and lead.comparable
+                else f"{_short(reading.lead)} not judged"
+            )
+            parts.append(f"{label} {_pct(cell.pct)} ({beside})")
+        lines.append(
+            f"{METRIC_NAMES[metric]} independently stepped on {len(labels)} "
+            f"additional configuration(s), where {name} did not step: "
+            f"{_named(parts)}."
         )
     return lines
 
@@ -338,26 +422,29 @@ def family_reading_lines(
             causes = sorted({cause for _label, cause in reading.unjudged})
             return [f"{bullet}{family}: {name} was not judged on any configuration ({', '.join(causes)})."]
         return [f"{bullet}{family}: {quiet}."]
-    baseline_stepped = "baseline" in reading.stepped
     moves = [_move_of(sweep, label, reading.lead) for label in reading.stepped]
     directions = []
     if reading.down:
         directions.append(f"{reading.down} down")
     if reading.up:
         directions.append(f"{reading.up} up")
+    unsized = len(reading.stepped) - reading.down - reading.up
+    if unsized:
+        directions.append(f"{unsized} of unknown size")
     lines = [
         f"{bullet}{family}: {name} stepped on {len(reading.stepped)} of "
         f"{reading.judged} judged configurations ({', '.join(directions)}): "
         f"{_named(moves)}."
     ]
-    lines.append(f"{bullet}{_baseline_phrase(sweep, reading, baseline_stepped)}")
+    lines += [f"{bullet}{line}" for line in _also_lines(sweep, reading)]
+    lines.append(f"{bullet}{_baseline_phrase(sweep, reading)}")
     if reading.opposite:
         if reading.up and reading.down and len(reading.opposite) == len(reading.stepped):
             lines.append(f"{bullet}They stepped in opposite directions.")
         else:
             lines.append(
                 f"{bullet}Against the direction of the rest: "
-                f"{_named([_move_of(sweep, name, reading.lead) for name in reading.opposite])}."
+                f"{_named([_move_of(sweep, label, reading.lead) for label in reading.opposite])}."
             )
     if reading.isolated:
         lines.append(
@@ -367,27 +454,16 @@ def family_reading_lines(
     if reading.absent:
         lines.append(
             f"{bullet}Without the step — judged and moved less than a third of "
-            f"it ({len(reading.absent)}): "
-            f"{_named([_move_of(sweep, name, reading.lead) for name in reading.absent])}."
+            f"it in {name} ({len(reading.absent)}): "
+            f"{_named([_move_of(sweep, label, reading.lead) for label in reading.absent])}."
         )
     if reading.unconfirmed:
         lines.append(
-            f"{bullet}Moved as far as a stepped configuration without confirming "
-            f"({len(reading.unconfirmed)}): "
-            f"{_named([_move_of(sweep, name, reading.lead) for name in reading.unconfirmed])}."
+            f"{bullet}Moved as far as a stepped configuration in {name} without "
+            f"confirming ({len(reading.unconfirmed)}): "
+            f"{_named([_move_of(sweep, label, reading.lead) for label in reading.unconfirmed])}."
         )
-    if reading.smaller:
-        lines.append(
-            f"{bullet}Moved the same way but less than the baseline: "
-            + _named([f"{label} ({ratio:.0%} of it)" for label, ratio in reading.smaller])
-            + "."
-        )
-    if reading.larger:
-        lines.append(
-            f"{bullet}Moved more than the baseline: "
-            + _named([f"{label} ({ratio:.0%} of it)" for label, ratio in reading.larger])
-            + "."
-        )
+    lines += _relative_lines(sweep, reading, bullet)
     if reading.unjudged:
         causes: dict[str, int] = {}
         for _label, cause in reading.unjudged:
@@ -401,8 +477,9 @@ def family_reading_lines(
     lines += [f"{bullet}{line}" for line in _shape_phrase(reading)]
     if family == "memory":
         lines.append(
-            f"{bullet}Memory is set mostly by what the job loads, not by a few "
-            f"long events, and does not depend on which machine ran it."
+            f"{bullet}Memory is determined primarily by what the job loads rather "
+            f"than by a few long events. Any machine dependence should be "
+            f"assessed from the measured host evidence."
         )
     return lines
 
@@ -428,10 +505,11 @@ def _matched_phrase(profile) -> str:
     """Which of the longest events changed between the two ends beyond what
     the typical event did, and which moved with it — the same event number
     simulated at both ends."""
-    typical = (
-        (profile.onset.median - profile.base.median) / profile.base.median
-        if profile.base.median else 0.0
-    )
+    if not profile.base.median:
+        # Without the typical event's own move there is nothing to tell a
+        # changed event from one that moved with it.
+        return ""
+    typical = (profile.onset.median - profile.base.median) / profile.base.median
     changed, held = [], []
     for m in profile.matched:
         if m.base is None or m.onset is None or m.base <= 0:
@@ -514,21 +592,81 @@ def event_record_lines(
     return out
 
 
+#: Regions named per configuration in the summary; the history tables below
+#: carry the full list.
+_MAX_SUMMARY_REGIONS = 3
+
+
+def _region_move(delta: RegionDelta) -> str:
+    """``"HCAL +0.142"``; a region measured at one end only says so in words
+    rather than as a move against zero."""
+    if delta.base is None:
+        return f"{delta.region} newly present ({delta.onset:.3g})"
+    if delta.onset is None:
+        return f"{delta.region} no longer measured (was {delta.base:.3g})"
+    return f"{delta.region} {delta.delta:+.3g}"
+
+
+def region_summary_lines(
+    sweep: ScopeSweep, *, indent: str = "  ", limit: int = MAX_EVENT_RECORDS,
+) -> list[str]:
+    """The typical event's largest per-region movements on the configurations
+    that stepped in time — the baseline first, then the largest moves — or
+    nothing when no region timing was recorded for them.
+
+    The movements are of per-event medians, so each says how the typical
+    event's time in one region moved. They are never added up or turned into a
+    region's share of the step: a sum of medians is not the median of a sum."""
+    if "time" not in sweep.stepped_families:
+        return []
+    reading = sweep.reading("time")
+    labels = list(reading.stepped) + [
+        label for _metric, labels in reading.also for label in labels
+    ]
+    labels = sorted(dict.fromkeys(labels), key=lambda label: label != "baseline")
+    rows = [
+        row for label in labels
+        if (row := sweep.row(label)) is not None and row.regions
+    ]
+    if not rows:
+        return []
+    out = [
+        f"{indent}- Largest typical-event region movements (per-event medians, "
+        f"s/event, base → onset):"
+    ]
+    out += [
+        f"{indent}    {row.label}: "
+        + "; ".join(_region_move(d) for d in row.regions[:_MAX_SUMMARY_REGIONS])
+        + "."
+        for row in rows[:limit]
+    ]
+    rest = len(rows) - min(len(rows), limit)
+    if rest > 0:
+        out.append(f"{indent}    (+{rest} more stepped configuration(s) with region timing)")
+    return out
+
+
 # ── One line per scope ────────────────────────────────────────────────────────
 
 def _shape_summary(reading: FamilyReading) -> str:
-    kinds: dict[str, int] = {}
-    for _label, shape in reading.shapes:
-        kinds[shape.kind] = kinds.get(shape.kind, 0) + 1
+    """The stepped configurations' shapes, counted per kind, each kind with one
+    configuration's numbers — the baseline's where it has that shape."""
+    kinds: dict[str, list[tuple[str, TimeShape]]] = {}
+    for label, shape in reading.shapes:
+        kinds.setdefault(shape.kind, []).append((label, shape))
     words = {
         "tail": "carried by a few long events (typical event unmoved)",
         "typical": "in the typical event",
         "outside": "outside the event loop",
         "mixed": "partly in the typical event",
     }
-    return "; ".join(
-        f"{n} {words[kind]}" for kind, n in sorted(kinds.items(), key=lambda kv: -kv[1])
-    )
+    parts = []
+    for kind, items in sorted(kinds.items(), key=lambda kv: -len(kv[1])):
+        label, shape = next(
+            ((label, s) for label, s in items if label == "baseline"), items[0],
+        )
+        parts.append(f"{len(items)} {words[kind]}, e.g. {_shape_item(label, shape)}")
+    return "; ".join(parts)
 
 
 def _quiet_family(sweep: ScopeSweep, reading: FamilyReading) -> str:
@@ -592,6 +730,11 @@ def scope_state(sweep: ScopeSweep) -> str:
         shapes = _shape_summary(reading)
         if shapes:
             text += f" — {shapes}"
+        for metric, labels in reading.also:
+            text += (
+                f"; {METRIC_NAMES[metric]} independently stepped on "
+                f"{len(labels)} more where {name} did not"
+            )
         parts.append(text)
     unjudged = [
         family for family in SWEEP_METRICS
@@ -637,69 +780,29 @@ def history_summary(
     if before:
         bits.append(f"{history.prior_flags} of {len(before)} earlier releases were flagged")
     persistence = history.persistence
-    bits.append({
-        "persisted": f"the new level held across {len(history.after_onset)} later release(s)",
-        "returned": "later releases came back towards the old level",
-    }.get(persistence, "no release after the onset has been measured yet"))
-    lines = [f"History of {label}'s {name}: " + "; ".join(bits) + "."]
-    host = _host_sentence(history)
-    if host:
-        lines.append(host)
-    return lines
-
-
-def _host_names(hosts) -> str:
-    names = [h.name or "an unnamed host" for h in hosts]
-    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
-
-
-def _host_sentence(history: MetricHistory) -> str:
-    """The machines, in one sentence: who measured what, and what switching
-    machines does to this series on identical software."""
-    bits = []
-    reading = history.host_reading
-    if reading is not None:
-        if reading.kind == "reproduced":
-            bits.append(
-                f"{_host_names(reading.moved)} measured both the release before "
-                f"the onset and the onset release and moved with the step"
-            )
-        elif reading.kind == "confined":
-            bits.append(
-                f"{_host_names(reading.stayed)} measured both releases and stayed "
-                f"at the old level; the new level came only from "
-                f"{_host_names(reading.at_new)}"
-            )
-        else:
-            bits.append(
-                f"at the onset {_host_names(reading.at_new)} measured the new level "
-                f"and {_host_names(reading.at_old)} the old one"
-            )
-    change = history.host_change_at_onset
-    if change is not None:
-        previous, now = change
+    after = len(history.after_onset)
+    if persistence == "persisted":
+        bits.append(f"the new level held across {after} later release(s)")
+    elif persistence == "returned":
+        bits.append("later releases came back towards the old level")
+    elif not history.measured_after_onset:
+        bits.append("no release after the onset has been measured yet")
+    else:
         bits.append(
-            f"the benchmark host changed at the onset ({previous.name or 'unnamed'} "
-            f"→ {now.name or 'unnamed'})"
+            f"whether the new level held across the {after} later release(s) "
+            f"is unknown"
         )
-        seen = history.new_host_seen_at_old_level
-        if seen is not None:
-            host, release = seen
-            bits.append(
-                f"but {host.name} had measured the old level in release {release}"
-            )
+    lines = [f"History of {label}'s {name}: " + "; ".join(bits) + "."]
+    lines += host_sentences(history)
     spread = history.host_spread
     if spread is not None:
         value, releases = spread
-        bits.append(
-            f"machines measuring the same release differed by up to "
-            f"{_spread(value)} on this series "
-            f"({releases} release(s) measured on several machines)"
+        lines.append(
+            f"Machines measuring the same release differed by up to "
+            f"{_spread(value)} on this series ({releases} release(s) measured "
+            f"on several machines)."
         )
-    if not bits:
-        return ""
-    sentence = "; ".join(bits)
-    return "Hosts: " + sentence[0].lower() + sentence[1:] + "."
+    return lines
 
 
 # ── What a candidate changes in benchmarked geometry ─────────────────────────
@@ -861,8 +964,8 @@ def scope_evidence_lines(
     indent: str = "  ",
 ) -> list[str]:
     """Everything the summary says about one scope under judgement: each
-    family's reading, the event records behind a time step, and the history and
-    machines of its representative metric."""
+    family's reading, the event records and region movements behind a time
+    step, and the history and machines of its representative metric."""
     if sweep.unread:
         return [f"{indent}- No reading: {sweep.unread}; unknown, not flat."]
     lines = []
@@ -874,6 +977,7 @@ def scope_evidence_lines(
     for failure in sweep.failures:
         lines.append(f"{indent}- Job failure: {failure} — no reading for it, not flat.")
     lines += event_record_lines(sweep, indent=indent)
+    lines += region_summary_lines(sweep, indent=indent)
     lines += [
         f"{indent}- {line}"
         for line in history_summary(history, history_metric, history_label)

@@ -188,6 +188,30 @@ def test_each_host_keeps_its_own_level_in_first_sighting_order():
     )
 
 
+def test_a_release_split_across_machines_sits_between_their_own_levels():
+    # The release level is the median of every night, so machines measuring
+    # two levels put it between them — near neither — while each machine's own
+    # level stays where it measured.
+    frame = _frame([
+        ("2026-09-24a", "2026-09-24", 6618.0, True),
+        ("2026-09-24b", "2026-09-24", 5850.0, True),
+    ])
+    verdicts = [
+        _verdict("2026-09-24a", "2026-09-24", 6618.0, Severity.OK),
+        _verdict("2026-09-24b", "2026-09-24", 5850.0, Severity.WATCH, Direction.DOWN),
+    ]
+    hosts = host_facts(_machines([
+        ("2026-09-24a", "fcc-ironic-01"), ("2026-09-24b", "fcc-ironic-03"),
+    ]))
+    point = release_points(frame, verdicts, hosts=hosts)[0]
+    assert point.value == 6234.0
+    assert point.direction is Direction.DOWN
+    assert point.host_levels == (
+        HostLevel(HostFact("fcc-ironic-01", 64), 6618.0),
+        HostLevel(HostFact("fcc-ironic-03", 64), 5850.0),
+    )
+
+
 def test_a_host_whose_nights_were_not_judged_has_no_level_beside_judged_ones():
     # The release level ignores an unjudged night when a judged one exists, and
     # so does each machine: the contended host is listed, but a level the

@@ -93,6 +93,7 @@ from k4bench.blame.prompt import (
     historical_lines,
     history_block,
     history_clause,
+    host_sentences,
     log_prompt_size,
     measurement_phrase,
     outcome_lines,
@@ -801,6 +802,13 @@ def _history_lines(request: AttributionRequest) -> list[str]:
     if not facts:
         return []
     shown = facts[:_MAX_HISTORY_BLOCKS]
+    summarised = _summarised_facts(request)
+    # Per scope: the summary has stated its summarised row's machines, and the
+    # scope's other rows were measured on the same nights. Another scope's
+    # machines are its own fact, so each scope keeps its own record.
+    stated = {
+        scope: set(host_sentences(fact.history)) for scope, fact in summarised.items()
+    }
     lines = [
         "",
         "Recent history of the metrics that moved most — this is how each series "
@@ -810,8 +818,13 @@ def _history_lines(request: AttributionRequest) -> list[str]:
         subject = f"{fact.detector} · {fact.metric} ({fact.label})"
         if fact.sub_detector:
             subject += f" [{fact.sub_detector}]"
+        scope = _fact_scope(fact)
         lines.append("")
-        lines += history_block(fact.history, title=f"[{fact.id}] {subject} — ")
+        lines += history_block(
+            fact.history, title=f"[{fact.id}] {subject} — ",
+            readings=fact is not summarised.get(scope),
+            stated=stated.setdefault(scope, set()),
+        )
         lines += region_lines(fact.regions)
     remaining = len(facts) - len(shown)
     if remaining > 0:
@@ -904,6 +917,7 @@ def _scope_blocks(request: AttributionRequest) -> list[str]:
     facts = _attributed_facts(request)
     ids = scope_ids(facts)
     sweeps = {sweep.scope: sweep for sweep in request.sweeps}
+    summarised = _summarised_facts(request)
     lines = [
         "Scopes with confirmed regressions in this window — answer each as a "
         "whole by its id:",
@@ -922,17 +936,34 @@ def _scope_blocks(request: AttributionRequest) -> list[str]:
         lines += _prior_summary(rows)
         if sweep is None:
             continue
-        ranked = sorted(rows, key=_by_movement)
-        rep = representative(
-            sweep, [(f.label, f.metric, f) for f in ranked if f.history],
-        )
+        fact = summarised.get(scope)
         lines += scope_evidence_lines(
             sweep,
-            history=rep[2].history if rep else None,
-            history_metric=rep[1] if rep else "",
-            history_label=rep[0] if rep else "baseline",
+            history=fact.history if fact else None,
+            history_metric=fact.metric if fact else "",
+            history_label=fact.label if fact else "baseline",
         )
     return lines
+
+
+def _summarised_facts(
+    request: AttributionRequest,
+) -> dict[tuple[str, str, str], RegressionFact]:
+    """``scope -> `` the row whose history the evidence summary reads for that
+    scope; a scope without a sweep, or without a row that has a history, reads
+    none and is absent."""
+    facts = _attributed_facts(request)
+    sweeps = {sweep.scope: sweep for sweep in request.sweeps}
+    summarised = {}
+    for scope in scope_ids(facts):
+        sweep = sweeps.get(scope)
+        if sweep is None:
+            continue
+        ranked = sorted((f for f in facts if _fact_scope(f) == scope), key=_by_movement)
+        rep = representative(sweep, [(f.label, f.metric, f) for f in ranked if f.history])
+        if rep is not None:
+            summarised[scope] = rep[2]
+    return summarised
 
 
 def _summary_lines(request: AttributionRequest) -> list[str]:

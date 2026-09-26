@@ -40,6 +40,7 @@ from k4bench.regression.models import (
     EventProfile,
     MetricVerdict,
     NightlyReport,
+    RegionDelta,
     RunGroupReport,
     Severity,
     Unjudged,
@@ -128,6 +129,9 @@ class SweepRow:
     #: configuration's stepped time verdict; ``None`` when it did not step in
     #: time or the report predates the field.
     profile: EventProfile | None = None
+    #: How the typical event's time moved per detector region, from the same
+    #: verdict, largest movement first; empty when unknown.
+    regions: tuple[RegionDelta, ...] = ()
 
     def cell(self, metric: str) -> SweepCell | None:
         return next((c for c in self.cells if c.metric == metric), None)
@@ -137,6 +141,11 @@ class SweepRow:
         return any(
             c.status == STEPPED for c in self.cells if c.metric in SWEEP_METRICS[family]
         )
+
+    def stepped_in(self, metric: str) -> bool:
+        """Whether *metric* itself stepped in this window."""
+        cell = self.cell(metric)
+        return cell is not None and cell.status == STEPPED
 
 
 # ── How a time step is shaped ─────────────────────────────────────────────────
@@ -202,18 +211,20 @@ class TimeShape:
         return (p.onset.stepping_mean - p.base.stepping_mean) / moved
 
 
-def time_shape(row: SweepRow) -> TimeShape | None:
-    """How *row*'s time step is shaped, or ``None`` when it did not step in
-    time or no typical view of it was judged.
+def time_shape(row: SweepRow, lead: str | None = None) -> TimeShape | None:
+    """How *row*'s step in the *lead* metric is shaped, or ``None`` when that
+    metric did not step or no typical view of it was judged.
 
-    The lead is the mean event time when it stepped, else the wall time — the
-    per-job figure, which also carries initialisation, so a wall step is first
-    checked against the mean event time. Only judged views count; a view nobody
-    judged is unknown, and a step with no judged view is not called any
-    shape."""
+    Without a *lead*, it is the mean event time when that stepped, else the wall
+    time — the per-job figure, which also carries initialisation, so a wall step
+    is first checked against the mean event time. A step in a typical view
+    itself (the median or trimmed mean) is a step of the typical event. Only
+    judged views count; a view nobody judged is unknown, and a step with no
+    judged view is not called any shape."""
+    candidates = (lead,) if lead is not None else ("mean_time_s", "wall_time_s")
     lead = next(
         (
-            c for metric in ("mean_time_s", "wall_time_s")
+            c for metric in candidates
             if (c := row.cell(metric)) is not None and c.status == STEPPED
             and c.pct is not None and math.isfinite(c.pct) and c.pct != 0
         ),
@@ -221,6 +232,11 @@ def time_shape(row: SweepRow) -> TimeShape | None:
     )
     if lead is None:
         return None
+    if lead.metric in TYPICAL_TIME_METRICS:
+        return TimeShape(
+            kind="typical", lead=lead.metric, lead_pct=lead.pct,
+            typical=((lead.metric, lead.pct),), profile=row.profile,
+        )
     step = abs(lead.pct)
     mean = row.cell("mean_time_s")
     if lead.metric == "wall_time_s" and mean is not None and mean.comparable:
@@ -256,7 +272,13 @@ def time_shape(row: SweepRow) -> TimeShape | None:
 
 @dataclass(frozen=True)
 class FamilyReading:
-    """What the sweep's pattern says for one metric family.
+    """What the sweep's pattern says for one metric family, read on one metric.
+
+    Everything is read from the **lead** metric's own cells: a configuration
+    counts as stepped when the lead stepped there, as judged when the lead was
+    judged there, and every direction, size and comparison below is the lead's.
+    Another metric of the family that stepped where the lead did not is kept
+    apart in ``also``, never counted as a step of the lead.
 
     Every list names configurations by label and is ordered largest move first;
     ``judged`` counts the configurations whose lead metric was judged at all,
@@ -290,6 +312,9 @@ class FamilyReading:
     larger: tuple[tuple[str, float], ...] = ()
     #: For time: the stepped configurations' shapes, by label.
     shapes: tuple[tuple[str, TimeShape], ...] = ()
+    #: ``(metric, labels)`` for each other metric of the family that stepped
+    #: on configurations where the lead did not, largest move first.
+    also: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
     @property
     def tail(self) -> tuple[str, ...]:
@@ -363,8 +388,14 @@ class ScopeSweep:
         """What the pattern says for *family* (see :class:`FamilyReading`)."""
         lead = self.lead_metric(family)
         cells = [(r, r.cell(lead)) for r in self.rows]
-        judged = [(r, c) for r, c in cells if c is not None and c.comparable]
-        stepped = [(r, c) for r, c in cells if r.stepped(family) and c is not None]
+        # A confirmed step whose size is unknown is still a step: it counts as
+        # stepped and judged, and adds nothing to any direction or size.
+        judged = [
+            (r, c) for r, c in cells
+            if c is not None and (c.comparable or c.status == STEPPED)
+        ]
+        stepped = [(r, c) for r, c in judged if c.status == STEPPED]
+        sized = [(r, c) for r, c in stepped if c.pct is not None]
 
         def move(cell: SweepCell | None) -> float:
             if cell is None or cell.pct is None or not math.isfinite(cell.pct):
@@ -372,24 +403,20 @@ class ScopeSweep:
             return abs(cell.pct)
 
         stepped.sort(key=lambda rc: (-move(rc[1]), rc[0].label))
-        up = sum(1 for _r, c in stepped if (c.pct or 0) > 0)
-        down = sum(1 for _r, c in stepped if (c.pct or 0) < 0)
+        up = sum(1 for _r, c in sized if c.pct > 0)
+        down = sum(1 for _r, c in sized if c.pct < 0)
         if up > down:
-            opposite = [r.label for r, c in stepped if (c.pct or 0) < 0]
+            opposite = [r.label for r, c in stepped if c.pct is not None and c.pct < 0]
         elif down > up:
-            opposite = [r.label for r, c in stepped if (c.pct or 0) > 0]
+            opposite = [r.label for r, c in stepped if c.pct is not None and c.pct > 0]
         else:
             opposite = [r.label for r, _c in stepped] if up and down else []
 
         typical_step = (
-            statistics.median(move(c) for _r, c in stepped) if stepped else None
+            statistics.median(move(c) for _r, c in sized) if sized else None
         )
-        stepped_labels = {r.label for r, _c in stepped}
         quiet = sorted(
-            (
-                (r, c) for r, c in judged
-                if r.label not in stepped_labels and c.status != STEPPED
-            ),
+            ((r, c) for r, c in judged if c.status != STEPPED),
             key=lambda rc: (-move(rc[1]), rc[0].label),
         )
         absent, unconfirmed = [], []
@@ -403,12 +430,12 @@ class ScopeSweep:
         unjudged = tuple(
             (r.label, c.cause or c.status)
             for r, c in cells
-            if c is not None and not c.comparable
+            if c is not None and not c.comparable and c.status != STEPPED
         ) + tuple((r.label, "missing") for r, c in cells if c is None)
 
         baseline_row = self.row("baseline")
         baseline = baseline_row.cell(lead) if baseline_row is not None else None
-        baseline_stepped = baseline_row is not None and baseline_row.stepped(family)
+        baseline_stepped = any(r.label == "baseline" for r, _c in stepped)
         isolated = (
             bool(stepped) and baseline is not None and "baseline" in absent
             and len(stepped) <= max(2, _ISOLATED_SHARE * len(judged))
@@ -431,8 +458,22 @@ class ScopeSweep:
         if family == "time":
             shapes = tuple(
                 (r.label, shape) for r, _c in stepped
-                if (shape := time_shape(r)) is not None
+                if (shape := time_shape(r, lead)) is not None
             )
+        also = []
+        for metric in SWEEP_METRICS[family]:
+            if metric == lead:
+                continue
+            extra = sorted(
+                (
+                    (r, c) for r in self.rows
+                    if (c := r.cell(metric)) is not None and c.status == STEPPED
+                    and not r.stepped_in(lead)
+                ),
+                key=lambda rc: (-move(rc[1]), rc[0].label),
+            )
+            if extra:
+                also.append((metric, tuple(r.label for r, _c in extra)))
         return FamilyReading(
             family=family, lead=lead, judged=len(judged),
             stepped=tuple(r.label for r, _c in stepped), up=up, down=down,
@@ -440,6 +481,7 @@ class ScopeSweep:
             absent=tuple(absent), unconfirmed=tuple(unconfirmed),
             unjudged=unjudged, isolated=isolated,
             smaller=tuple(smaller), larger=tuple(larger), shapes=shapes,
+            also=tuple(also),
         )
 
 
@@ -485,17 +527,21 @@ def _cell(verdict: MetricVerdict, window: tuple[str | None, str]) -> SweepCell:
     return SweepCell(verdict.metric, status, pct=pct, delta=delta, direction=direction)
 
 
-def _profile(verdicts: list[MetricVerdict], window: tuple[str | None, str]) -> EventProfile | None:
-    """The event profile of a configuration's stepped time verdict — the mean
-    event time's first, since that is the statistic the profile decomposes."""
+def _time_evidence(
+    verdicts: list[MetricVerdict], window: tuple[str | None, str],
+) -> tuple[EventProfile | None, tuple[RegionDelta, ...]]:
+    """The event profile and region movements of a configuration's stepped time
+    verdict — the mean event time's first, since that is the statistic the
+    profile decomposes. Both come from one read of the window's region files, so
+    they are taken from the same verdict."""
     for metric in ("mean_time_s", "wall_time_s", "median_time_s", "trimmed_mean_time_s"):
         for v in verdicts:
             if (
-                v.metric == metric and v.event_profile is not None
-                and steps_in_window(v, window)
+                v.metric == metric and steps_in_window(v, window)
+                and (v.event_profile is not None or v.region_deltas)
             ):
-                return v.event_profile
-    return None
+                return v.event_profile, tuple(v.region_deltas)
+    return None, ()
 
 
 def scope_sweep(
@@ -524,7 +570,8 @@ def scope_sweep(
                 for v in sorted(verdicts, key=lambda v: v.metric)
                 if v.metric in shown and v.sub_detector is None
             )
-        rows.append(SweepRow(label=label, cells=cells, profile=_profile(verdicts, window)))
+        profile, regions = _time_evidence(verdicts, window)
+        rows.append(SweepRow(label=label, cells=cells, profile=profile, regions=regions))
     return ScopeSweep(
         detector=group.detector, platform=group.platform, sample=group.sample,
         stack=group.k4h_release, base_release=base_release,

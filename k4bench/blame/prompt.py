@@ -201,10 +201,11 @@ WEIGHING_RULE = (
     "the event loop — initialisation or teardown — and time outside Geant4 "
     "stepping points at per-event work other than stepping through the "
     "geometry. "
-    "(5) Memory metrics (VmPeak, anonymous RSS) are set mostly by what the job "
-    "loads — geometry, physics tables, libraries — so a few long events do not "
-    "carry a memory step, and they do not depend on which machine ran the job; "
-    "time metrics depend on both. "
+    "(5) Memory metrics (VmPeak, anonymous RSS) are determined primarily by "
+    "what the job loads — geometry, physics tables, libraries — rather than by "
+    "a few long events, so a few long events do not carry a memory step; time "
+    "metrics depend on both. Whether a metric depends on the machine that ran "
+    "it is read from the measured host evidence, not assumed. "
 )
 
 
@@ -366,7 +367,7 @@ def _history_rows(history: MetricHistory) -> list[str]:
     return rows
 
 
-def _history_readings(history: MetricHistory) -> list[str]:
+def _history_readings(history: MetricHistory, *, readings: bool = True) -> list[str]:
     """The derived sentences under the table — the part a model actually reasons
     from.
 
@@ -375,6 +376,9 @@ def _history_readings(history: MetricHistory) -> list[str]:
     the evidence for it is missing. "The step persisted" and "we cannot tell yet
     whether the step persisted" are opposite evidence, and the second is the
     normal state on the night a regression is confirmed.
+
+    Without *readings* only the note explaining the table's own markers is
+    kept — for a metric whose readings the evidence summary already states.
     """
     lines = []
     if any(point.platform for point in history.points):
@@ -384,6 +388,8 @@ def _history_readings(history: MetricHistory) -> list[str]:
             "series replaced; a level change where the platform changes is not a "
             "change inside the stack."
         )
+    if not readings:
+        return lines
     band = history.noise_band
     if band is not None:
         lines.append(
@@ -423,16 +429,37 @@ def _history_readings(history: MetricHistory) -> list[str]:
             f"its old level — that is what a noise excursion looks like once it "
             f"passes, and it argues against any code change causing it."
         )
-    else:
+    elif not history.measured_after_onset:
         lines.append(
             "    No release after the onset has been measured yet, so whether "
             "this level holds is simply unknown — do not treat that either way."
         )
+    else:
+        lines.append(
+            f"    Whether the new level held across the {after} later "
+            f"release(s) cannot be read from this history — unknown, not "
+            f"either way."
+        )
+    return lines
+
+
+def host_sentences(history: MetricHistory | None) -> list[str]:
+    """What the machines say about *history*'s step, one sentence per fact: a
+    change of machine exactly at the onset and its counter-evidence, then what
+    each machine's own level shows, with the levels it was read from.
+
+    Shared by the evidence summary and the history tables, so a machine fact is
+    stated in the same words wherever it appears, and a prompt that has already
+    stated one can recognise it and not state it again. Nothing is said when the
+    machines' evidence is unknown."""
+    if history is None:
+        return []
+    lines = []
     change = history.host_change_at_onset
     if change is not None:
         previous, now = change
         lines.append(
-            f"    The benchmark host changed exactly at the onset release: "
+            f"The benchmark host changed exactly at the onset release: "
             f"{_host(previous)} -> {_host(now)}. A different machine can move a "
             f"measurement on its own, independently of any code."
         )
@@ -440,36 +467,59 @@ def _history_readings(history: MetricHistory) -> list[str]:
         if seen is not None:
             host, release = seen
             lines.append(
-                f"    But {_host_list((host,))} had already measured this series "
+                f"But {_host_list((host,))} had already measured this series "
                 f"at its old level in release {release}, so that machine on its "
                 f"own does not produce the new level."
             )
-    lines += _host_reading_lines(history.host_reading)
+    reading = history.host_reading
+    if reading is not None:
+        lines.append(_host_reading_sentence(reading))
+        lines.append(_host_levels_sentence(reading))
     return lines
 
 
-def _host_reading_lines(reading: HostReading | None) -> list[str]:
+def _host_reading_sentence(reading: HostReading) -> str:
     """The sentence each machine-level reading renders as, naming its machines."""
-    if reading is None:
-        return []
     if reading.kind == "reproduced":
-        return [
-            f"    {_host_list(reading.moved)} measured both the release before "
+        return (
+            f"{_host_list(reading.moved)} measured both the release before "
             f"the onset and the onset release, and moved with the step: "
             f"switching machines does not explain it."
-        ]
+        )
     if reading.kind == "confined":
-        return [
-            f"    {_host_list(reading.stayed)} measured both the release before "
+        return (
+            f"{_host_list(reading.stayed)} measured both the release before "
             f"the onset and the onset release, and stayed at the old level; the "
             f"new level came only from {_host_list(reading.at_new)}; a machine "
             f"effect is a live explanation."
-        ]
-    return [
-        f"    At the onset release {_host_list(reading.at_new)} measured the new "
+        )
+    return (
+        f"At the onset release {_host_list(reading.at_new)} measured the new "
         f"level and {_host_list(reading.at_old)} the old one: identical software "
         f"gave both levels; the host evidence is inconclusive."
+    )
+
+
+def _host_levels_sentence(reading: HostReading) -> str:
+    """Each machine's own level on both sides of the onset, beside the baseline
+    it was placed against — ``"fcc-ironic-01 6621 → 5851"``."""
+    before = {level.host: level.value for level in reading.before}
+    onset = {level.host: level.value for level in reading.onset}
+    parts = [
+        f"{host.name} {before[host]:.4g} → {value:.4g}" if host in before
+        else f"{host.name} {value:.4g} (not in the release before)"
+        for host, value in onset.items()
+    ] + [
+        f"{host.name} {value:.4g} (not at the onset)"
+        for host, value in before.items() if host not in onset
     ]
+    baseline = (
+        f"; baseline {reading.old_level:.4g}" if reading.old_level is not None else ""
+    )
+    return (
+        f"Each machine's own level (release before the onset → onset "
+        f"release{baseline}): " + "; ".join(parts) + "."
+    )
 
 
 def _host(host) -> str:
@@ -489,7 +539,13 @@ def _host_list(hosts) -> str:
     return ", ".join(names[:-1]) + " and " + names[-1]
 
 
-def history_block(history: MetricHistory | None, *, title: str = "") -> list[str]:
+def history_block(
+    history: MetricHistory | None,
+    *,
+    title: str = "",
+    readings: bool = True,
+    stated: set[str] | None = None,
+) -> list[str]:
     """A metric's recent releases as prompt lines: the table, then what it means.
 
     This is the evidence that separates "a number moved" from "something changed
@@ -497,6 +553,13 @@ def history_block(history: MetricHistory | None, *, title: str = "") -> list[str
     regression with no history — a report written before histories were recorded
     — renders as nothing at all rather than as an empty table, since an empty
     table reads as a series with no past.
+
+    *readings* ``False`` keeps the table without the series' readings, for a
+    metric the evidence summary has already read. *stated* holds the machine
+    sentences (:func:`host_sentences`) the prompt has already made: those are
+    left out here, and the ones made here are added to it. The machines of one
+    scope measured every configuration on the same nights, so their facts would
+    otherwise repeat under every table.
     """
     if history is None or not history.points:
         return []
@@ -506,8 +569,14 @@ def history_block(history: MetricHistory | None, *, title: str = "") -> list[str
         "made of it, nights measured, and how much of the tracked software "
         "changed entering that release.",
         *_history_rows(history),
-        *_history_readings(history),
+        *_history_readings(history, readings=readings),
     ]
+    for sentence in host_sentences(history):
+        if stated is not None:
+            if sentence in stated:
+                continue
+            stated.add(sentence)
+        lines.append(f"    {sentence}")
     return lines
 
 

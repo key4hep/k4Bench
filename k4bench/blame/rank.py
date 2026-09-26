@@ -81,6 +81,7 @@ from k4bench.blame.prompt import (
     historical_offer_lines,
     history_block,
     history_clause,
+    host_sentences,
     log_prompt_size,
     measurement_phrase,
     outcome_lines,
@@ -729,13 +730,21 @@ def _history_lines(request: RankRequest) -> list[str]:
         return []
     ranked = sorted(request.metrics, key=_by_movement)
     shown = [step for step in ranked if step.history][:_MAX_HISTORY_BLOCKS]
+    summarised = _summarised_step(request)
+    # The summary has stated the summarised step's machines; the scope's other
+    # metrics were measured on the same nights, so a sentence already made is
+    # not made again under their tables.
+    stated = set(host_sentences(summarised.history)) if summarised else set()
     lines: list[str] = []
     for step in shown:
         subject = f"{step.metric} ({step.label})"
         if step.sub_detector:
             subject += f" [{step.sub_detector}]"
         lines.append("")
-        lines += history_block(step.history, title=f"{subject} — ")
+        lines += history_block(
+            step.history, title=f"{subject} — ",
+            readings=step is not summarised, stated=stated,
+        )
         lines += region_lines(step.regions)
     remaining = sum(1 for step in ranked if step.history) - len(shown)
     if remaining > 0:
@@ -836,6 +845,19 @@ def _reach_lines(request: RankRequest) -> list[str]:
     return ["- Candidates whose changed files are in this detector's geometry:", *lines]
 
 
+def _summarised_step(request: RankRequest) -> MetricStep | None:
+    """The step whose history the evidence summary reads, or ``None`` when the
+    summary reads none — without a sweep there is no summary of this scope."""
+    if request.sweep is None:
+        return None
+    ranked = sorted(request.metrics, key=_by_movement)
+    rep = representative(
+        request.sweep,
+        [(step.label, step.metric, step) for step in ranked if step.history],
+    )
+    return rep[2] if rep else None
+
+
 def _summary_lines(request: RankRequest) -> list[str]:
     """The evidence summary: this run's scope, the candidates reaching its
     geometry, and every other scope that measured the window."""
@@ -843,16 +865,12 @@ def _summary_lines(request: RankRequest) -> list[str]:
     lines = [EVIDENCE_HEADER, ""]
     if request.sweep is not None:
         lines.append(f"This run — {scope_name(request.sweep)}:")
-        ranked = sorted(request.metrics, key=_by_movement)
-        rep = representative(
-            request.sweep,
-            [(step.label, step.metric, step) for step in ranked if step.history],
-        )
+        step = _summarised_step(request)
         lines += scope_evidence_lines(
             request.sweep,
-            history=rep[2].history if rep else None,
-            history_metric=rep[1] if rep else "",
-            history_label=rep[0] if rep else "baseline",
+            history=step.history if step else None,
+            history_metric=step.metric if step else "",
+            history_label=step.label if step else "baseline",
         )
     else:
         lines += _step_lines(request)

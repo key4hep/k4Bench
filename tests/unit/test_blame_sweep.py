@@ -29,6 +29,7 @@ from k4bench.regression.models import (
     EventSample,
     MetricVerdict,
     NightlyReport,
+    RegionDelta,
     RunGroupReport,
     Severity,
     Unjudged,
@@ -283,3 +284,111 @@ def test_an_ok_cell_keeps_its_move_and_a_failed_configuration_reads_failed():
     assert sweep.row("baseline").cell("mean_time_s").status == OK
     assert sweep.row("baseline").cell("mean_time_s").pct == 0.02
     assert all(c.status == "failed" for c in sweep.row("no_A").cells)
+
+
+# ── One metric per reading ────────────────────────────────────────────────────
+# A family is read on its lead metric alone. A configuration where another
+# metric of the family stepped is kept apart, never counted, sized or pointed
+# as a step of the lead.
+
+def _mixed():
+    # The baseline stepped in mean event time only, no_ECAL in wall time only,
+    # no_HCAL in neither.
+    return scope_sweep(_group([
+        _v("baseline", "mean_time_s", +0.100, Severity.CONFIRMED),
+        _v("baseline", "median_time_s", +0.005),
+        _v("baseline", "trimmed_mean_time_s", +0.006),
+        _v("baseline", "wall_time_s", +0.020),
+        _v("no_ECAL", "mean_time_s", +0.010),
+        _v("no_ECAL", "median_time_s", +0.002),
+        _v("no_ECAL", "trimmed_mean_time_s", +0.003),
+        _v("no_ECAL", "wall_time_s", +0.120, Severity.CONFIRMED),
+        *_timing("no_HCAL", +0.005, +0.001, +0.002, +0.004),
+    ]), base_release=_WINDOW[0], onset_release=_WINDOW[1])
+
+
+def test_a_configuration_that_stepped_in_another_metric_is_not_a_step_of_the_lead():
+    reading = _mixed().reading("time")
+    assert reading.lead == "mean_time_s"
+    assert reading.stepped == ("baseline",)
+    assert (reading.judged, reading.up, reading.down) == (3, 1, 0)
+    assert reading.also == (("wall_time_s", ("no_ECAL",)),)
+    # In the lead metric no_ECAL is without the step, which is what it measured.
+    assert set(reading.absent) == {"no_ECAL", "no_HCAL"}
+    assert reading.unconfirmed == ()
+    assert [label for label, _s in reading.shapes] == ["baseline"]
+    assert dict(reading.shapes)["baseline"].lead == "mean_time_s"
+
+
+def test_a_lead_metric_nobody_judged_keeps_the_row_out_of_the_lead_counts():
+    sweep = scope_sweep(_group([
+        _v("baseline", "mean_time_s", +0.100, Severity.CONFIRMED),
+        _v("no_X", "mean_time_s", None, Severity.UNKNOWN,
+           unjudged=Unjudged.INSUFFICIENT_HISTORY),
+        _v("no_X", "wall_time_s", +0.090, Severity.CONFIRMED),
+        _v("no_Y", "mean_time_s", +0.002),
+    ]), base_release=_WINDOW[0], onset_release=_WINDOW[1])
+    reading = sweep.reading("time")
+    assert reading.stepped == ("baseline",)
+    assert reading.judged == 2
+    assert dict(reading.unjudged) == {"no_X": "insufficient_history"}
+    assert reading.also == (("wall_time_s", ("no_X",)),)
+    assert reading.absent == ("no_Y",)
+
+
+def test_directions_are_the_lead_metrics_own():
+    # The baseline's events got slower while its job got faster (a quicker
+    # initialisation); no_B's wall time fell with its events unmoved.
+    sweep = scope_sweep(_group([
+        _v("baseline", "mean_time_s", +0.100, Severity.CONFIRMED),
+        _v("baseline", "wall_time_s", -0.060, Severity.CONFIRMED),
+        _v("no_A", "mean_time_s", +0.090, Severity.CONFIRMED),
+        _v("no_A", "wall_time_s", +0.080, Severity.CONFIRMED),
+        _v("no_B", "mean_time_s", +0.005),
+        _v("no_B", "wall_time_s", -0.090, Severity.CONFIRMED),
+    ]), base_release=_WINDOW[0], onset_release=_WINDOW[1])
+    reading = sweep.reading("time")
+    assert (reading.up, reading.down) == (2, 0)
+    assert reading.opposite == ()
+    assert reading.stepped == ("baseline", "no_A")
+    assert reading.also == (("wall_time_s", ("no_B",)),)
+
+
+def test_metrics_stepping_together_are_counted_once_under_the_lead():
+    sweep = scope_sweep(_group([
+        *_timing("baseline", +0.100, +0.004, +0.005, +0.095, stepped=True),
+        *_timing("no_A", +0.080, +0.003, +0.002, +0.078, stepped=True),
+        *_timing("no_B", +0.002, +0.001, +0.001, +0.003),
+    ]), base_release=_WINDOW[0], onset_release=_WINDOW[1])
+    reading = sweep.reading("time")
+    assert reading.stepped == ("baseline", "no_A")
+    assert reading.judged == 3
+    assert reading.also == ()
+    assert reading.absent == ("no_B",)
+
+
+def test_region_movements_ride_on_the_row_that_stepped_in_time():
+    regions = (RegionDelta("HCAL", 0.31, 0.46, 0.15), RegionDelta("ECAL", 0.12, 0.121, 0.001))
+    sweep = scope_sweep(_group([
+        _v("baseline", "mean_time_s", +0.100, Severity.CONFIRMED, region_deltas=regions),
+        _v("no_A", "mean_time_s", +0.002, region_deltas=regions),
+    ]), base_release=_WINDOW[0], onset_release=_WINDOW[1])
+    assert sweep.row("baseline").regions == regions
+    # A configuration that did not step carries no step to decompose.
+    assert sweep.row("no_A").regions == ()
+
+
+def test_a_confirmed_step_of_unknown_size_is_still_a_step():
+    # A non-finite change reaches the sweep as no percentage at all: the row
+    # stepped, and nothing is said about how far or which way.
+    sweep = scope_sweep(_group([
+        _v("baseline", "mean_time_s", +0.100, Severity.CONFIRMED),
+        _v("no_A", "mean_time_s", float("inf"), Severity.CONFIRMED),
+        _v("no_B", "mean_time_s", +0.002),
+    ]), base_release=_WINDOW[0], onset_release=_WINDOW[1])
+    assert sweep.row("no_A").cell("mean_time_s").pct is None
+    reading = sweep.reading("time")
+    assert set(reading.stepped) == {"baseline", "no_A"}
+    assert (reading.judged, reading.up, reading.down) == (3, 1, 0)
+    assert reading.unjudged == ()
+    assert reading.absent == ("no_B",)

@@ -91,6 +91,10 @@ class HostReading:
     moved with the step or stayed at the old level; ``at_new`` and ``at_old``
     are the onset release's machines at each level. All four keep the onset
     release's order.
+
+    ``before`` and ``onset`` are every machine's own level in the release before
+    the onset and in the onset release, and ``old_level`` the baseline each was
+    placed against: the measurements the reading was made from.
     """
 
     kind: str  # "reproduced" | "confined" | "mixed"
@@ -98,6 +102,9 @@ class HostReading:
     stayed: tuple[HostFact, ...] = ()
     at_new: tuple[HostFact, ...] = ()
     at_old: tuple[HostFact, ...] = ()
+    before: tuple[HostLevel, ...] = ()
+    onset: tuple[HostLevel, ...] = ()
+    old_level: float | None = None
 
 
 @dataclass(frozen=True)
@@ -215,6 +222,13 @@ class MetricHistory:
         return tuple(p for p in self.points if p.release > self.onset_release)
 
     @property
+    def measured_after_onset(self) -> bool:
+        """Whether any release after the onset was judged with a level — what
+        separates "too fresh to say" from a persistence that could not be read
+        for another reason."""
+        return any(p.judged and p.value is not None for p in self.after_onset)
+
+    @property
     def onset_point(self) -> HistoryPoint | None:
         return next(
             (p for p in self.points if p.release == self.onset_release), None
@@ -318,24 +332,62 @@ class MetricHistory:
             return None
         return onset, self.points[at - 1]
 
-    def _level_side(self, value: float) -> str | None:
-        """``"new"`` when *value* lies within half the step of the onset level,
-        ``"old"`` when it lies within half the step of the baseline, else
-        ``None``.
+    @property
+    def _machine_step(self) -> float | None:
+        """The step as the onset release's machines measured it, signed, or
+        ``None`` when it has no direction or no size.
 
-        The two bands are open and meet at the midpoint, so a value exactly
-        halfway belongs to neither and no value can belong to both."""
+        Its direction is the one the engine flagged at the onset release, else
+        the sign of that release's departure from the baseline. Its size is the
+        largest departure any onset machine measured in that direction — the new
+        level as one machine actually measured it — and never less than the
+        release's own departure.
+
+        Not the release's level alone: that is the median of every night of the
+        release, so when machines disagree it sits between them, and when the
+        machine that carries the new level ran only a minority of the nights it
+        sits at the old level, leaving a step of no size to place anything
+        against."""
         onset = self.onset_point
         if onset is None or onset.value is None or self.baseline_median is None:
             return None
-        step = onset.value - self.baseline_median
-        if not math.isfinite(step) or step == 0 or not math.isfinite(value):
+        release_step = onset.value - self.baseline_median
+        if not math.isfinite(release_step):
+            return None
+        sign = {"UP": 1.0, "DOWN": -1.0}.get(onset.direction)
+        if sign is None:
+            if release_step == 0:
+                return None
+            sign = math.copysign(1.0, release_step)
+        size = max(
+            [release_step * sign] + [
+                (level.value - self.baseline_median) * sign
+                for level in onset.host_levels if math.isfinite(level.value)
+            ]
+        )
+        return sign * size if size > 0 else None
+
+    def _level_side(self, value: float) -> str | None:
+        """``"old"`` when *value* lies within half the step of the baseline,
+        ``"new"`` when it departed from the baseline by more than that in the
+        step's direction, else ``None``.
+
+        A machine is placed by its own departure from the old level, never by
+        its distance to the onset release's level, and against the step its
+        machines measured (:attr:`_machine_step`).
+
+        The two bands meet at half the step, so a value exactly there belongs
+        to neither and no value can belong to both. A value that departed the
+        other way belongs to neither as well: it is at neither level."""
+        step = self._machine_step
+        if step is None or not math.isfinite(value):
             return None
         tolerance = abs(step) * _PERSISTENCE_TOLERANCE
-        if abs(value - onset.value) < tolerance:
-            return "new"
-        if abs(value - self.baseline_median) < tolerance:
+        departure = value - self.baseline_median
+        if abs(departure) < tolerance:
             return "old"
+        if departure * step > 0 and abs(departure) > tolerance:
+            return "new"
         return None
 
     @property
@@ -386,9 +438,10 @@ class MetricHistory:
 
         Read from the per-machine levels of the onset release and the release
         immediately before it. Every machine is placed at the new level, the old
-        level or neither (:meth:`_level_side`); a machine at neither, or a
-        release without per-machine levels, leaves the reading ``None`` rather
-        than a guess — this evidence is allowed to say it does not know.
+        level or neither by its own departure from the baseline
+        (:meth:`_level_side`); a machine at neither, or a release without
+        per-machine levels, leaves the reading ``None`` rather than a guess —
+        this evidence is allowed to say it does not know.
 
         Both releases must have been judged. A release nobody could judge still
         records per-machine levels, but the engine refused to read them, and an
@@ -434,6 +487,8 @@ class MetricHistory:
             return None
         return HostReading(
             kind=kind, moved=moved, stayed=stayed, at_new=at_new, at_old=at_old,
+            before=previous.host_levels, onset=onset.host_levels,
+            old_level=self.baseline_median,
         )
 
     @property

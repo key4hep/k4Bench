@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 
+import pandas as pd
 import pytest
 
 from k4bench.blame.evidence import (
@@ -24,6 +25,7 @@ from k4bench.blame.evidence import (
     steps_in_window,
 )
 from k4bench.blame.prompt import history_block
+from k4bench.regression.history import release_points
 from k4bench.regression.models import (
     Direction,
     HostFact,
@@ -194,6 +196,13 @@ _IRONIC02 = HostFact("fcc-ironic-02", 64)
 _IRONIC03 = HostFact("fcc-ironic-03", 64)
 
 
+def _classified(reading: HostReading | None) -> HostReading | None:
+    """*reading* without the levels it carries — only what it concluded."""
+    if reading is None:
+        return None
+    return dataclasses.replace(reading, before=(), onset=(), old_level=None)
+
+
 def _step(previous: dict, onset: dict, *, onset_value=5850.0, earlier=None,
           judged=(True, True, True)):
     """A two-release window, 09-23 -> 09-24, with the given per-host levels.
@@ -219,7 +228,7 @@ def test_a_machine_that_measured_both_releases_is_not_a_host_change():
         {_IRONIC01: 6620.0}, {_IRONIC03: 5850.0, _IRONIC01: 5850.0},
     )
     assert history.host_change_at_onset is None
-    assert history.host_reading == HostReading(
+    assert _classified(history.host_reading) == HostReading(
         kind="reproduced", moved=(_IRONIC01,), at_new=(_IRONIC03, _IRONIC01),
     )
 
@@ -229,10 +238,19 @@ def test_a_step_only_a_new_machine_measured_is_confined_to_it():
         {_IRONIC01: 6620.0}, {_IRONIC01: 6618.0, _IRONIC03: 5850.0},
     )
     assert history.host_change_at_onset is None
-    assert history.host_reading == HostReading(
+    assert _classified(history.host_reading) == HostReading(
         kind="confined", stayed=(_IRONIC01,), at_new=(_IRONIC03,),
         at_old=(_IRONIC01,),
     )
+
+
+def test_a_reading_carries_the_levels_it_was_read_from():
+    reading = _step(
+        {_IRONIC01: 6620.0}, {_IRONIC01: 6618.0, _IRONIC03: 5850.0},
+    ).host_reading
+    assert reading.before == (HostLevel(_IRONIC01, 6620.0),)
+    assert reading.onset == (HostLevel(_IRONIC01, 6618.0), HostLevel(_IRONIC03, 5850.0))
+    assert reading.old_level == 6620.0
 
 
 def test_a_new_machine_still_at_the_old_level_makes_the_reading_mixed():
@@ -348,6 +366,147 @@ def test_per_host_levels_reach_the_blame_view_from_a_verdict():
                      (_IRONIC01,), host_levels=(level,)),
     ))
     assert history_from_verdict(verdict).points[0].host_levels == (level,)
+
+
+# ── Machines, through the release aggregation ─────────────────────────────────
+# The cases above hand the onset release its level. These build it the way a
+# report does, from nights through release_points(): the release level is the
+# median of every night, whichever machine ran it.
+
+_A, _B = HostFact("bench-a", 64), HostFact("bench-b", 64)
+_C, _D = HostFact("bench-c", 64), HostFact("bench-d", 64)
+
+
+def _nights(nights, *, flagged=(), hosts=True) -> MetricHistory:
+    """VmPeak nights ``(release, host, value)`` on a 6620 MB baseline, the
+    window 09-23 -> 09-24. Every night was judged; the nights whose index is
+    in *flagged* tripped downwards. Without *hosts* no night names a machine."""
+    run_ids = [f"{release}-{i}" for i, (release, _h, _v) in enumerate(nights)]
+    frame = pd.DataFrame({
+        "run_id": run_ids,
+        "run_date": pd.to_datetime([release for release, _h, _v in nights]),
+        "value": [value for _r, _h, value in nights],
+        "reliable": [True] * len(nights),
+    })
+    verdicts = [
+        _verdict(
+            metric="peak_vmem_mb", metric_family="memory", run_id=run_id,
+            run_date=release, value=value, baseline_median=6620.0,
+            baseline_mad=6.0,
+            severity=Severity.WATCH if i in flagged else Severity.OK,
+            direction=Direction.DOWN if i in flagged else Direction.NONE,
+        )
+        for i, (run_id, (release, _h, value)) in enumerate(zip(run_ids, nights))
+    ]
+    machines = (
+        {run_id: host for run_id, (_r, host, _v) in zip(run_ids, nights)}
+        if hosts else None
+    )
+    return history_from_verdict(_verdict(
+        metric="peak_vmem_mb", metric_family="memory",
+        history=release_points(frame, verdicts, hosts=machines),
+        baseline_median=6620.0, baseline_mad=6.0,
+        onset_run_date="2026-09-24", last_accepted_run_date="2026-09-23",
+    ))
+
+
+def test_a_new_machine_carrying_the_step_is_confined_though_the_release_sits_between():
+    # The onset release's level is the median of 6618 and 5850: 6234, 386 MB
+    # from the old level and 384 MB from the new one. Placed against that
+    # level, fcc-ironic-03's 5850 would be near neither.
+    history = _nights([
+        ("2026-09-23", _A, 6620.0),
+        ("2026-09-24", _A, 6618.0), ("2026-09-24", _B, 5850.0),
+    ], flagged=(2,))
+    assert history.onset_point.value == pytest.approx(6234.0)
+    assert _classified(history.host_reading) == HostReading(
+        kind="confined", stayed=(_A,), at_new=(_B,), at_old=(_A,),
+    )
+
+
+def test_a_new_machine_on_a_minority_of_nights_is_still_confined():
+    # Two of three onset nights ran on the old machine, so the release level
+    # is the old one: the step has no size there, only on bench-b.
+    history = _nights([
+        ("2026-09-23", _A, 6620.0),
+        ("2026-09-24", _A, 6618.0), ("2026-09-24", _A, 6619.0),
+        ("2026-09-24", _B, 5850.0),
+    ], flagged=(3,))
+    assert history.onset_point.value == pytest.approx(6618.0)
+    assert _classified(history.host_reading) == HostReading(
+        kind="confined", stayed=(_A,), at_new=(_B,), at_old=(_A,),
+    )
+
+
+def test_the_same_machine_on_both_sides_reproduces_the_step():
+    history = _nights([
+        ("2026-09-23", _A, 6620.0), ("2026-09-23", _A, 6622.0),
+        ("2026-09-24", _A, 5850.0), ("2026-09-24", _A, 5852.0),
+    ], flagged=(2,))
+    assert _classified(history.host_reading) == HostReading(
+        kind="reproduced", moved=(_A,), at_new=(_A,),
+    )
+
+
+def test_several_old_and_new_machines_are_each_placed_on_their_own():
+    history = _nights([
+        ("2026-09-23", _A, 6620.0), ("2026-09-23", _C, 6621.0),
+        ("2026-09-24", _A, 6619.0), ("2026-09-24", _B, 5850.0),
+        ("2026-09-24", _C, 6620.0), ("2026-09-24", _D, 5851.0),
+    ], flagged=(3,))
+    assert _classified(history.host_reading) == HostReading(
+        kind="confined", stayed=(_A, _C), at_new=(_B, _D), at_old=(_A, _C),
+    )
+    moved_together = _nights([
+        ("2026-09-23", _A, 6620.0), ("2026-09-23", _C, 6621.0),
+        ("2026-09-24", _A, 5850.0), ("2026-09-24", _C, 5849.0),
+        ("2026-09-24", _B, 5851.0),
+    ], flagged=(2,))
+    assert _classified(moved_together.host_reading) == HostReading(
+        kind="reproduced", moved=(_A, _C), at_new=(_A, _C, _B),
+    )
+
+
+def test_machines_disagreeing_on_identical_software_are_mixed():
+    # bench-a moved and bench-c, which measured both releases too, did not.
+    history = _nights([
+        ("2026-09-23", _A, 6620.0), ("2026-09-23", _C, 6621.0),
+        ("2026-09-24", _A, 5850.0), ("2026-09-24", _C, 6620.0),
+    ], flagged=(2,))
+    assert _classified(history.host_reading) == HostReading(
+        kind="mixed", moved=(_A,), stayed=(_C,), at_new=(_A,), at_old=(_C,),
+    )
+
+
+def test_a_machine_at_neither_level_leaves_the_reading_unknown():
+    # bench-b moved as far the other way: it is at neither the old level nor
+    # the new.
+    history = _nights([
+        ("2026-09-23", _A, 6620.0),
+        ("2026-09-24", _A, 5850.0), ("2026-09-24", _B, 7400.0),
+        ("2026-09-24", _A, 5851.0),
+    ], flagged=(1,))
+    assert history.host_reading is None
+
+
+def test_without_machine_levels_the_reading_is_unknown():
+    unnamed = _nights([
+        ("2026-09-23", _A, 6620.0),
+        ("2026-09-24", _A, 6618.0), ("2026-09-24", _B, 5850.0),
+    ], flagged=(2,), hosts=False)
+    assert unnamed.points[-1].host_levels == ()
+    assert unnamed.host_reading is None
+    # A report written before the onset release named its machines.
+    one_side = history_from_verdict(_verdict(
+        history=(
+            ReleasePoint("2026-09-23", 6620.0, 1, 1, Severity.OK, Direction.NONE),
+            ReleasePoint("2026-09-24", 6234.0, 2, 2, Severity.WATCH, Direction.DOWN,
+                         (_A, _B), host_levels=(HostLevel(_A, 6618.0), HostLevel(_B, 5850.0))),
+        ),
+        baseline_median=6620.0, onset_run_date="2026-09-24",
+        last_accepted_run_date="2026-09-23",
+    ))
+    assert one_side.host_reading is None
 
 
 # ── Building the view from a verdict ──────────────────────────────────────────
