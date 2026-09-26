@@ -47,8 +47,9 @@ from k4bench.regression.models import (
     unjudged_cause,
 )
 
-#: The metrics a sweep shows per family, in column order. The first one that
-#: stepped leads the family's reading.
+#: The metrics a sweep shows per family, in column order — the order that
+#: breaks a tie for which metric leads the family's reading
+#: (:meth:`ScopeSweep.lead_metric`).
 SWEEP_METRICS: dict[str, tuple[str, ...]] = {
     "memory": ("peak_vmem_mb", "mean_rss_anon_mb"),
     "time": ("mean_time_s", "median_time_s", "trimmed_mean_time_s", "wall_time_s"),
@@ -95,6 +96,9 @@ FAILED = "failed"  # the configuration failed
 #: Statuses whose percentage is a judged, current move against a settled
 #: baseline — the only cells a pattern may be read from.
 _COMPARABLE = frozenset({STEPPED, WATCH, OK})
+
+#: Statuses of a judged metric that is not comparable in this window.
+_EXCLUDED = (SETTLING, ELSEWHERE)
 
 
 @dataclass(frozen=True)
@@ -218,9 +222,9 @@ def time_shape(row: SweepRow, lead: str | None = None) -> TimeShape | None:
     Without a *lead*, it is the mean event time when that stepped, else the wall
     time — the per-job figure, which also carries initialisation, so a wall step
     is first checked against the mean event time. A step in a typical view
-    itself (the median or trimmed mean) is a step of the typical event. Only
-    judged views count; a view nobody judged is unknown, and a step with no
-    judged view is not called any shape."""
+    itself (the median or trimmed mean) is a step of the typical event. Every
+    other shape is read from both typical views: with either one not judged,
+    the typical event is only half seen and the step is not called any shape."""
     candidates = (lead,) if lead is not None else ("mean_time_s", "wall_time_s")
     lead = next(
         (
@@ -250,7 +254,7 @@ def time_shape(row: SweepRow, lead: str | None = None) -> TimeShape | None:
         for metric in TYPICAL_TIME_METRICS
         if (c := row.cell(metric)) is not None and c.comparable
     )
-    if not typical:
+    if len(typical) < len(TYPICAL_TIME_METRICS):
         return None
     largest = max(abs(pct) for _metric, pct in typical)
     if largest <= step * _TAIL_FRACTION:
@@ -294,12 +298,18 @@ class FamilyReading:
     #: Stepped against the direction most stepped configurations took — or,
     #: when neither direction is a majority, every stepped configuration.
     opposite: tuple[str, ...]
+    #: The stepped configurations' median move, unsigned; ``None`` when none
+    #: has a known size.
+    typical_step: float | None
     #: Judged, not stepped, and moved less than a third of the typical step.
     absent: tuple[str, ...]
     #: Judged, not stepped, but moved as much as a stepped configuration would.
     unconfirmed: tuple[str, ...]
     #: The lead metric could not be judged here, with the causes.
     unjudged: tuple[tuple[str, str], ...]
+    #: Judged, but not comparable in this window — still settling after a step
+    #: of its own, or stepped in another window — with that status.
+    excluded: tuple[tuple[str, str], ...]
     #: Few configurations stepped, and the baseline is among those that
     #: moved less than a third of their step: isolated rows on a flat baseline.
     isolated: bool
@@ -341,10 +351,6 @@ class ScopeSweep:
     detector: str
     platform: str
     sample: str
-    stack: str
-    base_release: str | None
-    onset_release: str
-    geometry_path: str = ""
     rows: tuple[SweepRow, ...] = ()
     unread: str = ""
     failures: tuple[str, ...] = ()
@@ -369,18 +375,24 @@ class ScopeSweep:
         ))
 
     def lead_metric(self, family: str) -> str:
-        """The family's metric the reading is taken on: the first in column
-        order that stepped anywhere, else the first judged anywhere, else the
-        first."""
+        """The family's metric the reading is taken on: one the baseline stepped
+        in, else the one that stepped on the most configurations, else the first
+        comparable anywhere, else the first judged anywhere (settling or stepped
+        in another window), else the first — column order breaking every tie, so
+        the reading follows the pattern most of the sweep shows."""
         metrics = SWEEP_METRICS[family]
-        for wanted in (
-            lambda c: c.status == STEPPED,
-            lambda c: c.comparable,
-        ):
+        baseline = self.row("baseline")
+        if baseline is not None:
             for metric in metrics:
-                if any(
-                    (c := r.cell(metric)) is not None and wanted(c) for r in self.rows
-                ):
+                if baseline.stepped_in(metric):
+                    return metric
+        steps = {m: sum(r.stepped_in(m) for r in self.rows) for m in metrics}
+        most = max(metrics, key=lambda m: steps[m])
+        if steps[most]:
+            return most
+        for wanted in (lambda c: c.comparable, lambda c: c.status in _EXCLUDED):
+            for metric in metrics:
+                if any((c := r.cell(metric)) is not None and wanted(c) for r in self.rows):
                     return metric
         return metrics[0]
 
@@ -430,8 +442,13 @@ class ScopeSweep:
         unjudged = tuple(
             (r.label, c.cause or c.status)
             for r, c in cells
-            if c is not None and not c.comparable and c.status != STEPPED
+            if c is not None and not c.comparable
+            and c.status not in (STEPPED, *_EXCLUDED)
         ) + tuple((r.label, "missing") for r, c in cells if c is None)
+        excluded = tuple(
+            (r.label, c.status) for r, c in cells
+            if c is not None and c.status in _EXCLUDED
+        )
 
         baseline_row = self.row("baseline")
         baseline = baseline_row.cell(lead) if baseline_row is not None else None
@@ -478,8 +495,8 @@ class ScopeSweep:
             family=family, lead=lead, judged=len(judged),
             stepped=tuple(r.label for r, _c in stepped), up=up, down=down,
             baseline=baseline, opposite=tuple(opposite),
-            absent=tuple(absent), unconfirmed=tuple(unconfirmed),
-            unjudged=unjudged, isolated=isolated,
+            typical_step=typical_step, absent=tuple(absent), unconfirmed=tuple(unconfirmed),
+            unjudged=unjudged, excluded=excluded, isolated=isolated,
             smaller=tuple(smaller), larger=tuple(larger), shapes=shapes,
             also=tuple(also),
         )
@@ -574,8 +591,6 @@ def scope_sweep(
         rows.append(SweepRow(label=label, cells=cells, profile=profile, regions=regions))
     return ScopeSweep(
         detector=group.detector, platform=group.platform, sample=group.sample,
-        stack=group.k4h_release, base_release=base_release,
-        onset_release=onset_release, geometry_path=group.geometry_path,
         rows=tuple(rows), unread=unread, failures=tuple(group.job_failures),
     )
 

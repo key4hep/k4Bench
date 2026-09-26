@@ -188,11 +188,11 @@ def test_unknown_is_never_flat():
         "baseline": STEPPED, "no_A": UNJUDGED, "no_B": SETTLING, "no_C": ELSEWHERE,
     }
     reading = sweep.reading("time")
-    # None of the three can say "the step is absent here".
+    # None of the three can say "the step is absent here". Two were judged and
+    # only excluded from this window's comparison; one was not judged at all.
     assert reading.absent == () and reading.judged == 1
-    assert dict(reading.unjudged) == {
-        "no_A": "insufficient_history", "no_B": SETTLING, "no_C": ELSEWHERE,
-    }
+    assert dict(reading.unjudged) == {"no_A": "insufficient_history"}
+    assert dict(reading.excluded) == {"no_B": SETTLING, "no_C": ELSEWHERE}
 
 
 def test_a_wall_step_the_mean_event_time_did_not_follow_is_outside_the_event_loop():
@@ -224,6 +224,49 @@ def test_no_shape_is_claimed_without_a_judged_typical_view():
     assert time_shape(sweep.row("baseline")) is None
 
 
+def test_a_typical_event_seen_through_one_view_is_not_called_any_shape():
+    # Only the median was judged: "the median and trimmed mean followed" (or did
+    # not) would claim a view nobody read.
+    for median in (-0.090, -0.001):
+        sweep = scope_sweep(_group([
+            _v("baseline", "mean_time_s", -0.100, Severity.CONFIRMED),
+            _v("baseline", "median_time_s", median),
+            _v("baseline", "trimmed_mean_time_s", None, Severity.UNKNOWN,
+               unjudged=Unjudged.INSUFFICIENT_HISTORY),
+        ]), base_release=_WINDOW[0], onset_release=_WINDOW[1])
+        assert time_shape(sweep.row("baseline")) is None
+
+
+def test_the_lead_is_what_the_baseline_stepped_in_else_what_stepped_most():
+    # k4geo#607's ALLEGRO_o1_v03 single_e- (2026-06-27): the mean confirmed on
+    # one configuration, the wall time on most of the sweep and the baseline.
+    def sweep(baseline_wall):
+        return scope_sweep(_group([
+            _v("baseline", "wall_time_s", 0.101, baseline_wall),
+            _v("baseline", "mean_time_s", 0.062),
+            _v("no_A", "mean_time_s", 0.121, Severity.CONFIRMED),
+            *(v for i in range(3) for v in (
+                _v(f"no_W{i}", "wall_time_s", 0.09, Severity.CONFIRMED),
+                _v(f"no_W{i}", "mean_time_s", 0.05),
+            )),
+        ]), base_release=_WINDOW[0], onset_release=_WINDOW[1])
+
+    assert sweep(Severity.CONFIRMED).lead_metric("time") == "wall_time_s"
+    # Without the baseline, the metric most configurations stepped in leads.
+    assert sweep(Severity.OK).lead_metric("time") == "wall_time_s"
+    reading = sweep(Severity.OK).reading("time")
+    assert reading.stepped == ("no_W0", "no_W1", "no_W2")
+    assert reading.also == (("mean_time_s", ("no_A",)),)
+
+
+def test_a_tie_in_how_often_metrics_stepped_goes_to_column_order():
+    sweep = scope_sweep(_group([
+        _v("no_A", "mean_time_s", 0.12, Severity.CONFIRMED),
+        _v("no_B", "wall_time_s", 0.09, Severity.CONFIRMED),
+    ]), base_release=_WINDOW[0], onset_release=_WINDOW[1])
+    assert sweep.lead_metric("time") == "mean_time_s"
+
+
 def test_the_event_profile_of_the_stepped_time_verdict_reaches_the_row():
     profile = EventProfile(
         base=EventSample(nights=1, n_events=999, mean=0.5277, median=0.4302,
@@ -234,6 +277,7 @@ def test_the_event_profile_of_the_stepped_time_verdict_reaches_the_row():
     sweep = scope_sweep(_group([
         _v("baseline", "mean_time_s", -0.072, Severity.CONFIRMED, event_profile=profile),
         _v("baseline", "median_time_s", -0.012),
+        _v("baseline", "trimmed_mean_time_s", -0.013),
     ]), base_release=_WINDOW[0], onset_release=_WINDOW[1])
     shape = time_shape(sweep.row("baseline"))
     assert shape.profile is profile
@@ -392,3 +436,13 @@ def test_a_confirmed_step_of_unknown_size_is_still_a_step():
     assert (reading.judged, reading.up, reading.down) == (3, 1, 0)
     assert reading.unjudged == ()
     assert reading.absent == ("no_B",)
+
+
+def test_a_family_only_settling_is_read_on_the_metric_that_is_settling():
+    sweep = scope_sweep(_group([
+        _v("baseline", "wall_time_s", -0.01, reanchor_run_date="2026-09-10"),
+        _v("no_A", "wall_time_s", -0.02, reanchor_run_date="2026-09-10"),
+    ]), base_release=_WINDOW[0], onset_release=_WINDOW[1])
+    reading = sweep.reading("time")
+    assert reading.lead == "wall_time_s"
+    assert dict(reading.excluded) == {"baseline": SETTLING, "no_A": SETTLING}

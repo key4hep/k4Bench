@@ -337,8 +337,10 @@ def test_the_decisive_hunk_of_k4geo_612_reaches_the_ranker():
 
 def test_ild_v02_is_told_the_typical_event_held_and_one_long_event_carried_the_mean():
     summary = _summary(_incident_prompt("ILD_FCCee_v02"))
-    assert "a few long events carry it" in summary
-    assert "median -1.2%, trimmed mean -1.3%" in summary
+    assert (
+        "carried by a few long events (median and trimmed mean moved under a "
+        "third as far), e.g. baseline (mean -7.2%; median -1.2%, trimmed mean -1.3%)"
+    ) in summary
     assert (
         "baseline: longest event 35.5 s (event 37, 32.0 s of it in SET) at the "
         "base, 8.8 s (event 949, 7.9 s of it in unattributed) at the onset"
@@ -347,27 +349,40 @@ def test_ild_v02_is_told_the_typical_event_held_and_one_long_event_carried_the_m
 
 
 def test_ild_v02_is_shown_its_removal_sweep_as_one_picture():
-    summary = _summary(_incident_prompt("ILD_FCCee_v02"))
-    assert "Against the direction of the rest: no_TPC +10.8%." in summary
-    assert "Without the step — judged and moved less than a third of it" in summary
-    assert "no_InnerTrackers -1.0%" in summary
+    prompt = _incident_prompt("ILD_FCCee_v02")
+    summary = _summary(prompt)
+    assert "Against the direction of the rest: no_TPC" in summary
+    absent = next(line for line in summary.splitlines() if "Without the step" in line)
+    assert "moved less than a third of the stepped configurations' median move" in absent
+    assert "no_InnerTrackers" in absent
+    # Each configuration's own move is in the sweep table.
+    row = next(
+        line for line in prompt.splitlines() if line.split()[:1] == ["no_InnerTrackers"]
+    )
+    assert "-1.0%" in row
 
 
 def test_the_612_block_names_ild_v01_as_a_detector_that_got_the_same_change():
-    summary = _summary(_incident_prompt("ILD_FCCee_v02"))
-    line = next(line for line in summary.splitlines() if "key4hep/k4geo#612 changes" in line)
+    prompt = _incident_prompt("ILD_FCCee_v02")
+    summary = _summary(prompt)
+    assert (
+        "key4hep/k4geo#612 (in its compact directory; the same change to "
+        "ILD_FCCee_v01)"
+    ) in summary
+    v01 = next(line for line in summary.splitlines() if line.startswith("- ILD_FCCee_v01 · single_e-"))
+    assert "baseline +1.6%, not stepped" in v01
+    assert "isolated configurations on a flat baseline" in v01
+    # What it changes is stated once, in its own entry.
+    block = _candidate_block(prompt, 612)
     assert (
         "include switched ../../../CLD/compact/CLD_o2_v07/Vertex_o4_v07_smallBP.xml "
         "→ ../../../CLD/compact/CLD_o2_v09/Vertex_o4_v08_smallBP.xml"
-    ) in line
-    assert "It makes the same change to ILD_FCCee_v01, which measured in this window" in line
-    assert "baseline +1.6% (not stepped)" in line
-    assert "isolated configurations on a flat baseline" in line
+    ) in block
+    assert "include switched" not in summary
 
 
 def test_ild_v01_is_told_its_steps_are_isolated_and_opposite():
     summary = _summary(_incident_prompt("ILD_FCCee_v01"))
-    assert "The baseline did not step: mean event time +1.6%." in summary
+    assert "baseline +1.6%, not stepped), isolated configurations on a flat baseline" in summary
     assert "They stepped in opposite directions." in summary
-    assert "These are isolated configurations on a baseline that did not move." in summary
     assert "51.6 s (event 322" in summary

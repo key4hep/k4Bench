@@ -182,8 +182,9 @@ def _event_sample(nights: Sequence[_Night]) -> EventSample | None:
 
     Every figure is computed night by night and the nights are combined by
     their median. The longest events are ranked by their median time over the
-    nights that simulated them, and each names the region that took the largest
-    share of it on the first such night."""
+    nights that simulated them, among the events most of the nights simulated,
+    and each names the region with the largest median time in it over those
+    nights — the same nights its own time is the median of."""
     usable = [n for n in nights if n.wall is not None and not n.wall.dropna().empty]
     if not usable:
         return None
@@ -200,16 +201,21 @@ def _event_sample(nights: Sequence[_Night]) -> EventSample | None:
         for event, seconds in wall.items():
             times.setdefault(int(event), []).append(float(seconds))
     ranked = sorted(
-        times, key=lambda event: (-float(np.median(times[event])), event)
+        (event for event in times if 2 * len(times[event]) > len(usable)),
+        key=lambda event: (-float(np.median(times[event])), event),
     )[:MAX_LONG_EVENTS]
     longest = []
     for event in ranked:
-        region, region_seconds = "", None
-        night = next(n for n in usable if event in n.wall.index)
-        if event in night.regions.index:
-            row = night.regions.loc[event]
-            if not row.empty and float(row.max()) > 0:
-                region, region_seconds = str(row.idxmax()), float(row.max())
+        spent: dict[str, list[float]] = {}
+        for night in usable:
+            if event in night.wall.index and event in night.regions.index:
+                for name, seconds in night.regions.loc[event].dropna().items():
+                    spent.setdefault(str(name), []).append(float(seconds))
+        typical = {name: float(np.median(values)) for name, values in spent.items()}
+        region = max(sorted(typical), key=typical.get, default="")
+        region_seconds = typical.get(region)
+        if region_seconds is None or region_seconds <= 0:
+            region, region_seconds = "", None
         longest.append(LongEvent(
             event=event, seconds=float(np.median(times[event])),
             region=region, region_seconds=region_seconds,

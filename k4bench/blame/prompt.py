@@ -25,6 +25,7 @@ import logging
 import math
 import statistics
 import textwrap
+from dataclasses import dataclass
 
 from k4bench.blame.evidence import HostReading, MetricHistory, ScopeOutcome
 from k4bench.blame.geometry import compact_dir, geometry_tree  # noqa: F401 — re-exported
@@ -37,6 +38,7 @@ from k4bench.blame.history import (
     HistoricalBoundary,
     HistoricalPR,
 )
+from k4bench.blame.llm import one_line
 from k4bench.labels import describe_platform, pretty_sample
 from k4bench.regression.models import RegionDelta
 
@@ -178,6 +180,45 @@ ASSESSMENT_RULE = (
     'candidate. If you answer "likely_noise", no candidate should score above '
     '25: there is most likely nothing to attribute. '
 )
+
+
+@dataclass(frozen=True)
+class StepAssessment:
+    """What a pass made of the *movement* itself, before any question of who
+    caused it — the answer to :data:`ASSESSMENT_RULE`, in both passes.
+
+    Separate from the scores because it answers a different question: without
+    somewhere to say "this step is noise" a model can only express that by
+    scoring every candidate low, which reads identically to "I looked and found
+    nothing". ``verdict`` is one of :data:`ASSESSMENT_VALUES`; anything else is
+    dropped at the parse (:func:`parse_assessment`), so no surface rendering
+    this has to defend against a word nobody defined."""
+
+    verdict: str
+    reason: str = ""
+
+    @property
+    def likely_noise(self) -> bool:
+        return self.verdict == "likely_noise"
+
+
+def parse_assessment(raw: object, reason_chars: int) -> StepAssessment | None:
+    """A reply's ``step_assessment`` member, or ``None`` when it gave no
+    readable one — never a default: every consumer reads ``None`` as *not
+    assessed*, and inventing ``real_change`` would put a word in the model's
+    mouth in exactly the direction the field exists to avoid. The reason is
+    clipped to *reason_chars*."""
+    if isinstance(raw, str):
+        verdict, reason = raw, ""  # a model that answered with the bare verdict
+    elif isinstance(raw, dict):
+        verdict = str(raw.get("verdict") or "")
+        reason = one_line(raw.get("reason"), reason_chars)
+    else:
+        return None
+    verdict = verdict.strip().lower().replace(" ", "_").replace("-", "_")
+    if verdict not in ASSESSMENT_VALUES:
+        return None
+    return StepAssessment(verdict=verdict, reason=reason)
 
 #: How cross-configuration evidence is weighed. Written once for both passes,
 #: because both are shown the other detectors a candidate reaches, and the two

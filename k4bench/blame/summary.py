@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections import Counter
 from collections.abc import Mapping, Sequence
 
 from k4bench.blame.evidence import MetricHistory
@@ -125,12 +126,15 @@ def _named(items: Sequence[str], limit: int = _MAX_NAMED) -> str:
 # ── The sweep table ───────────────────────────────────────────────────────────
 
 def _families_shown(sweep: ScopeSweep) -> list[str]:
-    """The stepped families, then any other family judged somewhere."""
+    """The stepped families, then any other family judged somewhere — settling
+    after a step of its own or stepped in another window included: those were
+    judged, and only this window's comparison excludes them."""
     stepped = list(sweep.stepped_families)
     rest = [
         family for family in SWEEP_METRICS
         if family not in stepped and any(
-            (c := row.cell(m)) is not None and c.comparable
+            (c := row.cell(m)) is not None
+            and (c.comparable or c.status in (SETTLING, ELSEWHERE))
             for row in sweep.rows for m in SWEEP_METRICS[family]
         )
     ]
@@ -238,40 +242,25 @@ def sweep_table_lines(
 
 
 # ── What the sweep's pattern says ─────────────────────────────────────────────
+# A family's reading is stated once, as a clause (:func:`family_clause`): every
+# other scope's line is its clauses, and the reading of a scope under judgement
+# opens with them and adds only what its sweep table cannot show — which
+# configurations each grouping holds, sizes in the metric's own unit, and each
+# shape's configurations.
 
-def _move_of(sweep: ScopeSweep, label: str, metric: str) -> str:
-    row = sweep.row(label)
-    cell = row.cell(metric) if row is not None else None
-    return f"{label} {_pct(cell.pct)}" if cell is not None and cell.pct is not None else label
+#: How each shape of a time step is named.
+_SHAPE_WORDS = {
+    "tail": "carried by a few long events (median and trimmed mean moved under a third as far)",
+    "typical": "in the typical event",
+    "outside": "outside the event loop",
+    "mixed": "partly in the typical event",
+}
 
-
-def _baseline_phrase(sweep: ScopeSweep, reading: FamilyReading) -> str:
-    """What the baseline did in the lead metric, and in any other metric of
-    the family that stepped there — each named as itself."""
-    name = METRIC_NAMES[reading.lead]
-    row = sweep.row("baseline")
-    if row is None:
-        return "There is no baseline configuration in this sweep."
-    cell = reading.baseline
-    if cell is not None and cell.status == STEPPED:
-        return f"The baseline stepped: {name} {_pct(cell.pct)}."
-    others = [
-        f"{METRIC_NAMES[c.metric]} {_pct(c.pct)}" for c in row.cells
-        if c.metric in SWEEP_METRICS[reading.family] and c.metric != reading.lead
-        and c.status == STEPPED
-    ]
-    if cell is None:
-        lead = f"The baseline has no {name} measurement"
-    elif not cell.comparable:
-        lead = f"The baseline's {name} was not judged ({cell.cause or cell.status})"
-    else:
-        word = "moved once without confirming" if cell.status == WATCH else "did not step"
-        if not others:
-            return f"The baseline {word}: {name} {_pct(cell.pct)}."
-        lead = f"The baseline's {name} {word} ({_pct(cell.pct)})"
-    if others:
-        return f"{lead}, but it stepped in {', '.join(others)}."
-    return f"{lead}."
+#: How a judged metric that is not comparable in this window is named.
+_EXCLUDED_WORDS = {
+    SETTLING: "settling after a step of its own",
+    ELSEWHERE: "stepped in another window",
+}
 
 
 def _short(metric: str) -> str:
@@ -327,163 +316,171 @@ def _relative_lines(
     return lines
 
 
-def _shape_phrase(reading: FamilyReading) -> list[str]:
-    """How the stepped time configurations are shaped, counted."""
-    if not reading.shapes:
-        return []
-    by_kind: dict[str, list[str]] = {}
+def _unread_phrase(reading: FamilyReading) -> str:
+    """The configurations whose lead metric says nothing about this window,
+    counted by why: not judged (with the causes), or judged but settling after
+    a step of its own or stepped in another window. Empty when there are none."""
+    parts = []
+    if reading.unjudged:
+        causes = Counter(
+            cause for _label, cause in reading.unjudged if cause != "not judged"
+        )
+        why = (
+            next(iter(causes)) if len(causes) == 1 and causes.total() == len(reading.unjudged)
+            else ", ".join(f"{n} {cause}" for cause, n in sorted(causes.items()))
+        )
+        parts.append(f"{len(reading.unjudged)} not judged" + (f" ({why})" if why else ""))
+    statuses = Counter(status for _label, status in reading.excluded)
+    parts += [f"{statuses[s]} {words}" for s, words in _EXCLUDED_WORDS.items() if statuses[s]]
+    return ", ".join(parts)
+
+
+def _baseline_text(sweep: ScopeSweep, reading: FamilyReading) -> str:
+    """What the baseline did in the lead metric."""
+    cell = reading.baseline
+    if cell is None:
+        return "no baseline" if sweep.row("baseline") is None else "baseline not measured"
+    if cell.status in _EXCLUDED_WORDS:
+        return f"baseline {_EXCLUDED_WORDS[cell.status]}"
+    if cell.status not in (STEPPED, WATCH, OK):
+        return f"baseline not judged ({cell.cause or cell.status})"
+    word = {STEPPED: "", WATCH: ", moved once without confirming", OK: ", not stepped"}
+    return f"baseline {_pct(cell.pct)}{word[cell.status]}"
+
+
+def _shape_summary(reading: FamilyReading) -> str:
+    """The stepped configurations' shapes, counted per kind, each kind with one
+    configuration's numbers — the baseline's where it has that shape."""
+    kinds: dict[str, list[tuple[str, TimeShape]]] = {}
     for label, shape in reading.shapes:
-        by_kind.setdefault(shape.kind, []).append(label)
-    total = len(reading.stepped)
-    shapes = dict(reading.shapes)
-
-    def items(labels: list[str]) -> str:
-        return _named([_shape_item(label, shapes[label]) for label in labels])
-
-    lines = []
-    tail = by_kind.get("tail", [])
-    if tail:
-        example = next(
-            (s for label, s in reading.shapes if label == "baseline" and s.kind == "tail"),
-            next(s for _l, s in reading.shapes if s.kind == "tail"),
+        kinds.setdefault(shape.kind, []).append((label, shape))
+    parts = []
+    for kind, items in sorted(kinds.items(), key=lambda kv: -len(kv[1])):
+        label, shape = next(
+            ((label, s) for label, s in items if label == "baseline"), items[0],
         )
-        label = next(name for name, s in reading.shapes if s is example)
-        views = ", ".join(f"{_short(m)} {_pct(p)}" for m, p in example.typical)
-        rest = [name for name in tail if name != label]
-        lines.append(
-            f"On {len(tail)} of {total} stepped configurations the typical event "
-            f"did not follow — the median and trimmed mean moved less than a third "
-            f"of the step, so a few long events carry it (e.g. {label}: "
-            f"{METRIC_NAMES[example.lead]} {_pct(example.lead_pct)}, {views})"
-            + (f"; the others: {items(rest)}." if rest else ".")
-        )
-    typical = by_kind.get("typical", [])
-    if typical:
-        lines.append(
-            f"On {len(typical)} of {total} the typical event moved with the step "
-            f"(median and trimmed mean followed it): {items(typical)}."
-        )
-    outside = by_kind.get("outside", [])
-    if outside:
-        lines.append(
-            f"On {len(outside)} of {total} only the wall time stepped and the mean "
-            f"event time did not follow — the step happened outside the event "
-            f"loop (initialisation or teardown): {items(outside)}."
-        )
-    mixed = by_kind.get("mixed", [])
-    if mixed:
-        lines.append(
-            f"On {len(mixed)} of {total} the typical event moved partly: "
-            f"{items(mixed)}."
-        )
-    unread = total - len(reading.shapes)
-    if unread:
-        lines.append(
-            f"On {unread} of {total} no typical view was judged, so their shape "
-            f"is unknown."
-        )
-    return lines
+        parts.append(f"{len(items)} {_SHAPE_WORDS[kind]}, e.g. {_shape_item(label, shape)}")
+    return "; ".join(parts)
 
 
-def _also_lines(sweep: ScopeSweep, reading: FamilyReading) -> list[str]:
-    """Each other metric of the family that stepped where the lead did not,
-    with its own move and the lead's on the same configuration."""
+def _quiet_clause(sweep: ScopeSweep, reading: FamilyReading) -> str:
+    """A family nothing stepped in: the range it moved over, and every
+    configuration that moved past the gates once without confirming — a first
+    strike in this very window is not a configuration that held."""
     name = METRIC_NAMES[reading.lead]
-    lines = []
-    for metric, labels in reading.also:
-        parts = []
-        for label in labels:
-            row = sweep.row(label)
-            cell, lead = row.cell(metric), row.cell(reading.lead)
-            beside = (
-                f"{_short(reading.lead)} {_pct(lead.pct)}"
-                if lead is not None and lead.comparable
-                else f"{_short(reading.lead)} not judged"
-            )
-            parts.append(f"{label} {_pct(cell.pct)} ({beside})")
-        lines.append(
-            f"{METRIC_NAMES[metric]} independently stepped on {len(labels)} "
-            f"additional configuration(s), where {name} did not step: "
-            f"{_named(parts)}."
+    unread = _unread_phrase(reading)
+    cells = [
+        (row.label, c) for row in sweep.rows
+        if (c := row.cell(reading.lead)) is not None and c.comparable
+    ]
+    if not cells:
+        return f"no {reading.family} comparison in this window ({unread or 'nothing judged'})"
+    moves = [c.pct for _label, c in cells]
+    text = (
+        f"no {reading.family} step ({name} {_pct(min(moves))} to "
+        f"{_pct(max(moves))} on {len(cells)} configurations"
+    )
+    base = reading.baseline
+    if base is not None and base.comparable:
+        text += f", baseline {_pct(base.pct)}"
+    if unread:
+        text += f"; {unread}"
+    watched = sorted(
+        ((label, c.pct) for label, c in cells if c.status == WATCH),
+        key=lambda lp: (-abs(lp[1]), lp[0]),
+    )
+    if watched:
+        text += (
+            f"; {len(watched)} moved past the gates once without confirming — "
+            + _named([f"{label} {_pct(pct)}" for label, pct in watched], 4)
         )
-    return lines
+    return text + ")"
+
+
+def family_clause(sweep: ScopeSweep, family: str) -> str:
+    """One family of *sweep* in a clause — what stepped, which way, against
+    which baseline, in what shape, and what says nothing about this window."""
+    reading = sweep.reading(family)
+    if not reading.stepped:
+        return _quiet_clause(sweep, reading)
+    name = METRIC_NAMES[reading.lead]
+    unsized = len(reading.stepped) - reading.down - reading.up
+    directions = [
+        f"{n} {word}"
+        for n, word in ((reading.down, "down"), (reading.up, "up"), (unsized, "of unknown size"))
+        if n
+    ]
+    unread = _unread_phrase(reading)
+    text = (
+        f"{name} stepped on {len(reading.stepped)} of {reading.judged} ("
+        + ", ".join(directions) + f"; {_baseline_text(sweep, reading)}"
+        + (f"; {unread}" if unread else "") + ")"
+    )
+    if reading.isolated:
+        text += ", isolated configurations on a flat baseline"
+    if shapes := _shape_summary(reading):
+        text += f" — {shapes}"
+    for metric, labels in reading.also:
+        text += (
+            f"; {METRIC_NAMES[metric]} independently stepped on {len(labels)} "
+            f"more where {name} did not"
+        )
+    return text
 
 
 def family_reading_lines(
     sweep: ScopeSweep, family: str, *, indent: str = "  ",
 ) -> list[str]:
-    """What *sweep*'s pattern says for one family, one fact per line."""
+    """What *sweep*'s pattern says for one family: its clause, then what the
+    sweep table beside it cannot show."""
     reading = sweep.reading(family)
-    name = METRIC_NAMES[reading.lead]
     bullet = f"{indent}- "
+    lines = [f"{bullet}{family}: {family_clause(sweep, family)}."]
     if not reading.stepped:
-        quiet = _quiet_family(sweep, reading)
-        if not quiet:
-            causes = sorted({cause for _label, cause in reading.unjudged})
-            return [f"{bullet}{family}: {name} was not judged on any configuration ({', '.join(causes)})."]
-        return [f"{bullet}{family}: {quiet}."]
-    moves = [_move_of(sweep, label, reading.lead) for label in reading.stepped]
-    directions = []
-    if reading.down:
-        directions.append(f"{reading.down} down")
-    if reading.up:
-        directions.append(f"{reading.up} up")
-    unsized = len(reading.stepped) - reading.down - reading.up
-    if unsized:
-        directions.append(f"{unsized} of unknown size")
-    lines = [
-        f"{bullet}{family}: {name} stepped on {len(reading.stepped)} of "
-        f"{reading.judged} judged configurations ({', '.join(directions)}): "
-        f"{_named(moves)}."
-    ]
-    lines += [f"{bullet}{line}" for line in _also_lines(sweep, reading)]
-    lines.append(f"{bullet}{_baseline_phrase(sweep, reading)}")
-    if reading.opposite:
-        if reading.up and reading.down and len(reading.opposite) == len(reading.stepped):
-            lines.append(f"{bullet}They stepped in opposite directions.")
-        else:
-            lines.append(
-                f"{bullet}Against the direction of the rest: "
-                f"{_named([_move_of(sweep, label, reading.lead) for label in reading.opposite])}."
-            )
-    if reading.isolated:
+        return lines
+    name = METRIC_NAMES[reading.lead]
+    for metric, labels in reading.also:
         lines.append(
-            f"{bullet}These are isolated configurations on a baseline that did "
-            f"not move."
+            f"{bullet}{METRIC_NAMES[metric]} stepped where {name} did not: "
+            f"{_named(labels)}."
+        )
+    if reading.opposite:
+        lines.append(
+            f"{bullet}They stepped in opposite directions."
+            if reading.up and reading.down and len(reading.opposite) == len(reading.stepped)
+            else f"{bullet}Against the direction of the rest: {_named(reading.opposite)}."
         )
     if reading.absent:
         lines.append(
-            f"{bullet}Without the step — judged and moved less than a third of "
-            f"it in {name} ({len(reading.absent)}): "
-            f"{_named([_move_of(sweep, label, reading.lead) for label in reading.absent])}."
+            f"{bullet}Without the step in {name} — moved less than a third of the "
+            f"stepped configurations' median move "
+            f"({pct_phrase(reading.typical_step, signed=False)}): {_named(reading.absent)}."
         )
     if reading.unconfirmed:
         lines.append(
             f"{bullet}Moved as far as a stepped configuration in {name} without "
-            f"confirming ({len(reading.unconfirmed)}): "
-            f"{_named([_move_of(sweep, label, reading.lead) for label in reading.unconfirmed])}."
+            f"confirming: {_named(reading.unconfirmed)}."
         )
     lines += _relative_lines(sweep, reading, bullet)
-    if reading.unjudged:
-        causes: dict[str, int] = {}
-        for _label, cause in reading.unjudged:
-            causes[cause] = causes.get(cause, 0) + 1
-        lines.append(
-            f"{bullet}{name} could not be read on {len(reading.unjudged)} "
-            f"configuration(s) ("
-            + ", ".join(f"{n} {cause}" for cause, n in sorted(causes.items()))
-            + ") — unknown, not flat."
-        )
-    lines += [f"{bullet}{line}" for line in _shape_phrase(reading)]
-    if family == "memory":
-        lines.append(
-            f"{bullet}Memory is determined primarily by what the job loads rather "
-            f"than by a few long events. Any machine dependence should be "
-            f"assessed from the measured host evidence."
-        )
+    if family == "time":
+        # The clause names one configuration of each shape and counts the rest;
+        # a shape it names in full, or one every stepped configuration has, is
+        # not listed again.
+        listed = [
+            f"{_SHAPE_WORDS[kind]} — {_named(labels)}"
+            for kind in _SHAPE_WORDS
+            if 1 < len(labels := [label for label, s in reading.shapes if s.kind == kind])
+            < len(reading.stepped)
+        ]
+        shaped = dict(reading.shapes)
+        unknown = [label for label in reading.stepped if label not in shaped]
+        if unknown:
+            listed.append(
+                f"unknown (median and trimmed mean not both judged) — {_named(unknown)}"
+            )
+        if listed:
+            lines.append(f"{bullet}By shape: " + "; ".join(listed) + ".")
     return lines
-
-
 # ── The event records ─────────────────────────────────────────────────────────
 
 def _long_event(event) -> str:
@@ -648,98 +645,13 @@ def region_summary_lines(
 
 # ── One line per scope ────────────────────────────────────────────────────────
 
-def _shape_summary(reading: FamilyReading) -> str:
-    """The stepped configurations' shapes, counted per kind, each kind with one
-    configuration's numbers — the baseline's where it has that shape."""
-    kinds: dict[str, list[tuple[str, TimeShape]]] = {}
-    for label, shape in reading.shapes:
-        kinds.setdefault(shape.kind, []).append((label, shape))
-    words = {
-        "tail": "carried by a few long events (typical event unmoved)",
-        "typical": "in the typical event",
-        "outside": "outside the event loop",
-        "mixed": "partly in the typical event",
-    }
-    parts = []
-    for kind, items in sorted(kinds.items(), key=lambda kv: -len(kv[1])):
-        label, shape = next(
-            ((label, s) for label, s in items if label == "baseline"), items[0],
-        )
-        parts.append(f"{len(items)} {words[kind]}, e.g. {_shape_item(label, shape)}")
-    return "; ".join(parts)
-
-
-def _quiet_family(sweep: ScopeSweep, reading: FamilyReading) -> str:
-    """A family nothing stepped in: the range it moved over, and every
-    configuration that moved past the gates once without confirming — a first
-    strike in this very window is not a configuration that held."""
-    name = METRIC_NAMES[reading.lead]
-    cells = [
-        (row.label, c) for row in sweep.rows
-        if (c := row.cell(reading.lead)) is not None and c.comparable
-    ]
-    if not cells:
-        return ""
-    moves = [c.pct for _label, c in cells]
-    watched = sorted(
-        ((label, c.pct) for label, c in cells if c.status == WATCH),
-        key=lambda lp: (-abs(lp[1]), lp[0]),
-    )
-    text = (
-        f"no {reading.family} step ({name} {_pct(min(moves))} to "
-        f"{_pct(max(moves))} on {len(cells)} configurations"
-    )
-    if reading.unjudged:
-        text += f", not judged on {len(reading.unjudged)}"
-    base = reading.baseline
-    if base is not None and base.comparable:
-        text += f", baseline {_pct(base.pct)}"
-    if watched:
-        text += (
-            f"; {len(watched)} moved past the gates once without confirming — "
-            + _named([f"{label} {_pct(pct)}" for label, pct in watched], 4)
-        )
-    return text + ")"
-
-
 def scope_state(sweep: ScopeSweep) -> str:
     """What *sweep* measured in this window, in one clause per family."""
     if sweep.unread:
         return f"no reading — {sweep.unread}; unknown, not flat"
-    parts = []
-    for family in _families_shown(sweep):
-        reading = sweep.reading(family)
-        name = METRIC_NAMES[reading.lead]
-        if not reading.stepped:
-            if quiet := _quiet_family(sweep, reading):
-                parts.append(quiet)
-            continue
-        base = reading.baseline
-        base_text = (
-            f"baseline {_pct(base.pct)}{'' if 'baseline' in reading.stepped else ' (not stepped)'}"
-            if base is not None and base.comparable else "baseline not judged"
-        )
-        text = (
-            f"{name} stepped on {len(reading.stepped)} of {reading.judged} "
-            f"({reading.down} down, {reading.up} up; {base_text}"
-            + (f"; not judged on {len(reading.unjudged)}" if reading.unjudged else "")
-            + ")"
-        )
-        if reading.isolated:
-            text += ", isolated configurations on a flat baseline"
-        shapes = _shape_summary(reading)
-        if shapes:
-            text += f" — {shapes}"
-        for metric, labels in reading.also:
-            text += (
-                f"; {METRIC_NAMES[metric]} independently stepped on "
-                f"{len(labels)} more where {name} did not"
-            )
-        parts.append(text)
-    unjudged = [
-        family for family in SWEEP_METRICS
-        if family not in _families_shown(sweep)
-    ]
+    shown = _families_shown(sweep)
+    parts = [family_clause(sweep, family) for family in shown]
+    unjudged = [family for family in SWEEP_METRICS if family not in shown]
     if unjudged:
         parts.append(f"{' and '.join(unjudged)} not judged")
     if sweep.failures:
@@ -881,12 +793,16 @@ def touch_lines(
     sweeps_by_detector: Mapping[str, Sequence[ScopeSweep]],
     *,
     this_detector: str = "",
+    described: Mapping[tuple[str, str, str], str] | None = None,
     indent: str = "  ",
 ) -> list[str]:
     """The benchmarked detectors a candidate's diff reaches, what it changes in
     each, and what each measured in this window — the detector this run loads
     first, then those whose compact directory it changes, then those it reaches
-    only elsewhere in their geometry tree."""
+    only elsewhere in their geometry tree.
+
+    *described* maps a scope the prompt reads in full elsewhere to where, and
+    that scope's line points there instead of repeating it."""
     if not touches:
         return []
 
@@ -918,7 +834,9 @@ def touch_lines(
             f"{indent}  - {touch.detector}{where}: its compact directory "
             f"{touch.own_dir} — " + "; ".join(parts) + "." + same
         )
-        lines += _measured_lines(sweeps_by_detector.get(touch.detector, ()), indent)
+        lines += _measured_lines(
+            sweeps_by_detector.get(touch.detector, ()), described or {}, indent,
+        )
     for touch in tree_only:
         where = " — this run" if touch.detector == this_detector else ""
         lines.append(
@@ -928,11 +846,17 @@ def touch_lines(
             + _named([f.removeprefix(geometry_tree(touch.geometry_path)) for f in touch.tree_files], _MAX_TOUCH_FILES)
             + "), which it loads only if its compact files include them."
         )
-        lines += _measured_lines(sweeps_by_detector.get(touch.detector, ()), indent)
+        lines += _measured_lines(
+            sweeps_by_detector.get(touch.detector, ()), described or {}, indent,
+        )
     return lines
 
 
-def _measured_lines(sweeps: Sequence[ScopeSweep], indent: str) -> list[str]:
+def _measured_lines(
+    sweeps: Sequence[ScopeSweep],
+    described: Mapping[tuple[str, str, str], str],
+    indent: str,
+) -> list[str]:
     """What each of a detector's scopes measured in this window, one line each."""
     if not sweeps:
         return [f"{indent}      this window: none of its runs measured this window."]
@@ -940,7 +864,7 @@ def _measured_lines(sweeps: Sequence[ScopeSweep], indent: str) -> list[str]:
     return [
         f"{indent}      this window, {_sample_phrase(sweep.sample)}"
         + (f" · {sweep.platform}" if len(platforms) > 1 else "")
-        + f": {scope_state(sweep)}."
+        + f": {described.get(sweep.scope) or scope_state(sweep)}."
         for sweep in sweeps
     ]
 

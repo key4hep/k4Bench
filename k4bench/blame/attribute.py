@@ -79,10 +79,10 @@ from k4bench.blame.llm import (
 )
 from k4bench.blame.prompt import (
     ASSESSMENT_RULE,
-    ASSESSMENT_VALUES,
     HISTORICAL_ANALOGUE_RULE,
     NOISE_RULE,
     SCORE_BAND_RULE,
+    StepAssessment,
     UNTRUSTED_EVIDENCE_RULE,
     WEIGHING_RULE,
     allocate_diff_budget,
@@ -97,6 +97,7 @@ from k4bench.blame.prompt import (
     log_prompt_size,
     measurement_phrase,
     outcome_lines,
+    parse_assessment,
     platform_line,
     platform_switch_lines,
     region_lines,
@@ -327,26 +328,6 @@ class AttributionRequest:
     def slug(self) -> str:
         """``owner/repo#123`` — how this review is named in logs."""
         return f"{self.repo}#{self.number}"
-
-
-@dataclass(frozen=True)
-class StepAssessment:
-    """What the review made of the movements themselves, across the window.
-
-    The same three readings the first pass gives (see
-    :class:`k4bench.blame.rank.StepAssessment`), asked again here because this
-    pass sees strictly more: every configuration's history, not one
-    configuration's. A review that concludes ``likely_noise`` withdraws the
-    comment entirely — the one outcome this pass can add on its own — so the
-    field is not decoration: it is the bot declining to accuse anybody of a
-    wobble."""
-
-    verdict: str
-    reason: str = ""
-
-    @property
-    def likely_noise(self) -> bool:
-        return self.verdict == "likely_noise"
 
 
 @dataclass(frozen=True)
@@ -946,6 +927,17 @@ def _scope_blocks(request: AttributionRequest) -> list[str]:
     return lines
 
 
+def _described(request: AttributionRequest) -> dict[tuple[str, str, str], str]:
+    """``scope -> `` where the evidence summary reads it in full, for every
+    scope under judgement that has a sweep."""
+    swept = {sweep.scope for sweep in request.sweeps}
+    return {
+        scope: f"under judgement as [{sid}] — read in the evidence summary"
+        for scope, sid in scope_ids(_attributed_facts(request)).items()
+        if scope in swept
+    }
+
+
 def _summarised_facts(
     request: AttributionRequest,
 ) -> dict[tuple[str, str, str], RegressionFact]:
@@ -978,7 +970,7 @@ def _summary_lines(request: AttributionRequest) -> list[str]:
         lines.append(
             f"What {request.slug} changes in the benchmarked detectors' geometry:"
         )
-        lines += touch_lines(request.touches, by_detector)
+        lines += touch_lines(request.touches, by_detector, described=_described(request))
         lines.append("")
     lines += _scope_blocks(request)
     scored = set(scope_ids(_attributed_facts(request)))
@@ -1128,6 +1120,7 @@ def _competitor_lines(
     competitors: list[CompetingPR],
     budgets: list[int],
     by_detector: dict[str, list[ScopeSweep]] | None = None,
+    described: dict[tuple[str, str, str], str] | None = None,
 ) -> list[str]:
     """The rest of the window, each with the first pass's reading of it.
 
@@ -1176,7 +1169,7 @@ def _competitor_lines(
                 + (f" — {competitor.scope_reason}" if competitor.scope_reason else "")
             )
         if competitor.touches:
-            lines += touch_lines(competitor.touches, by_detector or {})
+            lines += touch_lines(competitor.touches, by_detector or {}, described=described)
         # The author's own material — description then diff — stays together and
         # last, after k4Bench's own account of the candidate.
         lines += body_block(competitor.body, _MAX_COMPETITOR_BODY_CHARS)
@@ -1240,7 +1233,9 @@ def build_user_prompt(
         # Diffs last, so no amount of code can push the evidence out of the
         # model's reading.
         *_subject_lines(request, subject_budget),
-        *_competitor_lines(competitors, competitor_budgets, by_detector),
+        *_competitor_lines(
+            competitors, competitor_budgets, by_detector, _described(request),
+        ),
         # Last, and on their own budget: the analogues are background to the
         # window above, and the reviewed pull request and its competitors must
         # never lose a character of diff to them.
@@ -1602,17 +1597,9 @@ def _parse_assessment(data: dict, *, slug: str = "") -> StepAssessment | None:
     so reading an absent assessment as a positive one would silently restore the
     comment the field exists to prevent.
     """
-    raw = data.get("step_assessment")
-    if isinstance(raw, str):
-        verdict, reason = raw, ""  # a model that answered with the bare verdict
-    elif isinstance(raw, dict):
-        verdict = str(raw.get("verdict") or "")
-        reason = one_line(raw.get("reason"), _MAX_SUMMARY_CHARS)
-    else:
-        return None
-    verdict = verdict.strip().lower().replace(" ", "_").replace("-", "_")
-    if verdict not in ASSESSMENT_VALUES:
-        return None
-    if verdict != "real_change":
-        _log.info("attribute: %s — review reads the step as %s", slug or "?", verdict)
-    return StepAssessment(verdict=verdict, reason=reason)
+    assessment = parse_assessment(data.get("step_assessment"), _MAX_SUMMARY_CHARS)
+    if assessment is not None and assessment.verdict != "real_change":
+        _log.info(
+            "attribute: %s — review reads the step as %s", slug or "?", assessment.verdict,
+        )
+    return assessment

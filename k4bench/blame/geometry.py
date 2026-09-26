@@ -210,20 +210,21 @@ def file_change(patch: FilePatch) -> FileChange:
     )
 
 
-def _fingerprint(patches: Sequence[FilePatch], directory: str) -> frozenset:
+def _fingerprint(patches: Sequence[FilePatch], directory: str) -> tuple:
     """The changed lines of *patches*, normalised so the same change made to
     two detectors compares equal: paths relative to *directory*, the
     directory's own name replaced by a placeholder, comments and whitespace
-    ignored."""
+    ignored. Sorted, not a set: a line changed twice is not the same change as
+    that line changed once."""
     own = directory.rstrip("/").rsplit("/", 1)[-1]
-    lines = set()
+    lines = []
     for patch in patches:
         relative = patch.path.removeprefix(directory.rstrip("/") + "/")
         if own:
             relative = relative.replace(own, "{self}")
         for sign, body in _code_lines(patch.text):
-            lines.add((relative, sign, body.replace(own, "{self}") if own else body))
-    return frozenset(lines)
+            lines.append((relative, sign, body.replace(own, "{self}") if own else body))
+    return tuple(sorted(lines))
 
 
 # ── Every benchmarked detector ────────────────────────────────────────────────

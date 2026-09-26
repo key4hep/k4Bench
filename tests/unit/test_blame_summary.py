@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 
 from k4bench.blame.evidence import HistoryPoint, MetricHistory
+from k4bench.blame.prompt import WEIGHING_RULE
 from k4bench.blame.geometry import DetectorTouch, FileChange
 from k4bench.blame.summary import (
     event_record_line,
@@ -37,6 +38,7 @@ from k4bench.regression.models import (
     RegionDelta,
     RunGroupReport,
     Severity,
+    Unjudged,
 )
 
 _PLAT = "x86_64-el9-gcc16-opt"
@@ -146,22 +148,18 @@ def test_row_ids_ride_on_the_cells_they_score():
 
 
 def test_the_reading_states_the_pattern_the_table_holds():
-    text = "\n".join(family_reading_lines(_ild_v02(), "time"))
-    assert "time: mean event time stepped on 3 of 4 judged configurations (2 down, 1 up)" in text
-    assert "The baseline stepped: mean event time -7.2%." in text
-    assert "Against the direction of the rest: no_TPC +10.8%." in text
-    assert (
-        "Without the step — judged and moved less than a third of it in mean event "
-        "time (1): no_Vertex -1.8%."
-    ) in text
-    # Every configuration called a long-event step keeps the numbers that made it one.
-    assert (
-        "On 3 of 3 stepped configurations the typical event did not follow — the "
-        "median and trimmed mean moved less than a third of the step, so a few long "
-        "events carry it (e.g. baseline: mean event time -7.2%, median -1.2%, trimmed "
-        "mean -1.3%); the others: no_TPC (mean +10.8%; median -0.7%, trimmed mean "
-        "-0.5%), no_LumiCal (mean -9.0%; median -1.1%, trimmed mean -1.0%)."
-    ) in text
+    lines = family_reading_lines(_ild_v02(), "time")
+    assert lines == [
+        "  - time: mean event time stepped on 3 of 4 (2 down, 1 up; baseline -7.2%) "
+        "— 3 carried by a few long events (median and trimmed mean moved under a "
+        "third as far), e.g. baseline (mean -7.2%; median -1.2%, trimmed mean -1.3%).",
+        "  - Against the direction of the rest: no_TPC.",
+        "  - Without the step in mean event time — moved less than a third of the "
+        "stepped configurations' median move (9.0%): no_Vertex.",
+    ]
+    # Each configuration's own move is in the table beside it, not repeated here.
+    assert "-1.8%" not in "\n".join(lines)
+    assert "no_Vertex" in "\n".join(sweep_table_lines(_ild_v02()))
 
 
 def test_isolated_opposite_configurations_are_said_to_be_that():
@@ -172,9 +170,11 @@ def test_isolated_opposite_configurations_are_said_to_be_that():
         *(v for i in range(10) for v in _timing(f"no_X{i}", 0.01, 0.0, 0.0, 0.0)),
     ], detector="ILD_FCCee_v01")
     text = "\n".join(family_reading_lines(sweep, "time"))
-    assert "The baseline did not step: mean event time +1.6%." in text
+    assert (
+        "mean event time stepped on 2 of 13 (1 down, 1 up; baseline +1.6%, not "
+        "stepped), isolated configurations on a flat baseline"
+    ) in text
     assert "They stepped in opposite directions." in text
-    assert "These are isolated configurations on a baseline that did not move." in text
 
 
 def test_an_event_moving_with_a_typical_step_is_not_one_that_changed():
@@ -191,6 +191,7 @@ def test_an_event_moving_with_a_typical_step_is_not_one_that_changed():
     sweep = _sweep([
         _v("baseline", "mean_time_s", 0.105, Severity.CONFIRMED, event_profile=profile),
         _v("baseline", "median_time_s", 0.117),
+        _v("baseline", "trimmed_mean_time_s", 0.110),
     ])
     line = event_record_line("baseline", time_shape(sweep.row("baseline")), matched=True)
     assert (
@@ -225,7 +226,7 @@ def test_one_line_per_scope_never_calls_an_unread_or_watched_scope_flat():
     ], detector="SiD")
     line = scope_line(watched)
     assert "no time step (mean event time +7.2% to +26.7% on 2 configurations" in line
-    assert "not judged on 1" in line
+    assert "; 1 not judged;" in line
     assert "1 moved past the gates once without confirming — no_VertexBarrelSupports +26.7%" in line
     assert "memory not judged" in line
 
@@ -325,30 +326,33 @@ def test_the_geometry_map_leads_with_this_run_and_says_what_each_detector_measur
         "under FCCee/CLD/ (compact/CLD_o2_v09/Vertex_o4_v08_smallBP.xml), which it "
         "loads only if its compact files include them."
     ) in lines
+    # A scope the prompt reads in full elsewhere is pointed to, not repeated.
+    pointed = touch_lines(
+        touches, {"ILD_FCCee_v01": [v01]}, this_detector="ILD_FCCee_v02",
+        described={v01.scope: "under judgement as [S1]"},
+    )
+    assert (
+        "        this window, single_e-_10GeV (Single e⁻ · 10 GeV): under judgement as [S1]."
+    ) in pointed
+    assert not any("stepped on" in line for line in pointed)
 
 
-def test_a_baseline_that_stepped_in_another_metric_is_not_called_a_mean_step():
+def test_the_reading_leads_with_the_metric_the_baseline_stepped_in():
     # k4geo#607's ALLEGRO_o1_v03 single_e- baseline: wall time confirmed +10.1%
-    # while its mean event time moved +6.2% without confirming, and the sweep's
-    # time reading leads with the mean because other configurations stepped in it.
+    # while its mean event time moved +6.2% without confirming, and one other
+    # configuration confirmed in mean event time.
     sweep = _sweep([
         _v("baseline", "wall_time_s", 0.101, Severity.CONFIRMED),
         _v("baseline", "mean_time_s", 0.062),
         _v("no_SiWrB", "mean_time_s", 0.121, Severity.CONFIRMED),
+        _v("no_SiWrB", "wall_time_s", 0.030),
     ])
     lines = family_reading_lines(sweep, "time")
-    assert lines[0] == (
-        "  - time: mean event time stepped on 1 of 2 judged configurations "
-        "(1 up): no_SiWrB +12.1%."
-    )
-    assert (
-        "  - wall time independently stepped on 1 additional configuration(s), "
-        "where mean event time did not step: baseline +10.1% (mean +6.2%)."
-    ) in lines
-    assert (
-        "  - The baseline's mean event time did not step (+6.2%), but it stepped "
-        "in wall time +10.1%."
-    ) in lines
+    assert lines[:2] == [
+        "  - time: wall time stepped on 1 of 2 (1 up; baseline +10.1%); mean event "
+        "time independently stepped on 1 more where wall time did not.",
+        "  - mean event time stepped where wall time did not: no_SiWrB.",
+    ]
 
 
 def _mixed():
@@ -370,52 +374,68 @@ def _mixed():
 def test_a_step_in_one_metric_is_never_reported_as_a_step_in_another():
     sweep = _mixed()
     lines = family_reading_lines(sweep, "time")
-    assert lines[0] == (
-        "  - time: mean event time stepped on 1 of 3 judged configurations "
-        "(1 up): baseline +10.0%."
-    )
-    assert lines[1] == (
-        "  - wall time independently stepped on 1 additional configuration(s), "
-        "where mean event time did not step: no_ECAL +12.0% (mean +1.0%)."
-    )
-    assert (
-        "  - Without the step — judged and moved less than a third of it in mean "
-        "event time (2): no_ECAL +1.0%, no_HCAL +0.5%."
-    ) in lines
-    # The shape is the baseline's alone: no_ECAL has no mean step to shape.
-    shape_line = next(line for line in lines if "typical event did not follow" in line)
-    assert "no_ECAL" not in shape_line
-    assert scope_line(sweep).endswith(
-        "mean event time stepped on 1 of 3 (0 down, 1 up; baseline +10.0%) — 1 "
-        "carried by a few long events (typical event unmoved), e.g. baseline (mean "
-        "+10.0%; median +0.5%, trimmed mean +0.6%); wall time independently "
-        "stepped on 1 more where mean event time did not; memory not judged."
-    )
+    assert lines == [
+        "  - time: mean event time stepped on 1 of 3 (1 up; baseline +10.0%) — 1 "
+        "carried by a few long events (median and trimmed mean moved under a third "
+        "as far), e.g. baseline (mean +10.0%; median +0.5%, trimmed mean +0.6%); "
+        "wall time independently stepped on 1 more where mean event time did not.",
+        "  - wall time stepped where mean event time did not: no_ECAL.",
+        "  - Without the step in mean event time — moved less than a third of the "
+        "stepped configurations' median move (10.0%): no_ECAL, no_HCAL.",
+    ]
+    # The scope line is the same clause.
+    assert scope_line(sweep).endswith(lines[0].removeprefix("  - time: ")[:-1] + "; memory not judged.")
 
 
 def test_a_row_whose_lead_metric_was_not_judged_says_so_beside_its_other_step():
     sweep = _sweep([
         _v("baseline", "mean_time_s", +0.100, Severity.CONFIRMED),
-        _v("no_X", "mean_time_s", None, Severity.UNKNOWN),
+        _v("no_X", "mean_time_s", None, Severity.UNKNOWN,
+           unjudged=Unjudged.INSUFFICIENT_HISTORY),
         _v("no_X", "wall_time_s", +0.090, Severity.CONFIRMED),
     ])
-    text = "\n".join(family_reading_lines(sweep, "time"))
-    assert "mean event time stepped on 1 of 1 judged configurations" in text
-    assert "no_X +9.0% (mean not judged)" in text
+    lines = family_reading_lines(sweep, "time")
+    assert lines[0].startswith(
+        "  - time: mean event time stepped on 1 of 1 (1 up; baseline +10.0%; 1 not "
+        "judged (insufficient_history)); wall time independently stepped on 1 more"
+    )
+    assert "  - wall time stepped where mean event time did not: no_X." in lines
 
 
 def test_memory_is_not_claimed_to_be_machine_independent():
+    # What memory depends on is a weighing rule, stated once in the system
+    # prompt; the summary states measurements.
     sweep = _sweep([
         _v("baseline", "peak_vmem_mb", -0.117, Severity.CONFIRMED),
         _v("no_A", "peak_vmem_mb", -0.110, Severity.CONFIRMED),
     ])
-    text = "\n".join(family_reading_lines(sweep, "memory"))
+    assert family_reading_lines(sweep, "memory") == [
+        "  - memory: VmPeak stepped on 2 of 2 (2 down; baseline -11.7%).",
+    ]
+    assert "read from the measured host evidence, not assumed" in WEIGHING_RULE
+    assert "does not depend on which machine" not in WEIGHING_RULE
+
+
+def test_a_family_settling_or_stepped_elsewhere_is_judged_not_unjudged():
+    sweep = _sweep([
+        _v("baseline", "mean_time_s", -0.010, reanchor_run_date="2026-09-10"),
+        _v("no_A", "mean_time_s", -0.012, reanchor_run_date="2026-09-10"),
+        dataclasses.replace(
+            _v("no_B", "mean_time_s", -0.080, Severity.CONFIRMED),
+            onset_run_date="2026-09-10", last_accepted_run_date="2026-09-08",
+        ),
+        _v("no_C", "mean_time_s", None, Severity.UNKNOWN,
+           unjudged=Unjudged.INSUFFICIENT_HISTORY),
+        _v("baseline", "peak_vmem_mb", -0.117, Severity.CONFIRMED),
+    ])
+    lines = scope_evidence_lines(sweep)
     assert (
-        "Memory is determined primarily by what the job loads rather than by a "
-        "few long events. Any machine dependence should be assessed from the "
-        "measured host evidence."
-    ) in text
-    assert "does not depend on which machine" not in text
+        "  - time: no time comparison in this window (1 not judged "
+        "(insufficient_history), 2 settling after a step of its own, 1 stepped in "
+        "another window)."
+    ) in lines
+    assert not any("time: not judged" in line for line in lines)
+    assert "time not judged" not in scope_line(sweep)
 
 
 # ── Region movements in the summary ───────────────────────────────────────────
@@ -449,16 +469,24 @@ def test_the_summary_carries_the_largest_region_movements_of_each_timing_step():
 def test_each_shape_in_the_scope_line_carries_its_own_example():
     # The baseline carries the long-event example, and the one configuration
     # the typical event partly followed carries its own numbers.
-    line = scope_line(_sweep([
+    sweep = _sweep([
         *_timing("baseline", -0.072, -0.012, -0.013, -0.071, stepped=True),
         *_timing("no_TPC", +0.108, -0.007, -0.005, +0.100, stepped=True),
         *_timing("no_Shell3", -0.073, -0.032, -0.026, -0.070, stepped=True),
-    ]))
+        *_timing("no_Q", +0.001, +0.001, +0.001, +0.001),
+    ])
     assert (
-        "— 2 carried by a few long events (typical event unmoved), e.g. baseline "
-        "(mean -7.2%; median -1.2%, trimmed mean -1.3%); 1 partly in the typical "
-        "event, e.g. no_Shell3 (mean -7.3%; median -3.2%, trimmed mean -2.6%);"
-    ) in line
+        "— 2 carried by a few long events (median and trimmed mean moved under a "
+        "third as far), e.g. baseline (mean -7.2%; median -1.2%, trimmed mean "
+        "-1.3%); 1 partly in the typical event, e.g. no_Shell3 (mean -7.3%; median "
+        "-3.2%, trimmed mean -2.6%);"
+    ) in scope_line(sweep)
+    # The detailed reading lists a shape's configurations only where the clause
+    # has not already named them all.
+    assert (
+        "  - By shape: carried by a few long events (median and trimmed mean moved "
+        "under a third as far) — no_TPC, baseline."
+    ) in family_reading_lines(sweep, "time")
 
 
 def test_region_movements_of_a_step_in_another_metric_are_kept_too():
@@ -487,10 +515,12 @@ def test_without_region_timing_the_summary_says_nothing_about_regions():
 
 def test_a_step_of_unknown_size_is_counted_and_not_sized():
     sweep = _sweep([
-        _v("baseline", "mean_time_s", +0.100, Severity.CONFIRMED),
+        *_timing("baseline", +0.100, +0.090, +0.095, +0.098, stepped=True),
         _v("no_A", "mean_time_s", float("inf"), Severity.CONFIRMED),
     ])
-    assert family_reading_lines(sweep, "time")[0] == (
-        "  - time: mean event time stepped on 2 of 2 judged configurations "
-        "(1 up, 1 of unknown size): baseline +10.0%, no_A."
-    )
+    assert family_reading_lines(sweep, "time") == [
+        "  - time: mean event time stepped on 2 of 2 (1 up, 1 of unknown size; "
+        "baseline +10.0%) — 1 in the typical event, e.g. baseline (mean +10.0%; "
+        "median +9.0%, trimmed mean +9.5%).",
+        "  - By shape: unknown (median and trimmed mean not both judged) — no_A.",
+    ]

@@ -390,6 +390,26 @@ def test_a_release_measured_on_several_nights_is_summarised_by_their_median(tmp_
     assert onset.mean == pytest.approx((8.0 + 2.0) / 3)  # likewise their means
 
 
+def test_a_long_event_is_placed_by_its_nights_together_not_by_the_first(tmp_path):
+    # Event 1 spent 7 s in SET on the first onset night only; over its three
+    # nights TPC is where its time went, as its 8 s median is over the same
+    # three. Event 4 ran on one night of three and cannot stand for the release.
+    dirs = [
+        _write_events_run(tmp_path, "2026-09-23", "2026-09-23", [9.0, 30.0, 1.0, 1.0]),
+        _write_events_run(tmp_path, "2026-09-24", "2026-09-24", [9.0, 8.0, 1.0, 1.0, 20.0],
+                          long_region=(1, "SET", 7.0)),
+        _write_events_run(tmp_path, "2026-09-25", "2026-09-24", [9.0, 9.0, 1.2, 1.2]),
+        _write_events_run(tmp_path, "2026-09-26", "2026-09-24", [9.0, 7.0, 1.1, 1.1]),
+    ]
+    _deltas, profile = region_evidence(
+        dirs, label="baseline", base_release="2026-09-23", onset_release="2026-09-24",
+    )
+    assert [e.event for e in profile.onset.longest] == [1, 2, 3]
+    assert profile.onset.longest[0] == LongEvent(
+        event=1, seconds=8.0, region="TPC", region_seconds=pytest.approx(6.997),
+    )
+
+
 def test_no_profile_without_both_ends(tmp_path):
     dirs = [
         _write_run(tmp_path, "2026-07-14", "2026-07-14", None),

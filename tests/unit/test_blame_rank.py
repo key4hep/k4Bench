@@ -992,7 +992,7 @@ def test_the_evidence_summary_comes_first_and_the_diffs_last():
 def test_the_summary_says_the_typical_event_did_not_follow():
     prompt = _build_user_prompt(_summarised_request())
     head = prompt[:prompt.index("Details:")]
-    assert "a few long events carry it" in head
+    assert "carried by a few long events" in head
     assert "median -1.2%, trimmed mean -1.3%" in head
 
 
@@ -1000,15 +1000,18 @@ def test_a_candidate_making_the_same_change_elsewhere_names_that_detector_s_outc
     prompt = _build_user_prompt(_summarised_request())
     head = prompt[:prompt.index("Details:")]
     assert (
-        "- Candidates whose changed files are in this detector's geometry:" in head
-    )
-    line = next(line for line in head.splitlines() if "key4hep/k4geo#612 changes" in line)
-    assert "include switched ../../../CLD/compact/CLD_o2_v07/Vertex_o4_v07_smallBP.xml" in line
+        "- Candidates whose changed files are in this detector's geometry: "
+        "key4hep/k4geo#612 (in its compact directory; the same change to "
+        "ILD_FCCee_v01). Each one's entry below says what it changes and what "
+        "every detector it reaches measured."
+    ) in head
+    # The candidate's entry carries what it changes and what ILD_FCCee_v01 measured.
+    block = prompt[prompt.index("- #612 — "):prompt.index("## AIDASoft/DD4hep")]
+    assert "include switched ../../../CLD/compact/CLD_o2_v07/Vertex_o4_v07_smallBP.xml" in block
     assert (
-        "It makes the same change to ILD_FCCee_v01, which measured in this window — "
-        "single_e-_10GeV: no time step (mean event time +1.6% to +1.6% on 1 "
-        "configurations, baseline +1.6%)"
-    ) in line
+        "single_e-_10GeV (Single e⁻ · 10 GeV): no time step (mean event time +1.6% "
+        "to +1.6% on 1 configurations, baseline +1.6%)"
+    ) in block
     # Only candidates that reach this geometry are named; DD4hep#20 is not.
     assert "DD4hep#20" not in head
     # The other scope that measured the window is listed as its own line.
@@ -1020,6 +1023,8 @@ def test_the_candidate_block_carries_its_geometry_map():
     block = prompt[prompt.index("- #612 — "):prompt.index("## AIDASoft/DD4hep")]
     assert "benchmarked geometry it reaches" in block
     assert block.index("- ILD_FCCee_v02 — this run") < block.index("- ILD_FCCee_v01:")
+    # This run's own scope is read in the evidence summary, not again here.
+    assert "single_e-_10GeV (Single e⁻ · 10 GeV): this run — read in the evidence summary." in block
 
 
 def test_the_evidence_reading_is_logged_and_never_stored(caplog):

@@ -132,6 +132,20 @@ def test_the_same_change_to_two_detectors_is_recognised_as_the_same():
     )
 
 
+def test_a_line_changed_twice_is_not_the_same_change_as_it_changed_once():
+    twice = _ild_hunk("ILD_FCCee_v01", "vertex").replace(
+        '+    <gdmlFile  ref="../ILD_common_FCCee/materials.xml"/>',
+        '+    <gdmlFile  ref="../ILD_common_FCCee/materials.xml"/>\n'
+        '+    <gdmlFile  ref="../ILD_common_FCCee/materials.xml"/>',
+    )
+    files = [
+        FilePatch(_ILD1 + "ILD_FCCee_v01.xml", twice),
+        FilePatch(_ILD2 + "ILD_FCCee_v02.xml", _ild_hunk("ILD_FCCee_v02", "vertex")),
+    ]
+    touches = detector_touches([f.path for f in files], files, _geometry())
+    assert all(touch.same_as == () for touch in touches)
+
+
 def test_a_file_without_a_hunk_is_unread_and_never_called_unchanged():
     touches = detector_touches([_ALLEGRO + "logo.png"], [], _geometry())
     (touch,) = touches

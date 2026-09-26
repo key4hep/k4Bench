@@ -62,11 +62,11 @@ from k4bench.blame.llm import (
 )
 from k4bench.blame.prompt import (
     ASSESSMENT_RULE,
-    ASSESSMENT_VALUES,
     HARNESS_PACKAGE_NOTE,
     HISTORICAL_ANALOGUE_RULE,
     NOISE_RULE,
     SCORE_BAND_RULE,
+    StepAssessment,
     UNTRUSTED_EVIDENCE_RULE,
     WEIGHING_RULE,
     allocate_favoured_diff_budget,
@@ -85,6 +85,7 @@ from k4bench.blame.prompt import (
     log_prompt_size,
     measurement_phrase,
     outcome_lines,
+    parse_assessment,
     platform_line,
     platform_switch_lines,
     region_lines,
@@ -94,12 +95,10 @@ from k4bench.blame.prompt import (
 from k4bench.blame.summary import (
     EVIDENCE_HEADER,
     SWEEP_METRICS,
-    file_change_phrase,
     other_scope_lines,
     representative,
     scope_evidence_lines,
     scope_name,
-    scope_state,
     sweep_table_lines,
     touch_lines,
 )
@@ -255,28 +254,6 @@ class Ranking:
     score: float
     description: str
     against: str = ""
-
-
-@dataclass(frozen=True)
-class StepAssessment:
-    """What the model made of the *movement*, before any question of who caused
-    it.
-
-    Separate from the rankings because it answers a different question, and
-    because without somewhere to say "this step is noise" a model can only
-    express that by scoring every candidate low — which is indistinguishable
-    downstream from "I looked and found nothing", and loses the one conclusion a
-    human most needs. ``verdict`` is one of
-    :data:`~k4bench.blame.prompt.ASSESSMENT_VALUES`; anything else is dropped at
-    the parse, so a surface rendering this never has to defend against a word
-    nobody defined."""
-
-    verdict: str
-    reason: str = ""
-
-    @property
-    def likely_noise(self) -> bool:
-        return self.verdict == "likely_noise"
 
 
 @dataclass(frozen=True)
@@ -796,53 +773,31 @@ def _unshown_steps(request: RankRequest) -> tuple[MetricStep, ...]:
 
 
 def _reach_lines(request: RankRequest) -> list[str]:
-    """The candidates whose files are in this detector's geometry, each with
-    the other benchmarked detectors it changed the same way and what those
-    measured. Positive only: a change can reach every detector through a
-    shared driver or material without touching one detector's files, so no
-    line is written about the candidates that do not appear here."""
-    this = request.detector
-    by_detector: dict[str, list[ScopeSweep]] = {}
-    for sweep in request.window_sweeps:
-        by_detector.setdefault(sweep.detector, []).append(sweep)
-    lines = []
+    """One line naming the candidates whose files are in this detector's
+    geometry, with the other detectors each changes the same way — what it
+    changes and what those detectors measured is in its entry below. Positive
+    only: a change can reach every detector through a shared driver or material
+    without touching one detector's files, so nothing is said about the
+    candidates not named here."""
+    names = []
     for candidate in request.candidates:
-        touch = next((t for t in candidate.touches if t.detector == this), None)
+        touch = next(
+            (t for t in candidate.touches if t.detector == request.detector), None,
+        )
         if touch is None:
             continue
-        if touch.own_files:
-            what = "changes this run's compact directory: " + "; ".join(
-                [file_change_phrase(c) for c in touch.changes]
-                + ([f"{touch.unread} file(s) with no readable hunk"] if touch.unread else [])
-            )
-        else:
-            what = (
-                f"changes {len(touch.tree_files)} file(s) elsewhere in this "
-                f"detector's geometry tree, none in its compact directory"
-            )
-        line = f"  - {candidate.repo}#{candidate.number} {what}."
-        for detector in touch.same_as:
-            states = by_detector.get(detector, [])
-            measured = "; ".join(
-                f"{sweep.sample}: {scope_state(sweep)}" for sweep in states
-            ) or "none of its runs measured this window"
-            line += (
-                f" It makes the same change to {detector}, which measured in "
-                f"this window — {measured}."
-            )
-        others = [
-            t.detector for t in candidate.touches
-            if t.detector != this and t.own_files and t.detector not in touch.same_as
-        ]
-        if others:
-            line += (
-                f" It also changes the compact directories of {', '.join(others)} "
-                f"— see its entry below."
-            )
-        lines.append(line)
-    if not lines:
+        where = "in its compact directory" if touch.own_files else "elsewhere in its geometry tree"
+        same = (
+            f"; the same change to {', '.join(touch.same_as)}" if touch.same_as else ""
+        )
+        names.append(f"{candidate.repo}#{candidate.number} ({where}{same})")
+    if not names:
         return []
-    return ["- Candidates whose changed files are in this detector's geometry:", *lines]
+    return [
+        "- Candidates whose changed files are in this detector's geometry: "
+        + ", ".join(names) + ". Each one's entry below says what it changes and "
+        "what every detector it reaches measured."
+    ]
 
 
 def _summarised_step(request: RankRequest) -> MetricStep | None:
@@ -918,6 +873,10 @@ def _render_candidate(
                 by_detector.setdefault(sweep.detector, []).append(sweep)
             lines += touch_lines(
                 candidate.touches, by_detector, this_detector=request.detector,
+                described=(
+                    {request.sweep.scope: "this run — read in the evidence summary"}
+                    if request.sweep is not None else None
+                ),
             )
         else:
             # A fact, where the run recorded enough to state one: whether this
@@ -1132,27 +1091,9 @@ def _asks_again(content: str) -> bool:
 
 
 def _parse_assessment(content: str) -> StepAssessment | None:
-    """The model's read of the step itself, or ``None`` when it gave none.
-
-    ``None`` is a first-class outcome — an older model, a reply that skipped the
-    field, a verdict outside :data:`~k4bench.blame.prompt.ASSESSMENT_VALUES` —
-    and every consumer treats it as "not assessed", never as "real change". The
-    field exists to let a model say a step is noise; inventing a default would
-    put a word in its mouth in exactly the direction the field was added to
-    avoid.
-    """
+    """The model's read of the step itself, or ``None`` when it gave none
+    (see :func:`~k4bench.blame.prompt.parse_assessment`)."""
     data = extract_json(content)
     if not isinstance(data, dict):
         return None
-    raw = data.get("step_assessment")
-    if isinstance(raw, str):
-        verdict, reason = raw, ""  # a model that answered with the bare verdict
-    elif isinstance(raw, dict):
-        verdict = str(raw.get("verdict") or "")
-        reason = one_line(raw.get("reason"), _MAX_DESCRIPTION_CHARS)
-    else:
-        return None
-    verdict = verdict.strip().lower().replace(" ", "_").replace("-", "_")
-    if verdict not in ASSESSMENT_VALUES:
-        return None
-    return StepAssessment(verdict=verdict, reason=reason)
+    return parse_assessment(data.get("step_assessment"), _MAX_DESCRIPTION_CHARS)
