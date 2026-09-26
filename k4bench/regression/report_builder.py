@@ -55,7 +55,7 @@ from k4bench.regression.models import (
     Severity,
     Unjudged,
 )
-from k4bench.regression.regions import dirs_by_release, region_deltas
+from k4bench.regression.regions import dirs_by_release, region_evidence
 from k4bench.remote import (
     fetch_runs_windowed,
     list_detectors,
@@ -959,6 +959,10 @@ def _with_region_deltas(
     ``(label, window)`` however many metrics share it. On the overwhelming
     majority of nights nothing is confirmed and this does no I/O at all.
 
+    The same read also yields the window's per-event wall times
+    (:attr:`~k4bench.regression.models.MetricVerdict.event_profile`), which say
+    whether the step is in the typical event or in a few long ones.
+
     Windows are identified by :func:`_region_window`, so two of them inside one
     release keep their own decompositions instead of one answering for the other.
 
@@ -995,7 +999,7 @@ def _with_region_deltas(
         return base_dirs + [str(d) for d in own_by_release.get(window[2], [])]
 
     computed = {
-        window: region_deltas(
+        window: region_evidence(
             dirs_for(window, crosses), label=window[0],
             base_release=window[1], onset_release=window[2],
             base_run_id=window[3], onset_run_id=window[4],
@@ -1003,11 +1007,17 @@ def _with_region_deltas(
         )
         for window, crosses in crossing.items()
     }
-    group.verdicts = [
-        dataclasses.replace(v, region_deltas=deltas)
-        if (deltas := computed.get(_region_window(v))) else v
-        for v in group.verdicts
-    ]
+    verdicts = []
+    for v in group.verdicts:
+        deltas, profile = (
+            computed.get(_region_window(v), ((), None))
+            if v.severity is Severity.CONFIRMED and v.metric_family == "time"
+            else ((), None)
+        )
+        if deltas or profile is not None:
+            v = dataclasses.replace(v, region_deltas=deltas, event_profile=profile)
+        verdicts.append(v)
+    group.verdicts = verdicts
     return group
 
 

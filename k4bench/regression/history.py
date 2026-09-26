@@ -30,6 +30,7 @@ from k4bench.regression.engine import release_key
 from k4bench.regression.models import (
     Direction,
     HostFact,
+    HostLevel,
     MetricVerdict,
     ReleasePoint,
     Severity,
@@ -115,7 +116,8 @@ def release_points(
 
     *hosts* (from :func:`host_facts`) names the machine behind each ``run_id``,
     so the tail can show a change of benchmark host next to the change in the
-    number. Omit it and the points simply carry no host.
+    number, and what each machine measured on its own. Omit it and the points
+    simply carry no host.
 
     Ordered and grouped exactly as the engine orders and groups — same sort, same
     :func:`~k4bench.regression.engine.release_key` — so a point here can never
@@ -132,6 +134,7 @@ def release_points(
 
     ordered = history.sort_values(["run_date", "run_id"], kind="stable")
     recorded: dict[str, list[float]] = {}
+    recorded_on: dict[str, dict[HostFact, list[float]]] = {}
     dates: dict[str, str] = {}
     ran_on: dict[str, dict[HostFact, None]] = {}
     #: A continued series marks the rows its predecessor platform measured.
@@ -152,6 +155,8 @@ def release_points(
             # normally share one host, and the first sighting's order is what
             # renders.
             ran_on.setdefault(key, {})[host] = None
+            if value is not None:
+                recorded_on.setdefault(key, {}).setdefault(host, []).append(value)
 
     points: list[ReleasePoint] = []
     for key, values in recorded.items():
@@ -167,6 +172,18 @@ def release_points(
             # The release recorded nothing readable for this metric. A point
             # with no level would be a gap rendered as a measurement.
             continue
+        judged_on: dict[HostFact, list[float]] = {}
+        for verdict in release_verdicts:
+            host = hosts.get(str(verdict.run_id))
+            value = _finite(verdict.value)
+            if (
+                host is not None and value is not None
+                and verdict.severity is not Severity.UNKNOWN
+            ):
+                judged_on.setdefault(host, []).append(value)
+        # Each machine's level follows the release's own rule: when any night
+        # was judged, a machine whose nights were not has no level here.
+        by_host = judged_on if judged else recorded_on.get(key, {})
         worst = max(
             release_verdicts,
             key=lambda v: _SEVERITY_RANK.get(v.severity, 0),
@@ -181,6 +198,11 @@ def release_points(
             direction=worst.direction if worst is not None else Direction.NONE,
             hosts=tuple(ran_on.get(key, {})),
             platform=platforms.get(key),
+            host_levels=tuple(
+                HostLevel(host=host, value=float(np.median(np.asarray(by_host[host]))))
+                for host in {**ran_on.get(key, {}), **dict.fromkeys(by_host)}
+                if by_host.get(host)
+            ),
         ))
     return tuple(points)
 

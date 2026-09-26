@@ -227,8 +227,9 @@ def _load_policy(path: Path, overrides: dict):
 
 
 def _text_source(token: str | None):
-    """``(patch_for, body_for)`` for the cross-configuration review — a pull
-    request's diff and its description, each ``(repo, number) -> str``.
+    """``(patch_for, body_for, files_for)`` for the cross-configuration review —
+    a pull request's diff and its description, each ``(repo, number) -> str``,
+    and the per-file hunks the diff was sampled from.
 
     Memoized for the whole run and fetched **once** per pull request: one
     window's subject is another window's competitor, and the diff and the
@@ -274,20 +275,22 @@ def _text_source(token: str | None):
     return (
         lambda repo, number: text_for(repo, number).patch,
         lambda repo, number: text_for(repo, number).body,
+        lambda repo, number: text_for(repo, number).files,
     )
 
 
 def _review_inputs(token: str | None, attributor) -> dict:
-    """The diff/description fetchers :func:`k4bench.blame.comment.build_comments`
-    takes, or neither when no reviewer is configured.
+    """The diff, description and per-file hunk fetchers
+    :func:`k4bench.blame.comment.build_comments` takes, or none of them when no
+    reviewer is configured.
 
     Kept as one helper so the two callers that build comments — the nightly job
     and the preview tool — cannot end up handing the review different inputs,
     which would make a preview a preview of something else."""
     if attributor is None:
         return {}
-    patch_for, body_for = _text_source(token)
-    return {"patch_for": patch_for, "body_for": body_for}
+    patch_for, body_for, files_for = _text_source(token)
+    return {"patch_for": patch_for, "body_for": body_for, "files_for": files_for}
 
 
 def main(argv: list[str] | None = None) -> int:

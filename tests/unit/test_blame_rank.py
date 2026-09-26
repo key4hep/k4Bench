@@ -14,6 +14,7 @@ underneath it belongs to :mod:`k4bench.blame.llm` and is tested in
 from __future__ import annotations
 
 import dataclasses
+import random
 
 from types import SimpleNamespace
 
@@ -167,8 +168,10 @@ def test_prompt_asks_the_plausibility_question_about_this_run():
     # thing read before the model answers.
     prompt = _build_user_prompt(_request(sample="p8_ee_Zbb_ecm91"))
     question = prompt.rsplit("\n\n", 1)[-1]
-    assert "makes sense that this change affected" in question
-    assert "IDEA_o1_v03" in question and "p8_ee_Zbb_ecm91" in question
+    assert "what its diff changes that the IDEA_o1_v03 run" in question
+    assert "p8_ee_Zbb_ecm91" in question
+    # The movement is judged first, then each candidate's mechanism against it.
+    assert question.index("step_assessment") < question.index("for each pull")
 
 
 def test_prompt_allows_a_shared_infrastructure_answer():
@@ -309,6 +312,64 @@ def test_allocate_diff_budget_waterfills():
     assert prompt_mod.allocate_diff_budget([10, 20], 100) == [10, 20]  # all fits
     assert prompt_mod.allocate_diff_budget([], 100) == []
     assert prompt_mod.allocate_diff_budget([50, 50], 0) == [0, 0]
+
+
+def test_the_favoured_budget_keeps_the_waterfills_guarantees():
+    rng = random.Random(20260925)
+    sizes = [0, 1, 50, 2000, 7999, 8000, 8001, 12014, 30000]
+    for _ in range(5000):
+        count = rng.randint(0, 25)
+        needs = [rng.choice(sizes) for _ in range(count)]
+        favoured = [rng.random() < 0.25 for _ in range(count)]
+        total = rng.choice([0, 7, 1000, 20000, 45000])
+        got = prompt_mod.allocate_favoured_diff_budget(needs, favoured, total)
+        even = prompt_mod.allocate_diff_budget(needs, total)
+        assert sum(got) <= total
+        assert all(0 <= share <= need for share, need in zip(got, needs))
+        # Favouring only ever costs the others: their clip stays a prefix of
+        # the one they would have had.
+        assert all(g <= e for g, e, f in zip(got, even, favoured) if not f)
+        if not any(favoured):
+            assert got == even
+        if sum(needs) <= total:
+            assert got == needs
+
+
+def test_many_favoured_candidates_share_half_the_budget_first():
+    # Four favoured asking 8000 each split the 22500 pool (5625 each), and then
+    # share the other half evenly with seventeen others (1071 each).
+    needs = [12014] * 4 + [12000] * 17
+    got = prompt_mod.allocate_favoured_diff_budget(needs, [True] * 4 + [False] * 17, 45000)
+    assert got == [5625 + 1071] * 4 + [1071] * 17
+
+
+def test_one_favoured_candidate_gets_its_request_before_the_even_share():
+    needs = [12014] + [12000] * 20
+    got = prompt_mod.allocate_favoured_diff_budget(needs, [True] + [False] * 20, 45000)
+    assert got[0] == prompt_mod.FAVOURED_DIFF_REQUEST + got[1]
+    assert set(got[1:]) == {(45000 - prompt_mod.FAVOURED_DIFF_REQUEST) // 21}
+
+
+def test_a_candidate_in_the_runs_own_compact_directory_is_served_first(monkeypatch):
+    monkeypatch.setattr(rank_mod, "_MAX_PROMPT_CHARS", 2000)
+    monkeypatch.setattr(prompt_mod, "FAVOURED_DIFF_REQUEST", 800)
+    own = "FCCee/ALLEGRO/compact/ALLEGRO_o2_v01/"
+    request = dataclasses.replace(
+        _request(candidates=(
+            RankCandidate(repo="key4hep/k4geo", number=1, title="other",
+                          files=("src/a.cpp",), patch="~" * 3000),
+            RankCandidate(repo="key4hep/k4geo", number=2, title="own",
+                          files=(own + "DectDimensions.xml",), patch="^" * 3000),
+            RankCandidate(repo="key4hep/k4geo", number=3, title="sibling",
+                          files=("FCCee/IDEA/compact/IDEA_o2_v01_CI/x.xml",),
+                          patch="=" * 3000),
+        )),
+        geometry_tree=own + "ALLEGRO_o2_v01.xml",
+    )
+    prompt = _build_user_prompt(request)
+    # 800 first, then a third of the remaining 1200 each.
+    assert prompt.count("^") == 800 + 400
+    assert prompt.count("~") == prompt.count("=") == 400
 
 
 # ── Parsing a good response ───────────────────────────────────────────────────
@@ -748,6 +809,26 @@ def test_a_candidate_touching_the_run_s_geometry_says_so():
     )
     prompt = rank_mod._build_user_prompt(request)
     assert "reaches this run's geometry: 1 of 2 changed file(s)" in prompt
+    assert "own compact directory" not in prompt
+
+
+def test_the_reach_line_names_the_files_in_the_runs_own_compact_directory():
+    own = "FCCee/ALLEGRO/compact/ALLEGRO_o2_v01/"
+    request = dataclasses.replace(
+        _request(candidates=(
+            RankCandidate(repo="key4hep/k4geo", number=612, title="Silicon wrapper",
+                          files=(own + "DectDimensions.xml", own + "display.xml",
+                                 "FCCee/ALLEGRO/compact/ALLEGRO_o1_v03/x.xml",
+                                 "CMakeLists.txt")),
+        )),
+        geometry_tree=own + "ALLEGRO_o2_v01.xml",
+    )
+    prompt = rank_mod._build_user_prompt(request)
+    assert (
+        "reaches this run's geometry: 3 of 4 changed file(s) are under "
+        "FCCee/ALLEGRO/, which this detector loads; 2 of them are in this run's "
+        f"own compact directory {own} (DectDimensions.xml, display.xml)"
+    ) in prompt
 
 
 def test_a_run_with_no_recorded_geometry_says_nothing_about_reach():
@@ -761,7 +842,7 @@ def test_the_prompt_carries_the_region_breakdown_of_the_largest_movers():
                    pct_change=0.2, label="baseline", history=_history(),
                    regions=(RegionDelta("HCAL_barrel", 0.31, 4.52, 4.21),)),
     )))
-    assert "Where the change landed inside the detector" in prompt
+    assert "How the typical event's time moved per detector region" in prompt
     assert "HCAL_barrel: 0.31 -> 4.52 s/event (+4.21)" in prompt
 
 
@@ -816,3 +897,154 @@ def test_the_ranker_is_told_when_the_window_spans_a_platform_switch():
     assert f"Window onset measured on: {new}" in prompt
     assert "This window spans a platform switch" in prompt
     assert "platform switch" not in _build_user_prompt(_request())
+
+
+# ── The evidence summary ──────────────────────────────────────────────────────
+
+def _sweep_fixture():
+    """ILD_FCCee_v02 and ILD_FCCee_v01 on 09-25, reduced: v02's baseline stepped
+    through a few long events, v01 received the same change and did not step."""
+    from k4bench.blame.sweep import scope_sweep
+    from k4bench.regression.models import (
+        Direction, MetricVerdict, RunGroupReport, Severity,
+    )
+
+    def v(detector, label, metric, pct, stepped=False):
+        s = Severity.CONFIRMED if stepped else Severity.OK
+        return MetricVerdict(
+            detector=detector, platform="x86_64-el9-gcc16-opt",
+            sample="single_e-_10GeV", label=label, metric_family="time",
+            metric=metric, sub_detector=None, run_id="2026-09-25",
+            run_date="2026-09-24", value=1 + pct, baseline_median=1.0,
+            baseline_mad=0.01, pct_change=pct, z_score=5.0, severity=s,
+            direction=Direction.DOWN if stepped else Direction.NONE, reason="",
+            onset_run_id="2026-09-24" if stepped else None,
+            onset_run_date="2026-09-24" if stepped else None,
+            last_accepted_run_id="2026-09-23" if stepped else None,
+            last_accepted_run_date="2026-09-23" if stepped else None,
+        )
+
+    def group(detector, verdicts):
+        return scope_sweep(RunGroupReport(
+            detector=detector, platform="x86_64-el9-gcc16-opt",
+            sample="single_e-_10GeV", k4h_release="key4hep-2026-09-24",
+            run_date="2026-09-25", run_id="2026-09-25", verdicts=verdicts,
+            reliable=True,
+            geometry_path=f"FCCee/ILD_FCCee/compact/{detector}/{detector}.xml",
+        ), base_release="2026-09-23", onset_release="2026-09-24")
+
+    v02 = group("ILD_FCCee_v02", [
+        v("ILD_FCCee_v02", "baseline", "mean_time_s", -0.072, stepped=True),
+        v("ILD_FCCee_v02", "baseline", "median_time_s", -0.012),
+        v("ILD_FCCee_v02", "baseline", "trimmed_mean_time_s", -0.013),
+        v("ILD_FCCee_v02", "no_Vertex", "mean_time_s", -0.010),
+    ])
+    v01 = group("ILD_FCCee_v01", [
+        v("ILD_FCCee_v01", "baseline", "mean_time_s", 0.016),
+        v("ILD_FCCee_v01", "baseline", "median_time_s", -0.008),
+    ])
+    return v02, v01
+
+
+def _summarised_request():
+    from k4bench.blame.geometry import DetectorTouch, FileChange
+    v02, v01 = _sweep_fixture()
+    change = FileChange(
+        path="ILD_FCCee_v02.xml",
+        includes_added=("../../../CLD/compact/CLD_o2_v09/Vertex_o4_v08_smallBP.xml",),
+        includes_removed=("../../../CLD/compact/CLD_o2_v07/Vertex_o4_v07_smallBP.xml",),
+    )
+    touches = tuple(
+        DetectorTouch(
+            detector=d, geometry_path=f"FCCee/ILD_FCCee/compact/{d}/{d}.xml",
+            own_dir=f"FCCee/ILD_FCCee/compact/{d}/",
+            own_files=(f"FCCee/ILD_FCCee/compact/{d}/{d}.xml",),
+            changes=(dataclasses.replace(change, path=f"{d}.xml"),),
+            same_as=(other,),
+        )
+        for d, other in (("ILD_FCCee_v01", "ILD_FCCee_v02"), ("ILD_FCCee_v02", "ILD_FCCee_v01"))
+    )
+    request = _request(detector="ILD_FCCee_v02", sample="single_e-_10GeV", candidates=(
+        RankCandidate(repo="key4hep/k4geo", number=612, title="Refactor the vertex",
+                      files=tuple(t.own_files[0] for t in touches),
+                      patch="@@\n+ include", touches=touches),
+        RankCandidate(repo="AIDASoft/DD4hep", number=20, title="Refactor the field",
+                      files=("core/field.cpp",), patch="@@\n- old code"),
+    ), metrics=(
+        MetricStep(metric="mean_time_s", metric_family="time", direction="DOWN",
+                   pct_change=-0.072, label="baseline"),
+    ))
+    return dataclasses.replace(request, sweep=v02, window_sweeps=(v01, v02))
+
+
+def test_the_evidence_summary_comes_first_and_the_diffs_last():
+    prompt = _build_user_prompt(_summarised_request())
+    summary = prompt.index("EVIDENCE SUMMARY")
+    table = prompt.index("All 2 configurations of ILD_FCCee_v02")
+    candidates = prompt.index("Candidate pull requests")
+    diff = prompt.index("----- BEGIN DIFF -----")
+    assert summary < table < candidates < diff
+    # The sweep replaces the bullets and the non-confirming list.
+    assert "Metrics that stepped across the window" not in prompt
+    assert "did NOT confirm a step" not in prompt
+
+
+def test_the_summary_says_the_typical_event_did_not_follow():
+    prompt = _build_user_prompt(_summarised_request())
+    head = prompt[:prompt.index("Details:")]
+    assert "carried by a few long events" in head
+    assert "median -1.2%, trimmed mean -1.3%" in head
+
+
+def test_a_candidate_making_the_same_change_elsewhere_names_that_detector_s_outcome():
+    prompt = _build_user_prompt(_summarised_request())
+    head = prompt[:prompt.index("Details:")]
+    assert (
+        "- Candidates whose changed files are in this detector's geometry: "
+        "key4hep/k4geo#612 (in its compact directory; the same change to "
+        "ILD_FCCee_v01). Each one's entry below says what it changes and what "
+        "every detector it reaches measured."
+    ) in head
+    # The candidate's entry carries what it changes and what ILD_FCCee_v01 measured.
+    block = prompt[prompt.index("- #612 — "):prompt.index("## AIDASoft/DD4hep")]
+    assert "include switched ../../../CLD/compact/CLD_o2_v07/Vertex_o4_v07_smallBP.xml" in block
+    assert (
+        "single_e-_10GeV (Single e⁻ · 10 GeV): no time step (mean event time +1.6% "
+        "to +1.6% on 1 configurations, baseline +1.6%)"
+    ) in block
+    # Only candidates that reach this geometry are named; DD4hep#20 is not.
+    assert "DD4hep#20" not in head
+    # The other scope that measured the window is listed as its own line.
+    assert "- ILD_FCCee_v01 · single_e-_10GeV (Single e⁻ · 10 GeV)" in head
+
+
+def test_the_candidate_block_carries_its_geometry_map():
+    prompt = _build_user_prompt(_summarised_request())
+    block = prompt[prompt.index("- #612 — "):prompt.index("## AIDASoft/DD4hep")]
+    assert "benchmarked geometry it reaches" in block
+    assert block.index("- ILD_FCCee_v02 — this run") < block.index("- ILD_FCCee_v01:")
+    # This run's own scope is read in the evidence summary, not again here.
+    assert "single_e-_10GeV (Single e⁻ · 10 GeV): this run — read in the evidence summary." in block
+
+
+def test_the_evidence_reading_is_logged_and_never_stored(caplog):
+    reply = (
+        '{"evidence_reading": "One 35-second event carries the mean.", '
+        '"step_assessment": {"verdict": "likely_noise", "reason": "tail"}, '
+        '"rankings": [{"repo": "key4hep/k4geo", "pr": 10, "likelihood": 20, '
+        '"reason": "vertex include"}, {"repo": "AIDASoft/DD4hep", "pr": 20, '
+        '"likelihood": 5, "reason": "field code"}]}'
+    )
+    ranker = _ranker([_completion(reply)])
+    with caplog.at_level("INFO"):
+        result = ranker.rank(_request())
+    assert "evidence reading: One 35-second event carries the mean." in caplog.text
+    assert result.assessment.verdict == "likely_noise"
+    assert not hasattr(result, "reading")
+
+
+def test_the_system_prompt_carries_the_weighing_rules():
+    from k4bench.blame.prompt import WEIGHING_RULE
+    assert WEIGHING_RULE in rank_mod._SYSTEM_PROMPT
+    assert "Same change, different outcome" in WEIGHING_RULE
+    assert "only for a step in the typical event or in memory" in WEIGHING_RULE

@@ -36,9 +36,13 @@ question: *"which of this window's regressions did **this** pull request
 cause?"*, once per `(pull request, change window)`. It is shown everything —
 every confirmed regression across every detector, sample, platform and benchmark
 configuration; the configurations that measured the same window and did *not*
-confirm; the release's package diff; and every other pull request that landed in
-the window, with its diff and the first pass's judgement of it. It returns a
-likelihood per regression and the narrative the comment quotes.
+confirm; what the pull request changes in each benchmarked detector it reaches;
+the release's package diff; and every other pull request that landed in the
+window, with its diff and the first pass's judgement of it. It answers **per
+scope** — one `(detector, platform, sample)` at a time, with what moved there,
+what the diff changes that the scope loads, and what supports and contradicts
+the pull request — gives each scope one likelihood, overrides it for a row only
+where that row's evidence differs, and writes the narrative the comment quotes.
 
 "Everything" is meant literally, and both halves of it are load-bearing:
 
@@ -69,19 +73,35 @@ likelihood per regression and the narrative the comment quotes.
   not the run group. The sharpest control this suite produces lives *inside* a
   group — `baseline` stepped, `no_HCAL` did not, same detector, sample,
   platform and night, which places the cost inside the HCAL — and that is
-  exactly the comparison the review is asked to make. A configuration counts as
-  a control only when it genuinely measured cleanly: same release, reliable
-  host, no job failure, no failed metric of its own, no confirmed step in this
-  window. A run whose reliability is simply *unknown* is not a control either —
-  silence from a run that may not have happened is never evidence of absence.
+  exactly the comparison the review is asked to make. Each scope under review
+  is shown as its **whole removal sweep**: one row per configuration with every
+  judged time and memory metric, the ids of its confirmed regressions marked in
+  place, and the pattern read off it in words — where the step is absent,
+  which configurations moved the opposite way, whether they are a few isolated
+  rows on a baseline that did not move. A configuration counts as a control only
+  when it genuinely measured cleanly: same release, reliable host, no job
+  failure, no failed metric of its own, no confirmed step in this window. A run
+  whose reliability is simply *unknown* is not a control either — silence from a
+  run that may not have happened is never evidence of absence, and the prompt
+  names such a scope as unread.
+- The detectors a pull request **reaches but that did not move** are stated
+  next to the ones that did. For every benchmarked detector whose compact
+  directory or geometry tree the diff touches, the review is told what the diff
+  changes there — constants with their old and new values, includes switched,
+  display-only lines — whether another detector received the identical change,
+  and what each of those detectors measured in the window. "It made the same
+  include switch to ILD_FCCee_v01, whose baseline did not move" is one line,
+  rather than a comparison the model has to assemble from a file list.
 
 Three rules bound it:
 
-- **Only-echo.** A regression id the request did not contain is dropped, so a
-  regression the model invented cannot reach a comment. A row it simply omitted
-  is asked again — in a follow-up that still carries the whole window, since the
-  cross-configuration pattern is what decides that row too, and narrows only
-  which ids to answer for. A row still unanswered after that keeps its
+- **Only-echo.** A scope or regression id the request did not contain is
+  dropped, and so is an override filed under a scope its row does not belong
+  to, so a regression the model invented cannot reach a comment. A row it
+  simply omitted — usually a whole scope it skipped — is asked again, in a
+  follow-up that still carries the whole window, since the cross-configuration
+  pattern is what decides that row too, and narrows only which ids to answer
+  for. A row still unanswered after that keeps its
   per-configuration score, and the comment says so: an unanswered row is not a
   zero, and the headline counts only what the review itself scored.
 
@@ -125,16 +145,35 @@ Three rules bound it:
 - **Untrusted evidence.** PR titles, file paths and diffs are written by the
   authors of the changes under review. Both system prompts say so, and diffs
   arrive fenced between explicit markers: they are artifacts to analyse, never
-  instructions to follow.
-- **The step itself is judged first.** Both passes are shown each metric's own
-  recent history — its release-by-release level, how much it moves across
-  boundaries where *no tracked package changed at all*, whether the new level
-  held afterwards, whether the benchmark host changed at the onset, and where
-  inside the detector the time went — and both are asked for a `step_assessment`
-  before scoring anyone. Without a place to say "this movement is most likely
-  noise", a model asked only to rank candidates can express that solely by
-  scoring everybody low, which reads downstream exactly like "I looked and found
-  nothing".
+  instructions to follow. The constant names, values and include paths k4Bench
+  quotes from a diff are kept to short plain text, and the system prompts name
+  them as the authors' too.
+- **The step itself is judged first.** Both prompts open with an **evidence
+  summary** computed from the measurements, before any diff: for each scope,
+  what stepped and where in the removal sweep it did not; whether a time step is
+  in the *typical* event (the median and trimmed mean moved with the mean), in a
+  *few long events* (they did not), or outside the event loop (the wall time
+  moved and the mean event time did not); the per-event records behind it — the
+  longest events at both ends of the window, what the mean does without them,
+  and how much of the move was Geant4 stepping; the metric's own history — how
+  much it moves across boundaries where *no tracked package changed at all*,
+  whether the new level held; and the machines — who measured both sides, and
+  how far the machines disagree on this series when they measure the same
+  release. Both passes are asked for a `step_assessment` before scoring anyone.
+  Without a place to say "this movement is most likely noise", a model asked
+  only to rank candidates can express that solely by scoring everybody low,
+  which reads downstream exactly like "I looked and found nothing".
+
+    A mean event time needs this most. The benchmarks simulate the same events
+    every night with a fixed random seed, so a series looks quiet until
+    something changes which events are simulated — any change to the geometry or
+    physics a run loads does — and then the mean jumps by whatever long events
+    (a particle taking tens of seconds to finish) the new sample gains or loses.
+    On 2026-09-25 that moved ILD_FCCee_v02's mean event time by −7% while its
+    median held: one 35-second event had left the sample. Both passes are told
+    that such a step is sampling noise rather than a change in what an event
+    costs, whichever change reshuffled the sample, and that a removal sweep can
+    localise a cost only for a step in the typical event or in memory.
 
     A `likely_noise` verdict from *either* pass withholds the comment: the
     ranking is still written and still rendered on the dashboard and in the
@@ -167,7 +206,7 @@ being wrong about far less often than it is worth being silent.
 | Likelihood | The ranker's score is at or above `min_score` (default 80). |
 | Merged | The PR is merged — an open PR cannot have shipped in a release. |
 | Complete discovery | The blame entry's candidate search was complete. Naming one PR out of a knowingly partial set is the overclaim the ranker itself refuses to make. |
-| The step is not read as noise | Neither pass concluded the movement is `likely_noise`. Each is shown the metric's recent release-by-release history — how much the series moves on its own, whether the level held, whether the benchmark host changed underneath it — and either saying "this is probably noise" withholds the comment, however high the candidate scored. |
+| The step is not read as noise | Neither pass concluded the movement is `likely_noise`. Each is shown the metric's recent release-by-release history — how much the series moves on its own, whether the level held, what switching machines does to it — and whether a few long events carry a time step, and either saying "this is probably noise" withholds the comment, however high the candidate scored. |
 | The review committed to a reading | The cross-configuration pass must return a `step_assessment`. A reply without one is a decline, exactly like a reply with no summary, so nothing is posted that night — a comment on a step nobody assessed is the case this field exists to prevent. `insufficient_evidence` still posts, with one line in the comment saying the history was too short to judge. |
 | Confirmed tonight | Selection is driven from the *report*'s confirmed regressions, so a comment can only describe a regression that is confirmed in tonight's report. |
 | Not a storm | More than `max_comments` (default 10) comments in one night suppresses **all** of them: a night that loud is a bug, not a night. |
@@ -228,10 +267,14 @@ number that decided the comment exists at all. Then comes the change window,
 labelled as **Key4hep releases** since the two dates are release dates and not
 the days the benchmark ran.
 
-The reviewer's short account of the pattern follows. Below it sits a **table**
+The reviewer's short account of the pattern follows, cut at a sentence end when
+it runs long. Below it sits a **table**
 of the regressions in that window — metric, detector, sample, benchmark
 configuration, how far it moved, and the attribution likelihood — ordered by
-likelihood, then by the larger movement where likelihoods tie. It shows at most
+likelihood, then with the `baseline` configuration first and the larger movement
+next where likelihoods tie: the review scores a scope as a whole, so its rows
+tie often, and the full detector is the row the claim is measured against. It
+shows at most
 five rows, reserving in order: the **globally strongest row**, whatever its
 onset; the strongest currently confirmed row; one representative per onset the
 table covers; then the strongest rows remaining. The strongest row is reserved

@@ -42,11 +42,13 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 
 from k4bench.blame.evidence import history_from_verdict, outcomes_for_window
+from k4bench.blame.geometry import benchmarked_geometry, detector_touches
 from k4bench.blame.github import (
     GitHubClient,
     PRText,
     RateLimitError,
     RepoResolution,
+    diff_sample,
     low_signal_path,
     resolve_repo_prs,
 )
@@ -67,7 +69,8 @@ from k4bench.blame.models import (
     StepAssessment,
     rank_group_key,
 )
-from k4bench.blame.prompt import HARNESS_PACKAGE
+from k4bench.blame.prompt import HARNESS_PACKAGE, compact_dir, geometry_tree
+from k4bench.blame.sweep import ScopeSweep, window_sweeps
 from k4bench.blame.rank import (
     MetricStep,
     RankCandidate,
@@ -243,6 +246,13 @@ def build_blame_report(
     #: same for every metric of a run group, and computing them walks the whole
     #: report.
     outcome_cache: dict[tuple, tuple] = {}
+    #: Every scope that measured a window (:func:`~k4bench.blame.sweep.window_sweeps`),
+    #: per ``(window, stacks)``: every rank group of one window reads the same
+    #: suite-wide picture, and building it walks the whole report.
+    sweep_cache: dict[tuple, tuple[ScopeSweep, ...]] = {}
+    #: The compact file each benchmarked detector loads, for mapping a
+    #: candidate's files onto the detectors they reach.
+    geometry = benchmarked_geometry(report)
     #: Set once GitHub throttles: from then on repos keep their diffs but get no
     #: candidates, rather than each retry re-hitting the same wall.
     rate_limited = False
@@ -500,6 +510,7 @@ def build_blame_report(
                 texts[(pr.repo, pr.number)] = PRText(
                     patch=resolution.patches.get(pr.number, ""),
                     body=resolution.bodies.get(pr.number, ""),
+                    files=resolution.files.get(pr.number, ()),
                 )
 
         assessment: StepAssessment | None = None
@@ -514,6 +525,8 @@ def build_blame_report(
                 n_unchanged=unchanged_cache[window],
                 geometry_path=_geometry_path(report, v),
                 history=historical_index(group_verdicts, window),
+                sweeps=_sweeps(report, v, sweep_cache),
+                geometry=geometry,
             )
             if result.rankings:
                 repos = [_apply_rankings(r, result.rankings) for r in repos]
@@ -810,16 +823,39 @@ def _outcomes(
     scope = (verdict.detector, verdict.platform, verdict.sample)
     key = (scope, verdict.last_accepted_run_date, verdict.onset_run_date)
     if key not in cache:
-        stacks = {
-            g.k4h_release for g in report.groups
-            if (g.detector, g.platform, g.sample) == scope and g.k4h_release
-        }
+        stacks = _stacks(report, verdict)
         cache[key] = outcomes_for_window(
             report,
             base_release=verdict.last_accepted_run_date,
             onset_release=verdict.onset_run_date or "",
             stacks=stacks,
             regressed_scopes={scope},
+        )
+    return cache[key]
+
+
+def _stacks(report: NightlyReport, verdict: MetricVerdict) -> set[str]:
+    """The releases *verdict*'s run group measured — what makes another group a
+    like-for-like measurement of the same window."""
+    scope = (verdict.detector, verdict.platform, verdict.sample)
+    return {
+        g.k4h_release for g in report.groups
+        if (g.detector, g.platform, g.sample) == scope and g.k4h_release
+    }
+
+
+def _sweeps(
+    report: NightlyReport, verdict: MetricVerdict, cache: dict[tuple, tuple],
+) -> tuple[ScopeSweep, ...]:
+    """Every scope that measured *verdict*'s window, cached per window."""
+    stacks = _stacks(report, verdict)
+    key = (verdict.last_accepted_run_date, verdict.onset_run_date, frozenset(stacks))
+    if key not in cache:
+        cache[key] = window_sweeps(
+            report,
+            base_release=verdict.last_accepted_run_date,
+            onset_release=verdict.onset_run_date or "",
+            stacks=stacks,
         )
     return cache[key]
 
@@ -890,6 +926,8 @@ def _rank_group(
     n_unchanged: int = 0,
     geometry_path: str = "",
     history: HistoricalIndex | None = None,
+    sweeps: tuple[ScopeSweep, ...] = (),
+    geometry: dict[str, str] | None = None,
 ) -> RankResult:
     """The ranker's judgement of one rank group: a score per candidate, and its
     read of the step itself.
@@ -940,7 +978,7 @@ def _rank_group(
             ranker, verdicts, repos, texts,
             outcomes=outcomes, changed_count=changed_count,
             n_unchanged=n_unchanged, geometry_path=geometry_path,
-            history=history,
+            history=history, sweeps=sweeps, geometry=geometry,
         )
     return rank_cache[rank_group]
 
@@ -956,6 +994,8 @@ def _run_ranker(
     n_unchanged: int = 0,
     geometry_path: str = "",
     history: HistoricalIndex | None = None,
+    sweeps: tuple[ScopeSweep, ...] = (),
+    geometry: dict[str, str] | None = None,
 ) -> RankResult:
     """One guarded rank call. Any exception degrades to an empty result and is
     cached as such, so a broken ranker is asked at most once per detector/
@@ -966,7 +1006,7 @@ def _run_ranker(
             verdicts, repos, texts,
             outcomes=outcomes, changed_count=changed_count,
             n_unchanged=n_unchanged, geometry_path=geometry_path,
-            history=history,
+            history=history, sweeps=sweeps, geometry=geometry,
         )
         if not request.candidates:
             return RankResult()
@@ -1017,6 +1057,8 @@ def _rank_request(
     n_unchanged: int = 0,
     geometry_path: str = "",
     history: HistoricalIndex | None = None,
+    sweeps: tuple[ScopeSweep, ...] = (),
+    geometry: dict[str, str] | None = None,
 ) -> RankRequest:
     """Assemble the ranker's input: every metric that stepped across the shared
     window with its own recent history, the configurations that measured the
@@ -1029,7 +1071,18 @@ def _rank_request(
 
     A verdict from a report written before histories were recorded simply
     carries none, and the prompt renders without that block — the ranking path
-    must not depend on a field a historical backfill cannot supply."""
+    must not depend on a field a historical backfill cannot supply.
+
+    Each candidate's diff sample reads this run's own compact directory first,
+    then its geometry tree (:func:`~k4bench.blame.github.diff_sample`): a pull
+    request touching several detector variants would otherwise spend its sample
+    on whichever sort first, and the variant this run loads could be missing
+    from it. Without per-file hunks, the generic sample stands.
+
+    *sweeps* are every scope that measured the window (this one included) and
+    *geometry* the compact file each benchmarked detector loads: together they
+    are the sweep table, the other detectors each candidate reaches
+    (:func:`~k4bench.blame.geometry.detector_touches`), and what those did."""
     v = verdicts[0]
     metrics = tuple(
         MetricStep(
@@ -1044,17 +1097,30 @@ def _rank_request(
         )
         for m in verdicts
     )
+    own_dirs = (compact_dir(geometry_path),)
+    trees = (geometry_tree(geometry_path),)
+
+    def patch(text: PRText) -> str:
+        if not text.files:
+            return text.patch
+        return diff_sample(text.files, own_dirs=own_dirs, trees=trees)
+
     candidates = tuple(
         RankCandidate(
             repo=pr.repo, number=pr.number, title=pr.title,
             files=pr.files,
-            patch=texts.get((pr.repo, pr.number), PRText()).patch,
+            patch=patch(texts.get((pr.repo, pr.number), PRText())),
             body=texts.get((pr.repo, pr.number), PRText()).body,
             additions=pr.additions, deletions=pr.deletions,
+            touches=detector_touches(
+                pr.files, texts.get((pr.repo, pr.number), PRText()).files,
+                geometry or {},
+            ),
         )
         for repo in repos
         for pr in repo.candidates
     )
+    scope = (v.detector, v.platform, v.sample)
     return RankRequest(
         metrics=metrics,
         detector=v.detector, platform=v.platform, sample=v.sample,
@@ -1070,6 +1136,8 @@ def _rank_request(
             (r.repo or "" for r in repos if r.package == HARNESS_PACKAGE), ""
         ),
         history=history,
+        sweep=next((sweep for sweep in sweeps if sweep.scope == scope), None),
+        window_sweeps=sweeps,
     )
 
 

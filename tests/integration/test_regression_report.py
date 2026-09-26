@@ -482,6 +482,32 @@ def test_blame_report_refuses_incomplete_configured_ranking(tmp_path, monkeypatc
     assert not (out_dir / "blame.json").exists()
 
 
+def test_blame_report_logs_the_model_and_token_floor_of_the_ranker_s_client(
+    tmp_path, monkeypatch, capsys,
+):
+    # The model and max_tokens live on the ranker's chat client, not on the
+    # ranker: reading them off the ranker logged "provider default".
+    from types import SimpleNamespace
+
+    from k4bench.blame import builder as builder_mod
+    from k4bench.blame import rank as rank_mod
+    from k4bench.blame.models import BlameReport
+
+    report_path = tmp_path / "report.json"
+    report_path.write_text(json.dumps({"generated_at": "x", "groups": []}))
+    ranker = SimpleNamespace(client=SimpleNamespace(model="some/model", max_tokens=16384))
+    monkeypatch.setattr(rank_mod, "ranker_from_env", lambda: ranker)
+    monkeypatch.setattr(
+        builder_mod, "build_blame_report", lambda *a, **k: BlameReport("g", "2026-01-12"),
+    )
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    blame_cli = _load_script(_BLAME_SCRIPT)
+    # The CLI installs its own root handler (basicConfig force=True) on stderr.
+    blame_cli.main(["--report", str(report_path), "--output-dir", str(tmp_path / "out")])
+    assert "ranking with model some/model (initial max_tokens=16384)" in capsys.readouterr().err
+
+
 def test_blame_report_with_ranker_over_local_tree(tmp_path, monkeypatch):
     # Same tree as above, but this time we run the *builder* in-process with a
     # fake GitHub resolution and a fake ranker — proving the whole chain (real

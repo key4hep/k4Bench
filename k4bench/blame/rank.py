@@ -49,6 +49,8 @@ from k4bench.blame.history import (
     HistoricalRequestError,
     parse_request,
 )
+from k4bench.blame.geometry import DetectorTouch
+from k4bench.blame.github import path_under
 from k4bench.blame.llm import (
     MAX_OUTPUT_TOKENS,
     ChatClient,
@@ -60,14 +62,16 @@ from k4bench.blame.llm import (
 )
 from k4bench.blame.prompt import (
     ASSESSMENT_RULE,
-    ASSESSMENT_VALUES,
     HARNESS_PACKAGE_NOTE,
     HISTORICAL_ANALOGUE_RULE,
     NOISE_RULE,
     SCORE_BAND_RULE,
+    StepAssessment,
     UNTRUSTED_EVIDENCE_RULE,
-    allocate_diff_budget,
+    WEIGHING_RULE,
+    allocate_favoured_diff_budget,
     body_block,
+    compact_dir,
     diff_block,
     direction_phrase,
     format_files,
@@ -77,15 +81,28 @@ from k4bench.blame.prompt import (
     historical_offer_lines,
     history_block,
     history_clause,
+    host_sentences,
     log_prompt_size,
     measurement_phrase,
     outcome_lines,
+    parse_assessment,
     platform_line,
     platform_switch_lines,
     region_lines,
     sample_line,
     window_phrase,
 )
+from k4bench.blame.summary import (
+    EVIDENCE_HEADER,
+    SWEEP_METRICS,
+    other_scope_lines,
+    representative,
+    scope_evidence_lines,
+    scope_name,
+    sweep_table_lines,
+    touch_lines,
+)
+from k4bench.blame.sweep import ScopeSweep
 from k4bench.regression.models import RegionDelta
 
 _log = logging.getLogger(__name__)
@@ -114,6 +131,11 @@ class RankCandidate:
     #: deserve different priors, and the second pass was already shown this.
     additions: int = 0
     deletions: int = 0
+    #: Every benchmarked detector this pull request's files reach, and what it
+    #: changes in each (:func:`~k4bench.blame.geometry.detector_touches`):
+    #: the other detectors a geometry change reaches are this run's controls.
+    #: Empty when the run records no geometry, or the change reaches none.
+    touches: tuple[DetectorTouch, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -205,6 +227,15 @@ class RankRequest:
     #: request rather than through :class:`Ranker` so that a second adapter can
     #: ignore it entirely without the builder knowing.
     history: HistoricalIndex | None = None
+    #: Every configuration of this run's scope across the window
+    #: (:mod:`k4bench.blame.sweep`) — the removal sweep as one picture. ``None``
+    #: renders the per-metric bullets and the non-confirming configurations
+    #: (:attr:`outcomes`) instead.
+    sweep: ScopeSweep | None = None
+    #: Every scope in the night's report that measured this window, this one
+    #: included: what the other detectors a candidate reaches did, and what the
+    #: rest of the suite did in the same window.
+    window_sweeps: tuple[ScopeSweep, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -223,28 +254,6 @@ class Ranking:
     score: float
     description: str
     against: str = ""
-
-
-@dataclass(frozen=True)
-class StepAssessment:
-    """What the model made of the *movement*, before any question of who caused
-    it.
-
-    Separate from the rankings because it answers a different question, and
-    because without somewhere to say "this step is noise" a model can only
-    express that by scoring every candidate low — which is indistinguishable
-    downstream from "I looked and found nothing", and loses the one conclusion a
-    human most needs. ``verdict`` is one of
-    :data:`~k4bench.blame.prompt.ASSESSMENT_VALUES`; anything else is dropped at
-    the parse, so a surface rendering this never has to defend against a word
-    nobody defined."""
-
-    verdict: str
-    reason: str = ""
-
-    @property
-    def likely_noise(self) -> bool:
-        return self.verdict == "likely_noise"
 
 
 @dataclass(frozen=True)
@@ -297,13 +306,14 @@ _SYSTEM_PROMPT = (
     "You attribute a software performance regression to the pull request most "
     "likely responsible — or to none of them, when that is what the evidence "
     "says. You are given the run context the regression was measured in — one "
-    "detector, one physics sample, one build platform — every metric that moved "
-    "across the same release window, each labelled with the benchmark "
-    "configuration it was measured under, e.g. a detector-removal sweep's "
-    "baseline vs. no_<detector> runs; the recent release-by-release "
-    "history of those metrics; the configurations that measured the same window "
-    "and did NOT move; and, for each package that changed, the pull requests in "
-    "its commit range with their code diffs. "
+    "detector, one physics sample, one build platform — and an evidence summary "
+    "computed from the measurements: every configuration of that run's "
+    "detector-removal sweep across the same release window, what moved and in "
+    "what shape, the metrics' own history and the machines that measured them, "
+    "which candidates change this detector's geometry and what the other "
+    "benchmarked detectors they change did, and what every other benchmark did "
+    "in the same window. Then the details, and for each package that changed "
+    "the pull requests in its commit range with their code diffs. "
     "Score each PR independently 0-100 for how likely it caused the regressions "
     "as a whole, give a one-sentence reason grounded in the diff, and state what "
     "argues against it. "
@@ -317,6 +327,7 @@ _SYSTEM_PROMPT = (
     "cause can reach: a step in one detector and not another that ran the same "
     "sample on the same platform argues against a shared-infrastructure cause. "
     + NOISE_RULE
+    + WEIGHING_RULE
     + SCORE_BAND_RULE
     + ASSESSMENT_RULE
     + UNTRUSTED_EVIDENCE_RULE
@@ -326,9 +337,11 @@ _SYSTEM_PROMPT = (
 #: Total *diff* budget (chars) across all candidates. Per-PR patches are
 #: already bounded in :mod:`k4bench.blame.github`; this is the backstop that
 #: keeps a wide window (many PRs) inside a small-context model by waterfilling
-#: the budget — every oversized diff shrinks evenly (see
-#: :func:`_allocate_diff_budget`), and file paths and titles always survive, so
-#: every PR is still scored, at worst from metadata.
+#: the budget — every oversized diff shrinks evenly, after the candidates
+#: touching the run's own compact directory are served first (see
+#: :func:`~k4bench.blame.prompt.allocate_favoured_diff_budget`), and file paths
+#: and titles always survive, so every PR is still scored, at worst from
+#: metadata.
 _MAX_PROMPT_CHARS = 45000
 _MAX_FILES_LISTED = 12
 _MAX_DESCRIPTION_CHARS = 200
@@ -342,11 +355,10 @@ _MAX_AGAINST_CHARS = 200
 
 #: Metrics given a full history table. One window can confirm a dozen correlated
 #: metrics (``wall_time_s``, ``user_cpu_s`` and ``mean_time_s`` step together),
-#: and their histories say the same thing three times; the largest movers carry
-#: the evidence, and every metric still appears in the list above with its
-#: measurement. Six tables run to roughly 4 kB — a rounding error against the
-#: diff budget, and bounded whatever the window's width.
-_MAX_HISTORY_BLOCKS = 6
+#: and their histories say the same thing three times; the evidence summary
+#: already states the representative one's reading, so the largest movers'
+#: tables are detail, bounded whatever the window's width.
+_MAX_HISTORY_BLOCKS = 3
 
 #: Non-confirming configurations listed. The same cap the cross-configuration
 #: pass uses, for the same reason: enough to establish the pattern, bounded
@@ -358,9 +370,10 @@ _MAX_OUTCOMES_LISTED = 40
 #: hidden tokens before any of them.
 _OUTPUT_TOKENS_PER_CANDIDATE = 512
 
-#: Room for the step assessment on top of the per-candidate rows: it is written
-#: once per call, not once per candidate, so it scales with nothing.
-_OUTPUT_TOKENS_ASSESSMENT = 256
+#: Room for the evidence reading and the step assessment on top of the
+#: per-candidate rows: they are written once per call, not once per candidate,
+#: so they scale with nothing.
+_OUTPUT_TOKENS_ASSESSMENT = 768
 
 # Keep trying within a fixed bound when a model omits rows. Each retry
 # deliberately receives the complete request again: the candidates are
@@ -550,6 +563,11 @@ class OpenAICompatRanker:
             # window rather than of any row — re-asking it and taking the newer
             # answer would silently overwrite a considered reading with one made
             # under a prompt asking for something else.
+            if assessment is None and (reading := _parse_reading(content)):
+                _log.info(
+                    "rank: %s/%s %s — evidence reading: %s",
+                    request.detector, request.sample, request.onset_release, reading,
+                )
             assessment = assessment or _parse_assessment(content)
             missing = expected - set(combined)
             if not missing:
@@ -619,31 +637,37 @@ def ranker_from_env() -> Ranker | None:
 # ── Prompt assembly ───────────────────────────────────────────────────────────
 
 _RESPONSE_INSTRUCTION = (
-    'Respond with JSON only, no prose: {"step_assessment": {"verdict": '
+    'Respond with JSON only, no prose: {"evidence_reading": "<two or three '
+    'sentences: what the evidence summary says about the movement — its shape, '
+    'where in the sweep it is and is not, the history and machines — and about '
+    'the other detectors the candidates reach>", "step_assessment": {"verdict": '
     '"real_change" | "likely_noise" | "insufficient_evidence", "reason": "<one '
-    'sentence citing the history>"}, "rankings": [{"repo": "<owner/repo>", '
-    '"pr": <number>, "likelihood": <0-100>, "reason": "<one sentence grounded '
-    'in the diff, at whatever level the diff supports — this detector and '
-    'sample, or the shared code the run goes through>", "against": "<one '
-    'sentence on what argues against this candidate, or the empty string if '
-    'genuinely nothing does>"}]}. '
+    'sentence citing the evidence>"}, "rankings": [{"repo": "<owner/repo>", '
+    '"pr": <number>, "likelihood": <0-100>, "reason": "<one sentence: the '
+    'mechanism in the diff and how it fits what moved, at whatever level the '
+    'diff supports — this detector and sample, or the shared code the run goes '
+    'through>", "against": "<one sentence on what contradicts it — a detector '
+    'it changed the same way that did not move, a pattern it does not '
+    'predict — or the empty string if genuinely nothing does>"}]}. '
     'Score every candidate listed above and invent none.'
 )
 
 
-def _step_lines(request: RankRequest) -> list[str]:
+def _step_lines(
+    request: RankRequest, metrics: tuple[MetricStep, ...] | None = None,
+) -> list[str]:
     """One bullet per metric that stepped, with its measurement and a one-line
-    reading of its own history.
+    reading of its own history — for *metrics*, every step by default.
 
     Both ride on the bullet rather than only in the table below it, because not
     every metric gets a table: the tables are capped at the largest movers, and a
     metric past that cap would otherwise arrive as a bare percentage with no way
-    to judge its size and no hint of what its series normally does. That matters
-    more here than it looks — one assessment is given for the whole group, so a
-    metric whose series wobbles weekly must not be invisible behind six quiet
-    ones."""
+    to judge its size and no hint of what its series normally does."""
+    steps = request.metrics if metrics is None else metrics
+    if not steps:
+        return []
     lines = ["- Metrics that stepped across the window:"]
-    for step in request.metrics:
+    for step in steps:
         subject = f"{step.metric} ({step.label})"
         if step.sub_detector:
             subject += f" [{step.sub_detector}]"
@@ -675,22 +699,29 @@ def _history_lines(request: RankRequest) -> list[str]:
 
     Capped rather than exhaustive: a detector-removal sweep can confirm dozens
     of correlated metrics in one window, and a dozen full tables would crowd out
-    the diffs. Every metric still carries its one-line reading on its own bullet
-    (:func:`_step_lines`), so the cap costs detail, never evidence — and the cap
-    is stated when it bites, because a prompt that silently showed three of
-    twelve histories would read as a window where only three metrics have a
-    past."""
+    the diffs. The evidence summary already carries the representative
+    metric's reading, and the cap is stated when it bites, because a prompt
+    that silently showed three of twelve histories would read as a window where
+    only three metrics have a past."""
     if not any(step.history for step in request.metrics):
         return []
     ranked = sorted(request.metrics, key=_by_movement)
     shown = [step for step in ranked if step.history][:_MAX_HISTORY_BLOCKS]
+    summarised = _summarised_step(request)
+    # The summary has stated the summarised step's machines; the scope's other
+    # metrics were measured on the same nights, so a sentence already made is
+    # not made again under their tables.
+    stated = set(host_sentences(summarised.history)) if summarised else set()
     lines: list[str] = []
     for step in shown:
         subject = f"{step.metric} ({step.label})"
         if step.sub_detector:
             subject += f" [{step.sub_detector}]"
         lines.append("")
-        lines += history_block(step.history, title=f"{subject} — ")
+        lines += history_block(
+            step.history, title=f"{subject} — ",
+            readings=step is not summarised, stated=stated,
+        )
         lines += region_lines(step.regions)
     remaining = sum(1 for step in ranked if step.history) - len(shown)
     if remaining > 0:
@@ -698,26 +729,27 @@ def _history_lines(request: RankRequest) -> list[str]:
         # would be entitled to read it as a statement that they agree.
         lines.append(
             f"  ({remaining} further metric(s) stepped in this window; their "
-            f"full history tables are omitted here, and each is summarised on "
-            f"its own line above.)"
+            f"full history tables are omitted here"
+            + (
+                ", and each is in the sweep table above.)"
+                if request.sweep is not None
+                else ", and each is summarised on its own line above.)"
+            )
         )
     return lines
 
 
-def _run_context_lines(request: RankRequest) -> str:
-    """The labelled run context — detector, sample, platform, release window —
-    plus one bullet per metric that stepped across the window.
+def _context_lines(request: RankRequest) -> list[str]:
+    """The labelled run context — detector, sample, platform, release window.
 
-    Every metric rides in the same block, so the model judges the candidates
-    against the window's full picture rather than a single arbitrary metric
-    sharing it. The context is spelled out line by line because one shared
-    library can regress several detectors in the same window: each detector is
-    ranked in its own call, and a terse header is too easy to under-weight
-    against a large diff — the answer must be about *this* run, not the most
-    prominent detector in the diff."""
+    Spelled out line by line because one shared library can regress several
+    detectors in the same window: each detector is ranked in its own call, and
+    a terse header is too easy to under-weight against a large diff — the
+    answer must be about *this* run, not the most prominent detector in the
+    diff."""
     base_platform = request.base_platform or request.platform
     onset_platform = request.onset_platform or request.platform
-    lines = [
+    return [
         f"- Detector: {request.detector}",
         sample_line(request.sample),
         platform_line(request.platform),
@@ -727,14 +759,104 @@ def _run_context_lines(request: RankRequest) -> str:
             platform_switch_lines(base_platform, onset_platform)
             if base_platform != onset_platform else ()
         ),
-        *_step_lines(request),
-        *_history_lines(request),
     ]
-    return "\n".join(lines)
+
+
+def _unshown_steps(request: RankRequest) -> tuple[MetricStep, ...]:
+    """The steps the sweep table cannot show — a sub-detector metric, or one
+    outside the table's columns — which keep their own bullet."""
+    shown = {m for metrics in SWEEP_METRICS.values() for m in metrics}
+    return tuple(
+        step for step in request.metrics
+        if step.sub_detector or step.metric not in shown
+    )
+
+
+def _reach_lines(request: RankRequest) -> list[str]:
+    """One line naming the candidates whose files are in this detector's
+    geometry, with the other detectors each changes the same way — what it
+    changes and what those detectors measured is in its entry below. Positive
+    only: a change can reach every detector through a shared driver or material
+    without touching one detector's files, so nothing is said about the
+    candidates not named here."""
+    names = []
+    for candidate in request.candidates:
+        touch = next(
+            (t for t in candidate.touches if t.detector == request.detector), None,
+        )
+        if touch is None:
+            continue
+        where = "in its compact directory" if touch.own_files else "elsewhere in its geometry tree"
+        same = (
+            f"; the same change to {', '.join(touch.same_as)}" if touch.same_as else ""
+        )
+        names.append(f"{candidate.repo}#{candidate.number} ({where}{same})")
+    if not names:
+        return []
+    return [
+        "- Candidates whose changed files are in this detector's geometry: "
+        + ", ".join(names) + ". Each one's entry below says what it changes and "
+        "what every detector it reaches measured."
+    ]
+
+
+def _summarised_step(request: RankRequest) -> MetricStep | None:
+    """The step whose history the evidence summary reads, or ``None`` when the
+    summary reads none — without a sweep there is no summary of this scope."""
+    if request.sweep is None:
+        return None
+    ranked = sorted(request.metrics, key=_by_movement)
+    rep = representative(
+        request.sweep,
+        [(step.label, step.metric, step) for step in ranked if step.history],
+    )
+    return rep[2] if rep else None
+
+
+def _summary_lines(request: RankRequest) -> list[str]:
+    """The evidence summary: this run's scope, the candidates reaching its
+    geometry, and every other scope that measured the window."""
+    scope = (request.detector, request.platform, request.sample)
+    lines = [EVIDENCE_HEADER, ""]
+    if request.sweep is not None:
+        lines.append(f"This run — {scope_name(request.sweep)}:")
+        step = _summarised_step(request)
+        lines += scope_evidence_lines(
+            request.sweep,
+            history=step.history if step else None,
+            history_metric=step.metric if step else "",
+            history_label=step.label if step else "baseline",
+        )
+    else:
+        lines += _step_lines(request)
+    lines += _reach_lines(request)
+    other = other_scope_lines(request.window_sweeps, exclude={scope})
+    if other:
+        lines += ["", *other]
+    return lines
+
+
+def _detail_lines(request: RankRequest) -> list[str]:
+    """The details behind the summary: the sweep table, any step it cannot
+    show, the largest movers' histories — or, without a sweep, the
+    non-confirming configurations."""
+    lines: list[str] = []
+    if request.sweep is not None:
+        lines += sweep_table_lines(request.sweep)
+        lines += _step_lines(request, _unshown_steps(request))
+    lines += _history_lines(request)
+    if request.sweep is None:
+        lines += outcome_lines(request.outcomes, _MAX_OUTCOMES_LISTED)
+    return lines
 
 
 def _render_candidate(
-    candidate: RankCandidate, diff_budget: int, geometry: str = ""
+    candidate: RankCandidate,
+    diff_budget: int,
+    geometry: str = "",
+    own_dir: str = "",
+    *,
+    request: RankRequest | None = None,
 ) -> str:
     """One PR's prompt block.
 
@@ -745,13 +867,23 @@ def _render_candidate(
     lines = [f"- #{candidate.number} — {candidate.title} ({size})"]
     if candidate.files:
         lines.append(f"  files: {format_files(candidate.files, _MAX_FILES_LISTED)}")
-        # A fact, where the run recorded enough to state one: whether this change
-        # lands in the geometry tree this detector actually loads. The model
-        # would otherwise infer it from path names, which is where a
-        # plausible-sounding wrong answer comes from.
-        reach = geometry_reach(candidate.files, geometry)
-        if reach:
-            lines.append(reach)
+        if candidate.touches and request is not None:
+            by_detector: dict[str, list[ScopeSweep]] = {}
+            for sweep in request.window_sweeps:
+                by_detector.setdefault(sweep.detector, []).append(sweep)
+            lines += touch_lines(
+                candidate.touches, by_detector, this_detector=request.detector,
+                described=(
+                    {request.sweep.scope: "this run — read in the evidence summary"}
+                    if request.sweep is not None else None
+                ),
+            )
+        else:
+            # A fact, where the run recorded enough to state one: whether this
+            # change lands in the geometry tree this detector actually loads.
+            reach = geometry_reach(candidate.files, geometry, own_dir)
+            if reach:
+                lines.append(reach)
     lines += body_block(candidate.body, _MAX_BODY_CHARS)
     lines += diff_block(candidate.patch, diff_budget)
     return "\n".join(lines)
@@ -764,16 +896,16 @@ def _build_user_prompt(
     offer_omitted: int = 0,
     evidence: HistoricalEvidence | None = None,
 ) -> str:
-    """The user message: the window's regressions and their history, the
-    configurations that stayed flat, then every candidate grouped by package,
-    each with its fair share of the total diff budget.
+    """The user message: the run context, the evidence summary, the details
+    behind it, then every candidate grouped by package, each with its fair
+    share of the total diff budget — diffs last, so no amount of code can push
+    the evidence out of the model's reading.
 
     *offer* appends the lightweight index of older boundaries the model may ask
     for, *offer_omitted* how many of them the index cap cut; *evidence* appends
     the analogues it did ask for. Never both an offer and evidence — an index in
     the follow-up prompt would be a second retrieval round, which the protocol
-    does not have. With neither (the default, and the whole of a run with the
-    feature switched off) this returns byte-for-byte what it always did."""
+    does not have."""
     # The harness is not one of the tracked stack packages, so it never rides
     # in the moved/stood-still count — that number is a statement about the
     # simulation stack, and folding the harness in would quietly corrupt it.
@@ -783,8 +915,12 @@ def _build_user_prompt(
     parts = [
         f"Run context — the {request.detector} run these metrics were "
         f"measured on; judge every candidate against it:",
-        _run_context_lines(request),
-        *outcome_lines(request.outcomes, _MAX_OUTCOMES_LISTED),
+        *_context_lines(request),
+        "",
+        *_summary_lines(request),
+        "",
+        "Details:",
+        *_detail_lines(request),
         "",
         # The denominator bounds the search: whatever caused this is in the
         # packages that moved, or in something k4Bench does not track.
@@ -811,8 +947,14 @@ def _build_user_prompt(
         "",
         "Candidate pull requests, grouped by package — score each on its own:",
     ]
-    budgets = allocate_diff_budget(
-        [len(c.patch) for c in request.candidates], _MAX_PROMPT_CHARS
+    # A candidate touching the compact directory this run loads is served
+    # first: its diff sample leads with that directory's hunks, and an even
+    # share on a wide window cuts them off before the line that matters.
+    own_dir = compact_dir(request.geometry_tree)
+    budgets = allocate_favoured_diff_budget(
+        [len(c.patch) for c in request.candidates],
+        [any(path_under(f, own_dir) for f in c.files) for c in request.candidates],
+        _MAX_PROMPT_CHARS,
     )
     budget_for = dict(zip(request.candidates, budgets))
 
@@ -827,7 +969,8 @@ def _build_user_prompt(
             parts.append(HARNESS_PACKAGE_NOTE)
         for candidate in candidates:
             parts.append(_render_candidate(
-                candidate, budget_for[candidate], geometry_tree(request.geometry_tree)
+                candidate, budget_for[candidate],
+                geometry_tree(request.geometry_tree), own_dir, request=request,
             ))
 
     # After the candidates, so the current window is read first and the older
@@ -839,13 +982,16 @@ def _build_user_prompt(
 
     parts.append("")
     parts.append(
-        f"First decide whether these metrics really changed, using their "
-        f"history above. Then, for each pull request, ask whether it makes "
-        f"sense that this change affected the metrics measured on "
-        f"{request.detector} with {request.sample} — through that detector and "
-        f"sample specifically, or through shared code the run goes through — "
-        f"and let that answer decide the score, the reason and what argues "
-        f"against it."
+        f"Work in this order. First, from the evidence summary: did these "
+        f"metrics really change, and in what shape — in the typical event, in a "
+        f"few long events, outside the event loop, in memory — and is that the "
+        f"series' own noise? Give that as step_assessment. Then, for each pull "
+        f"request, ask what its diff changes that the {request.detector} run "
+        f"with {request.sample} goes through — this detector's geometry, or "
+        f"shared code the run executes — whether that mechanism predicts which "
+        f"configurations moved and which did not, here and in the other "
+        f"detectors it reaches, and what contradicts it; let that decide the "
+        f"score, the reason and what argues against it."
     )
     parts.append(_RESPONSE_INSTRUCTION)
     historical = "" if evidence is None else (
@@ -919,6 +1065,19 @@ def _parse_rankings(
     return out
 
 
+#: The evidence reading is logged, not stored, and a clause longer than this is
+#: an essay the contract did not ask for.
+_MAX_READING_CHARS = 800
+
+
+def _parse_reading(content: str) -> str:
+    """The model's reading of the evidence summary, or ``""``."""
+    data = extract_json(content)
+    if not isinstance(data, dict):
+        return ""
+    return one_line(data.get("evidence_reading"), _MAX_READING_CHARS)
+
+
 def _asks_again(content: str) -> bool:
     """Whether a reply carries a historical request the protocol cannot honour.
 
@@ -932,27 +1091,9 @@ def _asks_again(content: str) -> bool:
 
 
 def _parse_assessment(content: str) -> StepAssessment | None:
-    """The model's read of the step itself, or ``None`` when it gave none.
-
-    ``None`` is a first-class outcome — an older model, a reply that skipped the
-    field, a verdict outside :data:`~k4bench.blame.prompt.ASSESSMENT_VALUES` —
-    and every consumer treats it as "not assessed", never as "real change". The
-    field exists to let a model say a step is noise; inventing a default would
-    put a word in its mouth in exactly the direction the field was added to
-    avoid.
-    """
+    """The model's read of the step itself, or ``None`` when it gave none
+    (see :func:`~k4bench.blame.prompt.parse_assessment`)."""
     data = extract_json(content)
     if not isinstance(data, dict):
         return None
-    raw = data.get("step_assessment")
-    if isinstance(raw, str):
-        verdict, reason = raw, ""  # a model that answered with the bare verdict
-    elif isinstance(raw, dict):
-        verdict = str(raw.get("verdict") or "")
-        reason = one_line(raw.get("reason"), _MAX_DESCRIPTION_CHARS)
-    else:
-        return None
-    verdict = verdict.strip().lower().replace(" ", "_").replace("-", "_")
-    if verdict not in ASSESSMENT_VALUES:
-        return None
-    return StepAssessment(verdict=verdict, reason=reason)
+    return parse_assessment(data.get("step_assessment"), _MAX_DESCRIPTION_CHARS)
