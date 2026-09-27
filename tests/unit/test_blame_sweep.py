@@ -10,6 +10,8 @@ configuration's VmPeak stepped and removing the silicon wrapper shrank it.
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from k4bench.blame.sweep import (
@@ -309,6 +311,33 @@ def test_window_sweeps_keep_an_unread_scope_as_unread():
     assert set(by_detector) == {"ILD_FCCee_v01", "ILD_FCCee_v02"}
     assert "reliability check" in by_detector["ILD_FCCee_v01"].unread
     assert by_detector["ILD_FCCee_v02"].unread == ""
+
+
+def test_a_same_release_window_is_read_by_its_runs():
+    # Base and onset are one release, so ``(D, D]`` alone is empty and would
+    # read the step that formed the window as one from elsewhere. The runs
+    # decide: an onset run inside ``(base_run, onset_run]`` is this window's.
+    day = "2026-09-24"
+
+    def runs(label, base_run, onset_run):
+        return [
+            dataclasses.replace(v, last_accepted_run_id=base_run, onset_run_id=onset_run)
+            if v.severity is Severity.CONFIRMED else v
+            for v in _timing(label, +0.20, +0.18, +0.19, +0.20, stepped=True,
+                             onset=day, base=day)
+        ]
+
+    group = _group([
+        *runs("baseline", "2026-09-24-r1", "2026-09-24-r2"),
+        *runs("no_TPC", "2026-09-24-r2", "2026-09-24-r3"),
+    ])
+    sweep = scope_sweep(group, base_release=day, onset_release=day,
+                        base_run="2026-09-24-r1", onset_run="2026-09-24-r2")
+    assert sweep.reading("time").stepped == ("baseline",)
+    assert sweep.row("no_TPC").cell("mean_time_s").status == ELSEWHERE
+    # Without the runs the same window has no inside at all.
+    blind = scope_sweep(group, base_release=day, onset_release=day)
+    assert blind.reading("time").stepped == ()
 
 
 def test_a_failed_configuration_costs_itself_and_not_the_sweep():

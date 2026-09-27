@@ -1438,6 +1438,34 @@ def test_a_same_release_window_is_attributed_to_the_harness_alone(monkeypatch):
     assert entry.n_unchanged == 2
 
 
+def test_a_same_release_window_hands_the_ranker_its_step_as_stepped(monkeypatch):
+    # The sweep reads the window by its runs: by releases alone ``(D, D]`` is
+    # empty, and the step that formed the window would reach the ranker as one
+    # that happened elsewhere.
+    _stub_resolve(monkeypatch, lambda client, slug, base, head: RepoResolution(
+        candidates=[CandidatePR(repo=slug, number=7, title="Raise n_events",
+                                author="a", url="u", files=("k4bench/cli.py",))],
+    ))
+    v = dataclasses.replace(
+        _verdict(base="2026-07-04", onset="2026-07-04"),
+        last_accepted_run_id="2026-07-04", onset_run_id="2026-07-05",
+    )
+    lookup = _commits({
+        _hkey("2026-07-04", "2026-07-04"): ("1" * 40, _RUN_URL),
+        _hkey("2026-07-04", "2026-07-05"): ("2" * 40, _RUN_URL),
+    })
+    report = _report([v])
+    report.groups[0].reliable = True
+    ranker = _FakeRanker({("key4hep/k4Bench", 7): Ranking(60.0, "x")})
+    build_blame_report(
+        report, packages_for_release=_MOVED, k4bench_commit_for_run=lookup,
+        github=GitHubClient(), ranker=ranker,
+    )
+    (request,) = ranker.requests
+    assert request.sweep.row("baseline").stepped_in("wall_time_s")
+    assert request.sweep.reading("time").stepped == ("baseline",)
+
+
 def test_a_same_release_window_without_a_harness_move_stays_unattributed(monkeypatch):
     _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
     v = dataclasses.replace(

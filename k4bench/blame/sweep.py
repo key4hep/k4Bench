@@ -514,7 +514,36 @@ def _ratio(cell: SweepCell, baseline: SweepCell) -> float | None:
 
 # ── Building sweeps from a report ─────────────────────────────────────────────
 
-def _cell(verdict: MetricVerdict, window: tuple[str | None, str]) -> SweepCell:
+#: The window a sweep is read across: base and onset release, then base and
+#: onset *run* — the runs are set only for a same-release window, where they are
+#: all that tells ``(base, onset]`` from an empty interval (see
+#: :func:`~k4bench.blame.models.rank_group_key`).
+SweepWindow = tuple[str | None, str, str | None, str | None]
+
+
+def _steps_in(verdict: MetricVerdict, window: SweepWindow) -> bool:
+    """Does *verdict* place a confirmed step inside *window*?
+
+    :func:`~k4bench.blame.evidence.steps_in_window`, except for a same-release
+    window: its releases are equal, so the release pair is the empty interval
+    ``(D, D]`` and would read the very step that formed the window as one that
+    happened elsewhere. There the runs decide instead — an onset on that release
+    whose run is in ``(base_run, onset_run]``. An onset with no run id cannot be
+    placed and counts as inside, as an undated onset does."""
+    base, onset, base_run, onset_run = window
+    if base != onset or base_run is None or onset_run is None:
+        return steps_in_window(verdict, (base, onset))
+    if verdict.severity is not Severity.CONFIRMED:
+        return False
+    if verdict.onset_run_date is None:
+        return True
+    if verdict.onset_run_date != onset:
+        return False
+    at = verdict.onset_run_id
+    return at is None or base_run < at <= onset_run
+
+
+def _cell(verdict: MetricVerdict, window: SweepWindow) -> SweepCell:
     """What the engine made of one metric of one configuration, for *window*."""
     direction = str(getattr(verdict.direction, "value", verdict.direction))
     pct = verdict.pct_change
@@ -534,7 +563,7 @@ def _cell(verdict: MetricVerdict, window: tuple[str | None, str]) -> SweepCell:
             cause=cause.value if isinstance(cause, Unjudged) else "not judged",
         )
     if verdict.severity is Severity.CONFIRMED:
-        status = STEPPED if steps_in_window(verdict, window) else ELSEWHERE
+        status = STEPPED if _steps_in(verdict, window) else ELSEWHERE
     elif verdict.reanchor_run_date is not None:
         status = SETTLING
     elif verdict.severity is Severity.WATCH:
@@ -545,7 +574,7 @@ def _cell(verdict: MetricVerdict, window: tuple[str | None, str]) -> SweepCell:
 
 
 def _time_evidence(
-    verdicts: list[MetricVerdict], window: tuple[str | None, str],
+    verdicts: list[MetricVerdict], window: SweepWindow,
 ) -> tuple[EventProfile | None, tuple[RegionDelta, ...]]:
     """The event profile and region movements of a configuration's stepped time
     verdict — the mean event time's first, since that is the statistic the
@@ -554,7 +583,7 @@ def _time_evidence(
     for metric in ("mean_time_s", "wall_time_s", "median_time_s", "trimmed_mean_time_s"):
         for v in verdicts:
             if (
-                v.metric == metric and steps_in_window(v, window)
+                v.metric == metric and _steps_in(v, window)
                 and (v.event_profile is not None or v.region_deltas)
             ):
                 return v.event_profile, tuple(v.region_deltas)
@@ -563,9 +592,12 @@ def _time_evidence(
 
 def scope_sweep(
     group: RunGroupReport, *, base_release: str | None, onset_release: str,
+    base_run: str | None = None, onset_run: str | None = None,
 ) -> ScopeSweep:
-    """*group*'s configurations across ``(base_release, onset_release]``."""
-    window = (base_release, onset_release)
+    """*group*'s configurations across ``(base_release, onset_release]`` — or,
+    for a same-release window, across ``(base_run, onset_run]`` of that
+    release."""
+    window = (base_release, onset_release, base_run, onset_run)
     unread = ""
     if group.reliable is not True:
         unread = (
@@ -601,14 +633,20 @@ def window_sweeps(
     base_release: str | None,
     onset_release: str,
     stacks: set[str],
+    base_run: str | None = None,
+    onset_run: str | None = None,
 ) -> tuple[ScopeSweep, ...]:
     """Every scope in *report* that measured this window: ran one of *stacks*,
     the releases the window's regressed rows were measured on. Ordered by
     identity. A group that ran another release measured a different window and
     is not here; a group whose run could not be read is here, marked as such
-    (:attr:`ScopeSweep.unread`)."""
+    (:attr:`ScopeSweep.unread`). *base_run* / *onset_run* name a same-release
+    window's two runs (:func:`scope_sweep`)."""
     return tuple(
-        scope_sweep(group, base_release=base_release, onset_release=onset_release)
+        scope_sweep(
+            group, base_release=base_release, onset_release=onset_release,
+            base_run=base_run, onset_run=onset_run,
+        )
         for group in sorted(
             report.groups, key=lambda g: (g.detector, g.sample, g.platform)
         )

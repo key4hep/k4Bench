@@ -847,15 +847,27 @@ def _stacks(report: NightlyReport, verdict: MetricVerdict) -> set[str]:
 def _sweeps(
     report: NightlyReport, verdict: MetricVerdict, cache: dict[tuple, tuple],
 ) -> tuple[ScopeSweep, ...]:
-    """Every scope that measured *verdict*'s window, cached per window."""
+    """Every scope that measured *verdict*'s window, cached per window.
+
+    A same-release window is also read and cached by its two runs, as
+    :func:`rank_group_key` groups it: its releases alone are the empty interval
+    ``(D, D]``, which would place the step that formed it in another window."""
     stacks = _stacks(report, verdict)
-    key = (verdict.last_accepted_run_date, verdict.onset_run_date, frozenset(stacks))
+    base_run = onset_run = None
+    if verdict.last_accepted_run_date == verdict.onset_run_date:
+        base_run, onset_run = verdict.last_accepted_run_id, verdict.onset_run_id
+    key = (
+        verdict.last_accepted_run_date, verdict.onset_run_date,
+        base_run, onset_run, frozenset(stacks),
+    )
     if key not in cache:
         cache[key] = window_sweeps(
             report,
             base_release=verdict.last_accepted_run_date,
             onset_release=verdict.onset_run_date or "",
             stacks=stacks,
+            base_run=base_run,
+            onset_run=onset_run,
         )
     return cache[key]
 

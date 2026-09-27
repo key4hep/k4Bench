@@ -58,7 +58,7 @@ def _point(release, value, hosts, severity="OK", direction="NONE"):
 def _report_json() -> dict:
     verdict = {
         "detector": "ALLEGRO_o2_v01", "platform": _PLAT, "sample": "single_e-",
-        "label": "baseline", "metric_family": "memory", "metric": "vmpeak_mb",
+        "label": "baseline", "metric_family": "memory", "metric": "peak_vmem_mb",
         "sub_detector": None, "run_id": "2026-09-25", "run_date": "2026-09-24",
         "value": 5850.0, "baseline_median": 6620.0, "baseline_mad": 5.0,
         "pct_change": -0.1163, "z_score": -154.0, "severity": "CONFIRMED",
@@ -319,6 +319,11 @@ def test_the_host_evidence_says_the_step_reproduced_on_the_same_machine():
         "the onset release, and moved with the step: switching machines does not "
         "explain it."
     ) in prompt
+
+
+def test_the_vmpeak_step_is_read_from_the_memory_sweep():
+    summary = _summary(_incident_prompt())
+    assert "memory: VmPeak stepped on 1 of 1 (1 down; baseline -11.6%)." in summary
 
 
 def test_the_decisive_hunk_of_k4geo_612_reaches_the_ranker():
