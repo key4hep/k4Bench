@@ -14,7 +14,7 @@ from k4bench.blame.geometry import (
     file_change,
     quoted,
 )
-from k4bench.blame.github import FilePatch
+from k4bench.blame.github import _STORED_PATCH_CHARS, FilePatch, _file_patches
 from k4bench.regression.models import NightlyReport, RunGroupReport
 
 _ALLEGRO = "FCCee/ALLEGRO/compact/ALLEGRO_o2_v01/"
@@ -143,6 +143,21 @@ def test_a_line_changed_twice_is_not_the_same_change_as_it_changed_once():
         FilePatch(_ILD2 + "ILD_FCCee_v02.xml", _ild_hunk("ILD_FCCee_v02", "vertex")),
     ]
     touches = detector_touches([f.path for f in files], files, _geometry())
+    assert all(touch.same_as == () for touch in touches)
+
+
+def test_hunks_that_agree_up_to_where_they_were_clipped_are_not_the_same_change():
+    # A stored hunk stops at a cap, and two that agree up to it can part after
+    # it: what was cut off could be the very difference between them.
+    common = _ild_hunk("ILD_FCCee_v01", "vertex") + '\n+  <vis name="pad"/>' * _STORED_PATCH_CHARS
+    tail = '\n+  <constant name="n" value="{}"/>'
+    files = _file_patches([
+        {"filename": _ILD1 + "ILD_FCCee_v01.xml", "patch": common + tail.format(1)},
+        {"filename": _ILD2 + "ILD_FCCee_v02.xml", "patch": common + tail.format(2)},
+    ])
+    assert all(f.clipped for f in files) and files[0].text == files[1].text
+    touches = detector_touches([f.path for f in files], files, _geometry())
+    assert {touch.detector for touch in touches} == {"ILD_FCCee_v01", "ILD_FCCee_v02"}
     assert all(touch.same_as == () for touch in touches)
 
 

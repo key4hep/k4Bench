@@ -239,7 +239,8 @@ class DetectorTouch:
     (:func:`file_change`); ``unread`` counts own files that had none to read
     (a binary file, a pure rename, or a hunk that could not be fetched).
     ``same_as`` names the other benchmarked detectors whose compact directory
-    received exactly the same change."""
+    received exactly the same change, judged only where every own file's hunk
+    was read in full — unclipped — on both sides."""
 
     detector: str
     geometry_path: str
@@ -292,7 +293,9 @@ def detector_touches(
             changes=tuple(file_change(p) for p in own_hunks),
             unread=len(own) - len(own_hunks),
         ))
-        if own_hunks and len(own_hunks) == len(own):
+        # A clipped hunk shows the change only up to the cut, and two that agree
+        # there can still part after it: only hunks read in full say "the same".
+        if own_hunks and len(own_hunks) == len(own) and not any(p.clipped for p in own_hunks):
             prints[detector] = _fingerprint(own_hunks, own_dir)
     return tuple(
         replace(touch, same_as=tuple(
