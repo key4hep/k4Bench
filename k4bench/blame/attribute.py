@@ -993,7 +993,8 @@ def _sweep_detail_lines(request: AttributionRequest) -> list[str]:
         rows = [f for f in facts if _fact_scope(f) == scope]
         sweep = sweeps.get(scope)
         lines.append("")
-        lines.append(f"[{sid}] {scope_name(sweep) if sweep else ' · '.join(scope)}:")
+        name = scope_name(sweep) if sweep else f"{scope[0]} · {scope[2]} · {scope[1]}"
+        lines.append(f"[{sid}] {name}:")
         if sweep is not None:
             lines += sweep_table_lines(_with_ids(sweep, rows))
         unplaced = _unplaced(sweep, rows)

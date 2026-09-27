@@ -33,6 +33,7 @@ from k4bench.blame.attribute import (
 )
 from k4bench.blame.history import HistoricalPR
 from k4bench.blame.llm import ChatClient
+from k4bench.blame.sweep import ScopeSweep
 
 
 # ── Fakes ─────────────────────────────────────────────────────────────────────
@@ -795,3 +796,13 @@ def test_the_prompt_asks_per_scope_and_names_each_scope_s_rows():
     assert "Answer every scope listed above and invent none." in prompt
     # One prior line per scope when its rows agree.
     assert prompt.count("prior on every row: ranked 91/100") == 3
+
+
+def test_a_scope_without_a_sweep_is_named_as_the_summary_names_it():
+    # Another scope measured the window, so the details read per scope; this
+    # one has no sweep of its own and is named from its identity alone.
+    sweeps = (ScopeSweep("IDEA_o1_v03", _PLATFORM, "p8_ee_Zbb_ecm91"),)
+    prompt = build_user_prompt(_request(sweeps=sweeps))
+    name = f"ALLEGRO_o1_v03 · p8_ee_Zbb_ecm91 · {_PLATFORM}"
+    assert f"[S1] {name} — 1 confirmed regression(s)" in prompt
+    assert f"[S1] {name}:" in prompt
