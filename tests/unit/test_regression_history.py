@@ -21,6 +21,7 @@ from k4bench.regression.history import (
 from k4bench.regression.models import (
     Direction,
     HostFact,
+    HostLevel,
     MetricVerdict,
     Severity,
 )
@@ -149,6 +150,101 @@ def test_hosts_are_recorded_per_release():
     points = release_points(frame, [], hosts=host_facts(machine))
     assert points[0].hosts == (HostFact("bench01", 64),)
     assert points[1].hosts == (HostFact("bench02", 128),)
+
+
+def _machines(pairs) -> pd.DataFrame:
+    """``(run_id, hostname)`` pairs as a machine-info trend, 64 cores each."""
+    return pd.DataFrame({
+        "run_id": [p[0] for p in pairs],
+        "hostname": [p[1] for p in pairs],
+        "cpu_logical_cores": [64] * len(pairs),
+    })
+
+
+def test_each_host_keeps_its_own_level_in_first_sighting_order():
+    # One release measured on two machines has one level but two measurements,
+    # and only the per-machine view can say whether the machine that measured
+    # both sides of a step moved with it.
+    frame = _frame([
+        ("2026-09-24a", "2026-09-24", 5850.0, True),
+        ("2026-09-24b", "2026-09-24", 5840.0, True),
+        ("2026-09-24c", "2026-09-24", 5860.0, True),
+    ])
+    verdicts = [
+        _verdict("2026-09-24a", "2026-09-24", 5850.0, Severity.OK),
+        _verdict("2026-09-24b", "2026-09-24", 5840.0, Severity.OK),
+        _verdict("2026-09-24c", "2026-09-24", 5860.0, Severity.OK),
+    ]
+    hosts = host_facts(_machines([
+        ("2026-09-24a", "fcc-ironic-03"),
+        ("2026-09-24b", "fcc-ironic-01"),
+        ("2026-09-24c", "fcc-ironic-03"),
+    ]))
+    point = release_points(frame, verdicts, hosts=hosts)[0]
+    assert point.hosts == (HostFact("fcc-ironic-03", 64), HostFact("fcc-ironic-01", 64))
+    assert point.host_levels == (
+        HostLevel(HostFact("fcc-ironic-03", 64), 5855.0),
+        HostLevel(HostFact("fcc-ironic-01", 64), 5840.0),
+    )
+
+
+def test_a_release_split_across_machines_sits_between_their_own_levels():
+    # The release level is the median of every night, so machines measuring
+    # two levels put it between them — near neither — while each machine's own
+    # level stays where it measured.
+    frame = _frame([
+        ("2026-09-24a", "2026-09-24", 6618.0, True),
+        ("2026-09-24b", "2026-09-24", 5850.0, True),
+    ])
+    verdicts = [
+        _verdict("2026-09-24a", "2026-09-24", 6618.0, Severity.OK),
+        _verdict("2026-09-24b", "2026-09-24", 5850.0, Severity.WATCH, Direction.DOWN),
+    ]
+    hosts = host_facts(_machines([
+        ("2026-09-24a", "fcc-ironic-01"), ("2026-09-24b", "fcc-ironic-03"),
+    ]))
+    point = release_points(frame, verdicts, hosts=hosts)[0]
+    assert point.value == 6234.0
+    assert point.direction is Direction.DOWN
+    assert point.host_levels == (
+        HostLevel(HostFact("fcc-ironic-01", 64), 6618.0),
+        HostLevel(HostFact("fcc-ironic-03", 64), 5850.0),
+    )
+
+
+def test_a_host_whose_nights_were_not_judged_has_no_level_beside_judged_ones():
+    # The release level ignores an unjudged night when a judged one exists, and
+    # so does each machine: the contended host is listed, but a level the
+    # engine refused to read is not one of its measurements.
+    frame = _frame([
+        ("2026-07-07", "2026-07-07", 12.0, True),
+        ("2026-07-08", "2026-07-07", 19.0, False),
+    ])
+    verdicts = [_verdict("2026-07-07", "2026-07-07", 12.0, Severity.OK)]
+    hosts = host_facts(_machines([("2026-07-07", "bench01"), ("2026-07-08", "bench02")]))
+    point = release_points(frame, verdicts, hosts=hosts)[0]
+    assert point.hosts == (HostFact("bench01", 64), HostFact("bench02", 64))
+    assert point.host_levels == (HostLevel(HostFact("bench01", 64), 12.0),)
+
+
+def test_host_levels_fall_back_to_recorded_values_when_nothing_was_judged():
+    frame = _frame([
+        ("2026-07-07", "2026-07-07", 12.0, False),
+        ("2026-07-08", "2026-07-07", float("nan"), False),
+        ("2026-07-09", "2026-07-07", 13.0, False),
+    ])
+    hosts = host_facts(_machines([
+        ("2026-07-07", "bench01"), ("2026-07-08", "bench02"), ("2026-07-09", "bench01"),
+    ]))
+    point = release_points(frame, [], hosts=hosts)[0]
+    # bench02 recorded no finite value, so it has no level rather than a gap.
+    assert point.host_levels == (HostLevel(HostFact("bench01", 64), 12.5),)
+
+
+def test_without_host_facts_there_are_no_host_levels():
+    frame = _frame([("2026-07-07", "2026-07-07", 12.0, True)])
+    verdicts = [_verdict("2026-07-07", "2026-07-07", 12.0, Severity.OK)]
+    assert release_points(frame, verdicts)[0].host_levels == ()
 
 
 def test_hex_shaped_names_are_preserved_for_context_aware_comparison():

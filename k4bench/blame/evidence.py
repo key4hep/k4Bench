@@ -33,6 +33,7 @@ from dataclasses import dataclass
 
 from k4bench.regression.models import (
     HostFact,
+    HostLevel,
     MetricVerdict,
     NightlyReport,
     ReleasePoint,
@@ -71,6 +72,42 @@ def _legacy_container_cores(hosts: tuple[HostFact, ...]) -> int | None:
 
 
 @dataclass(frozen=True)
+class HostReading:
+    """What the machines that measured the onset release say about the step.
+
+    ``kind`` is one of:
+
+    * ``"reproduced"`` — a machine that measured both the release before the
+      onset and the onset release moved with the step, and no machine at the
+      onset stayed at the old level. Switching machines does not explain it.
+    * ``"confined"`` — a machine that measured both releases stayed at the old
+      level, and the new level came only from machines new to the series here.
+      A machine effect is a live explanation.
+    * ``"mixed"`` — the onset release has machines at both levels and neither
+      case above applies. Identical software gave both levels, so the machines
+      settle nothing.
+
+    ``moved`` and ``stayed`` are the machines that measured both releases and
+    moved with the step or stayed at the old level; ``at_new`` and ``at_old``
+    are the onset release's machines at each level. All four keep the onset
+    release's order.
+
+    ``before`` and ``onset`` are every machine's own level in the release before
+    the onset and in the onset release, and ``old_level`` the baseline each was
+    placed against: the measurements the reading was made from.
+    """
+
+    kind: str  # "reproduced" | "confined" | "mixed"
+    moved: tuple[HostFact, ...] = ()
+    stayed: tuple[HostFact, ...] = ()
+    at_new: tuple[HostFact, ...] = ()
+    at_old: tuple[HostFact, ...] = ()
+    before: tuple[HostLevel, ...] = ()
+    onset: tuple[HostLevel, ...] = ()
+    old_level: float | None = None
+
+
+@dataclass(frozen=True)
 class HistoryPoint:
     """One release of a metric's history, as the prompts meet it.
 
@@ -99,6 +136,10 @@ class HistoryPoint:
     #: The replaced build platform that measured this release, when it is not
     #: the series' own (see :attr:`~k4bench.regression.models.ReleasePoint.platform`).
     platform: str | None = None
+    #: Each machine's own level for this release (see
+    #: :attr:`~k4bench.regression.models.ReleasePoint.host_levels`); empty on
+    #: reports written before it was recorded.
+    host_levels: tuple[HostLevel, ...] = ()
 
     @property
     def flagged(self) -> bool:
@@ -179,6 +220,13 @@ class MetricHistory:
         if not self.onset_release:
             return ()
         return tuple(p for p in self.points if p.release > self.onset_release)
+
+    @property
+    def measured_after_onset(self) -> bool:
+        """Whether any release after the onset was judged with a level — what
+        separates "too fresh to say" from a persistence that could not be read
+        for another reason."""
+        return any(p.judged and p.value is not None for p in self.after_onset)
 
     @property
     def onset_point(self) -> HistoryPoint | None:
@@ -273,6 +321,76 @@ class MetricHistory:
         return "persisted" if len(held) * 2 >= len(after) else "returned"
 
     @property
+    def _onset_and_previous(self) -> tuple[HistoryPoint, HistoryPoint] | None:
+        """The onset release and the release immediately before it in the tail,
+        or ``None`` when the onset is not in the tail or opens it."""
+        onset = self.onset_point
+        if onset is None:
+            return None
+        at = self.points.index(onset)
+        if at == 0:
+            return None
+        return onset, self.points[at - 1]
+
+    @property
+    def _machine_step(self) -> float | None:
+        """The step as the onset release's machines measured it, signed, or
+        ``None`` when it has no direction or no size.
+
+        Its direction is the one the engine flagged at the onset release, else
+        the sign of that release's departure from the baseline. Its size is the
+        largest departure any onset machine measured in that direction — the new
+        level as one machine actually measured it — and never less than the
+        release's own departure.
+
+        Not the release's level alone: that is the median of every night of the
+        release, so when machines disagree it sits between them, and when the
+        machine that carries the new level ran only a minority of the nights it
+        sits at the old level, leaving a step of no size to place anything
+        against."""
+        onset = self.onset_point
+        if onset is None or onset.value is None or self.baseline_median is None:
+            return None
+        release_step = onset.value - self.baseline_median
+        if not math.isfinite(release_step):
+            return None
+        sign = {"UP": 1.0, "DOWN": -1.0}.get(onset.direction)
+        if sign is None:
+            if release_step == 0:
+                return None
+            sign = math.copysign(1.0, release_step)
+        size = max(
+            [release_step * sign] + [
+                (level.value - self.baseline_median) * sign
+                for level in onset.host_levels if math.isfinite(level.value)
+            ]
+        )
+        return sign * size if size > 0 else None
+
+    def _level_side(self, value: float) -> str | None:
+        """``"old"`` when *value* lies within half the step of the baseline,
+        ``"new"`` when it departed from the baseline by more than that in the
+        step's direction, else ``None``.
+
+        A machine is placed by its own departure from the old level, never by
+        its distance to the onset release's level, and against the step its
+        machines measured (:attr:`_machine_step`).
+
+        The two bands meet at half the step, so a value exactly there belongs
+        to neither and no value can belong to both. A value that departed the
+        other way belongs to neither as well: it is at neither level."""
+        step = self._machine_step
+        if step is None or not math.isfinite(value):
+            return None
+        tolerance = abs(step) * _PERSISTENCE_TOLERANCE
+        departure = value - self.baseline_median
+        if abs(departure) < tolerance:
+            return "old"
+        if departure * step > 0 and abs(departure) > tolerance:
+            return "new"
+        return None
+
+    @property
     def host_change_at_onset(self) -> tuple[HostFact, HostFact] | None:
         """``(before, at onset)`` when the benchmark moved to a different
         machine exactly at the onset release, else ``None``.
@@ -285,15 +403,20 @@ class MetricHistory:
         release recorded no host, nothing is claimed: "we do not know what ran
         the release before" is not evidence that the machine changed, and the
         model would read it as exactly that.
+
+        The two releases' machines must be **disjoint**. A machine that measured
+        both releases carries the software change and the machine change apart
+        from each other, so an onset measured on the old machine and a new one
+        is not a change of machine; what those machines measured is
+        :attr:`host_reading`'s question.
         """
-        onset = self.onset_point
-        if onset is None or not onset.hosts:
+        pair = self._onset_and_previous
+        if pair is None:
             return None
-        at = self.points.index(onset)
-        if at == 0:
+        onset, previous = pair
+        if not onset.hosts or not previous.hosts:
             return None
-        previous = self.points[at - 1]
-        if not previous.hosts or set(previous.hosts) == set(onset.hosts):
+        if set(previous.hosts) & set(onset.hosts):
             return None
         # Old containerised runs recorded a new container id as the hostname on
         # every night. Two adjacent groups of such ids with the same known core
@@ -308,6 +431,120 @@ class MetricHistory:
         ):
             return None
         return previous.hosts[0], onset.hosts[0]
+
+    @property
+    def host_reading(self) -> HostReading | None:
+        """What each machine's own level says about the step, or ``None``.
+
+        Read from the per-machine levels of the onset release and the release
+        immediately before it. Every machine is placed at the new level, the old
+        level or neither by its own departure from the baseline
+        (:meth:`_level_side`); a machine at neither, or a release without
+        per-machine levels, leaves the reading ``None`` rather than a guess —
+        this evidence is allowed to say it does not know.
+
+        Both releases must have been judged. A release nobody could judge still
+        records per-machine levels, but the engine refused to read them, and an
+        unread level is not a measurement to compare against. Every machine must
+        also carry a name: two unnamed machines compare equal without being
+        known to be one machine, so they cannot testify that a machine measured
+        both sides.
+
+        Every machine at the onset counts, not only those that measured both
+        releases: a newly added machine still at the old level on identical
+        software is already evidence against "the step reproduced".
+        """
+        pair = self._onset_and_previous
+        if pair is None:
+            return None
+        onset, previous = pair
+        if not (onset.judged and previous.judged):
+            return None
+        if not onset.host_levels or not previous.host_levels:
+            return None
+        if any(
+            not level.host.name for level in (*onset.host_levels, *previous.host_levels)
+        ):
+            return None
+        now = {level.host: self._level_side(level.value) for level in onset.host_levels}
+        before = {
+            level.host: self._level_side(level.value) for level in previous.host_levels
+        }
+        if None in now.values() or None in before.values():
+            return None
+        common = [host for host in now if host in before]
+        moved = tuple(h for h in common if before[h] == "old" and now[h] == "new")
+        stayed = tuple(h for h in common if before[h] == "old" and now[h] == "old")
+        at_new = tuple(h for h in now if now[h] == "new")
+        at_old = tuple(h for h in now if now[h] == "old")
+        if moved and not at_old:
+            kind = "reproduced"
+        elif stayed and at_new and not set(at_new) & set(common):
+            kind = "confined"
+        elif at_new and at_old:
+            kind = "mixed"
+        else:
+            return None
+        return HostReading(
+            kind=kind, moved=moved, stayed=stayed, at_new=at_new, at_old=at_old,
+            before=previous.host_levels, onset=onset.host_levels,
+            old_level=self.baseline_median,
+        )
+
+    @property
+    def host_spread(self) -> tuple[float, int] | None:
+        """``(largest spread, releases)``: how far apart this series' machines
+        measured it on identical software, as a fraction of the baseline, and
+        how many releases that rests on — or ``None`` when no judged release in
+        the tail was measured on two or more named machines.
+
+        Machines benchmarking one release ran the same software, so what they
+        disagree by is what switching machines alone does to this metric: the
+        measured answer to "could the host explain this step", per series,
+        where a fleet-wide rule would be right for one metric and wrong for
+        another."""
+        if not self.baseline_median:
+            return None
+        spreads = []
+        for point in self.points:
+            levels = [
+                level.value for level in point.host_levels
+                if level.host.name and math.isfinite(level.value)
+            ]
+            if not point.judged or len(levels) < 2:
+                continue
+            spreads.append((max(levels) - min(levels)) / abs(self.baseline_median))
+        if not spreads:
+            return None
+        return max(spreads), len(spreads)
+
+    @property
+    def new_host_seen_at_old_level(self) -> tuple[HostFact, str] | None:
+        """``(machine, release)`` when the host change at onset
+        (:attr:`host_change_at_onset`) has counter-evidence in the tail: a
+        machine that measured the new level at onset had already measured this
+        series at the old level, in *release* — the newest such sighting.
+
+        Only judged releases and named machines count, for the reasons
+        :attr:`host_reading` gives.
+
+        ``None`` when there is no host change to answer, or no such sighting."""
+        if self.host_change_at_onset is None:
+            return None
+        onset, _ = self._onset_and_previous
+        if not onset.judged:
+            return None
+        at_new = [
+            level.host for level in onset.host_levels
+            if level.host.name and self._level_side(level.value) == "new"
+        ]
+        for point in reversed(self.points[: self.points.index(onset)]):
+            if not point.judged:
+                continue
+            for level in point.host_levels:
+                if level.host in at_new and self._level_side(level.value) == "old":
+                    return level.host, point.release
+        return None
 
 
 def history_from_verdict(
@@ -348,6 +585,7 @@ def _point(point: ReleasePoint, packages_changed: int | None) -> HistoryPoint:
         hosts=point.hosts,
         packages_changed=packages_changed,
         platform=point.platform,
+        host_levels=point.host_levels,
     )
 
 

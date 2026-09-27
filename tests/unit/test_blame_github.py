@@ -7,12 +7,17 @@ from __future__ import annotations
 
 import pytest
 
+import random
+
 from k4bench.blame import github as gh_mod
 from k4bench.blame.github import (
+    FilePatch,
     GitHubClient,
     RateLimitError,
+    diff_sample,
     low_signal_path,
     parse_pr_number,
+    path_under,
     resolve_repo_prs,
 )
 
@@ -525,3 +530,195 @@ def test_the_diff_budget_is_spent_on_code_before_prose():
     assert res.candidates[0].files == (
         "CHANGELOG.md", "docs/guide.md", "src/stepping.cpp",
     )
+
+
+# ── Relevance-first samples ───────────────────────────────────────────────────
+
+def _reference_sample(files: list[dict]) -> str:
+    """The generic sample exactly as it was assembled before per-file hunks were
+    kept: the equivalence below holds :func:`diff_sample` to it."""
+    chunks: list[str] = []
+    used = 0
+    truncated = False
+    key = lambda e: (  # noqa: E731
+        low_signal_path(str(e.get("filename") or "")), str(e.get("filename") or "")
+    )
+    for entry in sorted(files, key=key):
+        filename = entry.get("filename")
+        if not filename:
+            continue
+        patch = entry.get("patch")
+        if not patch:
+            continue
+        if used >= 12000:
+            truncated = True
+            continue
+        clip = patch[:4000]
+        truncated = truncated or len(clip) < len(patch)
+        clip = clip[: 12000 - used]
+        truncated = truncated or len(clip) < len(patch)
+        chunks.append(f"--- {filename} ---\n{clip}")
+        used += len(clip)
+    text = "\n".join(chunks)
+    if truncated and text:
+        text += "\n… (truncated)"
+    return text
+
+
+def _random_files(rng: random.Random) -> list[dict]:
+    dirs = ["src", "docs", "FCCee/ALLEGRO/compact/ALLEGRO_o2_v01", "detector", ""]
+    names = ["a.cpp", "README.md", "CHANGELOG", "b.xml", "z.h", "LICENSE.txt"]
+    files = []
+    for _ in range(rng.randint(0, 14)):
+        folder, name = rng.choice(dirs), rng.choice(names)
+        entry = {"filename": f"{folder}/{name}" if folder else name}
+        size = rng.choice([0, 1, 50, 3999, 4000, 4001, 7000, 9999, 10000, 10001, 15000])
+        if rng.random() < 0.1:
+            entry.pop("filename")
+        if size:
+            entry["patch"] = "".join(rng.choice("+- x\n") for _ in range(size))
+        files.append(entry)
+    return files
+
+
+def test_the_generic_sample_is_byte_identical_to_the_previous_assembly():
+    fixtures = [
+        [{"filename": "big.cpp", "patch": "x" * 5000}],
+        [{"filename": f"f{i}.cpp", "patch": "y" * 1500} for i in range(10)],
+        [
+            {"filename": "CHANGELOG.md", "patch": "@@\n" + "+doc\n" * 4000},
+            {"filename": "docs/guide.md", "patch": "@@\n" + "+doc\n" * 4000},
+            {"filename": "src/stepping.cpp", "patch": "@@\n+ the real change"},
+        ],
+        [{"filename": "img/logo.png"}, {"filename": "new/name.py"}],
+        [],
+    ]
+    rng = random.Random(20260925)
+    fixtures += [_random_files(rng) for _ in range(500)]
+    for files in fixtures:
+        assert diff_sample(gh_mod._file_patches(files)) == _reference_sample(files)
+
+
+def test_the_stored_hunk_is_exactly_what_the_widest_policy_can_show():
+    assert gh_mod._STORED_PATCH_CHARS == max(
+        gh_mod._MAX_PATCH_CHARS_PER_FILE, gh_mod._MAX_OWN_DIR_PATCH_CHARS_PER_FILE
+    )
+    stored = gh_mod._file_patches([
+        {"filename": "big.xml", "patch": "x" * 15000},
+        {"filename": "small.xml", "patch": "y" * 10},
+        {"filename": "logo.png"},
+    ])
+    assert stored == (
+        FilePatch("big.xml", "x" * gh_mod._STORED_PATCH_CHARS, clipped=True),
+        FilePatch("small.xml", "y" * 10, clipped=False),
+    )
+
+
+def test_the_resolution_keeps_each_files_hunk_beside_the_generic_sample():
+    routes = _one_pr_routes([
+        {"filename": "b.cpp", "patch": "@@\n+b"},
+        {"filename": "a.cpp", "patch": "@@\n+a"},
+        {"filename": "logo.png"},
+    ])
+    res = resolve_repo_prs(_client(routes), "key4hep/k4geo", "a" * 40, "c" * 40)
+    assert res.files[10] == (FilePatch("b.cpp", "@@\n+b"), FilePatch("a.cpp", "@@\n+a"))
+    assert res.patches[10] == diff_sample(res.files[10])
+
+
+_OWN = "FCCee/ALLEGRO/compact/ALLEGRO_o2_v01/"
+_TREE = "FCCee/ALLEGRO/"
+
+
+def test_the_runs_own_directory_is_sampled_first():
+    files = [
+        FilePatch("FCCee/ALLEGRO/compact/ALLEGRO_o1_v03/DectDimensions.xml", "!" * 4000),
+        FilePatch("FCCee/ALLEGRO/compact/ALLEGRO_o1_v04/DectDimensions.xml", "@" * 4000),
+        FilePatch("CMakeLists.txt", "%" * 4000),
+        FilePatch(_OWN + "DectDimensions.xml", '+ <constant name="SiWr_nLayers" value="1"/>'),
+    ]
+    generic = diff_sample(files)
+    assert "SiWr_nLayers" not in generic  # the alphabetical order spent it all
+    sample = diff_sample(files, own_dirs=(_OWN,), trees=(_TREE,))
+    assert sample.startswith(f"--- {_OWN}DectDimensions.xml ---\n")
+    assert 'value="1"' in sample
+    # The detector's tree comes next, and the rest only after it.
+    order = [line for line in sample.splitlines() if line.startswith("--- ")]
+    assert order == [
+        f"--- {_OWN}DectDimensions.xml ---",
+        "--- FCCee/ALLEGRO/compact/ALLEGRO_o1_v03/DectDimensions.xml ---",
+        "--- FCCee/ALLEGRO/compact/ALLEGRO_o1_v04/DectDimensions.xml ---",
+        "--- CMakeLists.txt ---",
+    ]
+    assert sample.endswith("… (truncated)")  # CMakeLists.txt met the per-PR cap
+
+
+def test_an_own_directory_hunk_may_show_more_than_the_generic_cap():
+    files = [FilePatch(_OWN + "DectDimensions.xml", "#" * 9000)]
+    assert diff_sample(files).count("#") == gh_mod._MAX_PATCH_CHARS_PER_FILE
+    sample = diff_sample(files, own_dirs=(_OWN,))
+    assert sample.count("#") == 9000
+    assert "… (truncated)" not in sample
+
+
+def test_the_own_directory_cap_still_bounds_one_file():
+    files = [FilePatch(_OWN + "huge.xml", "#" * 10000, clipped=True)]
+    sample = diff_sample(files, own_dirs=(_OWN,))
+    assert sample.count("#") == gh_mod._MAX_OWN_DIR_PATCH_CHARS_PER_FILE
+    assert sample.endswith("… (truncated)")
+
+
+def test_the_per_pr_cap_is_spent_after_ordering():
+    files = [
+        FilePatch("A/first.cpp", "!" * 4000),
+        FilePatch(_OWN + "dims.xml", "#" * 10000),
+        FilePatch("FCCee/ALLEGRO/shared.xml", "~" * 4000),
+    ]
+    sample = diff_sample(files, own_dirs=(_OWN,), trees=(_TREE,))
+    assert sample.count("#") == 10000
+    assert sample.count("~") == gh_mod._MAX_PATCH_CHARS_PER_PR - 10000
+    assert "A/first.cpp" not in sample
+    assert sample.endswith("… (truncated)")
+
+
+def test_directory_membership_is_by_component_never_by_prefix():
+    # Both directories are in k4geo#612's own file list.
+    idea = "FCCee/IDEA/compact/IDEA_o2_v01"
+    assert path_under(f"{idea}/IDEA_o2_v01.xml", idea)
+    assert path_under(f"{idea}/IDEA_o2_v01.xml", idea + "/")
+    assert not path_under(f"{idea}_CI/IDEA_o2_v01_CI.xml", idea)
+    assert not path_under(f"{idea}_CI/IDEA_o2_v01_CI.xml", idea + "/")
+    assert not path_under(f"{idea}/IDEA_o2_v01.xml", "")
+    assert not path_under(idea, idea)  # a directory is not inside itself
+
+
+def test_several_own_directories_share_the_sample_instead_of_the_first_taking_it():
+    # A review spanning ALLEGRO and IDEA rows: both are a geometry that moved,
+    # and the one sorting second must not be left the scraps of the first.
+    allegro = "FCCee/ALLEGRO/compact/ALLEGRO_o2_v01/"
+    idea = "FCCee/IDEA/compact/IDEA_o2_v01/"
+    decisive = '+    <constant name="DCH_nLayers" value="100"/>'
+    files = [
+        FilePatch(allegro + "DectDimensions.xml", "#" * 10000),
+        FilePatch(idea + "IDEA_o2_v01.xml", "!" * 5000 + "\n" + decisive + "\n" + "!" * 4000),
+    ]
+    alone = diff_sample(files, own_dirs=(allegro,))
+    assert decisive not in alone  # one favoured directory spends the cap first
+    shared = diff_sample(files, own_dirs=(allegro, idea))
+    assert decisive in shared
+    assert shared.count("#") == gh_mod._MAX_PATCH_CHARS_PER_PR // 2
+    assert shared.endswith("… (truncated)")
+
+
+def test_a_small_own_directory_leaves_the_rest_of_the_share_to_the_others():
+    allegro = "FCCee/ALLEGRO/compact/ALLEGRO_o2_v01/"
+    idea = "FCCee/IDEA/compact/IDEA_o2_v01/"
+    files = [
+        FilePatch(allegro + "DectDimensions.xml", "#" * 11000, clipped=True),
+        FilePatch(idea + "small.xml", "!" * 1500),
+        FilePatch("FCCee/IDEA/shared.xml", "~" * 4000),
+    ]
+    sample = diff_sample(files, own_dirs=(allegro, idea), trees=("FCCee/IDEA/",))
+    assert sample.count("!") == 1500
+    assert sample.count("#") == gh_mod._MAX_OWN_DIR_PATCH_CHARS_PER_FILE
+    # What the own directories leave of the per-PR cap goes to the tree.
+    assert sample.count("~") == gh_mod._MAX_PATCH_CHARS_PER_PR - 1500 - 10000

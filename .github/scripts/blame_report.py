@@ -274,10 +274,12 @@ def main(argv: list[str] | None = None) -> int:
             "blame_report: no K4BENCH_LLM_* config — candidates written unranked"
         )
     else:
+        # The model and the token floor live on the ranker's chat client.
+        client = getattr(ranker, "client", ranker)
         _log.info(
             "blame_report: ranking with model %s (initial max_tokens=%s)",
-            getattr(ranker, "model", type(ranker).__name__),
-            getattr(ranker, "max_tokens", "provider default"),
+            getattr(client, "model", type(ranker).__name__),
+            getattr(client, "max_tokens", "provider default"),
         )
 
     blame = build_blame_report(

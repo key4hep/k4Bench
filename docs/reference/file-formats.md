@@ -262,16 +262,20 @@ of up to twelve *releases* (never nights — nights sharing a release are repeat
 measurements of one software state), oldest first, ending at the release that
 verdict judged. Each point records the release date, its level, how many nights
 it aggregates and how many of those the detector could actually judge, the
-severity and direction it was flagged with, and the machine(s) that ran it:
+severity and direction it was flagged with, the machine(s) that ran it, and each
+machine's own level:
 
 ```json
 "history": [
   {"run_date": "2026-07-03", "value": 100.2, "n_runs": 2, "n_judged": 2,
    "severity": "OK", "direction": "NONE",
    "hosts": [{"name": "bench01", "cpu_cores": 64}]},
-  {"run_date": "2026-07-04", "value": 120.4, "n_runs": 1, "n_judged": 1,
+  {"run_date": "2026-07-04", "value": 120.4, "n_runs": 2, "n_judged": 2,
    "severity": "CONFIRMED", "direction": "UP",
-   "hosts": [{"name": "bench01", "cpu_cores": 64}]}
+   "hosts": [{"name": "bench02", "cpu_cores": 64}, {"name": "bench01", "cpu_cores": 64}],
+   "host_levels": [
+     {"host": {"name": "bench02", "cpu_cores": 64}, "value": 120.3},
+     {"host": {"name": "bench01", "cpu_cores": 64}, "value": 120.5}]}
 ],
 "region_deltas": [
   {"region": "HCAL_barrel", "base": 0.31, "onset": 4.52, "delta": 4.21},
@@ -283,6 +287,13 @@ severity and direction it was flagged with, and the machine(s) that ran it:
 host, or a series still warming up — so its level must not be read as a flat
 night. A release that recorded nothing at all is simply absent: a gap is a gap,
 never a zero.
+
+`host_levels` is the median each machine measured for the release, by the same
+rule as `value`: when any night was judged, only judged nights count, so a
+machine whose nights were all unjudged has no entry. It is what lets attribution
+tell a step that a machine measuring both sides reproduced (above, bench01) from
+one only a newly added machine measured. Points written before the field existed
+carry none, and readers treat that as "unknown".
 
 The field exists for attribution. A step is only evidence that something changed
 if the series it came out of does not move that much by itself, and one number
@@ -302,6 +313,43 @@ window recorded no region file — with only one side measured there is no
 comparison, and treating the missing side as zero would report the whole detector
 as newly appearing. A region present on one end only keeps `null` on the other:
 it genuinely appeared or disappeared.
+
+Region times are per-event *medians*: they describe the typical event, and they
+cannot see a step carried by a handful of long events. `event_profile`, read from
+the same files, says which of the two a timing step is:
+
+```json
+"event_profile": {
+  "base":  {"nights": 1, "n_events": 999, "mean": 0.5277, "median": 0.4302,
+            "stepping_mean": 0.5248, "mean_without_longest": 0.4927,
+            "longest": [{"event": 37, "seconds": 35.53, "region": "SET",
+                         "region_seconds": 30.08}]},
+  "onset": {"nights": 2, "n_events": 999, "mean": 0.4939, "median": 0.4279,
+            "stepping_mean": 0.4909, "mean_without_longest": 0.4855,
+            "longest": [{"event": 949, "seconds": 8.81, "region": "unattributed",
+                         "region_seconds": 5.31}]},
+  "matched": [{"event": 37, "base": 35.53, "onset": 0.38},
+              {"event": 949, "base": 3.14, "onset": 8.81},
+              {"event": 240, "base": 3.71, "onset": 3.80}]
+}
+```
+
+Each end summarises its per-event wall times, warm-up event excluded: the mean
+and median, `stepping_mean` (time inside Geant4 stepping, summed over every
+region including `unattributed`, so `mean - stepping_mean` is the time outside
+it), the mean with the single longest event left out, and the longest events with
+the region that took most of each. An end measured on several nights is
+summarised night by night and the nights combined by their median. `matched`
+follows every one of those longest events to the other end: with a fixed random
+seed the same event number is the same event until the geometry or physics it
+meets changes, so an event whose time moved (37 above) is one whose simulation
+changed, and one that held (240) shows the rest of the sample did not. The example
+is ILD_FCCee_v02's baseline on 2026-09-25: its mean fell 6.4% while its median
+held, because one 35.5-second event left the sample.
+
+Both fields ride only on confirmed **timing** verdicts, `event_profile` only when
+both ends recorded per-event times, and reports written before it existed carry
+none — every reader treats a missing profile as unknown.
 
 ### Why a metric was not judged (`report.json`)
 
@@ -422,7 +470,9 @@ The ranking stage is a **language model** that reads the metric that moved, its
 recent release-by-release history, where inside the detector the time went, the
 configurations that measured the same window without moving, how much of the
 tracked stack stood still, and each candidate PR's own description and code diff
-(descriptions and diffs both arrive fenced as untrusted data). It is
+(descriptions and diffs both arrive fenced as untrusted data). A diff is sampled
+with the run's own compact directory first, then its detector's geometry tree,
+and a candidate touching that directory is served its diff budget first. It is
 configured entirely by environment —
 `K4BENCH_LLM_URL`, `K4BENCH_LLM_MODEL`, `K4BENCH_LLM_API_KEY` and optional
 `K4BENCH_LLM_MAX_TOKENS` (any OpenAI-compatible `/chat/completions` endpoint;

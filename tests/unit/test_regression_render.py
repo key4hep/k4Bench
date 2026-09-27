@@ -15,7 +15,12 @@ import math
 
 from k4bench.regression.models import (
     Direction,
+    EventProfile,
+    EventSample,
     HostFact,
+    HostLevel,
+    LongEvent,
+    MatchedEvent,
     MetricVerdict,
     NightlyReport,
     RegionDelta,
@@ -314,9 +319,10 @@ _WINDOW_FIELDS = {
 #: was first confirmed for its release, letting reruns render as reconfirmed).
 _REPEAT_FIELDS = {"first_confirmed_run_id"}
 #: The release-level history tail carried on confirmed verdicts, so a reader can
-#: weigh a step against the series it stepped out of, and the region breakdown
-#: saying where inside the detector a timing step landed.
-_HISTORY_FIELDS = {"history", "region_deltas"}
+#: weigh a step against the series it stepped out of, the region breakdown
+#: saying where inside the detector a timing step landed, and the per-event
+#: times at both ends of its window.
+_HISTORY_FIELDS = {"history", "region_deltas", "event_profile"}
 #: Machine-readable reason an UNKNOWN verdict was not judged.
 _UNJUDGED_FIELDS = {"unjudged"}
 #: The release a still-provisional baseline is re-anchoring onto, so a reader
@@ -475,6 +481,53 @@ def test_the_benchmark_host_survives_the_round_trip():
     assert restored.history[1].hosts == (HostFact("bench02", 128),)
 
 
+def test_per_host_levels_survive_the_round_trip():
+    # "fcc-ironic-01 reproduced the step" is only sayable if each machine's own
+    # level reaches the blame reader, and it reads report.json back.
+    verdict = _confirmed_with_evidence()
+    onset = dataclasses.replace(
+        verdict.history[1],
+        hosts=(HostFact("bench02", 128), HostFact("bench01", 64)),
+        host_levels=(
+            HostLevel(HostFact("bench02", 128), 14.5),
+            HostLevel(HostFact("bench01", 64), 14.7),
+        ),
+    )
+    verdict = dataclasses.replace(verdict, history=(verdict.history[0], onset))
+    data = json.loads(json.dumps(to_json(NightlyReport(
+        generated_at="x",
+        groups=[RunGroupReport(
+            detector="D", platform="P", sample="S", k4h_release="k",
+            run_date="2026-07-22", run_id="2026-07-22", verdicts=[verdict],
+        )],
+    ))))
+    restored = from_json(data).groups[0].verdicts[0]
+    assert restored.history[1].host_levels == onset.host_levels
+    assert restored.history[0].host_levels == ()
+
+
+def test_a_report_without_per_host_levels_reads_as_none():
+    data = to_json(NightlyReport(
+        generated_at="x",
+        groups=[RunGroupReport(
+            detector="D", platform="P", sample="S", k4h_release="k",
+            run_date="2026-07-22", run_id="2026-07-22",
+            verdicts=[_confirmed_with_evidence()],
+        )],
+    ))
+    history = data["groups"][0]["verdicts"][0]["history"]
+    for point in history:
+        del point["host_levels"]
+    history[1]["host_levels"] = [
+        {"host": {"name": "bench02", "cpu_cores": 128}, "value": None},
+        {"host": "not a host", "value": 14.6},
+        {"value": 14.6},
+    ]
+    restored = from_json(data).groups[0].verdicts[0]
+    assert restored.history[0].host_levels == ()
+    assert restored.history[1].host_levels == ()
+
+
 def test_a_null_benchmark_hostname_stays_unknown_after_the_round_trip():
     data = to_json(NightlyReport(
         generated_at="x",
@@ -508,6 +561,46 @@ def test_a_hex_benchmark_hostname_survives_the_round_trip():
 def test_the_region_breakdown_survives_the_round_trip():
     restored = _round_trip(_confirmed_with_evidence())
     assert restored.region_deltas == (RegionDelta("HCAL_barrel", 0.31, 4.52, 4.21),)
+
+
+def _with_profile(verdict: MetricVerdict) -> MetricVerdict:
+    return dataclasses.replace(verdict, event_profile=EventProfile(
+        base=EventSample(
+            nights=1, n_events=999, mean=0.5277, median=0.4302,
+            stepping_mean=0.5248, mean_without_longest=0.4926,
+            longest=(LongEvent(37, 35.53, "SET", 30.08), LongEvent(240, 3.7)),
+        ),
+        onset=EventSample(nights=2, n_events=999, mean=0.4939, median=0.4280),
+        matched=(MatchedEvent(37, 35.53, 0.38), MatchedEvent(949, 3.14, 8.81)),
+    ))
+
+
+def test_the_event_profile_survives_the_round_trip():
+    verdict = _with_profile(_confirmed_with_evidence())
+    assert _round_trip(verdict).event_profile == verdict.event_profile
+
+
+def test_an_unreadable_event_profile_is_no_profile():
+    data = to_json(NightlyReport(
+        generated_at="x",
+        groups=[RunGroupReport(
+            detector="D", platform="P", sample="S", k4h_release="k",
+            run_date="2026-07-22", run_id="2026-07-22",
+            verdicts=[_with_profile(_confirmed_with_evidence())],
+        )],
+    ))
+    verdict = data["groups"][0]["verdicts"][0]
+    verdict["event_profile"]["base"]["longest"][0]["seconds"] = "long"
+    verdict["event_profile"]["base"]["stepping_mean"] = None
+    restored = from_json(data).groups[0].verdicts[0].event_profile
+    # A bad entry costs that entry, a missing figure is unknown.
+    assert restored.base.longest == (LongEvent(240, 3.7),)
+    assert restored.base.stepping_mean is None
+    # Without an end there is nothing to compare, so there is no profile at all.
+    verdict["event_profile"]["onset"] = {"mean": "fast"}
+    assert from_json(data).groups[0].verdicts[0].event_profile is None
+    verdict["event_profile"] = "not an object"
+    assert from_json(data).groups[0].verdicts[0].event_profile is None
 
 
 def test_unreadable_evidence_costs_the_evidence_and_never_the_report():

@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 
 import requests
 
@@ -61,6 +63,14 @@ _MAX_COMMIT_PR_LOOKUPS = 250
 #: change.
 _MAX_PATCH_CHARS_PER_FILE = 4000
 _MAX_PATCH_CHARS_PER_PR = 12000
+#: Per-file cap for a hunk in the run's own compact directory (see
+#: :func:`diff_sample`). A detector's dimensions file is where one changed
+#: constant rebuilds a subdetector, and it is routinely longer than the generic
+#: cap.
+_MAX_OWN_DIR_PATCH_CHARS_PER_FILE = 10000
+#: How much of each file's hunk is kept for :func:`diff_sample`: exactly the
+#: most any sampling policy there can display, so storing it changes no prompt.
+_STORED_PATCH_CHARS = max(_MAX_PATCH_CHARS_PER_FILE, _MAX_OWN_DIR_PATCH_CHARS_PER_FILE)
 _PATCH_TRUNCATION_MARK = "\n… (truncated)"
 
 
@@ -150,16 +160,35 @@ MAX_BODY_CHARS = 4000
 
 
 @dataclass(frozen=True)
+class FilePatch:
+    """One changed file's hunk, kept so a diff sample can be drawn in whichever
+    order a caller's run makes relevant (:func:`diff_sample`).
+
+    ``text`` holds at most :data:`_STORED_PATCH_CHARS` of the hunk and
+    ``clipped`` says whether GitHub's hunk was longer; how much of it a prompt
+    shows is decided in :func:`diff_sample` alone."""
+
+    path: str
+    text: str
+    clipped: bool = False
+
+
+@dataclass(frozen=True)
 class PRText:
     """One pull request's *transient* text: its diff sample and its description.
 
     Both are model input and neither is persisted — they are re-fetchable from
     GitHub forever, and ``blame.json`` deliberately keeps only what a human needs
     to follow the lead. Named rather than returned as a widening tuple so a third
-    kind of text cannot silently shift a caller's unpacking."""
+    kind of text cannot silently shift a caller's unpacking.
+
+    ``patch`` is the generic sample (:func:`diff_sample` with no directories
+    favoured); ``files`` holds the per-file hunks it was drawn from, for a
+    caller that knows which directories its run loads."""
 
     patch: str = ""
     body: str = ""
+    files: tuple[FilePatch, ...] = ()
     #: Whether ``CandidatePR.files`` contains every path GitHub says the pull
     #: request changed. This is transient collection state: an incomplete list
     #: makes geometry reach and diff ranking unsafe, so the enclosing resolution
@@ -173,8 +202,9 @@ class RepoResolution:
     candidate PRs found in the range plus the two "couldn't see everything"
     flags the builder copies onto the blame.
 
-    ``patches`` maps a PR number to its bounded unified-diff sample and
-    ``bodies`` to its description — both *transient* ranker input the builder
+    ``patches`` maps a PR number to its bounded unified-diff sample, ``files``
+    to the per-file hunks behind it (see :class:`PRText`), and
+    ``bodies`` to its description — all *transient* ranker input the builder
     hands to the ranking stage, keyed alongside ``candidates`` but deliberately
     **not** part of the persisted :class:`CandidatePR`: both are re-fetchable
     from GitHub forever, so ``blame.json`` keeps only the file paths and the
@@ -184,6 +214,7 @@ class RepoResolution:
 
     candidates: list[CandidatePR] = field(default_factory=list)
     patches: dict[int, str] = field(default_factory=dict)
+    files: dict[int, tuple[FilePatch, ...]] = field(default_factory=dict)
     bodies: dict[int, str] = field(default_factory=dict)
     commits_unavailable: bool = False
     truncated: bool = False
@@ -283,6 +314,8 @@ def resolve_repo_prs(
             result.mark_truncated("changed_files_incomplete")
         if text.patch:
             result.patches[number] = text.patch
+        if text.files:
+            result.files[number] = text.files
         if text.body:
             result.bodies[number] = text.body
     if result.truncation_reasons:
@@ -333,12 +366,13 @@ def fetch_pr(
         changed_files = int(data["changed_files"])
     except (KeyError, TypeError, ValueError):
         changed_files = None
-    files, patch, files_complete = _fetch_pr_files(
+    files, patches, files_complete = _fetch_pr_files(
         client, slug, number, changed_files=changed_files
     )
     text = PRText(
-        patch=patch,
+        patch=diff_sample(patches),
         body=str(data.get("body") or "")[:MAX_BODY_CHARS],
+        files=patches,
         files_complete=files_complete,
     )
     pr = CandidatePR(
@@ -384,40 +418,161 @@ def low_signal_path(path: str) -> bool:
     )
 
 
-def _diff_priority(entry: dict) -> tuple:
+def path_under(path: str, directory: str) -> bool:
+    """Whether *path* lies inside *directory*, compared component by component.
+
+    Never a string prefix: ``FCCee/IDEA/compact/IDEA_o2_v01`` is a prefix of
+    ``FCCee/IDEA/compact/IDEA_o2_v01_CI/…``, a sibling directory. A trailing
+    slash on *directory* makes no difference, and an empty one contains
+    nothing."""
+    inside = PurePosixPath(directory).parts
+    parts = PurePosixPath(path).parts
+    return bool(inside) and len(parts) > len(inside) and parts[: len(inside)] == inside
+
+
+def allocate_diff_budget(needs: list[int], total: int) -> list[int]:
+    """Chars of diff each item may render, waterfilled from *total*.
+
+    When everything fits, everyone gets their full patch. Under pressure the
+    budget is shared evenly: small diffs stay whole and the largest ones split
+    the remainder — an item's *position* in the prompt never decides whether its
+    diff survives."""
+    alloc = [0] * len(needs)
+    remaining = total
+    active = [i for i, n in enumerate(needs) if n > 0]
+    while active and remaining >= len(active):
+        share = remaining // len(active)
+        satisfied = []
+        for i in active:
+            take = min(needs[i] - alloc[i], share)
+            alloc[i] += take
+            remaining -= take
+            if alloc[i] >= needs[i]:
+                satisfied.append(i)
+        if not satisfied:
+            break  # everyone consumed a full share; nothing left to rebalance
+        active = [i for i in active if i not in satisfied]
+    return alloc
+
+
+def _diff_priority(path: str) -> tuple:
     """Sort key deciding which hunks get the budget: code first, then everything
     else, ties broken by path so the order never depends on GitHub's."""
-    filename = str(entry.get("filename") or "")
-    return (low_signal_path(filename), filename)
+    return (low_signal_path(path), path)
+
+
+def diff_sample(
+    files: Sequence[FilePatch],
+    *,
+    own_dirs: Sequence[str] = (),
+    trees: Sequence[str] = (),
+) -> str:
+    """A pull request's bounded diff sample, most relevant hunks first.
+
+    Files in one of *own_dirs* — the compact directory a run loads — come first,
+    then files in one of *trees* — the detector's geometry tree — then the rest;
+    within each, :func:`_diff_priority` decides. An own-directory hunk may show
+    :data:`_MAX_OWN_DIR_PATCH_CHARS_PER_FILE` characters, every other hunk
+    :data:`_MAX_PATCH_CHARS_PER_FILE`, and the whole sample
+    :data:`_MAX_PATCH_CHARS_PER_PR`, spent in that order. Overflow past any cap
+    is marked ``… (truncated)``.
+
+    With no directories this is the generic sample every caller shares
+    (:attr:`PRText.patch`). The order matters because the per-PR cap is spent
+    front to back: a pull request touching six detector variants spends it on
+    the alphabetically first ones, and the variant this run loads can then be
+    missing from the sample altogether.
+
+    For the same reason, when several own directories have hunks — a review
+    spanning several detectors' rows — the per-PR cap is first shared between
+    them (:func:`allocate_diff_budget`): the directory that sorts first must not
+    take the allowance of one that sorts later, when both are a geometry that
+    moved."""
+
+    def owner(entry: FilePatch) -> int | None:
+        return next(
+            (i for i, d in enumerate(own_dirs) if path_under(entry.path, d)), None
+        )
+
+    def reach(entry: FilePatch) -> int:
+        if owner(entry) is not None:
+            return 0
+        if any(path_under(entry.path, t) for t in trees):
+            return 1
+        return 2
+
+    ordered = sorted(files, key=lambda e: (reach(e), *_diff_priority(e.path)))
+    needs: dict[int, int] = {}
+    for entry in ordered:
+        if entry.text and (d := owner(entry)) is not None:
+            needs[d] = needs.get(d, 0) + min(
+                len(entry.text), _MAX_OWN_DIR_PATCH_CHARS_PER_FILE
+            )
+    allowance: dict[int, int] = {}
+    if len(needs) > 1:
+        allowance = dict(zip(
+            needs, allocate_diff_budget(list(needs.values()), _MAX_PATCH_CHARS_PER_PR)
+        ))
+
+    chunks: list[str] = []
+    used = 0
+    truncated = False
+    for entry in ordered:
+        if not entry.text:
+            continue
+        if used >= _MAX_PATCH_CHARS_PER_PR:
+            truncated = True
+            continue
+        d = owner(entry)
+        cap = (
+            _MAX_OWN_DIR_PATCH_CHARS_PER_FILE if d is not None
+            else _MAX_PATCH_CHARS_PER_FILE
+        )
+        limit = _MAX_PATCH_CHARS_PER_PR - used
+        if d in allowance:
+            limit = min(limit, allowance[d])
+        if limit <= 0:
+            truncated = True
+            continue
+        clip = entry.text[:cap][:limit]
+        truncated = truncated or entry.clipped or len(clip) < len(entry.text)
+        chunks.append(f"--- {entry.path} ---\n{clip}")
+        used += len(clip)
+        if d in allowance:
+            allowance[d] -= len(clip)
+
+    text = "\n".join(chunks)
+    if truncated and text:
+        text += _PATCH_TRUNCATION_MARK
+    return text
 
 
 def _fetch_pr_files(
     client: GitHubClient, slug: str, number: int, *, changed_files: int | None
-) -> tuple[tuple[str, ...], str, bool]:
-    """A PR's changed paths and a bounded sample of its unified diff.
+) -> tuple[tuple[str, ...], tuple[FilePatch, ...], bool]:
+    """A PR's changed paths and each changed file's hunk.
 
     Every page of ``/pulls/{n}/files`` (up to :data:`_MAX_FILE_PAGES`) carries
     both the paths the ranker keys on — persisted on the
-    :class:`CandidatePR` — and each file's ``patch`` hunk, which is assembled
-    into the transient diff sample. The PR metadata's ``changed_files`` count
+    :class:`CandidatePR` — and each file's ``patch`` hunk, which is kept for the
+    transient diff sample (:func:`diff_sample`). The PR metadata's ``changed_files`` count
     is the completeness check; when older/malformed metadata lacks it, a short
     final page is the fallback proof. A failed page, a count mismatch, or the
     page cap returns ``files_complete=False`` so the enclosing resolution is
     disclosed as truncated and ranking is skipped.
 
-    Complete paths are always kept (cheap, high-signal); the diff is capped per
-    file and per PR (see the ``_MAX_PATCH_*`` bounds) with overflow marked
-    ``… (truncated)``. Binary files and pure renames carry no ``patch``, so they
-    contribute their path but no diff text.
+    Complete paths are always kept (cheap, high-signal); each hunk is kept up to
+    :data:`_STORED_PATCH_CHARS`. Binary files and pure renames carry no
+    ``patch``, so they contribute their path but no hunk.
 
-    The budget is spent in *relevance* order, not in GitHub's order (see
-    :func:`_diff_priority`). The paths keep the order GitHub gave them — they are
-    the pull request's own shape and cheap enough to keep whole — but the hunks
-    do not: a change touching a lockfile, a changelog and one source file spends
-    its whole allowance on the first two if the order is left alone, and what
-    reaches the model is then a diff with no code in it. On a wide window, where
-    each pull request gets barely a kilobyte, that is the difference between a
-    sample and a decoy."""
+    The sample's budget is spent in *relevance* order, not in GitHub's order
+    (see :func:`diff_sample`). The paths keep the order GitHub gave them — they
+    are the pull request's own shape and cheap enough to keep whole — but the
+    hunks do not: a change touching a lockfile, a changelog and one source file
+    spends its whole allowance on the first two if the order is left alone, and
+    what reaches the model is then a diff with no code in it. On a wide window,
+    where each pull request gets barely a kilobyte, that is the difference
+    between a sample and a decoy."""
     files: list[dict] = []
     reached_end = False
     read_failed = False
@@ -460,32 +615,23 @@ def _fetch_pr_files(
         )
 
     paths = [str(e["filename"]) for e in files if e.get("filename")]
-    chunks: list[str] = []
-    used = 0
-    truncated = False
-    for entry in sorted(files, key=_diff_priority):
-        filename = entry.get("filename")
-        if not filename:
-            continue
-        patch = entry.get("patch")
-        if not patch:
-            # Binary file or a pure rename: no hunk to show. The path already
-            # rode onto ``paths`` above — it is signal even without a diff.
-            continue
-        if used >= _MAX_PATCH_CHARS_PER_PR:
-            truncated = True
-            continue
-        clip = patch[:_MAX_PATCH_CHARS_PER_FILE]
-        truncated = truncated or len(clip) < len(patch)
-        clip = clip[: _MAX_PATCH_CHARS_PER_PR - used]
-        truncated = truncated or len(clip) < len(patch)
-        chunks.append(f"--- {filename} ---\n{clip}")
-        used += len(clip)
+    return tuple(paths), _file_patches(files), files_complete
 
-    patch_text = "\n".join(chunks)
-    if truncated and patch_text:
-        patch_text += _PATCH_TRUNCATION_MARK
-    return tuple(paths), patch_text, files_complete
+
+def _file_patches(files: Sequence[dict]) -> tuple[FilePatch, ...]:
+    """The stored hunks of ``/pulls/{n}/files`` entries, in GitHub's order.
+
+    Binary files and pure renames have no hunk and are left out; their paths
+    ride on the candidate regardless — they are signal even without a diff."""
+    return tuple(
+        FilePatch(
+            path=str(e["filename"]),
+            text=str(e["patch"])[:_STORED_PATCH_CHARS],
+            clipped=len(str(e["patch"])) > _STORED_PATCH_CHARS,
+        )
+        for e in files
+        if e.get("filename") and e.get("patch")
+    )
 
 
 # ── Pull-request comments ─────────────────────────────────────────────────────

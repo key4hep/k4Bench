@@ -11,6 +11,7 @@ from k4bench.blame.evidence import HistoryPoint, MetricHistory, ScopeOutcome
 from k4bench.blame.prompt import (
     PROMPT_CHAR_BUDGET,
     body_block,
+    compact_dir,
     diff_block,
     geometry_reach,
     geometry_tree,
@@ -20,7 +21,7 @@ from k4bench.blame.prompt import (
     outcome_lines,
     region_lines,
 )
-from k4bench.regression.models import HostFact, RegionDelta
+from k4bench.regression.models import HostFact, HostLevel, RegionDelta
 
 _ZWSP = "​"
 
@@ -89,7 +90,11 @@ def _point(release, value, **kw) -> HistoryPoint:
         release=release, value=value,
         n_runs=kw.get("n_runs", 1), n_judged=kw.get("n_judged", 1),
         severity=kw.get("severity", "OK"), direction=kw.get("direction", "NONE"),
-        hosts=kw.get("hosts", ()), packages_changed=kw.get("packages"),
+        hosts=kw.get("hosts", tuple(kw.get("levels") or ())),
+        packages_changed=kw.get("packages"),
+        host_levels=tuple(
+            HostLevel(host, level) for host, level in (kw.get("levels") or {}).items()
+        ),
     )
 
 
@@ -161,6 +166,67 @@ def test_a_host_change_at_the_onset_is_offered_as_a_rival_explanation():
     ])))
     assert "benchmark host changed exactly at the onset" in block
     assert "bench01, 64 cores -> bench02, 96 cores" in block
+    assert "can move a measurement on its own" in block
+
+
+_B1, _B2, _B3 = HostFact("bench01", 64), HostFact("bench02", 64), HostFact("bench03", 64)
+
+
+def _host_step(previous: dict, onset: dict, *, earlier=None) -> MetricHistory:
+    points = [_point("2026-07-01", 12.0, levels=earlier)] if earlier else []
+    return _history([
+        *points,
+        _point("2026-07-14", 12.0, levels=previous),
+        _point("2026-07-18", 14.0, severity="CONFIRMED", levels=onset),
+    ])
+
+
+def test_a_step_a_common_machine_reproduced_says_the_machines_do_not_explain_it():
+    history = _host_step({_B1: 12.0}, {_B3: 14.0, _B1: 14.0})
+    block = "\n".join(history_block(history))
+    assert "host changed" not in block
+    assert (
+        "bench01 (64 cores) measured both the release before the onset and the "
+        "onset release, and moved with the step: switching machines does not "
+        "explain it."
+    ) in block
+    assert "a host measuring both sides moved with the step" in history_clause(history)
+    assert "host changed" not in history_clause(history)
+
+
+def test_a_step_only_a_new_machine_measured_names_it_as_a_live_explanation():
+    history = _host_step({_B1: 12.0}, {_B1: 12.0, _B3: 14.0})
+    block = "\n".join(history_block(history))
+    assert "stayed at the old level" in block
+    assert (
+        "the new level came only from bench03 (64 cores); a machine effect is a "
+        "live explanation."
+    ) in block
+    assert "new level only on newly added host(s)" in history_clause(history)
+
+
+def test_machines_disagreeing_at_the_onset_are_stated_as_inconclusive():
+    history = _host_step({_B1: 12.0, _B2: 12.0}, {_B1: 12.0, _B2: 14.0, _B3: 14.0})
+    block = "\n".join(history_block(history))
+    assert (
+        "At the onset release bench02 (64 cores) and bench03 (64 cores) measured "
+        "the new level and bench01 (64 cores) the old one: identical software "
+        "gave both levels; the host evidence is inconclusive."
+    ) in block
+    assert "hosts disagreed at onset (inconclusive)" in history_clause(history)
+
+
+def test_a_new_machine_already_seen_at_the_old_level_answers_the_host_change():
+    history = _host_step({_B1: 12.0}, {_B3: 14.0}, earlier={_B3: 12.0})
+    block = "\n".join(history_block(history))
+    assert "bench01, 64 cores -> bench03, 64 cores" in block
+    assert (
+        "But bench03 (64 cores) had already measured this series at its old "
+        "level in release 2026-07-01"
+    ) in block
+    clause = history_clause(history)
+    assert "benchmark host changed at onset" in clause
+    assert "new host had measured the old level before" in clause
 
 
 def test_an_unjudged_release_is_not_rendered_as_a_flat_one():
@@ -280,7 +346,7 @@ def test_regions_are_rendered_largest_movement_first():
         RegionDelta("HCAL_barrel", 0.31, 4.52, 4.21),
         RegionDelta("ECAL_barrel", 1.02, 1.03, 0.01),
     )))
-    assert "Where the change landed inside the detector" in lines
+    assert "How the typical event's time moved per detector region" in lines
     assert "HCAL_barrel: 0.31 -> 4.52 s/event (+4.21)" in lines
     assert lines.index("HCAL_barrel") < lines.index("ECAL_barrel")
 
@@ -296,6 +362,20 @@ def test_a_region_measured_on_one_side_only_is_described_not_zeroed():
 
 def test_no_regions_render_nothing():
     assert region_lines(()) == []
+
+
+def test_regions_say_they_describe_the_typical_event_and_not_its_longest():
+    # Region times are per-event medians. On 09-25 the ILD_FCCee_v02 mean fell
+    # 0.034 s/event because one 35.5-second event left the sample, while the
+    # regions' medians barely moved: comparing the two says nothing about time
+    # outside stepping, so no share is claimed.
+    lines = "\n".join(region_lines((
+        RegionDelta("TPC", 0.080841, 0.080419, -0.000422),
+        RegionDelta("EcalBarrel", 0.31856, 0.3183095, -0.0002505),
+    )))
+    assert "per-event medians" in lines
+    assert "the few longest events do not show here" in lines
+    assert "outside" not in lines
 
 
 # ── The pull request's own description ────────────────────────────────────────
@@ -341,6 +421,35 @@ def test_the_geometry_tree_is_the_detector_not_the_exact_file():
     assert geometry_tree("standalone.xml") == ""
 
 
+def test_the_compact_directory_is_the_one_holding_the_run_s_compact_file():
+    assert compact_dir(
+        "FCCee/ALLEGRO/compact/ALLEGRO_o2_v01/ALLEGRO_o2_v01.xml"
+    ) == "FCCee/ALLEGRO/compact/ALLEGRO_o2_v01/"
+    assert compact_dir("") == ""
+    assert compact_dir("standalone.xml") == ""
+    assert compact_dir("FCCee/x.xml") == ""
+
+
+def test_the_run_s_own_compact_files_are_named_and_a_sibling_is_not():
+    # Both IDEA directories are in k4geo#612's file list; only one is loaded.
+    own = compact_dir("FCCee/IDEA/compact/IDEA_o2_v01/IDEA_o2_v01.xml")
+    line = geometry_reach(
+        (
+            "FCCee/IDEA/compact/IDEA_o2_v01_CI/IDEA_o2_v01_CI.xml",
+            "FCCee/IDEA/compact/IDEA_o2_v01/DriftChamber.xml",
+        ),
+        "FCCee/IDEA/", own,
+    )
+    assert line.endswith(
+        "; 1 of them are in this run's own compact directory "
+        "FCCee/IDEA/compact/IDEA_o2_v01/ (DriftChamber.xml)"
+    )
+    # Nothing in the own directory: the line says nothing about it.
+    assert "own compact directory" not in geometry_reach(
+        ("FCCee/IDEA/compact/IDEA_o2_v01_CI/IDEA_o2_v01_CI.xml",), "FCCee/IDEA/", own,
+    )
+
+
 def test_touching_the_run_s_geometry_is_stated_as_evidence():
     line = geometry_reach(
         ("FCCee/ALLEGRO/compact/x.xml", "README.md"), "FCCee/ALLEGRO/"
@@ -361,13 +470,13 @@ def test_not_touching_it_is_not_rendered_as_exculpatory():
 
 def test_the_rules_offer_the_harness_change_as_an_alternative_explanation():
     # A step caused by the benchmark harness previously had nowhere to land but
-    # "the benchmark host changed" — the only alternative the rules offered —
-    # and came back likely_noise with a confident wrong story. Both shared
-    # rules must name the harness beside the host.
+    # the benchmark host — the only alternative the rules offered — and came
+    # back likely_noise with a confident wrong story. Both shared rules must
+    # name the harness beside the machines.
     from k4bench.blame.prompt import ASSESSMENT_RULE, NOISE_RULE
-    assert "benchmark host changed" in NOISE_RULE
+    assert "switching machines" in NOISE_RULE
     assert "benchmark harness itself changed" in NOISE_RULE
-    assert "benchmark host changed" in ASSESSMENT_RULE
+    assert "switching machines" in ASSESSMENT_RULE
     assert "benchmark harness itself" in ASSESSMENT_RULE
     # A harness-caused step is a real change to the measurement, not noise.
     assert "not noise" in ASSESSMENT_RULE
