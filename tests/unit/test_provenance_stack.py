@@ -18,8 +18,8 @@ def test_nightly_uses_resolved_lcg_view_not_key4hep_package_variable():
     ).read_text()
     # The release label and the EOS path it drives come from the view the gate
     # resolved, never from whatever a sourced stack left in KEY4HEP_STACK.
-    start = script.index("K4H_IDENTITY=")
-    identity = script[start:script.index("IFS='|' read", start)]
+    start = script.index("read_k4h_identity() {")
+    identity = script[start : script.index("\n}\n", start)]
     assert "stack_identity" in identity
     assert "${K4H_STACK_SETUP}" in identity
     assert "KEY4HEP_STACK" not in identity

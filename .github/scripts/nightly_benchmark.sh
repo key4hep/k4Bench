@@ -69,27 +69,40 @@ echo "::endgroup::"
 
 # ── 3. Key4hep nightly ────────────────────────────────────────────────────────
 echo "::group::3. Key4hep nightly"
-set +u
 [[ -f "${K4H_STACK_SETUP:-}" ]] || { echo "ERROR: LCG setup not found: ${K4H_STACK_SETUP:-<unset>}" >&2; exit 1; }
-source "${K4H_STACK_SETUP}"
-set -u
-[[ -n "${KEY4HEP_STACK:-}" ]] || { echo "ERROR: KEY4HEP_STACK not set after sourcing Key4hep setup" >&2; exit 1; }
-# Reads the release date out of the view. This runs before section 4 installs
-# k4bench, so the checkout is put on the path explicitly rather than relying on
-# the interpreter's cwd; `|| true` keeps a failure in the guard below instead of
-# aborting on `read` hitting EOF with no message worth reading.
-K4H_IDENTITY="$(PYTHONPATH="${K4BENCH_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" python3 -c \
-    'import sys; from k4bench.provenance.stack import stack_identity; print("|".join(stack_identity(sys.argv[1])))' \
-    "${K4H_STACK_SETUP}" || true)"
-IFS='|' read -r K4H_RELEASE K4H_PLATFORM <<< "${K4H_IDENTITY}"
+# Reads the release date out of the view's header, so the view need not be
+# sourced. This runs before section 4 installs k4bench, so the checkout is put
+# on the path explicitly rather than relying on the interpreter's cwd; `|| true`
+# keeps a failure in the guard below instead of aborting with no message worth
+# reading.
+read_k4h_identity() {
+    IFS='|' read -r K4H_RELEASE K4H_PLATFORM <<< "$(PYTHONPATH="${K4BENCH_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" python3 -c \
+        'import sys; from k4bench.provenance.stack import stack_identity; print("|".join(stack_identity(sys.argv[1])))' \
+        "${K4H_STACK_SETUP}" || true)"
+}
+read_k4h_identity
+# A runner's CVMFS client can keep serving last week's weekday slot after the
+# new nightly is published, until its catalog TTL (4 min by default) expires and
+# its kernel cache drains (1 min more), so give it that long plus a margin.
+CVMFS_STALE_TIMEOUT=360
+CVMFS_DEADLINE=$(( SECONDS + CVMFS_STALE_TIMEOUT ))
+while [[ "${K4H_RELEASE}" != "${K4H_RELEASE_REQUESTED:-${K4H_RELEASE}}" ]] && (( SECONDS < CVMFS_DEADLINE )); do
+    echo "WARNING: CVMFS still serves ${K4H_RELEASE:-<unreadable>} instead of ${K4H_RELEASE_REQUESTED}; retrying in 30 s"
+    sleep 30
+    read_k4h_identity
+done
 [[ -n "${K4H_RELEASE}" ]] || { echo "ERROR: Failed to read Key4hep publication date from K4H_STACK_SETUP" >&2; exit 1; }
 # The resolved LCG setup is the source of truth for the label and the EOS path, so
 # a pinned source that lands somewhere else would file results under a release
 # that never produced them. Mislabelled results outlive a red job.
 if [[ -n "${K4H_RELEASE_REQUESTED:-}" && "${K4H_RELEASE}" != "${K4H_RELEASE_REQUESTED}" ]]; then
-    echo "ERROR: requested Key4hep release ${K4H_RELEASE_REQUESTED} but sourced ${K4H_RELEASE} (${K4H_STACK_SETUP})" >&2
+    echo "ERROR: requested Key4hep release ${K4H_RELEASE_REQUESTED} but ${K4H_STACK_SETUP} still provides ${K4H_RELEASE}" >&2
     exit 1
 fi
+set +u
+source "${K4H_STACK_SETUP}"
+set -u
+[[ -n "${KEY4HEP_STACK:-}" ]] || { echo "ERROR: KEY4HEP_STACK not set after sourcing Key4hep setup" >&2; exit 1; }
 echo "Release : key4hep-${K4H_RELEASE}"
 echo "Platform: ${K4H_PLATFORM}"
 echo "View    : ${K4H_STACK_SETUP}"
