@@ -41,7 +41,7 @@ jobs:
   # jobs cannot straddle a publication boundary and end up filed under two
   # different releases. Waiting for the day's stack happens in this job. A
   # matrix job waits only while its runner's CVMFS client still serves last
-  # week's weekday slot, for about two minutes, and then fails rather than
+  # week's weekday slot, for about six minutes, and then fails rather than
   # benchmark a release other than this one. Needs a CVMFS-mounted runner; the
   # job itself only lists directories.
   resolve-release:

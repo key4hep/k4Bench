@@ -74,8 +74,8 @@ def test_slot_that_never_refreshes_fails_without_being_sourced(tmp_path: Path):
     setup = _view(tmp_path / "test-platform/setup.sh", STALE)
     proc = _run(setup, tmp_path / "sleeps")
     assert proc.returncode != 0
-    # 120 s of 30 s waits, then the release check refuses the stale view.
-    assert _waits(tmp_path / "sleeps") == 4
+    # 6 min of 30 s waits, then the release check refuses the stale view.
+    assert _waits(tmp_path / "sleeps") == 12
     assert f"requested Key4hep release {REQUESTED}" in proc.stderr
     assert "still provides 2026-08-27" in proc.stderr
     assert "sourced" not in proc.stdout

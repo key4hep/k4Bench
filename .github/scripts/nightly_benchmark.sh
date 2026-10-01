@@ -81,9 +81,11 @@ read_k4h_identity() {
         "${K4H_STACK_SETUP}" || true)"
 }
 read_k4h_identity
-# A runner's CVMFS client can serve last week's weekday slot for a minute or two
-# after the new nightly is published, so give it that long to catch up.
-CVMFS_DEADLINE=$(( SECONDS + 120 ))
+# A runner's CVMFS client can keep serving last week's weekday slot after the
+# new nightly is published, until its catalog TTL (4 min by default) expires and
+# its kernel cache drains (1 min more), so give it that long plus a margin.
+CVMFS_STALE_TIMEOUT=360
+CVMFS_DEADLINE=$(( SECONDS + CVMFS_STALE_TIMEOUT ))
 while [[ "${K4H_RELEASE}" != "${K4H_RELEASE_REQUESTED:-${K4H_RELEASE}}" ]] && (( SECONDS < CVMFS_DEADLINE )); do
     echo "WARNING: CVMFS still serves ${K4H_RELEASE:-<unreadable>} instead of ${K4H_RELEASE_REQUESTED}; retrying in 30 s"
     sleep 30
