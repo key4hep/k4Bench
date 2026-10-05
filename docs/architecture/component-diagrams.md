@@ -60,7 +60,8 @@ flowchart TD
     scanner --> index
     patcher --> index
     executor --> runtime[plugin.runtime]
-    executor --> parser[runner.parser]
+    executor --> process[runner.process]
+    process --> parser[runner.parser]
     executor --> model
     reporter --> model
     plots[analysis.plots] --> loader[analysis.loader]

@@ -51,7 +51,7 @@ import shlex
 import sys
 from pathlib import Path
 
-from k4bench.benchmark.ddsim import BenchmarkConfig, SweepMode, run_sweep
+from k4bench.benchmark.ddsim import BenchmarkConfig, run_sweep, select_sweep
 from k4bench.geometry.scanner import get_detector_names
 from k4bench.results.reporter import print_summary, save_csv
 
@@ -264,22 +264,12 @@ def _build_config(args: argparse.Namespace) -> BenchmarkConfig:
 
     extra_args = shlex.split(args.ddsim_args) if args.ddsim_args else []
 
-    # --- sweep modes ---
-    if args.include_only:
-        mode = SweepMode.INCLUDE_ONLY
-        detector_names = args.include_only
-    elif args.exclude_only:
-        mode = SweepMode.EXCLUDE_ONLY
-        detector_names = args.exclude_only
-    elif args.sweep_detectors:
-        mode = SweepMode.FULL
-        detector_names = args.sweep_detectors
-    elif args.sweep:
-        mode = SweepMode.FULL
-        detector_names = []
-    else:
-        mode = SweepMode.BASELINE
-        detector_names = []
+    mode, detector_names = select_sweep(
+        sweep=args.sweep,
+        sweep_detectors=args.sweep_detectors or (),
+        include_only=args.include_only or (),
+        exclude_only=args.exclude_only or (),
+    )
 
     return BenchmarkConfig(
         xml_path=args.xml,

@@ -11,6 +11,7 @@ import csv
 import dataclasses
 from pathlib import Path
 
+from k4bench.artifacts import RESULTS_SUFFIX, label_path
 from k4bench.results.model import RunResult
 
 # Column format string shared by header and data rows.
@@ -65,7 +66,7 @@ def save_csv(results: list[RunResult], log_dir: Path) -> None:
 
     for result in results:
         row = dataclasses.asdict(result)
-        path = log_dir / f"{result.label}_results.csv"
+        path = label_path(log_dir, result.label, RESULTS_SUFFIX)
         with open(path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=row.keys())
             writer.writeheader()

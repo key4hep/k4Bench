@@ -105,7 +105,9 @@ reported-only diagnostics, as does the growth rate `rss_anon_slope_mb_per_event`
 
 ## regions JSON
 
-Written by the region timing plugin (`schema_version: 1`). It attributes Geant4
+Written by the region timing plugin (`schema_version: 1`). The version follows
+the same rules as the events JSON: an absent key is the legacy format, and a
+malformed or newer version is refused with `ValueError`. It attributes Geant4
 stepping time to top-level DD4hep detectors under two views,
 [`at_location` and `by_birth`](../user-guide/features/timing-plugins.md#per-region-timing),
 plus per-event totals, step counts, and metadata (timer used, the list of
@@ -115,7 +117,9 @@ parses it into per-run DataFrames keyed by detector. The special bucket
 
 ## run_info.json & machine_info.json
 
-Written by the nightly CI and read by the dashboard.
+Written by the nightly CI (`run_info.json` by `.github/scripts/run_info.py`,
+`machine_info.json` by `.github/scripts/machine_info.py`) and read by the
+dashboard.
 
 - **`run_info.json`** — describes one run directory: date, platform, Key4hep
   release, detector, sample, the GitHub run link and commit, event count, the

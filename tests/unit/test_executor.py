@@ -231,7 +231,7 @@ class TestVerboseReturncode:
 
     def _run(self, tmp_path: Path, verbose: bool):
         mock_proc = self._make_proc()
-        with patch("k4bench.runner.executor.subprocess.Popen", return_value=mock_proc):
+        with patch("k4bench.runner.process.subprocess.Popen", return_value=mock_proc):
             return run_ddsim(
                 xml_path=XML,
                 label="test",
@@ -290,7 +290,7 @@ def test_peak_vmem_from_plugin_reaches_results_csv(tmp_path, payload, expected):
 
     proc.wait.side_effect = finish
     with (
-        patch("k4bench.runner.executor.subprocess.Popen", return_value=proc),
+        patch("k4bench.runner.process.subprocess.Popen", return_value=proc),
         patch("k4bench.runner.executor.setup_plugin_environment", return_value=True),
     ):
         result = run_ddsim(

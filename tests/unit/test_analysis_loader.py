@@ -555,3 +555,20 @@ def test_event_file_with_non_object_root_is_refused(tmp_path, root):
     (tmp_path / "baseline_events.json").write_text(root)
     with pytest.raises(ValueError, match="root must be an object"):
         load_event_timing(tmp_path)
+
+
+@pytest.mark.parametrize("version", [2, True, "1"])
+def test_region_file_with_unreadable_schema_version_is_refused(tmp_path, version):
+    path = tmp_path / "baseline_regions.json"
+    _write_region_json(path, n_events=3)
+    raw = json.loads(path.read_text())
+    path.write_text(json.dumps({**raw, "schema_version": version}))
+    with pytest.raises(ValueError, match="schema_version"):
+        load_region_timing(tmp_path)
+
+
+@pytest.mark.parametrize("root", ["42", "[1, 2]"])
+def test_region_file_with_non_object_root_is_refused(tmp_path, root):
+    (tmp_path / "baseline_regions.json").write_text(root)
+    with pytest.raises(ValueError, match="root must be an object"):
+        load_region_timing(tmp_path)

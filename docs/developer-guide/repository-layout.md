@@ -8,8 +8,9 @@ k4Bench/
 ├── k4bench/                  # the installable Python package
 │   ├── __init__.py           #   version (via importlib.metadata / setuptools-scm)
 │   ├── cli.py                #   argparse CLI → BenchmarkConfig; the `k4bench` entry point
+│   ├── artifacts.py          #   file names of a run directory's artifacts (data contract)
 │   ├── benchmark/
-│   │   └── ddsim.py          #   orchestrator: BenchmarkConfig, SweepMode, run_sweep + strategies
+│   │   └── ddsim.py          #   orchestrator: BenchmarkConfig, SweepMode, select_sweep, run_sweep
 │   ├── geometry/
 │   │   ├── errors.py         #   geometry exception hierarchy
 │   │   ├── index.py          #   immutable include/detector/plugin structure
@@ -17,13 +18,15 @@ k4Bench/
 │   │   ├── scanner.py        #   lenient discovery façade
 │   │   └── patcher.py        #   one validated detector-removal engine
 │   ├── runner/
-│   │   ├── executor.py       #   run_ddsim: time -v wrap, plugin wiring, process control
+│   │   ├── executor.py       #   run_ddsim: ddsim command line, plugin wiring, RunResult
+│   │   ├── process.py        #   run_timed: any command under time -v, log streaming, Ctrl-C
 │   │   └── parser.py         #   parse_time_output
 │   ├── results/
 │   │   ├── model.py          #   RunResult dataclass
 │   │   └── reporter.py       #   print_summary, save_csv
 │   ├── plugin/
-│   │   └── runtime.py        #   locate/build C++ plugins, set env vars
+│   │   ├── runtime.py        #   locate/build C++ plugins, set env vars
+│   │   └── schema.py         #   schema_version contracts of the plugins' JSON files
 │   └── analysis/
 │       ├── loader.py         #   load_results, load_event_timing, load_region_timing
 │       └── plots/            #   Plotly figures (overview, event, region) + theme/utils
@@ -53,7 +56,8 @@ k4Bench/
 │   ├── workflows/            #   ci.yml, nightly.yml, benchmark-detector.yml,
 │   │                         #   deploy-dashboard.yml, on-release-main.yml, docs.yml
 │   ├── benchmarks/           #   *.yml nightly benchmark configs (one per detector)
-│   └── scripts/              #   nightly_benchmark.sh, list_benchmarks.py, machine_info.py
+│   └── scripts/              #   nightly_benchmark.sh, list_benchmarks.py, machine_info.py,
+│                             #   run_info.py, …
 │
 ├── tests/
 │   ├── conftest.py           #   matplotlib Agg backend
@@ -79,7 +83,8 @@ k4Bench/
 - **"Where does a number come from?"** → `runner/parser.py` parses it,
   `results/model.py` stores it, `results/reporter.py` prints/saves it.
 - **"Where is the geometry magic?"** → `geometry/index.py` + `geometry/patcher.py`.
-- **"Where does ddsim actually get run?"** → `runner/executor.py`.
+- **"Where does ddsim actually get run?"** → `runner/executor.py` builds the
+  command; `runner/process.py` runs and times it.
 - **"Where do per-event/-detector numbers come from?"** → `plugin/*.cpp`, wired
   by `k4bench/plugin/runtime.py`.
 

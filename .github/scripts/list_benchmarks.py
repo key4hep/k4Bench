@@ -107,6 +107,35 @@ def expand(path: Path) -> list[dict]:
     return records
 
 
+def _eos_directory(rec: dict) -> tuple[str, str]:
+    """The ``(detector, sample)`` part of the EOS directory *rec* uploads to.
+
+    nightly_benchmark.sh names the detector directory after the compact file
+    (``basename "${DETECTOR_XML}" .xml``), not after the benchmark config.
+    """
+    return Path(rec["xml"]).name.removesuffix(".xml"), rec["sample"]
+
+
+def _check_unique_destinations(items: list[dict]) -> None:
+    """Refuse two jobs that would upload into the same EOS run directory.
+
+    Two benchmark configs naming compact files with one basename, and sharing a
+    sample name, write ``run_info.json`` and every ``{label}_results.csv`` to the
+    same ``{detector}/{platform}/{release}/{sample}/{date}/`` — whichever job
+    uploads last silently replaces the other's results.
+    """
+    seen: dict[tuple[str, str], str] = {}
+    for rec in items:
+        where = _eos_directory(rec)
+        if where in seen:
+            _die(
+                f"configs {seen[where]!r} and {rec['config']!r} both upload sample "
+                f"{rec['sample']!r} to EOS detector directory {where[0]!r}; "
+                "rename the sample in one of them"
+            )
+        seen[where] = rec["config"]
+
+
 def _group_by_detector(items: list[dict]) -> list[dict]:
     grouped: dict[str, list[dict]] = {}
     for item in items:
@@ -120,6 +149,7 @@ def main() -> None:
     if not paths:
         _die(f"no benchmark configs found in {BENCH_DIR}/")
     items = [r for p in paths for r in expand(p)]
+    _check_unique_destinations(items)
     print(json.dumps(_group_by_detector(items) if grouped else items))
 
 
