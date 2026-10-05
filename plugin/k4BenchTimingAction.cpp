@@ -39,7 +39,7 @@ namespace dd4hep
   {
 
     // Version of the JSON format written below, not of the software. Must match
-    // EVENT_SCHEMA_VERSION in k4bench/plugin/event_schema.py.
+    // EVENT_SCHEMA_VERSION in k4bench/plugin/schema.py.
     static constexpr int kEventSchemaVersion = 1;
 
     // ---------------------------------------------------------------------------
