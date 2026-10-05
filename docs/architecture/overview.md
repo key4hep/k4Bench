@@ -39,6 +39,7 @@ flowchart TD
 
     subgraph execution["Execution"]
         EXEC["runner.executor<br/>run_ddsim"]
+        PROC["runner.process<br/>run_timed"]
         PARSE["runner.parser<br/>parse_time_output"]
         PRT["plugin.runtime<br/>setup_plugin_environment"]
     end
@@ -66,7 +67,8 @@ flowchart TD
     BENCH --> EXEC
     EXEC --> PRT
     PRT --> EV & RG
-    EXEC --> PARSE
+    EXEC --> PROC
+    PROC --> PARSE
     PARSE --> MODEL
     BENCH --> MODEL
     CLI --> REP
@@ -83,7 +85,7 @@ flowchart TD
 | **Entry** | `cli.py` | Parse args → `BenchmarkConfig`; orchestrate output (table, CSV, pickle); exit code |
 | **Orchestration** | `benchmark.ddsim` | Choose a sweep strategy; loop over configurations; collect `RunResult`s |
 | **Geometry** | `geometry.index`, `geometry.scanner`, `geometry.patcher` | Index and discover detectors; produce validated patched XML non-destructively |
-| **Execution** | `runner.executor`, `runner.parser`, `plugin.runtime` | Run `ddsim` under `time -v`; load plugins; scrape metrics |
+| **Execution** | `runner.executor`, `runner.process`, `runner.parser`, `plugin.runtime` | Build the `ddsim` command and load plugins (`executor`); run any command under `time -v` and scrape its metrics (`process`, `parser`) |
 | **Native** | `plugin/*.cpp` | In-process per-event & per-detector instrumentation |
 | **Results** | `results.model`, `results.reporter` | Typed metrics; human + machine output |
 | **Analysis** | `analysis.loader`, `analysis.plots` | Load artifacts into pandas; Plotly figures |

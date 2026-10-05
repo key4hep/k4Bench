@@ -42,6 +42,7 @@ import pandas as pd
 
 from k4bench.analysis.loader import load_region_timing
 from k4bench.analysis.trend import EXPECTED_LOAD_ERRORS, parse_run_dir
+from k4bench.artifacts import REGIONS_SUFFIX, label_path
 from k4bench.regression.engine import release_key
 from k4bench.regression.models import (
     EventProfile,
@@ -94,7 +95,7 @@ def _read_night(run_dir: Path, label: str) -> _Night | None:
     ``None`` when this run recorded no region file for that configuration —
     which is the ordinary case for a run predating the plugin, and is why the
     caller must treat "no regions" as unknown rather than as zero."""
-    if not (run_dir / f"{label}_regions.json").is_file():
+    if not label_path(run_dir, label, REGIONS_SUFFIX).is_file():
         return None
     try:
         data = load_region_timing(run_dir, labels=[label])

@@ -214,165 +214,24 @@ echo "::endgroup::"
 
 # ── 8. Write run_info.json + finalise machine_info.json ───────────────────────
 echo "::group::8. Write run metadata"
-CONFIGS_JSON=$(
-    find "logs/${DETECTOR}" -maxdepth 1 -name '*_results.csv' -print0 2>/dev/null \
-    | xargs -0 -r -I{} basename {} _results.csv \
-    | python3 -c "import sys, json; print(json.dumps(sys.stdin.read().split()))"
-)
-
-# Resolve the exact roster implied by the expanded benchmark YAML and the
-# geometry this job loaded.  Keep this separate from CONFIGS_JSON: that value is
-# what produced a CSV, while this is what was supposed to produce one.  If the
-# benchmark process was killed part-way through a sweep, the difference is the
-# missing-config failure the nightly report needs to surface.
-#
-# Any failure here — a broken import, a missing interpreter, an unreadable
-# geometry — must leave the roster unknown rather than abort the job before it
-# uploads what the benchmark did produce.  ``null`` is the legacy metadata the
-# report already understands, and it is also the fallback for empty output so
-# the interpolation below always stays valid JSON.
-if ! CONFIGURED_LABELS_JSON=$(
-python3 - "${DETECTOR_XML}" "${SWEEP}" "${SWEEP_DETECTORS}" \
-          "${INCLUDE_ONLY}" "${EXCLUDE_ONLY}" <<'PYEOF'
-import json
-import shlex
-import sys
-from pathlib import Path
-
-from k4bench.benchmark.ddsim import (
-    SweepMode,
-    planned_config_labels,
-)
-
-xml, sweep, sweep_detectors, include_only, exclude_only = sys.argv[1:]
-if include_only:
-    mode, names = SweepMode.INCLUDE_ONLY, shlex.split(include_only)
-elif exclude_only:
-    mode, names = SweepMode.EXCLUDE_ONLY, shlex.split(exclude_only)
-elif sweep_detectors:
-    mode, names = SweepMode.FULL, shlex.split(sweep_detectors)
-elif sweep == "true":
-    mode, names = SweepMode.FULL, []
-else:
-    mode, names = SweepMode.BASELINE, []
-
-try:
-    labels = planned_config_labels(Path(xml), mode, names)
-except Exception as exc:
-    print(f"WARNING: could not resolve configured labels: {exc}", file=sys.stderr)
-    labels = None
-print(json.dumps(labels))
-PYEOF
-); then
-    echo "WARNING: could not resolve configured labels" >&2
-    CONFIGURED_LABELS_JSON=null
-fi
-[[ -n "${CONFIGURED_LABELS_JSON}" ]] || CONFIGURED_LABELS_JSON=null
-
-# run_info.json
-python3 - "${DETECTOR}" "${SAMPLE}" "${DATE}" "${K4H_PLATFORM}" "${K4H_RELEASE}" \
-          "${N_EVENTS}" "${SWEEP}" "${XML_PATH}" "${DDSIM_ARGS}" \
-          "${INPUT_FILES}" "${STEERING_FILE}" "${CONFIGURED_XML_PATH}" \
-          "${STEERING_PATH}" <<PYEOF
-import json, os, shlex, sys
-
-detector, sample, date, platform, k4h_rel = sys.argv[1:6]
-n_events = int(sys.argv[6])
-sweep    = sys.argv[7] == "true"
-# The compact file this run loaded, relative to $K4GEO when it came from there.
-# Recorded so attribution can state as a *fact* which pull requests touch the
-# geometry this run actually reads, instead of inferring it from path names.
-xml_path = sys.argv[8] if len(sys.argv) > 8 else ""
-ddsim_args = sys.argv[9] if len(sys.argv) > 9 else ""
-input_files = shlex.split(sys.argv[10]) if len(sys.argv) > 10 and sys.argv[10] else []
-steering_file = sys.argv[11] if len(sys.argv) > 11 else ""
-configured_xml_path = sys.argv[12] if len(sys.argv) > 12 else ""
-resolved_steering_file = sys.argv[13] if len(sys.argv) > 13 else ""
-
-# The Monte-Carlo workload this run actually measured. Timing is a function of
-# which events were simulated, so a report comparing two nights is only
-# comparing software if the seed is the same on both — recording it is what
-# lets a report state that rather than assume it. None means the run drew a
-# fresh seed, i.e. the workload is not reproducible.
-#
-# The *last* occurrence wins, because that is what argparse gives ddsim and the
-# benchmark configs concatenate detector-level args before sample-level ones —
-# so a sample overriding the detector's seed would otherwise be recorded as the
-# seed it replaced, and the record would name a workload that never ran.
-def _random_seed(args: str):
-    tokens = shlex.split(args)
-    seed = None
-    for i, token in enumerate(tokens):
-        if token.startswith("--random.seed="):
-            raw = token.partition("=")[2]
-        elif token == "--random.seed" and i + 1 < len(tokens):
-            raw = tokens[i + 1]
-        else:
-            continue
-        try:
-            seed = int(raw)
-        except ValueError:
-            seed = None
-    return seed
-
-run_info = {
-    "date":             date,
-    "platform":         platform,
-    "k4h_release":      f"key4hep-{k4h_rel}",
-    "k4h_release_date": k4h_rel,
-    "k4h_stack_setup":  os.environ["K4H_STACK_SETUP"],
-    "detector":         detector,
-    "sample":           sample,
-    "xml_path":         xml_path,
-    "configured_xml_path": configured_xml_path,
-    "github_run_id":    os.environ["GITHUB_RUN_ID"],
-    "github_run_url": (
-        f"{os.environ['GITHUB_SERVER_URL']}"
-        f"/{os.environ['GITHUB_REPOSITORY']}"
-        f"/actions/runs/{os.environ['GITHUB_RUN_ID']}"
-    ),
-    "commit_sha":       os.environ["GITHUB_SHA"],
-    "n_events":         n_events,
-    "sweep":            sweep,
-    "ddsim_args":       ddsim_args,
-    "random_seed":      _random_seed(ddsim_args),
-    # How the benchmark was invoked, beyond its arguments.  Both move a timing
-    # measurement -- --verbose streams ddsim's output while it is being timed,
-    # and the runner pins the process to a fixed CPU set -- so a reproducer that
-    # does not know them cannot say it ran the same measurement.
-    "verbose":          os.environ.get("VERBOSE", "").lower() == "true",
-    "runner_cpu_set":   os.environ.get("RUNNER_CPU_SET", ""),
-    # Preserve the configured source values.  DDSIM_ARGS above names the /tmp
-    # copy actually read by ddsim; a reproducer also needs the xrootd URL from
-    # which that ephemeral file was obtained.
-    "input_files":      input_files,
-    "steering_file":    steering_file,
-    "resolved_steering_file": resolved_steering_file,
-    "configs":          ${CONFIGS_JSON},
-    "configured_labels": ${CONFIGURED_LABELS_JSON},
-}
-
-# Upstream commit of every package the stack built from git, so a regression
-# found weeks from now can still be traced to the PRs in its blame window. This
-# is the only moment the answer exists: LCG overwrites each weekday slot a week
-# later, after which the view that produced these numbers is gone. Never fatal
-# — the measurements are the deliverable, provenance is metadata.
-try:
-    from k4bench.provenance.stack import read_stack
-    manifest, packages = read_stack(os.environ["K4H_STACK_SETUP"])
-    if manifest is None:
-        print("WARNING: no stack provenance metadata found")
-    else:
-        run_info["k4h_stack_manifest"] = str(manifest)
-        run_info["k4h_packages"] = packages
-        print(f"Stack provenance: {len(packages)} git-built package(s)")
-except Exception as exc:
-    print(f"WARNING: stack provenance not recorded: {exc}")
-
-with open(f"logs/{detector}/run_info.json", "w") as f:
-    json.dump(run_info, f, indent=2)
-print(f"Written: logs/{detector}/run_info.json")
-PYEOF
+python3 .github/scripts/run_info.py "logs/${DETECTOR}" \
+    --detector="${DETECTOR}" \
+    --sample="${SAMPLE}" \
+    --date="${DATE}" \
+    --platform="${K4H_PLATFORM}" \
+    --release="${K4H_RELEASE}" \
+    --n-events="${N_EVENTS}" \
+    --sweep="${SWEEP}" \
+    --detector-xml="${DETECTOR_XML}" \
+    --xml-path="${XML_PATH}" \
+    --configured-xml-path="${CONFIGURED_XML_PATH}" \
+    --ddsim-args="${DDSIM_ARGS}" \
+    --input-files="${INPUT_FILES}" \
+    --steering-file="${STEERING_FILE}" \
+    --resolved-steering-file="${STEERING_PATH}" \
+    --sweep-detectors="${SWEEP_DETECTORS}" \
+    --include-only="${INCLUDE_ONLY}" \
+    --exclude-only="${EXCLUDE_ONLY}"
 
 # machine_info.json (merge start snapshot + end-of-run dynamic fields)
 python3 .github/scripts/machine_info.py finalize "logs/${DETECTOR}"

@@ -4,8 +4,9 @@ Design principle
 ----------------
 This module owns *instrumentation*: timing, logging, and metrics
 extraction.  It does **not** own physics configuration.  The caller
-decides which ddsim arguments to pass; the executor wraps them with
-``/usr/bin/time -v`` and harvests the results.
+decides which ddsim arguments to pass; the executor adds the ones it
+manages, times the run with :mod:`k4bench.runner.process`, and harvests
+the results.
 
 The only ddsim arguments that the executor needs to know about are:
 
@@ -30,17 +31,13 @@ from __future__ import annotations
 import json
 import math
 import os
-import shlex
-import shutil
-import signal
-import subprocess
 from pathlib import Path
-from collections import deque
 
-from k4bench.plugin.event_schema import validate_event_schema
+from k4bench.artifacts import EVENTS_SUFFIX, LOG_SUFFIX, REGIONS_SUFFIX, label_path
 from k4bench.plugin.runtime import setup_plugin_environment
+from k4bench.plugin.schema import validate_event_schema
 from k4bench.results.model import RunResult
-from k4bench.runner.parser import parse_time_output
+from k4bench.runner.process import run_timed, timed_shell_command
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -100,12 +97,11 @@ def run_ddsim(
     """
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    log_path = log_dir / f"{label}.log"
-
-    # Optional plugin output artifacts
-    event_json_path = log_dir / f"{label}_events.json"
+    # Optional plugin output artifacts. Removed first so a run that fails to
+    # write its own is never credited with a previous run's.
+    event_json_path = label_path(log_dir, label, EVENTS_SUFFIX)
     event_json_path.unlink(missing_ok=True)
-    region_json_path = log_dir / f"{label}_regions.json"
+    region_json_path = label_path(log_dir, label, REGIONS_SUFFIX)
     region_json_path.unlink(missing_ok=True)
 
     env = os.environ.copy()
@@ -125,57 +121,13 @@ def run_ddsim(
         plugin_available=plugin_available,
     )
 
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            shell=True,
-            executable="/bin/bash",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            env=env,
-            start_new_session=True,
-        )
-
-        time_output_lines = deque(maxlen=200)
-
-        with log_path.open("w") as log_file:
-
-            if proc.stdout is None:
-                raise RuntimeError("Failed to capture ddsim stdout.")
-
-            for line in proc.stdout:
-
-                # Stream to terminal if requested
-                if verbose:
-                    print(line, end="", flush=True)
-
-                # Stream immediately to logfile
-                log_file.write(line)
-
-                # Keep only a rolling tail in memory
-                time_output_lines.append(line)
-
-            proc.wait()  # ensure returncode is populated
-
-    except KeyboardInterrupt:
-        print("\nStopping ddsim...", flush=True)
-
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            proc.wait(timeout=5)
-
-        except (subprocess.TimeoutExpired, ProcessLookupError):
-
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-
-            except ProcessLookupError:
-                pass
-
-        raise
-
-    metrics = parse_time_output("".join(time_output_lines))
+    proc = run_timed(
+        cmd,
+        env=env,
+        log_path=label_path(log_dir, label, LOG_SUFFIX),
+        verbose=verbose,
+    )
+    metrics = proc.metrics
     peak_vmem_mb = _read_peak_vmem_mb(event_json_path)
 
     output_size_mb: float | None = None
@@ -190,9 +142,6 @@ def run_ddsim(
             n_events / metrics["wall_time_s"],
             4,
         )
-
-    if metrics["wall_time_raw"] is None or metrics["peak_rss_mb"] is None:
-        _warn_unparsed(label, log_path)
 
     if plugin_available and proc.returncode == 0 and peak_vmem_mb is None:
         _warn_missing_instrumentation(label, event_json_path)
@@ -218,6 +167,15 @@ def run_ddsim(
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+
+#: DDG4 actions the timing plugins register, as ``(ddsim flag, action name)``.
+_TIMING_ACTIONS = (
+    ("--action.event", "k4BenchTimingAction"),
+    ("--action.step", "k4BenchRegionTimingAction"),
+    ("--action.track", "k4BenchRegionTrackingAction"),
+    ("--action.event", "k4BenchRegionEventAction"),
+)
 
 
 def _read_peak_vmem_mb(path: Path) -> float | None:
@@ -269,46 +227,46 @@ def _build_command(
     plugin_available: bool,
 ) -> str:
     """Return the shell command used to execute ddsim."""
-
-    extra_args = extra_args or []
-
-    source_line = (
-        f"source {shlex.quote(str(setup_script))}\n" if setup_script is not None else ""
+    return timed_shell_command(
+        [
+            "ddsim",
+            *_ddsim_args(
+                xml_path=xml_path,
+                n_events=n_events,
+                output_file=output_file,
+                extra_args=extra_args or [],
+                plugin_available=plugin_available,
+            ),
+        ],
+        setup_script,
     )
 
+
+def _ddsim_args(
+    *,
+    xml_path: Path,
+    n_events: int,
+    output_file: Path,
+    extra_args: list[str],
+    plugin_available: bool,
+) -> list[str]:
+    """The executor-managed ddsim arguments, then the caller's *extra_args*.
+
+    The timing actions are registered only when the plugins are available and
+    the caller has not already registered them, so no action runs twice.
+    """
     managed = [
-        f"--compactFile={shlex.quote(str(xml_path))}",
+        f"--compactFile={xml_path}",
         f"--numberOfEvents={n_events}",
-        f"--outputFile={shlex.quote(str(output_file))}",
+        f"--outputFile={output_file}",
     ]
 
-    has_timing_action = _has_action(extra_args, "k4BenchTimingAction")
-    has_region_step   = _has_action(extra_args, "k4BenchRegionTimingAction")
-    has_region_track  = _has_action(extra_args, "k4BenchRegionTrackingAction")
-    has_region_event  = _has_action(extra_args, "k4BenchRegionEventAction")
-
-    if plugin_available and not has_timing_action:
-        managed.extend(["--action.event", "k4BenchTimingAction"])
-
     if plugin_available:
-        if not has_region_step:
-            managed.extend(["--action.step", "k4BenchRegionTimingAction"])
-        if not has_region_track:
-            managed.extend(["--action.track", "k4BenchRegionTrackingAction"])
-        if not has_region_event:
-            managed.extend(["--action.event", "k4BenchRegionEventAction"])
+        for flag, action in _TIMING_ACTIONS:
+            if not _has_action(extra_args, action):
+                managed.extend([flag, action])
 
-    caller = [shlex.quote(a) for a in extra_args]
-
-    all_args = " \\\n    ".join(managed + caller)
-
-    gnu_time = shutil.which("time")
-    if gnu_time is None:
-        raise RuntimeError(
-            "GNU time not found in PATH. Install it (e.g. 'dnf install time' or 'apt install time')."
-        )
-
-    return f"{source_line}" f"{gnu_time} -v ddsim \\\n" f"    {all_args}"
+    return managed + extra_args
 
 
 def _warn_missing_instrumentation(label: str, event_json_path: Path) -> None:
@@ -324,14 +282,4 @@ def _warn_missing_instrumentation(label: str, event_json_path: Path) -> None:
         f"timing-plugin output is missing or unusable.\n"
         f"           Expected {event_json_path}; this run contributes "
         f"no judged memory metrics."
-    )
-
-
-def _warn_unparsed(label: str, log_path: Path) -> None:
-    """Warn that /usr/bin/time output parsing failed."""
-
-    print(
-        f"  WARNING [{label}]: "
-        f"/usr/bin/time output could not be fully parsed.\n"
-        f"           Check {log_path} for the raw output."
     )

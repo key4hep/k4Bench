@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 
 from k4bench.analysis.loader import load_event_timing, load_region_timing, load_results
+from k4bench.artifacts import MACHINE_INFO, RUN_INFO
 
 _log = logging.getLogger(__name__)
 
@@ -153,7 +154,7 @@ def parse_run_dir(run_dir: Path) -> dict:
             "machine_consistent": None,
         }
 
-    info_path = run_dir / "run_info.json"
+    info_path = run_dir / RUN_INFO
     if info_path.exists():
         try:
             with open(info_path) as fh:
@@ -212,7 +213,7 @@ def parse_run_dir(run_dir: Path) -> dict:
 
 def load_machine_info(run_dir: str) -> dict | None:
     """Load ``machine_info.json`` from a run directory, or return ``None`` if absent."""
-    path = Path(run_dir) / "machine_info.json"
+    path = Path(run_dir) / MACHINE_INFO
     if not path.exists():
         return None
     try:

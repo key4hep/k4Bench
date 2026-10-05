@@ -22,8 +22,9 @@ whole repository: if a finding depends on code you cannot see, do not report it.
 - `plugin/*.cpp`: DDG4 timing actions that write `<label>_events.json` and
   `<label>_regions.json` from inside the simulation.
 - `k4bench/analysis/`: loaders for the persisted measurement files. Check
-  each format's reader and writer together; event version validation lives in
-  `k4bench/plugin/event_schema.py`, and report and blame models live in their
+  each format's reader and writer together; file names live in
+  `k4bench/artifacts.py`, event and region version validation in
+  `k4bench/plugin/schema.py`, and report and blame models live in their
   respective packages.
 - `k4bench/regression/`: the step detector (`engine.py`), release history
   (`history.py`), platform succession (`lineage.py`), report assembly, email.

@@ -32,6 +32,8 @@ from urllib.parse import unquote
 import requests
 from urllib3.util import Retry
 
+from k4bench.artifacts import RUN_INFO
+
 _log = logging.getLogger(__name__)
 
 _DIR_LINK_RE = re.compile(r'href="([^"/][^"]*/?)"', re.IGNORECASE)
@@ -484,7 +486,7 @@ def fetch_stack_packages(
             _stop_if_strict(f"{root}/{sample}", exc)
             continue
         for date in dates:
-            url = f"{root}/{sample}/{date}/run_info.json"
+            url = f"{root}/{sample}/{date}/{RUN_INFO}"
             try:
                 resp = _get_session().get(url, timeout=_TIMEOUT)
                 resp.raise_for_status()
@@ -515,7 +517,7 @@ def fetch_run_info(
     """
     url = (
         f"{base_url.rstrip('/')}/{detector}/{platform}/{stack}/{sample}/"
-        f"{run_id}/run_info.json"
+        f"{run_id}/{RUN_INFO}"
     )
     try:
         resp = _get_session().get(url, timeout=_TIMEOUT)

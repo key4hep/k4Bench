@@ -9,7 +9,14 @@ from typing import TypeVar
 
 import pandas as pd
 
-from k4bench.plugin.event_schema import validate_event_schema
+from k4bench.artifacts import (
+    EVENTS_SUFFIX,
+    REGIONS_SUFFIX,
+    RESULTS_SUFFIX,
+    label_path,
+    labelled_files,
+)
+from k4bench.plugin.schema import validate_event_schema, validate_region_schema
 
 
 # Internal row provenance used only when result files with and without a
@@ -177,6 +184,26 @@ def judgeable_config_data(
     return {label: value for label, value in data.items() if str(label) in labels}
 
 
+def _label_files(
+    log_dir: Path,
+    suffix: str,
+    labels: list[str] | None,
+    kind: str,
+) -> list[tuple[Path, str]]:
+    """``(path, label)`` of every *suffix* file to load from *log_dir*.
+
+    With *labels*, exactly those labels' files, raising ``ValueError`` naming
+    any that are missing; without, every *suffix* file present.
+    """
+    if labels is None:
+        return labelled_files(log_dir, suffix)
+    candidates = [(label_path(log_dir, label, suffix), label) for label in labels]
+    missing = [label for path, label in candidates if not path.exists()]
+    if missing:
+        raise ValueError(f"Missing {kind} files for labels: {missing}")
+    return candidates
+
+
 def load_results(log_dir: str | Path, labels: list[str] | None = None) -> pd.DataFrame:
     """Load benchmark results from a log directory into a DataFrame.
 
@@ -197,19 +224,10 @@ def load_results(log_dir: str | Path, labels: list[str] | None = None) -> pd.Dat
         integer columns that may contain NaN use nullable ``Int64``.
     """
     log_dir = Path(log_dir)
-    _suffix = "_results.csv"
-
-    if labels is not None:
-        candidates = [(log_dir / f"{lbl}{_suffix}", lbl) for lbl in labels]
-        missing = [lbl for path, lbl in candidates if not path.exists()]
-        if missing:
-            raise ValueError(f"Missing result files for labels: {missing}")
-        paths = [path for path, _ in candidates if path.exists()]
-    else:
-        paths = sorted(log_dir.glob(f"*{_suffix}"))
+    paths = [path for path, _ in _label_files(log_dir, RESULTS_SUFFIX, labels, "result")]
 
     if not paths:
-        raise ValueError(f"No *_results.csv files found in '{log_dir}'.")
+        raise ValueError(f"No *{RESULTS_SUFFIX} files found in '{log_dir}'.")
 
     frames = [pd.read_csv(p) for p in paths]
     if not all("returncode" in frame.columns for frame in frames):
@@ -277,30 +295,12 @@ def load_event_timing(
     ValueError
         For a JSON root that is not an object, a malformed or unsupported
         ``schema_version``
-        (:func:`~k4bench.plugin.event_schema.validate_event_schema`), missing
+        (:func:`~k4bench.plugin.schema.validate_event_schema`), missing
         required keys, or mismatched array lengths. A file without
         ``schema_version`` is the legacy unversioned format and loads as usual.
     """
-    log_dir = Path(log_dir)
-    _suffix = "_events.json"
-
-    if labels is not None:
-        candidates = [(log_dir / f"{lbl}{_suffix}", lbl) for lbl in labels]
-    else:
-        candidates = [
-            (p, p.name[: -len(_suffix)])
-            for p in sorted(log_dir.glob(f"*{_suffix}"))
-        ]
-
-    if labels is not None:
-        missing_files = [lbl for path, lbl in candidates if not path.exists()]
-        if missing_files:
-            raise ValueError(f"Missing event files for labels: {missing_files}")
-
     out: dict[str, pd.DataFrame] = {}
-    for path, label in candidates:
-        if not path.exists():
-            continue
+    for path, label in _label_files(Path(log_dir), EVENTS_SUFFIX, labels, "event"):
         with path.open() as f:
             raw = json.load(f)
         validate_event_schema(raw, source=path)
@@ -365,28 +365,11 @@ def load_region_timing(
         - ``"by_birth"``: same shape as ``at_location``, time charged to the
           detector where the primary track was created.
     """
-    log_dir = Path(log_dir)
-    _suffix = "_regions.json"
-
-    if labels is not None:
-        candidates = [(log_dir / f"{lbl}{_suffix}", lbl) for lbl in labels]
-    else:
-        candidates = [
-            (p, p.name[: -len(_suffix)])
-            for p in sorted(log_dir.glob(f"*{_suffix}"))
-        ]
-
-    if labels is not None:
-        missing = [lbl for path, lbl in candidates if not path.exists()]
-        if missing:
-            raise ValueError(f"Missing region files for labels: {missing}")
-
     out: dict[str, dict] = {}
-    for path, label in candidates:
-        if not path.exists():
-            continue
+    for path, label in _label_files(Path(log_dir), REGIONS_SUFFIX, labels, "region"):
         with path.open() as f:
             raw = json.load(f)
+        validate_region_schema(raw, source=path)
 
         _required = [
             "event_numbers", "event_wall_seconds",
@@ -454,6 +437,6 @@ def load_region_timing(
             raise ValueError(
                 f"No region files found for labels={labels} in '{log_dir}'."
             )
-        raise ValueError(f"No *_regions.json files found in '{log_dir}'.")
+        raise ValueError(f"No *{REGIONS_SUFFIX} files found in '{log_dir}'.")
 
     return out

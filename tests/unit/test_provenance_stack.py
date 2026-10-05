@@ -23,8 +23,12 @@ def test_nightly_uses_resolved_lcg_view_not_key4hep_package_variable():
     assert "stack_identity" in identity
     assert "${K4H_STACK_SETUP}" in identity
     assert "KEY4HEP_STACK" not in identity
-    assert '"k4h_stack_setup":  os.environ["K4H_STACK_SETUP"]' in script
-    assert 'read_stack(os.environ["K4H_STACK_SETUP"])' in script
+    writer = (
+        Path(__file__).resolve().parents[2] / ".github/scripts/run_info.py"
+    ).read_text()
+    assert '"k4h_stack_setup":  env["K4H_STACK_SETUP"]' in writer
+    assert 'add_stack_provenance(run_info, env["K4H_STACK_SETUP"])' in writer
+    assert "KEY4HEP_STACK" not in writer
 
 
 def test_stack_identity_uses_generated_date_not_weekday_slot(tmp_path):

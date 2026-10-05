@@ -60,6 +60,30 @@ class SweepMode(Enum):
     EXCLUDE_ONLY = "exclude_only" # single run with only the named detectors removed
 
 
+def select_sweep(
+    *,
+    sweep: bool = False,
+    sweep_detectors: Iterable[str] = (),
+    include_only: Iterable[str] = (),
+    exclude_only: Iterable[str] = (),
+) -> tuple[SweepMode, list[str]]:
+    """The sweep mode and detector names a set of sweep options selects.
+
+    The options are meant to be mutually exclusive; if several are given, the
+    first non-empty one in the order include-only, exclude-only, partial sweep,
+    full sweep wins. With none, a single baseline run.
+    """
+    if include_only := list(include_only):
+        return SweepMode.INCLUDE_ONLY, include_only
+    if exclude_only := list(exclude_only):
+        return SweepMode.EXCLUDE_ONLY, exclude_only
+    if sweep_detectors := list(sweep_detectors):
+        return SweepMode.FULL, sweep_detectors
+    if sweep:
+        return SweepMode.FULL, []
+    return SweepMode.BASELINE, []
+
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------

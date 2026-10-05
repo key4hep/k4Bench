@@ -14,6 +14,7 @@ import pandas as pd
 import streamlit as st
 
 from k4bench.analysis.loader import failed_config_mask
+from k4bench.artifacts import LOG_SUFFIX, label_path
 from k4bench.labels import pretty_platform, pretty_release, pretty_sample
 from k4bench.regression.lineage import is_replaced
 from sections import SECTION_SCOPE, SectionScope
@@ -430,7 +431,7 @@ def render_logs_tab(
         st.caption("Logs are only available when viewing cached or remote runs.")
         return
 
-    log_path = Path(run_dir) / f"{chosen}.log"
+    log_path = label_path(Path(run_dir), chosen, LOG_SUFFIX)
     try:
         stat = log_path.stat()
     except OSError:

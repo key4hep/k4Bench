@@ -67,7 +67,7 @@ def test_event_plugin_writes_memory_json_without_simulation(tmp_path, n_events):
     import os
     import shutil
 
-    from k4bench.plugin.event_schema import EVENT_SCHEMA_VERSION
+    from k4bench.plugin.schema import EVENT_SCHEMA_VERSION
 
     compiler = shutil.which("c++")
     if compiler is None:

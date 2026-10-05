@@ -1,10 +1,15 @@
-"""Unit tests for the event JSON version contract (:mod:`k4bench.plugin.event_schema`)."""
+"""Unit tests for the plugin JSON version contracts (:mod:`k4bench.plugin.schema`)."""
 
 from __future__ import annotations
 
 import pytest
 
-from k4bench.plugin.event_schema import EVENT_SCHEMA_VERSION, validate_event_schema
+from k4bench.plugin.schema import (
+    EVENT_SCHEMA_VERSION,
+    REGION_SCHEMA_VERSION,
+    validate_event_schema,
+    validate_region_schema,
+)
 
 
 def test_current_version_is_one():
@@ -40,3 +45,22 @@ def test_non_object_root_is_refused_as_value_error(raw):
 def test_source_names_the_file():
     with pytest.raises(ValueError, match="^/runs/x_events.json: "):
         validate_event_schema({"schema_version": 99}, source="/runs/x_events.json")
+
+
+def test_region_current_version_is_one():
+    assert REGION_SCHEMA_VERSION == 1
+
+
+@pytest.mark.parametrize("raw", [{}, {"schema_version": 1}])
+def test_region_legacy_unversioned_and_current_files_are_accepted(raw):
+    validate_region_schema(raw)
+
+
+def test_region_future_version_is_refused_rather_than_misread():
+    with pytest.raises(ValueError, match="unsupported future schema_version 2"):
+        validate_region_schema({"schema_version": REGION_SCHEMA_VERSION + 1})
+
+
+def test_region_non_object_root_names_the_region_kind():
+    with pytest.raises(ValueError, match="region JSON root must be an object"):
+        validate_region_schema([])
