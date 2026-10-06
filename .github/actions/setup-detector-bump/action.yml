@@ -8,7 +8,7 @@ runs:
       shell: bash
       run: |
         python3 -m venv "$RUNNER_TEMP/bump-venv"
-        "$RUNNER_TEMP/bump-venv/bin/pip" install PyYAML
+        "$RUNNER_TEMP/bump-venv/bin/pip" install 'pyyaml>=6.0,<6.1'
         echo "$RUNNER_TEMP/bump-venv/bin" >> "$GITHUB_PATH"
         # Match resolve_release.sh defaults; isolate the stack environment.
         (

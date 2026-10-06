@@ -11,31 +11,21 @@ AUTOMATIC_COMMANDS = ["review", "describe", "improve"]
 
 
 def is_review_request(event, repository):
+    if event.get("sender", {}).get("type") == "Bot":
+        return False
+
     pr = event.get("pull_request") or event.get("issue", {}).get("pull_request")
     if not pr:
         return False
 
     comment = event.get("comment")
-    head = pr.get("head") or {}
-    head_repository = head.get("repo") or {}
-    is_same_repository = head_repository.get("full_name") == repository
-    sender = event.get("sender", {})
-    if sender.get("type") == "Bot":
-        # Permit the detector-bump workflow, while rejecting bot comments and
-        # unrelated automation so review replies cannot trigger review loops.
-        is_detector_bump = (
-            sender.get("login") == "github-actions[bot]"
-            and is_same_repository
-            and head.get("ref", "").startswith("bump/")
-        )
-        if comment or not is_detector_bump:
-            return False
-
     if comment:
         is_command = comment.get("body", "").startswith("/")
         is_contributor = comment.get("author_association") in CONTRIBUTORS
         return is_command and is_contributor
 
+    head_repository = pr.get("head", {}).get("repo") or {}
+    is_same_repository = head_repository.get("full_name") == repository
     return is_same_repository and not pr.get("draft", False)
 
 

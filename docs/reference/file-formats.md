@@ -230,8 +230,9 @@ coexist, only the highest is replaced. A candidate must contain its matching XML
 The bot opens one PR per family on `bump/<family>`, one at a time: every bump
 edits the shared lineage blocks, so while any `bump/` PR is open, later runs
 propose nothing and leave its branch untouched, keeping maintainer commits on
-it. Once it is merged, the next run proposes the next family from the updated
-base. Closing a bump PR unmerged rejects that exact version: later runs skip it
+it. Only this repository's `bump/` branches count; PRs from forks are ignored,
+whatever their branch name. Once it is merged, the next run proposes the next
+family from the updated base. Closing a bump PR unmerged rejects that exact version: later runs skip it
 and move on to the next family, and propose the family again only when a newer
 version appears. All runs share one concurrency group, so two runs never
 both find no open PR and open one each. It
@@ -283,9 +284,7 @@ triggering documentation](https://docs.github.com/en/actions/how-tos/write-workf
 The bot therefore opens a draft, and a maintainer clicking **Ready for review**
 starts both: the Pipeline and AI PR Review workflows trigger on
 `ready_for_review`. Later maintainer pushes trigger them as usual. This is
-separate from approving or merging the PR. PR-Agent also accepts
-same-repository `bump/` PR events from `github-actions[bot]`; bot comments and
-unrelated bot PRs remain excluded.
+separate from approving or merging the PR.
 
 Local inspection (no files written unless `--apply --family NAME` is supplied):
 

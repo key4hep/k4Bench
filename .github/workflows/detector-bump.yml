@@ -35,9 +35,11 @@ jobs:
         run: |
           # A bump PR closed unmerged rejects that exact version; skip it so the
           # next family can proceed. Titles read "... bump <family> to vNN".
+          # Fork PRs list their branch without an owner, so count only this
+          # repository's bump/ branches.
           gh pr list --repo "$GITHUB_REPOSITORY" --state closed --limit 1000 \
-            --json headRefName,title,mergedAt \
-            --jq '[.[] | select((.headRefName | startswith("bump/")) and .mergedAt == null)
+            --json headRefName,isCrossRepository,title,mergedAt \
+            --jq '[.[] | select((.isCrossRepository | not) and (.headRefName | startswith("bump/")) and .mergedAt == null)
               | .title | capture("bump (?<family>[A-Za-z0-9_-]+) to (?<version>v[0-9]+)$")
               | "\(.family)_\(.version)"]' > "$RUNNER_TEMP/rejected.json"
           cat "$RUNNER_TEMP/rejected.json"
@@ -49,8 +51,8 @@ jobs:
           # regenerated (that would force-push over maintainer commits). Propose
           # one family at a time so each PR starts from a main with the last merged.
           open="$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 200 \
-            --json number,headRefName \
-            --jq '[.[] | select(.headRefName | startswith("bump/")) | "#\(.number)"] | join(", ")')"
+            --json number,headRefName,isCrossRepository \
+            --jq '[.[] | select((.isCrossRepository | not) and (.headRefName | startswith("bump/"))) | "#\(.number)"] | join(", ")')"
           if [[ -n "$open" ]]; then
             echo "::notice::Detector-bump PR $open is open; merge or close it to propose the next bump."
             families='[]'

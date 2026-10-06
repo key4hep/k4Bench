@@ -22,8 +22,7 @@ concurrency:
 
 jobs:
   request:
-    # The selector permits same-repository detector bumps from github-actions[bot].
-    if: github.event.sender.type != 'Bot' || github.event_name == 'pull_request'
+    if: github.event.sender.type != 'Bot'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
