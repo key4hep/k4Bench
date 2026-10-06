@@ -15,7 +15,8 @@ Top-level keys in a benchmark file are detector-wide defaults; keys inside a
 samples[] entry override them for that sample only. The single exception is
 ddsim_args: top-level and sample-level strings are concatenated (top first),
 which lets shared ddsim flags live at the detector level. Lists are joined
-to space-separated strings so they round-trip through env vars unchanged.
+to space-separated strings so they round-trip through env vars unchanged, and
+boolean keys are always "true" or "false" (an absent key is "false").
 """
 from __future__ import annotations
 
@@ -31,7 +32,8 @@ BENCH_DIR = Path(".github/benchmarks")
 CONFIG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 SAMPLE_RE = re.compile(r"^[A-Za-z0-9_.+-]+$")
 
-SCALAR_KEYS = ("xml", "n_events", "ddsim_args", "verbose", "sweep", "steering_file", "timeout")
+SCALAR_KEYS = ("xml", "n_events", "ddsim_args", "steering_file", "timeout")
+BOOL_KEYS   = ("verbose", "sweep")
 LIST_KEYS   = ("input_files", "sweep_detectors", "include_only", "exclude_only")
 
 
@@ -39,6 +41,14 @@ def _scalar(v) -> str:
     if v is None:           return ""
     if isinstance(v, bool): return str(v).lower()
     return str(v).strip()
+
+
+def _bool(v, key: str, loc: str) -> str:
+    if v is None:           return "false"
+    if isinstance(v, bool): return str(v).lower()
+    if isinstance(v, str) and v.strip().lower() in ("true", "false"):
+        return v.strip().lower()
+    _die(f"{key} must be true or false, got {v!r} ({loc})")
 
 
 def _list(v) -> str:
@@ -83,11 +93,12 @@ def expand(path: Path) -> list[dict]:
                 return " ".join(str(p).strip() for p in parts) if parts else None
             return s[k] if k in s else cfg.get(k)
 
+        loc = f"{path}::{name}"
         rec = {"config": config, "sample": name}
         for k in SCALAR_KEYS: rec[k] = _scalar(merge(k))
+        for k in BOOL_KEYS:   rec[k] = _bool(merge(k), k, loc)
         for k in LIST_KEYS:   rec[k] = _list(merge(k))
 
-        loc = f"{path}::{name}"
         if not rec["n_events"].isdigit() or int(rec["n_events"]) <= 0:
             _die(f"n_events must be a positive integer ({loc})")
         if rec["timeout"] and (not rec["timeout"].isdigit() or int(rec["timeout"]) <= 0):
