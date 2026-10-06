@@ -11,15 +11,20 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = ROOT / ".github" / "scripts" / "list_benchmarks.py"
+_RUN_INFO = ROOT / ".github" / "scripts" / "run_info.py"
 
 
-@pytest.fixture
-def list_benchmarks():
-    spec = importlib.util.spec_from_file_location("list_benchmarks", _SCRIPT)
+def _load(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture
+def list_benchmarks():
+    return _load("list_benchmarks", _SCRIPT)
 
 
 def _write(bench_dir: Path, name: str, xml: str, *samples: str) -> None:
@@ -38,6 +43,49 @@ def test_repository_benchmarks_expand(list_benchmarks, monkeypatch, capsys):
     items = _main(list_benchmarks, ROOT / ".github" / "benchmarks", monkeypatch, capsys)
     assert items
     assert all(item["config"] and item["sample"] for item in items)
+
+
+def test_repository_records_satisfy_the_run_info_contract(list_benchmarks, monkeypatch, capsys):
+    # nightly_benchmark.sh passes SWEEP straight to run_info.py, whose --sweep
+    # only accepts "true" or "false".
+    parser = _load("run_info_writer", _RUN_INFO)._parser()
+    items = _main(list_benchmarks, ROOT / ".github" / "benchmarks", monkeypatch, capsys)
+    for item in items:
+        assert {item["sweep"], item["verbose"]} <= {"true", "false"}, item["config"]
+        args = parser.parse_args([
+            "out", "--detector=d", "--sample=s", "--date=d", "--platform=p",
+            "--release=r", "--n-events=1", "--detector-xml=x",
+            f"--sweep={item['sweep']}",
+        ])
+        assert args.sweep == item["sweep"]
+
+
+@pytest.mark.parametrize(
+    "lines, expected",
+    [
+        ("", "false"),
+        ("sweep: true\n", "true"),
+        ("sweep: False\n", "false"),
+        ("sweep: 'true'\n", "true"),
+    ],
+)
+def test_sweep_is_always_true_or_false(list_benchmarks, tmp_path, monkeypatch, capsys, lines, expected):
+    _write(tmp_path, "A", "FCCee/A/A.xml", "single_e-_10GeV")
+    path = tmp_path / "A.yml"
+    path.write_text(lines + path.read_text())
+    [item] = _main(list_benchmarks, tmp_path, monkeypatch, capsys)
+    assert item["sweep"] == expected
+    assert item["verbose"] == "false"
+
+
+@pytest.mark.parametrize("value", ["maybe", "1", "''"])
+def test_non_boolean_sweep_is_refused(list_benchmarks, tmp_path, monkeypatch, capsys, value):
+    _write(tmp_path, "A", "FCCee/A/A.xml", "single_e-_10GeV")
+    path = tmp_path / "A.yml"
+    path.write_text(f"sweep: {value}\n" + path.read_text())
+    with pytest.raises(SystemExit):
+        _main(list_benchmarks, tmp_path, monkeypatch, capsys)
+    assert "sweep must be true or false" in capsys.readouterr().err
 
 
 def test_configs_on_distinct_geometries_may_share_a_sample(list_benchmarks, tmp_path, monkeypatch, capsys):
