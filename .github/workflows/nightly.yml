@@ -12,6 +12,11 @@ on:
         required: false
         type: string
         default: ''
+      configs:
+        description: 'Jobs to run, space-separated "config" or "config/sample", e.g. "IDEA_o1_v03 SiD/single_e-_10GeV" (empty: all)'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -32,9 +37,12 @@ jobs:
 
       - name: List benchmark configs
         id: list
+        env:
+          ONLY: ${{ inputs.configs }}
         run: |
           pip3 install --quiet 'pyyaml>=6.0,<6.1'
-          echo "configs=$(python3 .github/scripts/list_benchmarks.py --grouped)" >> "$GITHUB_OUTPUT"
+          configs=$(python3 .github/scripts/list_benchmarks.py --grouped --only "${ONLY}")
+          echo "configs=${configs}" >> "$GITHUB_OUTPUT"
 
   # ── Resolve the Key4hep release once for the whole night ──────────────────
   # Every benchmark job below sources the release named here, so one night's 18

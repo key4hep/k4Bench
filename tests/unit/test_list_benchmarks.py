@@ -32,9 +32,9 @@ def _write(bench_dir: Path, name: str, xml: str, *samples: str) -> None:
     (bench_dir / f"{name}.yml").write_text(f"xml: {xml}\nsamples:\n{entries}\n")
 
 
-def _main(list_benchmarks, bench_dir: Path, monkeypatch, capsys) -> list[dict]:
+def _main(list_benchmarks, bench_dir: Path, monkeypatch, capsys, *args: str) -> list[dict]:
     monkeypatch.setattr(list_benchmarks, "BENCH_DIR", bench_dir)
-    monkeypatch.setattr(sys, "argv", ["list_benchmarks.py"])
+    monkeypatch.setattr(sys, "argv", ["list_benchmarks.py", *args])
     list_benchmarks.main()
     return json.loads(capsys.readouterr().out)
 
@@ -115,3 +115,34 @@ def test_two_configs_uploading_to_one_eos_directory_are_refused(list_benchmarks,
     err = capsys.readouterr().err
     assert "'A' and 'A_steered'" in err
     assert "'single_e-_10GeV'" in err
+
+
+@pytest.mark.parametrize(
+    "only, expected",
+    [
+        ("", [("A", "s1"), ("A", "s2"), ("B", "s1")]),
+        ("A", [("A", "s1"), ("A", "s2")]),
+        ("A/s2 B", [("A", "s2"), ("B", "s1")]),
+        ("  B/s1  ", [("B", "s1")]),
+    ],
+)
+def test_only_keeps_the_named_jobs(list_benchmarks, tmp_path, monkeypatch, capsys, only, expected):
+    _write(tmp_path, "A", "FCCee/A/A.xml", "s1", "s2")
+    _write(tmp_path, "B", "FCCee/B/B.xml", "s1")
+    items = _main(list_benchmarks, tmp_path, monkeypatch, capsys, "--only", only)
+    assert [(i["config"], i["sample"]) for i in items] == expected
+
+
+def test_only_groups_the_selected_jobs(list_benchmarks, tmp_path, monkeypatch, capsys):
+    _write(tmp_path, "A", "FCCee/A/A.xml", "s1", "s2")
+    _write(tmp_path, "B", "FCCee/B/B.xml", "s1")
+    groups = _main(list_benchmarks, tmp_path, monkeypatch, capsys, "--grouped", "--only", "A/s1")
+    assert [(g["detector"], [s["sample"] for s in g["samples"]]) for g in groups] == [("A", ["s1"])]
+
+
+@pytest.mark.parametrize("only", ["C", "A/s3", "s1"])
+def test_only_refuses_a_name_matching_no_job(list_benchmarks, tmp_path, monkeypatch, capsys, only):
+    _write(tmp_path, "A", "FCCee/A/A.xml", "s1")
+    with pytest.raises(SystemExit):
+        _main(list_benchmarks, tmp_path, monkeypatch, capsys, "--only", f"A {only}")
+    assert f"no benchmark job matches {only!r}" in capsys.readouterr().err
