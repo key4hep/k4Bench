@@ -589,6 +589,8 @@ def _outcomes(groups, **kw):
         onset_release=kw.get("onset", "2026-07-18"),
         stacks=kw.get("stacks", {"key4hep-2026-07-22"}),
         regressed_scopes=kw.get("scopes", {("ALLEGRO_o1_v03", _PLAT, "single_e")}),
+        base_run=kw.get("base_run"),
+        onset_run=kw.get("onset_run"),
     )
 
 
@@ -600,6 +602,24 @@ def test_a_flat_configuration_is_a_control():
 def test_a_configuration_that_stepped_in_this_window_is_not_a_control():
     stepped = _verdict(onset_run_date="2026-07-18", last_accepted_run_date="2026-07-14")
     assert _outcomes([_group("IDEA_o1_v03", verdicts=[stepped])]) == ()
+
+
+def test_a_step_inside_a_same_release_window_is_not_a_control():
+    # A detector version switch within one release: the release pair alone is
+    # the empty interval (D, D], so only the runs place the step inside it.
+    stepped = _verdict(
+        onset_run_date="2026-07-18", onset_run_id="2026-07-18_2",
+        last_accepted_run_date="2026-07-18", last_accepted_run_id="2026-07-18_1",
+    )
+    groups = [_group("ALLEGRO_o1_v03", verdicts=[stepped]),
+              _group("IDEA_o1_v03", verdicts=[_flat()])]
+    outcomes = _outcomes(groups, base="2026-07-18", onset="2026-07-18",
+                         base_run="2026-07-18_1", onset_run="2026-07-18_2")
+    assert [(o.detector, o.status) for o in outcomes] == [("IDEA_o1_v03", "clean")]
+    # A later window of that release does not contain the step.
+    later = _outcomes(groups, base="2026-07-18", onset="2026-07-18",
+                      base_run="2026-07-18_2", onset_run="2026-07-18_3")
+    assert {o.detector for o in later} == {"ALLEGRO_o1_v03", "IDEA_o1_v03"}
 
 
 def test_a_configuration_still_re_anchoring_is_not_a_control():

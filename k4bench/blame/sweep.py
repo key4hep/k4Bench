@@ -531,16 +531,9 @@ def _steps_in(verdict: MetricVerdict, window: SweepWindow) -> bool:
     whose run is in ``(base_run, onset_run]``. An onset with no run id cannot be
     placed and counts as inside, as an undated onset does."""
     base, onset, base_run, onset_run = window
-    if base != onset or base_run is None or onset_run is None:
-        return steps_in_window(verdict, (base, onset))
-    if verdict.severity is not Severity.CONFIRMED:
-        return False
-    if verdict.onset_run_date is None:
-        return True
-    if verdict.onset_run_date != onset:
-        return False
-    at = verdict.onset_run_id
-    return at is None or base_run < at <= onset_run
+    return steps_in_window(
+        verdict, (base, onset), base_run=base_run, onset_run=onset_run,
+    )
 
 
 def _cell(verdict: MetricVerdict, window: SweepWindow) -> SweepCell:

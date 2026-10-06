@@ -1498,6 +1498,8 @@ def test_a_same_release_window_hands_the_ranker_its_step_as_stepped(monkeypatch)
     (request,) = ranker.requests
     assert request.sweep.row("baseline").stepped_in("wall_time_s")
     assert request.sweep.reading("time").stepped == ("baseline",)
+    # Nor is the configuration that stepped offered as a clean control.
+    assert request.outcomes == ()
 
 
 def test_a_same_release_window_without_a_harness_move_stays_unattributed(monkeypatch):

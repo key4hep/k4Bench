@@ -685,7 +685,8 @@ class ScopeOutcome:
 
 
 def steps_in_window(
-    verdict: MetricVerdict, window: tuple[str | None, str]
+    verdict: MetricVerdict, window: tuple[str | None, str],
+    *, base_run: str | None = None, onset_run: str | None = None,
 ) -> bool:
     """Does *verdict* place a confirmed step inside this window?
 
@@ -696,17 +697,31 @@ def steps_in_window(
     this release as one that never moved. Anything that stepped strictly inside
     the window is ours too; a step onsetting after it left this window flat and
     is still a control for it. An unplaceable onset counts as inside, because a
-    step nobody can date is not evidence of flatness."""
+    step nobody can date is not evidence of flatness.
+
+    A same-release window is the empty release interval ``(D, D]``, which would
+    read the very step that formed it as one that happened elsewhere. There
+    *base_run* / *onset_run* decide instead — an onset on that release whose run
+    is in ``(base_run, onset_run]``; an onset with no run id cannot be placed
+    and counts as inside."""
     if verdict.severity is not Severity.CONFIRMED:
         return False
     base, onset = window
     at = verdict.onset_run_date
     if at is None:
         return True
+    if base == onset and base_run is not None and onset_run is not None:
+        if at != onset:
+            return False
+        run = verdict.onset_run_id
+        return run is None or base_run < run <= onset_run
     return at <= onset and (base is None or at > base)
 
 
-def disqualified_as_control(verdict: MetricVerdict, window: tuple[str | None, str]) -> bool:
+def disqualified_as_control(
+    verdict: MetricVerdict, window: tuple[str | None, str],
+    *, base_run: str | None = None, onset_run: str | None = None,
+) -> bool:
     """True when *verdict* cannot testify that its configuration held still
     across *window*.
 
@@ -724,7 +739,10 @@ def disqualified_as_control(verdict: MetricVerdict, window: tuple[str | None, st
     No date check on the re-anchor: a series that stepped last week is not a
     clean control for a window this week either.
     """
-    return steps_in_window(verdict, window) or verdict.reanchor_run_date is not None
+    return (
+        steps_in_window(verdict, window, base_run=base_run, onset_run=onset_run)
+        or verdict.reanchor_run_date is not None
+    )
 
 
 def outcomes_for_window(
@@ -734,6 +752,8 @@ def outcomes_for_window(
     onset_release: str,
     stacks: set[str],
     regressed_scopes: set[tuple[str, str, str]],
+    base_run: str | None = None,
+    onset_run: str | None = None,
 ) -> tuple[ScopeOutcome, ...]:
     """The benchmark configurations that measured this window and did **not**
     confirm.
@@ -763,6 +783,8 @@ def outcomes_for_window(
     *regressed_scopes* only orders the result: the like-for-like controls — same
     detector, same sample, same platform as something that did regress — come
     first, because a caller that has to cut the list must keep those.
+    *base_run* / *onset_run* name a same-release window's two runs
+    (:func:`steps_in_window`).
     """
     window = (base_release, onset_release)
     outcomes: list[ScopeOutcome] = []
@@ -782,7 +804,10 @@ def outcomes_for_window(
         for verdict in group.verdicts:
             by_label.setdefault(verdict.label, []).append(verdict)
         for label, verdicts in by_label.items():
-            if any(disqualified_as_control(v, window) for v in verdicts):
+            if any(
+                disqualified_as_control(v, window, base_run=base_run, onset_run=onset_run)
+                for v in verdicts
+            ):
                 continue  # stepped in this window, or has not settled since its own step
             if any(v.severity is Severity.FAILURE for v in verdicts):
                 continue  # a configuration that partly failed did not run clean

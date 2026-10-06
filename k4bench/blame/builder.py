@@ -820,9 +820,16 @@ def _outcomes(
     detector. Ordering puts this scope's own configurations first — the
     ``baseline`` vs. ``no_<detector>`` comparison is the sharpest control the
     suite produces, and it must survive the prompt's cap.
+
+    A same-release window is also read and cached by its two runs, as
+    :func:`_sweeps` reads it: its releases alone are the empty interval
+    ``(D, D]``, which would offer the step that formed it as a clean control.
     """
     scope = (verdict.detector, verdict.platform, verdict.sample)
-    key = (scope, verdict.last_accepted_run_date, verdict.onset_run_date)
+    base_run = onset_run = None
+    if verdict.last_accepted_run_date == verdict.onset_run_date:
+        base_run, onset_run = verdict.last_accepted_run_id, verdict.onset_run_id
+    key = (scope, verdict.last_accepted_run_date, verdict.onset_run_date, base_run, onset_run)
     if key not in cache:
         stacks = _stacks(report, verdict)
         cache[key] = outcomes_for_window(
@@ -831,6 +838,8 @@ def _outcomes(
             onset_release=verdict.onset_run_date or "",
             stacks=stacks,
             regressed_scopes={scope},
+            base_run=base_run,
+            onset_run=onset_run,
         )
     return cache[key]
 
