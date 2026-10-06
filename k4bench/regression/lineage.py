@@ -23,7 +23,9 @@ would hand its successor a history cut short at its own first night. When the
 next platform (or version) replaces the current one, remove the current one's
 own entry before adding the new one; a later replay of the current one's first
 nights then judges them cold. A detector config whose entry is removed that way
-moves to :data:`RETIRED_DETECTORS`, so it stays replaced.
+moves to :data:`RETIRED_DETECTORS` with the config that replaced it, so it stays
+replaced — not expected to run once that successor has — without its history
+being continued.
 """
 
 from __future__ import annotations
@@ -45,10 +47,11 @@ DETECTOR_SUCCESSORS: dict[str, str] = {
     "IDEA_o1_v04":    "IDEA_o1_v03",
 }
 
-#: Detector configs replaced before their successor was itself replaced. Their
-#: :data:`DETECTOR_SUCCESSORS` entry is gone to keep succession one hop, but
-#: they are still replaced; name-ascending.
-RETIRED_DETECTORS: tuple[str, ...] = ()
+#: ``{detector config: the detector config that replaced it}`` for configs
+#: whose successor was itself replaced. Their :data:`DETECTOR_SUCCESSORS` entry
+#: is gone to keep succession one hop, but they are still replaced; this map
+#: answers only that, never whose history a series continues.
+RETIRED_DETECTORS: dict[str, str] = {}
 
 
 def predecessor_of(platform: str) -> str | None:
@@ -77,16 +80,23 @@ def detector_predecessor_of(detector: str) -> str | None:
 
 
 def detector_successors_of(detector: str) -> tuple[str, ...]:
-    """The detector configs that replaced *detector*, name-ascending."""
-    return tuple(sorted(
-        successor for successor, predecessor in DETECTOR_SUCCESSORS.items()
-        if predecessor == detector and successor != detector
-    ))
+    """The detector configs that replaced *detector*, name-ascending, including
+    the one recorded for a retired config."""
+    return tuple(sorted({
+        *(
+            successor for successor, predecessor in DETECTOR_SUCCESSORS.items()
+            if predecessor == detector and successor != detector
+        ),
+        *(
+            successor for retired, successor in RETIRED_DETECTORS.items()
+            if retired == detector and successor != detector
+        ),
+    }))
 
 
 def is_detector_replaced(detector: str) -> bool:
     """Whether some detector config has replaced *detector*."""
-    return detector in RETIRED_DETECTORS or bool(detector_successors_of(detector))
+    return bool(detector_successors_of(detector))
 
 
 def predecessor_series(detector: str, platform: str) -> tuple[tuple[str, str], ...]:

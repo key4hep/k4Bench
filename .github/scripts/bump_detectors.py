@@ -93,27 +93,29 @@ def edit_lineage(text: str, old: str, new: str) -> str:
     body = "".join(line for line in lines if entry.fullmatch(line)[1] != old)
     body += f'    "{new}": "{old}",\n'
     text = text[: match.start("body")] + body + text[match.end("body") :]
-    # Dropping the one-hop entry must not make its predecessor look active again.
-    return edit_retired(text, previous) if previous else text
+    # Dropping the one-hop entry must not make its predecessor look active again:
+    # it stays replaced by the config that succeeded it.
+    return edit_retired(text, previous, old) if previous else text
 
 
-def edit_retired(text: str, detector: str) -> str:
+def edit_retired(text: str, detector: str, successor: str) -> str:
     text = text.replace(
-        "RETIRED_DETECTORS: tuple[str, ...] = ()\n", "RETIRED_DETECTORS: tuple[str, ...] = (\n)\n"
+        "RETIRED_DETECTORS: dict[str, str] = {}\n", "RETIRED_DETECTORS: dict[str, str] = {\n}\n"
     )
-    pattern = re.compile(
-        r"(?m)^RETIRED_DETECTORS: tuple\[str, \.\.\.\] = \(\n(?P<body>.*?)^\)", re.S
-    )
+    pattern = re.compile(r"(?m)^RETIRED_DETECTORS: dict\[str, str\] = \{\n(?P<body>.*?)^\}", re.S)
     matches = list(pattern.finditer(text))
     if len(matches) != 1:
         raise ValueError("Unexpected RETIRED_DETECTORS block")
     match = matches[0]
     lines = match["body"].splitlines(keepends=True)
-    entry = re.compile(r'    "([A-Za-z0-9_-]+)",\n')
+    entry = re.compile(r'    "([A-Za-z0-9_-]+)":\s+"([A-Za-z0-9_-]+)",\n')
     if any(not entry.fullmatch(line) for line in lines):
         raise ValueError("Unexpected RETIRED_DETECTORS entries")
-    names = sorted({entry.fullmatch(line)[1] for line in lines} | {detector})
-    body = "".join(f'    "{name}",\n' for name in names)
+    retired = dict(entry.fullmatch(line).groups() for line in lines)
+    if retired.get(detector, successor) != successor:
+        raise ValueError(f"Retired detector already has another successor: {detector}")
+    retired[detector] = successor
+    body = "".join(f'    "{name}": "{retired[name]}",\n' for name in sorted(retired))
     return text[: match.start("body")] + body + text[match.end("body") :]
 
 
@@ -197,10 +199,20 @@ def main() -> None:
     parser.add_argument("--fcc-config", type=Path, required=True)
     parser.add_argument("--family")
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument(
+        "--rejected",
+        type=Path,
+        help="JSON list of proposed configs (e.g. IDEA_o1_v05) whose bump PR was closed unmerged",
+    )
     args = parser.parse_args()
     if args.apply and not args.family:
         parser.error("--apply requires --family (one independent PR per family)")
     bumps = detect(ROOT, args.k4geo, args.family)
+    if args.rejected:
+        # A rejected version would otherwise be proposed again every run,
+        # holding back every other family; a newer version is a new proposal.
+        rejected = set(json.loads(args.rejected.read_text()))
+        bumps = [bump for bump in bumps if bump.new not in rejected]
     summaries = []
     for bump in bumps:
         edits, notes = prepare(ROOT, bump, args.fcc_config)

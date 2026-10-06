@@ -22,7 +22,7 @@ def tree(tmp_path):
     (root / "k4bench/regression").mkdir(parents=True)
     (root / "k4bench/regression/lineage.py").write_text(
         'DETECTOR_SUCCESSORS: dict[str, str] = {\n    "IDEA_o1_v03": "IDEA_o1_v02",\n}\n'
-        "RETIRED_DETECTORS: tuple[str, ...] = ()\n"
+        "RETIRED_DETECTORS: dict[str, str] = {}\n"
     )
     geo = tmp_path / "geo"
     fcc = tmp_path / "fcc"
@@ -125,12 +125,15 @@ def test_first_lineage_entry():
 def test_dropped_lineage_entry_keeps_its_predecessor_retired():
     text = (
         'DETECTOR_SUCCESSORS: dict[str, str] = {\n    "IDEA_o1_v03": "IDEA_o1_v02",\n}\n'
-        'RETIRED_DETECTORS: tuple[str, ...] = (\n    "IDEA_o1_v01",\n)\n'
+        'RETIRED_DETECTORS: dict[str, str] = {\n    "IDEA_o1_v01": "IDEA_o1_v02",\n}\n'
     )
     namespace = {}
     exec(bump.edit_lineage(text, "IDEA_o1_v03", "IDEA_o1_v04"), namespace)
     assert namespace["DETECTOR_SUCCESSORS"] == {"IDEA_o1_v04": "IDEA_o1_v03"}
-    assert namespace["RETIRED_DETECTORS"] == ("IDEA_o1_v01", "IDEA_o1_v02")
+    assert namespace["RETIRED_DETECTORS"] == {
+        "IDEA_o1_v01": "IDEA_o1_v02",
+        "IDEA_o1_v02": "IDEA_o1_v03",
+    }
     with pytest.raises(ValueError, match="Unexpected RETIRED_DETECTORS block"):
         bump.edit_lineage(text.split("RETIRED")[0], "IDEA_o1_v03", "IDEA_o1_v04")
 
@@ -142,6 +145,29 @@ def test_repository_lineage_retires_on_a_second_bump():
     assert namespace["is_detector_replaced"]("ALLEGRO_o1_v03")
     assert namespace["is_detector_replaced"]("ALLEGRO_o1_v04")
     assert not namespace["is_detector_replaced"]("ALLEGRO_o1_v05")
+    # Reports and the dashboard stop expecting v03 once v04 has run.
+    assert namespace["successor_series"]("ALLEGRO_o1_v03", "p") == (("ALLEGRO_o1_v04", "p"),)
+    # Its history is not continued: v04 is judged cold, v05 continues v04.
+    assert namespace["detector_predecessor_of"]("ALLEGRO_o1_v04") is None
+    assert namespace["detector_predecessor_of"]("ALLEGRO_o1_v05") == "ALLEGRO_o1_v04"
+
+
+def test_a_rejected_version_lets_the_next_family_through(tree, monkeypatch, capsys, tmp_path):
+    root, geo, fcc, config, _ = tree
+    config("CLD_o5_v98")
+    monkeypatch.setattr(bump, "ROOT", root)
+    args = ["bump_detectors", "--k4geo", str(geo), "--fcc-config", str(fcc)]
+    monkeypatch.setattr(sys, "argv", args)
+    bump.main()
+    assert [p["new"] for p in json.loads(capsys.readouterr().out)] == [
+        "CLD_o5_v99",
+        "IDEA_o1_v04",
+    ]
+    rejected = tmp_path / "rejected.json"
+    rejected.write_text('["CLD_o5_v99"]')
+    monkeypatch.setattr(sys, "argv", args + ["--rejected", str(rejected)])
+    bump.main()
+    assert [p["new"] for p in json.loads(capsys.readouterr().out)] == ["IDEA_o1_v04"]
 
 
 def test_older_steering_and_sample_overrides(tree):

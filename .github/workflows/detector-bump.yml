@@ -8,8 +8,10 @@ on:
 permissions:
   contents: read
 
+# One queue for the whole repository: the open-PR check and bump/<family>
+# branches are global, so runs on different refs must not interleave.
 concurrency:
-  group: detector-bump-${{ github.ref }}
+  group: detector-bump
   cancel-in-progress: false
 
 jobs:
@@ -28,8 +30,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # A bump PR closed unmerged rejects that exact version; skip it so the
+          # next family can proceed. Titles read "... bump <family> to vNN".
+          gh pr list --repo "$GITHUB_REPOSITORY" --state closed --limit 1000 \
+            --json headRefName,title,mergedAt \
+            --jq '[.[] | select((.headRefName | startswith("bump/")) and .mergedAt == null)
+              | .title | capture("bump (?<family>[A-Za-z0-9_-]+) to (?<version>v[0-9]+)$")
+              | "\(.family)_\(.version)"]' > "$RUNNER_TEMP/rejected.json"
+          cat "$RUNNER_TEMP/rejected.json"
           python .github/scripts/bump_detectors.py \
-            --k4geo "$K4GEO" --fcc-config "$FCCCONFIG" > "$RUNNER_TEMP/bumps.json"
+            --k4geo "$K4GEO" --fcc-config "$FCCCONFIG" --rejected "$RUNNER_TEMP/rejected.json" \
+            > "$RUNNER_TEMP/bumps.json"
           cat "$RUNNER_TEMP/bumps.json"
           # Every bump edits the shared lineage blocks, and an open PR is never
           # regenerated (that would force-push over maintainer commits). Propose

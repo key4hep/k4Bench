@@ -230,11 +230,15 @@ coexist, only the highest is replaced. A candidate must contain its matching XML
 The bot opens one PR per family on `bump/<family>`, one at a time: every bump
 edits the shared lineage blocks, so while any `bump/` PR is open, later runs
 propose nothing and leave its branch untouched, keeping maintainer commits on
-it. Once it is merged or closed, the next run proposes the next family (or a
-newer version) from the updated base. It
+it. Once it is merged, the next run proposes the next family from the updated
+base. Closing a bump PR unmerged rejects that exact version: later runs skip it
+and move on to the next family, and propose the family again only when a newer
+version appears. Runs on all refs share one concurrency group, so two runs never
+both find no open PR and open one each. It
 renames the benchmark YAML, updates geometry references and examples, and
-replaces the one-hop regression lineage entry, moving the dropped entry's
-predecessor to `RETIRED_DETECTORS`. Versioned steering paths change only when
+replaces the one-hop regression lineage entry, recording the dropped entry's
+predecessor and the config that replaced it in `RETIRED_DETECTORS`, so it is
+still treated as replaced. Versioned steering paths change only when
 the replacement exists in the same nightly's FCC-config. Otherwise the PR
 records that the existing steering file was retained. Review header prose,
 steering compatibility, sweep choices, timeouts, and the baseline transition.
