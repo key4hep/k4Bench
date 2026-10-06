@@ -16,6 +16,9 @@ concurrency:
 
 jobs:
   detect:
+    # Open and rejected bump PRs are tracked repository-wide, so only the
+    # default branch may propose bumps; test the workflow in a fork.
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -86,7 +89,10 @@ jobs:
       - uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
         if: steps.bump.outputs.changed == 'true'
         with:
+          # Events from GITHUB_TOKEN start no workflows, so CI and PR-Agent run
+          # only once a maintainer marks this draft ready for review.
           token: ${{ github.token }}
+          draft: true
           branch: bump/${{ matrix.family }}
           delete-branch: true
           title: 'feat(benchmarks): bump ${{ matrix.family }} to ${{ steps.bump.outputs.version }}'

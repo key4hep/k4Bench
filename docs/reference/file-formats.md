@@ -233,7 +233,7 @@ propose nothing and leave its branch untouched, keeping maintainer commits on
 it. Once it is merged, the next run proposes the next family from the updated
 base. Closing a bump PR unmerged rejects that exact version: later runs skip it
 and move on to the next family, and propose the family again only when a newer
-version appears. Runs on all refs share one concurrency group, so two runs never
+version appears. All runs share one concurrency group, so two runs never
 both find no open PR and open one each. It
 renames the benchmark YAML, updates geometry references and examples, and
 replaces the one-hop regression lineage entry, recording the dropped entry's
@@ -242,8 +242,8 @@ still treated as replaced. Versioned steering paths change only when
 the replacement exists in the same nightly's FCC-config. Otherwise the PR
 records that the existing steering file was retained. Review header prose,
 steering compatibility, sweep choices, timeouts, and the baseline transition.
-CI (including real geometry patching) and PR-Agent run after a maintainer
-clicks **Approve workflows to run** on the PR; a human merges it. There is no
+The PR opens as a draft; CI (including real geometry patching) and PR-Agent run
+after a maintainer clicks **Ready for review**; a human merges it. There is no
 auto-merge. The action is invoked only for actual bumps, so a no-op run does
 not close existing PRs or clean up merged branches.
 
@@ -277,12 +277,15 @@ One-time repository setup:
    an organization administrator must allow it first.
 2. Create the `detector-bump` label if it does not already exist.
 
-GitHub holds PR workflows triggered by `GITHUB_TOKEN` for maintainer approval.
-Click **Approve workflows to
-run** on the PR before reviewing the results. This is separate from approving
-or merging the PR. See [GitHub's workflow triggering documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow).
-PR-Agent accepts same-repository `bump/` PR events from `github-actions[bot]`;
-bot comments and unrelated bot PRs remain excluded.
+Events caused by `GITHUB_TOKEN` start no workflows, so neither the bot's
+opening of the PR nor its push runs CI or PR-Agent. See [GitHub's workflow
+triggering documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow).
+The bot therefore opens a draft, and a maintainer clicking **Ready for review**
+starts both: the Pipeline and AI PR Review workflows trigger on
+`ready_for_review`. Later maintainer pushes trigger them as usual. This is
+separate from approving or merging the PR. PR-Agent also accepts
+same-repository `bump/` PR events from `github-actions[bot]`; bot comments and
+unrelated bot PRs remain excluded.
 
 Local inspection (no files written unless `--apply --family NAME` is supplied):
 
@@ -292,11 +295,11 @@ py-venv/bin/python .github/scripts/bump_detectors.py \
 ```
 
 After merging, dispatch `gh workflow run detector-bump.yml` to check the no-op
-case. To test PR creation and CI approval, dispatch on a scratch branch with
-one config deliberately behind; approve the resulting PR workflows and check
-the `run` result. The normal CI branch filter targets `main`; use a disposable
-fork for this end-to-end test if the scratch branch is the PR base.
-Manual dispatch uses the selected branch as the PR base.
+case. Open and rejected bump PRs are tracked repository-wide, so the workflow
+proposes bumps only when run on the default branch; a dispatch on any other
+branch does nothing. To test PR creation and CI, use a disposable fork whose
+default branch has one config deliberately behind: dispatch there, mark the
+resulting draft ready for review, and check the `run` result.
 
 ## EOS layout
 

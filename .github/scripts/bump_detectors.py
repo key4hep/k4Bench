@@ -185,7 +185,7 @@ def body(bump: Bump, notes: list[str]) -> str:
         + "\n\n"
         "CI smoke-tests the changed geometry/steering pairs with one particle-gun event. "
         "Physics correctness still needs review.\n\n"
-        "- [ ] Click **Approve workflows to run** on this PR to start CI and PR-Agent.\n"
+        "- [ ] Click **Ready for review** on this draft to start CI and PR-Agent.\n"
         "- [ ] Review header comment prose and steering compatibility.\n"
         "- [ ] Confirm sweep selection and timeout remain sensible.\n"
         "- [ ] Review CI `run` (including geometry patching and simulation) and PR-Agent results.\n"
