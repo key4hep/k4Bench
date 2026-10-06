@@ -451,10 +451,12 @@ def _regressions_in_range(
                 continue
             if sample is not None and v.sample != sample:
                 continue
-            # A same-release window (onset == baseline) means the stack did not
-            # move across the step, so it cannot be an effect of any diff — drop
-            # it rather than list it with a nonsensical X → X window.
-            if _blame.classify(v) is _blame.WindowKind.SAME_STACK:
+            # A same-release window (onset == baseline) cannot be an effect of a
+            # release-to-release diff — the base run already had that release —
+            # so drop it rather than list it with a nonsensical X → X window.
+            # Tested on the releases rather than on SAME_STACK: a detector or
+            # platform switch inside one release is still such a window here.
+            if v.last_accepted_run_date == v.onset_run_date:
                 continue
             key = (v.detector, v.sample, v.label, v.metric, v.sub_detector, v.onset_run_id)
             if key not in seen:
@@ -691,6 +693,7 @@ def _render_focus_action(
     target_head = verdict.onset_run_date
     if (
         not target_base or not target_head
+        or target_base == target_head  # a same-release window has no package diff
         or target_base not in releases or target_head not in releases
         or (target_base, target_head) == (base_release, head_release)
     ):

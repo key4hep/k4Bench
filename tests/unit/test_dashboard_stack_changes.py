@@ -247,6 +247,18 @@ def test_regressions_in_range_excludes_same_release_windows():
     assert [v.metric for v in hits] == ["peak_rss_mb"]
 
 
+def test_regressions_in_range_excludes_a_detector_switch_within_one_release():
+    # The geometry version changed between two runs of one release: a bounded
+    # window for the Regressions view, but the stack still did not move.
+    reports = [_raw_report([
+        _confirmed(metric="wall_time_s", last_accepted_run_date="2026-06-25",
+                   last_accepted_detector="CLD_old"),
+        _confirmed(metric="peak_rss_mb"),
+    ])]
+    hits = stack_changes._regressions_in_range(reports, PLAT, "2026-06-24", "2026-06-25")
+    assert [v.metric for v in hits] == ["peak_rss_mb"]
+
+
 def test_regressions_in_range_skips_missing_reports():
     # A night whose report could not be fetched is None and must be tolerated.
     hits = stack_changes._regressions_in_range(
