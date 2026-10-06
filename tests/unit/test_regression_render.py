@@ -328,9 +328,12 @@ _UNJUDGED_FIELDS = {"unjudged"}
 #: The release a still-provisional baseline is re-anchoring onto, so a reader
 #: can tell "has not moved again" from "did not move" without parsing `reason`.
 _REANCHOR_FIELDS = {"reanchor_run_date"}
-#: The platform each window end was measured on, when a series continues a
-#: replaced platform's history.
-_ENDPOINT_PLATFORM_FIELDS = {"last_accepted_platform", "onset_platform"}
+#: The platform and detector config each window end was measured on, when a
+#: series continues a replaced platform's or detector's history.
+_ENDPOINT_PLATFORM_FIELDS = {
+    "last_accepted_platform", "onset_platform",
+    "last_accepted_detector", "onset_detector",
+}
 #: The verdict schema a reader deployed before these features knew about. The
 #: compatibility contract is that the new fields are *purely additive* to this
 #: set — anything else (a renamed or dropped field) breaks an old reader in a
@@ -621,3 +624,23 @@ def test_unreadable_evidence_costs_the_evidence_and_never_the_report():
     assert restored.region_deltas == ()
     # The verdict itself is untouched: this is context for a step, not the step.
     assert restored.severity is Severity.CONFIRMED and restored.pct_change == 0.21
+
+
+def test_a_version_switch_survives_the_round_trip():
+    # The blame CLI reads report.json back; a window end or history point that
+    # lost its detector would read as an ordinary release boundary there.
+    verdict = _confirmed_with_evidence()
+    verdict = dataclasses.replace(
+        verdict,
+        detector="ALLEGRO_o1_v04", last_accepted_detector="ALLEGRO_o1_v03",
+        history=(
+            dataclasses.replace(verdict.history[0], detector="ALLEGRO_o1_v03"),
+            verdict.history[1],
+        ),
+    )
+    restored = _round_trip(verdict)
+    assert restored.spans_detector_switch
+    assert (restored.base_detector, restored.onset_run_detector) == (
+        "ALLEGRO_o1_v03", "ALLEGRO_o1_v04",
+    )
+    assert [p.detector for p in restored.history] == ["ALLEGRO_o1_v03", None]

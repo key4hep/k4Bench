@@ -141,6 +141,40 @@ def test_open_window_is_skipped(monkeypatch):
     assert blame.entries == ()
 
 
+def test_a_window_spanning_a_detector_version_switch_is_attributed(monkeypatch):
+    # The switch is made in k4Bench's own configuration, so the ranker sees it
+    # among the candidates; the window is attributed like any other.
+    provenance = _provenance({
+        (_PLAT, "2026-07-03"): {"k4geo": _pkgs("a" * 40)},
+        (_PLAT, "2026-07-04"): {"k4geo": _pkgs("c" * 40)},
+    })
+    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+    switched = dataclasses.replace(
+        _verdict(detector="ALLEGRO_o1_v04"), last_accepted_detector="ALLEGRO_o1_v03",
+    )
+    blame = build_blame_report(
+        _report([switched]), packages_for_release=provenance, github=GitHubClient(),
+    )
+    assert [e.detector for e in blame.entries] == ["ALLEGRO_o1_v04"]
+
+
+def test_a_detector_switch_inside_the_history_is_no_stack_boundary():
+    # An older boundary where the geometry changed is not "no package moved",
+    # whatever the release diff says.
+    history = (
+        ReleasePoint("2026-07-01", 100.0, 1, 1, Severity.OK, Direction.NONE,
+                     detector="ALLEGRO_o1_v03"),
+        ReleasePoint("2026-07-02", 110.0, 1, 1, Severity.OK, Direction.NONE),
+        ReleasePoint("2026-07-03", 110.0, 1, 1, Severity.OK, Direction.NONE),
+    )
+    v = dataclasses.replace(_verdict(detector="ALLEGRO_o1_v04"), history=history)
+    changed = builder_mod._packages_changed(v, lambda *a: 0)
+    assert changed == {"2026-07-01": None, "2026-07-02": None, "2026-07-03": 0}
+    assert builder_mod._detector_switch_boundaries([v]) == {
+        (_PLAT, "2026-07-01", _PLAT, "2026-07-02"),
+    }
+
+
 def test_missing_provenance_is_skipped(monkeypatch):
     _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
     # Only the head release is known; the baseline aged off CVMFS → no diff.

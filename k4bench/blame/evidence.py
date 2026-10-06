@@ -140,6 +140,9 @@ class HistoryPoint:
     #: :attr:`~k4bench.regression.models.ReleasePoint.host_levels`); empty on
     #: reports written before it was recorded.
     host_levels: tuple[HostLevel, ...] = ()
+    #: The replaced detector config that measured this release, when it is not
+    #: the series' own (see :attr:`~k4bench.regression.models.ReleasePoint.detector`).
+    detector: str | None = None
 
     @property
     def flagged(self) -> bool:
@@ -257,9 +260,10 @@ class MetricHistory:
         for earlier, later in zip(self.points, self.points[1:]):
             if (
                 later.packages_changed == 0
-                # A boundary where the build platform changed is not identical
-                # software, whatever the package list says.
+                # A boundary where the build platform or the geometry changed
+                # is not identical software, whatever the package list says.
                 and earlier.platform == later.platform
+                and earlier.detector == later.detector
                 and earlier.judged and later.judged
                 and earlier.value is not None and later.value is not None
             ):
@@ -586,6 +590,7 @@ def _point(point: ReleasePoint, packages_changed: int | None) -> HistoryPoint:
         packages_changed=packages_changed,
         platform=point.platform,
         host_levels=point.host_levels,
+        detector=point.detector,
     )
 
 

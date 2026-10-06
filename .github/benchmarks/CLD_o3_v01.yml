@@ -43,6 +43,8 @@
 # `from cld_steer import *`, a relative import that only resolves because
 # nightly_benchmark.sh puts the steering file's own directory on PYTHONPATH.
 
+# xml:           https://github.com/key4hep/k4geo/blob/main/FCCee/CLD/compact/CLD_o3_v01/CLD_o3_v01.xml
+# steering_file: https://github.com/key4hep/CLDConfig/blob/main/CLDConfig/cld_arc_steer.py
 xml: FCCee/CLD/compact/CLD_o3_v01/CLD_o3_v01.xml
 steering_file: $CLDCONFIG/share/CLDConfig/cld_arc_steer.py
 

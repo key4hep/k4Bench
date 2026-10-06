@@ -1,11 +1,17 @@
-"""Unit tests for platform succession (:mod:`k4bench.regression.lineage`)."""
+"""Unit tests for platform and detector succession (:mod:`k4bench.regression.lineage`)."""
 
 from __future__ import annotations
 
 from k4bench.regression.lineage import (
+    DETECTOR_SUCCESSORS,
     PLATFORM_SUCCESSORS,
+    detector_predecessor_of,
+    detector_successors_of,
+    is_detector_replaced,
     is_replaced,
     predecessor_of,
+    predecessor_series,
+    successor_series,
     successors_of,
 )
 
@@ -35,3 +41,48 @@ def test_succession_does_not_chain():
 
 def test_no_platform_replaces_itself():
     assert not [p for p, pre in PLATFORM_SUCCESSORS.items() if p == pre]
+
+
+def test_a_geometry_version_continues_the_version_it_replaced():
+    assert detector_predecessor_of("ALLEGRO_o1_v04") == "ALLEGRO_o1_v03"
+    assert detector_successors_of("ALLEGRO_o1_v03") == ("ALLEGRO_o1_v04",)
+    assert is_detector_replaced("ALLEGRO_o1_v03")
+    assert not is_detector_replaced("ALLEGRO_o1_v04")
+    # Another option of the same concept is an independent series.
+    assert detector_predecessor_of("ALLEGRO_o2_v01") is None
+
+
+def test_the_replaced_detector_is_the_nearest_predecessor_series():
+    # A version bump after the platform migration: the new version only ever
+    # ran on the new platform, so its own predecessor on that platform comes
+    # first, and the platform's predecessor is the fallback.
+    assert predecessor_series("ALLEGRO_o1_v04", _LCG) == (
+        ("ALLEGRO_o1_v03", _LCG), ("ALLEGRO_o1_v04", _SPACK),
+    )
+    assert predecessor_series("ALLEGRO_o1_v03", _LCG) == (("ALLEGRO_o1_v03", _SPACK),)
+    assert predecessor_series("ALLEGRO_o1_v03", _SPACK) == ()
+
+
+def test_successor_series_inverts_predecessor_series():
+    assert successor_series("ALLEGRO_o1_v03", _LCG) == (("ALLEGRO_o1_v04", _LCG),)
+    assert successor_series("ALLEGRO_o1_v03", _SPACK) == (
+        ("ALLEGRO_o1_v04", _SPACK), ("ALLEGRO_o1_v03", _LCG),
+    )
+    assert successor_series("ALLEGRO_o1_v04", _LCG) == ()
+
+
+def test_detector_succession_does_not_chain():
+    assert not set(DETECTOR_SUCCESSORS) & set(DETECTOR_SUCCESSORS.values())
+    assert not [d for d, pre in DETECTOR_SUCCESSORS.items() if d == pre]
+
+
+def test_every_successor_detector_is_a_benchmarked_config():
+    # A successor names a config file in .github/benchmarks/; a typo would
+    # silently leave the new version cold and the old one reported missing.
+    from pathlib import Path
+
+    configs = {
+        p.stem for p in (Path(__file__).parents[2] / ".github" / "benchmarks").glob("*.yml")
+    }
+    assert set(DETECTOR_SUCCESSORS) <= configs
+    assert not set(DETECTOR_SUCCESSORS.values()) & configs

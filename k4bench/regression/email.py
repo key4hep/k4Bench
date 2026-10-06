@@ -402,9 +402,12 @@ def _window_href(
 
 def _stack_changes_href(dashboard_url: str | None, section) -> str | None:
     """The Stack Changes view for a window section's exact release window, or
-    ``None`` for a window measured across a platform migration — that view
-    compares two releases of one platform."""
-    if any(v.base_platform != v.onset_run_platform for v in section.verdicts):
+    ``None`` for a window measured across a platform migration or a detector
+    version switch — that view compares two releases of one series."""
+    if any(
+        v.base_platform != v.onset_run_platform or v.spans_detector_switch
+        for v in section.verdicts
+    ):
         return None
     return stack_changes_href(
         dashboard_url,
@@ -1030,6 +1033,25 @@ class WindowSection:
         benchmark-side or noise."""
         return bool(self.onset_release) and self.base_release == self.onset_release
 
+    @property
+    def detector_switch(self) -> tuple[str, str] | None:
+        """``(base, onset)`` detector configs when the window spans a geometry
+        version switch (see :mod:`k4bench.regression.lineage`), else ``None``."""
+        return next(
+            ((v.base_detector, v.onset_run_detector)
+             for v in self.verdicts if v.spans_detector_switch),
+            None,
+        )
+
+
+def _detector_switch_note(switch: tuple[str, str]) -> str:
+    """The likeliest explanation of a window spanning a geometry version switch,
+    for when no ranking is available to say so."""
+    return (
+        f"The benchmarked geometry changed across this window "
+        f"({switch[0]} → {switch[1]}), which likely accounts for the step."
+    )
+
 
 def _window_sections(group: RunGroupReport, index: _BlameIndex) -> list[WindowSection]:
     """*group*'s confirmed regressions split by the window their change entered
@@ -1209,6 +1231,11 @@ def _html_ranking_body(section: WindowSection, dashboard_url: str | None) -> str
             f"Package changes: {' · '.join(compare_items)}</p>"
         )
     if card is None or not card.complete:
+        if (switch := section.detector_switch) is not None:
+            return (
+                f'<p style="margin:0;font-size:13px;color:{_C_MUTED};">'
+                f"{_esc(_detector_switch_note(switch))}</p>"
+            )
         if section.same_release:
             # The stack is identical by construction; the compare links (when a
             # blame build recorded any) can only name the benchmark harness.
@@ -1615,6 +1642,9 @@ def _md_window_section(
             items.append(f"+{card.total_compares - len(card.compare_links)} more")
         compare_line = f"  Package changes: {' · '.join(items)}"
     if card is None or not card.complete:
+        if (switch := section.detector_switch) is not None:
+            lines.append(f"  {_detector_switch_note(switch)}")
+            return lines
         if section.same_release:
             if compare_line:
                 # The stack is identical by construction; the compare links can

@@ -790,6 +790,16 @@ def test_a_boundary_where_the_build_platform_changed_is_not_a_noise_measurement(
     assert migrated.quiet_boundary_move is None
 
 
+def test_a_boundary_where_the_detector_version_changed_is_not_a_noise_measurement():
+    # No tracked package moved, but the geometry did.
+    switched = _history((
+        dataclasses.replace(_point("2026-07-14", 12.0), detector="ALLEGRO_o1_v03"),
+        _point("2026-07-18", 14.0, packages=0),
+    ))
+    assert switched.quiet_boundaries == 0
+    assert switched.quiet_boundary_move is None
+
+
 def test_history_points_keep_the_platform_that_measured_them():
     verdict = MetricVerdict(
         detector="DET", platform="x86_64-el9-gcc16-opt", sample="s", label="baseline",

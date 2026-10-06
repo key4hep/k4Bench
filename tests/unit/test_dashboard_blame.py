@@ -64,6 +64,10 @@ def test_classify_covers_the_four_window_shapes():
     assert _blame.classify(_verdict(onset_run_date=None)) is K.NONE  # pre-onset report
     assert _blame.classify(_verdict(last_accepted_run_date=None)) is K.OPEN
     assert _blame.classify(_verdict(last_accepted_run_date="2026-06-25")) is K.SAME_STACK
+    # One release on both ends, but the geometry changed between them.
+    assert _blame.classify(_verdict(
+        last_accepted_run_date="2026-06-25", last_accepted_detector="CLD_old",
+    )) is K.BOUNDED
     # Baseline newer than onset can only be a corrupt report — degrade to OPEN
     # rather than trust the impossible bound.
     assert _blame.classify(_verdict(last_accepted_run_date="2026-06-28")) is K.OPEN

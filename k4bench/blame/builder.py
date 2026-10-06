@@ -440,7 +440,8 @@ def build_blame_report(
                 for v in rank_verdicts
             ],
             changed_packages=changed_packages,
-            exclude={(base_platform, base or "", platform, onset)},
+            exclude={(base_platform, base or "", platform, onset)}
+            | _detector_switch_boundaries(rank_verdicts),
         )
         # The index is the offer; the provider is how it is redeemed. Built
         # apart so the offer stays a pure function of provenance the report
@@ -665,12 +666,12 @@ def _harness_change(
     base_end = next(m for m in verdicts if m.last_accepted_run_id == base_id)
     onset_end = next(m for m in verdicts if m.onset_run_id == onset_id)
     base = k4bench_commit_for_run(
-        v.detector, base_end.base_platform, base_end.last_accepted_run_date,
-        v.sample, base_id,
+        base_end.base_detector, base_end.base_platform,
+        base_end.last_accepted_run_date, v.sample, base_id,
     )
     onset = k4bench_commit_for_run(
-        v.detector, onset_end.onset_run_platform, onset_end.onset_run_date,
-        v.sample, onset_id,
+        onset_end.onset_run_detector, onset_end.onset_run_platform,
+        onset_end.onset_run_date, v.sample, onset_id,
     )
     if base is None or onset is None:
         return None
@@ -1041,22 +1042,42 @@ def _packages_changed(
     where the metric moved and *nothing* in the stack changed measures this
     series' own noise directly, with the software held fixed. The oldest point
     has no predecessor in the tail and therefore no boundary — ``None``, unread,
-    which is what the prompt says about it.
+    which is what the prompt says about it. So is a boundary where the detector
+    config changed: the geometry moved there whatever the stack did.
     """
     changed: dict[str, int | None] = {}
     previous: str | None = None
     previous_platform: str | None = None
+    previous_detector: str | None = None
     for point in verdict.history:
         platform = point.platform or verdict.platform
+        detector = point.detector or verdict.detector
         changed[point.run_date] = (
             changed_count(
                 platform, previous, point.run_date,
                 None if previous_platform == platform else previous_platform,
             )
-            if previous else None
+            if previous and previous_detector == detector else None
         )
-        previous, previous_platform = point.run_date, platform
+        previous, previous_platform, previous_detector = (
+            point.run_date, platform, detector,
+        )
     return changed
+
+
+def _detector_switch_boundaries(verdicts: list[MetricVerdict]) -> set[tuple]:
+    """``(base platform, base, onset platform, onset)`` for every boundary in
+    *verdicts*' history tails where the detector config changed — a geometry
+    version switch, never an upstream change worth offering as history."""
+    switches = set()
+    for v in verdicts:
+        for earlier, later in zip(v.history, v.history[1:]):
+            if (earlier.detector or v.detector) != (later.detector or v.detector):
+                switches.add((
+                    earlier.platform or v.platform, earlier.run_date,
+                    later.platform or v.platform, later.run_date,
+                ))
+    return switches
 
 
 def _rank_request(
@@ -1140,6 +1161,8 @@ def _rank_request(
         onset_release=v.onset_run_date,
         base_platform=v.last_accepted_platform,
         onset_platform=v.onset_platform,
+        base_detector=v.last_accepted_detector,
+        onset_detector=v.onset_detector,
         candidates=candidates,
         outcomes=outcomes,
         n_unchanged=n_unchanged,

@@ -300,6 +300,10 @@ class ReleasePoint:
     #: :mod:`k4bench.regression.lineage`). ``None`` means the verdict's platform.
     platform: str | None = None
     host_levels: tuple[HostLevel, ...] = ()
+    #: The detector config that measured this release when it is not the
+    #: verdict's own — a series continuing a replaced geometry version's
+    #: history. ``None`` means the verdict's detector.
+    detector: str | None = None
 
 
 @dataclass(frozen=True)
@@ -403,6 +407,14 @@ class MetricVerdict:
     #: verdict's own platform, and on every report written before these existed.
     last_accepted_platform: str | None = None
     onset_platform: str | None = None
+    #: The detector config each window end was measured on, when that is not
+    #: this verdict's own — a series continuing a replaced geometry version's
+    #: history (see :mod:`k4bench.regression.lineage`). A window whose ends
+    #: differ here spans the version switch: the geometry changed across it, so
+    #: no upstream change is needed to explain the step. ``None`` means the
+    #: verdict's own detector, and on every report written before these existed.
+    last_accepted_detector: str | None = None
+    onset_detector: str | None = None
 
     @property
     def base_platform(self) -> str:
@@ -413,6 +425,22 @@ class MetricVerdict:
     def onset_run_platform(self) -> str:
         """The platform the window's onset run was measured on."""
         return self.onset_platform or self.platform
+
+    @property
+    def base_detector(self) -> str:
+        """The detector config the window's base run was measured on."""
+        return self.last_accepted_detector or self.detector
+
+    @property
+    def onset_run_detector(self) -> str:
+        """The detector config the window's onset run was measured on."""
+        return self.onset_detector or self.detector
+
+    @property
+    def spans_detector_switch(self) -> bool:
+        """Whether the window's two ends were measured on different detector
+        configs — a geometry version bump inside the window."""
+        return self.base_detector != self.onset_run_detector
 
     @property
     def flagged(self) -> bool:

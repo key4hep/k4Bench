@@ -899,6 +899,17 @@ def test_the_ranker_is_told_when_the_window_spans_a_platform_switch():
     assert "platform switch" not in _build_user_prompt(_request())
 
 
+def test_the_ranker_is_told_when_the_window_spans_a_detector_version_switch():
+    request = dataclasses.replace(
+        _request(), detector="ALLEGRO_o1_v04", base_detector="ALLEGRO_o1_v03",
+    )
+    prompt = _build_user_prompt(request)
+    assert "Window base measured on detector config: ALLEGRO_o1_v03" in prompt
+    assert "Window onset measured on detector config: ALLEGRO_o1_v04" in prompt
+    assert "This window spans a detector version switch" in prompt
+    assert "detector version switch" not in _build_user_prompt(_request())
+
+
 # ── The evidence summary ──────────────────────────────────────────────────────
 
 def _sweep_fixture():

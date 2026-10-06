@@ -34,6 +34,8 @@
 # Sample-level keys override top-level, except ddsim_args (which concatenates).
 # sweep / sweep_detectors / include_only / exclude_only are mutually exclusive.
 
+# xml:           https://github.com/key4hep/k4geo/blob/main/FCCee/IDEA/compact/IDEA_o2_v01/IDEA_o2_v01.xml
+# steering_file: https://github.com/HEP-FCC/FCC-config/blob/main/FCCee/FullSim/IDEA/IDEA_o2_v01/SteeringFile_IDEA_o2_v01.py
 xml: FCCee/IDEA/compact/IDEA_o2_v01/IDEA_o2_v01.xml
 steering_file: $FCCCONFIG/FullSim/IDEA/IDEA_o2_v01/SteeringFile_IDEA_o2_v01.py
 

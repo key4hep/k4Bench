@@ -72,6 +72,7 @@ from k4bench.blame.prompt import (
     allocate_favoured_diff_budget,
     body_block,
     compact_dir,
+    detector_switch_lines,
     diff_block,
     direction_phrase,
     format_files,
@@ -194,6 +195,11 @@ class RankRequest:
     #: platform's history. ``None`` means ``platform``.
     base_platform: str | None = None
     onset_platform: str | None = None
+    #: The detector configs the window's base and onset runs were measured on,
+    #: when either is not ``detector`` — a series continuing a replaced geometry
+    #: version's history. ``None`` means ``detector``.
+    base_detector: str | None = None
+    onset_detector: str | None = None
     #: Tracked packages that did **not** move across this window. The other half
     #: of the diff, and the half that bounds the search: "three of twenty-one
     #: moved" tells the model the cause is in those three or in something
@@ -749,6 +755,8 @@ def _context_lines(request: RankRequest) -> list[str]:
     diff."""
     base_platform = request.base_platform or request.platform
     onset_platform = request.onset_platform or request.platform
+    base_detector = request.base_detector or request.detector
+    onset_detector = request.onset_detector or request.detector
     return [
         f"- Detector: {request.detector}",
         sample_line(request.sample),
@@ -758,6 +766,10 @@ def _context_lines(request: RankRequest) -> list[str]:
         *(
             platform_switch_lines(base_platform, onset_platform)
             if base_platform != onset_platform else ()
+        ),
+        *(
+            detector_switch_lines(base_detector, onset_detector)
+            if base_detector != onset_detector else ()
         ),
     ]
 

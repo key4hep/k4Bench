@@ -1623,6 +1623,9 @@ class CommentPlan:
     #: measured across a platform migration. Its release diff is then filed
     #: under :func:`_window_platform`, never under either platform alone.
     platform_switches: set[tuple[str, str]] = field(default_factory=set)
+    #: ``(base detector, onset detector)`` for every row whose window was
+    #: measured across a geometry version switch.
+    detector_switches: set[tuple[str, str]] = field(default_factory=set)
     #: ``(repo, number) -> reference`` for the older-boundary pull requests the
     #: first pass read before scoring this window
     #: (:class:`~k4bench.blame.models.HistoricalRef`). De-duplicated across
@@ -1997,6 +2000,8 @@ def _collect_window(confirmed: list[_Confirmed], plan: CommentPlan) -> None:
         plan.platforms_seen.add(platform)
         if verdict.base_platform != verdict.onset_run_platform:
             plan.platform_switches.add((verdict.base_platform, verdict.onset_run_platform))
+        if verdict.spans_detector_switch:
+            plan.detector_switches.add((verdict.base_detector, verdict.onset_run_detector))
         if entry is not None:
             # Only an entry measuring *this comment's* window describes this
             # comment's release diff. A row can enter the window on a narrower
@@ -2460,12 +2465,12 @@ def _reproducer_for(
         return None
     try:
         base_info = run_info_for(
-            verdict.detector, verdict.base_platform,
+            verdict.base_detector, verdict.base_platform,
             f"key4hep-{verdict.last_accepted_run_date}", verdict.sample,
             verdict.last_accepted_run_id,
         )
         onset_info = run_info_for(
-            verdict.detector, verdict.onset_run_platform,
+            verdict.onset_run_detector, verdict.onset_run_platform,
             f"key4hep-{verdict.onset_run_date}", verdict.sample,
             verdict.onset_run_id,
         )
@@ -2671,6 +2676,7 @@ def _attribution_request(
         unchanged_by_platform=dict(plan.unchanged),
         packages_unavailable_on=plan.packages_unavailable_on,
         platform_switches=tuple(sorted(plan.platform_switches)),
+        detector_switches=tuple(sorted(plan.detector_switches)),
         # Resolved above, and allowed to raise: the review must see the same
         # historical evidence the first pass did, or it must not happen at all.
         historical=historical,

@@ -133,3 +133,9 @@ def test_a_replaced_platform_does_not_become_the_default():
 
 def test_platforms_nothing_replaced_stay_alphabetical():
     assert ui_chrome.order_platforms(["b-plat", "a-plat"]) == ["a-plat", "b-plat"]
+
+
+def test_a_replaced_detector_version_does_not_become_the_default():
+    assert ui_chrome.order_detectors(
+        ["ALLEGRO_o1_v03", "ALLEGRO_o1_v04", "ALLEGRO_o2_v01", "CLD_o2_v08", "CLD_o2_v09"]
+    ) == ["ALLEGRO_o1_v04", "ALLEGRO_o2_v01", "CLD_o2_v09", "ALLEGRO_o1_v03", "CLD_o2_v08"]

@@ -244,10 +244,14 @@ def regression_href(
     Returns ``None`` when the verdict carries no onset identity — the tab needs
     one to tell two onsets of the same release apart, and a link that would
     quietly select the wrong step is worse than the unpinned one. Also ``None``
-    for a window measured across a platform migration: Stack Changes compares
-    two releases of one platform, and the base release is not on this one.
+    for a window measured across a platform migration or a detector version
+    switch: Stack Changes compares two releases of one series, and the base
+    release is not in this one.
     """
-    if verdict.base_platform != verdict.onset_run_platform:
+    if (
+        verdict.base_platform != verdict.onset_run_platform
+        or verdict.spans_detector_switch
+    ):
         return None
     base = stack_changes_href(
         dashboard_url,
@@ -402,6 +406,7 @@ def _history(raw: object) -> tuple[ReleasePoint, ...]:
                 hosts=_hosts(item.get("hosts")),
                 platform=str(item["platform"]) if item.get("platform") else None,
                 host_levels=_host_levels(item.get("host_levels")),
+                detector=str(item["detector"]) if item.get("detector") else None,
             ))
         except (TypeError, ValueError):
             continue

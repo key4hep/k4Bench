@@ -1,4 +1,4 @@
-# k4Bench nightly benchmark config — CLD o2_v08
+# k4Bench nightly benchmark config — CLD o2_v09
 #
 # The nightly workflow expands every file in .github/benchmarks/ into a matrix
 # of (detector × sample) jobs and uploads each result to EOS under:
@@ -34,14 +34,16 @@
 # Sample-level keys override top-level, except ddsim_args (which concatenates).
 # sweep / sweep_detectors / include_only / exclude_only are mutually exclusive.
 #
-# CLD_o2_v08 is the FCC-ee CLD detector concept (silicon vertex/tracker,
+# CLD_o2_v09 is the FCC-ee CLD detector concept (silicon vertex/tracker,
 # ECal/HCal, solenoid, muon yoke). Docs (CERN SSO):
 # https://fcc-ee-detector-full-sim.docs.cern.ch/CLD/
 # Steering comes from CLDConfig (github.com/key4hep/CLDConfig), shipped by
 # Key4hep under $CLDCONFIG; our xml: below overrides the steering file's own
 # hardcoded compactFile default, same pattern IDEA already relies on.
 
-xml: FCCee/CLD/compact/CLD_o2_v08/CLD_o2_v08.xml
+# xml:           https://github.com/key4hep/k4geo/blob/main/FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
+# steering_file: https://github.com/key4hep/CLDConfig/blob/main/CLDConfig/cld_steer.py
+xml: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
 steering_file: $CLDCONFIG/share/CLDConfig/cld_steer.py
 
 verbose: false

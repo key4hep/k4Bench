@@ -42,6 +42,7 @@ from ui_chrome import (
     _render_footer,
     _render_scope_reset,
     _render_sidebar_footer,
+    order_detectors,
     order_platforms,
     render_example_detector_badge,
     render_logs_tab,
@@ -196,6 +197,7 @@ def main() -> None:
             if not detectors:
                 st.error("No detectors found at the configured WebEOS URL.")
                 return
+            detectors = order_detectors(detectors)
             _drop_stale_selection("sb_detector", detectors)
             seed_query_param("sb_detector", "detector", detectors)
             detector = st.selectbox("Detector", detectors, key="sb_detector")

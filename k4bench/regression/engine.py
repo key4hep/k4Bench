@@ -69,9 +69,10 @@ so every gate errs toward *not* flagging:
    change arriving in the same window keeps a bounded onset window to
    attribute it with.
 
-A platform that succeeds another continues its series: the report assembly puts
-the predecessor's nights in front of the history this engine walks (see
-:mod:`k4bench.regression.lineage`), so a migration is judged like any other step.
+A platform or detector config that succeeds another continues its series: the
+report assembly puts the predecessor's nights in front of the history this engine
+walks (see :mod:`k4bench.regression.lineage`), so a migration or a geometry
+version switch is judged like any other step.
 
 Every series reaching this engine is a measurement: what a configuration
 recorded, judged against its own history. A night where every configuration of
@@ -331,9 +332,9 @@ def evaluate_series(
     is independent evidence against a machine fluke; a clean night clears an
     unconfirmed WATCH). Unreliable runs are skipped entirely — they neither
     confirm nor reset a pending WATCH, since there is no evidence either way
-    for that night. An optional ``platform`` column marks rows a continued
-    history took from a replaced platform; a pending WATCH never carries across
-    a change of it. Returns the full verdict series (the dashboard
+    for that night. Optional ``platform`` and ``detector`` columns mark rows a
+    continued history took from a replaced platform or detector config; a
+    pending WATCH never carries across a change of either. Returns the full verdict series (the dashboard
     drill-down shades from it); callers wanting "tonight's" verdict take the
     last element.
 
@@ -430,10 +431,10 @@ def evaluate_series(
     def _segment_key(row) -> str:
         return release_key(row.run_date, row.run_id)
 
-    # Which platform measured the previous row, for a history that continues a
-    # replaced platform's (an optional ``platform`` column; empty on the
-    # series' own rows).
-    previous_platform: object = object()
+    # Which platform and detector config measured the previous row, for a
+    # history that continues a replaced one's (optional ``platform`` and
+    # ``detector`` columns; empty on the series' own rows).
+    previous_source: object = object()
 
     for release_date, group in groupby(
         df.itertuples(index=False), key=_segment_key,
@@ -458,14 +459,17 @@ def evaluate_series(
         release_last_at_new_level: tuple[str, str] | None = None
 
         for row in group:
-            platform = getattr(row, "platform", None)
-            platform = platform if isinstance(platform, str) and platform else None
-            if platform != previous_platform:
-                # Two strikes must come from one platform: a WATCH the replaced
-                # platform set on its last night would otherwise confirm on the
-                # successor's first and open the window before the switch.
+            source = tuple(
+                marker if isinstance(marker, str) and marker else None
+                for marker in (getattr(row, "platform", None), getattr(row, "detector", None))
+            )
+            if source != previous_source:
+                # Two strikes must come from one series: a WATCH the replaced
+                # platform or detector set on its last night would otherwise
+                # confirm on the successor's first and open the window before
+                # the switch.
                 pending = pending_run = None
-                previous_platform = platform
+                previous_source = source
             if row.reliable is False:
                 continue  # no evidence for this night: skip, don't touch `pending`
             x = row.value

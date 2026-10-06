@@ -53,7 +53,7 @@ from remote_cache import (
 )
 from k4bench.blame.models import BlameReport, BlameSchemaError, rank_group_key
 from k4bench.provenance.diff import diff_packages
-from k4bench.regression.lineage import successors_of
+from k4bench.regression.lineage import successor_series
 from tabs import _blame
 from tabs._night_picker import render_night_picker
 from tabs._regression_flags import (
@@ -302,16 +302,19 @@ def _candidate_nights(
 def _replaced_by(
     data_url: str, detector: str, platform: str, sample: str, night: str,
 ) -> bool:
-    """Whether a platform that replaced *platform* had run *sample* by *night* —
-    the condition under which the report stops expecting *platform* to run.
+    """Whether a platform or detector config that replaced this series had run
+    *sample* by *night* — the condition under which the report stops expecting
+    this series to run.
 
     A listing that cannot be fetched counts as not replaced: offering a night
     that turns out to hold nothing for this platform costs less than hiding a
     missing-run failure.
     """
-    for successor in successors_of(platform):
+    for successor_detector, successor_platform in successor_series(detector, platform):
         try:
-            listing = _cached_list_run_dates(data_url, detector, successor, sample)
+            listing = _cached_list_run_dates(
+                data_url, successor_detector, successor_platform, sample,
+            )
         except requests.RequestException:
             continue
         if any(d <= night for ds in listing.values() for d in ds):
@@ -672,6 +675,12 @@ def _render_blame_card(data_url: str, attribution: _WindowAttribution) -> None:
             st.caption(
                 f"This window spans a platform switch: "
                 f"`{v.base_platform}` → `{v.onset_run_platform}`."
+            )
+        elif v.spans_detector_switch:
+            # Stack Changes compares two releases of one detector config.
+            st.caption(
+                f"This window spans a detector version switch: "
+                f"`{v.base_detector}` → `{v.onset_run_detector}`."
             )
         else:
             st.link_button(

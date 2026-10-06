@@ -45,11 +45,11 @@ DD4HEP = os.environ.get("DD4hepINSTALL", "")
 
 #: The geometries the nightly benchmarks (see .github/benchmarks/*.yml).
 _GEOMETRIES = {
-    "ALLEGRO_o1_v03": "FCCee/ALLEGRO/compact/ALLEGRO_o1_v03/ALLEGRO_o1_v03.xml",
+    "ALLEGRO_o1_v04": "FCCee/ALLEGRO/compact/ALLEGRO_o1_v04/ALLEGRO_o1_v04.xml",
     "ALLEGRO_o2_v01": "FCCee/ALLEGRO/compact/ALLEGRO_o2_v01/ALLEGRO_o2_v01.xml",
-    "CLD_o2_v08":     "FCCee/CLD/compact/CLD_o2_v08/CLD_o2_v08.xml",
+    "CLD_o2_v09":     "FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml",
     "CLD_o3_v01":     "FCCee/CLD/compact/CLD_o3_v01/CLD_o3_v01.xml",
-    "IDEA_o1_v03":    "FCCee/IDEA/compact/IDEA_o1_v03/IDEA_o1_v03.xml",
+    "IDEA_o1_v04":    "FCCee/IDEA/compact/IDEA_o1_v04/IDEA_o1_v04.xml",
     "IDEA_o2_v01":    "FCCee/IDEA/compact/IDEA_o2_v01/IDEA_o2_v01.xml",
     "ILD_FCCee_v01":  "FCCee/ILD_FCCee/compact/ILD_FCCee_v01/ILD_FCCee_v01.xml",
     "ILD_FCCee_v02":  "FCCee/ILD_FCCee/compact/ILD_FCCee_v02/ILD_FCCee_v02.xml",

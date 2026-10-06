@@ -46,6 +46,7 @@
 # more sub-configs than any other detector in this repo. Watch the first
 # nightly run's wall time; drop back to sweep: false here if it's a problem.
 
+# xml:           https://github.com/AIDASoft/DD4hep/blob/master/DDDetectors/compact/SiD.xml
 xml: $DD4hepINSTALL/DDDetectors/compact/SiD.xml
 verbose: false
 

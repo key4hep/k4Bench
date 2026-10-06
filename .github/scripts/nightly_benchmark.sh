@@ -6,7 +6,7 @@
 # flat set of jobs (see .github/scripts/list_benchmarks.py).
 #
 # Required env vars (set by the workflow):
-#   BENCHMARK_CONFIG  — config file stem, e.g. "ALLEGRO_o1_v03"
+#   BENCHMARK_CONFIG  — config file stem, e.g. "ALLEGRO_o1_v04"
 #   BENCHMARK_SAMPLE  — sample name, e.g. "single_e-_10GeV"
 #   XML_PATH          — detector geometry, $K4GEO-relative or absolute
 #   N_EVENTS          — positive integer

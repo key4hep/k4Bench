@@ -111,8 +111,9 @@ def release_points(
     the verdicts alone would silently drop those releases from the tail, which
     reads as a stack that was never benchmarked.
 
-    An optional ``platform`` column names the platform behind rows a series
-    continued from a replaced platform; their points carry it.
+    Optional ``platform`` and ``detector`` columns name the platform or detector
+    config behind rows a series continued from a replaced one; their points
+    carry it.
 
     *hosts* (from :func:`host_facts`) names the machine behind each ``run_id``,
     so the tail can show a change of benchmark host next to the change in the
@@ -137,14 +138,18 @@ def release_points(
     recorded_on: dict[str, dict[HostFact, list[float]]] = {}
     dates: dict[str, str] = {}
     ran_on: dict[str, dict[HostFact, None]] = {}
-    #: A continued series marks the rows its predecessor platform measured.
+    #: A continued series marks the rows its predecessor measured.
     platforms: dict[str, str] = {}
+    detectors: dict[str, str] = {}
     for row in ordered.itertuples(index=False):
         key = release_key(row.run_date, row.run_id)
         dates.setdefault(key, key)
         platform = getattr(row, "platform", None)
         if isinstance(platform, str) and platform:
             platforms.setdefault(key, platform)
+        detector = getattr(row, "detector", None)
+        if isinstance(detector, str) and detector:
+            detectors.setdefault(key, detector)
         value = _finite(row.value)
         recorded.setdefault(key, [])
         if value is not None:
@@ -198,6 +203,7 @@ def release_points(
             direction=worst.direction if worst is not None else Direction.NONE,
             hosts=tuple(ran_on.get(key, {})),
             platform=platforms.get(key),
+            detector=detectors.get(key),
             host_levels=tuple(
                 HostLevel(host=host, value=float(np.median(np.asarray(by_host[host]))))
                 for host in {**ran_on.get(key, {}), **dict.fromkeys(by_host)}
