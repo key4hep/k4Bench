@@ -334,7 +334,8 @@ def evaluate_series(
     confirm nor reset a pending WATCH, since there is no evidence either way
     for that night. Optional ``platform`` and ``detector`` columns mark rows a
     continued history took from a replaced platform or detector config; a
-    pending WATCH never carries across a change of either. Returns the full verdict series (the dashboard
+    pending WATCH never carries across a change of either, and a replaced
+    detector config's nights of a release split it into a segment of their own. Returns the full verdict series (the dashboard
     drill-down shades from it); callers wanting "tonight's" verdict take the
     last element.
 
@@ -427,16 +428,23 @@ def evaluate_series(
     # Group the sorted rows by release: nights sharing one are repeat
     # measurements of one software state and must all be judged against the
     # same snapshot. A row with no usable date keys on its run_id, so it forms
-    # a single-night group and the walk stays night-by-night for it.
-    def _segment_key(row) -> str:
-        return release_key(row.run_date, row.run_id)
+    # a single-night group and the walk stays night-by-night for it. A
+    # replaced detector config's nights of a release the successor also
+    # measured are another geometry, so they form a segment of their own: the
+    # successor's nights neither share their median nor re-anchor on them.
+    def _segment_key(row) -> tuple[str, str | None]:
+        detector = getattr(row, "detector", None)
+        return (
+            release_key(row.run_date, row.run_id),
+            detector if isinstance(detector, str) and detector else None,
+        )
 
     # Which platform and detector config measured the previous row, for a
     # history that continues a replaced one's (optional ``platform`` and
     # ``detector`` columns; empty on the series' own rows).
     previous_source: object = object()
 
-    for release_date, group in groupby(
+    for (release_date, _), group in groupby(
         df.itertuples(index=False), key=_segment_key,
     ):
         # The baseline cannot move inside a release (judged values enter it at

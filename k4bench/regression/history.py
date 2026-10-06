@@ -113,7 +113,9 @@ def release_points(
 
     Optional ``platform`` and ``detector`` columns name the platform or detector
     config behind rows a series continued from a replaced one; their points
-    carry it.
+    carry it. A replaced detector config's nights of a release the successor
+    also measured form a point of their own, as they form a segment of their
+    own in the walk.
 
     *hosts* (from :func:`host_facts`) names the machine behind each ``run_id``,
     so the tail can show a change of benchmark host next to the change in the
@@ -128,28 +130,34 @@ def release_points(
         return ()
     hosts = hosts or {}
 
-    judged_by_release: dict[str, list[MetricVerdict]] = {}
+    # Keyed like the engine's segments: a replaced detector config's nights of
+    # a release the successor also measured are a point of their own.
+    ordered = history.sort_values(["run_date", "run_id"], kind="stable")
+    keys: dict[str, tuple[str, str | None]] = {}
+    for row in ordered.itertuples(index=False):
+        detector = getattr(row, "detector", None)
+        keys[str(row.run_id)] = (
+            release_key(row.run_date, row.run_id),
+            detector if isinstance(detector, str) and detector else None,
+        )
+
+    judged_by_release: dict[tuple[str, str | None], list[MetricVerdict]] = {}
     for verdict in verdicts:
-        key = release_key(verdict.run_date, verdict.run_id)
+        key = keys.get(
+            str(verdict.run_id), (release_key(verdict.run_date, verdict.run_id), None),
+        )
         judged_by_release.setdefault(key, []).append(verdict)
 
-    ordered = history.sort_values(["run_date", "run_id"], kind="stable")
-    recorded: dict[str, list[float]] = {}
-    recorded_on: dict[str, dict[HostFact, list[float]]] = {}
-    dates: dict[str, str] = {}
-    ran_on: dict[str, dict[HostFact, None]] = {}
+    recorded: dict[tuple[str, str | None], list[float]] = {}
+    recorded_on: dict[tuple[str, str | None], dict[HostFact, list[float]]] = {}
+    ran_on: dict[tuple[str, str | None], dict[HostFact, None]] = {}
     #: A continued series marks the rows its predecessor measured.
-    platforms: dict[str, str] = {}
-    detectors: dict[str, str] = {}
+    platforms: dict[tuple[str, str | None], str] = {}
     for row in ordered.itertuples(index=False):
-        key = release_key(row.run_date, row.run_id)
-        dates.setdefault(key, key)
+        key = keys[str(row.run_id)]
         platform = getattr(row, "platform", None)
         if isinstance(platform, str) and platform:
             platforms.setdefault(key, platform)
-        detector = getattr(row, "detector", None)
-        if isinstance(detector, str) and detector:
-            detectors.setdefault(key, detector)
         value = _finite(row.value)
         recorded.setdefault(key, [])
         if value is not None:
@@ -195,7 +203,7 @@ def release_points(
             default=None,
         )
         points.append(ReleasePoint(
-            run_date=dates[key],
+            run_date=key[0],
             value=float(np.median(np.asarray(level))),
             n_runs=len(values),
             n_judged=len(judged),
@@ -203,7 +211,7 @@ def release_points(
             direction=worst.direction if worst is not None else Direction.NONE,
             hosts=tuple(ran_on.get(key, {})),
             platform=platforms.get(key),
-            detector=detectors.get(key),
+            detector=key[1],
             host_levels=tuple(
                 HostLevel(host=host, value=float(np.median(np.asarray(by_host[host]))))
                 for host in {**ran_on.get(key, {}), **dict.fromkeys(by_host)}
@@ -230,10 +238,15 @@ def history_tail(
     The cut is made on *position* where the release is in the tail, and only
     falls back to comparing keys when it is not: the points are already in the
     engine's order, and an undated release keys on its run id, which orders
-    against a date by nothing more than luck.
+    against a date by nothing more than luck. A release a replaced detector
+    config and its successor both measured is two points; the cut keeps both,
+    since a successor verdict was issued on the later one.
     """
     if upto is not None:
-        at = next((i for i, p in enumerate(points) if p.run_date == upto), None)
+        at = next(
+            (i for i in reversed(range(len(points))) if points[i].run_date == upto),
+            None,
+        )
         points = (
             points[: at + 1] if at is not None
             else [p for p in points if p.run_date <= upto]

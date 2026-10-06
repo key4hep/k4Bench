@@ -233,8 +233,11 @@ class MetricHistory:
 
     @property
     def onset_point(self) -> HistoryPoint | None:
+        # The last match: a release a replaced detector config also measured is
+        # two points, and the onset is the successor's.
         return next(
-            (p for p in self.points if p.release == self.onset_release), None
+            (p for p in reversed(self.points) if p.release == self.onset_release),
+            None,
         )
 
     @property

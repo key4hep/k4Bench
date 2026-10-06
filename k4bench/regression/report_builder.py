@@ -215,10 +215,15 @@ class PredecessorRuns:
 
 def _preceding_rows(
     df: pd.DataFrame | None, date_column: str, own: pd.DataFrame | None, own_date_column: str,
+    *, same_platform: bool = False,
 ) -> pd.DataFrame | None:
     """Rows of a predecessor frame measured before the successor's first night,
     on both the release date and the run date — the same cutoff a continued
-    series applies (see :func:`_continued_history`)."""
+    series applies (see :func:`_continued_history`).
+
+    On *same_platform* (a detector config succession) a predecessor night of the
+    successor's first release is kept too: there the release names one build,
+    and its last nights are the before measurement of the geometry change."""
     if df is None or df.empty or own is None or own.empty:
         return None
     first_release = pd.to_datetime(own[own_date_column], errors="coerce").min()
@@ -227,8 +232,11 @@ def _preceding_rows(
         return None
     releases = pd.to_datetime(df[date_column], errors="coerce")
     runs = pd.to_datetime(df["run_id"], errors="coerce")
+    released_before = (
+        releases <= first_release if same_platform else releases < first_release
+    )
     return df[
-        releases.notna() & (releases < first_release)
+        releases.notna() & released_before
         & runs.notna() & (runs < first_run)
     ]
 
@@ -277,6 +285,10 @@ def _continued_history(
     engine pools every night sharing one as repeat measurements of the same
     software. A measurement taken after the successor started — an old release
     rerun on the replaced platform — would change verdicts already issued.
+    A detector config replaced on the same platform also keeps its nights of
+    the successor's first release, measured before the switch: the engine
+    walks them as a segment of their own (see
+    :func:`~k4bench.regression.engine.evaluate_series`).
     """
     if predecessor is None or df is None or df.empty or metric not in df.columns:
         return own
@@ -285,7 +297,7 @@ def _continued_history(
         return own
     before = _preceding_rows(
         _series_history(df, mask, metric, predecessor.reliability), "run_date",
-        own, "run_date",
+        own, "run_date", same_platform=predecessor.platform == series.platform,
     )
     if before is None or before.empty:
         return own
@@ -939,6 +951,7 @@ def _group_report_from_frames(
     preceding = _preceding_rows(
         predecessor.results_df if predecessor is not None else None, "x_date",
         results_df, "x_date",
+        same_platform=predecessor is not None and predecessor.platform == platform,
     )
     seed_frame = (
         pd.concat([preceding, results_df], ignore_index=True)
