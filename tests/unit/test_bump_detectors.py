@@ -22,6 +22,7 @@ def tree(tmp_path):
     (root / "k4bench/regression").mkdir(parents=True)
     (root / "k4bench/regression/lineage.py").write_text(
         'DETECTOR_SUCCESSORS: dict[str, str] = {\n    "IDEA_o1_v03": "IDEA_o1_v02",\n}\n'
+        "RETIRED_DETECTORS: tuple[str, ...] = ()\n"
     )
     geo = tmp_path / "geo"
     fcc = tmp_path / "fcc"
@@ -119,6 +120,28 @@ def test_cli_dry_run_and_apply(tree, monkeypatch, capsys, tmp_path):
 def test_first_lineage_entry():
     text = "DETECTOR_SUCCESSORS: dict[str, str] = {}\n"
     assert '"IDEA_o1_v04": "IDEA_o1_v03"' in bump.edit_lineage(text, "IDEA_o1_v03", "IDEA_o1_v04")
+
+
+def test_dropped_lineage_entry_keeps_its_predecessor_retired():
+    text = (
+        'DETECTOR_SUCCESSORS: dict[str, str] = {\n    "IDEA_o1_v03": "IDEA_o1_v02",\n}\n'
+        'RETIRED_DETECTORS: tuple[str, ...] = (\n    "IDEA_o1_v01",\n)\n'
+    )
+    namespace = {}
+    exec(bump.edit_lineage(text, "IDEA_o1_v03", "IDEA_o1_v04"), namespace)
+    assert namespace["DETECTOR_SUCCESSORS"] == {"IDEA_o1_v04": "IDEA_o1_v03"}
+    assert namespace["RETIRED_DETECTORS"] == ("IDEA_o1_v01", "IDEA_o1_v02")
+    with pytest.raises(ValueError, match="Unexpected RETIRED_DETECTORS block"):
+        bump.edit_lineage(text.split("RETIRED")[0], "IDEA_o1_v03", "IDEA_o1_v04")
+
+
+def test_repository_lineage_retires_on_a_second_bump():
+    lineage = Path(__file__).parents[2] / "k4bench/regression/lineage.py"
+    namespace = {}
+    exec(bump.edit_lineage(lineage.read_text(), "ALLEGRO_o1_v04", "ALLEGRO_o1_v05"), namespace)
+    assert namespace["is_detector_replaced"]("ALLEGRO_o1_v03")
+    assert namespace["is_detector_replaced"]("ALLEGRO_o1_v04")
+    assert not namespace["is_detector_replaced"]("ALLEGRO_o1_v05")
 
 
 def test_older_steering_and_sample_overrides(tree):

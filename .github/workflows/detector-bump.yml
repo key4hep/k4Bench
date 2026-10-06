@@ -43,8 +43,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - id: open
+        name: Leave an open bump PR to its reviewers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: bump/${{ matrix.family }}
+        run: |
+          # Regenerating the branch would force-push over maintainer commits.
+          number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open \
+            --json number --jq '.[0].number // empty')"
+          if [[ -n "$number" ]]; then
+            echo "::notice::PR #$number is open on $BRANCH; leaving it untouched. Merge or close it to propose a newer version."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: ./.github/actions/setup-detector-bump
+        if: steps.open.outputs.exists != 'true'
       - id: bump
+        if: steps.open.outputs.exists != 'true'
         name: Apply this family
         env:
           FAMILY: ${{ matrix.family }}

@@ -60,6 +60,14 @@ def test_a_geometry_version_continues_the_version_it_replaced(detector_map):
     assert detector_predecessor_of("ALLEGRO_o2_v01") is None
 
 
+def test_a_retired_detector_stays_replaced_without_a_successor_entry(monkeypatch):
+    monkeypatch.setattr(lineage, "DETECTOR_SUCCESSORS", {"ALLEGRO_o1_v05": "ALLEGRO_o1_v04"})
+    monkeypatch.setattr(lineage, "RETIRED_DETECTORS", ("ALLEGRO_o1_v03",))
+    assert is_detector_replaced("ALLEGRO_o1_v03")
+    assert detector_successors_of("ALLEGRO_o1_v03") == ()
+    assert not is_detector_replaced("ALLEGRO_o1_v05")
+
+
 def test_the_replaced_detector_is_the_nearest_predecessor_series(detector_map):
     # A version bump after the platform migration: the new version only ever
     # ran on the new platform, so its own predecessor on that platform comes

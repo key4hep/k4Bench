@@ -22,7 +22,8 @@ predecessor's own runs only, so one that replaced another and is itself replaced
 would hand its successor a history cut short at its own first night. When the
 next platform (or version) replaces the current one, remove the current one's
 own entry before adding the new one; a later replay of the current one's first
-nights then judges them cold.
+nights then judges them cold. A detector config whose entry is removed that way
+moves to :data:`RETIRED_DETECTORS`, so it stays replaced.
 """
 
 from __future__ import annotations
@@ -43,6 +44,11 @@ DETECTOR_SUCCESSORS: dict[str, str] = {
     "CLD_o2_v09":     "CLD_o2_v08",
     "IDEA_o1_v04":    "IDEA_o1_v03",
 }
+
+#: Detector configs replaced before their successor was itself replaced. Their
+#: :data:`DETECTOR_SUCCESSORS` entry is gone to keep succession one hop, but
+#: they are still replaced; name-ascending.
+RETIRED_DETECTORS: tuple[str, ...] = ()
 
 
 def predecessor_of(platform: str) -> str | None:
@@ -80,7 +86,7 @@ def detector_successors_of(detector: str) -> tuple[str, ...]:
 
 def is_detector_replaced(detector: str) -> bool:
     """Whether some detector config has replaced *detector*."""
-    return bool(detector_successors_of(detector))
+    return detector in RETIRED_DETECTORS or bool(detector_successors_of(detector))
 
 
 def predecessor_series(detector: str, platform: str) -> tuple[tuple[str, str], ...]:

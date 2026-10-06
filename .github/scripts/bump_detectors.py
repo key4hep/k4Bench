@@ -86,12 +86,34 @@ def edit_lineage(text: str, old: str, new: str) -> str:
     values = ast.literal_eval("{" + match["body"] + "}")
     if new in values:
         raise ValueError(f"Successor already exists: {new}")
-    values.pop(old, None)
+    previous = values.pop(old, None)
     values[new] = old
     if set(values) & set(values.values()):
         raise ValueError("Detector succession would chain")
     body = "".join(line for line in lines if entry.fullmatch(line)[1] != old)
     body += f'    "{new}": "{old}",\n'
+    text = text[: match.start("body")] + body + text[match.end("body") :]
+    # Dropping the one-hop entry must not make its predecessor look active again.
+    return edit_retired(text, previous) if previous else text
+
+
+def edit_retired(text: str, detector: str) -> str:
+    text = text.replace(
+        "RETIRED_DETECTORS: tuple[str, ...] = ()\n", "RETIRED_DETECTORS: tuple[str, ...] = (\n)\n"
+    )
+    pattern = re.compile(
+        r"(?m)^RETIRED_DETECTORS: tuple\[str, \.\.\.\] = \(\n(?P<body>.*?)^\)", re.S
+    )
+    matches = list(pattern.finditer(text))
+    if len(matches) != 1:
+        raise ValueError("Unexpected RETIRED_DETECTORS block")
+    match = matches[0]
+    lines = match["body"].splitlines(keepends=True)
+    entry = re.compile(r'    "([A-Za-z0-9_-]+)",\n')
+    if any(not entry.fullmatch(line) for line in lines):
+        raise ValueError("Unexpected RETIRED_DETECTORS entries")
+    names = sorted({entry.fullmatch(line)[1] for line in lines} | {detector})
+    body = "".join(f'    "{name}",\n' for name in names)
     return text[: match.start("body")] + body + text[match.end("body") :]
 
 

@@ -35,10 +35,21 @@ samples:
     xml: other.xml
 """)
     assert smoke.pairs([config]) == {
-        ("old.xml", "common.py"): "IDEA_o1_v04/gun",
-        ("old.xml", "other.py"): "IDEA_o1_v04/other_steering",
-        ("other.xml", "common.py"): "IDEA_o1_v04/other_geometry",
+        ("old.xml", "common.py"): ("IDEA_o1_v04/gun", 5),
+        ("old.xml", "other.py"): ("IDEA_o1_v04/other_steering", 5),
+        ("other.xml", "common.py"): ("IDEA_o1_v04/other_geometry", 5),
     }
+
+
+def test_a_benchmark_can_allow_slow_geometry_construction(smoke, tmp_path):
+    fast = tmp_path / "fast.yml"
+    fast.write_text("xml: shared.xml\nn_events: 1\nsamples:\n  - name: gun\n")
+    slow = tmp_path / "slow.yml"
+    slow.write_text(fast.read_text() + "smoke_timeout: 45\n")
+    assert smoke.pairs([fast, slow]) == {("shared.xml", ""): ("fast/gun", 45)}
+    slow.write_text(fast.read_text() + "smoke_timeout: 0\n")
+    with pytest.raises(ValueError, match="smoke_timeout"):
+        smoke.pairs([slow])
 
 
 @pytest.fixture
@@ -74,7 +85,7 @@ def test_missing_steering_is_a_failure(smoke, paths, tmp_path):
 @pytest.mark.parametrize("failure", ["exit", "timeout", "missing_output", "empty_output"])
 def test_failed_simulation_never_passes(smoke, paths, monkeypatch, failure):
     def run(args, **kwargs):
-        assert kwargs["timeout"] == 300 and kwargs["check"]
+        assert kwargs["timeout"] == 45 * 60 and kwargs["check"]
         if failure == "exit":
             raise subprocess.CalledProcessError(1, args)
         if failure == "timeout":
@@ -84,4 +95,4 @@ def test_failed_simulation_never_passes(smoke, paths, monkeypatch, failure):
 
     monkeypatch.setattr(smoke.subprocess, "run", run)
     with pytest.raises((subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError)):
-        smoke.smoke("geometry.xml", "$FCCCONFIG/steering.py")
+        smoke.smoke("geometry.xml", "$FCCCONFIG/steering.py", 45)

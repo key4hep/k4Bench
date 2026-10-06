@@ -227,9 +227,12 @@ in the CVMFS `devkey-head/latest/x86_64-el9-gcc16-opt` view used by the nightly,
 not k4geo main. Only already benchmarked families are tracked; when versions
 coexist, only the highest is replaced. A candidate must contain its matching XML.
 
-The bot opens or updates one PR per family on `bump/<family>`. It renames the
-benchmark YAML, updates geometry references and examples, and replaces the
-one-hop regression lineage entry. Versioned steering paths change only when
+The bot opens one PR per family on `bump/<family>`. While that PR is open,
+later runs leave its branch untouched, so maintainer commits on it are kept; a
+newer nightly version is proposed only after the PR is merged or closed. It
+renames the benchmark YAML, updates geometry references and examples, and
+replaces the one-hop regression lineage entry, moving the dropped entry's
+predecessor to `RETIRED_DETECTORS`. Versioned steering paths change only when
 the replacement exists in the same nightly's FCC-config. Otherwise the PR
 records that the existing steering file was retained. Review header prose,
 steering compatibility, sweep choices, timeouts, and the baseline transition.
@@ -242,7 +245,9 @@ Steering selection checks file existence. On PRs whose branch starts with
 `bump/`, the required `run` job also smoke-tests the changed benchmark YAMLs.
 It resolves sample overrides and runs one 10 GeV electron gun event per distinct
 geometry/steering pair in the latest nightly stack, with a five-minute timeout
-per pair. A simulation failure, timeout, or missing/empty output fails CI.
+per pair unless the benchmark YAML sets a top-level `smoke_timeout` in minutes
+(IDEA_o2's DR tube geometry needs longer to build). A simulation failure,
+timeout, or missing/empty output fails CI.
 Ordinary PRs and pushes to `main` skip this additional step. The smoke test does
 not run benchmark sweeps or download physics samples; physics correctness and
 sample-specific simulation options still need review.
@@ -266,8 +271,8 @@ One-time repository setup:
    an organization administrator must allow it first.
 2. Create the `detector-bump` label if it does not already exist.
 
-GitHub holds PR workflows triggered by `GITHUB_TOKEN` for maintainer approval,
-including runs caused by subsequent bot updates. Click **Approve workflows to
+GitHub holds PR workflows triggered by `GITHUB_TOKEN` for maintainer approval.
+Click **Approve workflows to
 run** on the PR before reviewing the results. This is separate from approving
 or merging the PR. See [GitHub's workflow triggering documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow).
 PR-Agent accepts same-repository `bump/` PR events from `github-actions[bot]`;
