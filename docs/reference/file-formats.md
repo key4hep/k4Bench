@@ -227,9 +227,11 @@ in the CVMFS `devkey-head/latest/x86_64-el9-gcc16-opt` view used by the nightly,
 not k4geo main. Only already benchmarked families are tracked; when versions
 coexist, only the highest is replaced. A candidate must contain its matching XML.
 
-The bot opens one PR per family on `bump/<family>`. While that PR is open,
-later runs leave its branch untouched, so maintainer commits on it are kept; a
-newer nightly version is proposed only after the PR is merged or closed. It
+The bot opens one PR per family on `bump/<family>`, one at a time: every bump
+edits the shared lineage blocks, so while any `bump/` PR is open, later runs
+propose nothing and leave its branch untouched, keeping maintainer commits on
+it. Once it is merged or closed, the next run proposes the next family (or a
+newer version) from the updated base. It
 renames the benchmark YAML, updates geometry references and examples, and
 replaces the one-hop regression lineage entry, moving the dropped entry's
 predecessor to `RETIRED_DETECTORS`. Versioned steering paths change only when

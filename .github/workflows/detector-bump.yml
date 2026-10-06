@@ -15,6 +15,9 @@ concurrency:
 jobs:
   detect:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       families: ${{ steps.detect.outputs.families }}
     steps:
@@ -22,11 +25,25 @@ jobs:
       - uses: ./.github/actions/setup-detector-bump
       - id: detect
         name: Detect newer benchmarked families
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           python .github/scripts/bump_detectors.py \
             --k4geo "$K4GEO" --fcc-config "$FCCCONFIG" > "$RUNNER_TEMP/bumps.json"
           cat "$RUNNER_TEMP/bumps.json"
-          echo "families=$(jq -c '[.[].family]' "$RUNNER_TEMP/bumps.json")" >> "$GITHUB_OUTPUT"
+          # Every bump edits the shared lineage blocks, and an open PR is never
+          # regenerated (that would force-push over maintainer commits). Propose
+          # one family at a time so each PR starts from a main with the last merged.
+          open="$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 200 \
+            --json number,headRefName \
+            --jq '[.[] | select(.headRefName | startswith("bump/")) | "#\(.number)"] | join(", ")')"
+          if [[ -n "$open" ]]; then
+            echo "::notice::Detector-bump PR $open is open; merge or close it to propose the next bump."
+            families='[]'
+          else
+            families="$(jq -c '[.[].family][:1]' "$RUNNER_TEMP/bumps.json")"
+          fi
+          echo "families=$families" >> "$GITHUB_OUTPUT"
 
   pr:
     needs: detect
@@ -43,23 +60,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - id: open
-        name: Leave an open bump PR to its reviewers
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BRANCH: bump/${{ matrix.family }}
-        run: |
-          # Regenerating the branch would force-push over maintainer commits.
-          number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open \
-            --json number --jq '.[0].number // empty')"
-          if [[ -n "$number" ]]; then
-            echo "::notice::PR #$number is open on $BRANCH; leaving it untouched. Merge or close it to propose a newer version."
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          fi
       - uses: ./.github/actions/setup-detector-bump
-        if: steps.open.outputs.exists != 'true'
       - id: bump
-        if: steps.open.outputs.exists != 'true'
         name: Apply this family
         env:
           FAMILY: ${{ matrix.family }}
