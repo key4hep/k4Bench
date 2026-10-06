@@ -409,11 +409,14 @@ def _packages(point) -> str:
 def _history_rows(history: MetricHistory) -> list[str]:
     """One fixed-width row per release, with the window's ends marked."""
     rows = []
-    for point in history.points:
+    # By position, not release: a detector switch within one release is two
+    # points of the same release, the base and the onset.
+    base, onset = history.base_index, history.onset_index
+    for i, point in enumerate(history.points):
         marker = ""
-        if history.base_release and point.release == history.base_release:
+        if i == base:
             marker = "  <- window base: newest release ruling this step out"
-        elif point.release == history.onset_release:
+        elif i == onset:
             marker = "  <- the step appeared here"
         value = "—" if point.value is None else f"{point.value:.4g}"
         where = "".join(

@@ -143,6 +143,21 @@ def test_prior_flags_count_only_releases_before_the_window():
     assert len(history.before_window) == 3
 
 
+def test_a_detector_switch_within_one_release_keeps_the_onset_out_of_the_past():
+    # One release, two points: the replaced config's is the window base and the
+    # successor's the onset, which is not a flag from before the window.
+    old = dataclasses.replace(_point("2026-07-18", 12.0), detector="ALLEGRO_o1_v03")
+    history = _history([
+        _point("2026-07-14", 12.0),
+        old,
+        _point("2026-07-18", 14.5, severity="CONFIRMED"),
+    ], base="2026-07-18")
+    assert history.before_window == history.points[:2]
+    assert history.before_window[-1] is old
+    assert history.prior_flags == 0
+    assert history.onset_point is history.points[2]
+
+
 def test_a_host_change_is_reported_only_when_it_lands_on_the_onset():
     bench01, bench02 = HostFact("bench01", 64), HostFact("bench02", 64)
     at_onset = _history([

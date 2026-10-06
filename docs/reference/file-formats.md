@@ -299,6 +299,19 @@ tell a step that a machine measuring both sides reproduced (above, bench01) from
 one only a newly added machine measured. Points written before the field existed
 carry none, and readers treat that as "unknown".
 
+A series that continues a replaced geometry version's history
+(`DETECTOR_SUCCESSORS` in `k4bench/regression/lineage.py`) carries the replaced
+version's releases too. Such a point has a `detector` key naming the detector
+config that measured it; absent or `null` means the verdict's own detector. A
+release both versions measured is two points, in order: the replaced version's
+first, then the successor's. The verdict records which config measured each end
+of its window in `last_accepted_detector` and `onset_detector`, using the same
+convention: absent or `null` means the verdict's own detector, and that is also
+what reports written before these fields existed hold. When the two ends
+differ, the window spans the version switch, and the geometry change alone can
+explain the step. The window can lie within one release: the base is that
+release's replaced-version point and the onset is its successor point.
+
 The field exists for attribution. A step is only evidence that something changed
 if the series it came out of does not move that much by itself, and one number
 cannot say which. Only confirmed verdicts carry it (they are the only ones

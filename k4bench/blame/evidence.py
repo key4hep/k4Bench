@@ -213,7 +213,12 @@ class MetricHistory:
         nothing here is known to predate the change."""
         if not self.base_release:
             return ()
-        return tuple(p for p in self.points if p.release <= self.base_release)
+        if (base := self.base_index) is not None:
+            return self.points[:base + 1]
+        onset = self.onset_index
+        return tuple(
+            p for p in self.points[:onset] if p.release <= self.base_release
+        )
 
     @property
     def after_onset(self) -> tuple[HistoryPoint, ...]:
@@ -232,13 +237,36 @@ class MetricHistory:
         return any(p.judged and p.value is not None for p in self.after_onset)
 
     @property
-    def onset_point(self) -> HistoryPoint | None:
-        # The last match: a release a replaced detector config also measured is
-        # two points, and the onset is the successor's.
+    def onset_index(self) -> int | None:
+        """The position of the onset in :attr:`points`. The last match: a
+        release a replaced detector config also measured is two points, and the
+        onset is the successor's."""
         return next(
-            (p for p in reversed(self.points) if p.release == self.onset_release),
+            (i for i in reversed(range(len(self.points)))
+             if self.points[i].release == self.onset_release),
             None,
         )
+
+    @property
+    def base_index(self) -> int | None:
+        """The position of the window base in :attr:`points`: the last point of
+        ``base_release`` before the onset. A detector switch within one release
+        is two points of that release, the replaced config's first — the base —
+        and the successor's last, the onset."""
+        if not self.base_release:
+            return None
+        onset = self.onset_index
+        end = len(self.points) if onset is None else onset
+        return next(
+            (i for i in reversed(range(end))
+             if self.points[i].release == self.base_release),
+            None,
+        )
+
+    @property
+    def onset_point(self) -> HistoryPoint | None:
+        onset = self.onset_index
+        return None if onset is None else self.points[onset]
 
     @property
     def prior_flags(self) -> int:
