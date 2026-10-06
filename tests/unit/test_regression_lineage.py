@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+
+from k4bench.regression import lineage
 from k4bench.regression.lineage import (
     DETECTOR_SUCCESSORS,
     PLATFORM_SUCCESSORS,
@@ -43,7 +46,12 @@ def test_no_platform_replaces_itself():
     assert not [p for p, pre in PLATFORM_SUCCESSORS.items() if p == pre]
 
 
-def test_a_geometry_version_continues_the_version_it_replaced():
+@pytest.fixture
+def detector_map(monkeypatch):
+    monkeypatch.setattr(lineage, "DETECTOR_SUCCESSORS", {"ALLEGRO_o1_v04": "ALLEGRO_o1_v03"})
+
+
+def test_a_geometry_version_continues_the_version_it_replaced(detector_map):
     assert detector_predecessor_of("ALLEGRO_o1_v04") == "ALLEGRO_o1_v03"
     assert detector_successors_of("ALLEGRO_o1_v03") == ("ALLEGRO_o1_v04",)
     assert is_detector_replaced("ALLEGRO_o1_v03")
@@ -52,7 +60,22 @@ def test_a_geometry_version_continues_the_version_it_replaced():
     assert detector_predecessor_of("ALLEGRO_o2_v01") is None
 
 
-def test_the_replaced_detector_is_the_nearest_predecessor_series():
+def test_a_retired_detector_stays_replaced_without_a_successor_entry(monkeypatch):
+    monkeypatch.setattr(lineage, "DETECTOR_SUCCESSORS", {"ALLEGRO_o1_v05": "ALLEGRO_o1_v04"})
+    monkeypatch.setattr(lineage, "RETIRED_DETECTORS", {"ALLEGRO_o1_v03": "ALLEGRO_o1_v04"})
+    assert is_detector_replaced("ALLEGRO_o1_v03")
+    # v05 counts too, so v03 stops being expected even if v04 never ran.
+    assert detector_successors_of("ALLEGRO_o1_v03") == ("ALLEGRO_o1_v04", "ALLEGRO_o1_v05")
+    assert successor_series("ALLEGRO_o1_v03", _LCG) == (
+        ("ALLEGRO_o1_v04", _LCG), ("ALLEGRO_o1_v05", _LCG),
+    )
+    # Retirement never continues a history: v04's own entry is gone.
+    assert detector_predecessor_of("ALLEGRO_o1_v04") is None
+    assert predecessor_series("ALLEGRO_o1_v04", _LCG) == (("ALLEGRO_o1_v04", _SPACK),)
+    assert not is_detector_replaced("ALLEGRO_o1_v05")
+
+
+def test_the_replaced_detector_is_the_nearest_predecessor_series(detector_map):
     # A version bump after the platform migration: the new version only ever
     # ran on the new platform, so its own predecessor on that platform comes
     # first, and the platform's predecessor is the fallback.
@@ -63,7 +86,7 @@ def test_the_replaced_detector_is_the_nearest_predecessor_series():
     assert predecessor_series("ALLEGRO_o1_v03", _SPACK) == ()
 
 
-def test_successor_series_inverts_predecessor_series():
+def test_successor_series_inverts_predecessor_series(detector_map):
     assert successor_series("ALLEGRO_o1_v03", _LCG) == (("ALLEGRO_o1_v04", _LCG),)
     assert successor_series("ALLEGRO_o1_v03", _SPACK) == (
         ("ALLEGRO_o1_v04", _SPACK), ("ALLEGRO_o1_v03", _LCG),

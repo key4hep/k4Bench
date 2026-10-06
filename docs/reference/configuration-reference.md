@@ -62,6 +62,7 @@ name (must match `^[A-Za-z0-9_-]+$`). Validated by `list_benchmarks.py`.
 | `exclude_only` | list | — | Drop these subdetectors (single run). |
 | `ddsim_args` | str | — | ddsim flags applied to every sample (concatenated with sample-level). |
 | `steering_file` | str | — | `ddsim --steeringFile` path; `$VAR` (e.g. `$FCCCONFIG`) expanded in the runner. Its containing directory is put on `PYTHONPATH`, so a steering file that itself does a relative `from sibling import *` (e.g. CLDConfig's `cld_arc_steer.py`) resolves. |
+| `smoke_timeout` | int > 0 | — | Minutes the bump-PR smoke test allows per geometry/steering pair (default `5`); for geometries that are slow to build, e.g. IDEA_o2's DR tube. Ignored by the nightly. |
 | `samples` | list | ✅ | List of sample entries (below). |
 
 ### Per-sample keys (under `samples:`)

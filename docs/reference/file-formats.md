@@ -220,6 +220,86 @@ samples:
     input_files: root://eospublic.cern.ch//eos/.../events_noVtxSmear.hepmc
 ```
 
+### Automated detector version bumps
+
+`detector-bump.yml` runs daily at 05:00 UTC and on manual dispatch. It looks
+in the CVMFS `devkey-head/latest/x86_64-el9-gcc16-opt` view used by the nightly,
+not k4geo main. Only already benchmarked families are tracked; when versions
+coexist, only the highest is replaced. A candidate must contain its matching XML.
+
+The bot opens one PR per family on `bump/<family>`, one at a time: every bump
+edits the shared lineage blocks, so while any `bump/` PR is open, later runs
+propose nothing and leave its branch untouched, keeping maintainer commits on
+it. Only this repository's `bump/` branches count; PRs from forks are ignored,
+whatever their branch name. Once it is merged, the next run proposes the next
+family from the updated base. Closing a bump PR unmerged rejects that exact version: later runs skip it
+and move on to the next family, and propose the family again only when a newer
+version appears. All runs share one concurrency group, so two runs never
+both find no open PR and open one each. It
+renames the benchmark YAML, updates geometry references and examples, and
+replaces the one-hop regression lineage entry, recording the dropped entry's
+predecessor and the config that replaced it in `RETIRED_DETECTORS`, so it is
+still treated as replaced. Versioned steering paths change only when
+the replacement exists in the same nightly's FCC-config. Otherwise the PR
+records that the existing steering file was retained. Review header prose,
+steering compatibility, sweep choices, timeouts, and the baseline transition.
+The PR opens as a draft; CI (including real geometry patching) and PR-Agent run
+after a maintainer clicks **Ready for review**; a human merges it. There is no
+auto-merge. The action is invoked only for actual bumps, so a no-op run does
+not close existing PRs or clean up merged branches.
+
+Steering selection checks file existence. On PRs whose branch starts with
+`bump/`, the required `run` job also smoke-tests the changed benchmark YAMLs.
+It resolves sample overrides and runs one 10 GeV electron gun event per distinct
+geometry/steering pair in the latest nightly stack, with a five-minute timeout
+per pair unless the benchmark YAML sets a top-level `smoke_timeout` in minutes
+(IDEA_o2's DR tube geometry needs longer to build). A simulation failure,
+timeout, or missing/empty output fails CI.
+Ordinary PRs and pushes to `main` skip this additional step. The smoke test does
+not run benchmark sweeps or download physics samples; physics correctness and
+sample-specific simulation options still need review.
+
+To repeat a smoke test locally, source the nightly view and run:
+
+```bash
+python3 .github/scripts/smoke_benchmarks.py .github/benchmarks/IDEA_o1_v04.yml
+```
+
+No GitHub App, PAT, or additional repository secrets are needed. The workflow
+uses the built-in `GITHUB_TOKEN`, with Contents and Pull requests write access
+only in the PR job, and signs commits as `github-actions[bot]`. Workflow examples
+are version-independent because this token cannot update workflow files.
+
+One-time repository setup:
+
+1. In **Settings → Actions → General → Workflow permissions**, enable
+   **Allow GitHub Actions to create and approve pull requests**. The workflow
+   creates PRs; it does not approve or merge them. If the setting is unavailable,
+   an organization administrator must allow it first.
+2. Create the `detector-bump` label if it does not already exist.
+
+Events caused by `GITHUB_TOKEN` start no workflows, so neither the bot's
+opening of the PR nor its push runs CI or PR-Agent. See [GitHub's workflow
+triggering documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow).
+The bot therefore opens a draft, and a maintainer clicking **Ready for review**
+starts both: the Pipeline and AI PR Review workflows trigger on
+`ready_for_review`. Later maintainer pushes trigger them as usual. This is
+separate from approving or merging the PR.
+
+Local inspection (no files written unless `--apply --family NAME` is supplied):
+
+```bash
+py-venv/bin/python .github/scripts/bump_detectors.py \
+  --k4geo "$K4GEO" --fcc-config "$FCCCONFIG"
+```
+
+After merging, dispatch `gh workflow run detector-bump.yml` to check the no-op
+case. Open and rejected bump PRs are tracked repository-wide, so the workflow
+proposes bumps only when run on the default branch; a dispatch on any other
+branch does nothing. To test PR creation and CI, use a disposable fork whose
+default branch has one config deliberately behind: dispatch there, mark the
+resulting draft ready for review, and check the `run` result.
+
 ## EOS layout
 
 Nightly results live under `EOS_ROOT = /eos/user/j/jbeirer/k4bench`, encoding

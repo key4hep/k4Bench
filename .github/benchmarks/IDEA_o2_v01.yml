@@ -43,6 +43,10 @@ verbose: false
 
 timeout: 600  # 10 hours — a job past this is stuck, not merely slow
 
+# Minutes for the one-event smoke test of detector-bump PRs (default 5): the DR
+# tube geometry construction alone takes ~27 min.
+smoke_timeout: 45
+
 # Partial sweep — full sweep is currently too long for nightly CI. The DR tube
 # geometries cost ~27 min of construction per config before the first event is
 # simulated, so every entry here adds over an hour to the job irrespective of

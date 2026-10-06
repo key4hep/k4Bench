@@ -32,6 +32,7 @@ from pathlib import Path
 from xml.dom import minidom
 
 import pytest
+import yaml
 
 from k4bench.geometry.patcher import (
     _PATCH_DIR_PREFIX,
@@ -44,16 +45,12 @@ K4GEO = os.environ.get("K4GEO", "")
 DD4HEP = os.environ.get("DD4hepINSTALL", "")
 
 #: The geometries the nightly benchmarks (see .github/benchmarks/*.yml).
-_GEOMETRIES = {
-    "ALLEGRO_o1_v04": "FCCee/ALLEGRO/compact/ALLEGRO_o1_v04/ALLEGRO_o1_v04.xml",
-    "ALLEGRO_o2_v01": "FCCee/ALLEGRO/compact/ALLEGRO_o2_v01/ALLEGRO_o2_v01.xml",
-    "CLD_o2_v09":     "FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml",
-    "CLD_o3_v01":     "FCCee/CLD/compact/CLD_o3_v01/CLD_o3_v01.xml",
-    "IDEA_o1_v04":    "FCCee/IDEA/compact/IDEA_o1_v04/IDEA_o1_v04.xml",
-    "IDEA_o2_v01":    "FCCee/IDEA/compact/IDEA_o2_v01/IDEA_o2_v01.xml",
-    "ILD_FCCee_v01":  "FCCee/ILD_FCCee/compact/ILD_FCCee_v01/ILD_FCCee_v01.xml",
-    "ILD_FCCee_v02":  "FCCee/ILD_FCCee/compact/ILD_FCCee_v02/ILD_FCCee_v02.xml",
-}
+_GEOMETRIES = {}
+for _config in sorted((Path(__file__).parents[2] / ".github/benchmarks").glob("*.yml")):
+    _xml = yaml.safe_load(_config.read_text())["xml"]
+    if not _xml.startswith("$") and not Path(_xml).is_absolute():
+        _GEOMETRIES[_config.stem] = _xml
+
 
 pytestmark = [
     pytest.mark.integration,
@@ -259,7 +256,7 @@ def test_every_nightly_geometry_was_found():
     ]
     assert not missing, (
         f"benchmarked geometries not found under $K4GEO={K4GEO}: {missing} — "
-        "either k4geo moved them (update _GEOMETRIES, and .github/benchmarks/) "
+        "either k4geo moved them (update .github/benchmarks/) "
         "or this environment is incomplete"
     )
 

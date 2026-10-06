@@ -1392,6 +1392,53 @@ def test_local_report_continues_the_replaced_detector_and_drops_it(tmp_path):
     assert all(v.base_detector == _OLD_DET for v in new.regressions)
 
 
+def test_a_retired_detector_is_not_reported_as_missing_after_two_bumps(tmp_path, monkeypatch):
+    # v03 → v04 → v05: the second bump drops v04's one-hop entry and retires
+    # v03. Once v04 has run, v03 is still not expected to, even within the
+    # missing-run grace; a backfill before v04's first night still reports it.
+    from k4bench.regression import lineage
+
+    v03, v04, v05 = "DET_o1_v03", "DET_o1_v04", "DET_o1_v05"
+    monkeypatch.setattr(lineage, "DETECTOR_SUCCESSORS", {v05: v04})
+    monkeypatch.setattr(lineage, "RETIRED_DETECTORS", {v03: v04})
+    for detector, nights in (
+        (v03, _nights(10)),
+        (v04, _nights(3, start="2026-01-11")),
+        (v05, _nights(2, start="2026-01-14")),
+    ):
+        for night in nights:
+            _write_run(tmp_path / detector / _PLAT / _STACK / "single_e" / night, night=night)
+
+    report = build_nightly_report_local(str(tmp_path))
+    assert {g.detector for g in report.groups} == {v05}
+    assert report.job_failures == []
+
+    backfill = build_nightly_report_local(str(tmp_path), as_of="2026-01-10", night="2026-01-11")
+    assert next(g for g in backfill.groups if g.detector == v03).job_failures
+
+
+def test_a_retired_detector_is_not_reported_as_missing_when_its_successor_never_ran(
+    tmp_path, monkeypatch,
+):
+    # v03 → v04 → v05 where v04 never produced a run: v05's runs alone mean
+    # v03 is no longer expected.
+    from k4bench.regression import lineage
+
+    v03, v04, v05 = "DET_o1_v03", "DET_o1_v04", "DET_o1_v05"
+    monkeypatch.setattr(lineage, "DETECTOR_SUCCESSORS", {v05: v04})
+    monkeypatch.setattr(lineage, "RETIRED_DETECTORS", {v03: v04})
+    for detector, nights in (
+        (v03, _nights(10)),
+        (v05, _nights(2, start="2026-01-14")),
+    ):
+        for night in nights:
+            _write_run(tmp_path / detector / _PLAT / _STACK / "single_e" / night, night=night)
+
+    report = build_nightly_report_local(str(tmp_path))
+    assert {g.detector for g in report.groups} == {v05}
+    assert report.job_failures == []
+
+
 def test_a_predecessor_candidate_without_a_tree_is_skipped(tmp_path, monkeypatch):
     # A new detector config never ran on the platform its own platform replaced;
     # that candidate's listing is a 404, which means "no runs", not a failure.

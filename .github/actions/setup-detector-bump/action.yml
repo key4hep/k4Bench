@@ -1,0 +1,17 @@
+name: Set up detector bump tooling
+description: Mount CVMFS, prepare Python, and read geometry paths from the nightly view.
+runs:
+  using: composite
+  steps:
+    - uses: cvmfs-contrib/github-action-cvmfs@72f2a8d366043978d6aebee154bc9ed321c2f2a8 # v5
+    - name: Prepare Python and read nightly paths
+      shell: bash
+      run: |
+        python3 -m venv "$RUNNER_TEMP/bump-venv"
+        "$RUNNER_TEMP/bump-venv/bin/pip" install 'pyyaml>=6.0,<6.1'
+        echo "$RUNNER_TEMP/bump-venv/bin" >> "$GITHUB_PATH"
+        # Match resolve_release.sh defaults; isolate the stack environment.
+        (
+          source "${VIEWS_ROOT:-/cvmfs/sft-nightlies.cern.ch/lcg/views/devkey-head}/latest/${PLATFORM_DIR:-x86_64-el9-gcc16-opt}/setup.sh" > /dev/null
+          printf 'K4GEO=%s\nFCCCONFIG=%s\n' "${K4GEO:?}" "${FCCCONFIG:?}" >> "$GITHUB_ENV"
+        )

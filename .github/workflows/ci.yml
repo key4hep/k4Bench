@@ -5,6 +5,9 @@ on:
     branches:
       - main
   pull_request:
+    # ready_for_review starts CI on detector-bump drafts, whose bot-created
+    # events start no workflows.
+    types: [opened, synchronize, reopened, ready_for_review]
     branches:
       - main
 
@@ -66,6 +69,34 @@ jobs:
             python -m pytest tests/integration/ --cov=k4bench --cov-append --cov-report=xml:/workspace/coverage.xml --junitxml=junit-integration.xml -o junit_family=legacy
             echo '::endgroup::'
           "
+
+      - name: Smoke-test bumped geometry and steering
+        if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'bump/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          K4BENCH_SMOKE_CONFIGS="$(
+            gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" \
+              --jq '[.[][] | select(.status != "removed") | .filename | select(startswith(".github/benchmarks/") and endswith(".yml"))]' \
+              | jq -c .
+          )"
+          export K4BENCH_SMOKE_CONFIGS
+          if [[ "$K4BENCH_SMOKE_CONFIGS" == '[]' ]]; then
+            echo 'No changed benchmark configs to simulate.'
+            exit 0
+          fi
+          docker run --rm \
+            --device /dev/fuse \
+            --cap-add SYS_ADMIN \
+            --volume /cvmfs:/cvmfs:shared \
+            --volume "${{ github.workspace }}:/workspace" \
+            --workdir /workspace \
+            -e K4BENCH_SMOKE_CONFIGS \
+            ${{ env.CONTAINER_IMAGE }} bash -ec '
+              source /cvmfs/sft-nightlies.cern.ch/lcg/views/devkey-head/latest/x86_64-el9-gcc16-opt/setup.sh
+              python3 .github/scripts/smoke_benchmarks.py
+            '
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v7
