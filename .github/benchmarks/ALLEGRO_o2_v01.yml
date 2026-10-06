@@ -34,6 +34,7 @@
 # Sample-level keys override top-level, except ddsim_args (which concatenates).
 # sweep / sweep_detectors / include_only / exclude_only are mutually exclusive.
 
+# xml:           https://github.com/key4hep/k4geo/blob/main/FCCee/ALLEGRO/compact/ALLEGRO_o2_v01/ALLEGRO_o2_v01.xml
 xml: FCCee/ALLEGRO/compact/ALLEGRO_o2_v01/ALLEGRO_o2_v01.xml
 verbose: false
 

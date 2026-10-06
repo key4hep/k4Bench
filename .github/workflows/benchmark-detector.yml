@@ -8,7 +8,7 @@ on:
   workflow_call:
     inputs:
       detector:
-        description: detector config name, e.g. "ALLEGRO_o1_v03"
+        description: detector config name, e.g. "ALLEGRO_o1_v04"
         required: true
         type: string
       samples_json:

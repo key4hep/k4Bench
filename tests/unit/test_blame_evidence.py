@@ -143,6 +143,21 @@ def test_prior_flags_count_only_releases_before_the_window():
     assert len(history.before_window) == 3
 
 
+def test_a_detector_switch_within_one_release_keeps_the_onset_out_of_the_past():
+    # One release, two points: the replaced config's is the window base and the
+    # successor's the onset, which is not a flag from before the window.
+    old = dataclasses.replace(_point("2026-07-18", 12.0), detector="ALLEGRO_o1_v03")
+    history = _history([
+        _point("2026-07-14", 12.0),
+        old,
+        _point("2026-07-18", 14.5, severity="CONFIRMED"),
+    ], base="2026-07-18")
+    assert history.before_window == history.points[:2]
+    assert history.before_window[-1] is old
+    assert history.prior_flags == 0
+    assert history.onset_point is history.points[2]
+
+
 def test_a_host_change_is_reported_only_when_it_lands_on_the_onset():
     bench01, bench02 = HostFact("bench01", 64), HostFact("bench02", 64)
     at_onset = _history([
@@ -574,6 +589,8 @@ def _outcomes(groups, **kw):
         onset_release=kw.get("onset", "2026-07-18"),
         stacks=kw.get("stacks", {"key4hep-2026-07-22"}),
         regressed_scopes=kw.get("scopes", {("ALLEGRO_o1_v03", _PLAT, "single_e")}),
+        base_run=kw.get("base_run"),
+        onset_run=kw.get("onset_run"),
     )
 
 
@@ -585,6 +602,24 @@ def test_a_flat_configuration_is_a_control():
 def test_a_configuration_that_stepped_in_this_window_is_not_a_control():
     stepped = _verdict(onset_run_date="2026-07-18", last_accepted_run_date="2026-07-14")
     assert _outcomes([_group("IDEA_o1_v03", verdicts=[stepped])]) == ()
+
+
+def test_a_step_inside_a_same_release_window_is_not_a_control():
+    # A detector version switch within one release: the release pair alone is
+    # the empty interval (D, D], so only the runs place the step inside it.
+    stepped = _verdict(
+        onset_run_date="2026-07-18", onset_run_id="2026-07-18_2",
+        last_accepted_run_date="2026-07-18", last_accepted_run_id="2026-07-18_1",
+    )
+    groups = [_group("ALLEGRO_o1_v03", verdicts=[stepped]),
+              _group("IDEA_o1_v03", verdicts=[_flat()])]
+    outcomes = _outcomes(groups, base="2026-07-18", onset="2026-07-18",
+                         base_run="2026-07-18_1", onset_run="2026-07-18_2")
+    assert [(o.detector, o.status) for o in outcomes] == [("IDEA_o1_v03", "clean")]
+    # A later window of that release does not contain the step.
+    later = _outcomes(groups, base="2026-07-18", onset="2026-07-18",
+                      base_run="2026-07-18_2", onset_run="2026-07-18_3")
+    assert {o.detector for o in later} == {"ALLEGRO_o1_v03", "IDEA_o1_v03"}
 
 
 def test_a_configuration_still_re_anchoring_is_not_a_control():
@@ -788,6 +823,16 @@ def test_a_boundary_where_the_build_platform_changed_is_not_a_noise_measurement(
     ))
     assert migrated.quiet_boundaries == 0
     assert migrated.quiet_boundary_move is None
+
+
+def test_a_boundary_where_the_detector_version_changed_is_not_a_noise_measurement():
+    # No tracked package moved, but the geometry did.
+    switched = _history((
+        dataclasses.replace(_point("2026-07-14", 12.0), detector="ALLEGRO_o1_v03"),
+        _point("2026-07-18", 14.0, packages=0),
+    ))
+    assert switched.quiet_boundaries == 0
+    assert switched.quiet_boundary_move is None
 
 
 def test_history_points_keep_the_platform_that_measured_them():

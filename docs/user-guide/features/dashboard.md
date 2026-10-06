@@ -305,6 +305,16 @@ step-change detector (`k4bench/regression/`):
   absence is silence rather than a *no run uploaded* failure, and it sorts to
   the end of the sidebar's platform list so a fresh visit lands on one still
   running. Platforms benchmarked side by side stay independent series.
+- **Continued series across a detector version switch.** A geometry version
+  bump works the same way: a detector config that **replaces** another
+  (`ALLEGRO_o1_v03` → `ALLEGRO_o1_v04`, listed in
+  `k4bench/regression/lineage.py`) continues its series on the same platform,
+  so the geometry change is reported as a regression with a window from the
+  old version's last night to the new one's first. The ranker is told the
+  window spans the switch, and k4Bench's own pull request that made it is among
+  the candidates. The replaced version sorts to the end of the sidebar's
+  detector list. Other options of a
+  concept (`ALLEGRO_o2_v01`) stay independent series.
 - **Direction** (faster/slower, more/less memory) is shown but not treated as
   good or bad — a regression is simply any confirmed step beyond the baseline in
   either direction.

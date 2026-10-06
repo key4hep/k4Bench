@@ -4,12 +4,17 @@
 export K4BENCH_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export LD_LIBRARY_PATH="${K4BENCH_REPO}/plugin/install/lib:${K4BENCH_REPO}/plugin/build:${LD_LIBRARY_PATH}"
 
-# Use environment variable if set, otherwise use default version
-KEY4HEP_VERSION=${KEY4HEP_VERSION:-"2026-04-08"}
-
-# Setup Key4HEP environment only if not already set
+# Setup Key4HEP environment only if not already set. KEY4HEP_VERSION names a
+# stable release, or failing that a dated Spack nightly; unset, it is the latest
+# nightly (on AlmaLinux 9 the LCG devkey-head view the nightly benchmarks run on)
 if [ -z "$KEY4HEP_STACK" ]; then
-    source /cvmfs/sw.hsf.org/key4hep/setup.sh -r "${KEY4HEP_VERSION}"
+    if [ -n "${KEY4HEP_VERSION:-}" ] && [ -d "/cvmfs/sw.hsf.org/key4hep/releases/${KEY4HEP_VERSION}" ]; then
+        source /cvmfs/sw.hsf.org/key4hep/setup.sh -r "${KEY4HEP_VERSION}"
+    elif [ -n "${KEY4HEP_VERSION:-}" ]; then
+        source /cvmfs/sw-nightlies.hsf.org/key4hep/setup.sh --spack -r "${KEY4HEP_VERSION}"
+    else
+        source /cvmfs/sw-nightlies.hsf.org/key4hep/setup.sh
+    fi
 else
     echo "✅ KEY4HEP_STACK is already set. Skipping Key4HEP environment setup."
 fi

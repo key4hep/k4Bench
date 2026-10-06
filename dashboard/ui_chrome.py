@@ -16,7 +16,7 @@ import streamlit as st
 from k4bench.analysis.loader import failed_config_mask
 from k4bench.artifacts import LOG_SUFFIX, label_path
 from k4bench.labels import pretty_platform, pretty_release, pretty_sample
-from k4bench.regression.lineage import is_replaced
+from k4bench.regression.lineage import is_detector_replaced, is_replaced
 from sections import SECTION_SCOPE, SectionScope
 
 
@@ -30,6 +30,13 @@ def order_platforms(platforms: list[str]) -> list[str]:
     history is still worth reading, it is just not where a reader should land.
     """
     return sorted(platforms, key=lambda p: (is_replaced(p), p))
+
+
+def order_detectors(detectors: list[str]) -> list[str]:
+    """Detector configs with replaced versions last, name-ascending within each
+    group — the same reasoning as :func:`order_platforms`: alphabetically, a
+    retired ``…_v03`` would otherwise be the default ahead of its ``…_v04``."""
+    return sorted(detectors, key=lambda d: (is_detector_replaced(d), d))
 
 
 def _failed_labels(results: "pd.DataFrame") -> list[str]:

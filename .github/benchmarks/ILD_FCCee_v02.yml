@@ -42,6 +42,7 @@
 # no steering file needed — runs with plain ddsim defaults, same as ALLEGRO.
 # ~38 top-level subdetectors, so --sweep is comparable in cost to ALLEGRO's.
 
+# xml:           https://github.com/key4hep/k4geo/blob/main/FCCee/ILD_FCCee/compact/ILD_FCCee_v02/ILD_FCCee_v02.xml
 xml: FCCee/ILD_FCCee/compact/ILD_FCCee_v02/ILD_FCCee_v02.xml
 verbose: false
 

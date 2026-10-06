@@ -43,8 +43,9 @@ What [`setup.sh`](../developer-guide/development-setup.md) does, step by step:
 
 1. Exports `K4BENCH_REPO` and prepends the plugin build/install dirs to
    `LD_LIBRARY_PATH` so DDG4 can find the timing libraries.
-2. Sources the Key4hep stack (release pinned by `KEY4HEP_VERSION`, default
-   `2026-04-08`) unless one is already active.
+2. Sources the Key4hep stack (the stable release or dated nightly
+   `KEY4HEP_VERSION` names, default the latest nightly) unless one is already
+   active.
 3. Creates a [`cvmfs-venv`](https://github.com/jbeirer/cvmfs-venv) named
    `py-venv` and activates it.
 4. Installs the dev tooling from `requirements.txt` (`codespell`, `pre-commit`).

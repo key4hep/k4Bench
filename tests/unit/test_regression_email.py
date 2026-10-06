@@ -1022,3 +1022,20 @@ def test_a_migration_window_is_not_linked_to_a_one_platform_stack_diff():
     ):
         assert "tab=Stack+Changes" not in body
         assert "tab=Regressions" in body
+
+
+def test_a_version_switch_window_explains_itself_instead_of_ranking():
+    # The geometry changed across the window, so no PR ranking exists for it,
+    # and the section says why rather than pointing at the package changes.
+    v = _windowed(
+        first_confirmed_run_id="2026-06-27",
+        detector="ALLEGRO_o1_v04", last_accepted_detector="ALLEGRO_o1_v03",
+    )
+    group = _group(v, detector="ALLEGRO_o1_v04")
+    for body in (
+        to_html(_report(group), dashboard_url="https://dash.example/"),
+        to_markdown(_report(group), dashboard_url="https://dash.example/"),
+    ):
+        assert "ALLEGRO_o1_v03 → ALLEGRO_o1_v04" in body
+        assert "No complete PR ranking" not in body
+        assert "tab=Stack+Changes" not in body

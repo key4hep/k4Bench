@@ -22,9 +22,12 @@ Reading it top to bottom, it is idempotent and safe to re-source:
 1. **Exports `K4BENCH_REPO`** to the repo root and prepends the plugin
    build/install dirs to `LD_LIBRARY_PATH`, so DDG4 can find the timing
    libraries at run time.
-2. **Sources the Key4hep stack** at `KEY4HEP_VERSION` (default `2026-04-08`)
-   from `/cvmfs/sw.hsf.org` — unless `KEY4HEP_STACK` is already set, in which
-   case it's left alone. A nightly reproducer sources the dated nightly stack
+2. **Sources the Key4hep stack** `KEY4HEP_VERSION` names: a stable release
+   from `/cvmfs/sw.hsf.org`, or, for a date with no stable release, that day's
+   Spack nightly from `/cvmfs/sw-nightlies.hsf.org` (only the last few weeks
+   are kept). Unset, it is the latest nightly — on AlmaLinux 9 the LCG
+   `devkey-head` view the nightly benchmarks run on. Nothing is sourced when
+   `KEY4HEP_STACK` is already set. A nightly reproducer sources the dated nightly stack
    directly before calling the historical `setup.sh`.
 3. **Creates a `cvmfs-venv`** named `py-venv` (downloading the
    [`cvmfs-venv`](https://github.com/jbeirer/cvmfs-venv) helper to `~/.local/bin`

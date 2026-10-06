@@ -351,6 +351,24 @@ def platform_switch_lines(base_platform: str, onset_platform: str) -> list[str]:
     ]
 
 
+def detector_switch_lines(base_detector: str, onset_detector: str) -> list[str]:
+    """The window spans a detector version switch: its base was measured on one
+    geometry version and its onset on the version that replaced it.
+
+    Stated as its own fact for the same reason as :func:`platform_switch_lines`,
+    and because the geometry evidence points the other way: the candidates are
+    matched against the *new* version's directory, so a pull request that only
+    touched it would otherwise look like the closest explanation."""
+    return [
+        f"- Window base measured on detector config: {base_detector}",
+        f"- Window onset measured on detector config: {onset_detector}",
+        "- This window spans a detector version switch: the benchmark moved to a "
+        "different geometry version between its two ends, a change made in the "
+        "benchmark harness's own configuration. The switch alone can explain "
+        "the step; judge every candidate against that possibility.",
+    ]
+
+
 #: Severity as the prompts say it. ``UNKNOWN`` is spelled out rather than
 #: abbreviated: a release nobody could judge is the single most misreadable row
 #: in a history, and "not judged" cannot be mistaken for a clean one.
@@ -391,14 +409,20 @@ def _packages(point) -> str:
 def _history_rows(history: MetricHistory) -> list[str]:
     """One fixed-width row per release, with the window's ends marked."""
     rows = []
-    for point in history.points:
+    # By position, not release: a detector switch within one release is two
+    # points of the same release, the base and the onset.
+    base, onset = history.base_index, history.onset_index
+    for i, point in enumerate(history.points):
         marker = ""
-        if history.base_release and point.release == history.base_release:
+        if i == base:
             marker = "  <- window base: newest release ruling this step out"
-        elif point.release == history.onset_release:
+        elif i == onset:
             marker = "  <- the step appeared here"
         value = "—" if point.value is None else f"{point.value:.4g}"
-        where = f"  [measured on {point.platform}]" if point.platform else ""
+        where = "".join(
+            f"  [measured on {source}]"
+            for source in (point.platform, point.detector) if source
+        )
         rows.append(
             f"    {point.release}  {value:>10}  "
             f"{pct_phrase(history.pct_of_baseline(point.value)):>8}  "
@@ -424,10 +448,17 @@ def _history_readings(history: MetricHistory, *, readings: bool = True) -> list[
     lines = []
     if any(point.platform for point in history.points):
         lines.append(
-            "    Releases marked [measured on …] were benchmarked on a different "
-            "build platform (another compiler and software stack) that this "
+            "    Releases marked [measured on <platform>] were benchmarked on a "
+            "different build platform (another compiler and software stack) that this "
             "series replaced; a level change where the platform changes is not a "
             "change inside the stack."
+        )
+    if any(point.detector for point in history.points):
+        lines.append(
+            "    Releases marked [measured on <detector config>] were benchmarked "
+            "on an older geometry version that this series replaced; a level "
+            "change where the detector config changes is the geometry change, "
+            "not a change inside the stack."
         )
     if not readings:
         return lines

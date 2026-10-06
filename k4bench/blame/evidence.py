@@ -140,6 +140,9 @@ class HistoryPoint:
     #: :attr:`~k4bench.regression.models.ReleasePoint.host_levels`); empty on
     #: reports written before it was recorded.
     host_levels: tuple[HostLevel, ...] = ()
+    #: The replaced detector config that measured this release, when it is not
+    #: the series' own (see :attr:`~k4bench.regression.models.ReleasePoint.detector`).
+    detector: str | None = None
 
     @property
     def flagged(self) -> bool:
@@ -210,7 +213,12 @@ class MetricHistory:
         nothing here is known to predate the change."""
         if not self.base_release:
             return ()
-        return tuple(p for p in self.points if p.release <= self.base_release)
+        if (base := self.base_index) is not None:
+            return self.points[:base + 1]
+        onset = self.onset_index
+        return tuple(
+            p for p in self.points[:onset] if p.release <= self.base_release
+        )
 
     @property
     def after_onset(self) -> tuple[HistoryPoint, ...]:
@@ -229,10 +237,36 @@ class MetricHistory:
         return any(p.judged and p.value is not None for p in self.after_onset)
 
     @property
-    def onset_point(self) -> HistoryPoint | None:
+    def onset_index(self) -> int | None:
+        """The position of the onset in :attr:`points`. The last match: a
+        release a replaced detector config also measured is two points, and the
+        onset is the successor's."""
         return next(
-            (p for p in self.points if p.release == self.onset_release), None
+            (i for i in reversed(range(len(self.points)))
+             if self.points[i].release == self.onset_release),
+            None,
         )
+
+    @property
+    def base_index(self) -> int | None:
+        """The position of the window base in :attr:`points`: the last point of
+        ``base_release`` before the onset. A detector switch within one release
+        is two points of that release, the replaced config's first — the base —
+        and the successor's last, the onset."""
+        if not self.base_release:
+            return None
+        onset = self.onset_index
+        end = len(self.points) if onset is None else onset
+        return next(
+            (i for i in reversed(range(end))
+             if self.points[i].release == self.base_release),
+            None,
+        )
+
+    @property
+    def onset_point(self) -> HistoryPoint | None:
+        onset = self.onset_index
+        return None if onset is None else self.points[onset]
 
     @property
     def prior_flags(self) -> int:
@@ -257,9 +291,10 @@ class MetricHistory:
         for earlier, later in zip(self.points, self.points[1:]):
             if (
                 later.packages_changed == 0
-                # A boundary where the build platform changed is not identical
-                # software, whatever the package list says.
+                # A boundary where the build platform or the geometry changed
+                # is not identical software, whatever the package list says.
                 and earlier.platform == later.platform
+                and earlier.detector == later.detector
                 and earlier.judged and later.judged
                 and earlier.value is not None and later.value is not None
             ):
@@ -586,6 +621,7 @@ def _point(point: ReleasePoint, packages_changed: int | None) -> HistoryPoint:
         packages_changed=packages_changed,
         platform=point.platform,
         host_levels=point.host_levels,
+        detector=point.detector,
     )
 
 
@@ -649,7 +685,8 @@ class ScopeOutcome:
 
 
 def steps_in_window(
-    verdict: MetricVerdict, window: tuple[str | None, str]
+    verdict: MetricVerdict, window: tuple[str | None, str],
+    *, base_run: str | None = None, onset_run: str | None = None,
 ) -> bool:
     """Does *verdict* place a confirmed step inside this window?
 
@@ -660,17 +697,31 @@ def steps_in_window(
     this release as one that never moved. Anything that stepped strictly inside
     the window is ours too; a step onsetting after it left this window flat and
     is still a control for it. An unplaceable onset counts as inside, because a
-    step nobody can date is not evidence of flatness."""
+    step nobody can date is not evidence of flatness.
+
+    A same-release window is the empty release interval ``(D, D]``, which would
+    read the very step that formed it as one that happened elsewhere. There
+    *base_run* / *onset_run* decide instead — an onset on that release whose run
+    is in ``(base_run, onset_run]``; an onset with no run id cannot be placed
+    and counts as inside."""
     if verdict.severity is not Severity.CONFIRMED:
         return False
     base, onset = window
     at = verdict.onset_run_date
     if at is None:
         return True
+    if base == onset and base_run is not None and onset_run is not None:
+        if at != onset:
+            return False
+        run = verdict.onset_run_id
+        return run is None or base_run < run <= onset_run
     return at <= onset and (base is None or at > base)
 
 
-def disqualified_as_control(verdict: MetricVerdict, window: tuple[str | None, str]) -> bool:
+def disqualified_as_control(
+    verdict: MetricVerdict, window: tuple[str | None, str],
+    *, base_run: str | None = None, onset_run: str | None = None,
+) -> bool:
     """True when *verdict* cannot testify that its configuration held still
     across *window*.
 
@@ -688,7 +739,10 @@ def disqualified_as_control(verdict: MetricVerdict, window: tuple[str | None, st
     No date check on the re-anchor: a series that stepped last week is not a
     clean control for a window this week either.
     """
-    return steps_in_window(verdict, window) or verdict.reanchor_run_date is not None
+    return (
+        steps_in_window(verdict, window, base_run=base_run, onset_run=onset_run)
+        or verdict.reanchor_run_date is not None
+    )
 
 
 def outcomes_for_window(
@@ -698,6 +752,8 @@ def outcomes_for_window(
     onset_release: str,
     stacks: set[str],
     regressed_scopes: set[tuple[str, str, str]],
+    base_run: str | None = None,
+    onset_run: str | None = None,
 ) -> tuple[ScopeOutcome, ...]:
     """The benchmark configurations that measured this window and did **not**
     confirm.
@@ -727,6 +783,8 @@ def outcomes_for_window(
     *regressed_scopes* only orders the result: the like-for-like controls — same
     detector, same sample, same platform as something that did regress — come
     first, because a caller that has to cut the list must keep those.
+    *base_run* / *onset_run* name a same-release window's two runs
+    (:func:`steps_in_window`).
     """
     window = (base_release, onset_release)
     outcomes: list[ScopeOutcome] = []
@@ -746,7 +804,10 @@ def outcomes_for_window(
         for verdict in group.verdicts:
             by_label.setdefault(verdict.label, []).append(verdict)
         for label, verdicts in by_label.items():
-            if any(disqualified_as_control(v, window) for v in verdicts):
+            if any(
+                disqualified_as_control(v, window, base_run=base_run, onset_run=onset_run)
+                for v in verdicts
+            ):
                 continue  # stepped in this window, or has not settled since its own step
             if any(v.severity is Severity.FAILURE for v in verdicts):
                 continue  # a configuration that partly failed did not run clean

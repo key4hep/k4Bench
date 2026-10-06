@@ -87,6 +87,7 @@ from k4bench.blame.prompt import (
     WEIGHING_RULE,
     allocate_diff_budget,
     body_block,
+    detector_switch_lines,
     diff_block,
     direction_phrase,
     format_files,
@@ -302,6 +303,10 @@ class AttributionRequest:
     #: its release diff is labelled ``"<base> → <onset>"`` in
     #: :attr:`packages_by_platform`.
     platform_switches: tuple[tuple[str, str], ...] = ()
+    #: ``(base detector, onset detector)`` for each geometry version switch some
+    #: row's window was measured across — a cause in its own right, made in
+    #: the benchmark harness's configuration.
+    detector_switches: tuple[tuple[str, str], ...] = ()
     #: The older-boundary pull requests the *first* pass asked to read before it
     #: produced the score that selected this comment
     #: (:mod:`k4bench.blame.history`), re-fetched from the sidecar's persisted
@@ -1218,6 +1223,11 @@ def build_user_prompt(
             line
             for base, onset in request.platform_switches
             for line in platform_switch_lines(base, onset)
+        ),
+        *(
+            line
+            for base, onset in request.detector_switches
+            for line in detector_switch_lines(base, onset)
         ),
         f"The pull request under review: {request.slug} — {request.title} ({size}).",
         "",

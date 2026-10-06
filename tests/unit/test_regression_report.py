@@ -9,11 +9,12 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
+import requests
 
 import pandas as pd
 
 from k4bench.regression.engine import BASELINE_WINDOW_RUNS
-from k4bench.regression.lineage import PLATFORM_SUCCESSORS
+from k4bench.regression.lineage import DETECTOR_SUCCESSORS, PLATFORM_SUCCESSORS
 from k4bench.regression.models import (
     Direction,
     MetricVerdict,
@@ -28,6 +29,7 @@ from k4bench.regression.report_builder import (
     RUN_METRICS,
     RUN_VALUE_METRICS,
     _failed_config_verdicts,
+    _fetch_predecessor,
     _region_window,
     _with_region_deltas,
     build_nightly_report_local,
@@ -104,6 +106,7 @@ def _write_run(
     event_time_s: float | None = None,
     result_overrides: dict[str, dict] | None = None,
     random_seed: int | None = 4242,
+    release: str | None = None,
 ) -> Path:
     """One synthetic nightly run dir: run_info + per-config results + machine info.
 
@@ -114,9 +117,10 @@ def _write_run(
     run_info = {
         "date": night,
         "platform": platform,
-        # One release per night — the production norm; nights sharing a
-        # release are covered by the engine's own multi-night tests.
-        "k4h_release": f"key4hep-{night}",
+        # One release per night unless *release* says otherwise — the
+        # production norm; nights sharing a release are covered by the
+        # engine's own multi-night tests.
+        "k4h_release": f"key4hep-{release or night}",
         "sample": sample,
         "github_run_url": github_run_url,
         "random_seed": random_seed,
@@ -1055,7 +1059,7 @@ def _new_platform_runs(root: Path) -> tuple[str, ...]:
 def _old_platform_runs(root: Path):
     sample_root = root / "DET" / _OLD_PLAT / _STACK / "single_e"
     return predecessor_runs(
-        _OLD_PLAT, tuple(str(p) for p in sorted(sample_root.iterdir()))
+        "DET", _OLD_PLAT, tuple(str(p) for p in sorted(sample_root.iterdir()))
     )
 
 
@@ -1262,6 +1266,156 @@ def test_local_report_continues_the_successor_platform(tmp_path):
     assert {g.platform for g in report.groups} == {_NEW_PLAT}
 
 
+# ── A detector version switch ────────────────────────────────────────────────
+#
+# A geometry version bump continues the replaced version's series on the same
+# platform, so the switch itself is judged — and reported — like any other step.
+
+_NEW_DET, _OLD_DET = next(iter(DETECTOR_SUCCESSORS.items()))
+
+
+def _version_switch_tree(root: Path, *, new_walls: list[float]) -> Path:
+    """Ten nights of the old detector config, then *new_walls* nights of the new."""
+    for night in _nights(10):
+        _write_run(
+            root / _OLD_DET / _PLAT / _STACK / "single_e" / night,
+            night=night, wall_time_s=100.0,
+        )
+    for night, wall in zip(_nights(len(new_walls), start="2026-01-11"), new_walls):
+        _write_run(
+            root / _NEW_DET / _PLAT / _STACK / "single_e" / night,
+            night=night, wall_time_s=wall,
+        )
+    return root
+
+
+def _detector_runs(root: Path, detector: str) -> tuple[str, ...]:
+    sample_root = root / detector / _PLAT / _STACK / "single_e"
+    return tuple(str(p) for p in sorted(sample_root.iterdir()))
+
+
+def test_a_version_switch_step_is_a_regression_across_the_switch(tmp_path):
+    _version_switch_tree(tmp_path, new_walls=[120.0, 120.5])
+    group = group_report_from_run_dirs(
+        _NEW_DET, _PLAT, "single_e", _detector_runs(tmp_path, _NEW_DET),
+        predecessor=lambda: predecessor_runs(
+            _OLD_DET, _PLAT, _detector_runs(tmp_path, _OLD_DET),
+        ),
+    )
+    wall = next(v for v in group.regressions if v.metric == "wall_time_s")
+    assert (wall.severity, wall.direction) == (Severity.CONFIRMED, Direction.UP)
+    assert (wall.last_accepted_run_id, wall.onset_run_id) == ("2026-01-10", "2026-01-11")
+    assert (wall.base_detector, wall.onset_run_detector) == (_OLD_DET, _NEW_DET)
+    assert wall.spans_detector_switch
+    # Same platform on both ends: only the detector is marked.
+    assert (wall.last_accepted_platform, wall.onset_platform) == (None, None)
+    assert [(p.run_date, p.detector, p.platform) for p in wall.history][-3:] == [
+        ("2026-01-10", _OLD_DET, None), ("2026-01-11", None, None),
+        ("2026-01-12", None, None),
+    ]
+
+
+def _same_release_switch_tree(root: Path) -> Path:
+    """The old detector config's last three nights and the new one's first two
+    all measure release 2026-01-10; the new one's third measures 2026-01-13."""
+    for night in _nights(10):
+        _write_run(
+            root / _OLD_DET / _PLAT / _STACK / "single_e" / night,
+            night=night, wall_time_s=100.0,
+            release="2026-01-10" if night >= "2026-01-08" else None,
+        )
+    for night, wall, release in (
+        ("2026-01-11", 120.0, "2026-01-10"),
+        ("2026-01-12", 120.5, "2026-01-10"),
+        ("2026-01-13", 120.2, None),
+    ):
+        _write_run(
+            root / _NEW_DET / _PLAT / _STACK / "single_e" / night,
+            night=night, wall_time_s=wall, release=release,
+        )
+    return root
+
+
+def test_a_version_switch_within_one_release_is_judged_across_the_switch(tmp_path):
+    # Repeat nights of one release are normal, so a geometry bump can land
+    # without the stack moving. The replaced version's nights of that release
+    # are the clean before measurement: the window must open on them, and the
+    # release must not pool both geometries into one median or history point.
+    _same_release_switch_tree(tmp_path)
+    new_runs = _detector_runs(tmp_path, _NEW_DET)
+
+    def report(run_dirs):
+        return group_report_from_run_dirs(
+            _NEW_DET, _PLAT, "single_e", run_dirs,
+            predecessor=lambda: predecessor_runs(
+                _OLD_DET, _PLAT, _detector_runs(tmp_path, _OLD_DET),
+            ),
+        )
+
+    wall = next(
+        v for v in report(new_runs[:2]).regressions if v.metric == "wall_time_s"
+    )
+    assert (wall.severity, wall.direction) == (Severity.CONFIRMED, Direction.UP)
+    assert (wall.last_accepted_run_id, wall.onset_run_id) == ("2026-01-10", "2026-01-11")
+    assert wall.last_accepted_run_date == wall.onset_run_date == "2026-01-10"
+    assert (wall.base_detector, wall.onset_run_detector) == (_OLD_DET, _NEW_DET)
+    assert wall.spans_detector_switch
+    assert [
+        (p.run_date, p.detector, p.n_runs, p.value) for p in wall.history
+    ][-2:] == [
+        ("2026-01-10", _OLD_DET, 3, 100.0), ("2026-01-10", None, 2, 120.25),
+    ]
+
+    # The re-anchor holds the new geometry's values only: pooled with the old
+    # one's 100 s nights, its median would flag the next release's 120.2 s.
+    after = next(
+        v for v in report(new_runs).verdicts
+        if v.metric == "wall_time_s" and v.run_id == "2026-01-13"
+    )
+    assert after.severity is Severity.OK
+    assert after.reanchor_run_date == "2026-01-10"
+
+
+def test_local_report_continues_the_replaced_detector_and_drops_it(tmp_path):
+    # End to end over the run tree: the predecessor lives under another
+    # detector directory, and once its successor has run the replaced version
+    # is not reported as a missing run.
+    _version_switch_tree(tmp_path, new_walls=[120.0, 120.5])
+    report = build_nightly_report_local(str(tmp_path))
+
+    assert {g.detector for g in report.groups} == {_NEW_DET}
+    assert report.job_failures == []
+    new = report.groups[0]
+    assert [(v.metric, v.direction) for v in new.regressions] == [
+        ("wall_time_s", Direction.UP)
+    ]
+    assert all(v.base_detector == _OLD_DET for v in new.regressions)
+
+
+def test_a_predecessor_candidate_without_a_tree_is_skipped(tmp_path, monkeypatch):
+    # A new detector config never ran on the platform its own platform replaced;
+    # that candidate's listing is a 404, which means "no runs", not a failure.
+    _version_switch_tree(tmp_path, new_walls=[100.0])
+    missing = requests.Response()
+    missing.status_code = 404
+
+    def fetch(data_url, cache_dir, detector, platform, sample, **_):
+        if detector == _NEW_DET:
+            raise requests.HTTPError(response=missing)
+        return _detector_runs(tmp_path, detector)
+
+    monkeypatch.setattr(
+        "k4bench.regression.report_builder._fetch_run_dirs", fetch,
+    )
+    runs = _fetch_predecessor(
+        "https://eos.invalid", None,
+        ((_NEW_DET, "x86_64-other-opt"), (_OLD_DET, _PLAT)), "single_e",
+        fetch_window_runs=20, as_of=None,
+    )
+    assert runs is not None
+    assert (runs.detector, runs.platform) == (_OLD_DET, _PLAT)
+
+
 # ── Region decomposition is attached per window, not per release pair ─────────
 
 def _write_region_run(root: Path, night: str, release: str, hcal: float) -> str:
@@ -1394,7 +1548,7 @@ def test_a_window_opening_on_the_replaced_platform_keeps_its_region_deltas(tmp_p
         run_id="2026-07-15", verdicts=[verdict],
     )
     predecessor = PredecessorRuns(
-        platform=_OLD_PLAT, results_df=None, event_df=None, reliability={},
+        detector="DET", platform=_OLD_PLAT, results_df=None, event_df=None, reliability={},
         run_dirs=old_dirs,
     )
 

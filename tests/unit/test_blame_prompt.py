@@ -122,6 +122,22 @@ def test_the_window_ends_are_marked_in_the_table():
     assert "the step appeared here" in block
 
 
+def test_a_detector_switch_within_one_release_marks_each_end_once():
+    # Both points share the release; the replaced config's is the base and the
+    # successor's the onset.
+    old = HistoryPoint(release="2026-07-18", value=12.0, n_runs=1, n_judged=1,
+                       detector="ALLEGRO_o1_v03")
+    rows = history_block(_history([
+        _point("2026-07-14", 12.0),
+        old,
+        _point("2026-07-18", 14.5, severity="CONFIRMED", direction="UP"),
+    ], base="2026-07-18"))
+    base = [row for row in rows if "window base" in row]
+    onset = [row for row in rows if "the step appeared here" in row]
+    assert len(base) == 1 and "ALLEGRO_o1_v03" in base[0]
+    assert len(onset) == 1 and "ALLEGRO_o1_v03" not in onset[0]
+
+
 def test_an_unchanged_stack_is_spelled_out_and_a_missing_diff_is_not():
     block = "\n".join(history_block(_history([
         _point("2026-07-14", 12.0, packages=0),
