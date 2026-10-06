@@ -8,6 +8,9 @@ on stdout. Two output shapes:
               fan out one reusable-workflow call per detector and nest the
               sample matrix beneath it in the Actions UI
 
+--only "A B/sample" keeps just the named jobs: a bare config name selects all
+of its samples, "config/sample" one of them. A name matching no job is an error.
+
 Each sample record is a fully-merged config consumed downstream as plain env
 vars — no YAML parsing happens after this script runs.
 
@@ -20,6 +23,7 @@ boolean keys are always "true" or "false" (an absent key is "false").
 """
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import shlex
@@ -147,6 +151,23 @@ def _check_unique_destinations(items: list[dict]) -> None:
         seen[where] = rec["config"]
 
 
+def _select(items: list[dict], only: str) -> list[dict]:
+    """The jobs named by *only*, or every job when it is blank."""
+    names = only.split()
+    if not names:
+        return items
+    unknown = [
+        n for n in names
+        if not any(n in (i["config"], f"{i['config']}/{i['sample']}") for i in items)
+    ]
+    if unknown:
+        _die(f"no benchmark job matches {', '.join(map(repr, unknown))}")
+    return [
+        i for i in items
+        if i["config"] in names or f"{i['config']}/{i['sample']}" in names
+    ]
+
+
 def _group_by_detector(items: list[dict]) -> list[dict]:
     grouped: dict[str, list[dict]] = {}
     for item in items:
@@ -155,13 +176,18 @@ def _group_by_detector(items: list[dict]) -> list[dict]:
 
 
 def main() -> None:
-    grouped = "--grouped" in sys.argv[1:]
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--grouped", action="store_true")
+    parser.add_argument("--only", default="",
+                        help='space-separated "config" or "config/sample" names')
+    args = parser.parse_args()
     paths = sorted(BENCH_DIR.glob("*.yml"))
     if not paths:
         _die(f"no benchmark configs found in {BENCH_DIR}/")
     items = [r for p in paths for r in expand(p)]
     _check_unique_destinations(items)
-    print(json.dumps(_group_by_detector(items) if grouped else items))
+    items = _select(items, args.only)
+    print(json.dumps(_group_by_detector(items) if args.grouped else items))
 
 
 if __name__ == "__main__":
