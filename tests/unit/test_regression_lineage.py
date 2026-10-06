@@ -64,8 +64,11 @@ def test_a_retired_detector_stays_replaced_without_a_successor_entry(monkeypatch
     monkeypatch.setattr(lineage, "DETECTOR_SUCCESSORS", {"ALLEGRO_o1_v05": "ALLEGRO_o1_v04"})
     monkeypatch.setattr(lineage, "RETIRED_DETECTORS", {"ALLEGRO_o1_v03": "ALLEGRO_o1_v04"})
     assert is_detector_replaced("ALLEGRO_o1_v03")
-    assert detector_successors_of("ALLEGRO_o1_v03") == ("ALLEGRO_o1_v04",)
-    assert successor_series("ALLEGRO_o1_v03", _LCG) == (("ALLEGRO_o1_v04", _LCG),)
+    # v05 counts too, so v03 stops being expected even if v04 never ran.
+    assert detector_successors_of("ALLEGRO_o1_v03") == ("ALLEGRO_o1_v04", "ALLEGRO_o1_v05")
+    assert successor_series("ALLEGRO_o1_v03", _LCG) == (
+        ("ALLEGRO_o1_v04", _LCG), ("ALLEGRO_o1_v05", _LCG),
+    )
     # Retirement never continues a history: v04's own entry is gone.
     assert detector_predecessor_of("ALLEGRO_o1_v04") is None
     assert predecessor_series("ALLEGRO_o1_v04", _LCG) == (("ALLEGRO_o1_v04", _SPACK),)

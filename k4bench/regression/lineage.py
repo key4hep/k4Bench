@@ -24,8 +24,8 @@ next platform (or version) replaces the current one, remove the current one's
 own entry before adding the new one; a later replay of the current one's first
 nights then judges them cold. A detector config whose entry is removed that way
 moves to :data:`RETIRED_DETECTORS` with the config that replaced it, so it stays
-replaced — not expected to run once that successor has — without its history
-being continued.
+replaced — not expected to run once that successor, or any config that later
+replaced it, has — without its history being continued.
 """
 
 from __future__ import annotations
@@ -79,19 +79,32 @@ def detector_predecessor_of(detector: str) -> str | None:
     return None if predecessor == detector else predecessor
 
 
-def detector_successors_of(detector: str) -> tuple[str, ...]:
-    """The detector configs that replaced *detector*, name-ascending, including
-    the one recorded for a retired config."""
-    return tuple(sorted({
+def _direct_detector_successors(detector: str) -> set[str]:
+    return {
         *(
             successor for successor, predecessor in DETECTOR_SUCCESSORS.items()
-            if predecessor == detector and successor != detector
+            if predecessor == detector
         ),
         *(
             successor for retired, successor in RETIRED_DETECTORS.items()
-            if retired == detector and successor != detector
+            if retired == detector
         ),
-    }))
+    } - {detector}
+
+
+def detector_successors_of(detector: str) -> tuple[str, ...]:
+    """The detector configs that replaced *detector*, name-ascending: the one
+    that replaced it, and whatever replaced that one in turn. A retired config
+    is thus no longer expected once any later version has run, even one whose
+    direct successor never produced a run."""
+    found: set[str] = set()
+    frontier = [detector]
+    while frontier:
+        for successor in _direct_detector_successors(frontier.pop()):
+            if successor != detector and successor not in found:
+                found.add(successor)
+                frontier.append(successor)
+    return tuple(sorted(found))
 
 
 def is_detector_replaced(detector: str) -> bool:
@@ -118,8 +131,10 @@ def predecessor_series(detector: str, platform: str) -> tuple[tuple[str, str], .
 
 
 def successor_series(detector: str, platform: str) -> tuple[tuple[str, str], ...]:
-    """The ``(detector, platform)`` series that may continue the *detector* /
-    *platform* series — the inverse of :func:`predecessor_series`."""
+    """The ``(detector, platform)`` series whose runs mean the *detector* /
+    *platform* series is no longer expected: the inverse of
+    :func:`predecessor_series`, plus later detector configs that replaced a
+    retired one."""
     return (
         *((successor, platform) for successor in detector_successors_of(detector)),
         *((detector, successor) for successor in successors_of(platform)),
