@@ -220,6 +220,73 @@ samples:
     input_files: root://eospublic.cern.ch//eos/.../events_noVtxSmear.hepmc
 ```
 
+### Automated detector version bumps
+
+`detector-bump.yml` runs daily at 05:00 UTC and on manual dispatch. It looks
+in the CVMFS `devkey-head/latest/x86_64-el9-gcc16-opt` view used by the nightly,
+not k4geo main. Only already benchmarked families are tracked; when versions
+coexist, only the highest is replaced. A candidate must contain its matching XML.
+
+The bot opens or updates one PR per family on `bump/<family>`. It renames the
+benchmark YAML, updates geometry references and examples, and replaces the
+one-hop regression lineage entry. Versioned steering paths change only when
+the replacement exists in the same nightly's FCC-config. Otherwise the PR
+records that the existing steering file was retained. Review header prose,
+steering compatibility, sweep choices, timeouts, and the baseline transition.
+CI (including real geometry patching) and PR-Agent run after a maintainer
+clicks **Approve workflows to run** on the PR; a human merges it. There is no
+auto-merge. The action is invoked only for actual bumps, so a no-op run does
+not close existing PRs or clean up merged branches.
+
+Steering selection checks file existence. On PRs whose branch starts with
+`bump/`, the required `run` job also smoke-tests the changed benchmark YAMLs.
+It resolves sample overrides and runs one 10 GeV electron gun event per distinct
+geometry/steering pair in the latest nightly stack, with a five-minute timeout
+per pair. A simulation failure, timeout, or missing/empty output fails CI.
+Ordinary PRs and pushes to `main` skip this additional step. The smoke test does
+not run benchmark sweeps or download physics samples; physics correctness and
+sample-specific simulation options still need review.
+
+To repeat a smoke test locally, source the nightly view and run:
+
+```bash
+python3 .github/scripts/smoke_benchmarks.py .github/benchmarks/IDEA_o1_v04.yml
+```
+
+No GitHub App, PAT, or additional repository secrets are needed. The workflow
+uses the built-in `GITHUB_TOKEN`, with Contents and Pull requests write access
+only in the PR job, and signs commits as `github-actions[bot]`. Workflow examples
+are version-independent because this token cannot update workflow files.
+
+One-time repository setup:
+
+1. In **Settings → Actions → General → Workflow permissions**, enable
+   **Allow GitHub Actions to create and approve pull requests**. The workflow
+   creates PRs; it does not approve or merge them. If the setting is unavailable,
+   an organization administrator must allow it first.
+2. Create the `detector-bump` label if it does not already exist.
+
+GitHub holds PR workflows triggered by `GITHUB_TOKEN` for maintainer approval,
+including runs caused by subsequent bot updates. Click **Approve workflows to
+run** on the PR before reviewing the results. This is separate from approving
+or merging the PR. See [GitHub's workflow triggering documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow).
+PR-Agent accepts same-repository `bump/` PR events from `github-actions[bot]`;
+bot comments and unrelated bot PRs remain excluded.
+
+Local inspection (no files written unless `--apply --family NAME` is supplied):
+
+```bash
+py-venv/bin/python .github/scripts/bump_detectors.py \
+  --k4geo "$K4GEO" --fcc-config "$FCCCONFIG"
+```
+
+After merging, dispatch `gh workflow run detector-bump.yml` to check the no-op
+case. To test PR creation and CI approval, dispatch on a scratch branch with
+one config deliberately behind; approve the resulting PR workflows and check
+the `run` result. The normal CI branch filter targets `main`; use a disposable
+fork for this end-to-end test if the scratch branch is the PR base.
+Manual dispatch uses the selected branch as the PR base.
+
 ## EOS layout
 
 Nightly results live under `EOS_ROOT = /eos/user/j/jbeirer/k4bench`, encoding

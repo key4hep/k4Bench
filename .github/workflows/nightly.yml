@@ -13,7 +13,7 @@ on:
         type: string
         default: ''
       configs:
-        description: 'Jobs to run, space-separated "config" or "config/sample", e.g. "IDEA_o1_v04 SiD/single_e-_10GeV" (empty: all)'
+        description: 'Jobs to run, space-separated "config" or "config/sample", e.g. "SiD/single_e-_10GeV"; config names come from .github/benchmarks (empty: all)'
         required: false
         type: string
         default: ''
