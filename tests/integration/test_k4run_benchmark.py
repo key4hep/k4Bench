@@ -21,6 +21,7 @@ requires_k4run = pytest.mark.skipif(
 # Sleeps --sleep seconds per event, and reads a file next to itself, so it
 # runs only from a copy of its own directory.
 JOB = """\
+from pathlib import Path
 
 from Configurables import ApplicationMgr, GaudiTesting__SleepyAlg
 from k4FWCore.parseArgs import parser

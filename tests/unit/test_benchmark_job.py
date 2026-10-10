@@ -324,8 +324,28 @@ def test_k4run_inputs_are_copied_locally(job_module, k4geo, input_dir, monkeypat
     job = job_module.resolve(_k4run_record(input_files=source), dict(os.environ))
     (fetch, _), = processes.calls
     assert fetch[0] == command
-    assert source in fetch and str(input_dir / "sim.root") in fetch
-    assert job.k4run_args.endswith(f"--inputFiles {input_dir / 'sim.root'}")
+    (local,) = [arg for arg in fetch if arg.startswith(str(input_dir))]
+    assert source in fetch and Path(local).name == "sim.root"
+    assert job.k4run_args.endswith(f"--inputFiles {local}")
+
+
+def test_k4run_inputs_sharing_a_file_name_get_distinct_copies(job_module, k4geo, input_dir, monkeypatch):
+    monkeypatch.setattr(job_module.subprocess, "run", Processes())
+    sources = "https://a.cern.ch/A/sim.root https://b.cern.ch/B/sim.root"
+    job = job_module.resolve(_k4run_record(input_files=sources), dict(os.environ))
+    first, second = job.k4run_args.split("--inputFiles ")[1].split()
+    assert first != second
+    assert Path(first).name == Path(second).name == "sim.root"
+
+
+def test_relative_local_k4run_input_is_made_absolute(job_module, k4geo, tmp_path, monkeypatch):
+    # The job runs from its own working directory, where a relative path
+    # would no longer name the file.
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "sim.root").write_text("events")
+    monkeypatch.chdir(tmp_path)
+    job = job_module.resolve(_k4run_record(input_files="data/sim.root"), dict(os.environ))
+    assert job.k4run_args.endswith(f"--inputFiles {tmp_path.resolve() / 'data' / 'sim.root'}")
 
 
 def test_missing_local_k4run_input_is_a_job_error(job_module, k4geo):

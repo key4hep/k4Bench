@@ -21,6 +21,7 @@ no run_info.json.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -197,13 +198,17 @@ def _resolve_k4run(
 def _fetch(source: str) -> str:
     """A local copy of one k4run input: fetched from a ``root://`` or
     ``https://`` URL (WebEOS serves EOS without credentials), or the local path
-    itself."""
+    itself, made absolute since the job runs from its own working directory.
+
+    Each URL gets its own directory, named by a hash of the URL, so two inputs
+    that share a file name never overwrite each other."""
     if not source.startswith(("root://", "http://", "https://")):
         if not Path(source).is_file():
             raise JobError(f"input not found: {source}")
-        return source
-    LOCAL_INPUT_DIR.mkdir(parents=True, exist_ok=True)
-    local = str(LOCAL_INPUT_DIR / os.path.basename(source))
+        return str(Path(source).resolve())
+    directory = LOCAL_INPUT_DIR / hashlib.sha256(source.encode()).hexdigest()[:16]
+    directory.mkdir(parents=True, exist_ok=True)
+    local = str(directory / os.path.basename(source))
     if source.startswith("root://"):
         subprocess.run(["xrdcp", "--force", source, local], check=True)
     else:
