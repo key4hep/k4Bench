@@ -99,7 +99,7 @@ are ddsim's except where marked; a key of the other tool is an error.
 | `name` | str | ✅ | Slug (`^[A-Za-z0-9_.+-]+$`); becomes the EOS sample dir + job label. |
 | `n_events` | int > 0 | ✅ | Events to simulate. |
 | `ddsim_args` | str | — | **Appended** to top-level `ddsim_args` (not replaced). |
-| `input_files` | list | — | HepMC path(s); mutually exclusive with `--enableGun`. k4run: frozen input file(s), copied locally before the run from `https://` (curl), `root://` (xrdcp) or a local path. |
+| `input_files` | list | — | HepMC path(s); mutually exclusive with `--enableGun`. k4run: frozen input file(s), copied locally before the run from an HTTPS URL (curl), an XRootD `root://` URL (xrdcp) or a local path. |
 | `k4run_args` | str | — | k4run: **appended** to top-level `k4run_args`. |
 | `variants` | list | — | k4run: replaces the top-level variants for this sample. |
 | `steering_file` | str | — | Overrides the top-level steering file for this sample. |
