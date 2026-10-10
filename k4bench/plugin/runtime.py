@@ -99,12 +99,11 @@ def ensure_plugin_built() -> None:
 
 
 def ensure_auditor_built() -> None:
-    """Build the k4Bench plugins if the auditor is missing."""
-    try:
-        find_auditor_dir()
-        return
-    except FileNotFoundError:
-        pass
+    """Build the k4Bench plugins if the auditor is missing or stale.
+
+    Always runs build.sh, which rebuilds only when a library is older than its
+    sources, so an installed auditor never outlives a change to them.
+    """
     _run_build_script()
 
 

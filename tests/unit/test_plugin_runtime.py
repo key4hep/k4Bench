@@ -449,14 +449,17 @@ def test_repository_ships_the_auditor_options_file():
 
 
 class TestEnsureAuditorBuilt:
-    def test_present_auditor_skips_the_build(self, tmp_path):
+    def test_present_auditor_still_runs_build_sh(self, tmp_path):
+        # build.sh decides from source timestamps whether an installed auditor
+        # is stale, so it must run even when the auditor is already present.
         _make_auditor(tmp_path)
+        (tmp_path / "build.sh").touch()
         with (
             patch.object(plugin_runtime, "_find_plugin_root", return_value=tmp_path),
-            patch("subprocess.run") as mock_run,
+            patch("subprocess.run", return_value=_mock_run(0)) as mock_run,
         ):
             ensure_auditor_built()
-        mock_run.assert_not_called()
+        mock_run.assert_called_once()
 
     def test_missing_auditor_runs_build_sh(self, tmp_path):
         (tmp_path / "build.sh").touch()
