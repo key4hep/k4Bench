@@ -11,14 +11,15 @@ on stdout. Two output shapes:
 --only "A B/sample" keeps just the named jobs: a bare config name selects all
 of its samples, "config/sample" one of them. A name matching no job is an error.
 
-Each sample record is a fully-merged config consumed downstream as plain env
-vars — no YAML parsing happens after this script runs.
+Each sample record is a fully-merged config, handed to its nightly job whole
+as JSON (benchmark_job.py reads it) — no YAML parsing happens after this script
+runs.
 
 Top-level keys in a benchmark file are detector-wide defaults; keys inside a
 samples[] entry override them for that sample only. The single exception is
 ddsim_args: top-level and sample-level strings are concatenated (top first),
 which lets shared ddsim flags live at the detector level. Lists are joined
-to space-separated strings so they round-trip through env vars unchanged, and
+to space-separated strings and every value is a string, and
 boolean keys are always "true" or "false" (an absent key is "false").
 """
 from __future__ import annotations
@@ -125,8 +126,8 @@ def expand(path: Path) -> list[dict]:
 def _eos_directory(rec: dict) -> tuple[str, str]:
     """The ``(detector, sample)`` part of the EOS directory *rec* uploads to.
 
-    nightly_benchmark.sh names the detector directory after the compact file
-    (``basename "${DETECTOR_XML}" .xml``), not after the benchmark config.
+    benchmark_job.py names the detector directory after the compact file
+    (``Job.detector``), not after the benchmark config.
     """
     return Path(rec["xml"]).name.removesuffix(".xml"), rec["sample"]
 

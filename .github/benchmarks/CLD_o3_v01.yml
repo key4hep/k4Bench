@@ -41,7 +41,7 @@
 # cld_steer.py — the plain one leaves the ARC region without a defined
 # tracking_volume and ddsim aborts. cld_arc_steer.py itself does
 # `from cld_steer import *`, a relative import that only resolves because
-# nightly_benchmark.sh puts the steering file's own directory on PYTHONPATH.
+# benchmark_job.py puts the steering file's own directory on PYTHONPATH.
 
 # xml:           https://github.com/key4hep/k4geo/blob/main/FCCee/CLD/compact/CLD_o3_v01/CLD_o3_v01.xml
 # steering_file: https://github.com/key4hep/CLDConfig/blob/main/CLDConfig/cld_arc_steer.py

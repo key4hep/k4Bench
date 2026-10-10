@@ -1,14 +1,10 @@
-#!/usr/bin/env python3
 """
-Write run_info.json for one nightly benchmark job.
+The run_info.json record of one nightly benchmark job.
 
-  run_info.py <output_dir> --detector=... --sample=... [options]
-
-Called by nightly_benchmark.sh after the benchmark has run, with the job's
-resolved parameters as options and the CI identity (GITHUB_*), the LCG view
-(K4H_STACK_SETUP) and the runner settings (VERBOSE, RUNNER_CPU_SET) in the
-environment. Every value is passed with ``--option=value``, so ddsim arguments
-that themselves start with ``--`` cannot be mistaken for options of this script.
+Written by benchmark_job.py once the benchmark has run (:func:`write_run_info`),
+from the job it resolved, the CI identity (GITHUB_*), the stack the nightly
+resolved (K4H_STACK_SETUP, K4H_PLATFORM, K4H_RELEASE) and the runner's CPU set
+(RUNNER_CPU_SET) in the environment.
 
 Besides the job parameters, the record holds:
 
@@ -23,12 +19,11 @@ measurements are the deliverable, so either is recorded as unknown instead.
 """
 from __future__ import annotations
 
-import argparse
 import json
-import os
 import shlex
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 # Executing a file below ``.github/scripts`` otherwise puts that directory—not
 # the checkout root—first on sys.path. Prefer the checkout over a stale k4bench
@@ -44,6 +39,9 @@ sys.path.insert(0, str(_REPO_ROOT))
 # fail on a broken dependency the way the benchmark modules below could.
 from k4bench.artifacts import RESULTS_SUFFIX, RUN_INFO, labelled_files  # noqa: E402
 from k4bench.labels import RELEASE_PREFIX  # noqa: E402
+
+if TYPE_CHECKING:
+    from benchmark_job import Job
 
 
 def random_seed(ddsim_args: str) -> int | None:
@@ -81,7 +79,7 @@ def produced_configs(output_dir: Path) -> list[str]:
     return [label for _, label in labelled_files(output_dir, RESULTS_SUFFIX)]
 
 
-def configured_labels(args: argparse.Namespace) -> list[str] | None:
+def configured_labels(job: Job) -> list[str] | None:
     """The labels the benchmark config was supposed to produce, or ``None``.
 
     Kept separate from :func:`produced_configs`: that is what produced a CSV,
@@ -94,64 +92,68 @@ def configured_labels(args: argparse.Namespace) -> list[str] | None:
     try:
         from k4bench.benchmark.ddsim import planned_config_labels, select_sweep
 
+        rec = job.record
         mode, names = select_sweep(
-            sweep=args.sweep == "true",
-            sweep_detectors=shlex.split(args.sweep_detectors),
-            include_only=shlex.split(args.include_only),
-            exclude_only=shlex.split(args.exclude_only),
+            sweep=rec["sweep"] == "true",
+            sweep_detectors=shlex.split(rec["sweep_detectors"]),
+            include_only=shlex.split(rec["include_only"]),
+            exclude_only=shlex.split(rec["exclude_only"]),
         )
-        return planned_config_labels(Path(args.detector_xml), mode, names)
+        return planned_config_labels(job.detector_xml, mode, names)
     except Exception as exc:
         print(f"WARNING: could not resolve configured labels: {exc}", file=sys.stderr)
         return None
 
 
 def build_run_info(
-    args: argparse.Namespace,
+    job: Job,
     env: dict[str, str],
     *,
+    date: str,
     configs: list[str],
     labels: list[str] | None,
 ) -> dict:
     """The run_info.json record of one job, without stack provenance."""
+    rec = job.record
     run_id = env["GITHUB_RUN_ID"]
+    release = env["K4H_RELEASE"]
     return {
-        "date":             args.date,
-        "platform":         args.platform,
-        "k4h_release":      f"{RELEASE_PREFIX}{args.release}",
-        "k4h_release_date": args.release,
+        "date":             date,
+        "platform":         env["K4H_PLATFORM"],
+        "k4h_release":      f"{RELEASE_PREFIX}{release}",
+        "k4h_release_date": release,
         # The resolved LCG view, never whatever a sourced stack left in its own
         # variables: it is what the release label and the EOS path came from.
         "k4h_stack_setup":  env["K4H_STACK_SETUP"],
-        "detector":         args.detector,
-        "sample":           args.sample,
+        "detector":         job.detector,
+        "sample":           rec["sample"],
         # The compact file this run loaded, relative to $K4GEO when it came from
         # there. Recorded so attribution can state as a *fact* which pull
         # requests touch the geometry this run actually reads, instead of
         # inferring it from path names.
-        "xml_path":         args.xml_path,
-        "configured_xml_path": args.configured_xml_path,
+        "xml_path":         job.xml_path,
+        "configured_xml_path": rec["xml"],
         "github_run_id":    run_id,
         "github_run_url": (
             f"{env['GITHUB_SERVER_URL']}/{env['GITHUB_REPOSITORY']}/actions/runs/{run_id}"
         ),
         "commit_sha":       env["GITHUB_SHA"],
-        "n_events":         args.n_events,
-        "sweep":            args.sweep == "true",
-        "ddsim_args":       args.ddsim_args,
-        "random_seed":      random_seed(args.ddsim_args),
+        "n_events":         int(rec["n_events"]),
+        "sweep":            rec["sweep"] == "true",
+        "ddsim_args":       job.ddsim_args,
+        "random_seed":      random_seed(job.ddsim_args),
         # How the benchmark was invoked, beyond its arguments.  Both move a timing
         # measurement -- --verbose streams ddsim's output while it is being timed,
         # and the runner pins the process to a fixed CPU set -- so a reproducer that
         # does not know them cannot say it ran the same measurement.
-        "verbose":          env.get("VERBOSE", "").lower() == "true",
+        "verbose":          rec["verbose"] == "true",
         "runner_cpu_set":   env.get("RUNNER_CPU_SET", ""),
         # Preserve the configured source values.  ddsim_args above names the /tmp
         # copy actually read by ddsim; a reproducer also needs the xrootd URL from
         # which that ephemeral file was obtained.
-        "input_files":      shlex.split(args.input_files),
-        "steering_file":    args.steering_file,
-        "resolved_steering_file": args.resolved_steering_file,
+        "input_files":      shlex.split(rec["input_files"]),
+        "steering_file":    rec["steering_file"],
+        "resolved_steering_file": job.steering_path,
         "configs":          configs,
         "configured_labels": labels,
     }
@@ -179,40 +181,18 @@ def add_stack_provenance(run_info: dict, stack_setup: str) -> None:
         print(f"WARNING: stack provenance not recorded: {exc}")
 
 
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0].strip())
-    parser.add_argument("output_dir", type=Path)
-    for name in ("detector", "sample", "date", "platform", "release"):
-        parser.add_argument(f"--{name}", required=True)
-    parser.add_argument("--n-events", type=int, required=True)
-    parser.add_argument("--sweep", choices=("true", "false"), default="false")
-    parser.add_argument("--detector-xml", required=True,
-                        help="absolute compact file the job loaded")
-    for name in (
-        "xml-path", "configured-xml-path", "ddsim-args", "input-files",
-        "steering-file", "resolved-steering-file",
-        "sweep-detectors", "include-only", "exclude-only",
-    ):
-        parser.add_argument(f"--{name}", default="")
-    return parser
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
-    env = dict(os.environ)
+def write_run_info(output_dir: Path, job: Job, env: dict[str, str], *, date: str) -> Path:
+    """Write *job*'s run_info.json into *output_dir*, once the benchmark has run."""
     run_info = build_run_info(
-        args,
+        job,
         env,
-        configs=produced_configs(args.output_dir),
-        labels=configured_labels(args),
+        date=date,
+        configs=produced_configs(output_dir),
+        labels=configured_labels(job),
     )
     add_stack_provenance(run_info, env["K4H_STACK_SETUP"])
 
-    path = args.output_dir / RUN_INFO
+    path = output_dir / RUN_INFO
     path.write_text(json.dumps(run_info, indent=2))
     print(f"Written: {path}")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+    return path

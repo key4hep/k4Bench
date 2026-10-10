@@ -56,8 +56,8 @@ k4Bench/
 │   ├── workflows/            #   ci.yml, nightly.yml, benchmark-detector.yml,
 │   │                         #   deploy-dashboard.yml, on-release-main.yml, docs.yml
 │   ├── benchmarks/           #   *.yml nightly benchmark configs (one per detector)
-│   └── scripts/              #   nightly_benchmark.sh, list_benchmarks.py, machine_info.py,
-│                             #   run_info.py, …
+│   └── scripts/              #   nightly_benchmark.sh, benchmark_job.py, list_benchmarks.py,
+│                             #   machine_info.py, run_info.py, …
 │
 ├── tests/
 │   ├── conftest.py           #   matplotlib Agg backend

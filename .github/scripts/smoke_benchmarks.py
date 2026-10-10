@@ -57,7 +57,7 @@ def command(xml: str, steering: str, output: Path) -> tuple[list[str], dict[str,
         if not path.is_file():
             raise ValueError(f"Missing steering file: {path}")
         args += ["--steeringFile", str(path)]
-        # Match nightly_benchmark.sh: CLD steering imports a sibling module.
+        # Match benchmark_job.py: CLD steering imports a sibling module.
         env["PYTHONPATH"] = str(path.parent) + os.pathsep + env.get("PYTHONPATH", "")
     args += [
         "--compactFile",

@@ -11,7 +11,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = ROOT / ".github" / "scripts" / "list_benchmarks.py"
-_RUN_INFO = ROOT / ".github" / "scripts" / "run_info.py"
 
 
 def _load(name: str, path: Path):
@@ -45,19 +44,11 @@ def test_repository_benchmarks_expand(list_benchmarks, monkeypatch, capsys):
     assert all(item["config"] and item["sample"] for item in items)
 
 
-def test_repository_records_satisfy_the_run_info_contract(list_benchmarks, monkeypatch, capsys):
-    # nightly_benchmark.sh passes SWEEP straight to run_info.py, whose --sweep
-    # only accepts "true" or "false".
-    parser = _load("run_info_writer", _RUN_INFO)._parser()
+def test_repository_records_satisfy_the_benchmark_job_contract(list_benchmarks, monkeypatch, capsys):
+    # benchmark_job.py reads a boolean as the string "true"; anything else is false.
     items = _main(list_benchmarks, ROOT / ".github" / "benchmarks", monkeypatch, capsys)
     for item in items:
         assert {item["sweep"], item["verbose"]} <= {"true", "false"}, item["config"]
-        args = parser.parse_args([
-            "out", "--detector=d", "--sample=s", "--date=d", "--platform=p",
-            "--release=r", "--n-events=1", "--detector-xml=x",
-            f"--sweep={item['sweep']}",
-        ])
-        assert args.sweep == item["sweep"]
 
 
 @pytest.mark.parametrize(

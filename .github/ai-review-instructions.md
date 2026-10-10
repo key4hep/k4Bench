@@ -36,9 +36,9 @@ whole repository: if a finding depends on code you cannot see, do not report it.
 - `dashboard/`: Streamlit app that reads EOS over HTTPS and renders the report.
   It never recomputes verdicts.
 - `.github/benchmarks/*.yml`: the nightly workload, one file per detector.
-- `.github/scripts/nightly_benchmark.sh`, `resolve_release.sh`,
-  `regression_report.sh` and `regression_report.py`: the nightly pipeline,
-  run inside the Key4hep container.
+- `.github/scripts/nightly_benchmark.sh`, `benchmark_job.py`, `run_info.py`,
+  `resolve_release.sh`, `regression_report.sh` and `regression_report.py`: the
+  nightly pipeline, run inside the Key4hep container.
 - `docs/reference/file-formats.md`: the documented contract for every
   persisted file and for the EOS layout.
 

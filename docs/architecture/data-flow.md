@@ -63,8 +63,8 @@ sequenceDiagram
     Cron->>Job: expand .github/benchmarks/*.yml → matrix
     Cron->>Gate: wait for today's Key4hep stack on CVMFS
     Gate-->>Job: release every job of this night sources
-    Job->>K: run (per detector/sample)
-    K-->>Job: logs/<detector>/ (CSV + JSON + log)
+    Job->>K: run (per detector/sample, from benchmark_job.py)
+    K-->>Job: logs/benchmark/ (CSV + JSON + log)
     Job->>Job: write run_info.json + machine_info.json
     Job->>EOS: upload to {detector}/{platform}/key4hep-{release}/{sample}/{date}/
     Reg->>EOS: pull trailing run window per (detector, platform, sample)
