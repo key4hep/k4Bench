@@ -36,6 +36,7 @@ from k4bench.analysis.trend import (
     parse_run_dir,
 )
 from k4bench.blame.models import rank_group_key
+from k4bench.layout import iter_run_dirs
 from k4bench.regression.engine import (
     BASELINE_WINDOW_RUNS,
     evaluate_series,
@@ -977,10 +978,10 @@ def _region_window(verdict: MetricVerdict) -> tuple:
     another window inside that release, and nowhere else — a cross-release
     window pools whole releases, so two metrics that stepped across it have one
     answer between them and re-deriving that rule here is how this and the
-    sidecar drift apart. The detector/platform/sample prefix is dropped: this
-    key is only ever compared within one run group.
+    sidecar drift apart. Only the window is kept: this key is only ever compared
+    within one run group.
     """
-    return (verdict.label, *rank_group_key(verdict)[3:])
+    return (verdict.label, *rank_group_key(verdict).window)
 
 
 def _with_region_deltas(
@@ -1170,7 +1171,7 @@ def build_nightly_report_local(
     night: str | None = None,
 ) -> NightlyReport:
     """Like :func:`build_nightly_report`, but over a local directory tree with
-    the same ``{detector}/{platform}/{stack}/{sample}/{date}`` layout as EOS
+    the same layout as EOS (:mod:`k4bench.layout`)
     (used by the integration test and for offline dry-runs; no network).
     *as_of* truncates each sample's runs the same way, and *night* reports an
     outage night the same way."""
@@ -1185,19 +1186,11 @@ def build_nightly_report_local(
 
     # Every series first: a successor continues its predecessor's runs, which
     # can live under another platform or another detector config.
+    # Each sample's run dirs are collected across all stacks.
     per_series: dict[tuple[str, str], dict[str, list[Path]]] = {}
-    for det_dir in sorted(p for p in root.iterdir() if p.is_dir()):
-        if det_dir.name.startswith(("_", ".")):
-            continue
-        for plat_dir in sorted(p for p in det_dir.iterdir() if p.is_dir()):
-            # Collect each sample's run dirs across all stacks.
-            per_sample: dict[str, list[Path]] = {}
-            for stack_dir in sorted(p for p in plat_dir.iterdir() if p.is_dir()):
-                for sample_dir in sorted(p for p in stack_dir.iterdir() if p.is_dir()):
-                    per_sample.setdefault(sample_dir.name, []).extend(
-                        p for p in sample_dir.iterdir() if p.is_dir()
-                    )
-            per_series[(det_dir.name, plat_dir.name)] = per_sample
+    for run in iter_run_dirs(root):
+        per_sample = per_series.setdefault((run.detector, run.platform), {})
+        per_sample.setdefault(run.sample, []).append(run.path)
 
     def _predecessor(detector: str, platform: str, sample: str) -> PredecessorRuns | None:
         for candidate in predecessor_series(detector, platform):

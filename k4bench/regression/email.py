@@ -43,6 +43,7 @@ from k4bench.blame.models import (
     BlameEntry,
     BlameReport,
     CandidatePR,
+    RankGroupKey,
     StepAssessment,
     rank_group_key,
 )
@@ -54,7 +55,7 @@ from k4bench.regression.models import (
     Unjudged,
     unjudged_cause,
 )
-from k4bench.labels import pretty_platform, pretty_sample
+from k4bench.labels import pretty_platform, pretty_release, pretty_sample
 from k4bench.metrics import METRICS, metric_label, pretty_metric
 from k4bench.regression.render import (
     _dashboard_link,
@@ -141,7 +142,7 @@ def _release_line(report: NightlyReport) -> str:
     """Plain-text ``Key4hep release: …`` summary for the header, or ``""`` when no
     group carries a release. The ``key4hep-`` prefix is dropped — a release is its
     date here — so it reads ``Key4hep release: 2026-06-27``."""
-    releases = [r.removeprefix("key4hep-") for r in _releases(report)]
+    releases = [pretty_release(r) for r in _releases(report)]
     if not releases:
         return ""
     if len(releases) == 1:
@@ -620,7 +621,7 @@ class RankingCard:
     #: :func:`_window_sections` matches its section on. Carried rather than
     #: recomputed from the release pair, which does not identify a same-release
     #: window.
-    rank_group: tuple
+    rank_group: RankGroupKey
     n_signals: int
     total_window_signals: int
     n_new: int
@@ -650,7 +651,7 @@ def _ranking_cards(group: RunGroupReport, index: _BlameIndex) -> list[RankingCar
     candidates deduplicated by ``repo#number`` (the current sidecar preferred on
     a collision), and each card records how many current signals it covers and
     whether its ranking was reused from a first-confirmation night."""
-    buckets: dict[tuple, list[tuple[MetricVerdict, BlameEntry, str | None]]] = {}
+    buckets: dict[RankGroupKey, list[tuple[MetricVerdict, BlameEntry, str | None]]] = {}
     for v in group.regressions:
         entry, reused_from = index.lookup(v)
         if entry is None:
@@ -693,8 +694,8 @@ def _ranking_cards(group: RunGroupReport, index: _BlameIndex) -> list[RankingCar
             if not any_current and len(reused_nights) == 1 else None
         )
         cards.append(RankingCard(
-            detector=key[0], platform=key[1], sample=key[2],
-            base_release=key[3], onset_release=key[4],
+            detector=key.detector, platform=key.platform, sample=key.sample,
+            base_release=key.base_release, onset_release=key.onset_release,
             rank_group=key,
             n_signals=len(items),
             total_window_signals=len(window_verdicts),
@@ -1064,7 +1065,7 @@ def _window_sections(group: RunGroupReport, index: _BlameIndex) -> list[WindowSe
     # Bucketed on the shared window rule, so two change windows inside one
     # release stay two sections — they have different runs, different harness
     # commits and different candidate PRs.
-    buckets: dict[tuple, list[MetricVerdict]] = {}
+    buckets: dict[RankGroupKey, list[MetricVerdict]] = {}
     for v in group.regressions:
         buckets.setdefault(rank_group_key(v), []).append(v)
 
@@ -1072,8 +1073,8 @@ def _window_sections(group: RunGroupReport, index: _BlameIndex) -> list[WindowSe
         WindowSection(
             detector=group.detector, platform=group.platform, sample=group.sample,
             k4h_release=group.k4h_release,
-            base_release=key[3], onset_release=key[4],
-            base_run_id=key[5], onset_run_id=key[6],
+            base_release=key.base_release, onset_release=key.onset_release,
+            base_run_id=key.base_run_id, onset_run_id=key.onset_run_id,
             verdicts=sorted(verdicts, key=_rep_sort_key),
             card=cards.get(key),
         )

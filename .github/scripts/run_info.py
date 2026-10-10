@@ -40,9 +40,10 @@ except ValueError:
     pass
 sys.path.insert(0, str(_REPO_ROOT))
 
-# A leaf module that imports only the standard library, so this import cannot
+# Leaf modules that import only the standard library, so these imports cannot
 # fail on a broken dependency the way the benchmark modules below could.
 from k4bench.artifacts import RESULTS_SUFFIX, RUN_INFO, labelled_files  # noqa: E402
+from k4bench.labels import RELEASE_PREFIX  # noqa: E402
 
 
 def random_seed(ddsim_args: str) -> int | None:
@@ -117,7 +118,7 @@ def build_run_info(
     return {
         "date":             args.date,
         "platform":         args.platform,
-        "k4h_release":      f"key4hep-{args.release}",
+        "k4h_release":      f"{RELEASE_PREFIX}{args.release}",
         "k4h_release_date": args.release,
         # The resolved LCG view, never whatever a sourced stack left in its own
         # variables: it is what the release label and the EOS path came from.

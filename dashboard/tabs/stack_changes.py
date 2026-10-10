@@ -27,7 +27,8 @@ import streamlit as st
 from k4bench.blame.models import BlameReport, BlameSchemaError
 from k4bench.provenance.diff import ADDED, CHANGED, REMOVED, diff_packages, unchanged_packages
 from k4bench.regression.models import MetricVerdict
-from k4bench.labels import RELEASE_PREFIX, pretty_release, pretty_sample
+from k4bench.labels import pretty_release, pretty_sample
+from k4bench.layout import stack_dir
 from k4bench.regression.render import from_json
 from sections import STACK_CHANGES_PLATFORM_WIDE, SectionScope
 from remote_cache import (
@@ -47,10 +48,6 @@ from tabs._regression_trend import (
     render_metric_trend,
 )
 from ui_chrome import seed_query_param
-
-#: Releases are stored as ``key4hep-{YYYY-MM-DD}`` directories; the tab talks
-#: in the bare nightly tag the rest of the dashboard shows on its axes.
-_PREFIX = RELEASE_PREFIX
 
 #: This tab's section name and the query-param names its two pickers seed from
 #: (see :func:`_seed`). Kept here, beside the widgets that read them, so a tab
@@ -321,7 +318,7 @@ def packages_for_release(data_url: str, platform: str, release: str) -> dict | N
     from whichever detector recorded it. The public provenance lookup other tabs
     use, so they need neither the ``key4hep-`` prefix nor this module's
     internals."""
-    return _packages(data_url, platform, _PREFIX + release)
+    return _packages(data_url, platform, stack_dir(release))
 
 
 
@@ -389,8 +386,8 @@ def render(
         return None
 
     span = _span(releases, base_release, head_release)
-    base = _packages(data_url, platform, _PREFIX + base_release)
-    head = _packages(data_url, platform, _PREFIX + head_release)
+    base = _packages(data_url, platform, stack_dir(base_release))
+    head = _packages(data_url, platform, stack_dir(head_release))
     missing = [r for r, p in ((base_release, base), (head_release, head)) if not p]
     provenance_state: _ProvenanceState
     if missing:

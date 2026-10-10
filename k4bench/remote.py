@@ -1,7 +1,7 @@
 """Discover and download benchmark run data from a WebEOS HTTP endpoint.
 
-The WebEOS site serves an Apache-style directory listing at K4BENCH_DATA_URL.
-Expected layout::
+The WebEOS site serves an Apache-style directory listing at K4BENCH_DATA_URL,
+laid out as :mod:`k4bench.layout` defines::
 
     {base_url}/
       {detector}/                                   e.g. ALLEGRO_o1_v03/
@@ -33,6 +33,7 @@ import requests
 from urllib3.util import Retry
 
 from k4bench.artifacts import RUN_INFO
+from k4bench.layout import is_reserved, run_path, run_url
 
 _log = logging.getLogger(__name__)
 
@@ -192,19 +193,17 @@ def list_detectors(base_url: str) -> list[str]:
     the nightly regression reports live) are reserved for non-detector data and
     skipped.
     """
-    return [d for d in _list_subdirs(base_url) if not d.startswith("_")]
+    return [d for d in _list_subdirs(base_url) if not is_reserved(d)]
 
 
 def list_platforms(base_url: str, detector: str) -> list[str]:
     """Return available platforms for *detector*."""
-    return _list_subdirs(f"{base_url.rstrip('/')}/{detector}")
+    return _list_subdirs(run_url(base_url, detector))
 
 
 def list_samples(base_url: str, detector: str, platform: str, stack: str) -> list[str]:
     """Return available physics samples for *(detector, platform, stack)*."""
-    return sorted(_list_subdirs(
-        f"{base_url.rstrip('/')}/{detector}/{platform}/{stack}"
-    ))
+    return sorted(_list_subdirs(run_url(base_url, detector, platform, stack)))
 
 
 def scan_stack_samples(
@@ -220,10 +219,9 @@ def scan_stack_samples(
     *strict*, the first that fails without an answer stops the scan and raises
     :class:`IncompleteFetch` carrying what was listed.
     """
-    root = f"{base_url.rstrip('/')}/{detector}/{platform}"
-    stacks = sorted(_list_subdirs(root), reverse=True)
+    stacks = sorted(_list_subdirs(run_url(base_url, detector, platform)), reverse=True)
     listed, failures = _list_each(
-        {stack: f"{root}/{stack}" for stack in stacks},
+        {stack: run_url(base_url, detector, platform, stack) for stack in stacks},
         strict=strict, caller="scan_stack_samples",
     )
     out = {stack: sorted(samples) for stack, samples in listed.items()}
@@ -240,9 +238,7 @@ def list_runs(
     sample: str,
 ) -> list[str]:
     """Return available run dates for a *(detector, platform, stack, sample)* combination, newest first."""
-    runs = _list_subdirs(
-        f"{base_url.rstrip('/')}/{detector}/{platform}/{stack}/{sample}"
-    )
+    runs = _list_subdirs(run_url(base_url, detector, platform, stack, sample))
     return sorted(runs, reverse=True)
 
 
@@ -264,10 +260,9 @@ def list_run_dates_all_stacks(
     skipped; with *strict*, the first that fails without an answer stops the
     scan and raises :class:`IncompleteFetch` carrying what was listed.
     """
-    root = f"{base_url.rstrip('/')}/{detector}/{platform}"
-    stacks = _list_subdirs(root)
+    stacks = _list_subdirs(run_url(base_url, detector, platform))
     listed, failures = _list_each(
-        {stack: f"{root}/{stack}/{sample}" for stack in stacks},
+        {stack: run_url(base_url, detector, platform, stack, sample) for stack in stacks},
         strict=strict, caller="list_run_dates_all_stacks",
     )
     out = {stack: sorted(runs) for stack, runs in listed.items() if runs}
@@ -297,7 +292,7 @@ def ensure_run_cached(
 ) -> Path:
     """Download one run into a stable cache path and return it.
 
-    Cache layout: ``{cache_root}/{detector}/{platform}/{stack}/{sample}/{date}/``.
+    The cache mirrors the store layout (:mod:`k4bench.layout`) below *cache_root*.
     Historical runs are immutable, so a run whose ``.complete`` sentinel exists is
     returned without any HTTP. To stay correct across concurrent reruns and
     processes, files are downloaded into a private temp dir and the finished run
@@ -306,18 +301,18 @@ def ensure_run_cached(
     behind (the temp dir is discarded) rather than a dir that looks cached.
     """
     root = Path(cache_root) if cache_root else _default_cache_root()
-    run_dir = root / detector / platform / stack / sample / date
+    run_dir = root / run_path(detector, platform, stack, sample, date)
     sentinel = run_dir / ".complete"
     if sentinel.exists():
         return run_dir
 
-    run_url = f"{base_url.rstrip('/')}/{detector}/{platform}/{stack}/{sample}/{date}"
+    url = run_url(base_url, detector, platform, stack, sample, date)
     run_dir.parent.mkdir(parents=True, exist_ok=True)
     # Stage in a sibling temp dir (same filesystem, so the publish rename is atomic).
     tmp_dir = Path(tempfile.mkdtemp(prefix=f".{date}.tmp-", dir=run_dir.parent))
     session = _get_session()
     try:
-        for fname in _list_files(run_url):
+        for fname in _list_files(url):
             # Validate the *decoded* name: a percent-encoded separator (e.g.
             # "%2e%2e%2fevil.csv" → "../evil.csv") slips past a raw-name check but
             # escapes the run dir once written, so decode first, then reject any
@@ -331,7 +326,7 @@ def ensure_run_cached(
                 or Path(decoded).name != decoded
             ):
                 raise ValueError(f"Unsafe filename in listing: {fname!r}")
-            resp = session.get(f"{run_url}/{fname}", timeout=_TIMEOUT)
+            resp = session.get(f"{url}/{fname}", timeout=_TIMEOUT)
             resp.raise_for_status()
             (tmp_dir / decoded).write_bytes(resp.content)
         (tmp_dir / ".complete").write_text("")
@@ -445,9 +440,7 @@ def list_stacks(base_url: str, detector: str, platform: str) -> list[str]:
     Directory names as stored (``key4hep-{YYYY-MM-DD}``). Discovery only — one
     listing, no downloads.
     """
-    return sorted(
-        _list_subdirs(f"{base_url.rstrip('/')}/{detector}/{platform}"), reverse=True
-    )
+    return sorted(_list_subdirs(run_url(base_url, detector, platform)), reverse=True)
 
 
 def fetch_stack_packages(
@@ -466,7 +459,7 @@ def fetch_stack_packages(
     server does not answer stops the walk and raises :class:`IncompleteFetch`
     instead: the ``None`` it would otherwise end in might not be the answer.
     """
-    root = f"{base_url.rstrip('/')}/{detector}/{platform}/{stack}"
+    root = run_url(base_url, detector, platform, stack)
 
     def _stop_if_strict(where: str, exc: requests.RequestException) -> None:
         if strict and not _is_absent(exc):
@@ -480,13 +473,14 @@ def fetch_stack_packages(
         return None
 
     for sample in samples:
+        sample_url = run_url(base_url, detector, platform, stack, sample)
         try:
-            dates = sorted(_list_subdirs(f"{root}/{sample}"), reverse=True)
+            dates = sorted(_list_subdirs(sample_url), reverse=True)
         except requests.RequestException as exc:
-            _stop_if_strict(f"{root}/{sample}", exc)
+            _stop_if_strict(sample_url, exc)
             continue
         for date in dates:
-            url = f"{root}/{sample}/{date}/{RUN_INFO}"
+            url = f"{run_url(base_url, detector, platform, stack, sample, date)}/{RUN_INFO}"
             try:
                 resp = _get_session().get(url, timeout=_TIMEOUT)
                 resp.raise_for_status()
@@ -515,10 +509,7 @@ def fetch_run_info(
     dispatches and partial re-runs can leave neighbouring run directories with
     different workloads and harness commits.
     """
-    url = (
-        f"{base_url.rstrip('/')}/{detector}/{platform}/{stack}/{sample}/"
-        f"{run_id}/{RUN_INFO}"
-    )
+    url = f"{run_url(base_url, detector, platform, stack, sample, run_id)}/{RUN_INFO}"
     try:
         resp = _get_session().get(url, timeout=_TIMEOUT)
         resp.raise_for_status()

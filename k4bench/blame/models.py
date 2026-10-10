@@ -26,7 +26,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, field, fields
-from typing import Any
+from typing import Any, NamedTuple
 
 
 #: The mandatory qualifier on every rendered ranking — a lead to verify, never
@@ -527,9 +527,23 @@ class BlameEntry:
         )
 
 
-#: The shape of a rank-group key: the run group's identity, the release window,
-#: and — for a same-release window only — the *run* window inside it.
-RankGroupKey = tuple[str, str, str, str, str, str | None, str | None]
+class RankGroupKey(NamedTuple):
+    """A rank-group key: the run group's identity, the release window, and —
+    for a same-release window only — the *run* window inside it."""
+
+    detector: str
+    platform: str
+    sample: str
+    base_release: str
+    onset_release: str
+    base_run_id: str | None
+    onset_run_id: str | None
+
+    @property
+    def window(self) -> tuple[str, str, str | None, str | None]:
+        """The change window alone, for keys only ever compared within one run
+        group."""
+        return (self.base_release, self.onset_release, self.base_run_id, self.onset_run_id)
 
 
 def rank_group_key(verdict) -> RankGroupKey:
@@ -557,13 +571,13 @@ def rank_group_key(verdict) -> RankGroupKey:
     duck-typed for the same reason the rest of this module is: it keeps the
     schema free of a dependency on the engine's models.
     """
-    key = (
+    same_release = verdict.last_accepted_run_date == verdict.onset_run_date
+    return RankGroupKey(
         verdict.detector, verdict.platform, verdict.sample,
         verdict.last_accepted_run_date, verdict.onset_run_date,
+        verdict.last_accepted_run_id if same_release else None,
+        verdict.onset_run_id if same_release else None,
     )
-    if verdict.last_accepted_run_date == verdict.onset_run_date:
-        return (*key, verdict.last_accepted_run_id, verdict.onset_run_id)
-    return (*key, None, None)
 
 
 @dataclass(frozen=True)

@@ -21,7 +21,7 @@ import textwrap
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from k4bench.labels import BASELINE_LABEL, INCLUDE_PREFIX, REMOVAL_PREFIX
+from k4bench.labels import BASELINE_LABEL, INCLUDE_PREFIX, REMOVAL_PREFIX, pretty_release
 
 #: The rendered recipe is an uploaded artifact rather than comment body, so the
 #: cap is only there to bound what a malformed run record can produce.
@@ -98,7 +98,7 @@ def sweep_flag(label: str) -> str | None:
 
 def _release(info: dict[str, Any]) -> str:
     value = info.get("k4h_release_date") or info.get("k4h_release") or ""
-    return str(value).removeprefix("key4hep-")
+    return pretty_release(str(value))
 
 
 def _files(value: object) -> tuple[str, ...]:

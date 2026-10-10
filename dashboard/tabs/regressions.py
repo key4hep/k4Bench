@@ -368,11 +368,11 @@ def _window_key(verdict: MetricVerdict) -> tuple:
     runs, different harness commits, different pull requests — so a
     same-release window is keyed on its run ids too. The rule lives in
     :func:`k4bench.blame.models.rank_group_key`, which the blame build groups
-    by; re-deriving it here is how the picker and the sidecar drift apart. The
-    detector/platform/sample prefix is dropped: this key is only ever compared
-    within one scoped run group.
+    by; re-deriving it here is how the picker and the sidecar drift apart. Only
+    the window is kept: this key is only ever compared within one scoped run
+    group.
     """
-    return rank_group_key(verdict)[3:]
+    return rank_group_key(verdict).window
 
 
 def _metric_key(verdict: MetricVerdict) -> tuple:

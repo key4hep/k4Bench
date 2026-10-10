@@ -251,7 +251,7 @@ voms-proxy-init \
 unset X509_USER_CERT
 unset X509_USER_KEY
 
-# New EOS path: {detector}/{platform}/key4hep-{release}/{sample}/{date}
+# The run directory k4bench/layout.py defines: {detector}/{platform}/key4hep-{release}/{sample}/{date}
 EOS_RUN="${EOS_ROOT}/${DETECTOR}/${K4H_PLATFORM}/key4hep-${K4H_RELEASE}/${SAMPLE}/${DATE}"
 EOS_URL="root://${EOS_FQDN}/${EOS_RUN}"
 
