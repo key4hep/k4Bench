@@ -272,6 +272,121 @@ def test_failed_machine_info_records_no_run(job_module, k4geo, tmp_path, monkeyp
 
 
 # ---------------------------------------------------------------------------
+# k4run jobs
+# ---------------------------------------------------------------------------
+
+
+def _k4run_record(**overrides) -> dict:
+    return _record(**{
+        "tool": "k4run", "ddsim_args": "", "options": "CLDReconstruction.py", "stage_dir": "",
+        "k4run_args": "--compactFile $DETECTOR_XML --inputFiles $LOCAL_INPUT_FILES",
+        "variants": {"truth_tracking": "--truthTracking", "pinned": "--compactFile ${DETECTOR_XML}"},
+        **overrides,
+    })
+
+
+@pytest.fixture
+def input_dir(job_module, tmp_path, monkeypatch):
+    directory = tmp_path / "inputs"
+    monkeypatch.setattr(job_module, "LOCAL_INPUT_DIR", directory)
+    return directory
+
+
+def test_k4run_job_names_its_geometry_and_inputs_through_variables(job_module, k4geo, tmp_path):
+    sim = tmp_path / "sim.edm4hep.root"
+    sim.write_text("events")
+    job = job_module.resolve(_k4run_record(input_files=str(sim)), dict(os.environ))
+    geometry = k4geo / "FCCee" / "minimal.xml"
+    assert job.k4run_args == f"--compactFile {geometry} --inputFiles {sim}"
+    assert job.variants == {"truth_tracking": "--truthTracking", "pinned": f"--compactFile {geometry}"}
+    assert job.ddsim_args == "" and job.pythonpath is None
+
+
+def test_k4run_stage_dir_is_expanded_and_must_exist(job_module, k4geo, tmp_path, monkeypatch):
+    (tmp_path / "CLDConfig").mkdir()
+    monkeypatch.setenv("CLDCONFIG", str(tmp_path))
+    job = job_module.resolve(_k4run_record(stage_dir="$CLDCONFIG/CLDConfig"), dict(os.environ))
+    assert job.stage_path == str(tmp_path / "CLDConfig")
+    with pytest.raises(job_module.JobError, match="stage directory not found"):
+        job_module.resolve(_k4run_record(stage_dir="$CLDCONFIG/absent"), dict(os.environ))
+
+
+@pytest.mark.parametrize(
+    "source, command",
+    [
+        ("https://k4bench-data.web.cern.ch/_inputs/sim.root", "curl"),
+        ("root://eosuser.cern.ch//eos/sim.root", "xrdcp"),
+    ],
+)
+def test_k4run_inputs_are_copied_locally(job_module, k4geo, input_dir, monkeypatch, source, command):
+    processes = Processes()
+    monkeypatch.setattr(job_module.subprocess, "run", processes)
+    job = job_module.resolve(_k4run_record(input_files=source), dict(os.environ))
+    (fetch, _), = processes.calls
+    assert fetch[0] == command
+    (local,) = [arg for arg in fetch if arg.startswith(str(input_dir))]
+    assert source in fetch and Path(local).name == "sim.root"
+    assert job.k4run_args.endswith(f"--inputFiles {local}")
+
+
+def test_k4run_inputs_sharing_a_file_name_get_distinct_copies(job_module, k4geo, input_dir, monkeypatch):
+    monkeypatch.setattr(job_module.subprocess, "run", Processes())
+    sources = "https://a.cern.ch/A/sim.root https://b.cern.ch/B/sim.root"
+    job = job_module.resolve(_k4run_record(input_files=sources), dict(os.environ))
+    first, second = job.k4run_args.split("--inputFiles ")[1].split()
+    assert first != second
+    assert Path(first).name == Path(second).name == "sim.root"
+
+
+def test_relative_local_k4run_input_is_made_absolute(job_module, k4geo, tmp_path, monkeypatch):
+    # The job runs from its own working directory, where a relative path
+    # would no longer name the file.
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "sim.root").write_text("events")
+    monkeypatch.chdir(tmp_path)
+    job = job_module.resolve(_k4run_record(input_files="data/sim.root"), dict(os.environ))
+    assert job.k4run_args.endswith(f"--inputFiles {tmp_path.resolve() / 'data' / 'sim.root'}")
+
+
+def test_missing_local_k4run_input_is_a_job_error(job_module, k4geo):
+    with pytest.raises(job_module.JobError, match="input not found"):
+        job_module.resolve(_k4run_record(input_files="/no/sim.root"), dict(os.environ))
+
+
+def test_k4bench_k4run_command(job_module, k4geo, tmp_path, monkeypatch):
+    (tmp_path / "CLDConfig").mkdir()
+    job = job_module.resolve(
+        _k4run_record(stage_dir=str(tmp_path / "CLDConfig"), k4run_args="--cms 91", verbose="true"),
+        dict(os.environ),
+    )
+    geometry = k4geo / "FCCee" / "minimal.xml"
+    assert job.k4bench_argv(Path("logs/benchmark")) == [
+        "k4run", "CLDReconstruction.py",
+        "--events", "10",
+        "--output-dir", "logs/benchmark",
+        "--stage-dir", str(tmp_path / "CLDConfig"),
+        "--k4run-args=--cms 91",
+        "--variant", "truth_tracking=--truthTracking",
+        "--variant", f"pinned=--compactFile {geometry}",
+        "--verbose",
+    ]
+
+
+def test_k4run_job_records_its_run(job_module, k4geo, tmp_path, monkeypatch):
+    def benchmark(command):
+        out = Path(command[command.index("--output-dir") + 1])
+        (out / "baseline_results.csv").write_text("label\nbaseline\n")
+
+    rc = _main(job_module, _k4run_record(), tmp_path, monkeypatch, Processes(on_k4bench=benchmark))
+
+    assert rc == 0
+    info = json.loads((tmp_path / "out" / "run_info.json").read_text())
+    assert info["tool"] == "k4run"
+    assert info["configured_labels"] == ["baseline", "variant_truth_tracking", "variant_pinned"]
+    assert info["configs"] == ["baseline"]
+
+
+# ---------------------------------------------------------------------------
 # Contracts with the workflow, the matrix and the nightly script
 # ---------------------------------------------------------------------------
 
@@ -285,9 +400,14 @@ def test_every_repository_record_resolves_into_a_command(job_module, monkeypatch
         for r in list_benchmarks.expand(path)
     ]
     assert records
+    assert {rec["tool"] for rec in records} == {"ddsim", "k4run"}
     for rec in records:
-        job = job_module.Job(rec, rec["xml"], Path(rec["xml"]), "", rec["ddsim_args"], None)
-        assert job.k4bench_argv(Path("out"))[:2] == ["--xml", rec["xml"]]
+        job = job_module.Job(rec, rec["xml"], Path(rec["xml"]), ddsim_args=rec["ddsim_args"])
+        argv = job.k4bench_argv(Path("out"))
+        if rec["tool"] == "k4run":
+            assert argv[:2] == ["k4run", *rec["options"].split()][:2]
+        else:
+            assert argv[:2] == ["--xml", rec["xml"]]
 
 
 def test_workflow_hands_the_whole_record_to_the_container():
@@ -296,15 +416,26 @@ def test_workflow_hands_the_whole_record_to_the_container():
     assert "-e BENCHMARK_JOB" in workflow
 
 
-def test_nightly_uploads_under_the_recorded_detector_and_date(tmp_path):
+@pytest.mark.parametrize("tool, tree", [("ddsim", "/eos"), ("k4run", "/eos/_k4run")])
+def test_nightly_uploads_under_the_recorded_tool_detector_and_date(tmp_path, tool, tree):
     script = (ROOT / ".github" / "scripts" / "nightly_benchmark.sh").read_text()
     assert 'python3 .github/scripts/benchmark_job.py "${OUTPUT_DIR}"' in script
-    start = script.index("read -r DETECTOR DATE")
+    start = script.index("read -r TOOL DETECTOR DATE")
     snippet = script[start : script.index('/run_info.json")"', start) + len('/run_info.json")"')]
-    (tmp_path / "run_info.json").write_text(json.dumps({"detector": "CLD_o2_v09", "date": "2026-10-10"}))
+    start = script.index('EOS_TREE="${EOS_ROOT}"')
+    upload = script[start : script.index("\n", script.index("EOS_RUN=", start))]
+    (tmp_path / "run_info.json").write_text(
+        json.dumps({"tool": tool, "detector": "CLD_o2_v09", "date": "2026-10-10"})
+    )
     done = subprocess.run(
-        ["bash", "-c", f'set -euo pipefail\n{snippet}\necho "$DETECTOR|$DATE"'],
-        env={**os.environ, "OUTPUT_DIR": str(tmp_path)},
+        ["bash", "-c", f'set -euo pipefail\n{snippet}\n{upload}\necho "$EOS_RUN"'],
+        env={
+            **os.environ, "OUTPUT_DIR": str(tmp_path), "EOS_ROOT": "/eos",
+            "K4H_PLATFORM": "x86_64-el9-gcc16-opt", "K4H_RELEASE": "2026-10-10",
+            "SAMPLE": "p8_ee_Zbb_ecm91",
+        },
         capture_output=True, text=True, check=True,
     )
-    assert done.stdout.strip() == "CLD_o2_v09|2026-10-10"
+    assert done.stdout.strip() == (
+        f"{tree}/CLD_o2_v09/x86_64-el9-gcc16-opt/key4hep-2026-10-10/p8_ee_Zbb_ecm91/2026-10-10"
+    )

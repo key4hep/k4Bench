@@ -26,7 +26,7 @@ flowchart TD
     SWEEP -->|INCLUDE_ONLY| I[Keep named detectors<br/>1 run]
     SWEEP -->|EXCLUDE_ONLY| E[Drop named detectors<br/>1 run]
     B & F & I & E --> PATCH[geometry.patcher<br/>temp XML]
-    PATCH --> EXEC[runner.executor<br/>ddsim under time -v]
+    PATCH --> EXEC[runner.ddsim<br/>ddsim under time -v]
     EXEC --> PARSE[runner.parser<br/>scrape time -v]
     PARSE --> MODEL[RunResult]
     MODEL --> REP[results.reporter<br/>table + CSV]

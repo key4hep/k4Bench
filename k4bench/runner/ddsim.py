@@ -4,11 +4,11 @@ Design principle
 ----------------
 This module owns *instrumentation*: timing, logging, and metrics
 extraction.  It does **not** own physics configuration.  The caller
-decides which ddsim arguments to pass; the executor adds the ones it
+decides which ddsim arguments to pass; the runner adds the ones it
 manages, times the run with :mod:`k4bench.runner.process`, and harvests
-the results.
+the results (:mod:`k4bench.runner.result`).
 
-The only ddsim arguments that the executor needs to know about are:
+The only ddsim arguments that the runner needs to know about are:
 
 * ``--compactFile``      — to allow per-run XML patching (geometry sweep)
 * ``--numberOfEvents``   — to compute events/sec
@@ -28,16 +28,14 @@ virtual-memory peak is copied into :class:`RunResult`.
 
 from __future__ import annotations
 
-import json
-import math
 import os
 from pathlib import Path
 
 from k4bench.artifacts import EVENTS_SUFFIX, LOG_SUFFIX, REGIONS_SUFFIX, label_path
 from k4bench.plugin.runtime import setup_plugin_environment
-from k4bench.plugin.schema import validate_event_schema
 from k4bench.results.model import RunResult
 from k4bench.runner.process import run_timed, timed_shell_command
+from k4bench.runner.result import run_result
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -57,7 +55,7 @@ def run_ddsim(
 ) -> RunResult:
     """Run ddsim for one geometry configuration and return collected metrics.
 
-    The executor injects ``--compactFile``, ``--numberOfEvents``, and
+    The runner injects ``--compactFile``, ``--numberOfEvents``, and
     ``--outputFile`` automatically. All other ddsim options should be
     supplied via *extra_args*.
 
@@ -127,40 +125,19 @@ def run_ddsim(
         log_path=label_path(log_dir, label, LOG_SUFFIX),
         verbose=verbose,
     )
-    metrics = proc.metrics
-    peak_vmem_mb = _read_peak_vmem_mb(event_json_path)
 
     output_size_mb: float | None = None
 
     if output_file.exists():
         output_size_mb = output_file.stat().st_size / 1024**2
 
-    events_per_sec: float | None = None
-
-    if metrics["wall_time_s"] is not None and metrics["wall_time_s"] > 0:
-        events_per_sec = round(
-            n_events / metrics["wall_time_s"],
-            4,
-        )
-
-    if plugin_available and proc.returncode == 0 and peak_vmem_mb is None:
-        _warn_missing_instrumentation(label, event_json_path)
-
-    return RunResult(
+    return run_result(
         label=label,
-        returncode=proc.returncode,
         n_events=n_events,
-        wall_time_raw=metrics["wall_time_raw"],
-        wall_time_s=metrics["wall_time_s"],
-        user_cpu_s=metrics["user_cpu_s"],
-        sys_cpu_s=metrics["sys_cpu_s"],
-        peak_rss_mb=metrics["peak_rss_mb"],
-        peak_vmem_mb=peak_vmem_mb,
-        major_page_faults=metrics["major_page_faults"],
-        voluntary_ctx_switches=metrics["voluntary_ctx_switches"],
-        involuntary_ctx_switches=metrics["involuntary_ctx_switches"],
+        proc=proc,
+        event_json_path=event_json_path,
         output_size_mb=output_size_mb,
-        events_per_sec=events_per_sec,
+        instrumentation="timing-plugin" if plugin_available else None,
     )
 
 
@@ -176,28 +153,6 @@ _TIMING_ACTIONS = (
     ("--action.track", "k4BenchRegionTrackingAction"),
     ("--action.event", "k4BenchRegionEventAction"),
 )
-
-
-def _read_peak_vmem_mb(path: Path) -> float | None:
-    """Read the plugin's optional high-water mark, tolerating incomplete output
-    and schema versions this k4bench cannot read."""
-    try:
-        with path.open() as stream:
-            raw = json.load(stream)
-    except (OSError, ValueError):
-        return None
-    if not isinstance(raw, dict):
-        return None
-    try:
-        validate_event_schema(raw, source=path)
-    except ValueError:
-        return None
-    value = raw.get("peak_vmem_mb")
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    if not math.isfinite(value) or value < 0:
-        return None
-    return float(value)
 
 
 def _has_action(args: list[str], action_name: str) -> bool:
@@ -250,7 +205,7 @@ def _ddsim_args(
     extra_args: list[str],
     plugin_available: bool,
 ) -> list[str]:
-    """The executor-managed ddsim arguments, then the caller's *extra_args*.
+    """The runner-managed ddsim arguments, then the caller's *extra_args*.
 
     The timing actions are registered only when the plugins are available and
     the caller has not already registered them, so no action runs twice.
@@ -268,18 +223,3 @@ def _ddsim_args(
 
     return managed + extra_args
 
-
-def _warn_missing_instrumentation(label: str, event_json_path: Path) -> None:
-    """Warn that the event plugin was set up but left no usable output.
-
-    Both judged memory metrics are read from this file, so a run that loses it
-    still succeeds while contributing no memory judgement at all — a state
-    worth distinguishing from a run whose memory simply did not move.
-    """
-
-    print(
-        f"  WARNING [{label}]: "
-        f"timing-plugin output is missing or unusable.\n"
-        f"           Expected {event_json_path}; this run contributes "
-        f"no judged memory metrics."
-    )

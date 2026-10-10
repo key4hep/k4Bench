@@ -13,8 +13,10 @@ run directory are named by :mod:`k4bench.artifacts`.
 
 The nightly upload (``nightly_benchmark.sh``) writes this layout and every
 reader walks it back, so it is part of the on-disk data contract. Top-level
-names starting with ``_`` or ``.`` (e.g. ``_reports/``) hold data that is not a
-run tree and are skipped by every walker. Like :mod:`k4bench.artifacts` this
+names starting with ``_`` or ``.`` (e.g. ``_reports/``) hold data outside the
+ddsim run tree and are skipped by every walker. k4run benchmark runs are one
+such tree: the same five levels below :data:`K4RUN_ROOT`, so the readers of
+ddsim runs never see them. Like :mod:`k4bench.artifacts` this
 is a leaf module, so every layer can share the one layout without importing
 the others.
 """
@@ -30,6 +32,10 @@ from k4bench.labels import RELEASE_PREFIX
 #: The directory levels of one run, outermost first.
 LEVELS = ("detector", "platform", "stack", "sample", "date")
 
+#: Reserved top-level directory holding the k4run benchmark runs, in the same
+#: :data:`LEVELS` as the ddsim runs at the store root.
+K4RUN_ROOT = "_k4run"
+
 
 def stack_dir(release: str) -> str:
     """The ``stack`` directory of a Key4hep release, e.g. ``2026-07-10`` ->
@@ -38,7 +44,7 @@ def stack_dir(release: str) -> str:
 
 
 def is_reserved(name: str) -> bool:
-    """Whether a top-level *name* is reserved for data that is not a run tree."""
+    """Whether a top-level *name* is reserved for data outside the ddsim run tree."""
     return name.startswith(("_", "."))
 
 

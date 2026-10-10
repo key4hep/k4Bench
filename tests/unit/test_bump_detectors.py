@@ -234,3 +234,17 @@ def test_retained_relative_steering_path_stays_intact(tree):
     assert f"steering_file: {steering}\n" in text
     assert "xml: IDEA_o1_v04/IDEA_o1_v04.xml" in text
     assert "retained" in notes[0]
+
+
+def test_k4run_benchmark_keeps_the_geometry_of_its_frozen_input(tree):
+    root, geo, _, _, _ = tree
+    reco = root / ".github/benchmarks/CLD_o5_v98.yml"
+    reco.write_text(
+        "tool: k4run\n"
+        "xml: FCCee/IDEA/compact/CLD_o5_v98/CLD_o5_v98.xml\n"
+        "options: Reco.py\n"
+    )
+    assert bump.detect(root, geo, "CLD_o5") == []
+    # The same config simulating would be bumped to the newer geometry.
+    reco.write_text("xml: FCCee/IDEA/compact/CLD_o5_v98/CLD_o5_v98.xml\n")
+    assert [p.new for p in bump.detect(root, geo, "CLD_o5")] == ["CLD_o5_v99"]

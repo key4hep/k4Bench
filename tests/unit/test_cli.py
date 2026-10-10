@@ -263,3 +263,84 @@ def test_strict_index_failure_makes_full_sweep_exit_nonzero(
     )
 
     assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# k4bench k4run
+# ---------------------------------------------------------------------------
+
+
+class TestK4runCommand:
+    """``k4bench k4run`` builds a K4runConfig; the benchmark itself is mocked."""
+
+    @pytest.fixture
+    def stage(self, tmp_path):
+        (tmp_path / "Reco.py").write_text("")
+        return tmp_path
+
+    def _main(self, monkeypatch, *argv: str) -> tuple[int, list]:
+        import k4bench.cli as cli
+
+        seen = []
+
+        def fake_benchmark(config):
+            seen.append(config)
+            return [RunResult(label="baseline", returncode=0, n_events=config.n_events)]
+
+        monkeypatch.setattr(cli, "run_k4run_benchmark", fake_benchmark)
+        return main(["k4run", *argv]), seen
+
+    def test_builds_the_config_from_the_flags(self, monkeypatch, stage, tmp_path):
+        rc, (config,) = self._main(
+            monkeypatch, "Reco.py",
+            "--stage-dir", str(stage),
+            "--events", "30",
+            "--k4run-args=--inputFiles /data/sim.root --cms 91",
+            "--variant", "truth_tracking=--truthTracking",
+            "--variant", "native=--native --trackingOnly",
+            "--output-dir", str(tmp_path / "out"),
+        )
+        assert rc == 0
+        assert config.options == ["Reco.py"]
+        assert config.stage_dir == stage
+        assert config.n_events == 30
+        assert config.extra_args == ["--inputFiles", "/data/sim.root", "--cms", "91"]
+        assert config.variants == {
+            "truth_tracking": ["--truthTracking"],
+            "native": ["--native", "--trackingOnly"],
+        }
+        assert (tmp_path / "out" / "baseline_results.csv").is_file()
+
+    def test_default_output_dir_is_named_after_the_options_file(self, monkeypatch, stage):
+        monkeypatch.chdir(stage)
+        _, (config,) = self._main(monkeypatch, "Reco.py", "--stage-dir", str(stage))
+        assert config.log_dir == Path("logs") / "Reco"
+
+    @pytest.mark.parametrize("spec", ["no_equals_sign", "=--args"])
+    def test_malformed_variant_is_an_error(self, monkeypatch, stage, spec, capsys):
+        rc, seen = self._main(monkeypatch, "Reco.py", "--stage-dir", str(stage), "--variant", spec)
+        assert rc == 1 and not seen
+        assert "--variant" in capsys.readouterr().err
+
+    def test_repeated_variant_is_an_error(self, monkeypatch, stage, capsys):
+        rc, seen = self._main(
+            monkeypatch, "Reco.py", "--stage-dir", str(stage),
+            "--variant", "a=--x", "--variant", "a=--y",
+        )
+        assert rc == 1 and not seen
+        assert "given twice" in capsys.readouterr().err
+
+    def test_failed_run_exits_one(self, monkeypatch, stage, tmp_path):
+        import k4bench.cli as cli
+
+        monkeypatch.setattr(
+            cli, "run_k4run_benchmark",
+            lambda config: [RunResult(label="baseline", returncode=2, n_events=1)],
+        )
+        argv = ["k4run", "Reco.py", "--stage-dir", str(stage), "--output-dir", str(tmp_path / "o")]
+        assert main(argv) == 1
+
+    def test_ddsim_command_line_is_unaffected(self):
+        # Without the k4run command, --xml is still required.
+        with pytest.raises(SystemExit):
+            main(["--events", "2"])

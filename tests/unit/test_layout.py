@@ -96,7 +96,16 @@ def test_nightly_upload_writes_the_layout():
     path = run_path(
         "${DETECTOR}", "${K4H_PLATFORM}", stack_dir("${K4H_RELEASE}"), "${SAMPLE}", "${DATE}"
     )
-    assert f'EOS_RUN="${{EOS_ROOT}}/{path}"' in script
+    assert f'EOS_RUN="${{EOS_TREE}}/{path}"' in script
+    assert 'EOS_TREE="${EOS_ROOT}"' in script
+    assert f'EOS_TREE="${{EOS_ROOT}}/{layout.K4RUN_ROOT}"' in script
+
+
+def test_k4run_runs_are_invisible_to_the_ddsim_walkers(tmp_path):
+    (tmp_path / layout.K4RUN_ROOT / Path(*_RUN)).mkdir(parents=True)
+    assert layout.is_reserved(layout.K4RUN_ROOT)
+    assert list(iter_run_dirs(tmp_path)) == []
+    assert [run.sample for run in iter_run_dirs(tmp_path / layout.K4RUN_ROOT)] == [_RUN[3]]
 
 
 def test_layout_imports_only_leaf_modules():

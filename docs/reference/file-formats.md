@@ -21,6 +21,19 @@ logs/<geometry>/
 └── <label>_regions.json     # per-detector timing    (region plugin only)
 ```
 
+A `k4bench k4run` run (default `logs/<options-stem>/`) writes the same log,
+results CSV and events JSON, the last one by the k4BenchAuditor in the same
+format, and instead of the regions JSON:
+
+```text
+├── <label>_components.json  # per-event, per-component (algorithm/service) costs (auditor only)
+└── <label>_joboptions.opts  # the fully resolved job options, as JobOptionsSvc dumps them
+```
+
+Its labels are `baseline` and `variant_<name>` for each variant. A k4run
+`output_size_mb` is the size of every file the job created in its working
+directory.
+
 In the nightly CI each run directory also gets `run_info.json` and
 `machine_info.json`, and the whole directory is uploaded to
 [EOS](#eos-layout).
@@ -132,6 +145,14 @@ dashboard.
   reproducer compare the logical workload while executing the exact path each
   release used. The record also carries the stack's git provenance
   (`k4h_stack_setup`, `k4h_stack_manifest`, `k4h_packages`; see below).
+  `tool` says what the run benchmarked: `ddsim`, or `k4run` (absent on runs
+  older than k4run benchmarks, which were all ddsim). A k4run record also
+  carries `options`, `stage_dir` and `resolved_stage_dir`, `k4run_args` (with
+  `$VAR`s expanded, i.e. the local input paths the job read) and `variants`
+  (`{name: k4run_args}`); its `configured_labels` are `baseline` and
+  `variant_<name>`. k4run runs are uploaded to their own tree,
+  [`_k4run/`](#eos-layout), which the dashboard, the regression report and
+  blame do not read.
 - **`machine_info.json`** — the benchmark host and its state *around* the run:
   CPU model/cores, RAM/swap totals, and `_start`/`_end` snapshots of load,
   available memory, CPU frequency, and thermal throttling. The pairs let the
@@ -219,6 +240,30 @@ samples:
     n_events: 100
     input_files: root://eospublic.cern.ch//eos/.../events_noVtxSmear.hepmc
 ```
+
+A k4run benchmark (`tool: k4run`) reconstructs a frozen input instead, and
+uploads to the [`_k4run/`](#eos-layout) tree, so its samples may share their
+names with the ddsim samples on the same `xml`:
+
+```yaml
+tool: k4run
+xml: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
+stage_dir: $CLDCONFIG/share/CLDConfig
+options: CLDReconstruction.py
+k4run_args: >-
+  --compactFile $DETECTOR_XML --inputFiles $LOCAL_INPUT_FILES --outputBasename reco
+variants:
+  - name: truth_tracking
+    k4run_args: --truthTracking
+samples:
+  - name: p8_ee_Zbb_ecm91
+    n_events: 100
+    input_files: https://k4bench-data.web.cern.ch/_inputs/CLD_o2_v09/p8_ee_Zbb_ecm91_100ev_seed42.edm4hep.root
+    k4run_args: --cms 91
+```
+
+Automated detector bumps skip k4run benchmarks: the frozen input was simulated
+with the geometry `xml` names.
 
 ### Automated detector version bumps
 
@@ -309,6 +354,12 @@ every browse dimension in the path so discovery is just directory listing:
 {detector}/{platform}/key4hep-{release}/{sample}/{YYYY-MM-DD}/
     run_info.json  machine_info.json
     {config}_results.csv  {config}_events.json  {config}_regions.json  {config}.log
+_k4run/{detector}/{platform}/key4hep-{release}/{sample}/{YYYY-MM-DD}/
+    run_info.json  machine_info.json
+    {config}_results.csv  {config}_events.json  {config}_components.json
+    {config}_joboptions.opts  {config}.log
+_inputs/{detector}/
+    frozen inputs of k4run benchmarks, each with its provenance and producing script
 _reports/{YYYY-MM-DD}/
     report.json
     blame.json   (only on nights with an attributable confirmed regression)
@@ -319,7 +370,10 @@ _reproducers/
 This is the integration contract between CI and the dashboard
 ([data flow](../architecture/data-flow.md#nightly-eos-dashboard)).
 Underscore-prefixed top-level directories are reserved for non-detector data
-and are skipped by detector discovery: `_reports/` holds the nightly regression
+and are skipped by detector discovery: `_k4run/` holds the k4run benchmark runs
+in the same layout as the ddsim runs (nothing reads it yet: the dashboard, the
+regression report and blame see only the ddsim runs), `_inputs/` holds the
+frozen inputs k4run benchmarks fetch over WebEOS, `_reports/` holds the nightly regression
 report (written by the `regression-report` CI job, rendered by the dashboard's
 Regressions tab), and `_reproducers/` holds the runnable recipes the blame
 pull-request comments link to (written by the same job's comment step, read

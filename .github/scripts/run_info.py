@@ -8,11 +8,16 @@ resolved (K4H_STACK_SETUP, K4H_PLATFORM, K4H_RELEASE) and the runner's CPU set
 
 Besides the job parameters, the record holds:
 
+  tool               what the job ran: ddsim, or k4run (absent on runs that
+                     predate k4run benchmarks, which were all ddsim)
   configs            labels that produced a result CSV in <output_dir>
   configured_labels  labels the benchmark config was supposed to produce,
                      resolved against the geometry the job loaded
   random_seed        the ddsim seed the run simulated with
   k4h_packages       upstream commit of every git-built package in the stack
+
+A k4run job also records its options files, stage directory, k4run arguments
+and variants.
 
 Resolving the roster or the stack provenance never fails the job: the
 measurements are the deliverable, so either is recorded as unknown instead.
@@ -90,6 +95,11 @@ def configured_labels(job: Job) -> list[str] | None:
     any reason including a benchmark module that fails to import.
     """
     try:
+        if job.tool == "k4run":
+            from k4bench.benchmark.k4run import planned_k4run_labels
+
+            return planned_k4run_labels(list(job.variants))
+
         from k4bench.benchmark.ddsim import planned_config_labels, select_sweep
 
         rec = job.record
@@ -117,7 +127,8 @@ def build_run_info(
     rec = job.record
     run_id = env["GITHUB_RUN_ID"]
     release = env["K4H_RELEASE"]
-    return {
+    record = {
+        "tool":             job.tool,
         "date":             date,
         "platform":         env["K4H_PLATFORM"],
         "k4h_release":      f"{RELEASE_PREFIX}{release}",
@@ -157,6 +168,17 @@ def build_run_info(
         "configs":          configs,
         "configured_labels": labels,
     }
+    if job.tool == "k4run":
+        record |= {
+            "options":            rec["options"].split(),
+            # As configured, and as the job found it once $VARs were expanded.
+            "stage_dir":          rec["stage_dir"],
+            "resolved_stage_dir": job.stage_path,
+            # With $VARs expanded: the arguments the job actually read.
+            "k4run_args":         job.k4run_args,
+            "variants":           job.variants,
+        }
+    return record
 
 
 def add_stack_provenance(run_info: dict, stack_setup: str) -> None:

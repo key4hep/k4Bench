@@ -13,11 +13,12 @@ The single most important design idea is a strict separation of concerns:
 - **The user owns physics** — particles, energies, inputs, steering — passed
   verbatim to `ddsim` via `--ddsim-args`.
 
-The executor knows about exactly three `ddsim` flags (`--compactFile`,
+The ddsim runner knows about exactly three `ddsim` flags (`--compactFile`,
 `--numberOfEvents`, `--outputFile`) because it must inject those to do its job.
 Everything else is opaque to it. This keeps k4Bench small, stable against
-`ddsim` changes, and reusable for any DD4hep geometry (and, eventually, for
-reconstruction).
+`ddsim` changes, and reusable for any DD4hep geometry. The k4run runner knows
+even less: it injects only `--num-events` and appends the k4BenchAuditor's
+options file, so any Gaudi job can be benchmarked, reconstruction included.
 
 ## Component map
 
@@ -38,7 +39,7 @@ flowchart TD
     end
 
     subgraph execution["Execution"]
-        EXEC["runner.executor<br/>run_ddsim"]
+        EXEC["runner.ddsim<br/>run_ddsim"]
         PROC["runner.process<br/>run_timed"]
         PARSE["runner.parser<br/>parse_time_output"]
         PRT["plugin.runtime<br/>setup_plugin_environment"]
@@ -85,7 +86,7 @@ flowchart TD
 | **Entry** | `cli.py` | Parse args → `BenchmarkConfig`; orchestrate output (table, CSV, pickle); exit code |
 | **Orchestration** | `benchmark.ddsim` | Choose a sweep strategy; loop over configurations; collect `RunResult`s |
 | **Geometry** | `geometry.index`, `geometry.scanner`, `geometry.patcher` | Index and discover detectors; produce validated patched XML non-destructively |
-| **Execution** | `runner.executor`, `runner.process`, `runner.parser`, `plugin.runtime` | Build the `ddsim` command and load plugins (`executor`); run any command under `time -v` and scrape its metrics (`process`, `parser`) |
+| **Execution** | `runner.ddsim`, `runner.k4run`, `runner.result`, `runner.process`, `runner.parser`, `plugin.runtime` | Build the `ddsim` or `k4run` command and load the plugins or the auditor (`ddsim`, `k4run`); run any command under `time -v` and scrape its metrics (`process`, `parser`); turn the outcome into a `RunResult` (`result`) |
 | **Native** | `plugin/*.cpp` | In-process per-event & per-detector instrumentation |
 | **Results** | `results.model`, `results.reporter` | Typed metrics; human + machine output |
 | **Analysis** | `analysis.loader`, `analysis.plots` | Load artifacts into pandas; Plotly figures |

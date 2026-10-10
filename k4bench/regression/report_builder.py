@@ -96,7 +96,7 @@ MISSING_RUN_GRACE_DAYS = 7
 
 #: Run-level metrics evaluated per config: ``{metric: family}``. Deliberately
 #: narrow: ``events_per_sec`` is dropped as it is exactly
-#: ``n_events / wall_time_s`` (see ``k4bench/runner/executor.py``) — tracking
+#: ``n_events / wall_time_s`` (see ``k4bench/runner/result.py``) — tracking
 #: it alongside ``wall_time_s`` would flag the same measurement twice with
 #: the sign flipped. ``cpu_efficiency`` is host-reliability evidence (see
 #: :mod:`k4bench.results.reliability`) rather than a benchmark regression

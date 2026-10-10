@@ -33,11 +33,15 @@ def smoke_timeout(config: Path) -> int:
 
 def pairs(configs: list[Path]) -> dict[tuple[str, str], tuple[str, int]]:
     """Deduplicate pairs after applying the nightly's sample-level overrides,
-    keeping the first label and the longest timeout in minutes."""
+    keeping the first label and the longest timeout in minutes.
+
+    Only ddsim samples have a pair; k4run benchmarks simulate nothing."""
     selected = {}
     for config in configs:
         minutes = smoke_timeout(config)
         for sample in expand(config):
+            if sample["tool"] != "ddsim":
+                continue
             pair = sample["xml"], sample["steering_file"]
             label, longest = selected.get(pair, (f"{sample['config']}/{sample['sample']}", 0))
             selected[pair] = label, max(longest, minutes)

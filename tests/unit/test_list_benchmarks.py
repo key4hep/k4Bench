@@ -137,3 +137,103 @@ def test_only_refuses_a_name_matching_no_job(list_benchmarks, tmp_path, monkeypa
     with pytest.raises(SystemExit):
         _main(list_benchmarks, tmp_path, monkeypatch, capsys, "--only", f"A {only}")
     assert f"no benchmark job matches {only!r}" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# k4run benchmarks
+# ---------------------------------------------------------------------------
+
+_K4RUN = """\
+tool: k4run
+xml: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
+stage_dir: $CLDCONFIG/share/CLDConfig
+options: CLDReconstruction.py
+k4run_args: --compactFile $DETECTOR_XML
+variants:
+  - name: truth_tracking
+    k4run_args: --truthTracking
+samples:
+  - name: p8_ee_Zbb_ecm91
+    n_events: 100
+    input_files: https://example.org/sim.edm4hep.root
+    k4run_args: --cms 91
+"""
+
+
+def _k4run(list_benchmarks, tmp_path, monkeypatch, capsys, text: str = _K4RUN) -> list[dict]:
+    (tmp_path / "CLD_o2_v09_reco.yml").write_text(text)
+    return _main(list_benchmarks, tmp_path, monkeypatch, capsys)
+
+
+def test_k4run_record_carries_the_job(list_benchmarks, tmp_path, monkeypatch, capsys):
+    (rec,) = _k4run(list_benchmarks, tmp_path, monkeypatch, capsys)
+    assert rec["tool"] == "k4run"
+    assert rec["options"] == "CLDReconstruction.py"
+    assert rec["stage_dir"] == "$CLDCONFIG/share/CLDConfig"
+    # Like ddsim_args, k4run_args concatenates top-level and sample-level.
+    assert rec["k4run_args"] == "--compactFile $DETECTOR_XML --cms 91"
+    assert rec["variants"] == {"truth_tracking": "--truthTracking"}
+    assert rec["input_files"] == "https://example.org/sim.edm4hep.root"
+    assert rec["ddsim_args"] == "" and rec["sweep"] == "false"
+
+
+def test_a_config_without_tool_is_ddsim(list_benchmarks, tmp_path, monkeypatch, capsys):
+    _write(tmp_path, "SiD", "SiD.xml", "single_e-_10GeV")
+    (rec,) = _main(list_benchmarks, tmp_path, monkeypatch, capsys)
+    assert rec["tool"] == "ddsim"
+    assert rec["options"] == "" and rec["k4run_args"] == "" and rec["variants"] == {}
+
+
+def test_sample_level_variants_replace_the_top_level_ones(list_benchmarks, tmp_path, monkeypatch, capsys):
+    text = _K4RUN + "    variants:\n      - name: native\n        k4run_args: --native\n"
+    (rec,) = _k4run(list_benchmarks, tmp_path, monkeypatch, capsys, text)
+    assert rec["variants"] == {"native": "--native"}
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda t: t.replace("tool: k4run", "tool: gaudirun"),
+        # A key of the other tool is an error, not silently ignored.
+        lambda t: t.replace("tool: k4run", "tool: k4run\nsweep: true"),
+        lambda t: t.replace("tool: k4run", "tool: k4run\nddsim_args: --enableGun"),
+        lambda t: t.replace("tool: k4run", "tool: k4run\nsteering_file: steer.py"),
+        lambda t: t.replace("options: CLDReconstruction.py\n", ""),
+        lambda t: t.replace("xml: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml\n", ""),
+        lambda t: t.replace("    k4run_args: --truthTracking\n", ""),
+        lambda t: t.replace("name: truth_tracking", "name: truth tracking"),
+        lambda t: t.replace("    k4run_args: --truthTracking\n",
+                            "    k4run_args: --truthTracking\n"
+                            "  - name: truth_tracking\n    k4run_args: --x\n"),
+        lambda t: t.replace("variants:\n", "variants: --truthTracking\nunused:\n"),
+    ],
+    ids=[
+        "unknown-tool", "sweep", "ddsim_args", "steering_file", "no-options", "no-xml",
+        "variant-without-args", "variant-name", "duplicate-variant", "variants-not-a-list",
+    ],
+)
+def test_malformed_k4run_config_is_refused(list_benchmarks, tmp_path, monkeypatch, capsys, edit):
+    with pytest.raises(SystemExit):
+        _k4run(list_benchmarks, tmp_path, monkeypatch, capsys, edit(_K4RUN))
+
+
+def test_k4run_keys_are_refused_in_a_ddsim_config(list_benchmarks, tmp_path, monkeypatch, capsys):
+    (tmp_path / "SiD.yml").write_text(
+        "xml: SiD.xml\noptions: Reco.py\nsamples:\n  - name: s\n    n_events: 1\n"
+    )
+    with pytest.raises(SystemExit):
+        _main(list_benchmarks, tmp_path, monkeypatch, capsys)
+
+
+def test_reco_and_sim_of_one_sample_upload_to_distinct_trees(list_benchmarks, tmp_path, monkeypatch, capsys):
+    _write(tmp_path, "CLD_o2_v09", "FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml", "p8_ee_Zbb_ecm91")
+    items = _k4run(list_benchmarks, tmp_path, monkeypatch, capsys)
+    assert sorted((i["tool"], i["sample"]) for i in items) == [
+        ("ddsim", "p8_ee_Zbb_ecm91"), ("k4run", "p8_ee_Zbb_ecm91"),
+    ]
+
+
+def test_two_k4run_configs_uploading_to_one_eos_directory_are_refused(list_benchmarks, tmp_path, monkeypatch, capsys):
+    (tmp_path / "CLD_o2_v09_reco2.yml").write_text(_K4RUN)
+    with pytest.raises(SystemExit):
+        _k4run(list_benchmarks, tmp_path, monkeypatch, capsys)

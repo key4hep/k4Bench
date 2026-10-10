@@ -1,8 +1,9 @@
 """Format and persist benchmark results.
 
-Two responsibilities:
-* :func:`save_csv`       — write results to a CSV file
-* :func:`print_summary`  — print a formatted table to stdout
+Three responsibilities:
+* :func:`save_csv`          — write results to a CSV file
+* :func:`print_summary`     — print a formatted table to stdout
+* :func:`print_run_result`  — print one run's status line as it finishes
 """
 
 from __future__ import annotations
@@ -47,6 +48,17 @@ def print_summary(results: list[RunResult]) -> None:
         print(_COL.format(r.label, wall, rss, cpu, out, eps, rc))
 
     print(sep)
+
+
+def print_run_result(result: RunResult) -> None:
+    """Print the status line of one finished run."""
+    status = "ok" if result.succeeded else f"FAILED (rc={result.returncode})"
+    wall = f"{result.wall_time_s:.1f}s"        if result.wall_time_s    is not None else "N/A"
+    rss  = f"{result.peak_rss_mb:.0f} MB"      if result.peak_rss_mb   is not None else "N/A"
+    out  = f"{result.output_size_mb:.2f} MB"   if result.output_size_mb is not None else "N/A"
+    eps  = f"{result.events_per_sec:.3f} ev/s" if result.events_per_sec is not None else "N/A"
+    print(f"         Status: {status}  |  Wall: {wall}  |  RSS: {rss}  |  Output: {out}  |  {eps}")
+    print(f"         Log:    {result.label}.log\n")
 
 
 def save_csv(results: list[RunResult], log_dir: Path) -> None:

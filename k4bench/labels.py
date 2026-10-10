@@ -38,6 +38,12 @@ BASELINE_LABEL = "baseline"
 REMOVAL_PREFIX = "no_"
 INCLUDE_PREFIX = "only_"
 
+#: Prefix of a k4run variant's label: ``variant_<name>`` is the job run with the
+#: variant's extra arguments, next to the ``baseline`` run without them. Distinct
+#: from the sweep prefixes, so a variant named ``no_vertexing`` never reads as a
+#: detector ablation.
+VARIANT_PREFIX = "variant_"
+
 #: Recognized generator/beam/particle tokens for :func:`pretty_sample`. Any
 #: sample name that doesn't match one of the two known layouts below (or that
 #: uses a token not listed here) falls back to the raw directory name

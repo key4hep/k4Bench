@@ -16,11 +16,16 @@ as JSON (benchmark_job.py reads it) — no YAML parsing happens after this scrip
 runs.
 
 Top-level keys in a benchmark file are detector-wide defaults; keys inside a
-samples[] entry override them for that sample only. The single exception is
-ddsim_args: top-level and sample-level strings are concatenated (top first),
-which lets shared ddsim flags live at the detector level. Lists are joined
-to space-separated strings and every value is a string, and
-boolean keys are always "true" or "false" (an absent key is "false").
+samples[] entry override them for that sample only. The exceptions are
+ddsim_args and k4run_args: top-level and sample-level strings are concatenated
+(top first), which lets shared flags live at the detector level. Lists are
+joined to space-separated strings, boolean keys are always "true" or "false"
+(an absent key is "false"), and every other value is a string except k4run
+variants, an object {name: k4run_args}.
+
+`tool` selects what a benchmark runs: ddsim (the default) or k4run. Each tool
+has keys of its own, and a key of the other tool is an error rather than
+silently ignored.
 """
 from __future__ import annotations
 
@@ -37,9 +42,21 @@ BENCH_DIR = Path(".github/benchmarks")
 CONFIG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 SAMPLE_RE = re.compile(r"^[A-Za-z0-9_.+-]+$")
 
-SCALAR_KEYS = ("xml", "n_events", "ddsim_args", "steering_file", "timeout")
+TOOLS = ("ddsim", "k4run")
+SCALAR_KEYS = (
+    "tool", "xml", "n_events", "ddsim_args", "steering_file", "timeout",
+    "stage_dir", "k4run_args",
+)
 BOOL_KEYS   = ("verbose", "sweep")
-LIST_KEYS   = ("input_files", "sweep_detectors", "include_only", "exclude_only")
+LIST_KEYS   = ("input_files", "sweep_detectors", "include_only", "exclude_only", "options")
+#: Keys that concatenate (top + sample) instead of overriding.
+CONCAT_KEYS = ("ddsim_args", "k4run_args")
+#: Keys only one tool reads; the record carries them empty for the other.
+TOOL_KEYS = {
+    "ddsim": ("ddsim_args", "steering_file", "sweep", "sweep_detectors",
+              "include_only", "exclude_only"),
+    "k4run": ("options", "stage_dir", "k4run_args", "variants"),
+}
 
 
 def _scalar(v) -> str:
@@ -60,6 +77,43 @@ def _list(v) -> str:
     if v is None:           return ""
     if isinstance(v, list): return " ".join(str(x) for x in v)
     return str(v).strip()
+
+
+def _variants(v, loc: str) -> dict[str, str]:
+    """k4run variants as ``{name: k4run_args}``."""
+    if v is None:
+        return {}
+    if not isinstance(v, list):
+        _die(f"variants must be a list of {{name, k4run_args}} mappings ({loc})")
+    out: dict[str, str] = {}
+    for entry in v:
+        if not isinstance(entry, dict) or set(entry) != {"name", "k4run_args"}:
+            _die(f"each variant needs exactly a name and k4run_args ({loc})")
+        name, args = str(entry["name"]), _scalar(entry["k4run_args"])
+        if not SAMPLE_RE.match(name):
+            _die(f"invalid variant name {name!r} ({loc})")
+        if name in out:
+            _die(f"variant {name!r} is defined twice ({loc})")
+        if not args:
+            _die(f"variant {name!r} has no k4run_args ({loc})")
+        out[name] = args
+    return out
+
+
+def _check_tool_keys(rec: dict, cfg: dict, sample: dict, loc: str) -> None:
+    """Refuse a key the record's tool does not read, and a k4run benchmark
+    without its options files or geometry."""
+    tool = rec["tool"]
+    if tool not in TOOLS:
+        _die(f"tool must be one of {', '.join(TOOLS)}, got {tool!r} ({loc})")
+    other = next(t for t in TOOLS if t != tool)
+    if foreign := [k for k in TOOL_KEYS[other] if k in cfg or k in sample]:
+        _die(f"{', '.join(foreign)} only apply to tool {other} ({loc})")
+    if tool == "k4run":
+        if not rec["options"]:
+            _die(f"a k4run benchmark needs options ({loc})")
+        if not rec["xml"]:
+            _die(f"a k4run benchmark needs xml, the geometry it reconstructs ({loc})")
 
 
 def _die(msg: str) -> None:
@@ -92,8 +146,9 @@ def expand(path: Path) -> list[dict]:
             _die(f"invalid sample name {name!r} in {path}")
 
         def merge(k):
-            # ddsim_args concatenates (top + sample); everything else overrides.
-            if k == "ddsim_args":
+            # ddsim_args and k4run_args concatenate (top + sample); everything
+            # else overrides.
+            if k in CONCAT_KEYS:
                 parts = [v for v in (cfg.get(k), s.get(k)) if v]
                 return " ".join(str(p).strip() for p in parts) if parts else None
             return s[k] if k in s else cfg.get(k)
@@ -103,6 +158,9 @@ def expand(path: Path) -> list[dict]:
         for k in SCALAR_KEYS: rec[k] = _scalar(merge(k))
         for k in BOOL_KEYS:   rec[k] = _bool(merge(k), k, loc)
         for k in LIST_KEYS:   rec[k] = _list(merge(k))
+        rec["tool"] = rec["tool"] or "ddsim"
+        rec["variants"] = _variants(merge("variants"), loc)
+        _check_tool_keys(rec, cfg, s, loc)
 
         if not rec["n_events"].isdigit() or int(rec["n_events"]) <= 0:
             _die(f"n_events must be a positive integer ({loc})")
@@ -123,30 +181,32 @@ def expand(path: Path) -> list[dict]:
     return records
 
 
-def _eos_directory(rec: dict) -> tuple[str, str]:
-    """The ``(detector, sample)`` part of the EOS directory *rec* uploads to.
+def _eos_directory(rec: dict) -> tuple[str, str, str]:
+    """The ``(tool, detector, sample)`` part of the EOS directory *rec* uploads to.
 
     benchmark_job.py names the detector directory after the compact file
-    (``Job.detector``), not after the benchmark config.
+    (``Job.detector``), not after the benchmark config, and the nightly puts
+    k4run runs in a tree of their own.
     """
-    return Path(rec["xml"]).name.removesuffix(".xml"), rec["sample"]
+    return rec["tool"], Path(rec["xml"]).name.removesuffix(".xml"), rec["sample"]
 
 
 def _check_unique_destinations(items: list[dict]) -> None:
     """Refuse two jobs that would upload into the same EOS run directory.
 
-    Two benchmark configs naming compact files with one basename, and sharing a
-    sample name, write ``run_info.json`` and every ``{label}_results.csv`` to the
-    same ``{detector}/{platform}/{release}/{sample}/{date}/`` — whichever job
-    uploads last silently replaces the other's results.
+    Two benchmark configs of one tool naming compact files with one basename,
+    and sharing a sample name, write ``run_info.json`` and every
+    ``{label}_results.csv`` to the same
+    ``{detector}/{platform}/{release}/{sample}/{date}/`` — whichever job uploads
+    last silently replaces the other's results.
     """
-    seen: dict[tuple[str, str], str] = {}
+    seen: dict[tuple[str, str, str], str] = {}
     for rec in items:
         where = _eos_directory(rec)
         if where in seen:
             _die(
-                f"configs {seen[where]!r} and {rec['config']!r} both upload sample "
-                f"{rec['sample']!r} to EOS detector directory {where[0]!r}; "
+                f"configs {seen[where]!r} and {rec['config']!r} both upload {where[0]} sample "
+                f"{rec['sample']!r} to EOS detector directory {where[1]!r}; "
                 "rename the sample in one of them"
             )
         seen[where] = rec["config"]

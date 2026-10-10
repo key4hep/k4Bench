@@ -104,7 +104,7 @@ def reconcile_steering_file(
     Parameters
     ----------
     extra_args:
-        ddsim arguments for this run, as passed through to the executor.
+        ddsim arguments for this run, as passed through to the runner.
     present_detectors:
         Subdetector names present in the patched geometry for this run.
     log_dir:
@@ -115,7 +115,7 @@ def reconcile_steering_file(
     Returns
     -------
     list[str]
-        Arguments to hand to :func:`k4bench.runner.executor.run_ddsim`.
+        Arguments to hand to :func:`k4bench.runner.ddsim.run_ddsim`.
     """
     found = _find_steering(extra_args)
     if found is None:

@@ -8,7 +8,7 @@ ships two optional C++ DDG4 plugins that instrument Geant4 from the inside.
 They live in `plugin/` (`k4BenchTimingAction.cpp`,
 `k4BenchRegionTimingAction.cpp`) and are wired up by
 [`k4bench.plugin.runtime`](../../reference/api/plugin/runtime.md) and
-[`k4bench.runner.executor`](../../reference/api/runner/executor.md).
+[`k4bench.runner.ddsim`](../../reference/api/runner/ddsim.md).
 
 ## Purpose
 
@@ -23,7 +23,7 @@ questions:
 
 ## How they're loaded
 
-You don't enable them by hand. Before each run, the executor calls
+You don't enable them by hand. Before each run, the runner calls
 [`setup_plugin_environment`](../../reference/api/plugin/runtime.md), which:
 
 1. Builds the plugins if needed
@@ -41,7 +41,7 @@ proceeds with run-level metrics only. **Plugins are best-effort, never fatal.**
 
 ```mermaid
 flowchart TD
-    EX[executor.run_ddsim] --> SP[setup_plugin_environment]
+    EX[runner.ddsim.run_ddsim] --> SP[setup_plugin_environment]
     SP -->|ok| AL["inject --action.* flags<br/>k4BenchTimingAction etc."]
     SP -->|fail| NO["NOTE: continuing<br/>without per-event timing"]
     AL --> DD[ddsim runs with DDG4 actions]
@@ -49,7 +49,7 @@ flowchart TD
     DD --> RJSON["&lt;label&gt;_regions.json"]
 ```
 
-When available, the executor appends DDG4 action flags automatically — unless
+When available, the runner appends DDG4 action flags automatically — unless
 you already supplied the corresponding `--action.*` flag in `--ddsim-args`, in
 which case yours wins:
 
@@ -110,7 +110,7 @@ of the same Key4hep release (see the
 Parallel arrays: `event_numbers`, `event_times_s`, `event_rss_begin_mb`,
 `event_rss_end_mb`, `event_rss_anon_begin_mb`, `event_rss_anon_end_mb`, and
 `event_rss_file_end_mb`, plus the run-level scalar `peak_vmem_mb` and the
-format's `schema_version` (currently `1`; absent in older, unversioned files). The executor
+format's `schema_version` (currently `1`; absent in older, unversioned files). The runner
 copies the scalar into the results CSV. The arrays are loaded by
 [`load_event_timing`](../../reference/api/analysis/loader.md) into a DataFrame
 with an added `rss_delta_mb` column. The new keys are optional on read, so
@@ -180,7 +180,7 @@ script), it defaults to `k4bench_regions.json` in the CWD.
 
 ## Using your own actions
 
-If you pass `--action.event SomeAction` in `--ddsim-args`, the executor detects
+If you pass `--action.event SomeAction` in `--ddsim-args`, the runner detects
 it and does **not** inject the corresponding k4Bench action — your configuration
 wins. This lets you combine k4Bench with custom DDG4 actions or steering files.
 

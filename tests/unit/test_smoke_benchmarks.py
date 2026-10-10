@@ -96,3 +96,15 @@ def test_failed_simulation_never_passes(smoke, paths, monkeypatch, failure):
     monkeypatch.setattr(smoke.subprocess, "run", run)
     with pytest.raises((subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError)):
         smoke.smoke("geometry.xml", "$FCCCONFIG/steering.py", 45)
+
+
+def test_k4run_benchmarks_have_no_simulation_to_smoke(smoke, tmp_path):
+    reco = tmp_path / "CLD_o2_v09_reco.yml"
+    reco.write_text("""tool: k4run
+xml: CLD_o2_v09.xml
+options: CLDReconstruction.py
+samples:
+  - name: p8_ee_Zbb_ecm91
+    n_events: 100
+""")
+    assert smoke.pairs([reco]) == {}

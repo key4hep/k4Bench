@@ -43,6 +43,15 @@ def test_output_reaches_the_log_and_the_time_report_is_parsed(tmp_path):
     assert proc.metrics["peak_rss_mb"] is not None
 
 
+def test_program_runs_in_the_given_directory(tmp_path):
+    work = tmp_path / "work"
+    work.mkdir()
+    log = tmp_path / "run.log"
+    proc = run_timed(timed_shell_command(["pwd"]), env=dict(os.environ), log_path=log, cwd=work)
+    assert proc.returncode == 0
+    assert log.read_text().splitlines()[0] == str(work)
+
+
 def test_failing_program_reports_its_exit_code(tmp_path):
     proc = run_timed(
         timed_shell_command(["false"]),

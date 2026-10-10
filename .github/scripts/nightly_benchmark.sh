@@ -17,13 +17,15 @@
 #   K4H_RELEASE_REQUESTED — publication date resolved once per night
 #   K4H_STACK_SETUP       — exact LCG view setup.sh resolved with that date
 #
-# EOS layout written by this script:
+# EOS layout written by this script (below {EOS_ROOT}/_k4run/ for a k4run job):
 #   {EOS_ROOT}/{detector}/{platform}/key4hep-{release}/{sample}/{YYYY-MM-DD}/
 #     run_info.json
 #     machine_info.json
 #     {config}_results.csv
 #     {config}_events.json
-#     {config}_regions.json
+#     {config}_regions.json       ddsim only
+#     {config}_components.json    k4run only
+#     {config}_joboptions.opts    k4run only
 #     {config}.log
 
 set -euo pipefail
@@ -128,9 +130,9 @@ python3 .github/scripts/benchmark_job.py "${OUTPUT_DIR}"
 BENCH_RC=$?
 set -e
 [[ -f "${OUTPUT_DIR}/run_info.json" ]] || { echo "ERROR: the benchmark job did not start; nothing to upload" >&2; exit 1; }
-# The run's detector and date, as recorded: the EOS path must agree with them.
-read -r DETECTOR DATE <<< "$(python3 -c \
-    'import json, sys; info = json.load(open(sys.argv[1])); print(info["detector"], info["date"])' \
+# The run's tool, detector and date, as recorded: the EOS path must agree with them.
+read -r TOOL DETECTOR DATE <<< "$(python3 -c \
+    'import json, sys; info = json.load(open(sys.argv[1])); print(info["tool"], info["detector"], info["date"])' \
     "${OUTPUT_DIR}/run_info.json")"
 
 # ── 9. Upload to EOS ──────────────────────────────────────────────────────────
@@ -147,8 +149,13 @@ voms-proxy-init \
 unset X509_USER_CERT
 unset X509_USER_KEY
 
-# The run directory k4bench/layout.py defines: {detector}/{platform}/key4hep-{release}/{sample}/{date}
-EOS_RUN="${EOS_ROOT}/${DETECTOR}/${K4H_PLATFORM}/key4hep-${K4H_RELEASE}/${SAMPLE}/${DATE}"
+# The run directory k4bench/layout.py defines: {detector}/{platform}/key4hep-{release}/{sample}/{date},
+# for a k4run job below its reserved tree, which no reader of the ddsim runs walks.
+EOS_TREE="${EOS_ROOT}"
+if [[ "${TOOL}" == "k4run" ]]; then
+    EOS_TREE="${EOS_ROOT}/_k4run"
+fi
+EOS_RUN="${EOS_TREE}/${DETECTOR}/${K4H_PLATFORM}/key4hep-${K4H_RELEASE}/${SAMPLE}/${DATE}"
 EOS_URL="root://${EOS_FQDN}/${EOS_RUN}"
 
 command -v xrdfs >/dev/null || { echo "ERROR: xrdfs not found" >&2; exit 1; }
@@ -165,7 +172,7 @@ echo "Uploaded to: ${EOS_URL}"
 echo "::endgroup::"
 
 # Surface the benchmark exit code now that results are safely uploaded, so a
-# failed sweep config (or any other ddsim failure) still turns the job red.
+# failed sweep config (or any other ddsim or k4run failure) still turns the job red.
 if [[ "${BENCH_RC}" -ne 0 ]]; then
     echo "ERROR: benchmark exited with code ${BENCH_RC} (one or more runs failed); results uploaded regardless" >&2
     exit "${BENCH_RC}"

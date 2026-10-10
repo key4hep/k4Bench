@@ -1,0 +1,72 @@
+# k4Bench nightly benchmark config — CLD o2_v09 reconstruction (k4run)
+#
+# A k4run benchmark: k4Bench runs the job's options files under the k4Bench
+# Gaudi auditor, which records per-event and per-component (algorithm and
+# service) time and memory. k4Bench knows nothing about the job itself;
+# everything experiment-specific is in this file. Results are uploaded to EOS
+# in the layout of the ddsim benchmarks, below a reserved tree of their own:
+#   _k4run/{detector}/{platform}/key4hep-{release}/{sample}/{date}/
+# where {detector} is the basename of xml: below. Nothing reads that tree yet:
+# the dashboard, the regression report and blame see only the ddsim runs.
+#
+# ── Top-level keys (apply to every sample in this file) ────────────────────
+#   tool          required   k4run (absent means ddsim)
+#   xml           required   the geometry the job reconstructs, $K4GEO-relative or
+#                            absolute. Names the EOS detector directory; the job
+#                            itself reads it only through $DETECTOR_XML in k4run_args.
+#   options       required   Gaudi options file(s), relative to stage_dir (list or
+#                            single path)
+#   stage_dir     optional   directory copied into every run's working directory;
+#                            $VAR refs (e.g. $CLDCONFIG) expanded inside the runner
+#   k4run_args    optional   job arguments applied to every sample. $VAR refs are
+#                            expanded inside the runner, including:
+#                              $DETECTOR_XML       the resolved xml: path
+#                              $LOCAL_INPUT_FILES  local copies of input_files
+#   variants      optional   list of {name, k4run_args}: one more run per variant,
+#                            labelled variant_<name>, with its k4run_args appended
+#   verbose       optional   stream k4run output to stdout       (default: false)
+#   timeout       optional   job timeout in minutes
+#   samples       required   list of sample entries — see below
+#
+# ── Per-sample keys (under samples:) ───────────────────────────────────────
+#   name          required   slug — becomes the EOS sample directory + job label
+#   n_events      required   positive integer, passed as --num-events
+#   input_files   optional   frozen input file(s), copied locally before the run:
+#                            https:// (curl), root:// (xrdcp) or a local path
+#   k4run_args    optional   appended to top-level k4run_args (not replaced)
+#   variants      optional   overrides the top-level variants for this sample
+#
+# The input is a frozen CLD_o2_v09 simulation (100 p8_ee_Zbb_ecm91 events,
+# ddsim --random.seed 42 --random.enableEventSeed, steered by cld_steer.py,
+# LCG devkey-head 2026-10-10). Its provenance and the script that produced it
+# sit next to it in _inputs/CLD_o2_v09/. Reconstructing a fixed input keeps
+# simulation changes out of the reconstruction numbers. xml: stays pinned to
+# the geometry the input was simulated with, so detector bumps skip this file.
+#
+# CLDReconstruction.py must run from a copy of its CLDConfig directory, and
+# defaults --compactFile to an older CLD, so both are given explicitly.
+
+# options: https://github.com/key4hep/CLDConfig/blob/main/CLDConfig/CLDReconstruction.py
+tool: k4run
+xml: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
+stage_dir: $CLDCONFIG/share/CLDConfig
+options: CLDReconstruction.py
+
+verbose: false
+
+timeout: 120
+
+k4run_args: >-
+  --compactFile $DETECTOR_XML
+  --inputFiles $LOCAL_INPUT_FILES
+  --outputBasename reco
+
+variants:
+  - name: truth_tracking
+    k4run_args: --truthTracking
+
+samples:
+  - name: p8_ee_Zbb_ecm91
+    n_events: 100
+    input_files: https://k4bench-data.web.cern.ch/_inputs/CLD_o2_v09/p8_ee_Zbb_ecm91_100ev_seed42.edm4hep.root
+    k4run_args: --cms 91
