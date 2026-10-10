@@ -13,7 +13,18 @@ import subprocess
 
 import pytest
 
-from k4bench.plugin.runtime import _find_plugin_root, find_plugin_lib_dir
+from k4bench.plugin.runtime import (
+    _find_plugin_root,
+    auditor_options_file,
+    find_auditor_dir,
+    find_plugin_lib_dir,
+    setup_auditor_environment,
+)
+
+requires_gaudi = pytest.mark.skipif(
+    "GAUDI_PLUGIN_PATH" not in __import__("os").environ,
+    reason="the k4BenchAuditor is built only in a Gaudi environment",
+)
 
 
 @pytest.fixture(scope="module")
@@ -126,7 +137,7 @@ int main(int argc, char** argv) {
   constexpr std::size_t bytes = 128 * 1024 * 1024;
   void* mapping = mmap(nullptr, bytes, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (mapping == MAP_FAILED) return 1;
-  const long peak = dd4hep::sim::read_vmpeak_kb();
+  const long peak = k4bench::read_vmpeak_kb();
   if (munmap(mapping, bytes) != 0) return 2;
   {
     dd4hep::sim::k4BenchTimingAction action(nullptr, "sanity");
@@ -187,3 +198,74 @@ int main(int argc, char** argv) {
     assert {len(values) for values in raw.values()} == {n_events}
     assert raw["event_numbers"] == list(range(n_events))
     assert all(value >= 0 for values in raw.values() for value in values)
+
+
+@pytest.mark.integration
+@requires_gaudi
+def test_auditor_is_found_after_build(built_plugin):
+    """build.sh builds the Gaudi auditor next to its .components manifest."""
+    assert built_plugin.returncode == 0, "Skipped: build already failed"
+    plugin_dir = find_auditor_dir()
+    assert any(plugin_dir.glob("libk4BenchAuditor.so*"))
+    assert "k4BenchAuditor" in "".join(p.read_text() for p in plugin_dir.glob("*.components"))
+
+
+@pytest.mark.integration
+@requires_gaudi
+def test_auditor_measures_a_real_gaudi_job(built_plugin, tmp_path):
+    """A sequencer running one algorithm that sleeps 1 s per event: the auditor
+    must find both, charge the sleep to the sleeper as wall but not CPU time,
+    and write an event file the ddsim readers accept."""
+    import json
+    import os
+
+    from k4bench.analysis.loader import load_component_timing, load_event_timing
+    from k4bench.plugin.schema import EVENT_SCHEMA_VERSION
+
+    assert built_plugin.returncode == 0, "Skipped: build already failed"
+    job = tmp_path / "job.py"
+    job.write_text(
+        "from Configurables import ApplicationMgr, Gaudi__Sequencer, GaudiTesting__SleepyAlg\n"
+        "nap = GaudiTesting__SleepyAlg('Nap', SleepTime=1)\n"
+        "ApplicationMgr(EvtSel='NONE', EvtMax=2, TopAlg=[Gaudi__Sequencer('Top', Members=[nap])])\n"
+    )
+    env = dict(os.environ)
+    assert setup_auditor_environment(
+        env=env,
+        components_json_path=tmp_path / "nap_components.json",
+        event_json_path=tmp_path / "nap_events.json",
+        joboptions_path=tmp_path / "nap_joboptions.opts",
+    )
+    result = subprocess.run(
+        ["gaudirun.py", str(job), str(auditor_options_file())],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout[-3000:] + result.stderr[-3000:]
+
+    timing = load_component_timing(tmp_path)["nap"]
+    assert timing.components.loc["Nap", "parent"] == "Top"
+    assert timing.components.loc["Nap", "category"] == "algorithm"
+    assert timing.components.loc["Nap", "library"].endswith(".so")
+    assert timing.components.loc["Nap", "execute_calls"] == 2
+    wall, cpu = timing.execute["wall_s"], timing.execute["cpu_s"]
+    assert wall.index.tolist() == [0, 1]
+    assert ((wall["Nap"] > 0.99) & (wall["Nap"] < 1.5)).all()
+    assert (cpu["Nap"] < 0.1).all()
+    assert (wall["Top"] < 0.1).all(), "a sequencer's self time must exclude its children"
+    assert "initialize" in timing.lifecycle
+
+    raw_events = json.loads((tmp_path / "nap_events.json").read_text())
+    assert next(iter(raw_events)) == "schema_version"
+    assert raw_events["schema_version"] == EVENT_SCHEMA_VERSION
+    events = load_event_timing(tmp_path)["nap"]
+    assert events["event_number"].tolist() == [0, 1]
+    # Self costs add up to the event's time.
+    assert wall.fillna(0).sum(axis=1).to_numpy() == pytest.approx(
+        events["event_time_s"].to_numpy(), abs=1e-3
+    )
+    assert (events["rss_anon_end_mb"] > 0).all()
+
+    assert "Nap.SleepTime" in (tmp_path / "nap_joboptions.opts").read_text()
