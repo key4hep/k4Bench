@@ -127,6 +127,9 @@ class ComponentTiming:
         events = pd.Index(raw["event_numbers"], name="event_number")
         if events.has_duplicates:
             raise ValueError(f"{where}event_numbers contains duplicates")
+        absent = [metric for metric in COMPONENT_METRICS if metric not in raw["execute"]]
+        if absent:
+            raise ValueError(f"{where}execute is missing metrics: {absent}")
         execute = {}
         for metric, rows in raw["execute"].items():
             if len(rows) != len(events) or any(len(row) != n for row in rows):
@@ -139,6 +142,9 @@ class ComponentTiming:
 
         lifecycle = {}
         for phase, table in raw["lifecycle"].items():
+            absent = [metric for metric in COMPONENT_METRICS if metric not in table]
+            if absent:
+                raise ValueError(f"{where}lifecycle.{phase} is missing metrics: {absent}")
             if any(len(column) != n for column in table.values()):
                 raise ValueError(f"{where}lifecycle.{phase} does not have one value per component")
             lifecycle[phase] = pd.DataFrame(table, index=components.index, dtype=float)

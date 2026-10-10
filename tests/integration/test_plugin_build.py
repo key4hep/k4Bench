@@ -247,31 +247,21 @@ def test_auditor_is_found_after_build(built_plugin):
     assert "k4BenchAuditor" in "".join(p.read_text() for p in plugin_dir.glob("*.components"))
 
 
-@pytest.mark.integration
-@requires_gaudi
-def test_auditor_measures_a_real_gaudi_job(built_plugin, tmp_path):
-    """A sequencer running one algorithm that sleeps 1 s per event: the auditor
-    must find both, charge the sleep to the sleeper as wall but not CPU time,
-    and write an event file the ddsim readers accept."""
-    import json
+def _run_audited_job(tmp_path, label, options):
+    """Run the job *options* under the auditor with gaudirun.py and return its
+    component timing and event table."""
     import os
 
     from k4bench.analysis.loader import load_component_timing, load_event_timing
-    from k4bench.plugin.schema import EVENT_SCHEMA_VERSION
 
-    assert built_plugin.returncode == 0, "Skipped: build already failed"
-    job = tmp_path / "job.py"
-    job.write_text(
-        "from Configurables import ApplicationMgr, Gaudi__Sequencer, GaudiTesting__SleepyAlg\n"
-        "nap = GaudiTesting__SleepyAlg('Nap', SleepTime=1)\n"
-        "ApplicationMgr(EvtSel='NONE', EvtMax=2, TopAlg=[Gaudi__Sequencer('Top', Members=[nap])])\n"
-    )
+    job = tmp_path / f"{label}.py"
+    job.write_text(options)
     env = dict(os.environ)
     assert setup_auditor_environment(
         env=env,
-        components_json_path=tmp_path / "nap_components.json",
-        event_json_path=tmp_path / "nap_events.json",
-        joboptions_path=tmp_path / "nap_joboptions.opts",
+        components_json_path=tmp_path / f"{label}_components.json",
+        event_json_path=tmp_path / f"{label}_events.json",
+        joboptions_path=tmp_path / f"{label}_joboptions.opts",
     )
     result = subprocess.run(
         ["gaudirun.py", str(job), str(auditor_options_file())],
@@ -281,8 +271,28 @@ def test_auditor_measures_a_real_gaudi_job(built_plugin, tmp_path):
         text=True,
     )
     assert result.returncode == 0, result.stdout[-3000:] + result.stderr[-3000:]
+    return load_component_timing(tmp_path)[label], load_event_timing(tmp_path)[label]
 
-    timing = load_component_timing(tmp_path)["nap"]
+
+@pytest.mark.integration
+@requires_gaudi
+def test_auditor_measures_a_real_gaudi_job(built_plugin, tmp_path):
+    """A sequencer running one algorithm that sleeps 1 s per event: the auditor
+    must find both, charge the sleep to the sleeper as wall but not CPU time,
+    and write an event file the ddsim readers accept."""
+    import json
+
+    from k4bench.plugin.schema import EVENT_SCHEMA_VERSION
+
+    assert built_plugin.returncode == 0, "Skipped: build already failed"
+    timing, events = _run_audited_job(
+        tmp_path,
+        "nap",
+        "from Configurables import ApplicationMgr, Gaudi__Sequencer, GaudiTesting__SleepyAlg\n"
+        "nap = GaudiTesting__SleepyAlg('Nap', SleepTime=1)\n"
+        "ApplicationMgr(EvtSel='NONE', EvtMax=2, TopAlg=[Gaudi__Sequencer('Top', Members=[nap])])\n",
+    )
+
     assert timing.components.loc["Nap", "parent"] == "Top"
     assert timing.components.loc["Nap", "category"] == "algorithm"
     assert timing.components.loc["Nap", "library"].endswith(".so")
@@ -297,7 +307,6 @@ def test_auditor_measures_a_real_gaudi_job(built_plugin, tmp_path):
     raw_events = json.loads((tmp_path / "nap_events.json").read_text())
     assert next(iter(raw_events)) == "schema_version"
     assert raw_events["schema_version"] == EVENT_SCHEMA_VERSION
-    events = load_event_timing(tmp_path)["nap"]
     assert events["event_number"].tolist() == [0, 1]
     # With a single top-level call, self costs add up to the event's time.
     assert wall.fillna(0).sum(axis=1).to_numpy() == pytest.approx(
@@ -306,3 +315,65 @@ def test_auditor_measures_a_real_gaudi_job(built_plugin, tmp_path):
     assert (events["rss_anon_end_mb"] > 0).all()
 
     assert "Nap.SleepTime" in (tmp_path / "nap_joboptions.opts").read_text()
+
+
+@pytest.mark.integration
+@requires_gaudi
+def test_auditor_spans_an_event_over_several_top_level_algorithms(built_plugin, tmp_path):
+    """Two top-level algorithms that each sleep 1 s per event: both have no
+    parent, and the event runs from the first one's start to the second one's
+    end, exceeding their summed self costs only by the gap between them."""
+    assert built_plugin.returncode == 0, "Skipped: build already failed"
+    timing, events = _run_audited_job(
+        tmp_path,
+        "pair",
+        "from Configurables import ApplicationMgr, GaudiTesting__SleepyAlg\n"
+        "first = GaudiTesting__SleepyAlg('First', SleepTime=1)\n"
+        "second = GaudiTesting__SleepyAlg('Second', SleepTime=1)\n"
+        "ApplicationMgr(EvtSel='NONE', EvtMax=2, TopAlg=[first, second])\n",
+    )
+
+    assert timing.components.loc[["First", "Second"], "parent"].isna().all()
+    wall = timing.execute["wall_s"][["First", "Second"]]
+    assert ((wall > 0.99) & (wall < 1.5)).all().all()
+    assert events["event_number"].tolist() == [0, 1]
+    event_time = events["event_time_s"].to_numpy()
+    assert (event_time > 1.98).all(), "the event must cover both top-level calls"
+    gap = event_time - timing.execute["wall_s"].fillna(0).sum(axis=1).to_numpy()
+    assert ((gap > -1e-3) & (gap < 0.05)).all()
+
+
+@pytest.mark.integration
+@requires_gaudi
+def test_auditor_leaves_a_filtered_algorithm_missing(built_plugin, tmp_path):
+    """A sequencer whose filter passes every other event, followed by an
+    algorithm that sleeps 1 s: the sleeper runs only in the passed events, and
+    in the others its cost is missing rather than zero."""
+    assert built_plugin.returncode == 0, "Skipped: build already failed"
+    timing, events = _run_audited_job(
+        tmp_path,
+        "filtered",
+        "from Configurables import ApplicationMgr, Gaudi__Sequencer\n"
+        "from Configurables import GaudiTesting__OddEventsFilter, GaudiTesting__SleepyAlg\n"
+        "members = [GaudiTesting__OddEventsFilter('Odd'), GaudiTesting__SleepyAlg('Nap', SleepTime=1)]\n"
+        "ApplicationMgr(EvtSel='NONE', EvtMax=4, TopAlg=[Gaudi__Sequencer('Top', Members=members)])\n",
+    )
+
+    assert timing.components.loc["Odd", "parent"] == "Top"
+    assert timing.components.loc["Nap", "parent"] == "Top"
+    assert timing.components.loc["Odd", "execute_calls"] == 4
+    assert timing.components.loc["Nap", "execute_calls"] == 2
+    wall = timing.execute["wall_s"]
+    assert wall.index.tolist() == [0, 1, 2, 3]
+    assert wall["Odd"].notna().all()
+    ran = wall["Nap"].notna()
+    assert ran.tolist() in ([True, False] * 2, [False, True] * 2)
+    assert ((wall["Nap"][ran] > 0.99) & (wall["Nap"][ran] < 1.5)).all()
+    top = timing.inclusive("wall_s")["Top"]
+    assert (top[ran] > 0.99).all()
+    assert (top[~ran] < 0.1).all()
+    # A single top-level call per event, so self costs add up to the event's
+    # time whether the sleeper ran or not.
+    assert wall.fillna(0).sum(axis=1).to_numpy() == pytest.approx(
+        events["event_time_s"].to_numpy(), abs=1e-3
+    )

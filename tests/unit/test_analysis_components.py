@@ -144,6 +144,22 @@ class TestFromJson:
         with pytest.raises(ValueError, match="execute.wall_s"):
             ComponentTiming.from_json(_raw(event_numbers=[0, 1]))
 
+    @pytest.mark.parametrize("metric", COMPONENT_METRICS)
+    def test_execute_without_a_metric_is_refused(self, metric):
+        raw = _raw()
+        del raw["execute"][metric]
+        with pytest.raises(ValueError, match=f"execute is missing metrics: \\['{metric}'\\]"):
+            ComponentTiming.from_json(raw)
+
+    @pytest.mark.parametrize("metric", COMPONENT_METRICS)
+    def test_lifecycle_phase_without_a_metric_is_refused(self, metric):
+        raw = _raw()
+        del raw["lifecycle"]["initialize"][metric]
+        with pytest.raises(
+            ValueError, match=f"lifecycle.initialize is missing metrics: \\['{metric}'\\]"
+        ):
+            ComponentTiming.from_json(raw)
+
     def test_lifecycle_of_wrong_length_is_refused(self):
         raw = _raw()
         raw["lifecycle"]["initialize"]["wall_s"] = [1.0]
