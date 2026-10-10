@@ -26,7 +26,7 @@ results CSV and events JSON, the last one by the k4BenchAuditor in the same
 format, and instead of the regions JSON:
 
 ```text
-├── <label>_components.json  # per-event, per-component (algorithm/service) costs (auditor only)
+├── <label>_components.json  # per-event, per-component (algorithm/service) time, instructions, memory and allocations (auditor only)
 └── <label>_joboptions.opts  # the fully resolved job options, as JobOptionsSvc dumps them
 ```
 

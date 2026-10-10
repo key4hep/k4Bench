@@ -170,8 +170,10 @@ regardless).
 
 `k4bench k4run` benchmarks any Gaudi job run with `k4run`, reconstruction for
 example, instead of ddsim. k4Bench appends the k4BenchAuditor's options file
-after the job's own, so every algorithm and service is measured per event, and
-injects `--num-events`. Everything else the job needs goes in `--k4run-args`.
+after the job's own, so every algorithm and service is measured per event,
+preloads the auditor's allocation counter, so the measurements include heap
+allocations, and injects `--num-events`. Everything else the job needs goes in
+`--k4run-args`.
 
 ```bash
 k4bench k4run CLDReconstruction.py \

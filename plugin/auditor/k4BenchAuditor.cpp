@@ -2,19 +2,38 @@
 //
 // Gaudi auditor that measures every audited call of every component — each
 // algorithm execution, and each initialize, start, stop and finalize of
-// algorithms and services: its wall time, the CPU time of its thread, and how
-// much it raised the process's peak RSS. It knows nothing about the job it
-// audits; components are discovered from the calls and described from the
-// Gaudi managers.
+// algorithms and services:
 //
-// Every cost is a *self* cost: calls nest (a sequencer runs its children, the
-// event loop manager initializes the algorithms), and a call is charged only
-// what was not spent in the audited calls nested inside it. Self costs
-// therefore add up: summed over the components of an event they give the cost
-// of its audited calls, without double counting at any depth. A non-execute
-// call made during an execution (a service initialized on first use, a custom
-// audited section) stays in the executing component's event cost and is also
-// listed under its own phase, without widening that phase's span.
+//   - its wall time, the CPU time of its thread and how much it raised the
+//     process's peak RSS;
+//   - the page faults of its thread, minor (a page mapped in from memory) and
+//     major (a page read from disk or CVMFS first), and its context switches,
+//     voluntary (it blocked, on I/O or a lock) and involuntary (it was
+//     preempted, a sign the host was busy);
+//   - the user-space instructions and cycles it ran, where the hardware
+//     performance counters can be read. Instructions depend on the work done,
+//     not on the host's load, so they show changes too small for time to;
+//   - when the job preloads libk4BenchAllocCounter.so, the heap blocks it
+//     allocated, the bytes it allocated and kept, the most heap it held at
+//     once and its largest single block.
+//
+// It knows nothing about the job it audits; components are discovered from the
+// calls and described from the Gaudi managers.
+//
+// Every cost but the heap peak and the largest block is a *self* cost: calls
+// nest (a sequencer runs its children, the event loop manager initializes the
+// algorithms), and a call is charged only what was not spent in the audited
+// calls nested inside it. Self costs therefore add up: summed over the
+// components of an event they give the cost of its audited calls, without
+// double counting at any depth. The heap peak (the most heap the call held at
+// once beyond what its thread held when it started) and the largest block
+// include nested calls, whose memory was held during the call too; they do not
+// add up, and a component called several times in one event or phase is
+// charged its largest.
+//
+// A non-execute call made during an execution (a service initialized on first
+// use, a custom audited section) stays in the executing component's event cost
+// and is also listed under its own phase, without widening that phase's span.
 //
 // An event's time in EventsOutput runs from its first top-level call to its
 // last, so with several top-level algorithms it also covers what happens
@@ -28,7 +47,11 @@
 // than the event's elapsed time, which is EventsOutput's event time. The peak
 // RSS is the process's, so a call is then also charged increases caused by
 // whatever ran on other threads meanwhile; only in a serial job does a nonzero
-// increase name the component that raised the high-water mark.
+// increase name the component that raised the high-water mark. Everything
+// else is counted per thread and stays exact.
+//
+// The auditor's own bookkeeping allocates too; counting is paused while it
+// runs, so no component is charged for it.
 //
 // Two files are written at finalize:
 //
@@ -42,6 +65,7 @@
 //
 // Enabled by appending plugin/auditor/k4BenchAuditorOptions.py to the job's options.
 
+#include "k4BenchAllocCounter.h"
 #include "k4BenchProcStats.h"
 
 #include <Gaudi/Algorithm.h>
@@ -56,14 +80,20 @@
 #include <nlohmann/json.hpp>
 
 #include <dlfcn.h>
+#include <linux/perf_event.h>
 #include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -93,61 +123,278 @@ namespace
   using Clock = std::chrono::steady_clock;
   using Json = nlohmann::ordered_json;
 
-  // What one side of a call reads. A single getrusage(RUSAGE_THREAD) gives both
-  // the thread's CPU time (user + system, microsecond resolution) and the
-  // process's peak RSS, at a fraction of the cost of reading /proc.
+  // The calling thread's allocation counters, or nullptr when the job does not
+  // preload libk4BenchAllocCounter.so. Looked up at run time, so the auditor
+  // neither links nor needs it.
+  k4bench::AllocCounters *alloc_counters()
+  {
+    using Getter = k4bench::AllocCounters *(*)() noexcept;
+    static const auto getter = reinterpret_cast<Getter>(::dlsym(RTLD_DEFAULT, "k4bench_thread_alloc_counters"));
+    return getter != nullptr ? getter() : nullptr;
+  }
+
+  // Keeps the calling thread's allocations out of the counts while it lives.
+  class PausedAllocCounting
+  {
+  public:
+    PausedAllocCounting() : m_counters(alloc_counters())
+    {
+      if (m_counters != nullptr)
+      {
+        m_wasPaused = std::exchange(m_counters->paused, true);
+      }
+    }
+    ~PausedAllocCounting()
+    {
+      if (m_counters != nullptr)
+      {
+        m_counters->paused = m_wasPaused;
+      }
+    }
+    PausedAllocCounting(const PausedAllocCounting &) = delete;
+    PausedAllocCounting &operator=(const PausedAllocCounting &) = delete;
+
+  private:
+    k4bench::AllocCounters *m_counters;
+    bool m_wasPaused{false};
+  };
+
+  struct HardwareCounts
+  {
+    std::uint64_t instructions{0};
+    std::uint64_t cycles{0};
+  };
+
+  // The user-space instructions and cycles of one thread, counted by a perf
+  // event group the kernel switches with the thread. The group is pinned, so it
+  // counts all the time or not at all: when the counters cannot be opened (a
+  // virtual machine without them, perf_event_paranoid above 2, a container's
+  // seccomp policy) or are taken by another user, reads fail and the counts are
+  // missing rather than estimated.
+  class PerfGroup
+  {
+  public:
+    PerfGroup()
+    {
+      m_leader = openCounter(PERF_COUNT_HW_INSTRUCTIONS, -1);
+      if (m_leader >= 0)
+      {
+        m_member = openCounter(PERF_COUNT_HW_CPU_CYCLES, m_leader);
+      }
+      if (m_member < 0)
+      {
+        m_error = errno;
+      }
+    }
+    ~PerfGroup()
+    {
+      for (const int fd : {m_member, m_leader})
+      {
+        if (fd >= 0)
+        {
+          ::close(fd);
+        }
+      }
+    }
+    PerfGroup(const PerfGroup &) = delete;
+    PerfGroup &operator=(const PerfGroup &) = delete;
+
+    std::optional<HardwareCounts> read() const
+    {
+      struct
+      {
+        std::uint64_t count;
+        std::uint64_t values[2];
+      } group{};
+      if (m_member < 0 || ::read(m_leader, &group, sizeof(group)) != sizeof(group))
+      {
+        return std::nullopt;
+      }
+      return HardwareCounts{group.values[0], group.values[1]};
+    }
+
+    std::string failure() const { return m_error != 0 ? std::strerror(m_error) : "not scheduled"; }
+
+  private:
+    static int openCounter(std::uint64_t config, int leader)
+    {
+      perf_event_attr attr{};
+      attr.size = sizeof(attr);
+      attr.type = PERF_TYPE_HARDWARE;
+      attr.config = config;
+      attr.read_format = PERF_FORMAT_GROUP;
+      attr.pinned = leader < 0; // only a group's leader can be
+      attr.exclude_kernel = 1;
+      attr.exclude_hv = 1;
+      return static_cast<int>(::syscall(SYS_perf_event_open, &attr, 0, -1, leader, PERF_FLAG_FD_CLOEXEC));
+    }
+
+    int m_leader{-1};
+    int m_member{-1};
+    int m_error{0};
+  };
+
+  // The calling thread's group, opened on its first use and closed with it.
+  const PerfGroup &perf_group()
+  {
+    thread_local const PerfGroup group;
+    return group;
+  }
+
+  // What one side of a call reads. A single getrusage(RUSAGE_THREAD) gives the
+  // thread's CPU time (user + system, microsecond resolution), page faults and
+  // context switches, and the process's peak RSS, at a fraction of the cost of
+  // reading /proc.
   struct Sample
   {
     Clock::time_point wall;
-    std::int64_t cpu_us{0};
-    long peak_rss_kb{0};
+    rusage usage{};
+    k4bench::AllocCounters alloc;           // zero without the allocation counter
+    std::optional<HardwareCounts> hardware; // missing without the hardware counters
   };
 
   Sample sample()
   {
     Sample s;
     s.wall = Clock::now();
-    rusage usage{};
-    if (::getrusage(RUSAGE_THREAD, &usage) == 0)
+    ::getrusage(RUSAGE_THREAD, &s.usage);
+    if (const auto *counters = alloc_counters())
     {
-      s.cpu_us = (usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) * 1'000'000LL +
-                 usage.ru_utime.tv_usec + usage.ru_stime.tv_usec;
-      s.peak_rss_kb = usage.ru_maxrss;
+      s.alloc = *counters;
     }
+    s.hardware = perf_group().read();
     return s;
   }
 
-  // What a call cost, or several calls of one component summed.
+  std::int64_t cpu_us(const rusage &usage)
+  {
+    return (usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) * 1'000'000LL + usage.ru_utime.tv_usec +
+           usage.ru_stime.tv_usec;
+  }
+
+  // What a call cost, or several calls of one component combined.
   struct Cost
   {
+    // Self costs, which add up.
     double wall_s{0.0};
     double cpu_s{0.0};
     double peak_rss_increase_mb{0.0};
+    std::int64_t minor_page_faults{0};
+    std::int64_t major_page_faults{0};
+    std::int64_t voluntary_context_switches{0};
+    std::int64_t involuntary_context_switches{0};
+    std::int64_t instructions{0};
+    std::int64_t cycles{0};
+    std::int64_t allocations{0};
+    std::int64_t allocated_bytes{0};
+    std::int64_t net_allocated_bytes{0}; // allocated minus freed
+    // Inclusive, the largest of several calls.
+    std::int64_t peak_heap_bytes{0};
+    std::int64_t largest_allocation_bytes{0};
+    // False once a sample of the call or of one nested in it had no hardware counts.
+    bool hardware_counted{true};
 
     Cost &operator+=(const Cost &other)
     {
       wall_s += other.wall_s;
       cpu_s += other.cpu_s;
       peak_rss_increase_mb += other.peak_rss_increase_mb;
+      minor_page_faults += other.minor_page_faults;
+      major_page_faults += other.major_page_faults;
+      voluntary_context_switches += other.voluntary_context_switches;
+      involuntary_context_switches += other.involuntary_context_switches;
+      instructions += other.instructions;
+      cycles += other.cycles;
+      allocations += other.allocations;
+      allocated_bytes += other.allocated_bytes;
+      net_allocated_bytes += other.net_allocated_bytes;
+      peak_heap_bytes = std::max(peak_heap_bytes, other.peak_heap_bytes);
+      largest_allocation_bytes = std::max(largest_allocation_bytes, other.largest_allocation_bytes);
+      hardware_counted = hardware_counted && other.hardware_counted;
       return *this;
     }
 
+    // Leaves the inclusive costs alone: the nested calls ran during this one.
     Cost &operator-=(const Cost &other)
     {
       wall_s -= other.wall_s;
       cpu_s -= other.cpu_s;
       peak_rss_increase_mb -= other.peak_rss_increase_mb;
+      minor_page_faults -= other.minor_page_faults;
+      major_page_faults -= other.major_page_faults;
+      voluntary_context_switches -= other.voluntary_context_switches;
+      involuntary_context_switches -= other.involuntary_context_switches;
+      instructions -= other.instructions;
+      cycles -= other.cycles;
+      allocations -= other.allocations;
+      allocated_bytes -= other.allocated_bytes;
+      net_allocated_bytes -= other.net_allocated_bytes;
+      hardware_counted = hardware_counted && other.hardware_counted;
       return *this;
     }
   };
 
   Cost cost_between(const Sample &begin, const Sample &end)
   {
+    const auto delta = [](auto from, auto to) { return static_cast<std::int64_t>(to - from); };
+    const rusage &b = begin.usage;
+    const rusage &e = end.usage;
     Cost cost;
     cost.wall_s = std::chrono::duration<double>(end.wall - begin.wall).count();
-    cost.cpu_s = static_cast<double>(end.cpu_us - begin.cpu_us) * 1e-6;
-    cost.peak_rss_increase_mb = static_cast<double>(end.peak_rss_kb - begin.peak_rss_kb) / 1024.0;
+    cost.cpu_s = static_cast<double>(cpu_us(e) - cpu_us(b)) * 1e-6;
+    cost.peak_rss_increase_mb = static_cast<double>(e.ru_maxrss - b.ru_maxrss) / 1024.0;
+    cost.minor_page_faults = delta(b.ru_minflt, e.ru_minflt);
+    cost.major_page_faults = delta(b.ru_majflt, e.ru_majflt);
+    cost.voluntary_context_switches = delta(b.ru_nvcsw, e.ru_nvcsw);
+    cost.involuntary_context_switches = delta(b.ru_nivcsw, e.ru_nivcsw);
+    if (begin.hardware && end.hardware)
+    {
+      cost.instructions = delta(begin.hardware->instructions, end.hardware->instructions);
+      cost.cycles = delta(begin.hardware->cycles, end.hardware->cycles);
+    }
+    else
+    {
+      cost.hardware_counted = false;
+    }
+    cost.allocations = delta(begin.alloc.allocations, end.alloc.allocations);
+    cost.allocated_bytes = delta(begin.alloc.allocated_bytes, end.alloc.allocated_bytes);
+    cost.net_allocated_bytes = cost.allocated_bytes - delta(begin.alloc.freed_bytes, end.alloc.freed_bytes);
+    cost.peak_heap_bytes = std::max<std::int64_t>(0, end.alloc.peak_live_bytes - begin.alloc.live_bytes());
+    cost.largest_allocation_bytes = static_cast<std::int64_t>(end.alloc.largest_allocation_bytes);
     return cost;
+  }
+
+  // The allocation counters a call's window resets: its heap peak and largest
+  // block are what the counters keep over the call.
+  struct AllocWindow
+  {
+    std::int64_t peak_live_bytes{0};
+    std::uint64_t largest_allocation_bytes{0};
+  };
+
+  // Starts the call's window at the live heap and no block yet, and returns
+  // the enclosing call's window so far.
+  AllocWindow open_alloc_window(const Sample &begin)
+  {
+    auto *counters = alloc_counters();
+    if (counters == nullptr)
+    {
+      return {};
+    }
+    return {std::exchange(counters->peak_live_bytes, begin.alloc.live_bytes()),
+            std::exchange(counters->largest_allocation_bytes, 0)};
+  }
+
+  // The enclosing call held whatever this one did, so its window continues
+  // from the larger of the two.
+  void close_alloc_window(const AllocWindow &outer, const Sample &end)
+  {
+    if (auto *counters = alloc_counters())
+    {
+      counters->peak_live_bytes = std::max(outer.peak_live_bytes, end.alloc.peak_live_bytes);
+      counters->largest_allocation_bytes =
+          std::max(outer.largest_allocation_bytes, end.alloc.largest_allocation_bytes);
+    }
   }
 
   // A component called more than once in one event or phase is charged the sum.
@@ -247,6 +494,7 @@ namespace
     std::string phase;
     Sample begin;
     bool top_level_execute;
+    AllocWindow outer_alloc_window; // the enclosing call's, while this one runs
     Cost nested{};
   };
 
@@ -268,13 +516,42 @@ namespace
     long long end_epoch_ns{-1};
   };
 
-  Json cost_column(const std::vector<std::optional<Cost>> &costs, std::size_t n, double Cost::*field,
-                   Json (*format)(double))
+  // A column of the components file: its name and how it prints a cost.
+  struct Metric
+  {
+    const char *name;
+    Json (*value)(const Cost &);
+  };
+
+  constexpr std::array kThreadMetrics{
+      Metric{"wall_s", [](const Cost &c) { return seconds(c.wall_s); }},
+      Metric{"cpu_s", [](const Cost &c) { return seconds(c.cpu_s); }},
+      Metric{"peak_rss_increase_mb", [](const Cost &c) { return megabytes(c.peak_rss_increase_mb); }},
+      Metric{"minor_page_faults", [](const Cost &c) { return Json(c.minor_page_faults); }},
+      Metric{"major_page_faults", [](const Cost &c) { return Json(c.major_page_faults); }},
+      Metric{"voluntary_context_switches", [](const Cost &c) { return Json(c.voluntary_context_switches); }},
+      Metric{"involuntary_context_switches", [](const Cost &c) { return Json(c.involuntary_context_switches); }},
+  };
+
+  constexpr std::array kHardwareMetrics{
+      Metric{"instructions", [](const Cost &c) { return c.hardware_counted ? Json(c.instructions) : Json(nullptr); }},
+      Metric{"cycles", [](const Cost &c) { return c.hardware_counted ? Json(c.cycles) : Json(nullptr); }},
+  };
+
+  constexpr std::array kAllocationMetrics{
+      Metric{"allocations", [](const Cost &c) { return Json(c.allocations); }},
+      Metric{"allocated_bytes", [](const Cost &c) { return Json(c.allocated_bytes); }},
+      Metric{"net_allocated_bytes", [](const Cost &c) { return Json(c.net_allocated_bytes); }},
+      Metric{"peak_heap_bytes", [](const Cost &c) { return Json(c.peak_heap_bytes); }},
+      Metric{"largest_allocation_bytes", [](const Cost &c) { return Json(c.largest_allocation_bytes); }},
+  };
+
+  Json cost_column(const std::vector<std::optional<Cost>> &costs, std::size_t n, const Metric &metric)
   {
     Json column = Json::array();
     for (std::size_t i = 0; i < n; ++i)
     {
-      column.push_back(i < costs.size() && costs[i] ? format((*costs[i]).*field) : Json(nullptr));
+      column.push_back(i < costs.size() && costs[i] ? metric.value(*costs[i]) : Json(nullptr));
     }
     return column;
   }
@@ -292,6 +569,26 @@ public:
     m_epochOrigin = std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::system_clock::now().time_since_epoch())
                         .count();
+    m_metrics.assign(kThreadMetrics.begin(), kThreadMetrics.end());
+    if (perf_group().read())
+    {
+      m_metrics.insert(m_metrics.end(), kHardwareMetrics.begin(), kHardwareMetrics.end());
+      info() << "Counting instructions and cycles" << endmsg;
+    }
+    else
+    {
+      info() << "Hardware counters unavailable (" << perf_group().failure() << "): no instruction or cycle counts"
+             << endmsg;
+    }
+    if (alloc_counters() != nullptr)
+    {
+      m_metrics.insert(m_metrics.end(), kAllocationMetrics.begin(), kAllocationMetrics.end());
+      info() << "Counting heap allocations" << endmsg;
+    }
+    else
+    {
+      info() << "libk4BenchAllocCounter.so is not preloaded: no allocation counts" << endmsg;
+    }
     calibrate();
     return StatusCode::SUCCESS;
   }
@@ -310,6 +607,7 @@ public:
 
   void before(std::string const &event, std::string const &caller, EventContext const &ctx) override
   {
+    const PausedAllocCounting paused;
     const bool execute = event == Gaudi::IAuditor::Execute;
     std::optional<k4bench::RssValues> event_rss;
     if (execute)
@@ -331,6 +629,7 @@ public:
       }
     }
     const Sample begin = sample();
+    const AllocWindow outer_alloc_window = open_alloc_window(begin);
     std::lock_guard lock(m_mutex);
     const std::size_t index = componentIndex(caller);
     auto &stack = m_stacks[std::this_thread::get_id()];
@@ -344,12 +643,13 @@ public:
     {
       openEvent(ctx.evt(), begin, event_rss);
     }
-    stack.push_back(Frame{index, lowercase(event), begin, top_level});
+    stack.push_back(Frame{index, lowercase(event), begin, top_level, outer_alloc_window});
   }
 
   void after(std::string const &event, std::string const &caller, EventContext const &ctx,
              StatusCode const & /* sc */) override
   {
+    const PausedAllocCounting paused;
     const Sample end = sample();
     std::lock_guard lock(m_mutex);
     auto &stack = m_stacks[std::this_thread::get_id()];
@@ -364,6 +664,7 @@ public:
     }
     const Frame done = *frame;
     stack.erase(std::next(frame).base(), stack.end());
+    close_alloc_window(done.outer_alloc_window, end);
 
     const bool execute = event == Gaudi::IAuditor::Execute;
     const Cost inclusive = cost_between(done.begin, end);
@@ -409,6 +710,7 @@ private:
   long long m_epochOrigin{0};
   double m_overheadNsPerCall{-1.0};
   std::once_flag m_describedOnce;
+  std::vector<Metric> m_metrics; // the columns written, allocations when counted
 
   std::vector<Component> m_components;
   std::unordered_map<std::string, std::size_t> m_index;
@@ -428,8 +730,8 @@ private:
     const auto begin = Clock::now();
     for (int i = 0; i < kCalibrationPairs; ++i)
     {
-      sink += sample().peak_rss_kb;
-      sink += sample().peak_rss_kb;
+      sink += sample().usage.ru_maxrss;
+      sink += sample().usage.ru_maxrss;
     }
     const auto elapsed = Clock::now() - begin;
     m_overheadNsPerCall = sink < 0 ? -1.0 : std::chrono::duration<double, std::nano>(elapsed).count() / kCalibrationPairs;
@@ -601,11 +903,14 @@ private:
 
   // -- output ----------------------------------------------------------------
 
-  static Json costTable(const std::vector<std::optional<Cost>> &costs, std::size_t n)
+  Json costTable(const std::vector<std::optional<Cost>> &costs, std::size_t n) const
   {
-    return {{"wall_s", cost_column(costs, n, &Cost::wall_s, seconds)},
-            {"cpu_s", cost_column(costs, n, &Cost::cpu_s, seconds)},
-            {"peak_rss_increase_mb", cost_column(costs, n, &Cost::peak_rss_increase_mb, megabytes)}};
+    Json table = Json::object();
+    for (const Metric &metric : m_metrics)
+    {
+      table[metric.name] = cost_column(costs, n, metric);
+    }
+    return table;
   }
 
   std::vector<const EventRecord *> completedEvents() const
@@ -659,18 +964,21 @@ private:
     out["lifecycle"] = lifecycle;
 
     Json numbers = Json::array();
-    Json wall = Json::array();
-    Json cpu = Json::array();
-    Json peak = Json::array();
+    Json execute = Json::object();
+    for (const Metric &metric : m_metrics)
+    {
+      execute[metric.name] = Json::array();
+    }
     for (const EventRecord *record : completedEvents())
     {
       numbers.push_back(record->number);
-      wall.push_back(cost_column(record->costs, n, &Cost::wall_s, seconds));
-      cpu.push_back(cost_column(record->costs, n, &Cost::cpu_s, seconds));
-      peak.push_back(cost_column(record->costs, n, &Cost::peak_rss_increase_mb, megabytes));
+      for (const Metric &metric : m_metrics)
+      {
+        execute[metric.name].push_back(cost_column(record->costs, n, metric));
+      }
     }
     out["event_numbers"] = numbers;
-    out["execute"] = {{"wall_s", wall}, {"cpu_s", cpu}, {"peak_rss_increase_mb", peak}};
+    out["execute"] = execute;
 
     write(m_componentsOutput.value(), out);
   }

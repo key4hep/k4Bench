@@ -20,6 +20,10 @@ _PLUGINS = (
 _AUDITOR_LIBRARY = "libk4BenchAuditor.so*"
 _AUDITOR_OPTIONS = "k4BenchAuditorOptions.py"
 
+# Preloaded into an audited job so the auditor can count heap allocations;
+# installed next to the auditor.
+_ALLOC_COUNTER_LIBRARY = "libk4BenchAllocCounter.so"
+
 
 def _find_plugin_root() -> Path:
     """Locate the k4Bench plugin source directory."""
@@ -203,7 +207,8 @@ def setup_auditor_environment(
     """Prepare environment variables for a k4run job audited by k4Bench.
 
     The job must also be given :func:`auditor_options_file` as its last options
-    file; this only makes the auditor findable and names its outputs.
+    file; this only makes the auditor findable, names its outputs and preloads
+    the allocation counter, without which the auditor records no allocations.
 
     Parameters
     ----------
@@ -241,4 +246,11 @@ def setup_auditor_environment(
     env["K4BENCH_COMPONENTS_JSON"] = str(components_json_path.resolve())
     env["K4BENCH_EVENT_JSON"] = str(event_json_path.resolve())
     env["K4BENCH_JOBOPTIONS"] = str(joboptions_path.resolve())
+
+    counter = Path(plugin_dir) / _ALLOC_COUNTER_LIBRARY
+    if counter.is_file():
+        existing = env.get("LD_PRELOAD", "")
+        env["LD_PRELOAD"] = f"{counter}:{existing}" if existing else str(counter)
+    else:
+        print(f"NOTE: {counter} not found; continuing without allocation counts.")
     return True

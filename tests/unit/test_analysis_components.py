@@ -9,7 +9,14 @@ from pathlib import Path
 
 import pytest
 
-from k4bench.analysis.components import COMPONENT_METRICS, ComponentTiming
+from k4bench.analysis.components import (
+    ALLOCATION_METRICS,
+    COMPONENT_METRICS,
+    HARDWARE_METRICS,
+    INCLUSIVE_METRICS,
+    THREAD_METRICS,
+    ComponentTiming,
+)
 from k4bench.analysis.loader import load_component_timing
 
 S = 1_000_000_000  # ns per s
@@ -210,6 +217,84 @@ class TestTree:
         inclusive = timing.inclusive("wall_s")
         assert math.isnan(inclusive.loc[2, "Slow"])
         assert inclusive["Geo"].isna().all()
+
+
+def _with_optional_metrics(raw: dict) -> dict:
+    """*raw* as the auditor writes it with every optional metric: the thread's
+    faults and context switches, hardware counts (unreadable once, for ``Slow``
+    in event 1) and allocations (``Slow`` frees more than it allocates in event
+    0)."""
+    raw["execute"] |= {
+        "minor_page_faults": [[None, 0, 12, 300], [None, 0, 0, 2], [None, 0, 0, None]],
+        "major_page_faults": [[None, 0, 0, 7], [None, 0, 0, 0], [None, 0, 0, None]],
+        "voluntary_context_switches": [[None, 0, 0, 3], [None, 0, 0, 0], [None, 0, 0, None]],
+        "involuntary_context_switches": [[None, 0, 1, 2], [None, 0, 0, 1], [None, 0, 0, None]],
+        "instructions": [[None, 900, 4e8, 3e9], [None, 900, 2e8, None], [None, 900, 2e8, None]],
+        "cycles": [[None, 800, 2e8, 1e9], [None, 800, 1e8, None], [None, 800, 1e8, None]],
+        "allocations": [[None, 0, 40, 9], [None, 0, 40, 9], [None, 0, 40, None]],
+        "allocated_bytes": [[None, 0, 4096, 512], [None, 0, 4096, 512], [None, 0, 4096, None]],
+        "net_allocated_bytes": [[None, 0, 640, -128], [None, 0, 640, 0], [None, 0, 640, None]],
+        # Inclusive: the sequencer held at least what each child did.
+        "peak_heap_bytes": [
+            [None, 1024, 1024, 384],
+            [None, 1024, 1024, 256],
+            [None, 1024, 1024, None],
+        ],
+        "largest_allocation_bytes": [
+            [None, 512, 512, 256],
+            [None, 512, 512, 256],
+            [None, 512, 512, None],
+        ],
+    }
+    raw["lifecycle"]["initialize"] |= {
+        "minor_page_faults": [90_000, 0, 500, 20],
+        "major_page_faults": [1200, 0, 3, 0],
+        "voluntary_context_switches": [40, 0, 1, 0],
+        "involuntary_context_switches": [5, 0, 0, 0],
+        "instructions": [5e9, 1e4, 1e8, 1e6],
+        "cycles": [4e9, 1e4, 9e7, 1e6],
+        "allocations": [12000, 0, 300, 5],
+        "allocated_bytes": [400_000_000, 0, 65536, 256],
+        "net_allocated_bytes": [350_000_000, 0, 32768, 256],
+        "peak_heap_bytes": [380_000_000, 65536, 65536, 256],
+        "largest_allocation_bytes": [200_000_000, 32768, 32768, 256],
+    }
+    return raw
+
+
+OPTIONAL_METRICS = {*THREAD_METRICS, *HARDWARE_METRICS, *ALLOCATION_METRICS}
+
+
+class TestOptionalMetrics:
+    def test_read_like_every_other_metric(self):
+        timing = ComponentTiming.from_json(_with_optional_metrics(_raw()))
+        assert set(timing.execute) == {*COMPONENT_METRICS, *OPTIONAL_METRICS}
+        assert timing.execute["net_allocated_bytes"].loc[0, "Slow"] == -128
+        assert timing.execute["major_page_faults"].loc[0, "Slow"] == 7
+        assert math.isnan(timing.execute["allocations"].loc[2, "Slow"])
+        assert timing.lifecycle["initialize"].loc["Geo", "allocations"] == 12000
+
+    def test_unreadable_hardware_counts_are_nan_although_the_component_ran(self):
+        timing = ComponentTiming.from_json(_with_optional_metrics(_raw()))
+        assert timing.execute["wall_s"].loc[1, "Slow"] == 1.0
+        assert math.isnan(timing.execute["instructions"].loc[1, "Slow"])
+
+    def test_absent_from_files_without_them(self, timing):
+        assert not OPTIONAL_METRICS & set(timing.execute)
+        assert not OPTIONAL_METRICS & set(timing.lifecycle["initialize"])
+
+    @pytest.mark.parametrize("metric", ["allocations", "instructions", "major_page_faults"])
+    def test_inclusive_adds_descendants_self_costs(self, metric):
+        timing = ComponentTiming.from_json(_with_optional_metrics(_raw()))
+        execute = timing.execute[metric]
+        expected = execute[["Top", "Fast", "Slow"]].fillna(0).sum(axis=1)
+        assert timing.inclusive(metric)["Top"].tolist() == expected.tolist()
+
+    @pytest.mark.parametrize("metric", INCLUSIVE_METRICS)
+    def test_inclusive_refuses_what_already_includes_nested_calls(self, metric):
+        timing = ComponentTiming.from_json(_with_optional_metrics(_raw()))
+        with pytest.raises(ValueError, match=f"{metric} already includes nested calls"):
+            timing.inclusive(metric)
 
 
 def test_phase_seconds_adds_configure_from_process_start(timing):

@@ -17,8 +17,9 @@ The ddsim runner knows about exactly three `ddsim` flags (`--compactFile`,
 `--numberOfEvents`, `--outputFile`) because it must inject those to do its job.
 Everything else is opaque to it. This keeps k4Bench small, stable against
 `ddsim` changes, and reusable for any DD4hep geometry. The k4run runner knows
-even less: it injects only `--num-events` and appends the k4BenchAuditor's
-options file, so any Gaudi job can be benchmarked, reconstruction included.
+even less: it injects only `--num-events`, appends the k4BenchAuditor's
+options file and preloads its allocation counter, so any Gaudi job can be
+benchmarked, reconstruction included.
 
 ## Component map
 

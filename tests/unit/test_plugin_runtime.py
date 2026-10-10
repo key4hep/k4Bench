@@ -542,6 +542,32 @@ class TestSetupAuditorEnvironment:
         assert env["GAUDI_PLUGIN_PATH"] == str(plugin_dir)
         assert env["LD_LIBRARY_PATH"] == str(plugin_dir)
 
+    @pytest.mark.parametrize("existing", [None, "/other/libpreloaded.so"])
+    def test_preloads_the_allocation_counter_first(self, tmp_path, existing):
+        plugin_dir = tmp_path / "gaudi-plugins"
+        plugin_dir.mkdir()
+        counter = plugin_dir / "libk4BenchAllocCounter.so"
+        counter.touch()
+        env = {} if existing is None else {"LD_PRELOAD": existing}
+        with (
+            patch.object(plugin_runtime, "ensure_auditor_built"),
+            patch.object(plugin_runtime, "find_auditor_dir", return_value=plugin_dir),
+        ):
+            assert self._setup(tmp_path, env) is True
+        assert env["LD_PRELOAD"] == (str(counter) if existing is None else f"{counter}:{existing}")
+
+    def test_without_the_allocation_counter_the_auditor_still_runs(self, tmp_path, capsys):
+        plugin_dir = tmp_path / "gaudi-plugins"
+        plugin_dir.mkdir()
+        env: dict[str, str] = {}
+        with (
+            patch.object(plugin_runtime, "ensure_auditor_built"),
+            patch.object(plugin_runtime, "find_auditor_dir", return_value=plugin_dir),
+        ):
+            assert self._setup(tmp_path, env) is True
+        assert "LD_PRELOAD" not in env
+        assert "without allocation counts" in capsys.readouterr().out
+
     @pytest.mark.parametrize(
         "error", [FileNotFoundError("no auditor"), RuntimeError("build failed")]
     )

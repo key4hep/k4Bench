@@ -3,14 +3,15 @@
 A Gaudi job is a set of components — algorithms and services — and the auditor
 times every audited call of each: algorithm executions per event, and the
 initialize/start/stop/finalize of algorithms and services. Every recorded cost
-is a *self* cost, what the call spent outside the audited calls nested inside
-it, so costs add up: a sequencer's own cost is its bookkeeping, and the costs of
-an event's components sum to the cost of its audited calls. The event time in
+but those in :data:`INCLUSIVE_METRICS` is a *self* cost, what the call spent
+outside the audited calls nested inside it, so costs add up: a sequencer's own
+cost is its bookkeeping, and the costs of an event's components sum to the cost
+of its audited calls. The event time in
 ``_events.json`` spans the first to the last top-level algorithm, so with
 several top-level algorithms it exceeds the components' summed ``wall_s`` by
 the time spent between them, which no component is charged for.
 
-Three metrics are recorded per call:
+Metrics recorded for every call:
 
 - ``wall_s`` — wall-clock time;
 - ``cpu_s`` — CPU time of the calling thread;
@@ -18,12 +19,51 @@ Three metrics are recorded per call:
   Zero for most calls once the job has warmed up; nonzero names the component
   that pushed the high-water mark, which is what a peak-memory regression needs.
 
+Recorded for every call too, but absent from files k4bench 0.0.47's auditor
+wrote (:data:`THREAD_METRICS`):
+
+- ``minor_page_faults`` — pages mapped in from memory: first touches of fresh
+  memory, or of files already cached;
+- ``major_page_faults`` — pages the thread waited to read from disk or CVMFS;
+- ``voluntary_context_switches`` — times the thread blocked, on I/O or a lock;
+  together with the major faults, why ``wall_s`` exceeds ``cpu_s``;
+- ``involuntary_context_switches`` — times it was preempted: a sign the host
+  was busy and the call's times are noisier.
+
+Where the hardware performance counters could be read (:data:`HARDWARE_METRICS`):
+
+- ``instructions`` — user-space instructions executed. They depend on the work
+  done, not on the host's load, so they show changes too small for time to;
+- ``cycles`` — user-space CPU cycles; instructions per cycle tell more work
+  apart from the same work run slower.
+
+When the job preloaded the auditor's allocation counter, as ``k4bench k4run``
+does (:data:`ALLOCATION_METRICS`):
+
+- ``allocations`` — heap blocks allocated (malloc and its relatives, and C++
+  new); a resized block counts as one;
+- ``allocated_bytes`` — the heap memory they take, malloc's 8-byte header and
+  rounding to 16 bytes included (a mapped page multiple for large blocks); the
+  byte metrics below count the same way;
+- ``net_allocated_bytes`` — allocated minus freed, what the call kept on the
+  heap. Negative for a call that freed more than it allocated;
+- ``peak_heap_bytes`` — the most heap the call held at once beyond what its
+  thread held when it started: the memory the component needs;
+- ``largest_allocation_bytes`` — its largest single block.
+
+The last two are not self costs (:data:`INCLUSIVE_METRICS`): they include
+nested calls, whose memory was held during the call too, so they do not add up,
+and a component called several times in one event or phase is charged its
+largest. Memory a library maps from the kernel itself, as pool allocators do,
+is not counted.
+
 Nesting is tracked per thread, so the above holds for a serial job. When calls
 ran concurrently (``threads`` > 1), ``cpu_s`` still sums to the event's work,
 but the ``wall_s`` of calls that overlapped on different threads sums to more
 than the event's elapsed time (the event time is in ``_events.json``), and since
 the peak RSS is the process's, a call's ``peak_rss_increase_mb`` may include
-memory allocated by other threads meanwhile.
+memory allocated by other threads meanwhile. Everything else is counted per
+thread and stays exact.
 
 A missing value is ``NaN``, never zero: an algorithm that did not run in an
 event (a filtered sequence) has no cost there, which is different from a cost
@@ -40,6 +80,29 @@ import pandas as pd
 
 #: Metrics the auditor records for every call.
 COMPONENT_METRICS = ("wall_s", "cpu_s", "peak_rss_increase_mb")
+
+#: Metrics recorded for every call, absent from files k4bench 0.0.47's auditor wrote.
+THREAD_METRICS = (
+    "minor_page_faults",
+    "major_page_faults",
+    "voluntary_context_switches",
+    "involuntary_context_switches",
+)
+
+#: Metrics recorded where the hardware performance counters could be read.
+HARDWARE_METRICS = ("instructions", "cycles")
+
+#: Metrics recorded when the job preloaded the allocation counter.
+ALLOCATION_METRICS = (
+    "allocations",
+    "allocated_bytes",
+    "net_allocated_bytes",
+    "peak_heap_bytes",
+    "largest_allocation_bytes",
+)
+
+#: Metrics that already include nested calls, and do not add up.
+INCLUSIVE_METRICS = ("peak_heap_bytes", "largest_allocation_bytes")
 
 
 @dataclass(frozen=True)
@@ -181,7 +244,10 @@ class ComponentTiming:
         sequencer's cost with everything it ran. A component that did not run
         in an event stays ``NaN`` there; its descendants' missing values count
         as zero. For ``wall_s`` in a job with ``threads`` > 1, descendants that
-        ran concurrently make this more than the elapsed time."""
+        ran concurrently make this more than the elapsed time. Refused for a
+        metric that already includes nested calls (:data:`INCLUSIVE_METRICS`)."""
+        if metric in INCLUSIVE_METRICS:
+            raise ValueError(f"{metric} already includes nested calls; read it from execute")
         own = self.execute[metric]
         filled = own.fillna(0.0)
         out = {}
