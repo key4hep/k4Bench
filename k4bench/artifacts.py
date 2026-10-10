@@ -8,7 +8,9 @@ configuration label, one file per artifact kind::
     machine_info.json
     {label}_results.csv
     {label}_events.json
-    {label}_regions.json
+    {label}_regions.json        ddsim only
+    {label}_components.json     k4run only
+    {label}_joboptions.opts     k4run only
     {label}.log
 
 These names are part of the on-disk data contract: the benchmark writes them,
@@ -31,6 +33,9 @@ MACHINE_INFO = "machine_info.json"
 RESULTS_SUFFIX = "_results.csv"
 EVENTS_SUFFIX = "_events.json"
 REGIONS_SUFFIX = "_regions.json"
+COMPONENTS_SUFFIX = "_components.json"
+#: The resolved Gaudi job options, as JobOptionsSvc dumps them.
+JOBOPTIONS_SUFFIX = "_joboptions.opts"
 LOG_SUFFIX = ".log"
 
 

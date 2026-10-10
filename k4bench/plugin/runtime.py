@@ -14,6 +14,12 @@ _PLUGINS = (
     ("K4BENCH_REGION_JSON", "libk4BenchRegionTimingAction.so*", "region timing"),
 )
 
+# The Gaudi auditor for k4run jobs, installed with its .components manifest
+# under lib/gaudi-plugins/ or, with older Gaudi, lib/, and the options file
+# that enables it.
+_AUDITOR_LIBRARY = "libk4BenchAuditor.so*"
+_AUDITOR_OPTIONS = "k4BenchAuditorOptions.py"
+
 
 def _find_plugin_root() -> Path:
     """Locate the k4Bench plugin source directory."""
@@ -62,6 +68,34 @@ def find_plugin_lib_dir() -> Path:
     )
 
 
+def find_auditor_dir() -> Path:
+    """Return the directory holding the k4BenchAuditor Gaudi plugin.
+
+    Gaudi's plugin service finds a component through the ``.components``
+    manifest next to its library, so the directory must hold both. Gaudi
+    installs plugins into ``lib/gaudi-plugins`` or, in older releases, ``lib``,
+    where the DDG4 plugins' manifests also live, so the manifest must be the
+    one registering the auditor.
+    """
+    plugin_root = _find_plugin_root()
+    for libdir in (
+        plugin_root / "install" / "lib" / "gaudi-plugins",
+        plugin_root / "install" / "lib64" / "gaudi-plugins",
+        plugin_root / "install" / "lib",
+        plugin_root / "install" / "lib64",
+    ):
+        if any(libdir.glob(_AUDITOR_LIBRARY)) and any(
+            "k4BenchAuditor" in manifest.read_text() for manifest in libdir.glob("*.components")
+        ):
+            return libdir
+    raise FileNotFoundError(f"Could not locate the k4Bench auditor ({_AUDITOR_LIBRARY}).")
+
+
+def auditor_options_file() -> Path:
+    """Gaudi options file that enables the auditor, appended after a job's own."""
+    return _find_plugin_root() / "auditor" / _AUDITOR_OPTIONS
+
+
 def ensure_plugin_built() -> None:
     """Build the k4Bench plugins if needed."""
     try:
@@ -69,7 +103,21 @@ def ensure_plugin_built() -> None:
         return
     except FileNotFoundError:
         pass
+    _run_build_script("ddg4")
 
+
+def ensure_auditor_built() -> None:
+    """Build the k4Bench auditor if it is missing or stale.
+
+    Always runs build.sh, which rebuilds only when a library is older than its
+    sources, so an installed auditor never outlives a change to them. Only the
+    auditor is built, so a DDG4 plugin that fails to build does not disable it.
+    """
+    _run_build_script("auditor")
+
+
+def _run_build_script(target: str) -> None:
+    """Run build.sh for one *target* (``ddg4`` or ``auditor``) only."""
     plugin_root = _find_plugin_root()
     build_script = plugin_root / "build.sh"
 
@@ -77,7 +125,7 @@ def ensure_plugin_built() -> None:
         raise FileNotFoundError(f"Missing plugin build script: {build_script}")
 
     result = subprocess.run(
-        ["bash", str(build_script)],
+        ["bash", str(build_script), target],
         capture_output=True,
         text=True,
     )
@@ -143,3 +191,54 @@ def setup_plugin_environment(
         )
 
         return False
+
+
+def setup_auditor_environment(
+    *,
+    env: dict[str, str],
+    components_json_path: Path,
+    event_json_path: Path,
+    joboptions_path: Path,
+) -> bool:
+    """Prepare environment variables for a k4run job audited by k4Bench.
+
+    The job must also be given :func:`auditor_options_file` as its last options
+    file; this only makes the auditor findable and names its outputs.
+
+    Parameters
+    ----------
+    env
+        Environment dictionary to mutate (typically a copy of os.environ).
+    components_json_path
+        Output path for the per-component JSON.
+    event_json_path
+        Output path for the per-event JSON, in the ddsim event format.
+    joboptions_path
+        Output path for the resolved job options dump.
+
+    Returns
+    -------
+    bool
+        True if the auditor is available and enabled. False if the job should
+        run without per-component and per-event measurements.
+    """
+    try:
+        ensure_auditor_built()
+        plugin_dir = str(find_auditor_dir())
+    except (FileNotFoundError, RuntimeError, subprocess.SubprocessError) as exc:
+        print(
+            f"NOTE: k4Bench auditor unavailable ({exc}); continuing without "
+            f"per-component and per-event measurements."
+        )
+        return False
+
+    # On Linux Gaudi finds plugins through LD_LIBRARY_PATH, and its manifests
+    # name libraries the dynamic linker resolves there; newer releases also
+    # search GAUDI_PLUGIN_PATH.
+    for variable in ("GAUDI_PLUGIN_PATH", "LD_LIBRARY_PATH"):
+        existing = env.get(variable, "")
+        env[variable] = f"{plugin_dir}:{existing}" if existing else plugin_dir
+    env["K4BENCH_COMPONENTS_JSON"] = str(components_json_path.resolve())
+    env["K4BENCH_EVENT_JSON"] = str(event_json_path.resolve())
+    env["K4BENCH_JOBOPTIONS"] = str(joboptions_path.resolve())
+    return True

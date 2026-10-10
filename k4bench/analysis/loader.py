@@ -9,14 +9,20 @@ from typing import TypeVar
 
 import pandas as pd
 
+from k4bench.analysis.components import ComponentTiming
 from k4bench.artifacts import (
+    COMPONENTS_SUFFIX,
     EVENTS_SUFFIX,
     REGIONS_SUFFIX,
     RESULTS_SUFFIX,
     label_path,
     labelled_files,
 )
-from k4bench.plugin.schema import validate_event_schema, validate_region_schema
+from k4bench.plugin.schema import (
+    validate_component_schema,
+    validate_event_schema,
+    validate_region_schema,
+)
 
 
 # Internal row provenance used only when result files with and without a
@@ -439,4 +445,40 @@ def load_region_timing(
             )
         raise ValueError(f"No *{REGIONS_SUFFIX} files found in '{log_dir}'.")
 
+    return out
+
+
+def load_component_timing(
+    log_dir: str | Path,
+    labels: list[str] | None = None,
+) -> dict[str, ComponentTiming]:
+    """Load the per-component files the k4BenchAuditor writes for k4run jobs.
+
+    Parameters
+    ----------
+    log_dir : str or Path
+        Directory containing ``*_components.json`` files.
+    labels : list[str] or None
+        Load only these run labels. If ``None``, every ``*_components.json``
+        file in *log_dir* is loaded.
+
+    Returns
+    -------
+    dict[str, ComponentTiming]
+        Maps label → its :class:`~k4bench.analysis.components.ComponentTiming`.
+        Empty when *log_dir* holds no component files (a ddsim run).
+
+    Raises
+    ------
+    ValueError
+        For a requested label without a file, an unsupported
+        ``schema_version`` (:func:`~k4bench.plugin.schema.validate_component_schema`),
+        or a file whose tables do not match its component and event lists.
+    """
+    out: dict[str, ComponentTiming] = {}
+    for path, label in _label_files(Path(log_dir), COMPONENTS_SUFFIX, labels, "component"):
+        with path.open() as f:
+            raw = json.load(f)
+        validate_component_schema(raw, source=path)
+        out[label] = ComponentTiming.from_json(raw, source=path)
     return out

@@ -15,8 +15,12 @@ import pytest
 import k4bench.plugin.runtime as plugin_runtime
 from k4bench.plugin.runtime import (
     _find_plugin_root,
+    auditor_options_file,
+    ensure_auditor_built,
     ensure_plugin_built,
+    find_auditor_dir,
     find_plugin_lib_dir,
+    setup_auditor_environment,
     setup_plugin_environment,
 )
 
@@ -253,8 +257,9 @@ class TestEnsurePluginBuilt:
             ) as mock_run,
         ):
             ensure_plugin_built()
+            # Only the DDG4 plugins: a failing auditor build must not disable them.
             mock_run.assert_called_once_with(
-                ["bash", str(build_sh)],
+                ["bash", str(build_sh), "ddg4"],
                 capture_output=True,
                 text=True,
             )
@@ -396,3 +401,153 @@ class TestSetupPluginEnvironment:
             )
         assert result is False
         assert "K4BENCH_REGION_JSON" not in env
+
+
+# ---------------------------------------------------------------------------
+# k4BenchAuditor (Gaudi plugin for k4run jobs)
+# ---------------------------------------------------------------------------
+
+
+def _make_auditor(
+    base: Path, libdir: str = "lib", *, plugindir: str = "gaudi-plugins", manifest: bool = True
+) -> Path:
+    plugin_dir = base / "install" / libdir / plugindir
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    (plugin_dir / "libk4BenchAuditor.so").touch()
+    if manifest:
+        (plugin_dir / "k4BenchGaudiPlugins.components").write_text(
+            "v2::libk4BenchAuditor.so:k4BenchAuditor\n"
+        )
+    return plugin_dir
+
+
+class TestFindAuditorDir:
+    """find_auditor_dir returns the directory holding the auditor and its manifest."""
+
+    @pytest.mark.parametrize("libdir", ["lib", "lib64"])
+    def test_found_under_either_libdir(self, tmp_path, libdir):
+        plugin_dir = _make_auditor(tmp_path, libdir)
+        with patch.object(plugin_runtime, "_find_plugin_root", return_value=tmp_path):
+            assert find_auditor_dir() == plugin_dir
+
+    @pytest.mark.parametrize("libdir", ["lib", "lib64"])
+    def test_found_where_older_gaudi_installs_plugins(self, tmp_path, libdir):
+        # Older Gaudi installs plugins straight into lib, next to the DDG4 plugins.
+        _make_plugin_libs(tmp_path, "install", libdir)
+        plugin_dir = _make_auditor(tmp_path, libdir, plugindir="")
+        with patch.object(plugin_runtime, "_find_plugin_root", return_value=tmp_path):
+            assert find_auditor_dir() == plugin_dir
+
+    def test_library_beside_only_ddg4_manifests_is_rejected(self, tmp_path):
+        # The DDG4 manifests in lib do not register the auditor.
+        _make_plugin_libs(tmp_path, "install", "lib")
+        _make_auditor(tmp_path, plugindir="", manifest=False)
+        with patch.object(plugin_runtime, "_find_plugin_root", return_value=tmp_path):
+            with pytest.raises(FileNotFoundError, match="auditor"):
+                find_auditor_dir()
+
+    def test_library_without_components_manifest_is_rejected(self, tmp_path):
+        # Gaudi's plugin service cannot find a component without its manifest.
+        _make_auditor(tmp_path, manifest=False)
+        with patch.object(plugin_runtime, "_find_plugin_root", return_value=tmp_path):
+            with pytest.raises(FileNotFoundError, match="auditor"):
+                find_auditor_dir()
+
+    def test_ddg4_plugins_alone_are_not_the_auditor(self, tmp_path):
+        _make_plugin_libs(tmp_path, "install", "lib")
+        with patch.object(plugin_runtime, "_find_plugin_root", return_value=tmp_path):
+            with pytest.raises(FileNotFoundError, match="auditor"):
+                find_auditor_dir()
+
+
+def test_auditor_options_file_sits_with_the_auditor_source(tmp_path):
+    with patch.object(plugin_runtime, "_find_plugin_root", return_value=tmp_path):
+        assert auditor_options_file() == tmp_path / "auditor" / "k4BenchAuditorOptions.py"
+
+
+def test_repository_ships_the_auditor_options_file():
+    assert auditor_options_file().is_file()
+
+
+class TestEnsureAuditorBuilt:
+    def test_present_auditor_still_runs_build_sh(self, tmp_path):
+        # build.sh decides from source timestamps whether an installed auditor
+        # is stale, so it must run even when the auditor is already present.
+        _make_auditor(tmp_path)
+        (tmp_path / "build.sh").touch()
+        with (
+            patch.object(plugin_runtime, "_find_plugin_root", return_value=tmp_path),
+            patch("subprocess.run", return_value=_mock_run(0)) as mock_run,
+        ):
+            ensure_auditor_built()
+        mock_run.assert_called_once()
+
+    def test_missing_auditor_runs_build_sh(self, tmp_path):
+        (tmp_path / "build.sh").touch()
+        with (
+            patch.object(plugin_runtime, "_find_plugin_root", return_value=tmp_path),
+            patch("subprocess.run", return_value=_mock_run(0)) as mock_run,
+        ):
+            ensure_auditor_built()
+        mock_run.assert_called_once()
+
+    def test_builds_only_the_auditor(self, tmp_path):
+        # A failing DDG4 build must not disable the auditor.
+        build_sh = tmp_path / "build.sh"
+        build_sh.touch()
+        with (
+            patch.object(plugin_runtime, "_find_plugin_root", return_value=tmp_path),
+            patch("subprocess.run", return_value=_mock_run(0)) as mock_run,
+        ):
+            ensure_auditor_built()
+        assert mock_run.call_args.args[0] == ["bash", str(build_sh), "auditor"]
+
+
+class TestSetupAuditorEnvironment:
+    """setup_auditor_environment makes the auditor findable and names its outputs."""
+
+    def _setup(self, tmp_path, env):
+        return setup_auditor_environment(
+            env=env,
+            components_json_path=tmp_path / "x_components.json",
+            event_json_path=tmp_path / "x_events.json",
+            joboptions_path=tmp_path / "x_joboptions.opts",
+        )
+
+    def test_sets_outputs_and_prepends_plugin_and_library_paths(self, tmp_path):
+        plugin_dir = tmp_path / "gaudi-plugins"
+        env = {"GAUDI_PLUGIN_PATH": "/stack/lib/gaudi-plugins", "LD_LIBRARY_PATH": "/stack/lib"}
+        with (
+            patch.object(plugin_runtime, "ensure_auditor_built"),
+            patch.object(plugin_runtime, "find_auditor_dir", return_value=plugin_dir),
+        ):
+            assert self._setup(tmp_path, env) is True
+        assert env == {
+            "GAUDI_PLUGIN_PATH": f"{plugin_dir}:/stack/lib/gaudi-plugins",
+            # On Linux Gaudi loads plugins through the dynamic linker.
+            "LD_LIBRARY_PATH": f"{plugin_dir}:/stack/lib",
+            "K4BENCH_COMPONENTS_JSON": str((tmp_path / "x_components.json").resolve()),
+            "K4BENCH_EVENT_JSON": str((tmp_path / "x_events.json").resolve()),
+            "K4BENCH_JOBOPTIONS": str((tmp_path / "x_joboptions.opts").resolve()),
+        }
+
+    def test_sets_plugin_path_when_absent(self, tmp_path):
+        plugin_dir = tmp_path / "gaudi-plugins"
+        env: dict[str, str] = {}
+        with (
+            patch.object(plugin_runtime, "ensure_auditor_built"),
+            patch.object(plugin_runtime, "find_auditor_dir", return_value=plugin_dir),
+        ):
+            self._setup(tmp_path, env)
+        assert env["GAUDI_PLUGIN_PATH"] == str(plugin_dir)
+        assert env["LD_LIBRARY_PATH"] == str(plugin_dir)
+
+    @pytest.mark.parametrize(
+        "error", [FileNotFoundError("no auditor"), RuntimeError("build failed")]
+    )
+    def test_unavailable_auditor_leaves_env_untouched(self, tmp_path, error, capsys):
+        env = {"GAUDI_PLUGIN_PATH": "/stack"}
+        with patch.object(plugin_runtime, "ensure_auditor_built", side_effect=error):
+            assert self._setup(tmp_path, env) is False
+        assert env == {"GAUDI_PLUGIN_PATH": "/stack"}
+        assert "auditor unavailable" in capsys.readouterr().out

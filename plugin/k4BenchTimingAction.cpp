@@ -25,10 +25,11 @@
 #include <DD4hep/Printout.h>
 #include <G4Event.hh>
 
+#include "k4BenchProcStats.h"
+
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
-#include <sstream>
 #include <string>
 #include <vector>
 #include <iomanip>
@@ -41,67 +42,6 @@ namespace dd4hep
     // Version of the JSON format written below, not of the software. Must match
     // EVENT_SCHEMA_VERSION in k4bench/plugin/schema.py.
     static constexpr int kEventSchemaVersion = 1;
-
-    // ---------------------------------------------------------------------------
-    // Read current RSS and its components from /proc/self/status (Linux only)
-    // ---------------------------------------------------------------------------
-
-    struct RssValues
-    {
-      long total{-1};
-      long anon{-1};
-      long file{-1};
-    };
-
-    static RssValues read_rss_kb()
-    {
-      RssValues values;
-      std::ifstream status("/proc/self/status");
-      std::string key;
-      std::string line;
-
-      while (std::getline(status, line))
-      {
-        std::istringstream iss(line);
-        long kb;
-        if (iss >> key >> kb)
-        {
-          if (key == "VmRSS:")
-          {
-            values.total = kb;
-          }
-          else if (key == "RssAnon:")
-          {
-            values.anon = kb;
-          }
-          else if (key == "RssFile:")
-          {
-            values.file = kb;
-          }
-        }
-      }
-
-      return values;
-    }
-
-    static long read_vmpeak_kb()
-    {
-      std::ifstream status("/proc/self/status");
-      std::string line;
-
-      while (std::getline(status, line))
-      {
-        if (line.rfind("VmPeak:", 0) == 0)
-        {
-          std::istringstream iss(line.substr(7));
-
-          long kb = -1;
-          return (iss >> kb) ? kb : -1;
-        }
-      }
-
-      return -1;
-    }
 
     // ---------------------------------------------------------------------------
     // k4BenchTimingAction
@@ -162,7 +102,7 @@ namespace dd4hep
 
       void begin(const G4Event * /* event */) override
       {
-        const auto rss = read_rss_kb();
+        const auto rss = k4bench::read_rss_kb();
         m_rssBegin = rss.total;
         m_rssAnonBegin = rss.anon;
         m_eventStart = Clock::now();
@@ -176,7 +116,7 @@ namespace dd4hep
         m_eventTimes.push_back(
             std::chrono::duration<double>(elapsed).count());
 
-        const auto rss = read_rss_kb();
+        const auto rss = k4bench::read_rss_kb();
         m_rssBeginValues.push_back(m_rssBegin);
         m_rssEndValues.push_back(rss.total);
         m_rssAnonBeginValues.push_back(m_rssAnonBegin);
@@ -229,7 +169,7 @@ namespace dd4hep
 
         out << "{\n";
         out << "  \"schema_version\": " << kEventSchemaVersion << ",\n";
-        const long vmpeak = read_vmpeak_kb();
+        const long vmpeak = k4bench::read_vmpeak_kb();
         out << "  \"peak_vmem_mb\": " << std::fixed << std::setprecision(3)
             << (vmpeak < 0 ? -1.0 : vmpeak / 1024.0) << ",\n";
 

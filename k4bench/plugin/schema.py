@@ -1,9 +1,11 @@
 """Version contracts of the timing plugins' JSON artifacts.
 
 Each plugin stamps its output with a ``schema_version``: the event timing
-plugin's ``<label>_events.json`` and the region timing plugin's
-``<label>_regions.json``. Every reader validates through this module, so a new
-version of either format is accepted or refused in one place.
+plugin's ``<label>_events.json``, the region timing plugin's
+``<label>_regions.json`` and the Gaudi auditor's ``<label>_components.json``
+(the auditor also writes ``<label>_events.json``, in the event format). Every
+reader validates through this module, so a new version of any format is
+accepted or refused in one place.
 
 A file without ``schema_version`` is the legacy unversioned format of its kind
 and is read as before.
@@ -20,6 +22,9 @@ EVENT_SCHEMA_VERSION = 1
 #: Matches the ``schema_version`` written by ``plugin/k4BenchRegionTimingAction.cpp``.
 REGION_SCHEMA_VERSION = 1
 
+#: Matches ``kComponentSchemaVersion`` in ``plugin/k4BenchAuditor.cpp``.
+COMPONENT_SCHEMA_VERSION = 1
+
 
 def validate_event_schema(raw: object, *, source: str | Path | None = None) -> None:
     """Raise ``ValueError`` unless *raw* is an event file this k4bench can read.
@@ -35,6 +40,14 @@ def validate_region_schema(raw: object, *, source: str | Path | None = None) -> 
     See :func:`_validate_schema` for the rules.
     """
     _validate_schema(raw, kind="region", current=REGION_SCHEMA_VERSION, source=source)
+
+
+def validate_component_schema(raw: object, *, source: str | Path | None = None) -> None:
+    """Raise ``ValueError`` unless *raw* is a component file this k4bench can read.
+
+    See :func:`_validate_schema` for the rules.
+    """
+    _validate_schema(raw, kind="component", current=COMPONENT_SCHEMA_VERSION, source=source)
 
 
 def _validate_schema(
