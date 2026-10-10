@@ -192,3 +192,39 @@ def test_unreadable_stack_provenance_does_not_fail_the_job(run_info, job_type, t
     monkeypatch.setattr(stack, "read_stack", read_stack)
     info = _write(run_info, _job(job_type), tmp_path)
     assert "k4h_packages" not in info
+
+
+def test_ddsim_record_names_its_tool(run_info, job_type, tmp_path, monkeypatch):
+    monkeypatch.setattr(run_info, "add_stack_provenance", lambda *_: None)
+    info = _write(run_info, _job(job_type, tool="ddsim"), tmp_path)
+    assert next(iter(info)) == "tool" and info["tool"] == "ddsim"
+    assert "k4run_args" not in info
+
+
+def test_k4run_record_carries_the_job_and_its_roster(run_info, job_type, tmp_path, monkeypatch):
+    monkeypatch.setattr(run_info, "add_stack_provenance", lambda *_: None)
+    (tmp_path / "baseline_results.csv").write_text("label\nbaseline\n")
+    job = dataclasses.replace(
+        _job(
+            job_type, tool="k4run", options="CLDReconstruction.py",
+            stage_dir="$CLDCONFIG/share/CLDConfig",
+            input_files="https://example.org/sim.root",
+        ),
+        stage_path="/cvmfs/cldconfig/share/CLDConfig",
+        k4run_args="--inputFiles /tmp/k4bench-inputs/sim.root --cms 91",
+        variants={"truth_tracking": "--truthTracking"},
+    )
+
+    info = _write(run_info, job, tmp_path)
+
+    assert info["tool"] == "k4run"
+    assert info["options"] == ["CLDReconstruction.py"]
+    assert info["stage_dir"] == "$CLDCONFIG/share/CLDConfig"
+    assert info["resolved_stage_dir"] == "/cvmfs/cldconfig/share/CLDConfig"
+    assert info["k4run_args"] == "--inputFiles /tmp/k4bench-inputs/sim.root --cms 91"
+    assert info["variants"] == {"truth_tracking": "--truthTracking"}
+    assert info["input_files"] == ["https://example.org/sim.root"]
+    assert info["random_seed"] is None
+    assert info["configs"] == ["baseline"]
+    # A killed job's missing variant is then a missing config, as for a sweep.
+    assert info["configured_labels"] == ["baseline", "variant_truth_tracking"]

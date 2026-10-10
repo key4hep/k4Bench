@@ -69,6 +69,8 @@ uses the same fields plus `setup_script` (a shell script sourced before each
 
 Files in `.github/benchmarks/*.yml`. The filename stem is the detector config
 name (must match `^[A-Za-z0-9_-]+$`). Validated by `list_benchmarks.py`.
+`tool` selects the benchmark: `ddsim` (the default) or `k4run`. The keys below
+are ddsim's except where marked; a key of the other tool is an error.
 
 ### Top-level keys (defaults for every sample in the file)
 
@@ -83,6 +85,11 @@ name (must match `^[A-Za-z0-9_-]+$`). Validated by `list_benchmarks.py`.
 | `ddsim_args` | str | — | ddsim flags applied to every sample (concatenated with sample-level). |
 | `steering_file` | str | — | `ddsim --steeringFile` path; `$VAR` (e.g. `$FCCCONFIG`) expanded in the runner. Its containing directory is put on `PYTHONPATH`, so a steering file that itself does a relative `from sibling import *` (e.g. CLDConfig's `cld_arc_steer.py`) resolves. |
 | `smoke_timeout` | int > 0 | — | Minutes the bump-PR smoke test allows per geometry/steering pair (default `5`); for geometries that are slow to build, e.g. IDEA_o2's DR tube. Ignored by the nightly. |
+| `tool` | str | — | `ddsim` (default) or `k4run`. |
+| `options` | list | k4run ✅ | Gaudi options file(s), relative to `stage_dir`. |
+| `stage_dir` | str | — | k4run: directory each run starts from a writable copy of; `$VAR` (e.g. `$CLDCONFIG`) expanded in the runner. |
+| `k4run_args` | str | — | k4run: job arguments (concatenated with sample-level). `$VAR`s are expanded in the runner, including `$DETECTOR_XML` (the resolved `xml`) and `$LOCAL_INPUT_FILES` (the local copies of `input_files`). |
+| `variants` | list | — | k4run: `{name, k4run_args}` entries; each is one more run, labelled `variant_<name>`, with its `k4run_args` appended. |
 | `samples` | list | ✅ | List of sample entries (below). |
 
 ### Per-sample keys (under `samples:`)
@@ -92,7 +99,9 @@ name (must match `^[A-Za-z0-9_-]+$`). Validated by `list_benchmarks.py`.
 | `name` | str | ✅ | Slug (`^[A-Za-z0-9_.+-]+$`); becomes the EOS sample dir + job label. |
 | `n_events` | int > 0 | ✅ | Events to simulate. |
 | `ddsim_args` | str | — | **Appended** to top-level `ddsim_args` (not replaced). |
-| `input_files` | list | — | HepMC path(s); mutually exclusive with `--enableGun`. |
+| `input_files` | list | — | HepMC path(s); mutually exclusive with `--enableGun`. k4run: frozen input file(s), copied locally before the run from `https://` (curl), `root://` (xrdcp) or a local path. |
+| `k4run_args` | str | — | k4run: **appended** to top-level `k4run_args`. |
+| `variants` | list | — | k4run: replaces the top-level variants for this sample. |
 | `steering_file` | str | — | Overrides the top-level steering file for this sample. |
 
 ### YAML validation rules
@@ -102,8 +111,18 @@ name (must match `^[A-Za-z0-9_-]+$`). Validated by `list_benchmarks.py`.
 - `sweep` / `sweep_detectors` / `include_only` / `exclude_only` are mutually exclusive (at most one).
 - Lists are joined to space-separated strings so they round-trip through GitHub
   Actions env vars unchanged.
-- `ddsim_args` is the **only** key that concatenates (top + sample); all others
-  override.
+- `ddsim_args` and `k4run_args` are the **only** keys that concatenate
+  (top + sample); all others override.
+- `tool: k4run` requires `options` and `xml` (the geometry it reconstructs,
+  which names the EOS detector directory), and refuses `ddsim_args`,
+  `steering_file`, `sweep`, `sweep_detectors`, `include_only` and
+  `exclude_only`; a ddsim benchmark refuses `options`, `stage_dir`,
+  `k4run_args` and `variants`.
+- Variant names follow the sample-name rule, must be unique, and each needs
+  `k4run_args`.
+- Two configs of one tool uploading the same sample under one compact-file
+  basename are refused. k4run runs upload to their own `_k4run/` tree, so a
+  k4run sample may share its name with a ddsim one.
 
 Full schema with examples: [File formats → benchmark YAML](file-formats.md#benchmark-yaml).
 

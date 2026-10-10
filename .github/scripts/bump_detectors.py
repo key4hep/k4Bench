@@ -36,6 +36,10 @@ def detect(root: Path, k4geo: Path, family: str | None = None) -> list[Bump]:
     for path in sorted((root / ".github/benchmarks").glob("*.yml")):
         match = VERSION.fullmatch(path.stem)
         cfg = yaml.safe_load(path.read_text())
+        # A k4run benchmark reconstructs a frozen input simulated with its
+        # geometry, so that geometry is never bumped.
+        if cfg.get("tool", "ddsim") != "ddsim":
+            continue
         xml = cfg["xml"]
         if not match or xml.startswith("$") or Path(xml).is_absolute():
             continue
