@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from k4bench.plugin.runtime import ALLOC_COUNTER_PRELOAD
 from k4bench.runner.k4run import _k4run_args, run_k4run
 
 AUDITOR = Path("/k4bench/plugin/auditor/k4BenchAuditorOptions.py")
@@ -53,7 +54,7 @@ def _finished_process(on_wait=lambda: None):
     return proc
 
 
-def _run(tmp_path: Path, proc, *, auditor: bool = True, **kwargs):
+def _run(tmp_path: Path, proc, *, auditor: bool = True, setup_env=None, **kwargs):
     work_dir = tmp_path / "work"
     work_dir.mkdir(exist_ok=True)
     defaults = dict(
@@ -62,7 +63,10 @@ def _run(tmp_path: Path, proc, *, auditor: bool = True, **kwargs):
     )
     with (
         patch("k4bench.runner.process.subprocess.Popen", return_value=proc) as popen,
-        patch("k4bench.runner.k4run.setup_auditor_environment", return_value=auditor),
+        patch(
+            "k4bench.runner.k4run.setup_auditor_environment",
+            setup_env or MagicMock(return_value=auditor),
+        ),
         patch("k4bench.runner.k4run.auditor_options_file", return_value=AUDITOR),
     ):
         result = run_k4run(**{**defaults, **kwargs})
@@ -82,6 +86,25 @@ def test_command_is_timed_k4run_with_the_auditor(tmp_path):
     assert tokens[tokens.index("k4run") + 1:] == [
         "Reco.py", str(AUDITOR), "--num-events=4", "--cms", "91",
     ]
+
+
+def test_allocation_counter_is_preloaded_after_the_setup_script(tmp_path):
+    # The script may set LD_PRELOAD itself, so the counter is checked after it.
+    setup = tmp_path / "setup.sh"
+    setup_env = MagicMock(return_value=True)
+    _, popen = _run(tmp_path, _finished_process(), setup_env=setup_env, setup_script=setup)
+    assert setup_env.call_args.kwargs["setup_script"] == setup
+    command = popen.call_args.args[0]
+    assert command.index(f"source {setup}") < command.index(ALLOC_COUNTER_PRELOAD)
+    assert command.index(ALLOC_COUNTER_PRELOAD) < command.index(" -v k4run")
+
+
+@pytest.mark.parametrize("auditor, setup_script", [(True, None), (False, Path("setup.sh"))])
+def test_no_preload_in_the_command_without_a_setup_script_or_auditor(
+    tmp_path, auditor, setup_script
+):
+    _, popen = _run(tmp_path, _finished_process(), auditor=auditor, setup_script=setup_script)
+    assert ALLOC_COUNTER_PRELOAD not in popen.call_args.args[0]
 
 
 def test_without_the_auditor_the_job_runs_unaudited(tmp_path):

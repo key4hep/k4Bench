@@ -176,8 +176,10 @@ allocations, and injects `--num-events`. Everything else the job needs goes in
 `--k4run-args`. The counter forwards to glibc's allocator, so when `LD_PRELOAD`
 already names another one (jemalloc, tcmalloc, ...) or a sanitizer runtime
 (ASan, TSan, ...) it is not preloaded and the job runs on its own allocator
-without allocation counts. An allocator the job links rather than preloads is
-not detected, and is replaced by glibc's while the counter is preloaded.
+without allocation counts. When the job has a `setup_script`, `LD_PRELOAD` is
+checked after the script is sourced, so the allocators it preloads count too. An
+allocator the job links rather than preloads is not detected, and is replaced by
+glibc's while the counter is preloaded.
 
 ```bash
 k4bench k4run CLDReconstruction.py \

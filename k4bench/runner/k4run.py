@@ -30,7 +30,11 @@ from k4bench.artifacts import (
     LOG_SUFFIX,
     label_path,
 )
-from k4bench.plugin.runtime import auditor_options_file, setup_auditor_environment
+from k4bench.plugin.runtime import (
+    ALLOC_COUNTER_PRELOAD,
+    auditor_options_file,
+    setup_auditor_environment,
+)
 from k4bench.results.model import RunResult
 from k4bench.runner.process import run_timed, timed_shell_command
 from k4bench.runner.result import run_result
@@ -110,6 +114,7 @@ def run_k4run(
         components_json_path=components_json_path,
         event_json_path=event_json_path,
         joboptions_path=joboptions_path,
+        setup_script=setup_script,
     )
 
     cmd = timed_shell_command(
@@ -123,6 +128,8 @@ def run_k4run(
             ),
         ],
         setup_script,
+        # The setup script may set LD_PRELOAD, so the counter is preloaded after it.
+        after_setup=ALLOC_COUNTER_PRELOAD if auditor_available and setup_script else "",
     )
 
     existing = _files_in(work_dir)
