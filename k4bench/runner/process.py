@@ -38,12 +38,15 @@ class TimedProcess:
     metrics: dict
 
 
-def timed_shell_command(argv: list[str], setup_script: Path | None = None) -> str:
+def timed_shell_command(
+    argv: list[str], setup_script: Path | None = None, after_setup: str = ""
+) -> str:
     """Return the bash command that runs *argv* under GNU ``time -v``.
 
-    *setup_script*, when given, is sourced first. Every argument is shell-quoted,
-    and one argument goes on each line so the command reads cleanly when it is
-    echoed into a log.
+    *setup_script*, when given, is sourced first, and the bash *after_setup*
+    runs next, in the environment the script left. Every argument is
+    shell-quoted, and one argument goes on each line so the command reads
+    cleanly when it is echoed into a log.
     """
     gnu_time = shutil.which("time")
     if gnu_time is None:
@@ -56,7 +59,7 @@ def timed_shell_command(argv: list[str], setup_script: Path | None = None) -> st
     )
     program, *args = argv
     joined = " \\\n    ".join(shlex.quote(a) for a in args)
-    return f"{source_line}{gnu_time} -v {shlex.quote(program)} \\\n    {joined}"
+    return f"{source_line}{after_setup}{gnu_time} -v {shlex.quote(program)} \\\n    {joined}"
 
 
 def run_timed(

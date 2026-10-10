@@ -245,6 +245,133 @@ def test_auditor_is_found_after_build(built_plugin):
     plugin_dir = find_auditor_dir()
     assert any(plugin_dir.glob("libk4BenchAuditor.so*"))
     assert "k4BenchAuditor" in "".join(p.read_text() for p in plugin_dir.glob("*.components"))
+    assert (plugin_dir / "libk4BenchAllocCounter.so").is_file()
+
+
+_ALLOC_PROBE = """\
+import ctypes, json
+
+class Counters(ctypes.Structure):
+    _fields_ = [("allocations", ctypes.c_uint64), ("allocated_bytes", ctypes.c_uint64),
+                ("freed_bytes", ctypes.c_uint64), ("peak_live_bytes", ctypes.c_int64),
+                ("largest_allocation_bytes", ctypes.c_uint64), ("paused", ctypes.c_bool)]
+
+process = ctypes.CDLL(None)  # the preloaded malloc and free, not libc's own
+process.k4bench_thread_alloc_counters.restype = ctypes.POINTER(Counters)
+process.malloc.restype = ctypes.c_void_p
+process.malloc.argtypes = [ctypes.c_size_t]
+process.free.argtypes = [ctypes.c_void_p]
+process.realloc.restype = ctypes.c_void_p
+process.realloc.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+process.malloc_usable_size.restype = ctypes.c_size_t
+process.malloc_usable_size.argtypes = [ctypes.c_void_p]
+counters = process.k4bench_thread_alloc_counters().contents
+
+def counted(action):
+    before = (counters.allocations, counters.allocated_bytes, counters.freed_bytes)
+    result = action()
+    after = (counters.allocations, counters.allocated_bytes, counters.freed_bytes)
+    return result, [b - a for a, b in zip(before, after)]
+
+def live():
+    return counters.allocated_bytes - counters.freed_bytes
+
+block, allocated = counted(lambda: process.malloc(1 << 20))
+_, freed = counted(lambda: process.free(block))
+
+# A block's heap memory is what glibc can hand out of it plus malloc's header:
+# 8 bytes, or 16 for a block mapped on its own.
+headers = []
+for size in (1, 24, 100, 1000, 100_000, 1 << 20, 64 << 20):
+    block, (_, heap_bytes, _) = counted(lambda: process.malloc(size))
+    headers.append(heap_bytes - process.malloc_usable_size(block))
+    process.free(block)
+
+# Resized and freed again, a block gives back exactly what it took. Inside a
+# function, so Python allocates nothing of its own meanwhile.
+def resize_and_free():
+    process.free(process.realloc(process.realloc(process.malloc(100), 5000), 200_000))
+
+_, (_, taken, given_back) = counted(resize_and_free)
+balance = taken - given_back
+
+# Shrunk in place, a heap block never held its old and new size at once.
+def shrink_in_place():
+    block = process.malloc(64 << 10)
+    start = counters.peak_live_bytes = live()
+    resized = process.realloc(block, 32 << 10)
+    peak = counters.peak_live_bytes - start
+    process.free(resized)
+    return resized == block, peak
+
+in_place, in_place_peak = shrink_in_place()
+
+# Grown, a block mapped on its own (64 MiB, above glibc's largest mmap
+# threshold) is moved by mremap and never held at both sizes either.
+def grow_mapped():
+    block = process.malloc(64 << 20)
+    start = counters.peak_live_bytes = live()
+    process.free(process.realloc(block, 128 << 20))
+    return counters.peak_live_bytes - start
+
+mapped_peak = grow_mapped()
+
+# A window like the auditor's around one call: 1 MiB held at once, then freed,
+# then a small block.
+start = counters.peak_live_bytes = live()
+counters.largest_allocation_bytes = 0
+process.free(process.malloc(1 << 20))
+process.free(process.malloc(64))
+peak = counters.peak_live_bytes - start
+kept = live() - start
+largest = counters.largest_allocation_bytes
+
+counters.paused = True
+_, paused = counted(lambda: process.free(process.malloc(1 << 20)))
+print(json.dumps({"allocated": allocated, "freed": freed, "headers": headers,
+                  "balance": balance, "in_place": in_place, "in_place_peak": in_place_peak,
+                  "mapped_peak": mapped_peak, "peak": peak, "kept": kept, "largest": largest,
+                  "paused": paused}))
+"""
+
+
+@pytest.mark.integration
+@requires_gaudi
+def test_alloc_counter_counts_the_calling_threads_heap_blocks(built_plugin):
+    """Preloaded, the counter adds every block malloc hands out and free takes
+    back to the calling thread's counters, as the heap memory glibc's own
+    header says the block takes, keeps the most the thread held at once and
+    its largest block since they were last reset, and counts nothing while
+    paused."""
+    import json
+    import os
+    import sys
+
+    assert built_plugin.returncode == 0, "Skipped: build already failed"
+    counter = find_auditor_dir() / "libk4BenchAllocCounter.so"
+    result = subprocess.run(
+        [sys.executable, "-c", _ALLOC_PROBE],
+        env={**os.environ, "LD_PRELOAD": str(counter)},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr[-3000:]
+    deltas = json.loads(result.stdout)
+
+    allocations, allocated_bytes, freed_bytes = deltas["allocated"]
+    assert allocations >= 1
+    assert allocated_bytes >= 1 << 20
+    assert freed_bytes == 0
+    assert deltas["freed"][2] >= 1 << 20
+    assert set(deltas["headers"]) <= {8, 16}, deltas["headers"]
+    assert deltas["balance"] == 0
+    assert deltas["in_place"]
+    assert deltas["in_place_peak"] < 1 << 10
+    assert deltas["mapped_peak"] < 65 << 20
+    assert deltas["peak"] >= 1 << 20
+    assert deltas["kept"] < 1 << 20
+    assert deltas["largest"] >= 1 << 20
+    assert deltas["paused"] == [0, 0, 0]
 
 
 def _run_audited_job(tmp_path, label, options):
@@ -279,9 +406,11 @@ def _run_audited_job(tmp_path, label, options):
 def test_auditor_measures_a_real_gaudi_job(built_plugin, tmp_path):
     """A sequencer running one algorithm that sleeps 1 s per event: the auditor
     must find both, charge the sleep to the sleeper as wall but not CPU time,
-    and write an event file the ddsim readers accept."""
+    and as the thread blocking, and write an event file the ddsim readers
+    accept."""
     import json
 
+    from k4bench.analysis.components import THREAD_METRICS
     from k4bench.plugin.schema import EVENT_SCHEMA_VERSION
 
     assert built_plugin.returncode == 0, "Skipped: build already failed"
@@ -301,6 +430,8 @@ def test_auditor_measures_a_real_gaudi_job(built_plugin, tmp_path):
     assert wall.index.tolist() == [0, 1]
     assert ((wall["Nap"] > 0.99) & (wall["Nap"] < 1.5)).all()
     assert (cpu["Nap"] < 0.1).all()
+    assert set(THREAD_METRICS) <= set(timing.execute)
+    assert (timing.execute["voluntary_context_switches"]["Nap"] >= 1).all(), "a sleep blocks"
     assert (wall["Top"] < 0.1).all(), "a sequencer's self time must exclude its children"
     assert "initialize" in timing.lifecycle
 
@@ -315,6 +446,68 @@ def test_auditor_measures_a_real_gaudi_job(built_plugin, tmp_path):
     assert (events["rss_anon_end_mb"] > 0).all()
 
     assert "Nap.SleepTime" in (tmp_path / "nap_joboptions.opts").read_text()
+
+
+@pytest.mark.integration
+@requires_gaudi
+def test_auditor_counts_each_components_heap_allocations(built_plugin, tmp_path):
+    """An algorithm putting three objects into the event store per event: it
+    allocates them and keeps them past its call, since the store is cleared
+    outside any audited call. The sequencer around it allocates nothing of its
+    own once warmed up, although the auditor's bookkeeping for the nested call
+    runs inside the sequencer's call, but its heap peak includes the
+    algorithm's."""
+    from k4bench.analysis.components import ALLOCATION_METRICS
+
+    assert built_plugin.returncode == 0, "Skipped: build already failed"
+    timing, _ = _run_audited_job(
+        tmp_path,
+        "put",
+        "from Configurables import ApplicationMgr, Gaudi__Sequencer, GaudiTesting__PutDataObjectAlg\n"
+        "put = GaudiTesting__PutDataObjectAlg('Put', Paths=['A', 'B', 'C'])\n"
+        "ApplicationMgr(EvtSel='NONE', EvtMax=3, TopAlg=[Gaudi__Sequencer('Top', Members=[put])])\n",
+    )
+
+    assert set(ALLOCATION_METRICS) <= set(timing.execute)
+    assert set(ALLOCATION_METRICS) <= set(timing.lifecycle["initialize"])
+    allocations = timing.execute["allocations"]
+    kept = timing.execute["net_allocated_bytes"]["Put"]
+    peak = timing.execute["peak_heap_bytes"]
+    largest = timing.execute["largest_allocation_bytes"]
+    assert (allocations["Put"] >= 3).all()
+    assert (kept > 0).all()
+    assert (peak["Put"] >= kept).all()
+    assert (allocations["Top"].iloc[1:] == 0).all()
+    assert (peak["Top"] >= peak["Put"]).all()
+    assert ((largest["Put"] > 0) & (largest["Put"] <= peak["Put"])).all()
+    assert (largest["Top"] >= largest["Put"]).all()
+
+
+@pytest.mark.integration
+@requires_gaudi
+def test_auditor_counts_instructions_where_the_hardware_counters_are_readable(
+    built_plugin, tmp_path
+):
+    """The same algorithm doing the same work every event executes nearly the
+    same number of instructions once warmed up, whatever the host's load."""
+    from k4bench.analysis.components import HARDWARE_METRICS
+
+    assert built_plugin.returncode == 0, "Skipped: build already failed"
+    timing, _ = _run_audited_job(
+        tmp_path,
+        "put",
+        "from Configurables import ApplicationMgr, GaudiTesting__PutDataObjectAlg\n"
+        "put = GaudiTesting__PutDataObjectAlg('Put', Paths=['A', 'B', 'C'])\n"
+        "ApplicationMgr(EvtSel='NONE', EvtMax=4, TopAlg=[put])\n",
+    )
+    if not set(HARDWARE_METRICS) <= set(timing.execute):
+        pytest.skip("the hardware performance counters cannot be read here")
+
+    instructions = timing.execute["instructions"]["Put"]
+    assert (instructions > 0).all()
+    assert (timing.execute["cycles"]["Put"] > 0).all()
+    warm = instructions.iloc[1:]
+    assert warm.max() / warm.min() < 1.05
 
 
 @pytest.mark.integration

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build the k4Bench plugins: the DDG4 timing actions for ddsim and, in a Gaudi
-# environment, the k4BenchAuditor for k4run.
+# environment, the k4BenchAuditor and its allocation counter for k4run.
 #
 # Idempotent: skips the build if every library exists and is newer than its
 # sources. Run this after sourcing the key4hep/DD4hep environment.
@@ -71,11 +71,15 @@ if [ "${TARGET}" != ddg4 ]; then
       exit 1
     fi
   else
-    # Gaudi installs plugins into lib/gaudi-plugins or, in older releases, lib.
+    # Gaudi installs plugins into lib/gaudi-plugins or, in older releases, lib;
+    # the allocation counter is installed next to the auditor.
     LIB_AUDITOR="$(installed 'lib*/gaudi-plugins/libk4BenchAuditor.so')"
     [ -f "${LIB_AUDITOR}" ] || LIB_AUDITOR="$(installed 'lib*/libk4BenchAuditor.so')"
-    needs_build "${LIB_AUDITOR}" "${SCRIPT_DIR}/auditor/k4BenchAuditor.cpp" "${PROC_STATS}" \
-      "${SCRIPT_DIR}/auditor/CMakeLists.txt" && STALE_AUDITOR=true
+    LIB_COUNTER="$(dirname "${LIB_AUDITOR}")/libk4BenchAllocCounter.so"
+    for lib in "${LIB_AUDITOR}" "${LIB_COUNTER}"; do
+      needs_build "${lib}" "${SCRIPT_DIR}"/auditor/*.{cpp,h} "${PROC_STATS}" \
+        "${SCRIPT_DIR}/auditor/CMakeLists.txt" && STALE_AUDITOR=true
+    done
   fi
 fi
 
@@ -110,7 +114,8 @@ fi
 
 echo "✅ k4Bench plugins built:"
 for lib in 'lib*/libk4BenchTimingAction.so' 'lib*/libk4BenchRegionTimingAction.so' \
-    'lib*/gaudi-plugins/libk4BenchAuditor.so' 'lib*/libk4BenchAuditor.so'; do
+    'lib*/gaudi-plugins/libk4BenchAuditor.so' 'lib*/libk4BenchAuditor.so' \
+    'lib*/gaudi-plugins/libk4BenchAllocCounter.so' 'lib*/libk4BenchAllocCounter.so'; do
   path="$(installed "${lib}")"
   [ -f "${path}" ] && echo "    - ${path}"
 done

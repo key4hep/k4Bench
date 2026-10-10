@@ -1,12 +1,13 @@
 """Unit tests for k4bench.plugin.runtime.
 
-All tests are pure Python — no subprocess is executed and no filesystem
-paths outside tmp_path are touched. Subprocess calls and the
-plugin-search helpers are patched so the suite runs without a built plugin.
+No filesystem paths outside tmp_path are touched. Subprocess calls and the
+plugin-search helpers are patched so the suite runs without a built plugin;
+only the allocation counter's preload, which is bash, runs in bash.
 """
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -14,6 +15,7 @@ import pytest
 
 import k4bench.plugin.runtime as plugin_runtime
 from k4bench.plugin.runtime import (
+    ALLOC_COUNTER_PRELOAD,
     _find_plugin_root,
     auditor_options_file,
     ensure_auditor_built,
@@ -542,6 +544,87 @@ class TestSetupAuditorEnvironment:
         assert env["GAUDI_PLUGIN_PATH"] == str(plugin_dir)
         assert env["LD_LIBRARY_PATH"] == str(plugin_dir)
 
+    @pytest.mark.parametrize("existing", [None, "/other/libpreloaded.so"])
+    def test_preloads_the_allocation_counter_first(self, tmp_path, existing):
+        plugin_dir = tmp_path / "gaudi-plugins"
+        plugin_dir.mkdir()
+        counter = plugin_dir / "libk4BenchAllocCounter.so"
+        counter.touch()
+        env = {} if existing is None else {"LD_PRELOAD": existing}
+        with (
+            patch.object(plugin_runtime, "ensure_auditor_built"),
+            patch.object(plugin_runtime, "find_auditor_dir", return_value=plugin_dir),
+        ):
+            assert self._setup(tmp_path, env) is True
+        assert env["LD_PRELOAD"] == (str(counter) if existing is None else f"{counter}:{existing}")
+
+    @pytest.mark.parametrize(
+        "existing",
+        [
+            "/opt/lib/libjemalloc.so.2",
+            "/other/libpreloaded.so /opt/libtcmalloc.so",
+            "/usr/lib64/libasan.so.8",
+            "/opt/llvm/lib/libclang_rt.tsan-x86_64.so",
+        ],
+    )
+    def test_a_preloaded_allocator_is_not_replaced(self, tmp_path, existing, capsys):
+        plugin_dir = tmp_path / "gaudi-plugins"
+        plugin_dir.mkdir()
+        (plugin_dir / "libk4BenchAllocCounter.so").touch()
+        env = {"LD_PRELOAD": existing}
+        with (
+            patch.object(plugin_runtime, "ensure_auditor_built"),
+            patch.object(plugin_runtime, "find_auditor_dir", return_value=plugin_dir),
+        ):
+            assert self._setup(tmp_path, env) is True
+        assert env["LD_PRELOAD"] == existing
+        assert "without allocation counts" in capsys.readouterr().out
+
+    def test_with_a_setup_script_the_counter_is_left_to_the_command(self, tmp_path):
+        # The script may set LD_PRELOAD, so it is checked only after the script.
+        plugin_dir = tmp_path / "gaudi-plugins"
+        plugin_dir.mkdir()
+        counter = plugin_dir / "libk4BenchAllocCounter.so"
+        counter.touch()
+        env = {"LD_PRELOAD": "/opt/lib/libjemalloc.so.2"}
+        with (
+            patch.object(plugin_runtime, "ensure_auditor_built"),
+            patch.object(plugin_runtime, "find_auditor_dir", return_value=plugin_dir),
+        ):
+            assert setup_auditor_environment(
+                env=env,
+                components_json_path=tmp_path / "x_components.json",
+                event_json_path=tmp_path / "x_events.json",
+                joboptions_path=tmp_path / "x_joboptions.opts",
+                setup_script=tmp_path / "setup.sh",
+            )
+        assert env["LD_PRELOAD"] == "/opt/lib/libjemalloc.so.2"
+        assert env["K4BENCH_ALLOC_COUNTER"] == str(counter)
+
+    def test_without_a_setup_script_no_counter_is_left_to_the_command(self, tmp_path):
+        plugin_dir = tmp_path / "gaudi-plugins"
+        plugin_dir.mkdir()
+        (plugin_dir / "libk4BenchAllocCounter.so").touch()
+        env = {"K4BENCH_ALLOC_COUNTER": "/stale/libk4BenchAllocCounter.so"}
+        with (
+            patch.object(plugin_runtime, "ensure_auditor_built"),
+            patch.object(plugin_runtime, "find_auditor_dir", return_value=plugin_dir),
+        ):
+            self._setup(tmp_path, env)
+        assert "K4BENCH_ALLOC_COUNTER" not in env
+
+    def test_without_the_allocation_counter_the_auditor_still_runs(self, tmp_path, capsys):
+        plugin_dir = tmp_path / "gaudi-plugins"
+        plugin_dir.mkdir()
+        env: dict[str, str] = {}
+        with (
+            patch.object(plugin_runtime, "ensure_auditor_built"),
+            patch.object(plugin_runtime, "find_auditor_dir", return_value=plugin_dir),
+        ):
+            assert self._setup(tmp_path, env) is True
+        assert "LD_PRELOAD" not in env
+        assert "without allocation counts" in capsys.readouterr().out
+
     @pytest.mark.parametrize(
         "error", [FileNotFoundError("no auditor"), RuntimeError("build failed")]
     )
@@ -551,3 +634,68 @@ class TestSetupAuditorEnvironment:
             assert self._setup(tmp_path, env) is False
         assert env == {"GAUDI_PLUGIN_PATH": "/stack"}
         assert "auditor unavailable" in capsys.readouterr().out
+
+
+class TestAllocCounterPreload:
+    """ALLOC_COUNTER_PRELOAD, run after a job's setup script, preloads the
+    counter into the LD_PRELOAD the script left, unless that holds an allocator
+    or a sanitizer runtime."""
+
+    COUNTER = "/k4bench/libk4BenchAllocCounter.so"
+
+    def _ld_preload(self, tmp_path, setup: str, env: dict[str, str]) -> tuple[str, str]:
+        script = tmp_path / "setup.sh"
+        script.write_text(setup)
+        result = subprocess.run(
+            ["bash", "-c", f'source "$1"\n{ALLOC_COUNTER_PRELOAD}echo "LD_PRELOAD=$LD_PRELOAD"',
+             "_", str(script)],
+            env={"PATH": "/usr/bin:/bin", **env},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        *notes, last = result.stdout.splitlines()
+        return last.removeprefix("LD_PRELOAD="), "\n".join(notes)
+
+    @pytest.mark.parametrize(
+        "setup, expected",
+        [
+            ("", COUNTER),
+            ("export LD_PRELOAD=/other/libpreloaded.so", f"{COUNTER}:/other/libpreloaded.so"),
+            ('export LD_PRELOAD="$LD_PRELOAD:/b.so"', f"{COUNTER}:/a.so:/b.so"),
+        ],
+    )
+    def test_counter_goes_first_in_the_preloads_the_script_left(self, tmp_path, setup, expected):
+        env = {"K4BENCH_ALLOC_COUNTER": self.COUNTER}
+        if "$LD_PRELOAD" in setup:
+            env["LD_PRELOAD"] = "/a.so"
+        ld_preload, notes = self._ld_preload(tmp_path, setup, env)
+        assert ld_preload == expected
+        assert notes == ""
+
+    def test_counter_survives_a_script_overwriting_ld_preload(self, tmp_path):
+        ld_preload, _ = self._ld_preload(
+            tmp_path,
+            "export LD_PRELOAD=/other/libpreloaded.so",
+            {"K4BENCH_ALLOC_COUNTER": self.COUNTER, "LD_PRELOAD": "/before.so"},
+        )
+        assert ld_preload == f"{self.COUNTER}:/other/libpreloaded.so"
+
+    @pytest.mark.parametrize(
+        "setup",
+        [
+            'export LD_PRELOAD="$LD_PRELOAD:/usr/lib64/libasan.so.8"',
+            'export LD_PRELOAD="$LD_PRELOAD /opt/lib/libJEMalloc.so.2"',
+            "export LD_PRELOAD=/opt/llvm/lib/libclang_rt.tsan-x86_64.so",
+        ],
+    )
+    def test_an_allocator_the_script_preloads_is_not_replaced(self, tmp_path, setup):
+        env = {"K4BENCH_ALLOC_COUNTER": self.COUNTER, "LD_PRELOAD": "/a.so"}
+        ld_preload, notes = self._ld_preload(tmp_path, setup, env)
+        assert self.COUNTER not in ld_preload
+        assert "without allocation counts" in notes
+
+    def test_nothing_is_preloaded_without_a_counter(self, tmp_path):
+        ld_preload, notes = self._ld_preload(tmp_path, "", {"LD_PRELOAD": "/a.so"})
+        assert ld_preload == "/a.so"
+        assert notes == ""

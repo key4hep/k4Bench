@@ -34,9 +34,10 @@ k4Bench/
 │       ├── loader.py         #   load_results, load_event_timing, load_region_timing
 │       └── plots/            #   Plotly figures (overview, event, region) + theme/utils
 │
-├── plugin/                   # C++ DDG4 timing plugins (built, not pip-installed)
+├── plugin/                   # C++ DDG4 timing plugins and Gaudi auditor (built, not pip-installed)
 │   ├── k4BenchTimingAction.cpp        #   per-event wall time + RSS
 │   ├── k4BenchRegionTimingAction.cpp  #   per-detector stepping time (3 actions, 1 .so)
+│   ├── auditor/                       #   k4run: k4BenchAuditor + its preloaded allocation counter
 │   ├── CMakeLists.txt
 │   └── build.sh              #   idempotent build helper
 │
