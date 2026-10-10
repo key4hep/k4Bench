@@ -156,6 +156,18 @@ class TestFromJson:
         with pytest.raises(ValueError, match="parent index 9 out of range"):
             ComponentTiming.from_json(raw)
 
+    def test_component_that_is_its_own_parent_is_refused(self):
+        raw = _raw()
+        raw["components"][1]["parent"] = 1
+        with pytest.raises(ValueError, match="'Top' is its own ancestor"):
+            ComponentTiming.from_json(raw)
+
+    def test_parent_cycle_is_refused(self):
+        raw = _raw()
+        raw["components"][1]["parent"] = 2
+        with pytest.raises(ValueError, match="is its own ancestor"):
+            ComponentTiming.from_json(raw)
+
     def test_duplicate_component_names_are_refused(self):
         raw = _raw()
         raw["components"][3]["name"] = "Fast"

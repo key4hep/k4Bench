@@ -101,6 +101,16 @@ class ComponentTiming:
                     f"{where}component {entry['name']!r} has parent index {parent} out of range"
                 )
             parents.append(None if parent is None else names[parent])
+        # A parent cycle would make descendants() recurse without end.
+        parent_of = dict(zip(names, parents))
+        for name in names:
+            seen = {name}
+            ancestor = parent_of[name]
+            while ancestor is not None:
+                if ancestor in seen:
+                    raise ValueError(f"{where}component {name!r} is its own ancestor")
+                seen.add(ancestor)
+                ancestor = parent_of[ancestor]
         components = pd.DataFrame(
             {
                 "category": [entry.get("category", "other") for entry in entries],
