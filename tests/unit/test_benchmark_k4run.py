@@ -61,6 +61,11 @@ class TestConfig:
         config = _config(tmp_path, None, options=["job.py"])
         assert config.options == [str(tmp_path / "job.py")]
 
+    def test_setup_script_is_made_absolute(self, tmp_path, stage_dir, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        config = _config(tmp_path, stage_dir, setup_script=Path("setup.sh"))
+        assert config.setup_script == tmp_path / "setup.sh"
+
 
 def test_planned_labels_are_the_baseline_then_each_variant():
     assert planned_k4run_labels([]) == ["baseline"]

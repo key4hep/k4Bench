@@ -59,7 +59,8 @@ class K4runConfig:
         ``{name: arguments}``. Each variant is one more run, with its arguments
         appended to *extra_args*.
     setup_script:
-        Optional shell script sourced before each k4run invocation.
+        Optional shell script sourced before each k4run invocation. A relative
+        path is relative to the current directory.
     verbose:
         If True, print k4run output in real time instead of only logging it.
     """
@@ -89,6 +90,9 @@ class K4runConfig:
             # Each run starts in an empty directory, where a relative path
             # would no longer name the caller's file.
             self.options = [str((base / o).resolve()) for o in self.options]
+        if self.setup_script is not None:
+            # Sourced from the run's working directory, not the caller's.
+            self.setup_script = self.setup_script.resolve()
 
 
 def planned_k4run_labels(variants: list[str]) -> list[str]:
