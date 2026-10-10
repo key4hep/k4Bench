@@ -21,6 +21,19 @@ logs/<geometry>/
 └── <label>_regions.json     # per-detector timing    (region plugin only)
 ```
 
+A `k4bench k4run` run (default `logs/<options-stem>/`) writes the same log,
+results CSV and events JSON, the last one by the k4BenchAuditor in the same
+format, and instead of the regions JSON:
+
+```text
+├── <label>_components.json  # per-event, per-component (algorithm/service) costs (auditor only)
+└── <label>_joboptions.opts  # the fully resolved job options, as JobOptionsSvc dumps them
+```
+
+Its labels are `baseline` and `variant_<name>` for each variant. A k4run
+`output_size_mb` is the size of every file the job created in its working
+directory.
+
 In the nightly CI each run directory also gets `run_info.json` and
 `machine_info.json`, and the whole directory is uploaded to
 [EOS](#eos-layout).

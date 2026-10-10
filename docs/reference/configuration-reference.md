@@ -38,6 +38,26 @@ explanations see [Configuration](../user-guide/configuration.md) and
 - Don't put `--compactFile` / `--numberOfEvents` / `--outputFile` in
   `--ddsim-args`; they're injected and would collide.
 
+### `k4bench k4run`
+
+`k4bench k4run OPTIONS [OPTIONS ...] [flags]` benchmarks a k4run job instead,
+measured per component by the k4BenchAuditor. Every run starts in a fresh
+working directory, removed afterwards, so give paths in `--k4run-args` as
+absolute paths.
+
+| Flag | Type | Default | Required | Description |
+| --- | --- | --- | --- | --- |
+| `OPTIONS` | path… | — | ✅ | Gaudi options files, loaded in order; relative to `--stage-dir` when given. The auditor's options file is appended after them. |
+| `--stage-dir` | path | *(none)* | — | Directory copied (writable) into every run's working directory, for jobs that must run from their own configuration directory. |
+| `--events` | int | `2` | — | Events per run → injected as `--num-events`; used for `events_per_sec`. |
+| `--k4run-args` | str | `""` | — | Args passed verbatim to `k4run` after the options files, as one quoted string. Use the `=` form. |
+| `--variant` | `NAME=ARGS` | — | — | One more run, labelled `variant_NAME`, with `ARGS` appended to `--k4run-args`. Repeatable. |
+| `--output-dir` | path | `logs/<options-stem>/` | — | Directory for logs and results; created if absent. |
+| `--pickle` | str | *(none)* | — | As for ddsim. |
+| `--verbose`, `-v` | bool | `false` | — | Stream `k4run` output live. |
+
+Don't put `--num-events` in `--k4run-args`; it is injected.
+
 ### Library use
 
 The CLI builds a `BenchmarkConfig` from these flags. Driving k4Bench from Python

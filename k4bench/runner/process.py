@@ -3,8 +3,9 @@
 This is the tool-independent half of a benchmark run: building the timed
 shell command, streaming the process output into its log, stopping the whole
 process group on Ctrl-C, and parsing the ``time -v`` report. It knows nothing
-about which program it times; :mod:`k4bench.runner.executor` supplies the
-``ddsim`` command line and turns the outcome into a
+about which program it times; :mod:`k4bench.runner.ddsim` and
+:mod:`k4bench.runner.k4run` supply the command line, and
+:mod:`k4bench.runner.result` turns the outcome into a
 :class:`~k4bench.results.model.RunResult`.
 """
 
@@ -64,12 +65,14 @@ def run_timed(
     env: dict[str, str],
     log_path: Path,
     verbose: bool = False,
+    cwd: Path | None = None,
 ) -> TimedProcess:
     """Run *command* (from :func:`timed_shell_command`) in bash and wait for it.
 
     All output goes to *log_path*, and to stdout as well when *verbose*. The
-    process runs in its own session, so a Ctrl-C stops it and every child it
-    started before the ``KeyboardInterrupt`` is re-raised.
+    process runs in *cwd* (default: the current directory) and in its own
+    session, so a Ctrl-C stops it and every child it started before the
+    ``KeyboardInterrupt`` is re-raised.
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -82,6 +85,7 @@ def run_timed(
             stderr=subprocess.STDOUT,
             text=True,
             env=env,
+            cwd=cwd,
             start_new_session=True,
         )
 

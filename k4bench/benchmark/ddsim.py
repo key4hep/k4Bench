@@ -4,7 +4,7 @@ This module is the top-level orchestrator.  It wires together:
 
 * :mod:`k4bench.geometry.scanner`  — discover subdetector names
 * :mod:`k4bench.geometry.patcher`  — produce patched XML files
-* :mod:`k4bench.runner.executor`   — time each ddsim run
+* :mod:`k4bench.runner.ddsim`      — time each ddsim run
 * :mod:`k4bench.results.model`     — collect results
 
 All runs are sequential.  Parallel execution would skew wall-time and
@@ -42,7 +42,8 @@ from k4bench.geometry.patcher import build_patch, patched
 from k4bench.geometry.scanner import get_detector_names
 from k4bench.labels import BASELINE_LABEL, INCLUDE_PREFIX, REMOVAL_PREFIX
 from k4bench.results.model import RunResult
-from k4bench.runner.executor import run_ddsim
+from k4bench.results.reporter import print_run_result
+from k4bench.runner.ddsim import run_ddsim
 from k4bench.runner.steering import reconcile_steering_file
 
 
@@ -466,7 +467,7 @@ def _timed_run(
         extra_args=extra_args,
         verbose=config.verbose,
     )
-    _print_run_result(result)
+    print_run_result(result)
     return result
 
 
@@ -474,12 +475,3 @@ def _print_run_header(index: int, total: int, label: str, xml_path: Path) -> Non
     print(f"[{index}/{total}] {label}")
     print(f"         XML: {xml_path}")
 
-
-def _print_run_result(result: RunResult) -> None:
-    status = "ok" if result.succeeded else f"FAILED (rc={result.returncode})"
-    wall = f"{result.wall_time_s:.1f}s"        if result.wall_time_s    is not None else "N/A"
-    rss  = f"{result.peak_rss_mb:.0f} MB"      if result.peak_rss_mb   is not None else "N/A"
-    out  = f"{result.output_size_mb:.2f} MB"   if result.output_size_mb is not None else "N/A"
-    eps  = f"{result.events_per_sec:.3f} ev/s" if result.events_per_sec is not None else "N/A"
-    print(f"         Status: {status}  |  Wall: {wall}  |  RSS: {rss}  |  Output: {out}  |  {eps}")
-    print(f"         Log:    {result.label}.log\n")

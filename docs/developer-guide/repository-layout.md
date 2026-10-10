@@ -10,7 +10,8 @@ k4Bench/
 │   ├── cli.py                #   argparse CLI → BenchmarkConfig; the `k4bench` entry point
 │   ├── artifacts.py          #   file names of a run directory's artifacts (data contract)
 │   ├── benchmark/
-│   │   └── ddsim.py          #   orchestrator: BenchmarkConfig, SweepMode, select_sweep, run_sweep
+│   │   ├── ddsim.py          #   orchestrator: BenchmarkConfig, SweepMode, select_sweep, run_sweep
+│   │   └── k4run.py          #   orchestrator: K4runConfig, staging, variants, run_k4run_benchmark
 │   ├── geometry/
 │   │   ├── errors.py         #   geometry exception hierarchy
 │   │   ├── index.py          #   immutable include/detector/plugin structure
@@ -18,7 +19,9 @@ k4Bench/
 │   │   ├── scanner.py        #   lenient discovery façade
 │   │   └── patcher.py        #   one validated detector-removal engine
 │   ├── runner/
-│   │   ├── executor.py       #   run_ddsim: ddsim command line, plugin wiring, RunResult
+│   │   ├── ddsim.py          #   run_ddsim: ddsim command line, DDG4 plugin wiring
+│   │   ├── k4run.py          #   run_k4run: k4run command line, auditor wiring, working dir
+│   │   ├── result.py         #   run_result: timed process + event JSON → RunResult
 │   │   ├── process.py        #   run_timed: any command under time -v, log streaming, Ctrl-C
 │   │   └── parser.py         #   parse_time_output
 │   ├── results/
@@ -83,8 +86,11 @@ k4Bench/
 - **"Where does a number come from?"** → `runner/parser.py` parses it,
   `results/model.py` stores it, `results/reporter.py` prints/saves it.
 - **"Where is the geometry magic?"** → `geometry/index.py` + `geometry/patcher.py`.
-- **"Where does ddsim actually get run?"** → `runner/executor.py` builds the
+- **"Where does ddsim actually get run?"** → `runner/ddsim.py` builds the
   command; `runner/process.py` runs and times it.
+- **"Where does a k4run job get run?"** → `benchmark/k4run.py` stages its
+  working directory, `runner/k4run.py` builds the command with the auditor's
+  options file, and `runner/process.py` runs and times it.
 - **"Where do per-event/-detector numbers come from?"** → `plugin/*.cpp`, wired
   by `k4bench/plugin/runtime.py`.
 

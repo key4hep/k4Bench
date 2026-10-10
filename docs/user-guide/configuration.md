@@ -33,7 +33,7 @@ flowchart LR
     dd --> RUN
 ```
 
-This separation is a deliberate design choice: the executor owns
+This separation is a deliberate design choice: the runner owns
 *instrumentation* (timing, logging, metrics) and knows about
 only three ddsim flags — `--compactFile`, `--numberOfEvents`, `--outputFile` —
 which it injects itself. Everything else is your concern and flows through
@@ -132,7 +132,7 @@ Two `BenchmarkConfig` fields have no CLI flag:
 !!! note "`setup_script` is not exposed on the CLI"
     As of this writing there is no `--setup-script` flag; the field exists in
     [`BenchmarkConfig`](../reference/api/benchmark/ddsim.md) and is honoured by
-    the [executor](../reference/api/runner/executor.md), but only library callers
+    the [runner](../reference/api/runner/ddsim.md), but only library callers
     can set it.
 
 ## Validation

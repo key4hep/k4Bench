@@ -166,6 +166,32 @@ results = pickle.loads(open("logs/ALLEGRO_o1_v03/results.pkl", "rb").read())
 Stream `ddsim` output to your terminal live (it is always captured to the `.log`
 regardless).
 
+## Benchmarking a k4run job
+
+`k4bench k4run` benchmarks any Gaudi job run with `k4run`, reconstruction for
+example, instead of ddsim. k4Bench appends the k4BenchAuditor's options file
+after the job's own, so every algorithm and service is measured per event, and
+injects `--num-events`. Everything else the job needs goes in `--k4run-args`.
+
+```bash
+k4bench k4run CLDReconstruction.py \
+    --stage-dir $CLDCONFIG/share/CLDConfig \
+    --events 30 \
+    --k4run-args="--inputFiles $PWD/sim.edm4hep.root --compactFile $K4GEO/FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml" \
+    --variant truth_tracking=--truthTracking
+# labels: baseline, variant_truth_tracking
+```
+
+Each run starts in a fresh working directory: a writable copy of
+`--stage-dir` (CLDConfig must run from its own directory) or an empty one.
+It is removed after the run, so the job's outputs never land in your
+directory, and paths in `--k4run-args` must be absolute. Each `--variant
+NAME=ARGS` is one more run with `ARGS` appended. Next to the usual log and
+results CSV, every label gets `<label>_events.json`,
+`<label>_components.json` and `<label>_joboptions.opts`; see
+[File formats](../reference/file-formats.md#output-directory-layout) and the
+[configuration reference](../reference/configuration-reference.md#k4bench-k4run).
+
 ## Exit codes
 
 | Code | Meaning |
@@ -188,7 +214,7 @@ Press ++ctrl+c++ to stop. k4bench catches `KeyboardInterrupt`, sends `SIGTERM`
 to the entire `ddsim` process group, waits up to 5 seconds, then escalates to
 `SIGKILL` if needed — so you don't leave orphaned `ddsim`/Geant4 processes
 behind. The interrupt then propagates and k4bench exits. See
-[`run_ddsim`](../reference/api/runner/executor.md).
+[`run_ddsim`](../reference/api/runner/ddsim.md).
 
 ## Built-in help
 

@@ -1,4 +1,4 @@
-"""Unit tests for k4bench.runner.executor.
+"""Unit tests for k4bench.runner.ddsim.
 
 _build_command is a pure function (no subprocess, no filesystem), so we
 test it directly.  run_ddsim itself requires a live ddsim binary and
@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from k4bench.runner.executor import _build_command, run_ddsim
+from k4bench.runner.ddsim import _build_command, run_ddsim
 
 XML = Path("/geo/ALLEGRO_o1_v03.xml")
 OUTPUT = Path("/tmp/out.edm4hep.root")
@@ -21,7 +21,7 @@ SETUP = Path("/opt/k4geo/bin/thisk4geo.sh")
 
 
 class TestBuildCommandManagedArgs:
-    """The three executor-owned flags are always present and correctly set."""
+    """The three runner-owned flags are always present and correctly set."""
 
     def _cmd(self, **kwargs) -> str:
         defaults = dict(
@@ -291,7 +291,7 @@ def test_peak_vmem_from_plugin_reaches_results_csv(tmp_path, payload, expected):
     proc.wait.side_effect = finish
     with (
         patch("k4bench.runner.process.subprocess.Popen", return_value=proc),
-        patch("k4bench.runner.executor.setup_plugin_environment", return_value=True),
+        patch("k4bench.runner.ddsim.setup_plugin_environment", return_value=True),
     ):
         result = run_ddsim(
             xml_path=XML,

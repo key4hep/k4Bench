@@ -93,8 +93,8 @@ semantics. Check for:
 - unit or normalisation mistakes (memory is reported in MB as kB/1024);
 - comparisons between runs that are not actually equivalent;
 - failed, partial or missing measurements read as valid ones;
-- instrumentation changes in `plugin/*.cpp` or `runner/executor.py` that
-  perturb the quantity being measured;
+- instrumentation changes in `plugin/*.cpp`, `plugin/auditor/`, `runner/ddsim.py`
+  or `runner/k4run.py` that perturb the quantity being measured;
 - changes that make detector or sweep configurations no longer comparable.
 
 Any edit to `.github/benchmarks/*.yml` that changes `n_events`, `ddsim_args`

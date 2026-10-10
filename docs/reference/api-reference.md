@@ -38,15 +38,18 @@ from k4bench.analysis import (
 | --- | --- | --- |
 | `k4bench.cli` | `main` | [cli](api/cli.md) |
 | `k4bench.benchmark.ddsim` | `BenchmarkConfig`, `SweepMode`, `run_sweep` | [benchmark.ddsim](api/benchmark/ddsim.md) |
+| `k4bench.benchmark.k4run` | `K4runConfig`, `run_k4run_benchmark`, `planned_k4run_labels` | [benchmark.k4run](api/benchmark/k4run.md) |
 | `k4bench.geometry.scanner` | `get_detector_names`, `resolve_includes` | [geometry.scanner](api/geometry/scanner.md) |
 | `k4bench.geometry.index` | `GeometryIndex`, `FilesystemRef` | [geometry.index](api/geometry/index.md) |
 | `k4bench.geometry.patcher` | `build_patch`, `patched`, `PatchResult`, `patched_geometry`, `patched_geometry_keep_only` | [geometry.patcher](api/geometry/patcher.md) |
 | `k4bench.geometry.errors` | geometry exception hierarchy | [geometry.errors](api/geometry/errors.md) |
-| `k4bench.runner.executor` | `run_ddsim` | [runner.executor](api/runner/executor.md) |
+| `k4bench.runner.ddsim` | `run_ddsim` | [runner.ddsim](api/runner/ddsim.md) |
+| `k4bench.runner.k4run` | `run_k4run` | [runner.k4run](api/runner/k4run.md) |
+| `k4bench.runner.result` | `run_result`, `read_peak_vmem_mb` | [runner.result](api/runner/result.md) |
 | `k4bench.runner.parser` | `parse_time_output` | [runner.parser](api/runner/parser.md) |
 | `k4bench.results.model` | `RunResult` | [results.model](api/results/model.md) |
-| `k4bench.results.reporter` | `print_summary`, `save_csv` | [results.reporter](api/results/reporter.md) |
-| `k4bench.plugin.runtime` | `setup_plugin_environment`, `find_plugin_lib_dir`, `ensure_plugin_built` | [plugin.runtime](api/plugin/runtime.md) |
+| `k4bench.results.reporter` | `print_summary`, `save_csv`, `print_run_result` | [results.reporter](api/results/reporter.md) |
+| `k4bench.plugin.runtime` | `setup_plugin_environment`, `setup_auditor_environment`, `find_plugin_lib_dir`, `ensure_plugin_built` | [plugin.runtime](api/plugin/runtime.md) |
 | `k4bench.analysis` | the loaders + plot functions | [analysis](api/analysis/index.md) |
 
 The complete, navigable tree is in the **API** section of the sidebar.

@@ -55,14 +55,20 @@ flowchart TD
     ddsim --> scanner[geometry.scanner]
     ddsim --> patcher[geometry.patcher]
     ddsim --> index[geometry.index]
-    ddsim --> executor[runner.executor]
+    cli --> k4run[benchmark.k4run]
+    ddsim --> runddsim[runner.ddsim]
     ddsim --> model[results.model]
+    k4run --> runk4run[runner.k4run]
     scanner --> index
     patcher --> index
-    executor --> runtime[plugin.runtime]
-    executor --> process[runner.process]
+    runddsim --> runtime[plugin.runtime]
+    runk4run --> runtime
+    runddsim --> result[runner.result]
+    runk4run --> result
+    runddsim --> process[runner.process]
+    runk4run --> process
     process --> parser[runner.parser]
-    executor --> model
+    result --> model
     reporter --> model
     plots[analysis.plots] --> loader[analysis.loader]
     dash[dashboard] --> loader
