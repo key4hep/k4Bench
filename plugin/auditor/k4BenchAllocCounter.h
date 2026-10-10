@@ -19,7 +19,8 @@ namespace k4bench
     bool paused{false};                        // while set, nothing is counted
 
     // Allocated minus freed on this thread; negative after freeing blocks
-    // other threads allocated.
+    // other threads allocated, and too high while blocks it allocated were
+    // freed by other threads, which then also raise peak_live_bytes.
     std::int64_t live_bytes() const { return static_cast<std::int64_t>(allocated_bytes - freed_bytes); }
   };
 } // namespace k4bench

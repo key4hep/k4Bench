@@ -109,8 +109,10 @@ extern "C"
     return 0;
   }
 
-  // A resized block is counted as a new block allocated and then the old one
-  // freed, which is what realloc does when it has to move the block.
+  // A moved block is counted as a new block allocated and then the old one
+  // freed, as both are held while realloc copies. A block resized in place
+  // never coexists with its old size, so that is freed first: counted the
+  // other way round, the peak would hold the old size twice.
   void *realloc(void *block, std::size_t size) noexcept
   {
     const std::size_t old_size = block != nullptr ? heap_bytes(block) : 0;
@@ -119,8 +121,13 @@ extern "C"
     {
       return nullptr; // failed, and the old block is untouched
     }
+    const bool in_place = resized == block;
+    if (in_place && !counters.paused)
+    {
+      counters.freed_bytes += old_size;
+    }
     counted(resized);
-    if (!counters.paused)
+    if (!in_place && !counters.paused)
     {
       counters.freed_bytes += old_size;
     }

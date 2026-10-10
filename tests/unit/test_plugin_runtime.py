@@ -556,6 +556,22 @@ class TestSetupAuditorEnvironment:
             assert self._setup(tmp_path, env) is True
         assert env["LD_PRELOAD"] == (str(counter) if existing is None else f"{counter}:{existing}")
 
+    @pytest.mark.parametrize(
+        "existing", ["/opt/lib/libjemalloc.so.2", "/other/libpreloaded.so /opt/libtcmalloc.so"]
+    )
+    def test_a_preloaded_allocator_is_not_replaced(self, tmp_path, existing, capsys):
+        plugin_dir = tmp_path / "gaudi-plugins"
+        plugin_dir.mkdir()
+        (plugin_dir / "libk4BenchAllocCounter.so").touch()
+        env = {"LD_PRELOAD": existing}
+        with (
+            patch.object(plugin_runtime, "ensure_auditor_built"),
+            patch.object(plugin_runtime, "find_auditor_dir", return_value=plugin_dir),
+        ):
+            assert self._setup(tmp_path, env) is True
+        assert env["LD_PRELOAD"] == existing
+        assert "without allocation counts" in capsys.readouterr().out
+
     def test_without_the_allocation_counter_the_auditor_still_runs(self, tmp_path, capsys):
         plugin_dir = tmp_path / "gaudi-plugins"
         plugin_dir.mkdir()

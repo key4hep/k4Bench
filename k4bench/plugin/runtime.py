@@ -24,6 +24,11 @@ _AUDITOR_OPTIONS = "k4BenchAuditorOptions.py"
 # installed next to the auditor.
 _ALLOC_COUNTER_LIBRARY = "libk4BenchAllocCounter.so"
 
+# Allocators a job may preload to replace glibc's. The counter forwards to
+# glibc's allocator and reads glibc's block headers, so preloaded before one of
+# these it would silently swap the allocator being benchmarked for glibc's.
+_PRELOADED_ALLOCATORS = ("jemalloc", "tcmalloc", "mimalloc", "tbbmalloc", "hoard", "snmalloc")
+
 
 def _find_plugin_root() -> Path:
     """Locate the k4Bench plugin source directory."""
@@ -248,8 +253,21 @@ def setup_auditor_environment(
     env["K4BENCH_JOBOPTIONS"] = str(joboptions_path.resolve())
 
     counter = Path(plugin_dir) / _ALLOC_COUNTER_LIBRARY
-    if counter.is_file():
-        existing = env.get("LD_PRELOAD", "")
+    existing = env.get("LD_PRELOAD", "")
+    allocator = next(
+        (
+            library
+            for library in existing.replace(" ", ":").split(":")
+            if any(name in Path(library).name.lower() for name in _PRELOADED_ALLOCATORS)
+        ),
+        None,
+    )
+    if allocator is not None:
+        print(
+            f"NOTE: the job preloads its own allocator ({allocator}); continuing "
+            f"without allocation counts, which would replace it with glibc's."
+        )
+    elif counter.is_file():
         env["LD_PRELOAD"] = f"{counter}:{existing}" if existing else str(counter)
     else:
         print(f"NOTE: {counter} not found; continuing without allocation counts.")

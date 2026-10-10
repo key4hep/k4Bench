@@ -295,6 +295,17 @@ def resize_and_free():
 _, (_, taken, given_back) = counted(resize_and_free)
 balance = taken - given_back
 
+# Shrunk in place, a heap block never held its old and new size at once.
+def shrink_in_place():
+    block = process.malloc(64 << 10)
+    start = counters.peak_live_bytes = live()
+    resized = process.realloc(block, 32 << 10)
+    peak = counters.peak_live_bytes - start
+    process.free(resized)
+    return resized == block, peak
+
+in_place, in_place_peak = shrink_in_place()
+
 # A window like the auditor's around one call: 1 MiB held at once, then freed,
 # then a small block.
 start = counters.peak_live_bytes = live()
@@ -308,8 +319,8 @@ largest = counters.largest_allocation_bytes
 counters.paused = True
 _, paused = counted(lambda: process.free(process.malloc(1 << 20)))
 print(json.dumps({"allocated": allocated, "freed": freed, "headers": headers,
-                  "balance": balance, "peak": peak, "kept": kept, "largest": largest,
-                  "paused": paused}))
+                  "balance": balance, "in_place": in_place, "in_place_peak": in_place_peak,
+                  "peak": peak, "kept": kept, "largest": largest, "paused": paused}))
 """
 
 
@@ -343,6 +354,8 @@ def test_alloc_counter_counts_the_calling_threads_heap_blocks(built_plugin):
     assert deltas["freed"][2] >= 1 << 20
     assert set(deltas["headers"]) <= {8, 16}, deltas["headers"]
     assert deltas["balance"] == 0
+    assert deltas["in_place"]
+    assert deltas["in_place_peak"] < 1 << 10
     assert deltas["peak"] >= 1 << 20
     assert deltas["kept"] < 1 << 20
     assert deltas["largest"] >= 1 << 20

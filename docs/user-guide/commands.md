@@ -173,7 +173,9 @@ example, instead of ddsim. k4Bench appends the k4BenchAuditor's options file
 after the job's own, so every algorithm and service is measured per event,
 preloads the auditor's allocation counter, so the measurements include heap
 allocations, and injects `--num-events`. Everything else the job needs goes in
-`--k4run-args`.
+`--k4run-args`. The counter forwards to glibc's allocator, so when `LD_PRELOAD`
+already names another one (jemalloc, tcmalloc, ...) it is not preloaded and the
+job runs on its own allocator without allocation counts.
 
 ```bash
 k4bench k4run CLDReconstruction.py \

@@ -47,8 +47,11 @@
 // than the event's elapsed time, which is EventsOutput's event time. The peak
 // RSS is the process's, so a call is then also charged increases caused by
 // whatever ran on other threads meanwhile; only in a serial job does a nonzero
-// increase name the component that raised the high-water mark. Everything
-// else is counted per thread and stays exact.
+// increase name the component that raised the high-water mark. A thread's heap
+// is what it allocated less what it freed, so a block one thread allocated and
+// another freed stays on the first thread's heap, and a call's heap peak may
+// then count blocks no longer held. Everything else is counted per thread and
+// stays exact.
 //
 // The auditor's own bookkeeping allocates too; counting is paused while it
 // runs, so no component is charged for it.

@@ -62,8 +62,11 @@ ran concurrently (``threads`` > 1), ``cpu_s`` still sums to the event's work,
 but the ``wall_s`` of calls that overlapped on different threads sums to more
 than the event's elapsed time (the event time is in ``_events.json``), and since
 the peak RSS is the process's, a call's ``peak_rss_increase_mb`` may include
-memory allocated by other threads meanwhile. Everything else is counted per
-thread and stays exact.
+memory allocated by other threads meanwhile. A thread's heap is what it
+allocated less what it freed, so a block one thread allocated and another freed
+stays on the first thread's heap: its calls' ``peak_heap_bytes`` may then count
+blocks that were no longer held, and ``net_allocated_bytes`` is shifted the same
+way. Everything else is counted per thread and stays exact.
 
 A missing value is ``NaN``, never zero: an algorithm that did not run in an
 event (a filtered sequence) has no cost there, which is different from a cost
