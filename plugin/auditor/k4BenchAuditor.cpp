@@ -234,6 +234,7 @@ namespace
     std::string impl;
     std::string library;
     std::optional<std::string> parent; // enclosing sequencer
+    bool shared{false};                // member of several sequencers
     long execute_calls{0};
     bool described{false};
   };
@@ -528,6 +529,24 @@ private:
     span.end_epoch_ns = std::max(span.end_epoch_ns, epochNs(end));
   }
 
+  // An algorithm listed by several sequencers runs once per event, under
+  // whichever reaches it first, so no single one encloses it: it gets no
+  // parent, and no sequencer's inclusive cost claims it.
+  static void setParent(Component &component, const std::string &sequence)
+  {
+    if (component.shared)
+    {
+      return;
+    }
+    if (component.parent && *component.parent != sequence)
+    {
+      component.parent.reset();
+      component.shared = true;
+      return;
+    }
+    component.parent = sequence;
+  }
+
   // Fill in category, type, implementation, library and parent for every
   // component the managers know. Algorithms are walked in full, so a
   // sequencer's children are registered even before their first call.
@@ -544,7 +563,7 @@ private:
           {
             for (const Gaudi::Algorithm *child : *children)
             {
-              m_components[componentIndex(child->name())].parent = sequence->name();
+              setParent(m_components[componentIndex(child->name())], sequence->name());
             }
           }
         }

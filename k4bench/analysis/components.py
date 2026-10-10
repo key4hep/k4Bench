@@ -51,7 +51,8 @@ class ComponentTiming:
     ``other``), ``type`` (the Gaudi type), ``impl`` (the class doing the work: the
     type, or the class a wrapper delegates to), ``library`` (the shared object
     defining the type, symlinks resolved), ``parent`` (the enclosing sequencer's
-    name, or ``None``) and ``execute_calls``.
+    name, or ``None``, also for an algorithm several sequencers share, which no
+    sequencer's inclusive cost then claims) and ``execute_calls``.
 
     ``execute`` maps each metric to an events × components frame indexed by
     event number. ``lifecycle`` maps each non-event phase (``initialize``,
