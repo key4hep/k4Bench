@@ -259,6 +259,18 @@ def test_failed_input_fetch_records_nothing(job_module, k4geo, tmp_path, monkeyp
     assert not (tmp_path / "out" / "run_info.json").exists()
 
 
+def test_failed_machine_info_records_no_run(job_module, k4geo, tmp_path, monkeypatch):
+    # run_info.json is what lets nightly_benchmark.sh upload, so a run whose
+    # metadata could not be finalised must not leave one behind.
+    def broken(_out_dir):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(sys.modules["machine_info"], "cmd_finalize", broken)
+    with pytest.raises(OSError):
+        _main(job_module, _record(), tmp_path, monkeypatch, Processes())
+    assert not (tmp_path / "out" / "run_info.json").exists()
+
+
 # ---------------------------------------------------------------------------
 # Contracts with the workflow, the matrix and the nightly script
 # ---------------------------------------------------------------------------

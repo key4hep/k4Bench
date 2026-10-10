@@ -163,8 +163,9 @@ def main(argv: list[str] | None = None) -> int:
     _group("7. Run benchmark")
     returncode = run(job, output_dir, env)
     _group("8. Write run metadata")
-    run_info.write_run_info(output_dir, job, env, date=date)
+    # run_info.json last: nightly_benchmark.sh uploads only once it exists.
     machine_info.cmd_finalize(output_dir)
+    run_info.write_run_info(output_dir, job, env, date=date)
     print("::endgroup::", flush=True)
     return returncode
 
