@@ -25,7 +25,7 @@ installed() {
 }
 
 # needs_build <library> <source>...: true if the library is missing or older
-# than any of its sources.
+# than any of its sources, its CMakeLists.txt included.
 needs_build() {
   local lib="$1"
   shift
@@ -40,15 +40,16 @@ needs_build() {
 LIB_EVENT="$(installed 'lib*/libk4BenchTimingAction.so')"
 LIB_REGION="$(installed 'lib*/libk4BenchRegionTimingAction.so')"
 STALE=false
-needs_build "${LIB_EVENT}" "${SCRIPT_DIR}/k4BenchTimingAction.cpp" "${PROC_STATS}" && STALE=true
-needs_build "${LIB_REGION}" "${SCRIPT_DIR}/k4BenchRegionTimingAction.cpp" && STALE=true
+needs_build "${LIB_EVENT}" "${SCRIPT_DIR}/k4BenchTimingAction.cpp" "${PROC_STATS}" "${SCRIPT_DIR}/CMakeLists.txt" && STALE=true
+needs_build "${LIB_REGION}" "${SCRIPT_DIR}/k4BenchRegionTimingAction.cpp" "${SCRIPT_DIR}/CMakeLists.txt" && STALE=true
 
 # GAUDI_PLUGIN_PATH is set by every Gaudi environment; without Gaudi the
 # auditor is not built, so it cannot be stale either.
 LIB_AUDITOR=""
 if [ -n "${GAUDI_PLUGIN_PATH:-}" ]; then
   LIB_AUDITOR="$(installed 'lib*/gaudi-plugins/libk4BenchAuditor.so')"
-  needs_build "${LIB_AUDITOR}" "${SCRIPT_DIR}/auditor/k4BenchAuditor.cpp" "${PROC_STATS}" && STALE=true
+  needs_build "${LIB_AUDITOR}" "${SCRIPT_DIR}/auditor/k4BenchAuditor.cpp" "${PROC_STATS}" \
+    "${SCRIPT_DIR}/auditor/CMakeLists.txt" && STALE=true
 fi
 
 if [ "${STALE}" = false ]; then

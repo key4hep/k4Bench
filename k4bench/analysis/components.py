@@ -55,9 +55,12 @@ class ComponentTiming:
 
     ``execute`` maps each metric to an events × components frame indexed by
     event number. ``lifecycle`` maps each non-event phase (``initialize``,
-    ``start``, ``stop``, ``finalize``) to a components × metrics frame.
-    ``phases`` holds each phase's ``(begin, end)`` in ns since the Unix epoch,
-    ``execute`` included.
+    ``start``, ``stop``, ``finalize``, or a custom audited section) to a
+    components × metrics frame. A non-event call made during an execution, such
+    as a service initialized on first use, appears there and also stays in the
+    executing component's ``execute`` cost. ``phases`` holds each phase's
+    ``(begin, end)`` in ns since the Unix epoch, ``execute`` included, spanning
+    only the calls made outside event processing.
     """
 
     components: pd.DataFrame

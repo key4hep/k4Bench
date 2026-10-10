@@ -11,7 +11,10 @@
 // event loop manager initializes the algorithms), and a call is charged only
 // what was not spent in the audited calls nested inside it. Self costs
 // therefore add up: summed over the components of an event they give the cost
-// of its audited calls, without double counting at any depth.
+// of its audited calls, without double counting at any depth. A non-execute
+// call made during an execution (a service initialized on first use, a custom
+// audited section) stays in the executing component's event cost and is also
+// listed under its own phase, without widening that phase's span.
 //
 // An event's time in EventsOutput runs from its first top-level call to its
 // last, so with several top-level algorithms it also covers what happens
@@ -83,6 +86,9 @@ namespace
 
   // Measurement pairs timed at initialize to report the auditor's own cost.
   constexpr int kCalibrationPairs = 1000;
+
+  // Phase name of an algorithm execution, Gaudi::IAuditor::Execute lowercased.
+  constexpr const char *kExecutePhase = "execute";
 
   using Clock = std::chrono::steady_clock;
   using Json = nlohmann::ordered_json;
@@ -358,21 +364,31 @@ public:
     const Frame done = *frame;
     stack.erase(std::next(frame).base(), stack.end());
 
+    const bool execute = event == Gaudi::IAuditor::Execute;
     const Cost inclusive = cost_between(done.begin, end);
-    if (!stack.empty())
+    // A call is subtracted only from an enclosing call recorded in the same
+    // table: a non-execute call during an execution (a service initialized on
+    // first use, a custom audited section) stays in the executing component's
+    // event cost, so an event's costs still add up, and is also listed under
+    // its own phase.
+    if (!stack.empty() && (stack.back().phase == kExecutePhase) == execute)
     {
       stack.back().nested += inclusive;
     }
     Cost self = inclusive;
     self -= done.nested;
 
-    if (event == Gaudi::IAuditor::Execute)
+    if (execute)
     {
       recordExecute(ctx.evt(), index, self, done, end);
     }
     else
     {
-      recordLifecycle(done.phase, index, self, done.begin, end);
+      // Only calls outside event processing delimit their phase, so a late
+      // initialize does not stretch the initialize phase over the event loop.
+      const bool during_execute =
+          std::any_of(stack.begin(), stack.end(), [](const Frame &f) { return f.phase == kExecutePhase; });
+      recordLifecycle(done.phase, index, self, done.begin, end, !during_execute);
     }
   }
 
@@ -487,7 +503,7 @@ private:
   }
 
   void recordLifecycle(const std::string &phase, std::size_t index, const Cost &self, const Sample &begin,
-                       const Sample &end)
+                       const Sample &end, bool delimits_phase)
   {
     auto &costs = m_lifecycle[phase];
     if (costs.size() <= index)
@@ -495,7 +511,10 @@ private:
       costs.resize(index + 1);
     }
     accumulate(costs[index], self);
-    extendSpan(phase, begin, end);
+    if (delimits_phase)
+    {
+      extendSpan(phase, begin, end);
+    }
   }
 
   void extendSpan(const std::string &phase, const Sample &begin, const Sample &end)
