@@ -15,7 +15,8 @@ _PLUGINS = (
 )
 
 # The Gaudi auditor for k4run jobs, installed with its .components manifest
-# under gaudi-plugins/, and the options file that enables it.
+# under lib/gaudi-plugins/ or, with older Gaudi, lib/, and the options file
+# that enables it.
 _AUDITOR_LIBRARY = "libk4BenchAuditor.so*"
 _AUDITOR_OPTIONS = "k4BenchAuditorOptions.py"
 
@@ -71,14 +72,21 @@ def find_auditor_dir() -> Path:
     """Return the directory holding the k4BenchAuditor Gaudi plugin.
 
     Gaudi's plugin service finds a component through the ``.components``
-    manifest next to its library, so the directory must hold both.
+    manifest next to its library, so the directory must hold both. Gaudi
+    installs plugins into ``lib/gaudi-plugins`` or, in older releases, ``lib``,
+    where the DDG4 plugins' manifests also live, so the manifest must be the
+    one registering the auditor.
     """
     plugin_root = _find_plugin_root()
     for libdir in (
         plugin_root / "install" / "lib" / "gaudi-plugins",
         plugin_root / "install" / "lib64" / "gaudi-plugins",
+        plugin_root / "install" / "lib",
+        plugin_root / "install" / "lib64",
     ):
-        if any(libdir.glob(_AUDITOR_LIBRARY)) and any(libdir.glob("*.components")):
+        if any(libdir.glob(_AUDITOR_LIBRARY)) and any(
+            "k4BenchAuditor" in manifest.read_text() for manifest in libdir.glob("*.components")
+        ):
             return libdir
     raise FileNotFoundError(f"Could not locate the k4Bench auditor ({_AUDITOR_LIBRARY}).")
 
@@ -224,8 +232,12 @@ def setup_auditor_environment(
         )
         return False
 
-    existing = env.get("GAUDI_PLUGIN_PATH", "")
-    env["GAUDI_PLUGIN_PATH"] = f"{plugin_dir}:{existing}" if existing else plugin_dir
+    # On Linux Gaudi finds plugins through LD_LIBRARY_PATH, and its manifests
+    # name libraries the dynamic linker resolves there; newer releases also
+    # search GAUDI_PLUGIN_PATH.
+    for variable in ("GAUDI_PLUGIN_PATH", "LD_LIBRARY_PATH"):
+        existing = env.get(variable, "")
+        env[variable] = f"{plugin_dir}:{existing}" if existing else plugin_dir
     env["K4BENCH_COMPONENTS_JSON"] = str(components_json_path.resolve())
     env["K4BENCH_EVENT_JSON"] = str(event_json_path.resolve())
     env["K4BENCH_JOBOPTIONS"] = str(joboptions_path.resolve())

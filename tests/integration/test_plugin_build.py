@@ -21,8 +21,10 @@ from k4bench.plugin.runtime import (
     setup_auditor_environment,
 )
 
+# Every Gaudi environment puts gaudirun.py on PATH; GAUDI_PLUGIN_PATH is not
+# set by all of them.
 requires_gaudi = pytest.mark.skipif(
-    "GAUDI_PLUGIN_PATH" not in __import__("os").environ,
+    __import__("shutil").which("gaudirun.py") is None,
     reason="the k4BenchAuditor is built only in a Gaudi environment",
 )
 
@@ -48,20 +50,27 @@ def test_plugin_build_succeeds(built_plugin):
 
 
 @pytest.mark.integration
-def test_auditor_target_leaves_the_ddg4_plugins_alone():
-    """Without Gaudi the auditor target has nothing to build, whatever the
-    state of the DDG4 plugins, so their build cannot fail it."""
+def test_auditor_target_without_gaudi_fails_and_builds_nothing():
+    """Without Gaudi the auditor target says so instead of reporting itself up
+    to date, and leaves the DDG4 plugins alone, built or not."""
     import os
 
+    path = os.pathsep.join(
+        d
+        for d in os.environ.get("PATH", "").split(os.pathsep)
+        if not os.path.exists(os.path.join(d, "gaudirun.py"))
+    )
     env = {k: v for k, v in os.environ.items() if k != "GAUDI_PLUGIN_PATH"}
+    env["PATH"] = path
     result = subprocess.run(
         ["bash", str(_find_plugin_root() / "build.sh"), "auditor"],
         env=env,
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "up to date" in result.stdout
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "No Gaudi environment" in result.stderr
+    assert "Building" not in result.stdout
 
 
 @pytest.mark.integration

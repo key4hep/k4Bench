@@ -408,23 +408,43 @@ class TestSetupPluginEnvironment:
 # ---------------------------------------------------------------------------
 
 
-def _make_auditor(base: Path, libdir: str = "lib", *, manifest: bool = True) -> Path:
-    plugin_dir = base / "install" / libdir / "gaudi-plugins"
+def _make_auditor(
+    base: Path, libdir: str = "lib", *, plugindir: str = "gaudi-plugins", manifest: bool = True
+) -> Path:
+    plugin_dir = base / "install" / libdir / plugindir
     plugin_dir.mkdir(parents=True, exist_ok=True)
     (plugin_dir / "libk4BenchAuditor.so").touch()
     if manifest:
-        (plugin_dir / "k4BenchGaudiPlugins.components").touch()
+        (plugin_dir / "k4BenchGaudiPlugins.components").write_text(
+            "v2::libk4BenchAuditor.so:k4BenchAuditor\n"
+        )
     return plugin_dir
 
 
 class TestFindAuditorDir:
-    """find_auditor_dir returns the gaudi-plugins directory holding the auditor."""
+    """find_auditor_dir returns the directory holding the auditor and its manifest."""
 
     @pytest.mark.parametrize("libdir", ["lib", "lib64"])
     def test_found_under_either_libdir(self, tmp_path, libdir):
         plugin_dir = _make_auditor(tmp_path, libdir)
         with patch.object(plugin_runtime, "_find_plugin_root", return_value=tmp_path):
             assert find_auditor_dir() == plugin_dir
+
+    @pytest.mark.parametrize("libdir", ["lib", "lib64"])
+    def test_found_where_older_gaudi_installs_plugins(self, tmp_path, libdir):
+        # Older Gaudi installs plugins straight into lib, next to the DDG4 plugins.
+        _make_plugin_libs(tmp_path, "install", libdir)
+        plugin_dir = _make_auditor(tmp_path, libdir, plugindir="")
+        with patch.object(plugin_runtime, "_find_plugin_root", return_value=tmp_path):
+            assert find_auditor_dir() == plugin_dir
+
+    def test_library_beside_only_ddg4_manifests_is_rejected(self, tmp_path):
+        # The DDG4 manifests in lib do not register the auditor.
+        _make_plugin_libs(tmp_path, "install", "lib")
+        _make_auditor(tmp_path, plugindir="", manifest=False)
+        with patch.object(plugin_runtime, "_find_plugin_root", return_value=tmp_path):
+            with pytest.raises(FileNotFoundError, match="auditor"):
+                find_auditor_dir()
 
     def test_library_without_components_manifest_is_rejected(self, tmp_path):
         # Gaudi's plugin service cannot find a component without its manifest.
@@ -494,9 +514,9 @@ class TestSetupAuditorEnvironment:
             joboptions_path=tmp_path / "x_joboptions.opts",
         )
 
-    def test_sets_outputs_and_prepends_plugin_path(self, tmp_path):
+    def test_sets_outputs_and_prepends_plugin_and_library_paths(self, tmp_path):
         plugin_dir = tmp_path / "gaudi-plugins"
-        env = {"GAUDI_PLUGIN_PATH": "/stack/lib/gaudi-plugins"}
+        env = {"GAUDI_PLUGIN_PATH": "/stack/lib/gaudi-plugins", "LD_LIBRARY_PATH": "/stack/lib"}
         with (
             patch.object(plugin_runtime, "ensure_auditor_built"),
             patch.object(plugin_runtime, "find_auditor_dir", return_value=plugin_dir),
@@ -504,6 +524,8 @@ class TestSetupAuditorEnvironment:
             assert self._setup(tmp_path, env) is True
         assert env == {
             "GAUDI_PLUGIN_PATH": f"{plugin_dir}:/stack/lib/gaudi-plugins",
+            # On Linux Gaudi loads plugins through the dynamic linker.
+            "LD_LIBRARY_PATH": f"{plugin_dir}:/stack/lib",
             "K4BENCH_COMPONENTS_JSON": str((tmp_path / "x_components.json").resolve()),
             "K4BENCH_EVENT_JSON": str((tmp_path / "x_events.json").resolve()),
             "K4BENCH_JOBOPTIONS": str((tmp_path / "x_joboptions.opts").resolve()),
@@ -518,6 +540,7 @@ class TestSetupAuditorEnvironment:
         ):
             self._setup(tmp_path, env)
         assert env["GAUDI_PLUGIN_PATH"] == str(plugin_dir)
+        assert env["LD_LIBRARY_PATH"] == str(plugin_dir)
 
     @pytest.mark.parametrize(
         "error", [FileNotFoundError("no auditor"), RuntimeError("build failed")]

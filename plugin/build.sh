@@ -59,13 +59,24 @@ if [ "${TARGET}" != auditor ]; then
   needs_build "${LIB_REGION}" "${SCRIPT_DIR}/k4BenchRegionTimingAction.cpp" "${SCRIPT_DIR}/CMakeLists.txt" && STALE_DDG4=true
 fi
 
-# GAUDI_PLUGIN_PATH is set by every Gaudi environment; without Gaudi the
-# auditor is not built, so it cannot be stale either.
+# Every Gaudi environment puts gaudirun.py on PATH; GAUDI_PLUGIN_PATH is set by
+# some only (on Linux, Gaudi finds plugins through LD_LIBRARY_PATH). Without
+# Gaudi the auditor cannot be built: the default target skips it, while the
+# auditor target fails, so its caller learns why there is no auditor.
 STALE_AUDITOR=false
-if [ "${TARGET}" != ddg4 ] && [ -n "${GAUDI_PLUGIN_PATH:-}" ]; then
-  LIB_AUDITOR="$(installed 'lib*/gaudi-plugins/libk4BenchAuditor.so')"
-  needs_build "${LIB_AUDITOR}" "${SCRIPT_DIR}/auditor/k4BenchAuditor.cpp" "${PROC_STATS}" \
-    "${SCRIPT_DIR}/auditor/CMakeLists.txt" && STALE_AUDITOR=true
+if [ "${TARGET}" != ddg4 ]; then
+  if [ -z "${GAUDI_PLUGIN_PATH:-}" ] && ! command -v gaudirun.py > /dev/null; then
+    if [ "${TARGET}" = auditor ]; then
+      echo "❌ No Gaudi environment (gaudirun.py is not on PATH): cannot build the k4BenchAuditor." >&2
+      exit 1
+    fi
+  else
+    # Gaudi installs plugins into lib/gaudi-plugins or, in older releases, lib.
+    LIB_AUDITOR="$(installed 'lib*/gaudi-plugins/libk4BenchAuditor.so')"
+    [ -f "${LIB_AUDITOR}" ] || LIB_AUDITOR="$(installed 'lib*/libk4BenchAuditor.so')"
+    needs_build "${LIB_AUDITOR}" "${SCRIPT_DIR}/auditor/k4BenchAuditor.cpp" "${PROC_STATS}" \
+      "${SCRIPT_DIR}/auditor/CMakeLists.txt" && STALE_AUDITOR=true
+  fi
 fi
 
 if [ "${STALE_DDG4}" = false ] && [ "${STALE_AUDITOR}" = false ]; then
@@ -98,7 +109,8 @@ if [ "${STALE_AUDITOR}" = true ]; then
 fi
 
 echo "✅ k4Bench plugins built:"
-for lib in 'lib*/libk4BenchTimingAction.so' 'lib*/libk4BenchRegionTimingAction.so' 'lib*/gaudi-plugins/libk4BenchAuditor.so'; do
+for lib in 'lib*/libk4BenchTimingAction.so' 'lib*/libk4BenchRegionTimingAction.so' \
+    'lib*/gaudi-plugins/libk4BenchAuditor.so' 'lib*/libk4BenchAuditor.so'; do
   path="$(installed "${lib}")"
   [ -f "${path}" ] && echo "    - ${path}"
 done
