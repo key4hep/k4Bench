@@ -306,6 +306,16 @@ def shrink_in_place():
 
 in_place, in_place_peak = shrink_in_place()
 
+# Grown, a block mapped on its own (64 MiB, above glibc's largest mmap
+# threshold) is moved by mremap and never held at both sizes either.
+def grow_mapped():
+    block = process.malloc(64 << 20)
+    start = counters.peak_live_bytes = live()
+    process.free(process.realloc(block, 128 << 20))
+    return counters.peak_live_bytes - start
+
+mapped_peak = grow_mapped()
+
 # A window like the auditor's around one call: 1 MiB held at once, then freed,
 # then a small block.
 start = counters.peak_live_bytes = live()
@@ -320,7 +330,8 @@ counters.paused = True
 _, paused = counted(lambda: process.free(process.malloc(1 << 20)))
 print(json.dumps({"allocated": allocated, "freed": freed, "headers": headers,
                   "balance": balance, "in_place": in_place, "in_place_peak": in_place_peak,
-                  "peak": peak, "kept": kept, "largest": largest, "paused": paused}))
+                  "mapped_peak": mapped_peak, "peak": peak, "kept": kept, "largest": largest,
+                  "paused": paused}))
 """
 
 
@@ -356,6 +367,7 @@ def test_alloc_counter_counts_the_calling_threads_heap_blocks(built_plugin):
     assert deltas["balance"] == 0
     assert deltas["in_place"]
     assert deltas["in_place_peak"] < 1 << 10
+    assert deltas["mapped_peak"] < 65 << 20
     assert deltas["peak"] >= 1 << 20
     assert deltas["kept"] < 1 << 20
     assert deltas["largest"] >= 1 << 20

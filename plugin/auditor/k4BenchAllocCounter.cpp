@@ -55,6 +55,13 @@ namespace
     return static_cast<const std::size_t *>(block)[-1] & ~kFlags;
   }
 
+  // Whether glibc mapped the block on its own (mmap), from the same size word.
+  bool is_mapped(const void *block) noexcept
+  {
+    constexpr std::size_t kIsMmapped = 0x2;
+    return (static_cast<const std::size_t *>(block)[-1] & kIsMmapped) != 0;
+  }
+
   [[gnu::always_inline]] inline void *counted(void *block) noexcept
   {
     if (block != nullptr && !counters.paused)
@@ -109,25 +116,27 @@ extern "C"
     return 0;
   }
 
-  // A moved block is counted as a new block allocated and then the old one
-  // freed, as both are held while realloc copies. A block resized in place
+  // A moved heap block is counted as a new block allocated and then the old
+  // one freed, as both are held while realloc copies. A block resized in place
   // never coexists with its old size, so that is freed first: counted the
-  // other way round, the peak would hold the old size twice.
+  // other way round, the peak would hold the old size twice. Nor does a block
+  // mapped on its own, which glibc moves with mremap rather than copying.
   void *realloc(void *block, std::size_t size) noexcept
   {
     const std::size_t old_size = block != nullptr ? heap_bytes(block) : 0;
+    const bool mapped = block != nullptr && is_mapped(block);
     void *resized = __libc_realloc(block, size);
     if (resized == nullptr && size != 0)
     {
       return nullptr; // failed, and the old block is untouched
     }
-    const bool in_place = resized == block;
-    if (in_place && !counters.paused)
+    const bool freed_first = resized == block || mapped;
+    if (freed_first && !counters.paused)
     {
       counters.freed_bytes += old_size;
     }
     counted(resized);
-    if (!in_place && !counters.paused)
+    if (!freed_first && !counters.paused)
     {
       counters.freed_bytes += old_size;
     }
