@@ -6,10 +6,24 @@
 # sources. Run this after sourcing the key4hep/DD4hep environment.
 #
 # Usage:
-#   source setup.sh          # sets up DD4hep environment
-#   bash plugin/build.sh     # builds the plugins
+#   source setup.sh                  # sets up DD4hep environment
+#   bash plugin/build.sh             # builds the plugins
+#   bash plugin/build.sh ddg4        # builds only the DDG4 timing actions
+#   bash plugin/build.sh auditor     # builds only the k4BenchAuditor
+#
+# A target builds only its own project, so a failing auditor build cannot take
+# the DDG4 timing actions down with it, nor the reverse.
 
 set -euo pipefail
+
+TARGET="${1:-all}"
+case "${TARGET}" in
+  all|ddg4|auditor) ;;
+  *)
+    echo "Usage: $0 [ddg4|auditor]" >&2
+    exit 2
+    ;;
+esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${SCRIPT_DIR}/build"
@@ -37,22 +51,24 @@ needs_build() {
   return 1
 }
 
-LIB_EVENT="$(installed 'lib*/libk4BenchTimingAction.so')"
-LIB_REGION="$(installed 'lib*/libk4BenchRegionTimingAction.so')"
-STALE=false
-needs_build "${LIB_EVENT}" "${SCRIPT_DIR}/k4BenchTimingAction.cpp" "${PROC_STATS}" "${SCRIPT_DIR}/CMakeLists.txt" && STALE=true
-needs_build "${LIB_REGION}" "${SCRIPT_DIR}/k4BenchRegionTimingAction.cpp" "${SCRIPT_DIR}/CMakeLists.txt" && STALE=true
+STALE_DDG4=false
+if [ "${TARGET}" != auditor ]; then
+  LIB_EVENT="$(installed 'lib*/libk4BenchTimingAction.so')"
+  LIB_REGION="$(installed 'lib*/libk4BenchRegionTimingAction.so')"
+  needs_build "${LIB_EVENT}" "${SCRIPT_DIR}/k4BenchTimingAction.cpp" "${PROC_STATS}" "${SCRIPT_DIR}/CMakeLists.txt" && STALE_DDG4=true
+  needs_build "${LIB_REGION}" "${SCRIPT_DIR}/k4BenchRegionTimingAction.cpp" "${SCRIPT_DIR}/CMakeLists.txt" && STALE_DDG4=true
+fi
 
 # GAUDI_PLUGIN_PATH is set by every Gaudi environment; without Gaudi the
 # auditor is not built, so it cannot be stale either.
-LIB_AUDITOR=""
-if [ -n "${GAUDI_PLUGIN_PATH:-}" ]; then
+STALE_AUDITOR=false
+if [ "${TARGET}" != ddg4 ] && [ -n "${GAUDI_PLUGIN_PATH:-}" ]; then
   LIB_AUDITOR="$(installed 'lib*/gaudi-plugins/libk4BenchAuditor.so')"
   needs_build "${LIB_AUDITOR}" "${SCRIPT_DIR}/auditor/k4BenchAuditor.cpp" "${PROC_STATS}" \
-    "${SCRIPT_DIR}/auditor/CMakeLists.txt" && STALE=true
+    "${SCRIPT_DIR}/auditor/CMakeLists.txt" && STALE_AUDITOR=true
 fi
 
-if [ "${STALE}" = false ]; then
+if [ "${STALE_DDG4}" = false ] && [ "${STALE_AUDITOR}" = false ]; then
   echo "✅ k4Bench plugins are up to date."
   exit 0
 fi
@@ -74,8 +90,10 @@ build_project() {
 }
 
 mkdir -p "${BUILD_DIR}"
-build_project "${SCRIPT_DIR}" "${BUILD_DIR}"
-if [ -n "${LIB_AUDITOR}" ]; then
+if [ "${STALE_DDG4}" = true ]; then
+  build_project "${SCRIPT_DIR}" "${BUILD_DIR}"
+fi
+if [ "${STALE_AUDITOR}" = true ]; then
   build_project "${SCRIPT_DIR}/auditor" "${BUILD_DIR}/auditor"
 fi
 

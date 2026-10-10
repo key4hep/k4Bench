@@ -257,8 +257,9 @@ class TestEnsurePluginBuilt:
             ) as mock_run,
         ):
             ensure_plugin_built()
+            # Only the DDG4 plugins: a failing auditor build must not disable them.
             mock_run.assert_called_once_with(
-                ["bash", str(build_sh)],
+                ["bash", str(build_sh), "ddg4"],
                 capture_output=True,
                 text=True,
             )
@@ -469,6 +470,17 @@ class TestEnsureAuditorBuilt:
         ):
             ensure_auditor_built()
         mock_run.assert_called_once()
+
+    def test_builds_only_the_auditor(self, tmp_path):
+        # A failing DDG4 build must not disable the auditor.
+        build_sh = tmp_path / "build.sh"
+        build_sh.touch()
+        with (
+            patch.object(plugin_runtime, "_find_plugin_root", return_value=tmp_path),
+            patch("subprocess.run", return_value=_mock_run(0)) as mock_run,
+        ):
+            ensure_auditor_built()
+        assert mock_run.call_args.args[0] == ["bash", str(build_sh), "auditor"]
 
 
 class TestSetupAuditorEnvironment:

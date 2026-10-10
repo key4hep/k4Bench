@@ -95,19 +95,21 @@ def ensure_plugin_built() -> None:
         return
     except FileNotFoundError:
         pass
-    _run_build_script()
+    _run_build_script("ddg4")
 
 
 def ensure_auditor_built() -> None:
-    """Build the k4Bench plugins if the auditor is missing or stale.
+    """Build the k4Bench auditor if it is missing or stale.
 
     Always runs build.sh, which rebuilds only when a library is older than its
-    sources, so an installed auditor never outlives a change to them.
+    sources, so an installed auditor never outlives a change to them. Only the
+    auditor is built, so a DDG4 plugin that fails to build does not disable it.
     """
-    _run_build_script()
+    _run_build_script("auditor")
 
 
-def _run_build_script() -> None:
+def _run_build_script(target: str) -> None:
+    """Run build.sh for one *target* (``ddg4`` or ``auditor``) only."""
     plugin_root = _find_plugin_root()
     build_script = plugin_root / "build.sh"
 
@@ -115,7 +117,7 @@ def _run_build_script() -> None:
         raise FileNotFoundError(f"Missing plugin build script: {build_script}")
 
     result = subprocess.run(
-        ["bash", str(build_script)],
+        ["bash", str(build_script), target],
         capture_output=True,
         text=True,
     )

@@ -48,6 +48,34 @@ def test_plugin_build_succeeds(built_plugin):
 
 
 @pytest.mark.integration
+def test_auditor_target_leaves_the_ddg4_plugins_alone():
+    """Without Gaudi the auditor target has nothing to build, whatever the
+    state of the DDG4 plugins, so their build cannot fail it."""
+    import os
+
+    env = {k: v for k, v in os.environ.items() if k != "GAUDI_PLUGIN_PATH"}
+    result = subprocess.run(
+        ["bash", str(_find_plugin_root() / "build.sh"), "auditor"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "up to date" in result.stdout
+
+
+@pytest.mark.integration
+def test_build_sh_refuses_an_unknown_target():
+    result = subprocess.run(
+        ["bash", str(_find_plugin_root() / "build.sh"), "everything"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "Usage" in result.stderr
+
+
+@pytest.mark.integration
 def test_plugin_library_is_found_after_build(built_plugin):
     """find_plugin_lib_dir locates libk4BenchTimingAction.so after a successful build."""
     assert built_plugin.returncode == 0, "Skipped: build already failed"
