@@ -5,7 +5,7 @@ times every audited call of each: algorithm executions per event, and the
 initialize/start/stop/finalize of algorithms and services. Every recorded cost
 is a *self* cost, what the call spent outside the audited calls nested inside
 it, so costs add up: a sequencer's own cost is its bookkeeping, and the costs of
-an event's components sum to the event's time.
+an event's components sum to the event's cost.
 
 Three metrics are recorded per call:
 
@@ -14,6 +14,13 @@ Three metrics are recorded per call:
 - ``peak_rss_increase_mb`` — how much the call raised the process's peak RSS.
   Zero for most calls once the job has warmed up; nonzero names the component
   that pushed the high-water mark, which is what a peak-memory regression needs.
+
+Nesting is tracked per thread, so the above holds for a serial job. When calls
+ran concurrently (``threads`` > 1), ``cpu_s`` still sums to the event's work,
+but the ``wall_s`` of calls that overlapped on different threads sums to more
+than the event's elapsed time (the event time is in ``_events.json``), and since
+the peak RSS is the process's, a call's ``peak_rss_increase_mb`` may include
+memory allocated by other threads meanwhile.
 
 A missing value is ``NaN``, never zero: an algorithm that did not run in an
 event (a filtered sequence) has no cost there, which is different from a cost
@@ -150,7 +157,8 @@ class ComponentTiming:
         """Per-event *metric* of each component including its descendants — a
         sequencer's cost with everything it ran. A component that did not run
         in an event stays ``NaN`` there; its descendants' missing values count
-        as zero."""
+        as zero. For ``wall_s`` in a job with ``threads`` > 1, descendants that
+        ran concurrently make this more than the elapsed time."""
         own = self.execute[metric]
         filled = own.fillna(0.0)
         out = {}

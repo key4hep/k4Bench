@@ -13,6 +13,14 @@
 // therefore add up: summed over the components of an event they give the
 // event's cost, without double counting at any depth.
 //
+// Nesting is tracked per thread. In a job that runs calls concurrently
+// ("threads" > 1 in the output), the summed CPU time is still the event's work,
+// but wall times of calls that overlapped on different threads add up to more
+// than the event's elapsed time, which is EventsOutput's event time. The peak
+// RSS is the process's, so a call is then also charged increases caused by
+// whatever ran on other threads meanwhile; only in a serial job does a nonzero
+// increase name the component that raised the high-water mark.
+//
 // Two files are written at finalize:
 //
 //   ComponentsOutput  per-component self costs per event and per lifecycle
@@ -278,9 +286,12 @@ public:
   StatusCode finalize() override
   {
     std::lock_guard lock(m_mutex);
+    // Read before the outputs are built, so the job's peak excludes the
+    // auditor's own serialisation.
+    const long peak_vmem_kb = k4bench::read_vmpeak_kb();
     describeComponents();
     writeComponents();
-    writeEvents();
+    writeEvents(peak_vmem_kb);
     return StatusCode::SUCCESS;
   }
 
@@ -423,13 +434,22 @@ private:
     return it->second;
   }
 
-  // An event opens at its first top-level call; later top-level calls of the
-  // same event (several top algorithms) extend it.
+  // An event opens at its earliest top-level call; later top-level calls of the
+  // same event (several top algorithms) extend it. Calls sample before taking
+  // the lock, so concurrent ones may arrive out of order.
   void openEvent(EventContext::ContextEvt_t number, const Sample &begin, const k4bench::RssValues &rss)
   {
-    if (m_eventRows.try_emplace(number, m_events.size()).second)
+    const auto [row, inserted] = m_eventRows.try_emplace(number, m_events.size());
+    if (inserted)
     {
       m_events.push_back(EventRecord{number, begin, std::nullopt, rss, {}, {}});
+      return;
+    }
+    EventRecord &record = m_events[row->second];
+    if (begin.wall < record.begin.wall)
+    {
+      record.begin = begin;
+      record.rss_begin = rss;
     }
   }
 
@@ -449,7 +469,7 @@ private:
     accumulate(record.costs[index], self);
     ++m_components[index].execute_calls;
 
-    if (frame.top_level_execute)
+    if (frame.top_level_execute && (!record.end || record.end->wall < end.wall))
     {
       record.end = end;
       record.rss_end = k4bench::read_rss_kb();
@@ -608,7 +628,7 @@ private:
     write(m_componentsOutput.value(), out);
   }
 
-  void writeEvents() const
+  void writeEvents(long peak_vmem_kb) const
   {
     const auto mb = [](long kb) { return kb < 0 ? Json(-1.0) : megabytes(static_cast<double>(kb) / 1024.0); };
 
@@ -632,7 +652,7 @@ private:
 
     Json out = Json::object();
     out["schema_version"] = kEventSchemaVersion;
-    out["peak_vmem_mb"] = mb(k4bench::read_vmpeak_kb());
+    out["peak_vmem_mb"] = mb(peak_vmem_kb);
     out["event_numbers"] = numbers;
     out["event_times_s"] = times;
     out["event_rss_begin_mb"] = rss_begin;
