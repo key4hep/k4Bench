@@ -283,12 +283,19 @@ class TestOptionalMetrics:
         assert not OPTIONAL_METRICS & set(timing.execute)
         assert not OPTIONAL_METRICS & set(timing.lifecycle["initialize"])
 
-    @pytest.mark.parametrize("metric", ["allocations", "instructions", "major_page_faults"])
+    @pytest.mark.parametrize("metric", ["allocations", "major_page_faults"])
     def test_inclusive_adds_descendants_self_costs(self, metric):
         timing = ComponentTiming.from_json(_with_optional_metrics(_raw()))
         execute = timing.execute[metric]
         expected = execute[["Top", "Fast", "Slow"]].fillna(0).sum(axis=1)
         assert timing.inclusive(metric)["Top"].tolist() == expected.tolist()
+
+    def test_inclusive_is_nan_where_a_descendant_ran_without_a_value(self):
+        timing = ComponentTiming.from_json(_with_optional_metrics(_raw()))
+        inclusive = timing.inclusive("instructions")
+        assert math.isnan(inclusive.loc[1, "Top"])
+        assert inclusive.loc[1, "Fast"] == 2e8
+        assert inclusive.loc[2, "Top"] == 900 + 2e8
 
     @pytest.mark.parametrize("metric", INCLUSIVE_METRICS)
     def test_inclusive_refuses_what_already_includes_nested_calls(self, metric):

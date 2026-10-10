@@ -245,17 +245,19 @@ class ComponentTiming:
     def inclusive(self, metric: str = "wall_s") -> pd.DataFrame:
         """Per-event *metric* of each component including its descendants — a
         sequencer's cost with everything it ran. A component that did not run
-        in an event stays ``NaN`` there; its descendants' missing values count
-        as zero. For ``wall_s`` in a job with ``threads`` > 1, descendants that
-        ran concurrently make this more than the elapsed time. Refused for a
-        metric that already includes nested calls (:data:`INCLUSIVE_METRICS`)."""
+        in an event stays ``NaN`` there; a descendant that did not run counts
+        as zero, but one that ran without a value (hardware counters that could
+        not be read) leaves the total ``NaN``. For ``wall_s`` in a job with
+        ``threads`` > 1, descendants that ran concurrently make this more than
+        the elapsed time. Refused for a metric that already includes nested
+        calls (:data:`INCLUSIVE_METRICS`)."""
         if metric in INCLUSIVE_METRICS:
             raise ValueError(f"{metric} already includes nested calls; read it from execute")
         own = self.execute[metric]
-        filled = own.fillna(0.0)
+        filled = own.mask(self.execute["wall_s"].isna(), 0.0)
         out = {}
         for component in own.columns:
-            total = filled[[component, *self.descendants(component)]].sum(axis=1)
+            total = filled[[component, *self.descendants(component)]].sum(axis=1, skipna=False)
             out[component] = total.where(own[component].notna())
         return pd.DataFrame(out, index=own.index)
 

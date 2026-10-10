@@ -29,6 +29,10 @@ _ALLOC_COUNTER_LIBRARY = "libk4BenchAllocCounter.so"
 # these it would silently swap the allocator being benchmarked for glibc's.
 _PRELOADED_ALLOCATORS = ("jemalloc", "tcmalloc", "mimalloc", "tbbmalloc", "hoard", "snmalloc")
 
+# Sanitizer runtimes replace the allocator too, and must come first in the
+# preload list: put after the counter, they abort the job.
+_SANITIZER_RUNTIMES = ("asan", "tsan", "msan", "lsan")
+
 
 def _find_plugin_root() -> Path:
     """Locate the k4Bench plugin source directory."""
@@ -258,7 +262,10 @@ def setup_auditor_environment(
         (
             library
             for library in existing.replace(" ", ":").split(":")
-            if any(name in Path(library).name.lower() for name in _PRELOADED_ALLOCATORS)
+            if any(
+                name in Path(library).name.lower()
+                for name in (*_PRELOADED_ALLOCATORS, *_SANITIZER_RUNTIMES)
+            )
         ),
         None,
     )

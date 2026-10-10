@@ -557,7 +557,13 @@ class TestSetupAuditorEnvironment:
         assert env["LD_PRELOAD"] == (str(counter) if existing is None else f"{counter}:{existing}")
 
     @pytest.mark.parametrize(
-        "existing", ["/opt/lib/libjemalloc.so.2", "/other/libpreloaded.so /opt/libtcmalloc.so"]
+        "existing",
+        [
+            "/opt/lib/libjemalloc.so.2",
+            "/other/libpreloaded.so /opt/libtcmalloc.so",
+            "/usr/lib64/libasan.so.8",
+            "/opt/llvm/lib/libclang_rt.tsan-x86_64.so",
+        ],
     )
     def test_a_preloaded_allocator_is_not_replaced(self, tmp_path, existing, capsys):
         plugin_dir = tmp_path / "gaudi-plugins"
