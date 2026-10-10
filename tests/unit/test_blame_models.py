@@ -4,6 +4,7 @@ verdict↔entry join that keeps ``blame.json`` decoupled from ``report.json``.""
 from __future__ import annotations
 
 import dataclasses
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +16,7 @@ from k4bench.blame.models import (
     HistoricalRef,
     RepoBlame,
     StepAssessment,
+    rank_group_key,
     ranking_coverage,
 )
 from k4bench.regression.models import Direction, MetricVerdict, Severity
@@ -494,3 +496,26 @@ def test_historical_references_never_enter_the_candidate_ledger():
         BlameReport(generated_at="g", report_night="n", entries=(entry,))
     )
     assert expected == 2 and ranked == 2 and missing == []
+
+
+def _window_verdict(base: str, onset: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        detector="ALLEGRO_o1_v03", platform="x86_64-almalinux9-gcc14.2.0-opt",
+        sample="single_e", last_accepted_run_date=base, onset_run_date=onset,
+        last_accepted_run_id="2026-07-03", onset_run_id="2026-07-05",
+    )
+
+
+def test_rank_group_key_keys_a_cross_release_window_on_its_releases_alone():
+    key = rank_group_key(_window_verdict("2026-07-03", "2026-07-04"))
+
+    assert (key.detector, key.platform, key.sample) == (
+        "ALLEGRO_o1_v03", "x86_64-almalinux9-gcc14.2.0-opt", "single_e",
+    )
+    assert key.window == ("2026-07-03", "2026-07-04", None, None)
+
+
+def test_rank_group_key_adds_the_runs_to_a_same_release_window():
+    key = rank_group_key(_window_verdict("2026-07-03", "2026-07-03"))
+
+    assert key.window == ("2026-07-03", "2026-07-03", "2026-07-03", "2026-07-05")

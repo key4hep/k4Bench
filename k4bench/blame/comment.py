@@ -107,6 +107,7 @@ from k4bench.blame.reproduce import ReproducerFacts
 from k4bench.blame.reproduce import facts_from as reproducer_facts_from
 from k4bench.blame.sweep import ScopeSweep, window_sweeps
 from k4bench.labels import compact_sample, pretty_platform
+from k4bench.layout import stack_dir
 from k4bench.regression.models import MetricVerdict, NightlyReport
 from k4bench.regression.render import (
     nightly_report_href,
@@ -2466,12 +2467,12 @@ def _reproducer_for(
     try:
         base_info = run_info_for(
             verdict.base_detector, verdict.base_platform,
-            f"key4hep-{verdict.last_accepted_run_date}", verdict.sample,
+            stack_dir(verdict.last_accepted_run_date), verdict.sample,
             verdict.last_accepted_run_id,
         )
         onset_info = run_info_for(
             verdict.onset_run_detector, verdict.onset_run_platform,
-            f"key4hep-{verdict.onset_run_date}", verdict.sample,
+            stack_dir(verdict.onset_run_date), verdict.sample,
             verdict.onset_run_id,
         )
         facts = reproducer_facts_from(row, base_info, onset_info)

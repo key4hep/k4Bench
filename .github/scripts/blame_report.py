@@ -67,6 +67,11 @@ except ValueError:
     pass
 sys.path.insert(0, str(_REPO_ROOT))
 
+# Leaf modules that import only the standard library, so these imports cannot
+# fail on a broken dependency the way the blame modules imported below could.
+from k4bench.artifacts import RUN_INFO  # noqa: E402
+from k4bench.layout import run_path, stack_dir  # noqa: E402
+
 _log = logging.getLogger(__name__)
 
 
@@ -74,11 +79,10 @@ def _local_packages(roots: list[str], platform: str, release: str) -> dict | Non
     """A release's ``k4h_packages`` from a local run tree, or ``None``.
 
     Both the CI run cache and the integration test's data tree share the EOS
-    layout ``{det}/{platform}/{stack}/{sample}/{date}/run_info.json`` with
-    ``stack == key4hep-{release}``. Every run under one release recorded the same
-    stack, so the first readable one answers the question."""
+    layout (:mod:`k4bench.layout`). Every run under one release recorded the
+    same stack, so the first readable one answers the question."""
     for root in roots:
-        pattern = f"{root}/*/{platform}/key4hep-{release}/*/*/run_info.json"
+        pattern = f"{root}/{run_path('*', platform, stack_dir(release), '*', '*')}/{RUN_INFO}"
         for path in sorted(glob.glob(pattern)):
             try:
                 packages = json.loads(Path(path).read_text()).get("k4h_packages")
@@ -102,7 +106,7 @@ def _make_packages_for_release(
             from k4bench.remote import fetch_stack_packages
             for detector in detectors_by_platform.get(platform, ()):
                 packages = fetch_stack_packages(
-                    data_url, detector, platform, f"key4hep-{release}"
+                    data_url, detector, platform, stack_dir(release)
                 )
                 if packages:
                     return packages
@@ -124,10 +128,8 @@ def _local_run_commit(
     sibling groups carrying different commits, so "any run of that night" is
     not a safe stand-in for this group's own run."""
     for root in roots:
-        path = (
-            Path(root) / detector / platform / f"key4hep-{release}" / sample
-            / run_id / "run_info.json"
-        )
+        run_dir = run_path(detector, platform, stack_dir(release), sample, run_id)
+        path = Path(root) / run_dir / RUN_INFO
         try:
             info = json.loads(path.read_text())
         except (OSError, ValueError):
@@ -151,7 +153,7 @@ def _make_k4bench_commit_for_run(roots: list[str], data_url: str | None):
         if data_url:
             from k4bench.remote import fetch_run_commit
             return fetch_run_commit(
-                data_url, detector, platform, f"key4hep-{release}", sample, run_id
+                data_url, detector, platform, stack_dir(release), sample, run_id
             )
         return None
 

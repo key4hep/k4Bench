@@ -788,6 +788,12 @@ def test_local_report_quiet_night_not_alertable(tmp_path):
     assert any(v.severity is Severity.OK for v in group.verdicts)
 
 
+def test_local_report_refuses_a_missing_data_dir(tmp_path):
+    # A mistyped --data-dir must fail, not pass as a report of zero regressions.
+    with pytest.raises(NotADirectoryError):
+        build_nightly_report_local(str(tmp_path / "missing"))
+
+
 # ── Sweep-shaped run groups ───────────────────────────────────────────────────
 #
 # These exercise the report assembly end to end over a *sweep*: several configs
