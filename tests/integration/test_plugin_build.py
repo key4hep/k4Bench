@@ -262,7 +262,7 @@ def test_auditor_measures_a_real_gaudi_job(built_plugin, tmp_path):
     assert raw_events["schema_version"] == EVENT_SCHEMA_VERSION
     events = load_event_timing(tmp_path)["nap"]
     assert events["event_number"].tolist() == [0, 1]
-    # Self costs add up to the event's time.
+    # With a single top-level call, self costs add up to the event's time.
     assert wall.fillna(0).sum(axis=1).to_numpy() == pytest.approx(
         events["event_time_s"].to_numpy(), abs=1e-3
     )

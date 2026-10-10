@@ -10,8 +10,14 @@
 // Every cost is a *self* cost: calls nest (a sequencer runs its children, the
 // event loop manager initializes the algorithms), and a call is charged only
 // what was not spent in the audited calls nested inside it. Self costs
-// therefore add up: summed over the components of an event they give the
-// event's cost, without double counting at any depth.
+// therefore add up: summed over the components of an event they give the cost
+// of its audited calls, without double counting at any depth.
+//
+// An event's time in EventsOutput runs from its first top-level call to its
+// last, so with several top-level algorithms it also covers what happens
+// between them: the framework's own work and the auditor's memory read at the
+// end of each top-level call. No component is charged for that; it is the
+// difference between the event's time and its components' summed wall time.
 //
 // Nesting is tracked per thread. In a job that runs calls concurrently
 // ("threads" > 1 in the output), the summed CPU time is still the event's work,
@@ -309,8 +315,10 @@ public:
         describeComponents();
       });
       // An event's starting memory is read before its clock starts, as in the
-      // DDG4 plugin, so the read is not part of the event's time.
-      if (startsTopLevelCall())
+      // DDG4 plugin, so the read is not part of the event's time. It is read
+      // only for the call opening the event: for a later top-level call the
+      // read would fall inside the event and be charged to no component.
+      if (startsEvent(ctx.evt()))
       {
         event_rss = k4bench::read_rss_kb();
       }
@@ -327,7 +335,7 @@ public:
     }
     if (top_level)
     {
-      openEvent(ctx.evt(), begin, event_rss.value_or(k4bench::RssValues{}));
+      openEvent(ctx.evt(), begin, event_rss);
     }
     stack.push_back(Frame{index, lowercase(event), begin, top_level});
   }
@@ -415,11 +423,11 @@ private:
     return m_epochOrigin + std::chrono::duration_cast<std::chrono::nanoseconds>(s.wall - m_steadyOrigin).count();
   }
 
-  // Whether this thread has no call in flight, so its next call is top-level.
-  bool startsTopLevelCall()
+  // Whether this thread's next call is top-level and opens event *number*.
+  bool startsEvent(EventContext::ContextEvt_t number)
   {
     std::lock_guard lock(m_mutex);
-    return m_stacks[std::this_thread::get_id()].empty();
+    return m_stacks[std::this_thread::get_id()].empty() && !m_eventRows.contains(number);
   }
 
   // -- bookkeeping (callers hold m_mutex) ------------------------------------
@@ -436,20 +444,21 @@ private:
 
   // An event opens at its earliest top-level call; later top-level calls of the
   // same event (several top algorithms) extend it. Calls sample before taking
-  // the lock, so concurrent ones may arrive out of order.
-  void openEvent(EventContext::ContextEvt_t number, const Sample &begin, const k4bench::RssValues &rss)
+  // the lock, so concurrent ones may arrive out of order; a call that found the
+  // event already open sampled after its opener and read no memory.
+  void openEvent(EventContext::ContextEvt_t number, const Sample &begin, const std::optional<k4bench::RssValues> &rss)
   {
     const auto [row, inserted] = m_eventRows.try_emplace(number, m_events.size());
     if (inserted)
     {
-      m_events.push_back(EventRecord{number, begin, std::nullopt, rss, {}, {}});
+      m_events.push_back(EventRecord{number, begin, std::nullopt, rss.value_or(k4bench::RssValues{}), {}, {}});
       return;
     }
     EventRecord &record = m_events[row->second];
-    if (begin.wall < record.begin.wall)
+    if (rss && begin.wall < record.begin.wall)
     {
       record.begin = begin;
-      record.rss_begin = rss;
+      record.rss_begin = *rss;
     }
   }
 

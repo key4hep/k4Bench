@@ -5,7 +5,10 @@ times every audited call of each: algorithm executions per event, and the
 initialize/start/stop/finalize of algorithms and services. Every recorded cost
 is a *self* cost, what the call spent outside the audited calls nested inside
 it, so costs add up: a sequencer's own cost is its bookkeeping, and the costs of
-an event's components sum to the event's cost.
+an event's components sum to the cost of its audited calls. The event time in
+``_events.json`` spans the first to the last top-level algorithm, so with
+several top-level algorithms it exceeds the components' summed ``wall_s`` by
+the time spent between them, which no component is charged for.
 
 Three metrics are recorded per call:
 
