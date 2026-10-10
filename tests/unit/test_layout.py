@@ -81,6 +81,16 @@ def test_iter_run_dirs_skips_reserved_trees_staging_dirs_and_files(tmp_path):
     assert [run.date for run in iter_run_dirs(tmp_path)] == [_RUN[4]]
 
 
+def test_iter_run_dirs_refuses_a_missing_root(tmp_path):
+    # A mistyped or unmounted store must not read as an empty one.
+    with pytest.raises(NotADirectoryError):
+        list(iter_run_dirs(tmp_path / "missing"))
+
+
+def test_iter_run_dirs_yields_nothing_for_an_empty_store(tmp_path):
+    assert list(iter_run_dirs(tmp_path)) == []
+
+
 def test_nightly_upload_writes_the_layout():
     script = (ROOT / ".github" / "scripts" / "nightly_benchmark.sh").read_text()
     path = run_path(

@@ -91,8 +91,11 @@ def iter_run_dirs(root: Path) -> Iterator[RunDir]:
 
     Reserved top-level names are skipped, and so is a hidden directory at any
     level: the download cache stages a run in a hidden sibling of its date
-    directory until it is complete.
+    directory until it is complete. A missing *root* is refused rather than
+    walked as an empty store.
     """
+    if not root.is_dir():
+        raise NotADirectoryError(f"run store root is not a directory: {root}")
     pattern = "/".join("*" * len(LEVELS))
     runs = []
     for path in root.glob(pattern):
