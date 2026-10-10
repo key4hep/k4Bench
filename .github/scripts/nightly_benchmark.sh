@@ -1,23 +1,15 @@
 #!/bin/bash
 #
 # Runs a single k4bench benchmark and uploads results to CERN EOS.
-# All configuration arrives via environment variables; the matrix in
-# .github/workflows/nightly.yml expands .github/benchmarks/*.yml into a
-# flat set of jobs (see .github/scripts/list_benchmarks.py).
+# The matrix in .github/workflows/nightly.yml expands .github/benchmarks/*.yml
+# into a flat set of jobs (see .github/scripts/list_benchmarks.py). This script
+# sources the Key4hep stack, installs k4bench, has benchmark_job.py run the job
+# and record it, and uploads the result.
 #
 # Required env vars (set by the workflow):
 #   BENCHMARK_CONFIG  — config file stem, e.g. "ALLEGRO_o1_v04"
 #   BENCHMARK_SAMPLE  — sample name, e.g. "single_e-_10GeV"
-#   XML_PATH          — detector geometry, $K4GEO-relative or absolute
-#   N_EVENTS          — positive integer
-#   DDSIM_ARGS        — verbatim ddsim flags (string, may be empty)
-#   INPUT_FILES       — space-separated HepMC paths (may be empty)
-#   STEERING_FILE     — optional ddsim --steeringFile path; $VAR expansion supported
-#   SWEEP             — "true"/"false"
-#   SWEEP_DETECTORS   — space-separated subdetector names (may be empty): partial sweep
-#   VERBOSE           — "true"/"false"
-#   INCLUDE_ONLY      — space-separated subdetector names (may be empty)
-#   EXCLUDE_ONLY      — space-separated subdetector names (may be empty)
+#   BENCHMARK_JOB     — the job's record from list_benchmarks.py, as JSON
 #   X509_USER_CERT, X509_USER_KEY — EOS service certificate paths
 #   GITHUB_RUN_ID, GITHUB_SHA, GITHUB_REPOSITORY, GITHUB_SERVER_URL
 #
@@ -53,18 +45,7 @@ echo "::endgroup::"
 
 # ── 2. Job parameters ─────────────────────────────────────────────────────────
 echo "::group::2. Job parameters"
-echo "  config       : ${BENCHMARK_CONFIG}"
-echo "  sample       : ${SAMPLE}"
-echo "  xml          : ${XML_PATH}"
-echo "  n_events     : ${N_EVENTS}"
-echo "  verbose      : ${VERBOSE}"
-echo "  sweep        : ${SWEEP}"
-echo "  sweep_dets   : ${SWEEP_DETECTORS:-<none>}"
-echo "  include_only : ${INCLUDE_ONLY:-<none>}"
-echo "  exclude_only : ${EXCLUDE_ONLY:-<none>}"
-echo "  input_files  : ${INPUT_FILES:-<none>}"
-echo "  steering_file: ${STEERING_FILE:-<none>}"
-echo "  ddsim_args   : ${DDSIM_ARGS:-<none>}"
+echo "${BENCHMARK_JOB}"
 echo "::endgroup::"
 
 # ── 3. Key4hep nightly ────────────────────────────────────────────────────────
@@ -103,6 +84,8 @@ set +u
 source "${K4H_STACK_SETUP}"
 set -u
 [[ -n "${KEY4HEP_STACK:-}" ]] || { echo "ERROR: KEY4HEP_STACK not set after sourcing Key4hep setup" >&2; exit 1; }
+# benchmark_job.py records the run under this release and platform.
+export K4H_RELEASE K4H_PLATFORM
 echo "Release : key4hep-${K4H_RELEASE}"
 echo "Platform: ${K4H_PLATFORM}"
 echo "View    : ${K4H_STACK_SETUP}"
@@ -133,109 +116,22 @@ pip install --no-build-isolation --quiet "."
 bash plugin/build.sh
 echo "::endgroup::"
 
-# ── 5. Resolve inputs (geometry + optional ddsim steering file) ───────────────
-echo "::group::5. Resolve inputs"
-# The XML path may reference Key4hep env vars (e.g. $DD4hepINSTALL, used by
-# DD4hep's own reference/example detectors, which live outside $K4GEO) so expand
-# them here, after the Key4hep stack is sourced, before checking for an absolute
-# path.
-CONFIGURED_XML_PATH="${XML_PATH}"
-XML_PATH=$(python3 -c "import os, sys; print(os.path.expandvars(sys.argv[1]))" "${XML_PATH}")
-if [[ "${XML_PATH}" = /* ]]; then
-    DETECTOR_XML="${XML_PATH}"
-else
-    DETECTOR_XML="${K4GEO}/${XML_PATH}"
-fi
-[[ -f "${DETECTOR_XML}" ]] || { echo "ERROR: XML not found: ${DETECTOR_XML}"; exit 1; }
-DETECTOR=$(basename "${DETECTOR_XML}" .xml)
-echo "Detector : ${DETECTOR}"
-echo "XML      : ${DETECTOR_XML}"
-
-# Optional steering file. The path may reference Key4hep env vars (e.g. $FCCCONFIG)
-# so we expand it here, after the Key4hep stack is sourced. Prepended to DDSIM_ARGS
-# so a sample-level --steeringFile flag would override it if both are given.
-STEERING_PATH=""
-if [[ -n "${STEERING_FILE}" ]]; then
-    STEERING_PATH=$(python3 -c "import os, sys; print(os.path.expandvars(sys.argv[1]))" "${STEERING_FILE}")
-    [[ -f "${STEERING_PATH}" ]] || { echo "ERROR: steering file not found: ${STEERING_PATH}"; exit 1; }
-    DDSIM_ARGS="--steeringFile ${STEERING_PATH} ${DDSIM_ARGS}"
-    echo "Steering : ${STEERING_PATH}"
-    # ddsim exec()s the steering file directly, without adding its own directory
-    # to sys.path, so a steering file that does its own relative import of a
-    # sibling module (e.g. CLDConfig's cld_arc_steer.py -> `from cld_steer
-    # import *`) fails unless that directory is already importable.
-    export PYTHONPATH="$(dirname "${STEERING_PATH}"):${PYTHONPATH:-}"
-fi
-
-# k4bench has no top-level --inputFiles flag; it forwards everything in
-# --ddsim-args verbatim to ddsim. So we prepend --inputFiles into DDSIM_ARGS.
-if [[ -n "${INPUT_FILES}" ]]; then
-    # HepMC inputs can't be streamed over xrootd (ROOT mis-parses the text as a
-    # ROOT file → SIGSEGV), so fetch to a local path first.
-    LOCAL_INPUT="/tmp/$(basename "${INPUT_FILES}")"
-    xrdcp --force "${INPUT_FILES}" "${LOCAL_INPUT}"
-    DDSIM_ARGS="--inputFiles ${LOCAL_INPUT} ${DDSIM_ARGS}"
-    echo "Inputs   : ${LOCAL_INPUT}"
-fi
-echo "::endgroup::"
-
-# Capture the date once here so run_info.json and the EOS upload path always agree,
-# even if the benchmark runs across a midnight boundary.
-DATE=$(date +%Y-%m-%d)
-
-# ── 6. Collect machine info (start snapshot, before benchmark) ────────────────
-echo "::group::6. Collect machine info (start)"
-python3 .github/scripts/machine_info.py start "logs/${DETECTOR}"
-echo "::endgroup::"
-
-# ── 7. Run benchmark ──────────────────────────────────────────────────────────
-echo "::group::7. Run benchmark"
-CMD=(k4bench
-    --xml        "${DETECTOR_XML}"
-    --events     "${N_EVENTS}"
-    --output-dir "logs/${DETECTOR}"
-)
-[[ "${SWEEP}"   == "true" ]] && CMD+=(--sweep)
-[[ -n "${SWEEP_DETECTORS}" ]] && read -ra _arr <<< "${SWEEP_DETECTORS}" && CMD+=(--sweep-detectors "${_arr[@]}")
-[[ -n "${INCLUDE_ONLY}" ]]   && read -ra _arr <<< "${INCLUDE_ONLY}" && CMD+=(--include-only "${_arr[@]}")
-[[ -n "${EXCLUDE_ONLY}" ]]   && read -ra _arr <<< "${EXCLUDE_ONLY}" && CMD+=(--exclude-only "${_arr[@]}")
-[[ "${VERBOSE}" == "true" ]] && CMD+=(--verbose)
-[[ -n "${DDSIM_ARGS}" ]]     && CMD+=(--ddsim-args="${DDSIM_ARGS}")
-
-# Don't let a single failed sweep config abort the script: a sweep may produce
-# valid results for 27/28 configs and fail one. We still want to upload what
-# succeeded, then surface the failure via the final exit code so the job goes red.
-echo "$ ${RUNNER_CPU_SET:+taskset -c $RUNNER_CPU_SET }${CMD[*]}"
+# ── 5.–8. Run the benchmark job ──────────────────────────────────────────────
+# Resolves the job's inputs, snapshots the machine around the benchmark, runs
+# k4bench and writes run_info.json (see benchmark_job.py). Its exit code is the
+# benchmark's: a sweep may produce valid results for 27/28 configs and fail one,
+# so a failure is surfaced only after what succeeded is uploaded. A job that
+# could not start records no run_info.json and has nothing to upload.
+OUTPUT_DIR="logs/benchmark"
 set +e
-${RUNNER_CPU_SET:+taskset -c "$RUNNER_CPU_SET"} "${CMD[@]}"
+python3 .github/scripts/benchmark_job.py "${OUTPUT_DIR}"
 BENCH_RC=$?
 set -e
-echo "::endgroup::"
-
-# ── 8. Write run_info.json + finalise machine_info.json ───────────────────────
-echo "::group::8. Write run metadata"
-python3 .github/scripts/run_info.py "logs/${DETECTOR}" \
-    --detector="${DETECTOR}" \
-    --sample="${SAMPLE}" \
-    --date="${DATE}" \
-    --platform="${K4H_PLATFORM}" \
-    --release="${K4H_RELEASE}" \
-    --n-events="${N_EVENTS}" \
-    --sweep="${SWEEP}" \
-    --detector-xml="${DETECTOR_XML}" \
-    --xml-path="${XML_PATH}" \
-    --configured-xml-path="${CONFIGURED_XML_PATH}" \
-    --ddsim-args="${DDSIM_ARGS}" \
-    --input-files="${INPUT_FILES}" \
-    --steering-file="${STEERING_FILE}" \
-    --resolved-steering-file="${STEERING_PATH}" \
-    --sweep-detectors="${SWEEP_DETECTORS}" \
-    --include-only="${INCLUDE_ONLY}" \
-    --exclude-only="${EXCLUDE_ONLY}"
-
-# machine_info.json (merge start snapshot + end-of-run dynamic fields)
-python3 .github/scripts/machine_info.py finalize "logs/${DETECTOR}"
-echo "::endgroup::"
+[[ -f "${OUTPUT_DIR}/run_info.json" ]] || { echo "ERROR: the benchmark job did not start; nothing to upload" >&2; exit 1; }
+# The run's detector and date, as recorded: the EOS path must agree with them.
+read -r DETECTOR DATE <<< "$(python3 -c \
+    'import json, sys; info = json.load(open(sys.argv[1])); print(info["detector"], info["date"])' \
+    "${OUTPUT_DIR}/run_info.json")"
 
 # ── 9. Upload to EOS ──────────────────────────────────────────────────────────
 echo "::group::9. Upload to EOS"
@@ -260,7 +156,7 @@ command -v xrdcp >/dev/null || { echo "ERROR: xrdcp not found" >&2; exit 1; }
 
 xrdfs "root://${EOS_FQDN}" mkdir -p "${EOS_RUN}"
 
-for f in "logs/${DETECTOR}"/*; do
+for f in "${OUTPUT_DIR}"/*; do
     echo "  → $(basename "${f}")"
     xrdcp --force "${f}" "${EOS_URL}/$(basename "${f}")" \
         || { echo "ERROR: Failed to upload ${f}" >&2; exit 1; }

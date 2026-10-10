@@ -69,8 +69,8 @@ def _night(text: str) -> str:
 def tonight() -> str:
     """The night a run started now would be filed under.
 
-    The same clock and format as ``date +%Y-%m-%d`` in
-    ``nightly_benchmark.sh`` — both run in the same container image — so an
+    The same clock and format as the run date ``benchmark_job.py`` records
+    (``time.strftime("%Y-%m-%d")``) — both run in the same container image — so an
     outage night is labelled by the convention the run directories follow.
     """
     return datetime.now().strftime("%Y-%m-%d")

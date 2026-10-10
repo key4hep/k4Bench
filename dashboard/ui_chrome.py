@@ -572,7 +572,7 @@ DOCS_URL = "https://key4hep.github.io/k4Bench/"
 
 # ── Non-experiment ("example") detectors ────────────────────────────────────
 # Detector names (the EOS top-level directory, derived from the compact XML's
-# basename — see DETECTOR in nightly_benchmark.sh) that come from a simulation
+# basename — see Job.detector in benchmark_job.py) that come from a simulation
 # toolkit's own reference/tutorial geometry rather than a maintained FCC/Key4hep
 # experiment design. Flagged here so the sidebar can make that distinction
 # obvious instead of the name silently looking like "just another detector".
