@@ -33,12 +33,19 @@ BASE = "https://eos.example/data"
 @pytest.fixture(autouse=True)
 def _fresh_cache():
     st.cache_data.clear()
+    st.cache_resource.clear()
     yield
     st.cache_data.clear()
+    st.cache_resource.clear()
 
 
 def _timeout(what: str) -> remote.IncompleteFetch:
     return remote.IncompleteFetch(None, [f"{what}: read timed out"])
+
+
+def _nights(reports) -> dict[str, str]:
+    """The fetched reports as ``{date: the night each parsed report names}``."""
+    return {date: report.night for date, report in reports.items()}
 
 
 def test_report_window_with_a_stalled_night_is_read_again(monkeypatch):
@@ -55,22 +62,25 @@ def test_report_window_with_a_stalled_night_is_read_again(monkeypatch):
     nights = ("2026-09-24", "2026-09-23")
 
     # The night that answered is shown; the stalled one is simply absent…
-    assert remote_cache._cached_fetch_reports(BASE, nights) == {
-        "2026-09-24": {"night": "2026-09-24"},
+    assert _nights(remote_cache._cached_fetch_reports(BASE, nights)) == {
+        "2026-09-24": "2026-09-24",
     }
-    # …and not remembered as absent: the next call asks again.
+    # …and not remembered as absent: the next call asks again, and only for it.
     stalled.clear()
     calls.clear()
-    assert remote_cache._cached_fetch_reports(BASE, nights) == {
-        "2026-09-24": {"night": "2026-09-24"},
-        "2026-09-23": {"night": "2026-09-23"},
+    assert _nights(remote_cache._cached_fetch_reports(BASE, nights)) == {
+        "2026-09-24": "2026-09-24",
+        "2026-09-23": "2026-09-23",
     }
-    assert sorted(calls) == sorted(nights)
+    assert calls == ["2026-09-23"]
 
-    # A complete window is cached as before.
+    # A complete window is cached as before, and so is every night of it on
+    # its own: a window sharing nights with it reads only its new ones.
     calls.clear()
     remote_cache._cached_fetch_reports(BASE, nights)
     assert calls == []
+    remote_cache._cached_fetch_reports(BASE, ("2026-09-25", "2026-09-24"))
+    assert calls == ["2026-09-25"]
 
 
 def test_report_window_keeps_a_night_that_is_absent(monkeypatch):
@@ -78,15 +88,18 @@ def test_report_window_keeps_a_night_that_is_absent(monkeypatch):
 
     def fetch_report(base_url, date, *, strict=False):
         calls.append(date)
+        if date == "2026-09-22":
+            return {"groups": [{"detector": "CLD"}]}  # half-written: no platform
         return None if date == "2026-09-23" else {"night": date}
 
     monkeypatch.setattr(remote, "fetch_report", fetch_report)
-    nights = ("2026-09-24", "2026-09-23")
+    nights = ("2026-09-24", "2026-09-23", "2026-09-22")
     remote_cache._cached_fetch_reports(BASE, nights)
     calls.clear()
-    # A 404 or an unparseable report is an answer: cached like any other.
-    assert remote_cache._cached_fetch_reports(BASE, nights) == {
-        "2026-09-24": {"night": "2026-09-24"},
+    # A 404 or an unparseable report is an answer: cached like any other, and
+    # costing only its own night.
+    assert _nights(remote_cache._cached_fetch_reports(BASE, nights)) == {
+        "2026-09-24": "2026-09-24",
     }
     assert calls == []
 

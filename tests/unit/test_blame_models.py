@@ -124,13 +124,13 @@ def test_entry_for_joins_on_verdict_identity_and_window():
     assert report.entry_for(matching) is report.entries[0]
 
     # A different metric on the same series has no blame entry.
-    other = MetricVerdict(**{**matching.__dict__, "metric": "peak_rss_mb"})
+    other = dataclasses.replace(matching, metric="peak_rss_mb")
     assert report.entry_for(other) is None
 
     # Same identity, different window: a sidecar left over from an earlier
     # build must never attach its ranking to a regression whose window it did
     # not examine.
-    moved = MetricVerdict(**{**matching.__dict__, "onset_run_date": "2026-07-06"})
+    moved = dataclasses.replace(matching, onset_run_date="2026-07-06")
     assert report.entry_for(moved) is None
 
 

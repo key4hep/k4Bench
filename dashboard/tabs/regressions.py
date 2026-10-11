@@ -21,7 +21,6 @@ preview downloads run data, and only for the series being inspected.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 
 import requests
@@ -41,7 +40,6 @@ from k4bench.regression.render import (
     WINDOW_WATCH_TOKEN,
     _detector_badge,
     _group_title,
-    from_json,
     window_token,
 )
 from remote_cache import (
@@ -69,7 +67,6 @@ from tabs._regression_trend import (
 from tabs.stack_changes import _release, deep_link, packages_for_release
 from ui_chrome import _drop_stale_selection, seed_query_param
 
-_log = logging.getLogger(__name__)
 
 def render(
     data_url: str, cache_dir: str, detector: str, platform: str, sample: str,
@@ -210,27 +207,10 @@ def render(
 def _load_reports(
     data_url: str, nights: list[str]
 ) -> tuple[dict[str, NightlyReport], list[str]]:
-    """Fetch and parse each candidate night **independently**, returning the
-    parseable reports and the nights that could not be loaded.
-
-    The tab now loads the release's whole report history, not just the one night
-    it shows, so a single half-uploaded or schema-drifted historical report must
-    not blank every other night's — parsing per night (rather than in one
-    comprehension) contains that blast radius to the offending night."""
-    raws = _cached_fetch_reports(data_url, tuple(nights))
-    reports: dict[str, NightlyReport] = {}
-    unavailable: list[str] = []
-    for n in nights:
-        raw = raws.get(n)
-        if not raw:
-            unavailable.append(n)
-            continue
-        try:
-            reports[n] = from_json(raw)
-        except (KeyError, TypeError, ValueError, AttributeError) as exc:
-            _log.warning("regressions: skipping malformed report for %s — %s", n, exc)
-            unavailable.append(n)
-    return reports, unavailable
+    """The parseable reports of *nights*, and the nights that could not be
+    loaded."""
+    reports = _cached_fetch_reports(data_url, tuple(nights))
+    return reports, [n for n in nights if n not in reports]
 
 
 def _candidate_nights(

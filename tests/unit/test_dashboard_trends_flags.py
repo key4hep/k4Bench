@@ -30,7 +30,6 @@ from k4bench.regression.models import (  # noqa: E402
     RunGroupReport,
     Severity,
 )
-from k4bench.regression.render import to_json  # noqa: E402
 
 _DASHBOARD_DIR = Path(__file__).resolve().parents[2] / "dashboard"
 
@@ -85,7 +84,7 @@ def test_severity_lookup_scopes_and_keys(monkeypatch):
                detector="IDEA"),
     ])
     monkeypatch.setattr(tr, "_cached_fetch_reports",
-                        lambda url, ids: {"2026-05-21": to_json(report)})
+                        lambda url, ids: {"2026-05-21": report})
 
     lookup = tr._severity_lookup(
         "https://x.invalid", "CLD", "PLAT", "single_e", ("2026-05-21",)
@@ -274,7 +273,7 @@ def _reports_stub(confirmed: bool):
             _verdict("peak_rss_mb", Severity.OK),
         ]),
     ])
-    return {"2026-05-21": to_json(report)}
+    return {"2026-05-21": report}
 
 
 def _app(
@@ -427,29 +426,25 @@ def test_same_tag_rerun_flags_the_release_on_its_plotted_point():
     # same value/severity pairing ReleasePoint makes. What must not happen is a
     # marker floating off the point: it belongs at the plotted coordinates.
     reports = {
-        "2026-05-20": to_json(
-            NightlyReport(
-                generated_at="",
-                groups=[
-                    _group(
-                        "2026-05-20",
-                        [_verdict("peak_vmem_mb", Severity.CONFIRMED)],
-                        k4h_release="key4hep-2026-05-21",
-                    ),
-                ],
-            )
+        "2026-05-20": NightlyReport(
+            generated_at="",
+            groups=[
+                _group(
+                    "2026-05-20",
+                    [_verdict("peak_vmem_mb", Severity.CONFIRMED)],
+                    k4h_release="key4hep-2026-05-21",
+                ),
+            ],
         ),
-        "2026-05-21": to_json(
-            NightlyReport(
-                generated_at="",
-                groups=[
-                    _group(
-                        "2026-05-21",
-                        [_verdict("peak_vmem_mb", Severity.OK)],
-                        k4h_release="key4hep-2026-05-21",
-                    ),
-                ],
-            )
+        "2026-05-21": NightlyReport(
+            generated_at="",
+            groups=[
+                _group(
+                    "2026-05-21",
+                    [_verdict("peak_vmem_mb", Severity.OK)],
+                    k4h_release="key4hep-2026-05-21",
+                ),
+            ],
         ),
     }
     at = _run(reports, same_tag=True)

@@ -171,15 +171,14 @@ def _confirmed(**kw):
     return MetricVerdict(**base)
 
 
-def _raw_report(verdicts, night="2026-06-27"):
+def _report(verdicts, night="2026-06-27"):
     from k4bench.regression.models import NightlyReport, RunGroupReport
-    from k4bench.regression.render import to_json
     group = RunGroupReport(
         detector="CLD", platform=PLAT, sample="single_e",
         k4h_release=f"key4hep-{night}", run_date=night, run_id=night,
         verdicts=verdicts,
     )
-    return to_json(NightlyReport(generated_at="", groups=[group]))
+    return NightlyReport(generated_at="", groups=[group])
 
 
 def _blame_json(verdict, candidates) -> dict:
@@ -205,7 +204,7 @@ def _blame_json(verdict, candidates) -> dict:
 
 
 def test_regressions_in_range_filters_by_range_and_platform():
-    reports = [_raw_report([
+    reports = [_report([
         _confirmed(metric="wall_time_s"),                     # in range
         _confirmed(metric="peak_rss_mb", onset_run_date="2026-07-05"),  # onset after range
         _confirmed(metric="mean_time_s", platform="other-plat"),        # other platform
@@ -215,7 +214,7 @@ def test_regressions_in_range_filters_by_range_and_platform():
 
 
 def test_regressions_in_range_dedups_on_the_onset_run_not_its_release():
-    reports = [_raw_report([
+    reports = [_report([
         _confirmed(onset_run_id="run-A"),
         _confirmed(onset_run_id="run-A"),   # exact duplicate → collapsed
         _confirmed(onset_run_id="run-B"),   # same onset release, different run → kept
@@ -225,7 +224,7 @@ def test_regressions_in_range_dedups_on_the_onset_run_not_its_release():
 
 
 def test_regressions_in_range_orders_by_magnitude_with_unknown_last():
-    reports = [_raw_report([
+    reports = [_report([
         _confirmed(metric="mean_time_s", pct_change=0.05),
         _confirmed(metric="cpu_efficiency", pct_change=None),  # absolute-floor: no %
         _confirmed(metric="wall_time_s", pct_change=-0.30),
@@ -239,7 +238,7 @@ def test_regressions_in_range_excludes_same_release_windows():
     # A regression whose onset and baseline are the SAME release had no stack
     # change, so it is not a candidate effect of a diff and must not appear with
     # a nonsensical X → X window.
-    reports = [_raw_report([
+    reports = [_report([
         _confirmed(metric="wall_time_s", last_accepted_run_date="2026-06-25"),  # == onset
         _confirmed(metric="peak_rss_mb"),  # normal bounded window 06-24 → 06-25
     ])]
@@ -250,7 +249,7 @@ def test_regressions_in_range_excludes_same_release_windows():
 def test_regressions_in_range_excludes_a_detector_switch_within_one_release():
     # The geometry version changed between two runs of one release: a bounded
     # window for the Regressions view, but the stack still did not move.
-    reports = [_raw_report([
+    reports = [_report([
         _confirmed(metric="wall_time_s", last_accepted_run_date="2026-06-25",
                    last_accepted_detector="CLD_old"),
         _confirmed(metric="peak_rss_mb"),
@@ -262,7 +261,7 @@ def test_regressions_in_range_excludes_a_detector_switch_within_one_release():
 def test_regressions_in_range_skips_missing_reports():
     # A night whose report could not be fetched is None and must be tolerated.
     hits = stack_changes._regressions_in_range(
-        [None, _raw_report([_confirmed()])], PLAT, "2026-06-24", "2026-06-25")
+        [None, _report([_confirmed()])], PLAT, "2026-06-24", "2026-06-25")
     assert len(hits) == 1
 
 
@@ -295,7 +294,7 @@ def test_reverse_view_renders_the_regression_trend_picker():
     # A confirmed regression whose onset falls in the diffed range, with a
     # relative-% metric and an absolute-floor metric (no %). Both should list;
     # the %-less one must not show +0.0%.
-    report = _raw_report([
+    report = _report([
         _confirmed(metric="wall_time_s", pct_change=0.10,
                    last_accepted_run_date="2026-07-09", onset_run_date="2026-07-10"),
         _confirmed(metric="cpu_efficiency", metric_family="cpu_efficiency_pp",
@@ -338,7 +337,7 @@ def test_selected_regression_shows_its_ai_ranked_prs():
         score=84.0, description="touches the geometry path used by this job",
         ranked=True,
     )
-    report = _raw_report([verdict], night="2026-07-10")
+    report = _report([verdict], night="2026-07-10")
     at = _run(
         from_release="2026-07-09", to_release="2026-07-10",
         report_dates=("2026-07-10",),
@@ -356,7 +355,7 @@ def test_reverse_view_renders_even_when_stack_provenance_is_missing():
     # Provenance for the two releases has aged off CVMFS (packages empty), so the
     # package diff cannot be built — but the trend picker comes from the reports
     # and must still show, alongside the "cannot be diffed" warning.
-    report = _raw_report([_confirmed(
+    report = _report([_confirmed(
         last_accepted_run_date="2026-07-09", onset_run_date="2026-07-10")])
     at = _run(stack_names=["key4hep-2026-07-10", "key4hep-2026-07-09"], packages={},
               from_release="2026-07-09", to_release="2026-07-10",
@@ -372,7 +371,7 @@ def test_reverse_view_renders_even_when_stack_provenance_is_missing():
 
 
 def test_identical_consecutive_stacks_rule_out_an_upstream_boundary_change():
-    report = _raw_report([_confirmed(
+    report = _report([_confirmed(
         last_accepted_run_date="2026-07-08", onset_run_date="2026-07-09",
     )], night="2026-07-09")
     at = _run(
@@ -393,7 +392,7 @@ def test_identical_cumulative_endpoints_do_not_hide_intermediate_moves():
         "key4hep-2026-07-09": {"k4geo": _pkg("c" * 40)},
         "key4hep-2026-07-10": {"k4geo": _pkg("a" * 40)},
     }
-    report = _raw_report([_confirmed(
+    report = _report([_confirmed(
         last_accepted_run_date="2026-07-08", onset_run_date="2026-07-09",
     )], night="2026-07-09")
     at = _run(
@@ -413,7 +412,7 @@ def test_multi_release_range_shows_each_regressions_own_window_without_extra_war
     # A multi-release diff where a regression's window is a sub-range of it —
     # the per-row window is what stops the cumulative diff being misread as
     # one night's change.
-    report = _raw_report([_confirmed(
+    report = _report([_confirmed(
         last_accepted_run_date="2026-07-04", onset_run_date="2026-07-05")])  # inside 07-01..07-10
     at = _run(
         stack_names=["key4hep-2026-07-10", "key4hep-2026-07-05", "key4hep-2026-07-01"],
@@ -432,7 +431,7 @@ def test_multi_release_range_shows_each_regressions_own_window_without_extra_war
 
 
 def test_focus_action_narrows_the_package_diff_to_the_blame_window():
-    report = _raw_report([_confirmed(
+    report = _report([_confirmed(
         run_id="2026-07-10", run_date="2026-07-10",
         first_confirmed_run_id="2026-07-10",
         last_accepted_run_date="2026-07-09", onset_run_date="2026-07-10",
@@ -462,7 +461,7 @@ def test_neighbouring_releases_never_trigger_the_cumulative_warning():
     # "cumulative". The trigger is the selected range spanning >1 release, not
     # any single regression's window. (The Blame window column itself is always
     # shown — it is the per-regression truth either way.)
-    report = _raw_report([_confirmed(
+    report = _report([_confirmed(
         last_accepted_run_date="2026-07-05",  # older than the selected base (07-09)
         onset_run_date="2026-07-10")])
     at = _run(packages={}, from_release="2026-07-09", to_release="2026-07-10",
@@ -476,7 +475,7 @@ def test_neighbouring_releases_never_trigger_the_cumulative_warning():
 def test_reverse_view_says_so_when_no_regression_has_onset_in_range():
     at = _run(from_release="2026-07-09", to_release="2026-07-10",
               report_dates=("2026-07-10",),
-              reports_map={"2026-07-10": _raw_report([
+              reports_map={"2026-07-10": _report([
                   _confirmed(onset_run_date="2026-05-01")])})  # onset far before range
     assert any("No confirmed regression" in m.value for m in at.info)
 
@@ -811,7 +810,7 @@ def test_section_order_is_independent_of_data_requirements(monkeypatch):
 # ── the scoped reverse view ───────────────────────────────────────────────────
 
 def test_regressions_in_range_scopes_by_detector_and_sample():
-    reports = [_raw_report([
+    reports = [_report([
         _confirmed(metric="wall_time_s"),
         _confirmed(detector="IDEA", metric="wall_time_s", onset_run_id="run-i"),
         _confirmed(sample="other", metric="peak_rss_mb", onset_run_id="run-s"),
@@ -824,7 +823,7 @@ def test_regressions_in_range_scopes_by_detector_and_sample():
 
 
 def test_reverse_view_scopes_to_the_sidebar_and_widens_on_toggle():
-    report = _raw_report([
+    report = _report([
         _confirmed(metric="wall_time_s", pct_change=0.10,
                    last_accepted_run_date="2026-07-09", onset_run_date="2026-07-10"),
         _confirmed(detector="IDEA", sample="p8_ee_Zbb_ecm91", metric="peak_rss_mb",
@@ -879,7 +878,7 @@ def test_the_widened_scope_is_reported_only_while_the_reverse_view_renders():
     # view that widened is on screen. The toggle's state outlives it — it is
     # remembered for the range it was set on — so a range the tab refuses to
     # compare must report no override at all rather than the remembered one.
-    report = _raw_report([
+    report = _report([
         _confirmed(metric="wall_time_s", pct_change=0.10,
                    last_accepted_run_date="2026-07-09",
                    onset_run_date="2026-07-10"),
@@ -911,7 +910,7 @@ def test_a_platform_with_nothing_to_compare_reports_no_scope_override():
 
 
 def test_reg_all_query_navigation_overrides_existing_toggle_session_state():
-    report = _raw_report([
+    report = _report([
         _confirmed(metric="wall_time_s", pct_change=0.10,
                    last_accepted_run_date="2026-07-09",
                    onset_run_date="2026-07-10"),
@@ -941,7 +940,7 @@ def test_reg_all_query_navigation_overrides_existing_toggle_session_state():
 
 
 def test_duplicate_picker_labels_restore_the_exact_onset_run():
-    report = _raw_report([
+    report = _report([
         _confirmed(onset_run_id="run-A",
                    last_accepted_run_date="2026-07-09",
                    onset_run_date="2026-07-10"),
@@ -966,7 +965,7 @@ def test_duplicate_picker_labels_restore_the_exact_onset_run():
 
 
 def test_region_picker_labels_and_deep_link_preserve_region_identity():
-    report = _raw_report([
+    report = _report([
         _confirmed(sub_detector="VertexBarrel", onset_run_id="run-vertex",
                    last_accepted_run_date="2026-07-09",
                    onset_run_date="2026-07-10"),
@@ -1001,7 +1000,7 @@ def test_requested_regression_below_picker_cap_remains_selectable():
         )
         for i in range(31)
     ]
-    report = _raw_report(verdicts)
+    report = _report(verdicts)
     at = _run(
         from_release="2026-07-09", to_release="2026-07-10",
         report_dates=("2026-07-10",), reports_map={"2026-07-10": report},
@@ -1253,7 +1252,7 @@ def test_hidden_marker_note_names_the_actual_reason():
 
 
 def test_scoped_miss_with_hits_elsewhere_points_at_the_toggle():
-    report = _raw_report([
+    report = _report([
         _confirmed(detector="IDEA", metric="wall_time_s", pct_change=0.10,
                    last_accepted_run_date="2026-07-09", onset_run_date="2026-07-10"),
     ])
@@ -1269,7 +1268,7 @@ def test_scoped_miss_with_hits_elsewhere_points_at_the_toggle():
 def test_cpu_and_memory_regressions_are_independent_trend_options():
     # The old custom CPU×memory plane is gone. Each confirmed metric uses the
     # same one-dimensional evidence window as the Regressions tab.
-    report = _raw_report([
+    report = _report([
         _confirmed(metric="wall_time_s", pct_change=0.10,
                    last_accepted_run_date="2026-07-09", onset_run_date="2026-07-10"),
         _confirmed(metric="cpu_efficiency", metric_family="cpu_efficiency_pp",

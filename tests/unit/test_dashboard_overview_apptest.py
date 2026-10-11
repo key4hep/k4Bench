@@ -114,8 +114,9 @@ def _app(dashboard_dir, dates, reports, window) -> None:
     from tabs import detectors_overview as ov
 
     ov._cached_list_report_dates = lambda url: dates
+    from k4bench.regression.render import from_json
     ov._cached_fetch_reports = lambda url, nights: {
-        n: reports[n] for n in nights if n in reports
+        n: from_json(reports[n]) for n in nights if n in reports
     }
     # No blame sidecar: the Nightly Report view's mail then renders unranked,
     # which is what most nights actually look like.
@@ -297,8 +298,9 @@ def _status_scope_app(dashboard_dir, dates, scenarios, window) -> None:
 
     reports = scenarios[_st.session_state.get("_scenario", 0)]
     ov._cached_list_report_dates = lambda url: dates
+    from k4bench.regression.render import from_json
     ov._cached_fetch_reports = lambda url, nights: {
-        n: reports[n] for n in nights if n in reports
+        n: from_json(reports[n]) for n in nights if n in reports
     }
     ov._nightly_email._cached_fetch_blame = lambda url, night: None
     ov.render(
@@ -424,8 +426,9 @@ def _status_sample_app(dashboard_dir, dates, reports, window) -> None:
     from tabs import detectors_overview as ov
 
     ov._cached_list_report_dates = lambda url: dates
+    from k4bench.regression.render import from_json
     ov._cached_fetch_reports = lambda url, nights: {
-        n: reports[n] for n in nights if n in reports
+        n: from_json(reports[n]) for n in nights if n in reports
     }
     ov._nightly_email._cached_fetch_blame = lambda url, night: None
     ov.render("https://example.invalid", "https://dash.invalid", "PLAT",
@@ -1000,8 +1003,9 @@ def test_email_view_renders_when_the_scope_has_no_benchmarks():
         from tabs import detectors_overview as ov
 
         ov._cached_list_report_dates = lambda url: dates
+        from k4bench.regression.render import from_json
         ov._cached_fetch_reports = lambda url, nights: {
-            n: reports[n] for n in nights if n in reports
+            n: from_json(reports[n]) for n in nights if n in reports
         }
         ov._nightly_email._cached_fetch_blame = lambda url, night: None
         ov.render(
@@ -1023,16 +1027,12 @@ def test_email_view_renders_when_the_scope_has_no_benchmarks():
     assert "Needs attention" in _srcdoc(at)
 
 
-#: A report whose group is missing the ``detector`` key — the shape a
-#: half-uploaded or schema-drifted report takes, and what ``from_json`` raises on.
-_UNPARSEABLE = {"groups": [{"platform": "PLAT", "sample": "single_e_10GeV"}]}
-
-
-def test_malformed_historical_report_does_not_blank_the_tab():
-    # Every view here spans many nights, so one half-uploaded or schema-drifted
-    # report must cost its own night and not the whole tab.
+def test_unloadable_historical_report_does_not_blank_the_tab():
+    # Every view here spans many nights, so one report that could not be
+    # loaded (a half-uploaded or schema-drifted one, see remote_cache) must
+    # cost its own night and not the whole tab.
     reports = dict(REPORTS)
-    reports["2026-07-10"] = _UNPARSEABLE
+    del reports["2026-07-10"]
     at = AppTest.from_function(
         _app, args=(str(_DASHBOARD_DIR), DATES, reports, _WINDOW),
         default_timeout=30,
@@ -1046,9 +1046,9 @@ def test_malformed_historical_report_does_not_blank_the_tab():
     assert [o.split()[-1] for o in offered] == ["2026-07-11", "2026-07-09"]
 
 
-def test_malformed_latest_report_is_reported_not_raised():
+def test_unloadable_latest_report_is_reported_not_raised():
     reports = dict(REPORTS)
-    reports["2026-07-11"] = _UNPARSEABLE
+    del reports["2026-07-11"]
     at = AppTest.from_function(
         _app, args=(str(_DASHBOARD_DIR), DATES, reports, _WINDOW),
         default_timeout=30,

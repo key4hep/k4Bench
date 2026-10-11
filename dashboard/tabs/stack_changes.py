@@ -26,10 +26,9 @@ import streamlit as st
 
 from k4bench.blame.models import BlameReport, BlameSchemaError
 from k4bench.provenance.diff import ADDED, CHANGED, REMOVED, diff_packages, unchanged_packages
-from k4bench.regression.models import MetricVerdict
+from k4bench.regression.models import MetricVerdict, NightlyReport
 from k4bench.labels import pretty_release, pretty_sample
 from k4bench.layout import stack_dir
-from k4bench.regression.render import from_json
 from sections import STACK_CHANGES_PLATFORM_WIDE, SectionScope
 from remote_cache import (
     _cached_fetch_blame,
@@ -424,7 +423,7 @@ def _regressions_in_range(
     reports, platform: str, older_release: str, newer_release: str,
     *, detector: str | None = None, sample: str | None = None,
 ) -> list:
-    """Confirmed regressions across *reports* (raw report dicts) whose onset
+    """Confirmed regressions across *reports* (parsed reports) whose onset
     falls in ``(older_release, newer_release]``, deduped per distinct onset
     *run* and sorted worst-first with unknown magnitude last. *detector* and
     *sample* narrow the selection to one sidebar scope; ``None`` keeps the
@@ -438,10 +437,10 @@ def _regressions_in_range(
     re-anchor).
     """
     hits, seen = [], set()
-    for raw in reports:
-        if not raw:
+    for report in reports:
+        if not report:
             continue
-        for v in from_json(raw).regressions:
+        for v in report.regressions:
             if v.platform != platform or not _blame.onset_in_range(v, older_release, newer_release):
                 continue
             if detector is not None and v.detector != detector:
@@ -467,8 +466,8 @@ def _regressions_in_range(
 
 def _reports_since(
     data_url: str, dates: list[str], base_release: str,
-) -> list[dict]:
-    """Batch-fetch parseable report payloads at/after *base_release*."""
+) -> list[NightlyReport]:
+    """Batch-fetch the parseable reports at/after *base_release*."""
     report_dates = tuple(date for date in dates if date >= base_release)
     report_map = _cached_fetch_reports(data_url, report_dates)
     return [report_map[date] for date in report_dates if date in report_map]

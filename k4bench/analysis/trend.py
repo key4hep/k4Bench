@@ -309,12 +309,13 @@ def build_region_timing_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
                 df_attr = df_attr[df_attr.index != 0]
                 if df_attr.empty:
                     continue
-                for detector in df_attr.columns:
-                    vals = df_attr[detector].dropna().to_numpy()
-                    if len(vals) == 0:
+                stats = zip(
+                    df_attr.columns, df_attr.count(), df_attr.median(),
+                    df_attr.mean(), df_attr.std(),
+                )
+                for detector, n, median, mean, std in stats:
+                    if not n:
                         continue
-                    s = pd.Series(vals)
-                    n = len(vals)
                     rows.append({
                         "run_id":           run_dir.name,
                         "run_date":         meta["run_date"],
@@ -323,10 +324,10 @@ def build_region_timing_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
                         "label":            label,
                         "attribution":      attribution,
                         "detector":         detector,
-                        "n_events":         n,
-                        "median_time_s":    float(s.median()),
-                        "mean_time_s":      float(s.mean()),
-                        "std_time_s":       float(s.std()) if n > 1 else 0.0,
+                        "n_events":         int(n),
+                        "median_time_s":    float(median),
+                        "mean_time_s":      float(mean),
+                        "std_time_s":       float(std) if n > 1 else 0.0,
                     })
 
     if not rows:

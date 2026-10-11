@@ -8,7 +8,6 @@ from plotly.subplots import make_subplots
 from k4bench.analysis.loader import failed_config_mask, with_cpu_efficiency
 from k4bench.analysis.plots._theme import _TEMPLATE
 from k4bench.metrics import metric_title
-from k4bench.regression.render import from_json
 from remote_cache import _cached_fetch_reports
 from tabs._regression_flags import SEVERITY_RANK, add_severity_markers, render_flag_pills
 from tabs._reliability import resolve_reliability_filter
@@ -83,8 +82,7 @@ def _severity_lookup(
         return {}
     reports = _cached_fetch_reports(data_url, run_ids)
     lookup: dict[tuple[str, str, str], str] = {}
-    for raw in reports.values():
-        report = from_json(raw)
+    for report in reports.values():
         for g in report.groups:
             if (g.detector, g.platform, g.sample) != (detector, platform, sample):
                 continue
