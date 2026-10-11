@@ -27,10 +27,13 @@ format, and instead of the regions JSON:
 
 ```text
 ├── <label>_components.json  # per-event, per-component (algorithm/service) time, instructions, memory and allocations (auditor only)
-└── <label>_joboptions.opts  # the fully resolved job options, as JobOptionsSvc dumps them
+├── <label>_joboptions.opts  # the fully resolved job options, as JobOptionsSvc dumps them
+└── <label>_warm-up.log      # the log of the unmeasured warm-up, only when it failed
 ```
 
-Its labels are `baseline` and `variant_<name>` for each variant. A k4run
+Its labels are `baseline` and `variant_<name>` for each variant. A
+`<label>_warm-up.log` marks a run whose warm-up failed, so its measurement may
+include fetching the software from CVMFS. A k4run
 `output_size_mb` is the size of every file the job created in its working
 directory.
 
@@ -357,7 +360,7 @@ every browse dimension in the path so discovery is just directory listing:
 _k4run/{detector}/{platform}/key4hep-{release}/{sample}/{YYYY-MM-DD}/
     run_info.json  machine_info.json
     {config}_results.csv  {config}_events.json  {config}_components.json
-    {config}_joboptions.opts  {config}.log
+    {config}_joboptions.opts  {config}.log  [{config}_warm-up.log]
 _inputs/{detector}/
     frozen inputs of k4run benchmarks, each with its provenance and producing script
 _reports/{YYYY-MM-DD}/

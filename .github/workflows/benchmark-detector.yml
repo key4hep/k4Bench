@@ -102,10 +102,12 @@ jobs:
                              -e GITHUB_STEP_SUMMARY=/tmp/step_summary)
           fi
           docker pull "${{ env.CONTAINER_IMAGE }}"
+          # PERFMON lets the k4run auditor count instructions and cycles
           docker run --rm --init \
             "${summary_mount[@]}" \
             --device /dev/fuse \
             --cap-add SYS_ADMIN \
+            --cap-add PERFMON \
             --security-opt label=disable \
             --volume /cvmfs:/cvmfs:shared \
             --volume "${{ github.workspace }}":/workspace:Z \

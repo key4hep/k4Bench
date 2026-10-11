@@ -12,6 +12,7 @@ configuration label, one file per artifact kind::
     {label}_components.json     k4run only
     {label}_joboptions.opts     k4run only
     {label}.log
+    {label}_warm-up.log         k4run only, when the warm-up failed
 
 These names are part of the on-disk data contract: the benchmark writes them,
 and the loaders, the regression report, the dashboard and the blame tooling
@@ -37,6 +38,9 @@ COMPONENTS_SUFFIX = "_components.json"
 #: The resolved Gaudi job options, as JobOptionsSvc dumps them.
 JOBOPTIONS_SUFFIX = "_joboptions.opts"
 LOG_SUFFIX = ".log"
+#: The log of a k4run warm-up that failed, so the measured run may have found
+#: a cold cache.
+WARM_UP_LOG_SUFFIX = "_warm-up.log"
 
 
 def label_path(run_dir: Path, label: str, suffix: str) -> Path:

@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <time.h>
 #include <unistd.h>
 
 #include <fstream>
@@ -78,8 +79,10 @@ namespace k4bench
   }
 
   // When this process started, in ns since the Unix epoch, from the start time
-  // in /proc/self/stat (clock ticks after boot) and the boot time in /proc/stat.
-  // Resolution is one clock tick, typically 10 ms.
+  // in /proc/self/stat (clock ticks after boot). It is placed on the epoch by
+  // reading the boot-time and real-time clocks together, as the boot time in
+  // /proc/stat is truncated to whole seconds. Resolution is one clock tick,
+  // typically 10 ms.
   inline long long read_process_start_epoch_ns()
   {
     std::ifstream stat("/proc/self/stat");
@@ -106,23 +109,18 @@ namespace k4bench
       }
     }
 
-    std::ifstream proc_stat("/proc/stat");
-    long long boot_s = -1;
-    while (std::getline(proc_stat, line))
-    {
-      if (line.rfind("btime ", 0) == 0)
-      {
-        boot_s = std::stoll(line.substr(6));
-        break;
-      }
-    }
-
+    // The start time counts from boot on the boot-time clock, so the boot
+    // time on the epoch is the real-time clock less the boot-time clock.
+    timespec since_boot{};
+    timespec since_epoch{};
     const long ticks_per_s = sysconf(_SC_CLK_TCK);
-    if (start_ticks < 0 || boot_s < 0 || ticks_per_s <= 0)
+    if (start_ticks < 0 || ticks_per_s <= 0 || clock_gettime(CLOCK_BOOTTIME, &since_boot) != 0 ||
+        clock_gettime(CLOCK_REALTIME, &since_epoch) != 0)
     {
       return -1;
     }
-    return boot_s * 1'000'000'000LL + start_ticks * (1'000'000'000LL / ticks_per_s);
+    const auto ns = [](const timespec &t) { return t.tv_sec * 1'000'000'000LL + t.tv_nsec; };
+    return ns(since_epoch) - ns(since_boot) + start_ticks * (1'000'000'000LL / ticks_per_s);
   }
 
 } // namespace k4bench

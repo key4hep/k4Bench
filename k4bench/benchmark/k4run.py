@@ -16,6 +16,13 @@ such as CLDConfig must run from their own directory), otherwise an empty one.
 A job's outputs therefore never land in the caller's directory, and one run's
 outputs are never read by the next. Paths in the job's arguments are read from
 that working directory, so give them as absolute paths.
+
+Each run is preceded by a warm-up: the same job for one event, unmeasured and
+discarded. A job loads its libraries, geometry and conditions from CVMFS, and
+on a host whose CVMFS cache does not hold them yet, fetching them dominates its
+initialization (tens of seconds for CLD reconstruction, against a few seconds
+from a warm cache), which would measure the host's cache rather than the job.
+The warm-up event also reads in the code the first measured event runs.
 """
 
 from __future__ import annotations
@@ -28,6 +35,7 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from k4bench.artifacts import LOG_SUFFIX, WARM_UP_LOG_SUFFIX, label_path
 from k4bench.labels import BASELINE_LABEL, VARIANT_PREFIX
 from k4bench.results.model import RunResult
 from k4bench.results.reporter import print_run_result
@@ -35,6 +43,9 @@ from k4bench.runner.k4run import run_k4run
 
 #: A variant name becomes part of the run's file names.
 _VARIANT_NAME_RE = re.compile(r"^[A-Za-z0-9_.+-]+$")
+
+#: Events of the unmeasured run before each measured one.
+WARM_UP_EVENTS = 1
 
 
 @dataclass
@@ -63,6 +74,10 @@ class K4runConfig:
         path is relative to the current directory.
     verbose:
         If True, print k4run output in real time instead of only logging it.
+    warm_up:
+        If True, precede each run with the same job for
+        :data:`WARM_UP_EVENTS` events, unmeasured, so the measured run finds
+        what the job reads from CVMFS already cached.
     """
 
     options: list[str]
@@ -73,6 +88,7 @@ class K4runConfig:
     variants: dict[str, list[str]] = field(default_factory=dict)
     setup_script: Path | None = None
     verbose: bool = False
+    warm_up: bool = True
 
     def __post_init__(self) -> None:
         if not self.options:
@@ -116,6 +132,10 @@ def run_k4run_benchmark(config: K4runConfig) -> list[RunResult]:
     for index, (label, args) in enumerate(runs, start=1):
         print(f"[{index}/{len(runs)}] {label}")
         print(f"         Options: {' '.join(config.options)}")
+        # Removed first, so a run is never marked by a previous run's warm-up.
+        label_path(config.log_dir, label, WARM_UP_LOG_SUFFIX).unlink(missing_ok=True)
+        if config.warm_up:
+            _warm_up(config, label, args)
         try:
             work_dir = _stage(config.stage_dir, label)
         except OSError:
@@ -138,6 +158,44 @@ def run_k4run_benchmark(config: K4runConfig) -> list[RunResult]:
         print_run_result(result)
         results.append(result)
     return results
+
+
+def _warm_up(config: K4runConfig, label: str, args: list[str]) -> None:
+    """Run *label*'s job for :data:`WARM_UP_EVENTS` events in a working and a
+    log directory of its own, both discarded.
+
+    A warm-up that fails does not stop the measured run, which may then find
+    a cold cache. Its log is kept as ``<label>_warm-up.log`` next to the
+    run's results, so the run shows that and why.
+    """
+    try:
+        work_dir = _stage(config.stage_dir, f"warm-up-{label}")
+    except OSError as exc:
+        print(f"         Warm-up skipped: staging failed ({exc})")
+        return
+    try:
+        with tempfile.TemporaryDirectory(prefix=f"k4bench-warm-up-{label}-logs-") as log_dir:
+            result = run_k4run(
+                options=config.options,
+                label=label,
+                n_events=WARM_UP_EVENTS,
+                work_dir=work_dir,
+                log_dir=Path(log_dir),
+                setup_script=config.setup_script,
+                extra_args=args,
+            )
+            if not result.succeeded:
+                kept = label_path(config.log_dir, label, WARM_UP_LOG_SUFFIX)
+                shutil.copyfile(label_path(Path(log_dir), label, LOG_SUFFIX), kept)
+    finally:
+        _remove(work_dir)
+    if not result.succeeded:
+        print(
+            f"         Warm-up failed (return code {result.returncode}), measuring anyway;"
+            f" log kept as {kept.name}"
+        )
+    elif result.wall_time_s is not None:
+        print(f"         Warm-up: {result.wall_time_s:.1f} s, not measured")
 
 
 def _stage(stage_dir: Path | None, label: str) -> Path:

@@ -173,7 +173,9 @@ namespace
   // counts all the time or not at all: when the counters cannot be opened (a
   // virtual machine without them, perf_event_paranoid above 2, a container's
   // seccomp policy) or are taken by another user, reads fail and the counts are
-  // missing rather than estimated.
+  // missing rather than estimated. podman's default seccomp profile allows
+  // perf_event_open only to a container granted CAP_PERFMON; one without it
+  // gets ENOSYS ("Function not implemented"), or EPERM without CAP_SYS_ADMIN.
   class PerfGroup
   {
   public:
@@ -216,7 +218,12 @@ namespace
       return HardwareCounts{group.values[0], group.values[1]};
     }
 
-    std::string failure() const { return m_error != 0 ? std::strerror(m_error) : "not scheduled"; }
+    // Why reads fail: the error opening the counters, or that the kernel did not
+    // schedule them.
+    std::string failure() const
+    {
+      return m_error != 0 ? std::string("perf_event_open: ") + std::strerror(m_error) : "counters not scheduled";
+    }
 
   private:
     static int openCounter(std::uint64_t config, int leader)
@@ -573,6 +580,8 @@ public:
                         std::chrono::system_clock::now().time_since_epoch())
                         .count();
     m_metrics.assign(kThreadMetrics.begin(), kThreadMetrics.end());
+    // A missing metric is reported as a warning, which jobs that quieten their
+    // output to warnings (as CLDReconstruction.py does) still print.
     if (perf_group().read())
     {
       m_metrics.insert(m_metrics.end(), kHardwareMetrics.begin(), kHardwareMetrics.end());
@@ -580,8 +589,9 @@ public:
     }
     else
     {
-      info() << "Hardware counters unavailable (" << perf_group().failure() << "): no instruction or cycle counts"
-             << endmsg;
+      m_hardwareCountersError = perf_group().failure();
+      warning() << "Hardware counters unavailable (" << *m_hardwareCountersError
+                << "): no instruction or cycle counts" << endmsg;
     }
     if (alloc_counters() != nullptr)
     {
@@ -590,7 +600,7 @@ public:
     }
     else
     {
-      info() << "libk4BenchAllocCounter.so is not preloaded: no allocation counts" << endmsg;
+      warning() << "libk4BenchAllocCounter.so is not preloaded: no allocation counts" << endmsg;
     }
     calibrate();
     return StatusCode::SUCCESS;
@@ -712,6 +722,7 @@ private:
   Clock::time_point m_steadyOrigin;
   long long m_epochOrigin{0};
   double m_overheadNsPerCall{-1.0};
+  std::optional<std::string> m_hardwareCountersError; // why there are no instruction or cycle counts
   std::once_flag m_describedOnce;
   std::vector<Metric> m_metrics; // the columns written, allocations when counted
 
@@ -938,6 +949,7 @@ private:
     out["measurement_overhead_ns"] = std::round(m_overheadNsPerCall);
     out["threads"] = m_threads.size();
     out["process_start_epoch_ns"] = m_processStartEpochNs;
+    out["hardware_counters_error"] = m_hardwareCountersError ? Json(*m_hardwareCountersError) : Json(nullptr);
 
     Json phases = Json::object();
     for (const auto &[phase, span] : m_phases)

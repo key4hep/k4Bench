@@ -309,7 +309,12 @@ class TestK4runCommand:
             "truth_tracking": ["--truthTracking"],
             "native": ["--native", "--trackingOnly"],
         }
+        assert config.warm_up
         assert (tmp_path / "out" / "baseline_results.csv").is_file()
+
+    def test_no_warm_up_flag_skips_the_warm_up(self, monkeypatch, stage):
+        _, (config,) = self._main(monkeypatch, "Reco.py", "--stage-dir", str(stage), "--no-warm-up")
+        assert not config.warm_up
 
     def test_default_output_dir_is_named_after_the_options_file(self, monkeypatch, stage):
         monkeypatch.chdir(stage)
