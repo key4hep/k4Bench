@@ -425,7 +425,8 @@ def _render_current_run(
     with right, st.container(border=True):
         st.markdown("##### 🐧 Environment")
         # Full-width rows for the long, free-text fields so the global metric-wrap
-        # CSS (see app.py) can wrap them instead of truncating; short fields pair up.
+        # CSS (see ui_chrome.configure_page) can wrap them instead of truncating;
+        # short fields pair up.
         st.metric("OS",     machine_info.get("os",     "N/A"))
         st.metric("Kernel", machine_info.get("kernel", "N/A"))
         c = st.columns(2)

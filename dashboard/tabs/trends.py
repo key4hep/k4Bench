@@ -345,9 +345,9 @@ def _trends_body(
     """Run Trends' controls, data prep and figures, scoped to a fragment so a
     style tweak or a Confirmed/Watch pill reruns only this block — not the whole
     app (sidebar, eager trend loads, reliability map). *trend_df* is loaded once
-    in app.py and replayed on a fragment rerun, which also reuses the cached
-    nightly reports behind the flag lookup rather than re-issuing the threaded
-    HTTPS fetch whose shutdown can race a rerun.
+    outside it (``data.load_run``) and replayed on a fragment rerun, which also
+    reuses the cached nightly reports behind the flag lookup rather than
+    re-issuing the threaded HTTPS fetch whose shutdown can race a rerun.
     """
     # Keep failed values for diagnostic markers, but never let them replace a
     # healthy rerun's ordinary line point for the same nightly tag.

@@ -1,7 +1,7 @@
 """Page chrome and small sidebar utilities for the dashboard entry point.
 
-Footers, the stale-selection helper — presentation/plumbing that would otherwise
-clutter ``app.main()``.
+The page configuration, footers, the stale-selection helper — presentation and
+plumbing that would otherwise clutter ``app.main()``.
 """
 from __future__ import annotations
 
@@ -564,11 +564,99 @@ def render_logs_tab(
 
 
 # ── Project links ────────────────────────────────────────────────────────────
-# Surfaced natively via st.set_page_config(menu_items=...) in app.py (the "☰"
-# menu's Get Help / Report a bug / About entries) rather than as sidebar cards,
+# Surfaced natively via st.set_page_config(menu_items=...) in configure_page (the
+# "☰" menu's Get Help / Report a bug / About entries) rather than as sidebar cards,
 # which got crowded once WebEOS data, GitHub, and docs all competed for space.
 GITHUB_URL = "https://github.com/key4hep/k4Bench"
 DOCS_URL = "https://key4hep.github.io/k4Bench/"
+
+# ── Page configuration ───────────────────────────────────────────────────────
+#: Global CSS tweaks: header, padding, plot spacing, metric wrapping and the
+#: sticky footer.
+_GLOBAL_CSS = """
+<style>
+/* Make the top toolbar transparent so it doesn't obscure tabs */
+[data-testid="stToolbar"],
+header[data-testid="stHeader"] {
+    background: transparent !important;
+    backdrop-filter: none !important;
+}
+/* The whitespace above the tabs is the (mostly empty) header band, not the
+   block padding — so shrink the header itself while keeping the toolbar
+   (menu / Deploy / Running) usable, and pull the content up under it. */
+header[data-testid="stHeader"] {
+    height: 2.5rem !important;
+    min-height: 2.5rem !important;
+}
+.block-container, .stMainBlockContainer {
+    padding-top: 0.75rem !important;
+    padding-bottom: 1rem !important;
+}
+/* Collapse the blank gap Streamlit inserts below plotly iframes */
+[data-testid="stPlotlyChart"] > div,
+.stPlotlyChart > div {
+    line-height: 0;
+}
+/* Remove extra bottom margin on plotly chart wrappers */
+[data-testid="stPlotlyChart"],
+.stPlotlyChart {
+    margin-bottom: 0 !important;
+}
+/* Tighten the gap between the last element and the footer */
+footer { margin-top: 0 !important; padding-top: 0 !important; }
+
+/* Let st.metric values wrap instead of truncating long strings with an
+   ellipsis (e.g. a full OS name "AlmaLinux 9.7 (Seafoam Ocelot)" or a
+   kernel version). Keeps every metric the same size while showing the
+   value in full. */
+[data-testid="stMetricValue"],
+[data-testid="stMetricValue"] > div {
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
+    overflow-wrap: anywhere;
+}
+
+/* Sticky footer: keep the copyright pinned to the bottom of the viewport
+   when the page is short, but let it flow normally (and scroll) when the
+   content is taller than the window. Achieved with a full-height flex
+   column whose footer element gets margin-top:auto. */
+.stMainBlockContainer {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+/* Let the root vertical block (one or two wrapper levels deep) grow to
+   fill the container so the auto margin below has space to consume. */
+.stMainBlockContainer > div:first-child,
+.stMainBlockContainer > div:first-child > [data-testid="stVerticalBlock"] {
+    flex: 1 0 auto;
+    display: flex;
+    flex-direction: column;
+}
+/* Push the footer's element container to the bottom of that free space. */
+[data-testid="stElementContainer"]:has(.k4-footer) {
+    margin-top: auto;
+}
+</style>
+"""
+
+
+def configure_page() -> None:
+    """Page title, icon, layout and menu, plus the global CSS. Must be the
+    first Streamlit call of a run."""
+    st.set_page_config(
+        page_title="k4Bench Dashboard",
+        page_icon="⚡",
+        layout="wide",
+        menu_items={
+            "Get Help": DOCS_URL,
+            "Report a bug": f"{GITHUB_URL}/issues",
+            "About": f"[GitHub repository]({GITHUB_URL}) · [Documentation]({DOCS_URL})",
+        },
+    )
+    st.markdown(_GLOBAL_CSS, unsafe_allow_html=True)
+
 
 # ── Non-experiment ("example") detectors ────────────────────────────────────
 # Detector names (the EOS top-level directory, derived from the compact XML's

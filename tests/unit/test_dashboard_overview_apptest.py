@@ -98,8 +98,8 @@ REPORTS = {
 
 
 #: Covers the fixture's full 3-day span — the window itself is the sidebar's
-#: shared Trend window, resolved by ``app.py`` and passed in as a plain
-#: (start, end) tuple, not a control this tab owns.
+#: shared Trend window, resolved by ``sidebar.pick_trend_window`` and passed in
+#: as a plain (start, end) tuple, not a control this tab owns.
 _WINDOW = (date(2026, 7, 9), date(2026, 7, 11))
 
 
