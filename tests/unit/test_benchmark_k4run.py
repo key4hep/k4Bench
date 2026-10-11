@@ -217,6 +217,20 @@ class TestWarmUp:
 
         assert len(calls) == 2 and result.succeeded
         assert "Warm-up failed (return code 1)" in capsys.readouterr().out
+        # Its log stays with the run's results, marking a measurement that may
+        # have found a cold cache.
+        assert sorted(p.name for p in config.log_dir.iterdir()) == [
+            "baseline.log", "baseline_warm-up.log",
+        ]
+
+    def test_a_previous_failed_warm_up_does_not_mark_the_run(self, tmp_path, stage_dir):
+        config = _config(tmp_path, stage_dir, warm_up=True)
+        config.log_dir.mkdir()
+        (config.log_dir / "baseline_warm-up.log").write_text("an earlier benchmark's warm-up")
+        with patch.object(k4run_module, "run_k4run", _recording_run_k4run([])):
+            run_k4run_benchmark(config)
+
+        assert sorted(p.name for p in config.log_dir.iterdir()) == ["baseline.log"]
 
     def test_a_warm_up_that_cannot_be_staged_is_skipped(self, tmp_path, stage_dir, capsys):
         calls: list[dict] = []

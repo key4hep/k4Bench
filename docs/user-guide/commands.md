@@ -197,7 +197,8 @@ directory, and paths in `--k4run-args` must be absolute. Each `--variant
 NAME=ARGS` is one more run with `ARGS` appended. Before each run, the same job
 runs for one event, unmeasured and discarded, so the measured run finds what it
 reads from CVMFS already cached; on a cold cache, fetching the software can take
-longer than initializing the job (`--no-warm-up` skips it). Next to the usual log and
+longer than initializing the job (`--no-warm-up` skips it). A warm-up that fails
+leaves its log as `<label>_warm-up.log`. Next to the usual log and
 results CSV, every label gets `<label>_events.json`,
 `<label>_components.json` and `<label>_joboptions.opts`; see
 [File formats](../reference/file-formats.md#output-directory-layout) and the

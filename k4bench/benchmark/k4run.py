@@ -35,6 +35,7 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from k4bench.artifacts import LOG_SUFFIX, WARM_UP_LOG_SUFFIX, label_path
 from k4bench.labels import BASELINE_LABEL, VARIANT_PREFIX
 from k4bench.results.model import RunResult
 from k4bench.results.reporter import print_run_result
@@ -131,6 +132,8 @@ def run_k4run_benchmark(config: K4runConfig) -> list[RunResult]:
     for index, (label, args) in enumerate(runs, start=1):
         print(f"[{index}/{len(runs)}] {label}")
         print(f"         Options: {' '.join(config.options)}")
+        # Removed first, so a run is never marked by a previous run's warm-up.
+        label_path(config.log_dir, label, WARM_UP_LOG_SUFFIX).unlink(missing_ok=True)
         if config.warm_up:
             _warm_up(config, label, args)
         try:
@@ -161,8 +164,9 @@ def _warm_up(config: K4runConfig, label: str, args: list[str]) -> None:
     """Run *label*'s job for :data:`WARM_UP_EVENTS` events in a working and a
     log directory of its own, both discarded.
 
-    A warm-up that fails is reported and otherwise ignored: the measured run
-    that follows records the failure in its own log and result.
+    A warm-up that fails does not stop the measured run, which may then find
+    a cold cache. Its log is kept as ``<label>_warm-up.log`` next to the
+    run's results, so the run shows that and why.
     """
     try:
         work_dir = _stage(config.stage_dir, f"warm-up-{label}")
@@ -180,10 +184,16 @@ def _warm_up(config: K4runConfig, label: str, args: list[str]) -> None:
                 setup_script=config.setup_script,
                 extra_args=args,
             )
+            if not result.succeeded:
+                kept = label_path(config.log_dir, label, WARM_UP_LOG_SUFFIX)
+                shutil.copyfile(label_path(Path(log_dir), label, LOG_SUFFIX), kept)
     finally:
         _remove(work_dir)
     if not result.succeeded:
-        print(f"         Warm-up failed (return code {result.returncode}), measuring anyway")
+        print(
+            f"         Warm-up failed (return code {result.returncode}), measuring anyway;"
+            f" log kept as {kept.name}"
+        )
     elif result.wall_time_s is not None:
         print(f"         Warm-up: {result.wall_time_s:.1f} s, not measured")
 
