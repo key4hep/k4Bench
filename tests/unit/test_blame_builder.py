@@ -133,8 +133,9 @@ def test_same_stack_window_without_a_harness_lookup_is_skipped(monkeypatch):
 def test_open_window_is_skipped(monkeypatch):
     _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
     v = _verdict()
-    open_v = MetricVerdict(**{**v.__dict__, "last_accepted_run_date": None,
-                             "last_accepted_run_id": None})
+    open_v = dataclasses.replace(
+        v, last_accepted_run_date=None, last_accepted_run_id=None,
+    )
     blame = build_blame_report(
         _report([open_v]), packages_for_release=_provenance({}), github=GitHubClient(),
     )
@@ -647,12 +648,12 @@ def test_the_ranker_is_shown_the_configurations_that_stayed_flat(monkeypatch):
     # The cross-configuration evidence the first pass previously had none of.
     _two_candidates(monkeypatch)
     ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
-    flat = MetricVerdict(**{
-        **_verdict(detector="IDEA_o1_v03", sample="single_e").__dict__,
-        "severity": Severity.OK, "direction": Direction.NONE,
-        "onset_run_id": None, "onset_run_date": None,
-        "last_accepted_run_id": None, "last_accepted_run_date": None,
-    })
+    flat = dataclasses.replace(
+        _verdict(detector="IDEA_o1_v03", sample="single_e"),
+        severity=Severity.OK, direction=Direction.NONE,
+        onset_run_id=None, onset_run_date=None,
+        last_accepted_run_id=None, last_accepted_run_date=None,
+    )
     report = _report_groups(
         ("ALLEGRO_o1_v03", "single_e", [_verdict()]),
         ("IDEA_o1_v03", "single_e", [flat]),

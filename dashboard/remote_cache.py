@@ -5,13 +5,13 @@ point stays focused on layout and data-source resolution. Each wrapper imports
 its underlying ``k4bench.remote`` function lazily so importing this module is
 cheap.
 
-``st.cache_data`` keeps whatever its function returns, for everyone, until the
-TTL runs out — and never an exception. So every call that can come back short
-because WebEOS stalled runs its fetch with ``strict=True`` inside the cached
-function, and an incomplete result raises :class:`~k4bench.remote.IncompleteFetch`
-instead of being kept. The next rerun reads it again, rather than every viewer
-seeing a stall's gaps for an hour. What happens to the incomplete result depends
-on what it is:
+``st.cache_data`` and ``st.cache_resource`` keep whatever their function
+returns, for everyone, until the TTL runs out — and never an exception. So every
+call that can come back short because WebEOS stalled runs its fetch with
+``strict=True`` inside the cached function, and an incomplete result raises
+:class:`~k4bench.remote.IncompleteFetch` instead of being kept. The next rerun
+reads it again, rather than every viewer seeing a stall's gaps for an hour. What
+happens to the incomplete result depends on what it is:
 
 * **Discovery** — the release and run-date listings — raises to the caller.
   Callers decide from these which release is newest and which selections are
@@ -24,8 +24,12 @@ on what it is:
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 import streamlit as st
+
+if TYPE_CHECKING:
+    from k4bench.regression.models import NightlyReport
 
 _log = logging.getLogger(__name__)
 
@@ -138,40 +142,56 @@ def _cached_fetch_blame(base_url: str, date: str) -> dict | None:
     return _keep_complete(_fetch_blame, base_url, date)
 
 
-@st.cache_data(show_spinner="Fetching nightly reports...", ttl=3600)
-def _fetch_reports(base_url: str, dates: tuple[str, ...]) -> dict[str, dict]:
-    """Fetch a whole window of nightly reports in parallel, keyed by date.
+@st.cache_resource(show_spinner=False, ttl=3600)
+def _fetch_report(base_url: str, date: str) -> NightlyReport | None:
+    """One night's report, parsed; ``None`` when it is absent or malformed.
 
-    One report per night and each is a small JSON, so a cold window is
-    dominated by request latency — fanning out cuts a 30-night first load
-    from ~30 sequential round-trips to a few. Nights that fail to fetch are
-    simply absent from the result; when one failed only because the server
-    did not answer, the result raises instead of being cached (see
-    :func:`_cached_fetch_reports`). Cached on the *dates* tuple: growing the
-    window refetches it in one parallel burst rather than serially.
+    A report is several MB of JSON and takes far longer to parse than to read,
+    so the parsed object itself is cached, once per night, and shared by every
+    session and every window that includes the night. Shared, not copied:
+    callers must not modify it. A night the server did not answer raises
+    :class:`~k4bench.remote.IncompleteFetch`, which is not cached.
+    """
+    from k4bench.regression.render import from_json
+    from k4bench.remote import fetch_report
 
-    Thread count is Python's own default (no ``max_workers``; this only ever
-    runs on a cache miss — a Streamlit rerun that hits the cache spawns no
-    threads at all). The concurrency ceiling lives one level down, in
-    :mod:`k4bench.remote`'s shared, ``pool_block=True`` connection pool (see
-    ``k4bench.remote._get_session``) — threads beyond it just queue for a
-    slot instead of each opening its own connection, which is what fixed this
-    fetch's intermittent, native interpreter crashes.
+    raw = fetch_report(base_url, date, strict=True)
+    if not raw:
+        return None
+    try:
+        return from_json(raw)
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        _log.warning("skipping malformed report for %s — %s", date, exc)
+        return None
+
+
+def _fetch_reports(base_url: str, dates: tuple[str, ...]) -> dict[str, NightlyReport]:
+    """Every night of *dates* with a report, parsed and keyed by date.
+
+    A night missing from the cache costs a request, so the nights are read in
+    parallel. Nights without a parseable report are absent from the result;
+    when one is absent only because the server did not answer, the result
+    raises instead (see :func:`_cached_fetch_reports`).
+
+    Thread count is Python's own default (no ``max_workers``). The concurrency
+    ceiling lives one level down, in :mod:`k4bench.remote`'s shared,
+    ``pool_block=True`` connection pool (see ``k4bench.remote._get_session``) —
+    threads beyond it just queue for a slot instead of each opening its own
+    connection, which is what fixed this fetch's intermittent, native
+    interpreter crashes.
     """
     from concurrent.futures import ThreadPoolExecutor
 
-    from k4bench.remote import IncompleteFetch, fetch_report
+    from k4bench.remote import IncompleteFetch
 
     failures: list[str] = []
 
-    def _one(date: str) -> tuple[str, dict | None]:
-        # fetch_report already handles absent and malformed reports (logs and
-        # returns None), and raises only for a transient failure; this also
-        # guards unexpected errors so one bad night can't abort the whole
+    def _one(date: str) -> tuple[str, NightlyReport | None]:
+        # Unexpected errors are guarded so one bad night can't abort the whole
         # window — logged (dashboard convention) but not surfaced as a UI
         # warning, since the night is simply absent from the result.
         try:
-            return date, fetch_report(base_url, date, strict=True)
+            return date, _fetch_report(base_url, date)
         except IncompleteFetch as exc:
             failures.extend(exc.failures)
             return date, None
@@ -179,15 +199,20 @@ def _fetch_reports(base_url: str, dates: tuple[str, ...]) -> dict[str, dict]:
             _log.exception("fetch_report: unexpected error for %s", date)
             return date, None
 
-    with ThreadPoolExecutor() as pool:
-        reports = {date: raw for date, raw in pool.map(_one, dates) if raw}
+    with st.spinner("Fetching nightly reports..."), ThreadPoolExecutor() as pool:
+        reports = {
+            date: report for date, report in pool.map(_one, dates) if report is not None
+        }
     if failures:
         raise IncompleteFetch(reports, failures)
     return reports
 
 
-def _cached_fetch_reports(base_url: str, dates: tuple[str, ...]) -> dict[str, dict]:
-    """:func:`_fetch_reports`, cached only when every night could be read."""
+def _cached_fetch_reports(
+    base_url: str, dates: tuple[str, ...]
+) -> dict[str, NightlyReport]:
+    """:func:`_fetch_reports`; when a night could not be read, the others with
+    a toast instead of an exception."""
     return _keep_complete(_fetch_reports, base_url, dates)
 
 

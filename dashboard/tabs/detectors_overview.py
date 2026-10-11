@@ -22,7 +22,6 @@ selected scope has nothing (see :func:`render`).
 
 from __future__ import annotations
 
-import logging
 import math
 import re
 from datetime import date
@@ -38,7 +37,7 @@ from k4bench.labels import BASELINE_LABEL
 from k4bench.metrics import is_megabytes, metric_label, metric_title
 from k4bench.regression.engine import Z_THRESHOLD
 from k4bench.regression.models import NightlyReport, RunGroupReport, Severity
-from k4bench.regression.render import _detector_badge, from_json
+from k4bench.regression.render import _detector_badge
 from remote_cache import _cached_fetch_reports, _cached_list_report_dates
 from tabs import _blame, _nightly_email
 from tabs._night_picker import render_night_picker
@@ -63,8 +62,6 @@ from ui_utils import (
     _reset_widget_on_scope,
     _to_rgba,
 )
-
-_log = logging.getLogger(__name__)
 
 #: The one config compared across detectors — the unpatched full-detector run
 #: every sweep starts with (``baseline``, see ``k4bench.labels``).
@@ -1293,26 +1290,6 @@ def stale_run_nights(
     })
 
 
-def _load_reports(data_url: str, nights: tuple[str, ...]) -> dict[str, NightlyReport]:
-    """Fetch and parse each night **independently**, keyed by night.
-
-    Nights that fail to fetch or parse are simply absent. Parsing per night
-    rather than in one comprehension keeps a single half-uploaded or
-    schema-drifted historical report from blanking the whole tab — the same
-    containment the Regressions tab applies to its own report history."""
-    raws = _cached_fetch_reports(data_url, nights)
-    reports: dict[str, NightlyReport] = {}
-    for n in nights:
-        raw = raws.get(n)
-        if not raw:
-            continue
-        try:
-            reports[n] = from_json(raw)
-        except (KeyError, TypeError, ValueError, AttributeError) as exc:
-            _log.warning("overview: skipping malformed report for %s — %s", n, exc)
-    return reports
-
-
 def unreliable_pairs(rel_hist: pd.DataFrame) -> set[tuple[str, str]]:
     """The ``(run_night, detector)`` runs that failed the host-reliability
     check. ``None`` (no evidence) never counts as unreliable.
@@ -1589,7 +1566,7 @@ def render(
             return
         # A PR comment's archived report can lie outside the sidebar trend range.
         fetch_nights = tuple(dict.fromkeys([*fetch_nights, pinned_report]))
-    reports = _load_reports(data_url, fetch_nights)
+    reports = _cached_fetch_reports(data_url, fetch_nights)
     if pinned_mail and pinned_report not in reports:
         st.error(f"Could not load the requested report ({pinned_report}) from EOS.")
         return
@@ -1621,7 +1598,7 @@ def render(
         if n in dates and n not in reports
     )
     if stragglers:
-        reports.update(_load_reports(data_url, stragglers))
+        reports.update(_cached_fetch_reports(data_url, stragglers))
     snap_nights = tuple(n for n in (*fetch_nights, *stragglers) if n in reports)
 
     frames = {n: report_metrics_frame(rep) for n, rep in reports.items()}

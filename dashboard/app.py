@@ -58,6 +58,7 @@ def main() -> None:
             # continue: the selectboxes re-render (keeping the current selection)
             # and the now-empty caches are repopulated with fresh data below.
             st.cache_data.clear()
+            st.cache_resource.clear()
 
         if config.data_url:
             selection = pick_run(config.data_url, config.cache_dir)

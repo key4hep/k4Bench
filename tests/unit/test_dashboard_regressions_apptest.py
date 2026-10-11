@@ -91,8 +91,9 @@ def _app(dashboard_dir, reports_map, blame_map, dates, stacks_dates,
     _tab._cached_list_report_dates = lambda url: list(dates)
     # The tab batch-fetches the release's candidate nights; a night absent from
     # reports_map models a report that could not be loaded (dropped silently).
+    from k4bench.regression.render import from_json
     _tab._cached_fetch_reports = lambda url, nights: {
-        n: reports_map[n] for n in nights if reports_map.get(n) is not None
+        n: from_json(reports_map[n]) for n in nights if reports_map.get(n) is not None
     }
     # Absent on most nights; the blame sidecar is best-effort, so the stub
     # returns None unless a test supplies one.
@@ -495,8 +496,9 @@ def _scope_app(dashboard_dir, platform, scenarios, reports_map, dates):
     from tabs import regressions as _tab
 
     _tab._cached_list_report_dates = lambda url: list(dates)
+    from k4bench.regression.render import from_json
     _tab._cached_fetch_reports = lambda url, nights: {
-        n: reports_map[n] for n in nights if reports_map.get(n) is not None
+        n: from_json(reports_map[n]) for n in nights if reports_map.get(n) is not None
     }
     _tab._cached_fetch_blame = lambda url, night: None
     _tab._cached_fetch_runs_windowed = lambda *a, **k: ()
@@ -584,19 +586,18 @@ def test_multi_single_multi_navigation_does_not_strand_state():
     assert _night_picker(at).value == NIGHT                    # re-defaults cleanly
 
 
-# ── one malformed historical report must not blank the tab ────────────────────
+# ── one unloadable historical report must not blank the tab ───────────────────
 
-def test_malformed_historical_report_does_not_blank_the_tab():
+def test_unloadable_historical_report_does_not_blank_the_tab():
     # The default night's report is valid and confirmed; a second candidate
-    # night is malformed (valid JSON, wrong shape). The valid night must still
-    # render, with a note that a night could not be loaded.
+    # night could not be loaded (a malformed one, see remote_cache). The valid
+    # night must still render, with a note that a night could not be loaded.
     at = _run(
-        reports_map={NIGHT: _confirmed_report(),
-                     "2026-07-11": {"groups": [{"detector": "CLD"}]}},
+        reports_map={NIGHT: _confirmed_report(), "2026-07-11": None},
         dates=("2026-07-11", NIGHT),
         stacks_dates={STACK: [NIGHT, "2026-07-11"]},
     )
-    # Only the valid night parsed, so the picker offers just that one night,
+    # Only the valid night loaded, so the picker offers just that one night,
     # and its confirmed banner shows.
     picker = _night_picker(at)
     assert list(picker.options) == [f"🔴 {NIGHT}"]
@@ -608,8 +609,7 @@ def test_pinned_report_that_cannot_be_loaded_warns():
     # A ?report= deep link to a night that fails to load must warn, not silently
     # fall through to another night as if the link had pointed there.
     at = _run(
-        reports_map={NIGHT: _confirmed_report(),
-                     "2026-07-11": {"groups": [{"detector": "CLD"}]}},
+        reports_map={NIGHT: _confirmed_report(), "2026-07-11": None},
         dates=("2026-07-11", NIGHT),
         stacks_dates={STACK: [NIGHT, "2026-07-11"]},
         query_params={"report": "2026-07-11"},
@@ -634,7 +634,10 @@ def _listing_failure_app(dashboard_dir, report_json, night, platform, stack):
     # Production batch-fetches candidate nights; patch that path, not the
     # removed singular fetch, so this test is hermetic (independent of what
     # a prior test left on the shared module).
-    _tab._cached_fetch_reports = lambda url, nights: {n: report_json for n in nights}
+    from k4bench.regression.render import from_json
+    _tab._cached_fetch_reports = lambda url, nights: {
+        n: from_json(report_json) for n in nights
+    }
     _tab._cached_fetch_blame = lambda url, n: None
 
     calls = {"n": 0}

@@ -306,7 +306,7 @@ class ReleasePoint:
     detector: str | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class MetricVerdict:
     """The engine's judgement of one metric on one night.
 
@@ -338,6 +338,10 @@ class MetricVerdict:
     ``baseline_median``, ``baseline_mad``, ``pct_change``, ``z_score`` —
     describes that same series, so the whole verdict is on one basis and a
     reader never has to guess which.
+
+    Slotted because a nightly report holds thousands of verdicts and the
+    dashboard keeps parsed reports in memory: it cuts a parsed report to about
+    a third of its size.
     """
 
     detector: str
