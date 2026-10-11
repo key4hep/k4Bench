@@ -38,16 +38,16 @@ from k4bench.labels import pretty_sample
 from sections import SectionScope, regressions_derived_release
 from k4bench.regression.render import (
     WINDOW_WATCH_TOKEN,
-    _detector_badge,
-    _group_title,
+    detector_badge,
+    group_title,
     window_token,
 )
 from remote_cache import (
-    _cached_fetch_blame,
-    _cached_fetch_reports,
-    _cached_fetch_runs_windowed,
-    _cached_list_report_dates,
-    _cached_list_run_dates,
+    cached_fetch_blame,
+    cached_fetch_reports,
+    cached_fetch_runs_windowed,
+    cached_list_report_dates,
+    cached_list_run_dates,
 )
 from k4bench.blame.models import BlameReport, BlameSchemaError, rank_group_key
 from k4bench.provenance.diff import diff_packages
@@ -65,7 +65,7 @@ from tabs._regression_trend import (
     render_metric_trend,
 )
 from tabs.stack_changes import _release, deep_link, packages_for_release
-from ui_chrome import _drop_stale_selection, seed_query_param
+from ui_chrome import drop_stale_selection, seed_query_param
 
 
 def render(
@@ -81,7 +81,7 @@ def render(
     :func:`sections.regressions_derived_release`).
     """
     try:
-        dates = _cached_list_report_dates(data_url)
+        dates = cached_list_report_dates(data_url)
     except Exception as err:
         st.warning(
             f"Could not list the nightly reports on EOS: {err}. "
@@ -209,7 +209,7 @@ def _load_reports(
 ) -> tuple[dict[str, NightlyReport], list[str]]:
     """The parseable reports of *nights*, and the nights that could not be
     loaded."""
-    reports = _cached_fetch_reports(data_url, tuple(nights))
+    reports = cached_fetch_reports(data_url, tuple(nights))
     return reports, [n for n in nights if n not in reports]
 
 
@@ -245,7 +245,7 @@ def _candidate_nights(
     empty listing — the only sensible fallback left.
     """
     try:
-        stacks_dates = _cached_list_run_dates(data_url, detector, platform, sample)
+        stacks_dates = cached_list_run_dates(data_url, detector, platform, sample)
     except requests.RequestException:
         # Only a listing failure falls back silently-to-the-reader-but-not-to-us:
         # the sidebar may have an old release selected, so showing the latest
@@ -292,7 +292,7 @@ def _replaced_by(
     """
     for successor_detector, successor_platform in successor_series(detector, platform):
         try:
-            listing = _cached_list_run_dates(
+            listing = cached_list_run_dates(
                 data_url, successor_detector, successor_platform, sample,
             )
         except requests.RequestException:
@@ -387,7 +387,7 @@ class _WindowAttribution:
 def _blame_for_night(data_url: str, night: str) -> BlameReport | None:
     """The night's sidecar, or ``None`` — absent and malformed are both normal
     (blame is best-effort and most nights have none)."""
-    raw = _cached_fetch_blame(data_url, night)
+    raw = cached_fetch_blame(data_url, night)
     if not raw:
         return None
     try:
@@ -505,7 +505,7 @@ def _night_badge(
     report's own detector badge so the picker speaks the same vocabulary as the
     Overview roster. ``❔`` when the night has no group for the triple."""
     g = _night_group(report, detector, platform, sample)
-    return _detector_badge([g]) if g is not None else "❔"
+    return detector_badge([g]) if g is not None else "❔"
 
 
 #: Session key of the report-night picker. Shares ``?report=`` with the
@@ -531,7 +531,7 @@ def _render_no_group_notice(
     next click is a sidebar switch rather than a dead end."""
     others = [g for g in report.groups if g.detector == detector]
     if others:
-        scopes = "; ".join(_group_title(g) for g in others)
+        scopes = "; ".join(group_title(g) for g in others)
         st.info(
             f"The {night} report has no **{pretty_sample(sample)}** run group "
             f"for **{detector}** on the selected platform. Judged that night: "
@@ -800,7 +800,7 @@ def _select_window(
         return (ranked[0] if ranked else None), flagged
 
     picker_key = f"regr_window_{key}"
-    _drop_stale_selection(picker_key, list(options))
+    drop_stale_selection(picker_key, list(options))
     seed_query_param(picker_key, "window", list(options))  # ?window= from an email
     if picker_key not in st.session_state:
         st.session_state[picker_key] = next(iter(options))
@@ -924,8 +924,8 @@ def _render_group(
             if selected is not None:
                 render_metric_trend(
                     selected, data_url, cache_dir,
-                    list_run_dates=_cached_list_run_dates,
-                    fetch_runs_windowed=_cached_fetch_runs_windowed,
+                    list_run_dates=cached_list_run_dates,
+                    fetch_runs_windowed=cached_fetch_runs_windowed,
                     widget_namespace="regr",
                     reliability_slot=reliability_slot,
                 )

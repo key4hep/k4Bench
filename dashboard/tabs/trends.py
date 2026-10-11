@@ -8,22 +8,22 @@ from plotly.subplots import make_subplots
 from k4bench.analysis.loader import failed_config_mask, with_cpu_efficiency
 from k4bench.analysis.plots._theme import _TEMPLATE
 from k4bench.metrics import metric_title
-from remote_cache import _cached_fetch_reports
+from remote_cache import cached_fetch_reports
+from tabs._historical_trends import render_stability_expander
 from tabs._regression_flags import SEVERITY_RANK, add_severity_markers, render_flag_pills
 from tabs._reliability import resolve_reliability_filter
 from ui_utils import (
-    _DASHES,
-    _PALETTES,
-    _SYMBOLS,
-    _display_options,
-    _legend_below,
-    _opacity_control,
-    _palette_control,
-    _render_stability_expander,
-    _smooth_lines_control,
-    _style_cycling_control,
-    _style_cycling_flags,
-    _to_rgba,
+    DASHES,
+    PALETTES,
+    SYMBOLS,
+    display_options,
+    legend_below,
+    opacity_control,
+    palette_control,
+    smooth_lines_control,
+    style_cycling_control,
+    style_cycling_flags,
+    to_rgba,
 )
 
 
@@ -80,7 +80,7 @@ def _severity_lookup(
     """
     if not (data_url and detector and platform and sample and run_ids):
         return {}
-    reports = _cached_fetch_reports(data_url, run_ids)
+    reports = cached_fetch_reports(data_url, run_ids)
     lookup: dict[tuple[str, str, str], str] = {}
     for report in reports.values():
         for g in report.groups:
@@ -200,10 +200,10 @@ def _render_timeseries(
         n_colors     = len(palette)
         cycle        = cfg_idx // n_colors
         color        = palette[cfg_idx % n_colors]
-        line_color   = _to_rgba(color, line_alpha)
-        marker_color = _to_rgba(color, marker_alpha)
-        dash         = _DASHES [cycle % len(_DASHES) ] if use_dash   else "solid"
-        symbol       = _SYMBOLS[cycle % len(_SYMBOLS)] if use_marker else "circle"
+        line_color   = to_rgba(color, line_alpha)
+        marker_color = to_rgba(color, marker_alpha)
+        dash         = DASHES [cycle % len(DASHES) ] if use_dash   else "solid"
+        symbol       = SYMBOLS[cycle % len(SYMBOLS)] if use_marker else "circle"
         failed_mask = cfg_df.get(
             "_config_failed", pd.Series(False, index=cfg_df.index)
         ).astype(bool)
@@ -296,7 +296,7 @@ def _render_timeseries(
     t_margin  = 40
     plot_h    = n_rows * 350
     # tick_clearance=75: rotated (-30°) date ticks + "Key4hep Nightly Tag" title.
-    legend, b_margin = _legend_below(
+    legend, b_margin = legend_below(
         plot_h, len(labels), t_margin=t_margin, tick_clearance=75,
         entry_width=200, font_size=12,
     )
@@ -375,19 +375,19 @@ def _trends_body(
         )
         reliability_slot = actions.container(width="content").empty()
         display_options_slot = actions.container(width="content").empty()
-    display = _display_options(
-        _palette_control("trends_palette", len(labels)),
-        _style_cycling_control("trends_style"),
-        _opacity_control("trends_alpha", default=0.75),
-        _smooth_lines_control("trends_smooth"),
+    display = display_options(
+        palette_control("trends_palette", len(labels)),
+        style_cycling_control("trends_style"),
+        opacity_control("trends_alpha", default=0.75),
+        smooth_lines_control("trends_smooth"),
         key_prefix="trends_display",
         slot=display_options_slot,
     )
 
-    palette    = _PALETTES[display["palette"]]
+    palette    = PALETTES[display["palette"]]
     alpha      = display["alpha"]
     line_shape = "spline" if display["smooth"] else "linear"
-    use_dash, use_marker = _style_cycling_flags(display["style"])
+    use_dash, use_marker = style_cycling_flags(display["style"])
 
     # ── Data prep ─────────────────────────────────────────────────────────────
     # Dates and x_date are already normalised by cached_load_trend_results.
@@ -467,6 +467,6 @@ def _trends_body(
     # Every successful run, before the same-tag collapse, which would discard
     # the same-release repeats the stability table is built from. Unreliable
     # runs are dropped inside regardless of the toggle.
-    _render_stability_expander(
+    render_stability_expander(
         judgeable_runs, _STABILITY_METRICS, reliability, key="trends_stability",
     )

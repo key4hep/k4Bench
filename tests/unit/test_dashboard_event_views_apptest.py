@@ -53,7 +53,7 @@ def _app(dashboard_dir, view, current_labels, n_events=200, memory_split=False):
         })
         return fig
 
-    real_bin_options = tab._cached_event_bin_options
+    real_bin_options = tab.cached_event_bin_options
 
     def _record_bin_options(*args, **kwargs):
         options = real_bin_options(*args, **kwargs)
@@ -62,7 +62,7 @@ def _app(dashboard_dir, view, current_labels, n_events=200, memory_split=False):
         st.session_state["_bin_max"] = options.maximum
         return options
 
-    tab._cached_event_bin_options = _record_bin_options
+    tab.cached_event_bin_options = _record_bin_options
     if view == "timing":
         tab.plot_event_timing = _stub
     else:
@@ -562,7 +562,7 @@ def test_historical_memory_uses_component_error_bars(monkeypatch):
     captured = []
     monkeypatch.setattr(
         ui_utils,
-        "_display_options",
+        "display_options",
         lambda *a, **kw: {
             "palette": "Matplotlib",
             "alpha": 0.75,

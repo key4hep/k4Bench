@@ -72,22 +72,22 @@ def _app(dashboard_dir, stack_names, packages, from_release, to_release,
 
     from tabs import stack_changes as _tab
 
-    _tab._cached_list_detectors = lambda url: ["IDEA"]
-    _tab._cached_list_stacks = lambda url, detector, platform: stack_names
-    _tab._cached_fetch_stack_packages = (
+    _tab.cached_list_detectors = lambda url: ["IDEA"]
+    _tab.cached_list_stacks = lambda url, detector, platform: stack_names
+    _tab.cached_fetch_stack_packages = (
         lambda url, detector, platform, stack: packages.get(stack)
     )
     # The reverse view reads the nightly reports; stub those too so the tab is
     # hermetic (default: no reports, so the reverse section is empty).
-    _tab._cached_list_report_dates = lambda url: report_dates
-    _tab._cached_fetch_reports = lambda url, dates: {
+    _tab.cached_list_report_dates = lambda url: report_dates
+    _tab.cached_fetch_reports = lambda url, dates: {
         date: reports_map[date] for date in dates if reports_map.get(date)
     }
-    _tab._cached_fetch_blame = lambda url, date: blame_map.get(date)
+    _tab.cached_fetch_blame = lambda url, date: blame_map.get(date)
     # Trend history is tested by the shared Regressions component. Keep this
     # tab's app tests network-free while still exercising its picker/ranking.
-    _tab._cached_list_run_dates = lambda *a: {}
-    _tab._cached_fetch_runs_windowed = lambda *a: ()
+    _tab.cached_list_run_dates = lambda *a: {}
+    _tab.cached_fetch_runs_windowed = lambda *a: ()
 
     if from_release:
         _st.query_params["from"] = from_release
@@ -272,7 +272,7 @@ def test_reports_since_fetches_the_historical_window_in_one_batch(monkeypatch):
         seen["dates"] = dates
         return {date: {"night": date} for date in dates if date != "2026-07-09"}
 
-    monkeypatch.setattr(stack_changes, "_cached_fetch_reports", _batch)
+    monkeypatch.setattr(stack_changes, "cached_fetch_reports", _batch)
     reports = stack_changes._reports_since(
         "url",
         ["2026-07-08", "2026-07-09", "2026-07-10"],
@@ -579,9 +579,9 @@ def test_stacks_are_unioned_across_detectors(monkeypatch):
     # Detectors join and leave the matrix, so no single detector's history is
     # the full set of releases.
     per_detector = {"IDEA": ["key4hep-2026-07-10"], "SiD": ["key4hep-2026-07-09"]}
-    monkeypatch.setattr(stack_changes, "_cached_list_detectors", lambda url: ["IDEA", "SiD"])
+    monkeypatch.setattr(stack_changes, "cached_list_detectors", lambda url: ["IDEA", "SiD"])
     monkeypatch.setattr(
-        stack_changes, "_cached_list_stacks",
+        stack_changes, "cached_list_stacks",
         lambda url, detector, platform: per_detector[detector],
     )
     assert stack_changes._stacks_for_platform("u", PLAT) == [
@@ -597,8 +597,8 @@ def test_a_detector_without_the_platform_is_skipped(monkeypatch):
             raise requests.RequestException("404")  # never ran on this platform
         return ["key4hep-2026-07-10"]
 
-    monkeypatch.setattr(stack_changes, "_cached_list_detectors", lambda url: ["IDEA", "SiD"])
-    monkeypatch.setattr(stack_changes, "_cached_list_stacks", _stacks)
+    monkeypatch.setattr(stack_changes, "cached_list_detectors", lambda url: ["IDEA", "SiD"])
+    monkeypatch.setattr(stack_changes, "cached_list_stacks", _stacks)
     # One detector missing a platform must not blank the whole tab.
     assert stack_changes._stacks_for_platform("u", PLAT) == ["key4hep-2026-07-10"]
 
@@ -607,8 +607,8 @@ def test_an_unexpected_listing_error_is_not_swallowed(monkeypatch):
     def _stacks(url, detector, platform):
         raise TypeError("a bug in the listing code")
 
-    monkeypatch.setattr(stack_changes, "_cached_list_detectors", lambda url: ["IDEA"])
-    monkeypatch.setattr(stack_changes, "_cached_list_stacks", _stacks)
+    monkeypatch.setattr(stack_changes, "cached_list_detectors", lambda url: ["IDEA"])
+    monkeypatch.setattr(stack_changes, "cached_list_stacks", _stacks)
     # Only an absent directory is expected here. Anything else is a bug, and
     # must surface rather than read as "this platform has no releases".
     with pytest.raises(TypeError):
@@ -621,15 +621,15 @@ def test_packages_fall_back_to_another_detector(monkeypatch):
     def _fetch(url, detector, platform, stack):
         return _STACKS[stack] if detector == "SiD" else None
 
-    monkeypatch.setattr(stack_changes, "_cached_list_detectors", lambda url: ["IDEA", "SiD"])
-    monkeypatch.setattr(stack_changes, "_cached_fetch_stack_packages", _fetch)
+    monkeypatch.setattr(stack_changes, "cached_list_detectors", lambda url: ["IDEA", "SiD"])
+    monkeypatch.setattr(stack_changes, "cached_fetch_stack_packages", _fetch)
     assert stack_changes._packages("u", PLAT, "key4hep-2026-07-10") == _STACKS["key4hep-2026-07-10"]
 
 
 def test_packages_none_when_no_detector_has_it(monkeypatch):
-    monkeypatch.setattr(stack_changes, "_cached_list_detectors", lambda url: ["IDEA"])
+    monkeypatch.setattr(stack_changes, "cached_list_detectors", lambda url: ["IDEA"])
     monkeypatch.setattr(
-        stack_changes, "_cached_fetch_stack_packages", lambda *a: None,
+        stack_changes, "cached_fetch_stack_packages", lambda *a: None,
     )
     # Unknown must never read as "an empty stack".
     assert stack_changes._packages("u", PLAT, "key4hep-2026-07-10") is None

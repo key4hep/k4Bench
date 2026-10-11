@@ -4,7 +4,7 @@ tabs show, and which window of history the trend views read.
 Both walk the WebEOS run store, so both exist in remote mode only; local mode
 has one run directory and nothing above it. Every selectbox here is mirrored in
 the page URL, which is what the nightly mail's and pull-request comments' deep
-links set (see ``k4bench.regression.render._dashboard_link``).
+links set (see ``k4bench.regression.render.dashboard_link``).
 """
 from __future__ import annotations
 
@@ -14,13 +14,13 @@ from datetime import date, timedelta
 import streamlit as st
 
 from remote_cache import (
-    _cached_fetch_latest_run,
-    _cached_fetch_runs_windowed,
-    _cached_list_detectors,
-    _cached_list_platforms,
-    _cached_list_report_dates,
-    _cached_list_run_dates,
-    _cached_scan_stack_samples,
+    cached_fetch_latest_run,
+    cached_fetch_runs_windowed,
+    cached_list_detectors,
+    cached_list_platforms,
+    cached_list_report_dates,
+    cached_list_run_dates,
+    cached_scan_stack_samples,
 )
 from trend_window import (
     WINDOW_PRESETS,
@@ -30,8 +30,8 @@ from trend_window import (
     window_domain,
 )
 from ui_chrome import (
-    _drop_stale_selection,
-    _render_scope_reset,
+    drop_stale_selection,
+    render_scope_reset,
     order_detectors,
     order_platforms,
     render_example_detector_badge,
@@ -72,11 +72,11 @@ def _url_synced_selectbox(
     """A selectbox mirrored in ``?param=``, returning ``(value, dropped)``.
 
     A remembered value no longer among *options* is dropped first (see
-    :func:`ui_chrome._drop_stale_selection`), a first visit opens on the URL's
+    :func:`ui_chrome.drop_stale_selection`), a first visit opens on the URL's
     value, and the selection is written back so the address bar stays a deep
     link to what is on screen.
     """
-    dropped = _drop_stale_selection(key, options)
+    dropped = drop_stale_selection(key, options)
     seed_query_param(key, param, options)
     value = st.selectbox(label, options, key=key)
     if value:
@@ -97,7 +97,7 @@ def pick_run(base_url: str, cache_dir: str) -> RunSelection | None:
     )
 
     try:
-        detectors = _cached_list_detectors(base_url)
+        detectors = cached_list_detectors(base_url)
     except Exception as err:
         st.error(f"Failed to list detectors: {err}")
         return None
@@ -112,7 +112,7 @@ def pick_run(base_url: str, cache_dir: str) -> RunSelection | None:
     render_example_detector_badge(detector)
 
     try:
-        platforms = _cached_list_platforms(base_url, detector)
+        platforms = cached_list_platforms(base_url, detector)
     except Exception as err:
         st.error(f"Failed to list platforms: {err}")
         return None
@@ -124,12 +124,12 @@ def pick_run(base_url: str, cache_dir: str) -> RunSelection | None:
     )
     if not platform:
         return None
-    _render_scope_reset(dropped, platform, f"isn't available for {detector}")
+    render_scope_reset(dropped, platform, f"isn't available for {detector}")
 
     # Scan the release tree once; derive both the sample union and the
     # per-sample stack list from the same {stack: [samples]} map.
     try:
-        stack_samples = _cached_scan_stack_samples(base_url, detector, platform)
+        stack_samples = cached_scan_stack_samples(base_url, detector, platform)
     except Exception as err:
         st.error(f"Failed to scan releases: {err}")
         return None
@@ -145,7 +145,7 @@ def pick_run(base_url: str, cache_dir: str) -> RunSelection | None:
         return None
     # The Overview tab is scoped by sample across all detectors, so this
     # re-default silently changes which detectors it shows.
-    _render_scope_reset(dropped, sample, f"isn't benchmarked for {detector}")
+    render_scope_reset(dropped, sample, f"isn't benchmarked for {detector}")
 
     # Stack — only releases that actually contain the chosen sample, newest
     # first, so the default jumps to the latest release that has the sample.
@@ -169,7 +169,7 @@ def pick_run(base_url: str, cache_dir: str) -> RunSelection | None:
     # Single-run tabs only ever show the latest run for the selected
     # stack — fetch just that one (cached), not the whole date history.
     try:
-        data_dir = _cached_fetch_latest_run(
+        data_dir = cached_fetch_latest_run(
             base_url, detector, platform, stack, sample, cache_dir
         )
     except Exception as err:
@@ -206,7 +206,7 @@ def pick_trend_window(base_url: str, run: RunSelection, cache_dir: str) -> Trend
     is downloaded.
     """
     try:
-        stacks_dates = _cached_list_run_dates(
+        stacks_dates = cached_list_run_dates(
             base_url, run.detector, run.platform, run.sample
         )
     except Exception as err:
@@ -220,7 +220,7 @@ def pick_trend_window(base_url: str, run: RunSelection, cache_dir: str) -> Trend
     # `trend_window.window_domain` for why the run dates alone are the
     # wrong anchor.
     try:
-        report_nights = _cached_list_report_dates(base_url)
+        report_nights = cached_list_report_dates(base_url)
     except Exception as err:
         st.warning(f"Could not list nightly reports: {err}")
         report_nights = []
@@ -270,7 +270,7 @@ def pick_trend_window(base_url: str, run: RunSelection, cache_dir: str) -> Trend
         caption += f" · {run.detector} last ran {run_days[-1]:%Y-%m-%d}"
     st.caption(caption)
     try:
-        run_dirs = _cached_fetch_runs_windowed(
+        run_dirs = cached_fetch_runs_windowed(
             base_url, run.detector, run.platform, run.sample, cache_dir, windowed,
         )
     except Exception as err:

@@ -25,8 +25,8 @@ from k4bench.blame.models import RANKING_DISCLOSURE, BlameReport, CandidatePR
 from k4bench.regression.models import Direction, MetricVerdict, Severity
 from k4bench.labels import compact_sample
 from k4bench.metrics import pretty_metric as _pretty_metric
-from k4bench.regression.render import _badge, _fmt, _fmt_pct
-from ui_utils import _to_rgba
+from k4bench.regression.render import severity_badge, format_value, format_pct
+from ui_utils import to_rgba
 
 #: Trend-flag marker specs keyed on verdict severity, matching the Regressions
 #: tab's colour language (severity = attention level, red = confirmed, amber =
@@ -176,7 +176,7 @@ def add_severity_markers(
                 legendgroup=str(name),
                 legend=legend,
                 marker=dict(symbol=mark["symbol"], size=mark["halo_size"],
-                            color=_to_rgba(mark["color"], 0.28), line_width=0),
+                            color=to_rgba(mark["color"], 0.28), line_width=0),
             ),
             row=row, col=col,
         )
@@ -234,7 +234,7 @@ def metric_option(
     Regression Status view spans the detectors of a single scope, so it leads
     with the detector instead — the order the roster above it is read in.
     """
-    parts = [_badge(verdict)]
+    parts = [severity_badge(verdict)]
     if include_detector:
         parts.append(verdict.detector)
     parts += [pretty_metric(verdict), verdict.label]
@@ -243,7 +243,7 @@ def metric_option(
     if include_window:
         base = verdict.last_accepted_run_date or "?"
         parts.append(f"{base} → {verdict.onset_run_date}")
-    return " · ".join(parts) + f" — Δ {_fmt_pct(verdict.pct_change)}"
+    return " · ".join(parts) + f" — Δ {format_pct(verdict.pct_change)}"
 
 
 #: Cap on ledger rows: beyond this, keep the worst so one sweep night can't
@@ -302,7 +302,7 @@ def flag_table(
             "Metric": pretty_metric(v),
             "Dir": _DIR_ARROWS.get(v.direction.value, "—"),
             "Δ vs baseline": None if v.pct_change is None else abs(v.pct_change) * 100,
-            "Current / baseline": f"{_fmt(v.value)} / {_fmt(v.baseline_median)}",
+            "Current / baseline": f"{format_value(v.value)} / {format_value(v.baseline_median)}",
         })
         if blame_window:
             rec["Blame window"] = _blame_window_text(v)

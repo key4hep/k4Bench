@@ -18,7 +18,7 @@ from k4bench.analysis.loader import failed_config_mask
 from k4bench.analysis.plots._theme import _TEMPLATE
 from k4bench.labels import BASELINE_LABEL, REMOVAL_PREFIX
 from k4bench.metrics import METRICS
-from ui_chrome import _drop_stale_selection
+from ui_chrome import drop_stale_selection
 
 
 @dataclass(frozen=True)
@@ -466,7 +466,7 @@ def render(results_df: pd.DataFrame | None) -> None:
         [2.2, 7.0], gap="medium", vertical_alignment="bottom",
     )
     with baseline_col:
-        _drop_stale_selection("impact_baseline", snap_labels)
+        drop_stale_selection("impact_baseline", snap_labels)
         baseline_index = (
             snap_labels.index(BASELINE_LABEL) if BASELINE_LABEL in snap_labels else 0
         )
@@ -481,7 +481,7 @@ def render(results_df: pd.DataFrame | None) -> None:
             ),
         )
     with metric_col:
-        _drop_stale_selection("impact_sort", metric_labels)
+        drop_stale_selection("impact_sort", metric_labels)
         wall_default = next(
             (metric.label for metric in present if metric.column == "wall_time_s"),
             metric_labels[0],

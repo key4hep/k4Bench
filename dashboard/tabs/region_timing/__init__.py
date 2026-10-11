@@ -10,8 +10,8 @@ import pandas as pd
 import streamlit as st
 
 from sections import TREND_WINDOW_SCOPE, SectionScope
-from ui_chrome import _drop_stale_selection
-from ui_utils import _view_control_row
+from ui_chrome import drop_stale_selection
+from ui_utils import view_control_row
 
 from .attribution import _render_attribution_analysis
 from .current_run import _render_current_run
@@ -49,8 +49,8 @@ def render(
     # This option set is dynamic. Drop a selection whose data disappeared before
     # constructing the radio, otherwise Streamlit would receive an invalid
     # session-state value for the current options.
-    _drop_stale_selection("region_view_mode", view_options)
-    view, reliability_slot, display_options_slot = _view_control_row(
+    drop_stale_selection("region_view_mode", view_options)
+    view, reliability_slot, display_options_slot = view_control_row(
         view_options, key="region_view_mode",
     )
 

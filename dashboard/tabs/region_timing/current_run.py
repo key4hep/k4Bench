@@ -5,11 +5,11 @@ import streamlit as st
 
 from k4bench.analysis.plots import plot_region_timing
 from ui_utils import (
-    _display_options,
-    _palette_control,
-    _PALETTES,
-    _top_n_control,
-    _TOP_N_DEFAULT,
+    display_options,
+    palette_control,
+    PALETTES,
+    top_n_control,
+    TOP_N_DEFAULT,
 )
 
 from ._common import _ATTRIBUTION_HELP
@@ -38,10 +38,10 @@ def _render_current_run(region_data: dict, display_options_slot=None) -> None:
     # size has to be known before either is drawn. Streamlit has already restored
     # the slider's stored value by this point, so reading it back is the count the
     # slider is about to show.
-    top_n_stored = int(st.session_state.get("region_topn", _TOP_N_DEFAULT))
-    display = _display_options(
-        _top_n_control("region_topn"),
-        _palette_control("region_cur_palette", top_n_stored),
+    top_n_stored = int(st.session_state.get("region_topn", TOP_N_DEFAULT))
+    display = display_options(
+        top_n_control("region_topn"),
+        palette_control("region_cur_palette", top_n_stored),
         key_prefix="region_cur_display",
         slot=display_options_slot,
     )
@@ -55,6 +55,6 @@ def _render_current_run(region_data: dict, display_options_slot=None) -> None:
         attribution=attribution,
         top_n=top_n,
         exclude_events=[0],
-        palette=_PALETTES[palette_name],
+        palette=PALETTES[palette_name],
     )
     st.plotly_chart(fig, width="stretch", key="region_current_chart")

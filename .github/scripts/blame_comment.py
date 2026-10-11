@@ -83,7 +83,7 @@ def _benchmark_inputs(root: Path = _REPO_ROOT / ".github" / "benchmarks") -> dic
     return inputs
 
 
-def _run_info_source(data_url: str | None):
+def run_info_source(data_url: str | None):
     """Memoized exact-run reader, enriched for pre-metadata HepMC runs."""
     if not data_url:
         return None
@@ -112,7 +112,7 @@ def _run_info_source(data_url: str | None):
     return run_info_for
 
 
-def _reproducer_publisher(
+def reproducer_publisher(
     eos_dir: str | None, data_url: str | None, *, dry_run: bool = False
 ):
     """``(facts) -> url`` that publishes one recipe beside the nightly data.
@@ -169,7 +169,7 @@ def _reproducer_publisher(
 
 def _run(command: list[str]) -> bool:
     """One xrootd call, reported rather than raised — see
-    :func:`_reproducer_publisher`."""
+    :func:`reproducer_publisher`."""
     try:
         done = subprocess.run(command, capture_output=True, text=True, timeout=300)
     except (OSError, subprocess.SubprocessError) as exc:
@@ -194,7 +194,7 @@ def _eos_path(url: str) -> str:
     return "/" + rest.partition("/")[2].lstrip("/")
 
 
-def _load_policy(path: Path, overrides: dict):
+def load_policy(path: Path, overrides: dict):
     """The comment policy from *path*, with any CLI *overrides* applied.
 
     A missing file is an empty policy — the bot is off; a malformed or unreadable
@@ -242,7 +242,7 @@ def _text_source(token: str | None):
     A rate limit *latches*: it is a statement about the whole token budget, not
     about one pull request, so every later fetch skips the call rather than
     spending a round trip on an answer already known — the same rule
-    :func:`k4bench.blame.builder._resolve` follows during the nightly build.
+    :meth:`k4bench.blame.builder._NightBlame.resolve` follows during the nightly build.
     """
     from k4bench.blame.github import GitHubClient, PRText, RateLimitError, fetch_pr
 
@@ -279,7 +279,7 @@ def _text_source(token: str | None):
     )
 
 
-def _review_inputs(token: str | None, attributor) -> dict:
+def review_inputs(token: str | None, attributor) -> dict:
     """The diff, description and per-file hunk fetchers
     :func:`k4bench.blame.comment.build_comments` takes, or none of them when no
     reviewer is configured.
@@ -377,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        policy = _load_policy(Path(args.config), {
+        policy = load_policy(Path(args.config), {
             "min_score": args.min_score, "max_comments": args.max_comments,
         })
     except CommentConfigError as exc:
@@ -452,9 +452,9 @@ def main(argv: list[str] | None = None) -> int:
     comments = build_comments(
         plans,
         attributor=attributor,
-        **_review_inputs(args.read_token, attributor),
-        run_info_for=_run_info_source(args.data_url),
-        reproducer_url_for=_reproducer_publisher(
+        **review_inputs(args.read_token, attributor),
+        run_info_for=run_info_source(args.data_url),
+        reproducer_url_for=reproducer_publisher(
             args.reproducer_dir, args.data_url, dry_run=dry_run
         ),
         dashboard_url=args.dashboard_url,

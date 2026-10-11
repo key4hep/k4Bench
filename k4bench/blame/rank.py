@@ -34,7 +34,6 @@ Three properties are load-bearing, and shape the whole module:
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass
 from dataclasses import field as dataclasses_field
 from typing import Protocol
@@ -85,6 +84,8 @@ from k4bench.blame.prompt import (
     host_sentences,
     log_prompt_size,
     measurement_phrase,
+    metric_subject,
+    movement,
     outcome_lines,
     parse_assessment,
     platform_line,
@@ -214,9 +215,8 @@ class RankRequest:
     geometry_tree: str = ""
     #: The controls: configurations that measured this window and stayed flat.
     #: Cross-configuration evidence is what tells a shared-infrastructure cause
-    #: apart from a detector-specific one, and this pass used to be shown none
-    #: of it — every call saw one configuration and could only conclude *within*
-    #: it.
+    #: apart from a detector-specific one; without it every call would see one
+    #: configuration and could only conclude *within* it.
     outcomes: tuple[ScopeOutcome, ...] = ()
     #: The ``owner/repo`` slug of the benchmark harness when its own commits
     #: moved across this window, else ``""``. The harness is categorically
@@ -674,9 +674,7 @@ def _step_lines(
         return []
     lines = ["- Metrics that stepped across the window:"]
     for step in steps:
-        subject = f"{step.metric} ({step.label})"
-        if step.sub_detector:
-            subject += f" [{step.sub_detector}]"
+        subject = metric_subject(step.metric, step.label, step.sub_detector)
         detail = measurement_phrase(
             step.value, step.baseline_median, step.z_score,
         )
@@ -695,9 +693,9 @@ def _by_movement(step: MetricStep) -> tuple:
     table. A missing or non-finite change counts as no movement rather than
     comparing false against everything, which would leave the order dependent on
     input order."""
-    pct = step.pct_change
-    magnitude = abs(pct) if pct is not None and math.isfinite(pct) else 0.0
-    return (-magnitude, step.metric, step.label, step.sub_detector or "")
+    return (
+        -movement(step.pct_change), step.metric, step.label, step.sub_detector or "",
+    )
 
 
 def _history_lines(request: RankRequest) -> list[str]:
@@ -720,9 +718,7 @@ def _history_lines(request: RankRequest) -> list[str]:
     stated = set(host_sentences(summarised.history)) if summarised else set()
     lines: list[str] = []
     for step in shown:
-        subject = f"{step.metric} ({step.label})"
-        if step.sub_detector:
-            subject += f" [{step.sub_detector}]"
+        subject = metric_subject(step.metric, step.label, step.sub_detector)
         lines.append("")
         lines += history_block(
             step.history, title=f"{subject} — ",

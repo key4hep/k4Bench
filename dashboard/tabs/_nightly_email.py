@@ -45,8 +45,8 @@ import streamlit as st
 from k4bench.blame.models import BlameReport, BlameSchemaError
 from k4bench.regression.email import to_html
 from k4bench.regression.models import NightlyReport
-from k4bench.regression.render import _detector_badge
-from remote_cache import _cached_fetch_blame
+from k4bench.regression.render import detector_badge
+from remote_cache import cached_fetch_blame
 from tabs._night_picker import render_night_picker
 
 _log = logging.getLogger(__name__)
@@ -160,7 +160,7 @@ def render(
     night = render_night_picker(
         nights,
         key=NIGHT_KEY,
-        badge=lambda n: _detector_badge(reports[n].groups),
+        badge=lambda n: detector_badge(reports[n].groups),
         default=nights[0],
         latest=latest_night,
         help="Which night's report is shown — the badge is that night's worst "
@@ -172,12 +172,12 @@ def render(
     report = reports[night]
     historical_blame_raw = {}
     for first_night in historical_nights(report):
-        raw = _cached_fetch_blame(data_url, first_night)
+        raw = cached_fetch_blame(data_url, first_night)
         if raw:
             historical_blame_raw[first_night] = raw
 
     document = email_document(
-        report, _cached_fetch_blame(data_url, night), historical_blame_raw,
+        report, cached_fetch_blame(data_url, night), historical_blame_raw,
         dashboard_url, night,
     )
     # An iframe, not st.markdown: the mail's own inline styles then render

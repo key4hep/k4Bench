@@ -986,5 +986,5 @@ def test_historical_evidence_travels_from_provenance_to_the_public_review(
     # The public comment lands on the candidate and never mentions the analogue
     # as an accused change.
     assert [(c.repo, c.number) for c in comments] == [("key4hep/k4geo", 1234)]
-    assert "777" not in comments[0].body
-    assert "Adjust HCAL material" not in comments[0].body
+    assert "777" not in comments[0].render().body
+    assert "Adjust HCAL material" not in comments[0].render().body

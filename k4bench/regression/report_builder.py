@@ -882,54 +882,14 @@ def _group_report_from_frames(
         if not no_results else []
     )
 
-    # Reuse the normal detector walk to attach the healthy-only baseline band
-    # and Δ to a failed measurement for display. This is a separate walk over
-    # judgeable history plus only tonight's failed rows: the raw value gets the
-    # same chart geometry as a healthy run but never enters real detector state,
-    # confirmation, or a later baseline.
-    failed_configs = failed_config_keys(results_df)
-    tonight_failed = {key for key in failed_configs if key[0] == str(tonight)}
-    if tonight_failed:
-        failed_results = config_rows_for_keys(results_df, tonight_failed)
-        failed_events = config_rows_for_keys(event_df, tonight_failed)
-        display_results = pd.concat(
-            [judgeable_results_df, failed_results], ignore_index=True,
-        )
-        event_frames = [
-            frame for frame in (judgeable_event_df, failed_events)
-            if frame is not None and not frame.empty
-        ]
-        display_events = (
-            pd.concat(event_frames, ignore_index=True) if event_frames else None
-        )
-        display_reliability = {**reliability, tonight: True}
-        display_series = evaluate_group_series(
-            detector=detector, platform=platform, sample=sample,
-            results_df=display_results, event_df=display_events,
-            reliability=display_reliability, hosts=hosts,
-            predecessor=predecessor,
-        )
-        failure_reason = {v.label: v.reason for v in config_failures}
-        group.verdicts.extend(
-            dataclasses.replace(
-                verdict,
-                severity=Severity.FAILURE,
-                direction=Direction.NONE,
-                reason=failure_reason[verdict.label],
-                onset_run_id=None,
-                onset_run_date=None,
-                last_accepted_run_id=None,
-                last_accepted_run_date=None,
-                first_confirmed_run_id=None,
-                history=(),
-                region_deltas=(),
-                unjudged=None,
-            )
-            for verdicts in display_series.values()
-            for verdict in verdicts
-            if verdict.run_id == tonight
-            and (str(verdict.run_id), verdict.label) in tonight_failed
-        )
+    group.verdicts.extend(_failed_display_verdicts(
+        detector=detector, platform=platform, sample=sample,
+        results_df=results_df, event_df=event_df,
+        judgeable_results_df=judgeable_results_df,
+        judgeable_event_df=judgeable_event_df,
+        reliability=reliability, tonight=tonight, hosts=hosts,
+        predecessor=predecessor, config_failures=config_failures,
+    ))
 
     # Record values the normal engine skipped because the host was unreliable.
     already = {(v.label, v.metric) for v in group.verdicts}
@@ -967,6 +927,75 @@ def _group_report_from_frames(
     )
 
     return group
+
+
+def _failed_display_verdicts(
+    *,
+    detector: str,
+    platform: str,
+    sample: str,
+    results_df: pd.DataFrame | None,
+    event_df: pd.DataFrame | None,
+    judgeable_results_df: pd.DataFrame | None,
+    judgeable_event_df: pd.DataFrame | None,
+    reliability: dict[str, bool | None],
+    tonight: str,
+    hosts: dict[str, HostFact] | None,
+    predecessor: PredecessorRuns | None,
+    config_failures: list[MetricVerdict],
+) -> list[MetricVerdict]:
+    """Tonight's failed measurements as display-only FAILURE verdicts.
+
+    Reuses the normal detector walk to attach the healthy-only baseline band
+    and Δ to a failed measurement. This is a separate walk over judgeable
+    history plus only tonight's failed rows: the raw value gets the same chart
+    geometry as a healthy run but never enters real detector state,
+    confirmation, or a later baseline.
+    """
+    failed_configs = failed_config_keys(results_df)
+    tonight_failed = {key for key in failed_configs if key[0] == str(tonight)}
+    if not tonight_failed:
+        return []
+    failed_results = config_rows_for_keys(results_df, tonight_failed)
+    failed_events = config_rows_for_keys(event_df, tonight_failed)
+    display_results = pd.concat(
+        [judgeable_results_df, failed_results], ignore_index=True,
+    )
+    event_frames = [
+        frame for frame in (judgeable_event_df, failed_events)
+        if frame is not None and not frame.empty
+    ]
+    display_events = (
+        pd.concat(event_frames, ignore_index=True) if event_frames else None
+    )
+    display_reliability = {**reliability, tonight: True}
+    display_series = evaluate_group_series(
+        detector=detector, platform=platform, sample=sample,
+        results_df=display_results, event_df=display_events,
+        reliability=display_reliability, hosts=hosts,
+        predecessor=predecessor,
+    )
+    failure_reason = {v.label: v.reason for v in config_failures}
+    return [
+        dataclasses.replace(
+            verdict,
+            severity=Severity.FAILURE,
+            direction=Direction.NONE,
+            reason=failure_reason[verdict.label],
+            onset_run_id=None,
+            onset_run_date=None,
+            last_accepted_run_id=None,
+            last_accepted_run_date=None,
+            first_confirmed_run_id=None,
+            history=(),
+            region_deltas=(),
+            unjudged=None,
+        )
+        for verdicts in display_series.values()
+        for verdict in verdicts
+        if verdict.run_id == tonight
+        and (str(verdict.run_id), verdict.label) in tonight_failed
+    ]
 
 
 def _region_window(verdict: MetricVerdict) -> tuple:

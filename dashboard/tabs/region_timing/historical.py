@@ -10,17 +10,17 @@ from plotly.subplots import make_subplots
 from k4bench.analysis.plots._theme import _TEMPLATE
 from tabs._reliability import render_reliability_filter
 from ui_utils import (
-    _DASHES,
-    _display_options,
-    _is_valid_df,
-    _legend_below,
-    _opacity_control,
-    _palette_control,
-    _PALETTES,
-    _style_cycling_control,
-    _style_cycling_flags,
-    _SYMBOLS,
-    _to_rgba,
+    DASHES,
+    display_options,
+    is_valid_df,
+    legend_below,
+    opacity_control,
+    palette_control,
+    PALETTES,
+    style_cycling_control,
+    style_cycling_flags,
+    SYMBOLS,
+    to_rgba,
 )
 
 from ._common import _ATTRIBUTION_HELP
@@ -31,7 +31,7 @@ def _render_historical(
     reliability: dict[str, bool | None] | None = None,
 ) -> None:
     """Render the historical region timing trends view."""
-    if not _is_valid_df(trend_region_df):
+    if not is_valid_df(trend_region_df):
         st.info(
             "No region timing trend data in the selected window. "
             "Widen the trend window in the sidebar."
@@ -81,12 +81,12 @@ def _render_historical(
 
         ``None`` means this render has no ranking to size against, which keeps
         every control's stored value alive without letting an empty render
-        re-default the palette (see :func:`~ui_utils._palette_control`).
+        re-default the palette (see :func:`~ui_utils.palette_control`).
         """
-        return _display_options(
-            _palette_control("region_hist_palette", n_detectors),
-            _style_cycling_control("region_hist_style"),
-            _opacity_control("region_hist_alpha"),
+        return display_options(
+            palette_control("region_hist_palette", n_detectors),
+            style_cycling_control("region_hist_style"),
+            opacity_control("region_hist_alpha"),
             key_prefix="region_hist_display",
             slot=display_options_slot,
         )
@@ -120,9 +120,9 @@ def _render_historical(
     top_detectors = detector_rank.index.tolist()
 
     display = _display_controls(len(top_detectors))
-    palette = _PALETTES[display["palette"]]
+    palette = PALETTES[display["palette"]]
     alpha = display["alpha"]
-    use_dash, use_marker = _style_cycling_flags(display["style"])
+    use_dash, use_marker = style_cycling_flags(display["style"])
 
     unique_dates = sorted(sub["x_date"].dropna().unique())
     tick_labels  = [pd.Timestamp(d).strftime("%Y-%m-%d") for d in unique_dates]
@@ -150,10 +150,10 @@ def _render_historical(
         n_colors     = len(palette)
         cycle        = det_idx // n_colors
         color        = palette[det_idx % n_colors]
-        line_color   = _to_rgba(color, alpha)
-        marker_color = _to_rgba(color, marker_alpha)
-        dash         = _DASHES [cycle % len(_DASHES) ] if use_dash   else "solid"
-        symbol       = _SYMBOLS[cycle % len(_SYMBOLS)] if use_marker else "circle"
+        line_color   = to_rgba(color, alpha)
+        marker_color = to_rgba(color, marker_alpha)
+        dash         = DASHES [cycle % len(DASHES) ] if use_dash   else "solid"
+        symbol       = SYMBOLS[cycle % len(SYMBOLS)] if use_marker else "circle"
         run_date_str = det_df["run_date"].dt.strftime("%Y-%m-%d").fillna("unknown")
         k4h_release  = det_df["k4h_release"].fillna("unknown")
         custom       = list(zip(run_date_str, k4h_release))
@@ -183,7 +183,7 @@ def _render_historical(
             if sem is not None:
                 err_y = dict(
                     type="data", array=sem, arrayminus=sem,
-                    visible=True, color=_to_rgba(color, 0.3),
+                    visible=True, color=to_rgba(color, 0.3),
                     thickness=1.5, width=4,
                 )
             fig.add_trace(
@@ -221,7 +221,7 @@ def _render_historical(
     # Extra 40 px so the "Key4hep Nightly Tag" x-axis title has breathing room
     # before the horizontal legend — same treatment as trends.py.
     # tick_clearance=75: rotated (-30°) date ticks + "Key4hep Nightly Tag" title.
-    _legend, _b_margin = _legend_below(
+    _legend, _b_margin = legend_below(
         380, len(top_detectors), t_margin=40, tick_clearance=75,
         entry_width=180, font_size=12,
     )

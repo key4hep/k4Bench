@@ -22,12 +22,12 @@ import plotly.graph_objects as go
 
 from k4bench.regression.models import MetricVerdict, Severity
 from tabs._regression_flags import FLAG_MARKS
-from ui_utils import _to_rgba
+from ui_utils import to_rgba
 
 #: Fill for the onset-window band — the same amber the ⚠️ Watch marker uses, at
 #: low alpha, so the shaded region reads as "where the ⚠️→🔴 step came from"
 #: rather than a second, unrelated highlight.
-_WINDOW_FILL = _to_rgba(FLAG_MARKS["WATCH"]["color"], 0.12)
+_WINDOW_FILL = to_rgba(FLAG_MARKS["WATCH"]["color"], 0.12)
 _WINDOW_LABEL = "change entered here"
 _WINDOW_LABEL_SIZE = 10
 

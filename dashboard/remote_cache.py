@@ -57,19 +57,19 @@ def _keep_complete(cached, *args):
 
 
 @st.cache_data(show_spinner="Fetching detectors...", ttl=3600)
-def _cached_list_detectors(base_url: str) -> list[str]:
+def cached_list_detectors(base_url: str) -> list[str]:
     from k4bench.remote import list_detectors
     return list_detectors(base_url)
 
 
 @st.cache_data(show_spinner="Fetching platforms...", ttl=3600)
-def _cached_list_platforms(base_url: str, detector: str) -> list[str]:
+def cached_list_platforms(base_url: str, detector: str) -> list[str]:
     from k4bench.remote import list_platforms
     return list_platforms(base_url, detector)
 
 
 @st.cache_data(show_spinner="Scanning releases...", ttl=3600)
-def _cached_scan_stack_samples(
+def cached_scan_stack_samples(
     base_url: str, detector: str, platform: str
 ) -> dict[str, list[str]]:
     """Raises :class:`~k4bench.remote.IncompleteFetch` rather than return a
@@ -79,7 +79,7 @@ def _cached_scan_stack_samples(
 
 
 @st.cache_data(show_spinner="Scanning run dates...", ttl=600)
-def _cached_list_run_dates(
+def cached_list_run_dates(
     base_url: str, detector: str, platform: str, sample: str
 ) -> dict[str, list[str]]:
     """Raises :class:`~k4bench.remote.IncompleteFetch` rather than return a
@@ -89,7 +89,7 @@ def _cached_list_run_dates(
 
 
 @st.cache_data(show_spinner="Scanning Key4hep releases...", ttl=600)
-def _cached_list_stacks(base_url: str, detector: str, platform: str) -> list[str]:
+def cached_list_stacks(base_url: str, detector: str, platform: str) -> list[str]:
     from k4bench.remote import list_stacks
     return list_stacks(base_url, detector, platform)
 
@@ -102,7 +102,7 @@ def _fetch_stack_packages(
     return fetch_stack_packages(base_url, detector, platform, stack, strict=True)
 
 
-def _cached_fetch_stack_packages(
+def cached_fetch_stack_packages(
     base_url: str, detector: str, platform: str, stack: str
 ) -> dict | None:
     """Cached :func:`k4bench.remote.fetch_stack_packages`.
@@ -114,7 +114,7 @@ def _cached_fetch_stack_packages(
 
 
 @st.cache_data(show_spinner="Listing regression reports...", ttl=600)
-def _cached_list_report_dates(base_url: str) -> list[str]:
+def cached_list_report_dates(base_url: str) -> list[str]:
     """Cached :func:`k4bench.remote.list_report_dates`, which raises — and so
     is not cached — when the listing did not answer; callers say so rather
     than "no reports yet"."""
@@ -128,7 +128,7 @@ def _fetch_blame(base_url: str, date: str) -> dict | None:
     return fetch_blame(base_url, date, strict=True)
 
 
-def _cached_fetch_blame(base_url: str, date: str) -> dict | None:
+def cached_fetch_blame(base_url: str, date: str) -> dict | None:
     """Cached :func:`k4bench.remote.fetch_blame`.
 
     Most nights have no ``blame.json`` (only a confirmed, attributable
@@ -171,7 +171,7 @@ def _fetch_reports(base_url: str, dates: tuple[str, ...]) -> dict[str, NightlyRe
     A night missing from the cache costs a request, so the nights are read in
     parallel. Nights without a parseable report are absent from the result;
     when one is absent only because the server did not answer, the result
-    raises instead (see :func:`_cached_fetch_reports`).
+    raises instead (see :func:`cached_fetch_reports`).
 
     Thread count is Python's own default (no ``max_workers``). The concurrency
     ceiling lives one level down, in :mod:`k4bench.remote`'s shared,
@@ -208,7 +208,7 @@ def _fetch_reports(base_url: str, dates: tuple[str, ...]) -> dict[str, NightlyRe
     return reports
 
 
-def _cached_fetch_reports(
+def cached_fetch_reports(
     base_url: str, dates: tuple[str, ...]
 ) -> dict[str, NightlyReport]:
     """:func:`_fetch_reports`; when a night could not be read, the others with
@@ -217,7 +217,7 @@ def _cached_fetch_reports(
 
 
 @st.cache_data(show_spinner="Downloading latest run...", ttl=3600)
-def _cached_fetch_latest_run(
+def cached_fetch_latest_run(
     base_url: str, detector: str, platform: str, stack: str, sample: str, cache_dir: str
 ) -> str | None:
     from k4bench.remote import ensure_latest_run_cached
@@ -256,7 +256,7 @@ def _fetch_runs_windowed(
     return tuple(sorted(r["run_dir"] for r in runs))
 
 
-def _cached_fetch_runs_windowed(
+def cached_fetch_runs_windowed(
     base_url: str,
     detector: str,
     platform: str,

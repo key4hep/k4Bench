@@ -17,8 +17,8 @@ from collections.abc import Callable
 
 import streamlit as st
 
-from ui_chrome import _drop_stale_selection, seed_query_param
-from ui_utils import _reset_widget_on_scope
+from ui_chrome import drop_stale_selection, seed_query_param
+from ui_utils import reset_widget_on_scope
 
 
 def render_night_picker(
@@ -62,8 +62,8 @@ def render_night_picker(
     than ``index=``).
     """
     if reset_scope is not None:
-        _reset_widget_on_scope(key, reset_scope, query_param="report")
-    _drop_stale_selection(key, nights)          # stale night → re-default
+        reset_widget_on_scope(key, reset_scope, query_param="report")
+    drop_stale_selection(key, nights)          # stale night → re-default
     seed_query_param(key, "report", nights)     # ?report= wins when it's valid
     st.session_state.setdefault(key, default)
     night = st.selectbox(

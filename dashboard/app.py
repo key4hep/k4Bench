@@ -27,8 +27,8 @@ from sections import visible_sections
 from sidebar import RunSelection, TrendWindow, pick_run, pick_trend_window
 from tabs._reliability import render_sidebar_run_quality
 from ui_chrome import (
-    _render_footer,
-    _render_sidebar_footer,
+    render_footer,
+    render_sidebar_footer,
     configure_page,
     render_run_status,
     render_scope_note,
@@ -88,7 +88,7 @@ def main() -> None:
             if not run.labels:
                 st.warning("No benchmark data found in the specified directory.")
 
-        _render_sidebar_footer()
+        render_sidebar_footer()
 
     if run is None or not run.labels:
         path_hint = f" in **{data_dir}**" if data_dir else ""
@@ -158,7 +158,7 @@ def main() -> None:
         data_dir=data_dir, override=scope_override, slot=scope_note,
     )
 
-    _render_footer()
+    render_footer()
 
 
 main()

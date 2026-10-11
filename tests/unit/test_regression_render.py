@@ -32,7 +32,7 @@ from k4bench.regression.models import (
     UNRELIABLE_HOST_REASON,
     unjudged_cause,
 )
-from k4bench.regression.render import _detector_badge, from_json, to_json
+from k4bench.regression.render import detector_badge, from_json, to_json
 
 
 def test_nightly_report_link_names_the_existing_view_without_single_scope_filters():
@@ -92,8 +92,8 @@ def test_detector_badge_marks_groups_with_nothing_judged_as_unknown():
             unjudged=Unjudged.UNRELIABLE_HOST,
         )],
     )
-    assert _detector_badge([unknown_group]) == "❔"
-    assert _detector_badge([]) == "❔"
+    assert detector_badge([unknown_group]) == "❔"
+    assert detector_badge([]) == "❔"
 
 
 def test_detector_badge_is_ok_when_any_group_has_a_judged_metric():
@@ -111,18 +111,18 @@ def test_detector_badge_is_ok_when_any_group_has_a_judged_metric():
         sample="p8_ee_Zbb_ecm91",
         verdicts=[_verdict(severity=Severity.OK)],
     )
-    assert _detector_badge([unknown_group, judged_group]) == "✅"
+    assert detector_badge([unknown_group, judged_group]) == "✅"
 
 
 def test_group_title_prettifies_known_sample_and_platform_layouts():
-    from k4bench.regression.render import _group_title
+    from k4bench.regression.render import group_title
 
     group = RunGroupReport(
         detector="IDEA_o1_v03", platform="x86_64-almalinux9-gcc14.2.0-opt",
         sample="p8_ee_Zbb_ecm91", k4h_release="key4hep-2026-01-01",
         run_date="2026-01-12", run_id="2026-01-12",
     )
-    assert _group_title(group) == (
+    assert group_title(group) == (
         "Pythia8: e⁺e⁻ → Z → bb (91 GeV) · AlmaLinux 9 · GCC 14.2.0 (optimized)"
     )
 
@@ -131,18 +131,18 @@ def test_group_title_prettifies_known_sample_and_platform_layouts():
         sample="single_e-_10GeV", k4h_release="key4hep-2026-01-01",
         run_date="2026-01-12", run_id="2026-01-12",
     )
-    assert _group_title(group2) == "Single e⁻ · 10 GeV · AlmaLinux 9 · GCC 14.2.0 (optimized)"
+    assert group_title(group2) == "Single e⁻ · 10 GeV · AlmaLinux 9 · GCC 14.2.0 (optimized)"
 
 
 def test_group_title_falls_back_to_raw_strings_for_unknown_layouts():
-    from k4bench.regression.render import _group_title
+    from k4bench.regression.render import group_title
 
     group = RunGroupReport(
         detector="DET", platform="some-weird-platform-string",
         sample="a_totally_unknown_sample_name", k4h_release="key4hep-2026-01-01",
         run_date="2026-01-12", run_id="2026-01-12",
     )
-    assert _group_title(group) == "a_totally_unknown_sample_name · some-weird-platform-string"
+    assert group_title(group) == "a_totally_unknown_sample_name · some-weird-platform-string"
 
 
 def test_json_roundtrip_and_sanitization():
@@ -301,14 +301,6 @@ def test_to_json_stays_free_of_blame():
     text = json.dumps(to_json(_full_report())).lower()
     assert "likelihood" not in text
     assert "candidate" not in text
-
-
-def test_legacy_email_renderer_imports_remain_compatible():
-    from k4bench.regression.render import to_html, to_markdown
-
-    report = _full_report()
-    assert "Needs attention" in to_html(report)
-    assert "## Needs attention" in to_markdown(report)
 
 
 #: The blame window fields added to every verdict.

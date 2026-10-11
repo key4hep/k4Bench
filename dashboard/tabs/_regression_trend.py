@@ -34,13 +34,13 @@ from k4bench.regression.engine import Z_THRESHOLD
 from k4bench.regression.models import MetricVerdict, Severity
 from k4bench.labels import pretty_sample
 from k4bench.metrics import metric_title
-from k4bench.regression.render import _metric_name
+from k4bench.regression.render import metric_name
 from k4bench.regression.report_builder import EVENT_VALUE_METRICS, RUN_VALUE_METRICS
 from k4bench.results.reliability_evidence import run_reliability_map
 from tabs import _blame
 from tabs._regression_flags import add_severity_markers, metric_option
 from tabs._reliability import resolve_reliability_filter
-from ui_utils import _is_valid_df, _to_rgba
+from ui_utils import is_valid_df, to_rgba
 
 #: Fill for the accepted-baseline band, shared by every metric drill-down.
 _BASELINE_FILL = "rgba(31,119,180,0.08)"
@@ -218,11 +218,11 @@ def _metric_history(
 
     if verdict.metric in EVENT_VALUE_METRICS:
         df = cached_load_trend_event_timing(run_dirs)
-        if not _is_valid_df(df):
+        if not is_valid_df(df):
             return None
     else:
         df = results_df
-        if not _is_valid_df(df):
+        if not is_valid_df(df):
             return None
         if verdict.metric in RUN_VALUE_METRICS:
             df = with_cpu_efficiency(df)
@@ -352,10 +352,10 @@ def render_metric_trend(
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=x, y=y, mode="lines+markers", name=_metric_name(verdict),
+        x=x, y=y, mode="lines+markers", name=metric_name(verdict),
         line=dict(color=PALETTE[0], width=2),
         marker=dict(
-            size=7, color=_to_rgba(PALETTE[0], 0.55),
+            size=7, color=to_rgba(PALETTE[0], 0.55),
             line=dict(color=PALETTE[0], width=1.5),
         ),
     ))

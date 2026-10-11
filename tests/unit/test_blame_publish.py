@@ -14,7 +14,6 @@ import pytest
 import requests
 
 from k4bench.blame.comment import (
-    CommentObservation,
     CommentPolicy,
     PRComment,
     build_comments,
@@ -36,53 +35,38 @@ _MARKER = "<!-- k4bench-blame-comment:v1 window=2026-07-03..2026-07-04 -->"
 _BOT = "k4bench-bot"
 
 
-def _comment(body: str = f"{_MARKER}\nbody text", number: int = 7) -> PRComment:
-    return PRComment(
-        repo="key4hep/k4geo", number=number, marker=_MARKER, body=body, score=91.0,
-    )
+@dataclasses.dataclass(frozen=True)
+class _Fixed:
+    """A draft whose body is already decided. The upsert rules — markers,
+    ownership, digests, failure handling — need no renderer behind them; the
+    lineage merge is exercised against really rendered drafts further down."""
+
+    repo: str
+    number: int
+    marker: str
+    body: str
+    score: float = 91.0
+    facts_digest: str = ""
+
+    @property
+    def target(self) -> str:
+        return f"{self.repo}#{self.number}"
+
+    def render(self, previous_bodies=()) -> PRComment:
+        return PRComment(
+            repo=self.repo, number=self.number, marker=self.marker,
+            body=self.body, score=self.score, facts_digest=self.facts_digest,
+        )
 
 
-def _window_comment(base: str | None, onset: str, *, number: int = 7) -> PRComment:
+def _comment(body: str = f"{_MARKER}\nbody text", number: int = 7) -> _Fixed:
+    return _Fixed(repo="key4hep/k4geo", number=number, marker=_MARKER, body=body)
+
+
+def _window_comment(base: str | None, onset: str, *, number: int = 7) -> _Fixed:
     marker = marker_for(base, onset)
-    return PRComment(
-        repo="key4hep/k4geo", number=number, marker=marker,
-        body=f"{marker}\nnew body", score=91.0,
-    )
-
-
-def _observed_comment(
-    base: str | None,
-    onset: str,
-    *,
-    night: str,
-    digest: str,
-    regressions: int,
-    scopes: int,
-    up: int,
-    down: int,
-) -> PRComment:
-    marker = marker_for(base, onset)
-    return PRComment(
-        repo="key4hep/k4geo",
-        number=7,
-        marker=marker,
-        body=(
-            f"{marker}\n<!-- k4bench-blame-facts:{digest} -->\n"
-            "current details\n<!-- k4bench-blame-history -->"
-        ),
-        score=91.0,
-        facts_digest=digest,
-        observation=CommentObservation(
-            report_night=night,
-            base_release=base,
-            onset_release=onset,
-            regressions=regressions,
-            scopes=scopes,
-            up=up,
-            down=down,
-            none=0,
-            url=f"https://dashboard.example/?report={night}",
-        ),
+    return _Fixed(
+        repo="key4hep/k4geo", number=number, marker=marker, body=f"{marker}\nnew body",
     )
 
 
@@ -201,7 +185,7 @@ def test_migration_rewrites_the_marker_even_when_the_facts_are_unchanged():
     previous = marker_for("2026-07-01", "2026-07-03")
     current_marker = marker_for("2026-07-01", "2026-07-04")
     digest = "abc123"
-    current = PRComment(
+    current = _Fixed(
         repo="key4hep/k4geo", number=7, marker=current_marker,
         body=(
             f"{current_marker}\n<!-- k4bench-blame-facts:{digest} -->\nnew wording"
@@ -233,10 +217,33 @@ def _observations_of(body: str) -> list[dict]:
     ]
 
 
-def test_a_created_comment_materialises_its_current_observation():
-    comment = _observed_comment(
-        "2026-07-01", "2026-07-03", night="2026-07-04", digest="first",
-        regressions=12, scopes=2, up=6, down=6,
+def _observed(base: str, onset: str, *, night: str, metrics=("wall_time_s",), pct=0.20):
+    """A really rendered draft confirming *metrics* in ``(base, onset]`` on
+    *night* — the observation it records is exactly what its rows say."""
+    verdicts = [
+        _verdict(metric=metric, base=base, onset=onset, pct=pct) for metric in metrics
+    ]
+    return _rendered(verdicts, dict.fromkeys(metrics, 91.0), night=night)
+
+
+def _observation(night: str, base: str, onset: str, regressions: int) -> dict:
+    return {
+        "report_night": night,
+        "base_release": base,
+        "onset_release": onset,
+        "regressions": regressions,
+        "scopes": 1,
+        "up": regressions,
+        "down": 0,
+        "none": 0,
+        "url": f"{_DASH}?tab=Overview&view=Nightly+Report&report={night}",
+    }
+
+
+def test_a_created_comment_writes_its_current_observation():
+    comment = _observed(
+        "2026-07-01", "2026-07-03", night="2026-07-04",
+        metrics=("wall_time_s", "mean_time_s"),
     )
     gh = _FakeGitHub({7: []})
 
@@ -248,32 +255,23 @@ def test_a_created_comment_materialises_its_current_observation():
     # visible section is withheld — but the marker that carries it into the
     # next night is written, and holds the night's counts exactly.
     assert "Observation history" not in body
-    assert "<!-- k4bench-blame-history -->" not in body
-    assert _observations_of(body) == [{
-        "report_night": "2026-07-04",
-        "base_release": "2026-07-01",
-        "onset_release": "2026-07-03",
-        "regressions": 12,
-        "scopes": 2,
-        "up": 6,
-        "down": 6,
-        "none": 0,
-        "url": "https://dashboard.example/?report=2026-07-04",
-    }]
+    assert _observations_of(body) == [
+        _observation("2026-07-04", "2026-07-01", "2026-07-03", 2),
+    ]
 
 
 def test_an_expanding_update_carries_the_previous_observation_forward():
-    previous = _observed_comment(
-        "2026-07-01", "2026-07-03", night="2026-07-04", digest="first",
-        regressions=12, scopes=2, up=6, down=6,
+    previous = _observed(
+        "2026-07-01", "2026-07-03", night="2026-07-04",
+        metrics=("wall_time_s", "mean_time_s"),
     )
     first_run = _FakeGitHub({7: []})
     assert publish(first_run, [previous]).created
     posted = first_run.created[0][1]
 
-    current = _observed_comment(
-        "2026-07-01", "2026-07-05", night="2026-07-06", digest="second",
-        regressions=28, scopes=6, up=8, down=20,
+    current = _observed(
+        "2026-07-01", "2026-07-05", night="2026-07-06",
+        metrics=("peak_rss_mb", "mean_rss_mb", "user_cpu_s"),
     )
     second_run = _FakeGitHub({7: [_mine(42, posted)]})
 
@@ -282,30 +280,31 @@ def test_an_expanding_update_carries_the_previous_observation_forward():
     assert result.updated == ["key4hep/k4geo#7"]
     body = second_run.updated[0][1]
     assert "Observation history</b> — 2 material updates" in body
-    assert body.index("2026-07-06") < body.index("2026-07-04")
-    assert "| 28 | 6 | 8 UP · 20 DOWN |" in body
-    assert "| 12 | 2 | 6 UP · 6 DOWN |" in body
-    assert body.count("k4bench-blame-observation:v1") == 2
-    assert "report=2026-07-06" in body and "report=2026-07-04" in body
+    assert _observations_of(body) == [
+        _observation("2026-07-06", "2026-07-01", "2026-07-05", 3),
+        _observation("2026-07-04", "2026-07-01", "2026-07-03", 2),
+    ]
+    assert "| 3 | 1 | 3 UP · 0 DOWN |" in body
+    assert "| 2 | 1 | 2 UP · 0 DOWN |" in body
 
 
 def test_observation_history_is_bounded_and_counts_omitted_updates():
     posted = ""
     for day in range(1, 26):
-        comment = _observed_comment(
-            "2026-06-29", "2026-06-30",
-            night=f"2026-07-{day:02d}", digest=f"digest-{day}",
-            regressions=1, scopes=1, up=1, down=0,
+        # A step that moves visibly every night, so every night is material.
+        comment = _observed(
+            "2026-06-29", "2026-06-30", night=f"2026-07-{day:02d}",
+            pct=0.10 + day / 100,
         )
         gh = _FakeGitHub({7: [] if not posted else [_mine(42, posted)]})
         assert publish(gh, [comment]).failed == []
         posted = (gh.created or gh.updated)[0][1]
 
-    assert posted.count("k4bench-blame-observation:v1") == 20
+    nights = [item["report_night"] for item in _observations_of(posted)]
+    assert len(nights) == 20
+    assert nights[0] == "2026-07-25" and nights[-1] == "2026-07-06"
     assert posted.count("k4bench-blame-observations-omitted:v1") == 1
     assert "20 material updates · 5 earlier updates omitted" in posted
-    assert "2026-07-25" in posted and "2026-07-06" in posted
-    assert "2026-07-05" not in posted
     assert len(posted.encode()) < 65_536
 
 
@@ -320,10 +319,7 @@ def test_observation_history_is_bounded_and_counts_omitted_updates():
     ids=["non-string-date", "non-string-onset", "boolean-count", "markdown-url"],
 )
 def test_invalid_observation_metadata_is_ignored(overrides):
-    current = _observed_comment(
-        "2026-07-01", "2026-07-02", night="2026-07-04", digest="new",
-        regressions=2, scopes=1, up=1, down=1,
-    )
+    current = _observed("2026-07-01", "2026-07-02", night="2026-07-04")
     previous = (
         f"{current.marker}\n<!-- k4bench-blame-facts:old -->\n"
         f"{_observation_marker(**overrides)}"
@@ -339,38 +335,29 @@ def test_invalid_observation_metadata_is_ignored(overrides):
 
 
 def test_a_same_night_rerun_replaces_instead_of_duplicating_its_observation():
-    previous = _observed_comment(
-        "2026-07-01", "2026-07-03", night="2026-07-04", digest="first",
-        regressions=12, scopes=2, up=6, down=6,
+    previous = _observed(
+        "2026-07-01", "2026-07-03", night="2026-07-04",
+        metrics=("wall_time_s", "mean_time_s"),
     )
     first_run = _FakeGitHub({7: []})
     assert publish(first_run, [previous]).created
 
-    current = _observed_comment(
-        "2026-07-01", "2026-07-03", night="2026-07-04", digest="second",
-        regressions=10, scopes=2, up=4, down=6,
-    )
+    current = _observed("2026-07-01", "2026-07-03", night="2026-07-04")
     gh = _FakeGitHub({7: [_mine(42, first_run.created[0][1])]})
 
     assert publish(gh, [current]).updated
     body = gh.updated[0][1]
-    observations = _observations_of(body)
-    assert len(observations) == 1
-    assert (observations[0]["regressions"], observations[0]["up"]) == (10, 4)
+    assert _observations_of(body) == [
+        _observation("2026-07-04", "2026-07-01", "2026-07-03", 1),
+    ]
 
 
 def test_an_unchanged_night_does_not_append_history_or_trigger_an_edit():
-    previous = _observed_comment(
-        "2026-07-01", "2026-07-03", night="2026-07-04", digest="same",
-        regressions=12, scopes=2, up=6, down=6,
-    )
+    previous = _observed("2026-07-01", "2026-07-03", night="2026-07-04")
     first_run = _FakeGitHub({7: []})
     assert publish(first_run, [previous]).created
 
-    unchanged = _observed_comment(
-        "2026-07-01", "2026-07-03", night="2026-07-05", digest="same",
-        regressions=12, scopes=2, up=6, down=6,
-    )
+    unchanged = _observed("2026-07-01", "2026-07-03", night="2026-07-05")
     gh = _FakeGitHub({7: [_mine(42, first_run.created[0][1])]})
 
     result = publish(gh, [unchanged])
@@ -627,9 +614,9 @@ def test_client_type_is_the_shared_github_client():
 # *benchmark facts* underneath it, so a rephrased summary of the same
 # regressions notifies nobody.
 
-def _digested(digest: str, text: str, *, number: int = 7) -> PRComment:
+def _digested(digest: str, text: str, *, number: int = 7) -> _Fixed:
     body = f"{_MARKER}\n<!-- k4bench-blame-facts:{digest} -->\n{text}"
-    return PRComment(
+    return _Fixed(
         repo="key4hep/k4geo", number=number, marker=_MARKER, body=body,
         score=91.0, facts_digest=digest,
     )
@@ -792,7 +779,7 @@ def test_a_migration_past_distant_duplicates_settles_on_the_next_run():
     nearest = marker_for("2026-07-01", "2026-07-03")
     digest = "settled"
     marker = marker_for("2026-07-01", "2026-07-04")
-    current = PRComment(
+    current = _Fixed(
         repo="key4hep/k4geo", number=7, marker=marker,
         body=f"{marker}\n<!-- k4bench-blame-facts:{digest} -->\nbody",
         score=91.0, facts_digest=digest,
@@ -825,7 +812,7 @@ _PLAT = "x86_64-almalinux9-gcc14.2.0-opt"
 _DASH = "https://k4bench-dashboard.app.cern.ch"
 
 
-def _verdict(*, metric, onset, pct, severity=Severity.CONFIRMED):
+def _verdict(*, metric, onset, pct, severity=Severity.CONFIRMED, base="2026-07-01"):
     return MetricVerdict(
         detector="ALLEGRO_o1_v03", platform=_PLAT, sample="single_e-_10GeV",
         label="baseline", metric_family="time", metric=metric, sub_detector=None,
@@ -833,7 +820,7 @@ def _verdict(*, metric, onset, pct, severity=Severity.CONFIRMED):
         baseline_mad=1.0, pct_change=pct, z_score=6.0, severity=severity,
         direction=Direction.UP, reason="step",
         onset_run_id=onset, onset_run_date=onset,
-        last_accepted_run_id="2026-07-01", last_accepted_run_date="2026-07-01",
+        last_accepted_run_id=base, last_accepted_run_date=base,
         first_confirmed_run_id="2026-07-05",
     )
 
@@ -904,7 +891,7 @@ def test_an_evidence_rows_onset_moving_updates_the_standing_comment():
     second = _rendered([lead, _verdict(metric="mean_time_s", onset="2026-07-04",
                                        pct=0.14)], scores)
     assert first.marker == second.marker            # the same plan window
-    assert first.facts_digest != second.facts_digest
+    assert first.render().facts_digest != second.render().facts_digest
 
     gh = _FakeGitHub({7: [_mine(42, standing)]})
     result = publish(gh, [second])
@@ -1025,7 +1012,7 @@ def test_a_retained_rows_date_is_the_night_it_was_last_published():
     # comment. The date a retained row carries is therefore the last
     # *published* one. It is hidden state now rather than a column, but it
     # still decides which snapshot survives when lineages converge
-    # (:func:`k4bench.blame.comment._merged_retained`), so it has to be right.
+    # (:func:`k4bench.blame.comment.state._merged_retained`), so it has to be right.
     # Hashing the report night to keep it current would re-notify everyone
     # watching the pull request every night, which is the worse trade.
     wall = _verdict(metric="wall_time_s", onset="2026-07-05", pct=0.20)

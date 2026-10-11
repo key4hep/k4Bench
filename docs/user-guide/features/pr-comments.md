@@ -9,7 +9,7 @@ request it holds responsible, in the repository that PR lives in.
 It is the **only** part of k4Bench that writes outside this repository, so
 everything below is built around not abusing that.
 
-Implemented by [`k4bench.blame.comment`](../../reference/api/blame/comment.md)
+Implemented by [`k4bench.blame.comment`](../../reference/api/blame/comment/index.md)
 (who is commented on — pure, no network — and what the comment says),
 [`k4bench.blame.attribute`](../../reference/api/blame/attribute.md) (the
 cross-configuration review behind the claim) and

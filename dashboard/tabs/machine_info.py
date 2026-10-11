@@ -49,7 +49,7 @@ from k4bench.results.reliability_evidence import (
     reliability_verdict as _reliability_verdict,
 )
 from sections import TREND_WINDOW_SCOPE, SectionScope
-from ui_utils import _is_valid_df, _to_rgba
+from ui_utils import is_valid_df, to_rgba
 
 # CPU flags relevant to simulation / floating-point heavy workloads.
 # Presence of these affects vectorisation and therefore benchmark performance.
@@ -194,7 +194,7 @@ def _contention_summary(results: pd.DataFrame | None) -> dict:
     over successfully completed configs, with whichever keys the data supports.
     """
     out: dict = {}
-    if not _is_valid_df(results):
+    if not is_valid_df(results):
         return out
     results = results.loc[~failed_config_mask(results)]
     if "involuntary_ctx_switches" in results.columns:
@@ -446,7 +446,7 @@ def _agg_results_by_date(trend_results_df: pd.DataFrame | None) -> pd.DataFrame 
     the rate is comparable across runs of different length and matches the units
     the reliability check uses.
     """
-    if not _is_valid_df(trend_results_df):
+    if not is_valid_df(trend_results_df):
         return None
     df = trend_results_df.loc[~failed_config_mask(trend_results_df)].copy()
     if df.empty:
@@ -484,7 +484,7 @@ def _render_historical(
     trend_results_df: pd.DataFrame | None,
 ) -> None:
     """Plot machine load, available memory and measured contention across releases."""
-    if not _is_valid_df(trend_machine_df):
+    if not is_valid_df(trend_machine_df):
         st.info(
             "No machine-info trend data in the selected window. "
             "Widen the trend window in the sidebar, or note that machine info is "
@@ -527,7 +527,7 @@ def _render_historical(
 
     # ── Layout ────────────────────────────────────────────────────────────────
     agg = _agg_results_by_date(trend_results_df)
-    has_contention = _is_valid_df(agg)
+    has_contention = is_valid_df(agg)
     n_rows = 2 if has_contention else 1
 
     load_title = "CPU Utilisation (% of physical cores)" if has_cores else "System Load (run-queue depth)"
@@ -576,8 +576,8 @@ def _render_historical(
         fig.add_trace(
             go.Scatter(
                 x=df["x_date"], y=y, mode="lines+markers", name=name, legend="legend",
-                line=dict(color=_to_rgba(color, 0.9), width=2, dash=dash),
-                marker=dict(size=7, color=_to_rgba(color, 0.7), line=dict(color=color, width=1.5)),
+                line=dict(color=to_rgba(color, 0.9), width=2, dash=dash),
+                marker=dict(size=7, color=to_rgba(color, 0.7), line=dict(color=color, width=1.5)),
                 customdata=custom, hovertemplate=hover,
             ),
             row=1, col=1,
@@ -599,8 +599,8 @@ def _render_historical(
         fig.add_trace(
             go.Scatter(
                 x=df["x_date"], y=df[col], mode="lines+markers", name=name, legend="legend2",
-                line=dict(color=_to_rgba(color, 0.9), width=2, dash=dash),
-                marker=dict(size=7, color=_to_rgba(color, 0.7), line=dict(color=color, width=1.5)),
+                line=dict(color=to_rgba(color, 0.9), width=2, dash=dash),
+                marker=dict(size=7, color=to_rgba(color, 0.7), line=dict(color=color, width=1.5)),
                 customdata=base_custom,
                 hovertemplate=(f"<b>{name}</b><br>Tag: %{{customdata[1]}} (%{{x|%Y-%m-%d}})<br>"
                                "%{y:.4g} GB<br>Host: %{customdata[2]} · CI run: %{customdata[0]}<extra></extra>"),
@@ -631,8 +631,8 @@ def _render_historical(
                 go.Scatter(
                     x=agg["x_date"], y=agg["invol"], mode="lines+markers",
                     name="Invol. ctx switches", showlegend=False,
-                    line=dict(color=_to_rgba(PALETTE[3], 0.9), width=2),
-                    marker=dict(size=7, color=_to_rgba(PALETTE[3], 0.7),
+                    line=dict(color=to_rgba(PALETTE[3], 0.9), width=2),
+                    marker=dict(size=7, color=to_rgba(PALETTE[3], 0.7),
                                 line=dict(color=PALETTE[3], width=1.5)),
                     hovertemplate=("<b>Involuntary ctx switches</b><br>%{x|%Y-%m-%d}<br>"
                                    "mean %{y:,.1f} / CPU-second<extra></extra>"),
@@ -655,8 +655,8 @@ def _render_historical(
                 go.Scatter(
                     x=agg["x_date"], y=agg["eff"], mode="lines+markers",
                     name="CPU efficiency", showlegend=False,
-                    line=dict(color=_to_rgba(PALETTE[4], 0.9), width=2),
-                    marker=dict(size=7, color=_to_rgba(PALETTE[4], 0.7),
+                    line=dict(color=to_rgba(PALETTE[4], 0.9), width=2),
+                    marker=dict(size=7, color=to_rgba(PALETTE[4], 0.7),
                                 line=dict(color=PALETTE[4], width=1.5)),
                     hovertemplate=("<b>CPU efficiency</b><br>%{x|%Y-%m-%d}<br>"
                                    "mean %{y:.3f} (CPU time / wall)<extra></extra>"),
