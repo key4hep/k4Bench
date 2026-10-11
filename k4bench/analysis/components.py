@@ -37,6 +37,8 @@ Where the hardware performance counters could be read (:data:`HARDWARE_METRICS`)
 - ``cycles`` — user-space CPU cycles; instructions per cycle tell more work
   apart from the same work run slower.
 
+Where they could not, :attr:`ComponentTiming.hardware_counters_error` says why.
+
 When the job preloaded the auditor's allocation counter, as ``k4bench k4run``
 does (:data:`ALLOCATION_METRICS`):
 
@@ -127,7 +129,11 @@ class ComponentTiming:
     as a service initialized on first use, appears there and also stays in the
     executing component's ``execute`` cost. ``phases`` holds each phase's
     ``(begin, end)`` in ns since the Unix epoch, ``execute`` included, spanning
-    only the calls made outside event processing.
+    only the calls made outside event processing. ``hardware_counters_error``
+    is why the job has no :data:`HARDWARE_METRICS`, such as
+    ``"perf_event_open: Function not implemented"`` in a container whose seccomp
+    profile refuses the counters; it is ``None`` when they were counted, and in
+    files the auditor of k4bench 0.0.48 or earlier wrote.
     """
 
     components: pd.DataFrame
@@ -137,6 +143,7 @@ class ComponentTiming:
     process_start_epoch_ns: int | None
     measurement_overhead_ns: float | None
     threads: int
+    hardware_counters_error: str | None
 
     @classmethod
     def from_json(cls, raw: Mapping, *, source: str | Path | None = None) -> ComponentTiming:
@@ -229,6 +236,7 @@ class ComponentTiming:
             process_start_epoch_ns=start if start is not None and start >= 0 else None,
             measurement_overhead_ns=overhead if overhead is not None and overhead >= 0 else None,
             threads=int(raw.get("threads", 1)),
+            hardware_counters_error=raw.get("hardware_counters_error"),
         )
 
     def children(self, component: str) -> list[str]:

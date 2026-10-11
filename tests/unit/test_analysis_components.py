@@ -128,6 +128,14 @@ class TestFromJson:
         assert timing.measurement_overhead_ns == 800.0
         assert timing.phases["execute"] == (105 * S, 111 * S)
 
+    def test_hardware_counters_error_says_why_they_are_missing(self):
+        reason = "perf_event_open: Function not implemented"
+        timing = ComponentTiming.from_json(_raw(hardware_counters_error=reason))
+        assert timing.hardware_counters_error == reason
+
+    def test_hardware_counters_error_is_none_without_the_key(self, timing):
+        assert timing.hardware_counters_error is None
+
     @pytest.mark.parametrize("field", ["process_start_epoch_ns", "measurement_overhead_ns"])
     def test_negative_sentinels_read_as_unknown(self, field):
         assert getattr(ComponentTiming.from_json(_raw(**{field: -1})), field) is None

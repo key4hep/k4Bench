@@ -52,6 +52,7 @@ absolute paths.
 | `--events` | int | `2` | — | Events per run → injected as `--num-events`; used for `events_per_sec`. |
 | `--k4run-args` | str | `""` | — | Args passed verbatim to `k4run` after the options files, as one quoted string. Use the `=` form. |
 | `--variant` | `NAME=ARGS` | — | — | One more run, labelled `variant_NAME`, with `ARGS` appended to `--k4run-args`. Repeatable. |
+| `--no-warm-up` | bool | `false` | — | Skip the unmeasured one-event run of the job before each run, which keeps fetching the software from CVMFS out of the measurement. |
 | `--output-dir` | path | `logs/<options-stem>/` | — | Directory for logs and results; created if absent. |
 | `--pickle` | str | *(none)* | — | As for ddsim. |
 | `--verbose`, `-v` | bool | `false` | — | Stream `k4run` output live. |

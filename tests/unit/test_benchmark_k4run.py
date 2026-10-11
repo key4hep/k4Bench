@@ -30,7 +30,11 @@ def stage_dir(tmp_path: Path) -> Path:
 
 
 def _config(tmp_path: Path, stage_dir: Path | None, **kwargs) -> K4runConfig:
-    defaults = dict(options=["Reco.py"], n_events=3, log_dir=tmp_path / "logs", stage_dir=stage_dir)
+    """A config without warm-ups, so each run is one call; TestWarmUp covers them."""
+    defaults = dict(
+        options=["Reco.py"], n_events=3, log_dir=tmp_path / "logs", stage_dir=stage_dir,
+        warm_up=False,
+    )
     return K4runConfig(**{**defaults, **kwargs})
 
 
@@ -85,6 +89,7 @@ def _recording_run_k4run(calls: list[dict], returncode: int = 0):
             "writable": all(os.access(p, os.W_OK) for p in [work_dir, *work_dir.rglob("*")]),
         })
         (work_dir / "output.root").write_text("job output")
+        (kwargs["log_dir"] / f"{kwargs['label']}.log").write_text("job log")
         return RunResult(label=kwargs["label"], returncode=returncode, n_events=kwargs["n_events"])
 
     return fake
@@ -160,3 +165,78 @@ def test_a_run_that_cannot_be_staged_is_recorded_as_failed(tmp_path, stage_dir):
 
     assert [(r.label, r.returncode) for r in results] == [("baseline", 1), ("variant_native", 0)]
     assert [c["label"] for c in calls] == ["variant_native"]
+
+
+class TestWarmUp:
+    """Each run is preceded by the same job for one event, unmeasured."""
+
+    def test_each_run_is_preceded_by_a_one_event_run_of_its_own_job(self, tmp_path, stage_dir):
+        calls: list[dict] = []
+        config = _config(
+            tmp_path, stage_dir, warm_up=True,
+            extra_args=["--cms", "91"], variants={"truth_tracking": ["--truthTracking"]},
+        )
+        with patch.object(k4run_module, "run_k4run", _recording_run_k4run(calls)):
+            results = run_k4run_benchmark(config)
+
+        assert [(c["label"], c["n_events"], c["extra_args"]) for c in calls] == [
+            ("baseline", k4run_module.WARM_UP_EVENTS, ["--cms", "91"]),
+            ("baseline", 3, ["--cms", "91"]),
+            ("variant_truth_tracking", k4run_module.WARM_UP_EVENTS, ["--cms", "91", "--truthTracking"]),
+            ("variant_truth_tracking", 3, ["--cms", "91", "--truthTracking"]),
+        ]
+        assert [(r.label, r.n_events) for r in results] == [("baseline", 3), ("variant_truth_tracking", 3)]
+
+    def test_the_warm_up_leaves_nothing_behind(self, tmp_path, stage_dir):
+        calls: list[dict] = []
+        config = _config(tmp_path, stage_dir, warm_up=True)
+        with patch.object(k4run_module, "run_k4run", _recording_run_k4run(calls)):
+            run_k4run_benchmark(config)
+
+        warm_up, measured = calls
+        # The measured run starts from a clean copy, without the warm-up's output.
+        assert measured["files"] == ["Reco.py", "Tracking", "Tracking/settings.xml"]
+        assert warm_up["work_dir"] != measured["work_dir"]
+        assert not warm_up["work_dir"].exists()
+        assert warm_up["log_dir"] != config.log_dir and not warm_up["log_dir"].exists()
+        assert sorted(p.name for p in config.log_dir.iterdir()) == ["baseline.log"]
+
+    def test_a_failed_warm_up_still_measures_the_run(self, tmp_path, stage_dir, capsys):
+        calls: list[dict] = []
+        recording = _recording_run_k4run(calls)
+
+        def warm_up_fails(**kwargs):
+            result = recording(**kwargs)
+            if kwargs["n_events"] == k4run_module.WARM_UP_EVENTS:
+                result.returncode = 1
+            return result
+
+        config = _config(tmp_path, stage_dir, warm_up=True)
+        with patch.object(k4run_module, "run_k4run", warm_up_fails):
+            (result,) = run_k4run_benchmark(config)
+
+        assert len(calls) == 2 and result.succeeded
+        assert "Warm-up failed (return code 1)" in capsys.readouterr().out
+
+    def test_a_warm_up_that_cannot_be_staged_is_skipped(self, tmp_path, stage_dir, capsys):
+        calls: list[dict] = []
+        real_stage = k4run_module._stage
+
+        def stage(stage_dir, label):
+            if label.startswith("warm-up-"):
+                raise OSError("disk full")
+            return real_stage(stage_dir, label)
+
+        config = _config(tmp_path, stage_dir, warm_up=True)
+        with (
+            patch.object(k4run_module, "run_k4run", _recording_run_k4run(calls)),
+            patch.object(k4run_module, "_stage", stage),
+        ):
+            (result,) = run_k4run_benchmark(config)
+
+        assert [c["n_events"] for c in calls] == [3] and result.succeeded
+        assert "Warm-up skipped" in capsys.readouterr().out
+
+    def test_warm_up_is_on_by_default(self, tmp_path, stage_dir):
+        config = K4runConfig(options=["Reco.py"], n_events=3, log_dir=tmp_path, stage_dir=stage_dir)
+        assert config.warm_up

@@ -337,6 +337,16 @@ def _build_k4run_parser() -> argparse.ArgumentParser:
             "--k4run-args. Repeat for several variants."
         ),
     )
+    parser.add_argument(
+        "--no-warm-up",
+        action="store_false",
+        dest="warm_up",
+        help=(
+            "Skip the unmeasured one-event run of the job before each measured "
+            "run, which keeps fetching the software from CVMFS out of the "
+            "measurement."
+        ),
+    )
     _add_output_args(parser, program="k4run", default_dir="logs/<options stem>/")
     return parser
 
@@ -408,4 +418,5 @@ def _build_k4run_config(args: argparse.Namespace) -> K4runConfig:
         extra_args=shlex.split(args.k4run_args) if args.k4run_args else [],
         variants=variants,
         verbose=args.verbose,
+        warm_up=args.warm_up,
     )

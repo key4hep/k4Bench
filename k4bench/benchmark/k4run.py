@@ -16,6 +16,13 @@ such as CLDConfig must run from their own directory), otherwise an empty one.
 A job's outputs therefore never land in the caller's directory, and one run's
 outputs are never read by the next. Paths in the job's arguments are read from
 that working directory, so give them as absolute paths.
+
+Each run is preceded by a warm-up: the same job for one event, unmeasured and
+discarded. A job loads its libraries, geometry and conditions from CVMFS, and
+on a host whose CVMFS cache does not hold them yet, fetching them dominates its
+initialization (tens of seconds for CLD reconstruction, against a few seconds
+from a warm cache), which would measure the host's cache rather than the job.
+The warm-up event also reads in the code the first measured event runs.
 """
 
 from __future__ import annotations
@@ -35,6 +42,9 @@ from k4bench.runner.k4run import run_k4run
 
 #: A variant name becomes part of the run's file names.
 _VARIANT_NAME_RE = re.compile(r"^[A-Za-z0-9_.+-]+$")
+
+#: Events of the unmeasured run before each measured one.
+WARM_UP_EVENTS = 1
 
 
 @dataclass
@@ -63,6 +73,10 @@ class K4runConfig:
         path is relative to the current directory.
     verbose:
         If True, print k4run output in real time instead of only logging it.
+    warm_up:
+        If True, precede each run with the same job for
+        :data:`WARM_UP_EVENTS` events, unmeasured, so the measured run finds
+        what the job reads from CVMFS already cached.
     """
 
     options: list[str]
@@ -73,6 +87,7 @@ class K4runConfig:
     variants: dict[str, list[str]] = field(default_factory=dict)
     setup_script: Path | None = None
     verbose: bool = False
+    warm_up: bool = True
 
     def __post_init__(self) -> None:
         if not self.options:
@@ -116,6 +131,8 @@ def run_k4run_benchmark(config: K4runConfig) -> list[RunResult]:
     for index, (label, args) in enumerate(runs, start=1):
         print(f"[{index}/{len(runs)}] {label}")
         print(f"         Options: {' '.join(config.options)}")
+        if config.warm_up:
+            _warm_up(config, label, args)
         try:
             work_dir = _stage(config.stage_dir, label)
         except OSError:
@@ -138,6 +155,37 @@ def run_k4run_benchmark(config: K4runConfig) -> list[RunResult]:
         print_run_result(result)
         results.append(result)
     return results
+
+
+def _warm_up(config: K4runConfig, label: str, args: list[str]) -> None:
+    """Run *label*'s job for :data:`WARM_UP_EVENTS` events in a working and a
+    log directory of its own, both discarded.
+
+    A warm-up that fails is reported and otherwise ignored: the measured run
+    that follows records the failure in its own log and result.
+    """
+    try:
+        work_dir = _stage(config.stage_dir, f"warm-up-{label}")
+    except OSError as exc:
+        print(f"         Warm-up skipped: staging failed ({exc})")
+        return
+    try:
+        with tempfile.TemporaryDirectory(prefix=f"k4bench-warm-up-{label}-logs-") as log_dir:
+            result = run_k4run(
+                options=config.options,
+                label=label,
+                n_events=WARM_UP_EVENTS,
+                work_dir=work_dir,
+                log_dir=Path(log_dir),
+                setup_script=config.setup_script,
+                extra_args=args,
+            )
+    finally:
+        _remove(work_dir)
+    if not result.succeeded:
+        print(f"         Warm-up failed (return code {result.returncode}), measuring anyway")
+    elif result.wall_time_s is not None:
+        print(f"         Warm-up: {result.wall_time_s:.1f} s, not measured")
 
 
 def _stage(stage_dir: Path | None, label: str) -> Path:

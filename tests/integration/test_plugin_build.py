@@ -501,13 +501,39 @@ def test_auditor_counts_instructions_where_the_hardware_counters_are_readable(
         "ApplicationMgr(EvtSel='NONE', EvtMax=4, TopAlg=[put])\n",
     )
     if not set(HARDWARE_METRICS) <= set(timing.execute):
-        pytest.skip("the hardware performance counters cannot be read here")
+        assert timing.hardware_counters_error, "a job without the counters says why"
+        pytest.skip(
+            f"the hardware performance counters cannot be read here ({timing.hardware_counters_error})"
+        )
 
+    assert timing.hardware_counters_error is None
     instructions = timing.execute["instructions"]["Put"]
     assert (instructions > 0).all()
     assert (timing.execute["cycles"]["Put"] > 0).all()
     warm = instructions.iloc[1:]
     assert warm.max() / warm.min() < 1.05
+
+
+@pytest.mark.integration
+@requires_gaudi
+def test_auditor_dates_the_process_start_to_a_clock_tick(built_plugin, tmp_path):
+    """The job's process started after the test launched it and before the
+    auditor's first measured call, to within the clock tick /proc counts the
+    start time in, so the configure phase before it is timed that closely."""
+    import os
+    import time
+
+    assert built_plugin.returncode == 0, "Skipped: build already failed"
+    launched_ns = time.time_ns()
+    timing, _ = _run_audited_job(
+        tmp_path,
+        "put",
+        "from Configurables import ApplicationMgr, GaudiTesting__PutDataObjectAlg\n"
+        "ApplicationMgr(EvtSel='NONE', EvtMax=1, TopAlg=[GaudiTesting__PutDataObjectAlg('Put')])\n",
+    )
+    tick_ns = 1_000_000_000 // os.sysconf("SC_CLK_TCK")
+    started_ns = timing.process_start_epoch_ns
+    assert launched_ns - tick_ns <= started_ns <= timing.phases["initialize"][0]
 
 
 @pytest.mark.integration
