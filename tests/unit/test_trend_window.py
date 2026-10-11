@@ -1,4 +1,5 @@
-"""Unit tests for ``dashboard/trend_window.py`` preset → date-window resolution.
+"""Unit tests for ``dashboard/trend_window.py``: preset → date-window resolution,
+and the run listing cut to a window.
 
 ``trend_window`` is a pure, Streamlit-free module, so it is loaded in isolation
 by file path (its siblings ``app``/``data`` pull in Streamlit).
@@ -125,3 +126,30 @@ def test_window_domain_falls_back_to_either_side_alone():
     assert tw.window_domain(runs, []) == runs
     assert tw.window_domain([], runs) == runs
     assert tw.window_domain([], []) == []
+
+
+def test_to_dates_sorts_dedupes_and_drops_unparseable_names():
+    assert tw.to_dates(["2026-05-21", "latest", "2026-01-01", "2026-05-21"]) == [
+        date(2026, 1, 1), date(2026, 5, 21),
+    ]
+    assert tw.to_dates([]) == []
+
+
+def test_runs_in_window_keeps_inclusive_bounds_in_sorted_hashable_form():
+    stacks_dates = {
+        "key4hep-2026-05-20": ["2026-05-21", "2026-05-14", "2026-05-15"],
+        "key4hep-2026-03-01": ["2026-03-15"],
+        "key4hep-2026-01-01": ["2026-01-01", "not-a-date"],
+    }
+    windowed = tw.runs_in_window(stacks_dates, date(2026, 3, 15), date(2026, 5, 15))
+    # Both bounds count; a stack with nothing inside is dropped, not left empty.
+    assert windowed == (
+        ("key4hep-2026-03-01", ("2026-03-15",)),
+        ("key4hep-2026-05-20", ("2026-05-14", "2026-05-15")),
+    )
+    # The download cache keys on it, so it must hash.
+    hash(windowed)
+
+
+def test_runs_in_window_of_an_empty_listing_is_empty():
+    assert tw.runs_in_window({}, date(2026, 1, 1), date(2026, 12, 31)) == ()

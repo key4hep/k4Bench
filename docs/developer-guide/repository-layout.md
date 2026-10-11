@@ -42,11 +42,13 @@ k4Bench/
 │   └── build.sh              #   idempotent build helper
 │
 ├── dashboard/                # Streamlit app (separate from the package)
-│   ├── app.py                #   page layout + tab wiring
+│   ├── app.py                #   entry point: sidebar, then the active section
+│   ├── sidebar.py            #   remote-mode run picker + trend window
+│   ├── section_dispatch.py   #   section bar + how each section is drawn
+│   ├── sections.py           #   section order, data source and scope registries
 │   ├── config.py             #   Config.from_env (K4BENCH_DATA_DIR/_URL/_CACHE_DIR)
-│   ├── data.py               #   @st.cache_data loaders + trend aggregation
-│   ├── remote.py             #   WebEOS discovery + atomic immutable run cache
-│   ├── remote_cache.py       #   Streamlit-cached wrappers around remote.py
+│   ├── data.py               #   @st.cache_data loaders + the selected run's RunData
+│   ├── remote_cache.py       #   Streamlit-cached wrappers around k4bench.remote
 │   ├── stats.py              #   summary-statistics tables
 │   ├── trend_window.py       #   pure window-resolution logic (unit-tested)
 │   ├── ui_chrome.py / ui_utils.py

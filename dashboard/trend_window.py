@@ -1,14 +1,16 @@
 """Pure trend-window resolution (no Streamlit), so it can be unit-tested.
 
 The sidebar offers a set of look-back presets plus a custom range; this module
-turns a chosen preset into a concrete inclusive ``(start, end)`` date window that
-the caller uses to filter the run dates it downloads.
+turns a chosen preset into a concrete inclusive ``(start, end)`` date window and
+cuts the run listing to the runs the caller downloads for it.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import date, timedelta
+
+import pandas as pd
 
 # Trend-window presets → look-back length in days; ``None`` means special handling.
 WINDOW_PRESETS: dict[str, int | None] = {
@@ -20,6 +22,36 @@ WINDOW_PRESETS: dict[str, int | None] = {
     "All":           None,
     "Custom…":       None,
 }
+
+
+def _parse_day(raw: str) -> date | None:
+    """The date a ``YYYY-MM-DD`` directory name spells, or ``None``."""
+    parsed = pd.to_datetime(raw, errors="coerce")
+    return None if pd.isna(parsed) else parsed.date()
+
+
+def to_dates(raw: Iterable[str]) -> list[date]:
+    """Parse ``YYYY-MM-DD`` directory names to sorted, unique dates, dropping
+    anything unparseable."""
+    return sorted({day for day in map(_parse_day, raw) if day is not None})
+
+
+def runs_in_window(
+    stacks_dates: Mapping[str, Iterable[str]], start: date, end: date
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """The ``{stack: [date, ...]}`` run listing cut to the inclusive window, as
+    the hashable ``((stack, (date, ...)), ...)`` the windowed download caches
+    on: stacks and dates sorted, stacks left with no run dropped."""
+    windowed = {
+        stack: sorted(
+            raw for raw in dates
+            if (day := _parse_day(raw)) is not None and start <= day <= end
+        )
+        for stack, dates in stacks_dates.items()
+    }
+    return tuple(
+        (stack, tuple(dates)) for stack, dates in sorted(windowed.items()) if dates
+    )
 
 
 def window_domain(

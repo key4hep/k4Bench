@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
+from k4bench.analysis.loader import judgeable_config_data
 from k4bench.analysis.loader import load_event_timing, load_region_timing, load_results  # noqa: F401 (re-exported)
 from k4bench.analysis import trend as _trend
 from k4bench.analysis.trend import EXPECTED_LOAD_ERRORS as _EXPECTED_ERRORS
@@ -97,16 +99,43 @@ def load_machine_info(run_dir: str) -> dict | None:
     return _trend.load_machine_info(run_dir)
 
 
-def collect_labels(
-    results: pd.DataFrame | None,
-    event_data: dict | None,
-    region_data: dict | None,
-) -> list[str]:
+@dataclass(frozen=True)
+class RunData:
+    """The selected run's data, plus the window's trend results its labels also draw on."""
+
+    results: pd.DataFrame | None
+    event_data: dict | None
+    region_data: dict | None
+    #: The windowed runs' results; ``None`` when the window holds none, as in local mode.
+    trend_results: pd.DataFrame | None
+    #: Every configuration with data on screen, sorted.
+    labels: list[str]
+
+
+def load_run(data_dir: str, run_dirs: tuple[str, ...]) -> RunData:
+    """Load the run in *data_dir* and the results of the windowed *run_dirs*."""
+    results = cached_load_results(data_dir)
+    event_data = cached_load_event_timing(data_dir)
+    region_data = cached_load_region_timing(data_dir)
+    # Current-run event/region files can be partial leftovers from a
+    # crashed config, or orphans with no result row at all. These views
+    # present their inputs as ordinary evidence (unlike regression
+    # plots, which can mark a failed point explicitly), so only
+    # successful result-backed labels belong here.
+    event_data = judgeable_config_data(event_data, results)
+    region_data = judgeable_config_data(region_data, results)
+
     labels: set[str] = set()
     if results is not None and "label" in results.columns:
         labels.update(results["label"].unique())
-    if event_data is not None:
-        labels.update(event_data.keys())
-    if region_data is not None:
-        labels.update(region_data.keys())
-    return sorted(labels)
+    labels.update(event_data or ())
+    labels.update(region_data or ())
+    # The latest run alone can be missing every config (a failed/timed-out
+    # job, or ones retired from the newest release) while the trend window
+    # still has history for them — union those labels in too, so the
+    # "no benchmark data" guards don't blank out a page that Run
+    # Trends does have data for.
+    trend_results = cached_load_trend_results(run_dirs) if run_dirs else None
+    if trend_results is not None and "label" in trend_results.columns:
+        labels.update(trend_results["label"])
+    return RunData(results, event_data, region_data, trend_results, sorted(labels))
