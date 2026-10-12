@@ -759,6 +759,47 @@ def test_window_reports_release_dates_alongside_run_ids():
     assert confirmed.last_accepted_run_date == confirmed.onset_run_date == "2026-01-20"
 
 
+def test_a_step_confirmed_late_is_windowed_where_it_landed():
+    # ILD_FCCee_v02 no_BeampipeShell2 wall time, 2026-09/10: two steps down,
+    # each too small to trip while the window straddled the level above. The
+    # second (~540 → ~508 s, release 10-03) only tripped on release 10-10, once
+    # the ~570 s nights had aged out and the spread had narrowed, with nothing
+    # new in the measurement. The nights in between already sat at the new
+    # level, so the window must reach back to where it landed, not end on
+    # 10-09, a night at that level.
+    rows = [
+        ("2026-09-18", "2026-09-18", 568.06), ("2026-09-19", "2026-09-19", 565.55),
+        ("2026-09-20", "2026-09-19", 583.41), ("2026-09-21", "2026-09-21", 566.93),
+        ("2026-09-22", "2026-09-22", 567.30), ("2026-09-23", "2026-09-23", 580.12),
+        ("2026-09-24", "2026-09-24", 537.15), ("2026-09-26", "2026-09-26", 538.82),
+        ("2026-09-27", "2026-09-26", 533.06), ("2026-09-28", "2026-09-28", 543.61),
+        ("2026-09-29", "2026-09-29", 540.54), ("2026-09-30", "2026-09-30", 540.79),
+        ("2026-10-01", "2026-10-01", 542.30), ("2026-10-02", "2026-10-02", 533.05),
+        ("2026-10-04", "2026-10-03", 508.29), ("2026-10-05", "2026-10-05", 504.83),
+        ("2026-10-07", "2026-10-06", 510.54), ("2026-10-09", "2026-10-09", 509.76),
+        ("2026-10-10", "2026-10-10", 506.29), ("2026-10-11", "2026-10-10", 508.76),
+    ]
+    verdicts = evaluate_series(_release_rows(rows), series=_TIME)
+    assert _severities(verdicts[-6:]) == [Severity.OK] * 4 + [
+        Severity.WATCH, Severity.CONFIRMED,
+    ]
+    confirmed = verdicts[-1]
+    assert confirmed.direction is Direction.DOWN
+    assert confirmed.baseline_median == pytest.approx(537.985)
+    assert _window(confirmed) == ("2026-10-02", "2026-10-04")
+    assert confirmed.last_accepted_run_date == "2026-10-02"
+    assert confirmed.onset_run_date == "2026-10-03"
+
+
+def test_a_partial_move_below_the_gates_still_bounds_an_on_time_step():
+    # 103.5 sits nearer the level the step reaches than the baseline, but it
+    # cleared no gate against the snapshot that confirmed the step, so the
+    # confirmation is not late and the window stays where the walk put it.
+    verdicts = evaluate_series(_history(_STEADY + [103.5, 106.0, 106.5]), series=_TIME)
+    assert _severities(verdicts[-3:]) == [Severity.OK, Severity.WATCH, Severity.CONFIRMED]
+    assert _window(verdicts[-1]) == ("2026-01-11", "2026-01-12")
+
+
 # ── The event sample is not engine state ──────────────────────────────────────
 
 def _workload_history(values, workloads, start="2026-01-01") -> pd.DataFrame:

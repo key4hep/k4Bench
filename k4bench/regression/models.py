@@ -326,7 +326,10 @@ class MetricVerdict:
     therefore landed in ``(last_accepted, onset]`` — the interval to search for
     a cause. ``last_accepted_*`` is ``None`` when no such night exists (a
     change confirmed before the series ever settled), which makes the window
-    open-ended rather than empty.
+    open-ended rather than empty. A change confirmed late, once the baseline
+    narrowed onto a level the series had already reached, has its onset on the
+    first night at that level instead of the WATCH night (see
+    :func:`~k4bench.regression.engine.evaluate_series`).
 
     ``first_confirmed_run_id`` names the night a ``CONFIRMED`` change was
     first confirmed for its release (``None`` on every other severity). It
