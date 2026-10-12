@@ -583,9 +583,9 @@ def render(
     shared Trend window, as the report nights that judged its releases
     (``None`` only when the store has no release yet) — in that case
     :func:`nights_in_window` falls back to the latest
-    :data:`_FALLBACK_NIGHTS`. It carries no detector scope: it ranges over
-    every release benchmarked on the platform (see
-    ``trend_window.default_releases``), so the range this tab draws stays put
+    :data:`_FALLBACK_NIGHTS`. It carries no detector scope: on this tab it
+    ranges over every release benchmarked on the platform (see
+    ``sidebar.pick_trend_window``), so the range this tab draws stays put
     when the sidebar detector changes rather than shrinking to that detector's
     releases and dropping the more recently benchmarked detectors off the
     charts. The window sets which report nights are fetched,

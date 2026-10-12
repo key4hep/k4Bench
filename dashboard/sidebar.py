@@ -181,10 +181,16 @@ def pick_run(base_url: str, cache_dir: str) -> RunSelection | None:
     return RunSelection(detector, platform, sample, stack, data_dir)
 
 
-def pick_trend_window(base_url: str, run: RunSelection, cache_dir: str) -> TrendWindow:
+def pick_trend_window(
+    base_url: str, run: RunSelection, cache_dir: str, across_detectors: bool,
+) -> TrendWindow:
     """The Trend window section, and the runs it covers for *run*'s
     detector, platform and sample.
 
+    The slider ranges over the releases *run*'s detector was benchmarked with,
+    or, *across_detectors*, over every release benchmarked on the platform by
+    any detector — what a section that compares the detectors draws, which
+    must not shrink to the history of whichever one the sidebar has selected.
     The releases and run dates come from directory listings only; just the
     windowed runs are downloaded.
     """
@@ -195,18 +201,15 @@ def pick_trend_window(base_url: str, run: RunSelection, cache_dir: str) -> Trend
     except Exception as err:
         st.warning(f"Could not scan trend run dates: {err}")
         stacks_dates = {}
-    run_days = to_dates(dt for dates in stacks_dates.values() for dt in dates)
 
-    # Every release benchmarked on the platform, by any detector: the slider
-    # ranges over these so that it covers the same releases whichever
-    # detector is selected (see `trend_window.default_releases`). The selected
-    # detector's own releases are folded in so a listing that missed one
-    # cannot hide its runs.
-    try:
-        platform_stacks = list_platform_stacks(base_url, run.platform)
-    except Exception as err:
-        st.warning(f"Could not list the platform's releases: {err}")
-        platform_stacks = []
+    platform_stacks: list[str] = []
+    if across_detectors:
+        try:
+            platform_stacks = list_platform_stacks(base_url, run.platform)
+        except Exception as err:
+            st.warning(f"Could not list the platform's releases: {err}")
+    # The selected detector's own releases are folded into the platform's so
+    # a listing that missed one cannot hide its runs.
     releases = dated_releases([*platform_stacks, *stacks_dates])
     if not releases:
         return TrendWindow()
@@ -226,33 +229,26 @@ def pick_trend_window(base_url: str, run: RunSelection, cache_dir: str) -> Trend
     # No key: a widget without one is identified by its options and default,
     # so a new release or a newly landed report re-opens the slider on the
     # newest releases rather than leaving it on a range that stopped at
-    # yesterday's. Switching detector changes neither, so it keeps the range.
+    # yesterday's. So does a change of scope — another section, or a detector
+    # with other releases — while the same releases keep the range.
     lo, hi = st.select_slider(
         "Releases", releases,
         value=(opening[0], opening[-1]),
         format_func=pretty_release,
-        help="Limits the Key4hep releases plotted in the Trends and "
-             "Overview tabs. Ranges over every release benchmarked on the "
-             "platform, so it covers the same releases whichever detector "
-             "is selected. Smaller windows load faster.",
+        help=(
+            "The Key4hep releases this tab draws, out of every release "
+            "benchmarked on the platform by any detector."
+            if across_detectors else
+            "The Key4hep releases the trend views read, out of those the "
+            "selected detector was benchmarked with."
+        ) + " Smaller windows load faster.",
     )
     selected = releases_between(releases, lo, hi)
     windowed = runs_in_window(stacks_dates, selected)
-    n_runs = sum(len(dates) for _, dates in windowed)
     first, last = release_day(selected[0]), release_day(selected[-1])
-    caption = (
-        f"{first:%Y-%m-%d} → {last:%Y-%m-%d} · {len(selected)} release(s) · "
-        f"{n_runs} run(s) in {len(windowed)} of them"
-    )
-    # The window counts the platform's releases, not the detector's, so a
-    # detector benchmarked for fewer of them fills only part of it. Naming
-    # when it ran tells a short Run Trends tab apart from a broken window,
-    # and turns an empty one into a range to widen to.
-    own_releases = dated_releases(stacks_dates)
-    if not n_runs and run_days:
-        caption += f" · {run.detector} last ran {run_days[-1]:%Y-%m-%d}"
-    elif run_days and own_releases and release_day(own_releases[0]) > first:
-        caption += f" · {run.detector} first ran {run_days[0]:%Y-%m-%d}"
+    caption = f"{first:%Y-%m-%d} → {last:%Y-%m-%d} · {len(selected)} release(s)"
+    if not across_detectors:
+        caption += f" · {sum(len(dates) for _, dates in windowed)} run(s)"
     st.caption(caption)
     try:
         run_dirs = cached_fetch_runs_windowed(

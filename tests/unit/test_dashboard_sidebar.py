@@ -116,7 +116,7 @@ def test_pick_run_stops_when_the_release_has_no_run():
     assert at.warning[0].value == "No runs found for the selected combination."
 
 
-def _window_app(dashboard_dir, run_dates, report_nights, platform_stacks) -> None:
+def _window_app(dashboard_dir, run_dates, report_nights, platform_stacks, across) -> None:
     import sys as _sys
     if dashboard_dir not in _sys.path:
         _sys.path.insert(0, dashboard_dir)
@@ -142,8 +142,10 @@ def _window_app(dashboard_dir, run_dates, report_nights, platform_stacks) -> Non
         st.session_state.get("detector", "CLD_o2_v09"),
         "PLAT", "single_e-_10GeV", "key4hep-2026-10-10", "/cache/run",
     )
+    # A test changes section mid-session through "across".
     st.session_state["window"] = sidebar.pick_trend_window(
-        "https://store.invalid", selection, "/cache"
+        "https://store.invalid", selection, "/cache",
+        st.session_state.get("across", across),
     )
 
 
@@ -159,13 +161,25 @@ PLATFORM_STACKS = [_rel(d) for d in (
 )]
 REPORT_NIGHTS = ["2026-10-10", "2026-10-11"]
 
+#: A detector benchmarked for the three newest releases only, as after a
+#: detector version bump.
+NEW_DETECTOR_RUNS = {
+    _rel("10-08"): ["2026-10-08"],
+    _rel("10-10"): ["2026-10-10", "2026-10-11"],
+    _rel("10-12"): ["2026-10-12"],
+}
+
+#: A detector with a run in every other release from 09-24 on.
+LONG_RUNS = {_rel(d): [f"2026-{d}"] for d in ("09-24", "09-26", "09-28", "10-10")}
+
 
 def _run_window(
     run_dates, report_nights=REPORT_NIGHTS, platform_stacks=PLATFORM_STACKS,
+    across=True,
 ) -> AppTest:
     at = AppTest.from_function(
         _window_app,
-        args=(str(_DASHBOARD_DIR), run_dates, report_nights, platform_stacks),
+        args=(str(_DASHBOARD_DIR), run_dates, report_nights, platform_stacks, across),
         default_timeout=30,
     )
     at.run()
@@ -173,56 +187,41 @@ def _run_window(
     return at
 
 
-def test_trend_window_opens_on_the_last_10_releases_of_the_platform():
+def test_across_detectors_the_window_opens_on_the_platforms_last_10_releases():
     # 10-12 was uploaded ahead of its report: it is added on top of the ten
     # releases counted back from the newest report night, so the window
     # reaches it without dropping 09-22.
-    run_dates = {
-        _rel("10-12"): ["2026-10-12"],
-        _rel("10-10"): ["2026-10-10", "2026-10-11"],
-        _rel("09-22"): ["2026-09-22"],
-        _rel("09-20"): ["2026-09-20"],
-    }
-    at = _run_window(run_dates)
+    at = _run_window(NEW_DETECTOR_RUNS)
     window = at.session_state["window"]
+    assert at.select_slider[0].options == [
+        p.removeprefix("key4hep-") for p in reversed(PLATFORM_STACKS)
+    ]
+    assert at.select_slider[0].value == (_rel("09-22"), _rel("10-12"))
     assert window.dates == (date(2026, 9, 22), date(2026, 10, 12))
+    # The window is not part of the deep link.
+    assert _query(at) == {}
+    # The selected detector's runs are no part of what the Overview draws.
+    assert at.caption[0].value == "2026-09-22 → 2026-10-12 · 11 release(s)"
+
+
+def test_for_one_detector_the_window_ranges_over_its_own_releases():
+    # The new detector's three releases are the whole slider, so no range can
+    # reach back past its history and show the same runs as a shorter one.
+    at = _run_window(NEW_DETECTOR_RUNS, platform_stacks=None, across=False)
+    slider = at.select_slider[0]
+    assert slider.options == ["2026-10-08", "2026-10-10", "2026-10-12"]
+    assert slider.value == (_rel("10-08"), _rel("10-12"))
+    window = at.session_state["window"]
     assert window.run_dirs == (
-        f"/cache/{_rel('09-22')}/2026-09-22",
+        f"/cache/{_rel('10-08')}/2026-10-08",
         f"/cache/{_rel('10-10')}/2026-10-10",
         f"/cache/{_rel('10-10')}/2026-10-11",
         f"/cache/{_rel('10-12')}/2026-10-12",
     )
-    assert at.select_slider[0].value == (_rel("09-22"), _rel("10-12"))
-    # The window is not part of the deep link.
-    assert _query(at) == {}
-    assert at.caption[0].value == (
-        "2026-09-22 → 2026-10-12 · 11 release(s) · 4 run(s) in 3 of them"
-    )
-
-
-def test_trend_window_names_when_a_new_detector_first_ran():
-    # A detector added two releases ago fills only part of any window, which
-    # is why every range longer than its history shows the same runs.
-    at = _run_window({_rel("10-10"): ["2026-10-10"], _rel("10-12"): ["2026-10-12"]})
-    assert at.caption[0].value == (
-        "2026-09-22 → 2026-10-12 · 11 release(s) · 2 run(s) in 2 of them"
-        " · CLD_o2_v09 first ran 2026-10-10"
-    )
-
-
-def test_trend_window_does_not_name_a_detector_that_ran_its_oldest_release():
-    # The oldest release ran the night after it was tagged: still the whole window.
-    at = _run_window({_rel("09-20"): ["2026-09-21"], _rel("10-12"): ["2026-10-12"]})
-    at.select_slider[0].set_value((_rel("09-20"), _rel("10-12"))).run()
-    assert at.caption[0].value == (
-        "2026-09-20 → 2026-10-12 · 12 release(s) · 2 run(s) in 2 of them"
-    )
-
-
-def test_trend_window_names_the_last_run_of_a_detector_outside_it():
-    at = _run_window({_rel("09-20"): ["2026-09-20"]})
-    assert at.session_state["window"].run_dirs == ()
-    assert at.caption[0].value.endswith("· CLD_o2_v09 last ran 2026-09-20")
+    assert at.caption[0].value == "2026-10-08 → 2026-10-12 · 3 release(s) · 4 run(s)"
+    # The platform's releases are not listed at all: the failing stub would
+    # have warned.
+    assert not at.warning
 
 
 def test_trend_window_is_absent_until_something_has_run():
@@ -239,11 +238,8 @@ def test_trend_window_falls_back_to_the_detectors_releases():
     assert window.run_dirs == (f"/cache/{_rel('10-10')}/2026-10-10",)
 
 
-_PICKED_RUNS = {_rel(d): [f"2026-{d}"] for d in ("09-24", "09-26", "09-28", "10-10")}
-
-
 def test_a_picked_range_spans_the_releases_between_its_two_ends():
-    at = _run_window(_PICKED_RUNS)
+    at = _run_window(LONG_RUNS)
     at.select_slider[0].set_value((_rel("09-24"), _rel("09-28"))).run()
     window = at.session_state["window"]
     # The 09-28 release was benchmarked until 09-30 was tagged.
@@ -253,8 +249,8 @@ def test_a_picked_range_spans_the_releases_between_its_two_ends():
     )
 
 
-def test_a_picked_range_survives_switching_detector():
-    at = _run_window(_PICKED_RUNS)
+def test_across_detectors_a_picked_range_survives_switching_detector():
+    at = _run_window(LONG_RUNS)
     at.select_slider[0].set_value((_rel("09-24"), _rel("09-28"))).run()
     at.session_state["detector"] = "ALLEGRO_o1_v04"
     at.run()
@@ -264,8 +260,16 @@ def test_a_picked_range_survives_switching_detector():
 
 def test_a_new_release_reopens_the_window_on_the_newest_releases():
     # A range picked yesterday would otherwise stop short of tonight's release.
-    at = _run_window(_PICKED_RUNS)
+    at = _run_window(LONG_RUNS)
     at.select_slider[0].set_value((_rel("09-24"), _rel("09-28"))).run()
     at.session_state["new_stacks"] = [_rel("10-14")]
     at.run()
     assert at.select_slider[0].value == (_rel("09-22"), _rel("10-14"))
+
+
+def test_changing_scope_reopens_the_window_on_the_newest_releases():
+    at = _run_window(LONG_RUNS)
+    at.select_slider[0].set_value((_rel("09-24"), _rel("09-26"))).run()
+    at.session_state["across"] = False
+    at.run()
+    assert at.select_slider[0].value == (_rel("09-24"), _rel("10-10"))

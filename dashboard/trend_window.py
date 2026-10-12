@@ -48,12 +48,8 @@ def dated_releases(stacks: Iterable[str]) -> list[str]:
 def default_releases(
     releases: list[str], anchor: date | None, count: int = DEFAULT_RELEASES,
 ) -> list[str]:
-    """The releases the window opens on, as an oldest-first slice of *releases*.
-
-    *releases* is every release benchmarked on the platform, oldest first (see
-    :func:`dated_releases`), not the selected detector's: the cross-detector
-    Overview draws every detector over this one window, so it has to open on
-    the same releases whichever detector the sidebar has selected.
+    """The releases the window opens on, as an oldest-first slice of
+    *releases* (see :func:`dated_releases`).
 
     That is the *count* newest releases tagged on or before *anchor* — the
     newest nightly **report** night — and every newer release on top. A release
