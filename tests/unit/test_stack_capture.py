@@ -143,6 +143,28 @@ def test_capture_unions_configs_and_removes_private_paths(tmp_path, monkeypatch,
         assert info["g4_datasets"] == {"G4LEDATA": "G4EMLOW8.8"}
 
 
+def test_capture_matches_the_executed_ddsim_steering_file(tmp_path, monkeypatch):
+    setup = tmp_path / "lcg/views/devkey-head/Mon/platform/setup.sh"
+    setup.parent.mkdir(parents=True)
+    setup.touch()
+    nightly = tmp_path / "lcg/nightlies/devkey-head/Mon"
+    nightly.mkdir(parents=True)
+    for source, kind in zip(manifests(), ("externals", "contrib")):
+        (nightly / f"LCG_{kind}_platform.txt").write_text(source)
+    run = tmp_path / "run"
+    run.mkdir()
+    stack.loaded_paths_file(run, "baseline").write_text("# k4bench loaded paths v1\n/lib/library.so\n")
+    seen = []
+    def mapping(paths, packages):
+        seen.extend(paths)
+        return set(), []
+    monkeypatch.setattr(stack, "mapped_packages", mapping)
+    steering = "/cvmfs/CLDConfig/share/CLDConfig/cld_steer.py"
+    info = {"tool": "ddsim", "configs": ["baseline"], "resolved_steering_file": steering}
+    stack.capture_stack(run, info, {"K4H_STACK_SETUP": str(setup)})
+    assert steering in seen
+
+
 def test_conflicting_config_datasets_leave_no_job_environment_claim(tmp_path, monkeypatch):
     setup = tmp_path / "lcg/views/devkey-head/Mon/platform/setup.sh"
     setup.parent.mkdir(parents=True)

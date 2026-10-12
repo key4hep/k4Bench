@@ -83,6 +83,10 @@ def capture_stack(run_dir: Path, info: dict, env: dict[str, str]) -> None:
         if info.get("tool") == "k4run":
             stage = Path(info.get("resolved_stage_dir") or ".")
             paths.extend(str(stage / option) for option in info.get("options", []))
+        # ddsim executes its steering file without mapping it, and the file can
+        # belong to a Python-only package such as CLDConfig.
+        if steering := info.get("resolved_steering_file"):
+            paths.append(steering)
         loaded, unknown = mapped_packages(paths, packages)
         unmatched = [path for path in unknown if path.startswith("/cvmfs/")]
         if unmatched:

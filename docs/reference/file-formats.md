@@ -222,7 +222,8 @@ manifest install. `k4h_packages` retains its existing HEAD-only contract.
 The timing action's destructor and the auditor's `finalize()` read unique file
 paths from `/proc/self/maps`. The k4run options file also appends imported Python
 module paths at exit: reconstruction imports packages without mapped libraries.
-Executed staged options files are mapped through their recorded source paths.
+Executed staged options files are mapped through their recorded source paths,
+and a ddsim run's resolved steering file is matched the same way.
 Paths match resolved manifest install directories by longest prefix, including
 stable releases and the contrib compiler. Unmatched CVMFS paths are logged.
 Private `.LABEL.loaded` handoffs are consumed and deleted before writing
