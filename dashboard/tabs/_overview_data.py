@@ -42,8 +42,8 @@ MEMORY_METRICS = ["mean_rss_anon_mb", "peak_vmem_mb", "mean_rss_mb", "peak_rss_m
                   "mean_rss_file_mb"]
 METRIC_ORDER: list[str] = [*TIME_METRICS, *MEMORY_METRICS]
 
-#: Cap on report fetches when the sidebar provides no trend window (e.g. a
-#: mid-edit custom range) — keeps the fallback from downloading years of nights.
+#: Cap on report fetches when the sidebar provides no trend window (the store
+#: has no release yet) — keeps the fallback from downloading years of nights.
 _FALLBACK_NIGHTS = 30
 
 _FRAME_COLUMNS = [

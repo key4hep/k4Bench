@@ -246,3 +246,43 @@ def test_metric_drill_down_warns_when_the_local_cache_fails(monkeypatch):
     assert len(warnings) == 1
     assert "local cache" in warnings[0]
     assert "No space left on device" in warnings[0]
+
+
+def test_stacks_are_unioned_across_detectors(monkeypatch):
+    # Detectors join and leave the matrix, so no single detector's history is
+    # the full set of releases.
+    per_detector = {"IDEA": ["key4hep-2026-07-10"], "SiD": ["key4hep-2026-07-09"]}
+    monkeypatch.setattr(remote_cache, "cached_list_detectors", lambda url: ["IDEA", "SiD"])
+    monkeypatch.setattr(
+        remote_cache, "cached_list_stacks",
+        lambda url, detector, platform: per_detector[detector],
+    )
+    assert remote_cache.list_platform_stacks("u", "PLAT") == [
+        "key4hep-2026-07-10", "key4hep-2026-07-09",
+    ]
+
+
+def test_a_detector_without_the_platform_is_skipped(monkeypatch):
+    import requests
+
+    def _stacks(url, detector, platform):
+        if detector == "SiD":
+            raise requests.RequestException("404")  # never ran on this platform
+        return ["key4hep-2026-07-10"]
+
+    monkeypatch.setattr(remote_cache, "cached_list_detectors", lambda url: ["IDEA", "SiD"])
+    monkeypatch.setattr(remote_cache, "cached_list_stacks", _stacks)
+    # One detector missing a platform must not blank the whole list.
+    assert remote_cache.list_platform_stacks("u", "PLAT") == ["key4hep-2026-07-10"]
+
+
+def test_an_unexpected_listing_error_is_not_swallowed(monkeypatch):
+    def _stacks(url, detector, platform):
+        raise TypeError("a bug in the listing code")
+
+    monkeypatch.setattr(remote_cache, "cached_list_detectors", lambda url: ["IDEA"])
+    monkeypatch.setattr(remote_cache, "cached_list_stacks", _stacks)
+    # Only an absent directory is expected here. Anything else is a bug, and
+    # must surface rather than read as "this platform has no releases".
+    with pytest.raises(TypeError):
+        remote_cache.list_platform_stacks("u", "PLAT")

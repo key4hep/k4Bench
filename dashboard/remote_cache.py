@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+import requests
 import streamlit as st
 
 if TYPE_CHECKING:
@@ -92,6 +93,25 @@ def cached_list_run_dates(
 def cached_list_stacks(base_url: str, detector: str, platform: str) -> list[str]:
     from k4bench.remote import list_stacks
     return list_stacks(base_url, detector, platform)
+
+
+def list_platform_stacks(base_url: str, platform: str) -> list[str]:
+    """Every release benchmarked on *platform*, newest first.
+
+    Unioned across detectors rather than read from one: detectors join and
+    leave the matrix, so no single detector's history is the full set of
+    releases.
+    """
+    stacks: set[str] = set()
+    for detector in cached_list_detectors(base_url):
+        try:
+            stacks.update(cached_list_stacks(base_url, detector, platform))
+        except requests.RequestException:
+            # A detector never benchmarked on this platform has no such
+            # directory to list. Only that is expected here — a broader catch
+            # would bury a bug in the listing itself as "no releases".
+            continue
+    return sorted(stacks, reverse=True)
 
 
 @st.cache_data(show_spinner="Fetching stack provenance...", ttl=3600)

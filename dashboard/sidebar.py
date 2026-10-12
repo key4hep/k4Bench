@@ -9,10 +9,11 @@ links set (see ``k4bench.regression.render.dashboard_link``).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 
 import streamlit as st
 
+from k4bench.labels import pretty_release
 from remote_cache import (
     cached_fetch_latest_run,
     cached_fetch_runs_windowed,
@@ -21,13 +22,16 @@ from remote_cache import (
     cached_list_report_dates,
     cached_list_run_dates,
     cached_scan_stack_samples,
+    list_platform_stacks,
 )
 from trend_window import (
     WINDOW_PRESETS,
-    resolve_window,
+    dated_releases,
+    release_day,
+    report_span,
     runs_in_window,
+    select_releases,
     to_dates,
-    window_domain,
 )
 from ui_chrome import (
     drop_stale_selection,
@@ -40,7 +44,7 @@ from ui_chrome import (
 )
 
 #: The preset a first visit opens on, when the URL names none.
-DEFAULT_PRESET = "Last 14 days"
+DEFAULT_PRESET = "Last 10 releases"
 
 
 @dataclass(frozen=True)
@@ -57,10 +61,10 @@ class RunSelection:
 
 @dataclass(frozen=True)
 class TrendWindow:
-    """The history the trend views read: every release's runs inside the window."""
+    """The history the trend views read: every run of the releases in the window."""
 
-    #: Inclusive ``(start, end)``; ``None`` when no window resolved — nothing
-    #: has run yet, or a custom range is still being picked.
+    #: Inclusive ``(start, end)`` of the report nights that judged the
+    #: window's releases; ``None`` when nothing has run yet.
     dates: tuple[date, date] | None = None
     #: The windowed runs' cached directories, across all releases.
     run_dirs: tuple[str, ...] = ()
@@ -181,29 +185,22 @@ def pick_run(base_url: str, cache_dir: str) -> RunSelection | None:
     return RunSelection(detector, platform, sample, stack, data_dir)
 
 
-def _pick_custom_range(lo: date, hi: date) -> tuple[date, date] | None:
-    """The custom range's two dates, or ``None`` while only one is picked.
-
-    Mid-selection does not fall back to the full range, which would download
-    every run, but waits for both dates.
-    """
-    picked = st.date_input(
-        "From → to",
-        value=(max(lo, hi - timedelta(days=90)), hi),
-        min_value=lo, max_value=hi,
+def _pick_custom_range(releases: list[str], opening: list[str]) -> tuple[str, str]:
+    """The custom range's oldest and newest release, opening on *opening*."""
+    lo, hi = st.select_slider(
+        "Releases", releases,
+        value=(opening[0], opening[-1]),
+        format_func=pretty_release,
     )
-    if isinstance(picked, (tuple, list)) and len(picked) == 2:
-        return picked[0], picked[1]
-    st.info("Pick both a start and end date.")
-    return None
+    return lo, hi
 
 
 def pick_trend_window(base_url: str, run: RunSelection, cache_dir: str) -> TrendWindow:
     """The Trend window section, and the runs it covers for *run*'s
-    detector, platform and sample across every release.
+    detector, platform and sample.
 
-    The run dates come from directory listings only; just the windowed subset
-    is downloaded.
+    The releases and run dates come from directory listings only; just the
+    windowed runs are downloaded.
     """
     try:
         stacks_dates = cached_list_run_dates(
@@ -214,21 +211,29 @@ def pick_trend_window(base_url: str, run: RunSelection, cache_dir: str) -> Trend
         stacks_dates = {}
     run_days = to_dates(dt for dates in stacks_dates.values() for dt in dates)
 
-    # The nightly report nights — one cached directory listing, the same
-    # one the Overview tab reads. They are folded into the window's date
-    # domain so the preset anchors on a date every detector shares; see
-    # `trend_window.window_domain` for why the run dates alone are the
-    # wrong anchor.
+    # Every release benchmarked on the platform, by any detector: the presets
+    # count over these so that they cover the same releases whichever detector
+    # is selected (see `trend_window.select_releases`). The selected
+    # detector's own releases are folded in so a listing that missed one
+    # cannot hide its runs.
+    try:
+        platform_stacks = list_platform_stacks(base_url, run.platform)
+    except Exception as err:
+        st.warning(f"Could not list the platform's releases: {err}")
+        platform_stacks = []
+    releases = dated_releases([*platform_stacks, *stacks_dates])
+    if not releases:
+        return TrendWindow()
+
+    # The nightly report nights — one cached directory listing, the same one
+    # the Overview tab reads. The newest is where a preset starts counting,
+    # and they bound the nights the Overview draws.
     try:
         report_nights = cached_list_report_dates(base_url)
     except Exception as err:
         st.warning(f"Could not list nightly reports: {err}")
         report_nights = []
     report_days = to_dates(report_nights)
-
-    all_dates = window_domain(run_days, report_days)
-    if not all_dates:
-        return TrendWindow()
 
     st.header("Trend window")
     presets = list(WINDOW_PRESETS)
@@ -237,37 +242,36 @@ def pick_trend_window(base_url: str, run: RunSelection, cache_dir: str) -> Trend
     preset = st.selectbox(
         "Range", presets,
         key="sb_trend_preset",
-        help="Limits the date range plotted in the Trends and "
-             "Overview tabs. Anchored on the newest nightly, so it "
-             "covers the same dates whichever detector is "
-             "selected. Smaller windows load faster.",
+        help="Limits the Key4hep releases plotted in the Trends and "
+             "Overview tabs. Counted over every release benchmarked on the "
+             "platform, so it covers the same releases whichever detector "
+             "is selected. Smaller windows load faster.",
     )
     st.query_params["range"] = preset
+    anchor = report_days[-1] if report_days else None
     custom_range = None
     if preset == "Custom…":
-        custom_range = _pick_custom_range(all_dates[0], all_dates[-1])
-        if custom_range is None:
-            return TrendWindow()
+        custom_range = _pick_custom_range(
+            releases, select_releases(DEFAULT_PRESET, releases, None, anchor),
+        )
 
-    # Presets count back from the newest report night, which every
-    # detector shares — a run already uploaded ahead of tonight's report
-    # must not pull the window's start forward for the detector that
-    # uploaded it.
-    start, end = resolve_window(
-        preset, all_dates, custom_range,
-        anchor=report_days[-1] if report_days else None,
-    )
-    windowed = runs_in_window(stacks_dates, start, end)
+    selected = select_releases(preset, releases, custom_range, anchor)
+    windowed = runs_in_window(stacks_dates, selected)
     n_runs = sum(len(dates) for _, dates in windowed)
+    first, last = release_day(selected[0]), release_day(selected[-1])
     caption = (
-        f"{start:%Y-%m-%d} → {end:%Y-%m-%d} · "
-        f"{n_runs} run(s) across {len(windowed)} release(s)"
+        f"{first:%Y-%m-%d} → {last:%Y-%m-%d} · {len(selected)} release(s) · "
+        f"{n_runs} run(s) in {len(windowed)} of them"
     )
-    # The window spans every detector, so one that stopped being
-    # benchmarked can have nothing in it. Naming its last run turns an
-    # empty Run Trends tab into a range to widen to.
+    # The window counts the platform's releases, not the detector's, so a
+    # detector benchmarked for fewer of them fills only part of it. Naming
+    # when it ran tells a short Run Trends tab apart from a broken window,
+    # and turns an empty one into a range to widen to.
+    own_releases = dated_releases(stacks_dates)
     if not n_runs and run_days:
         caption += f" · {run.detector} last ran {run_days[-1]:%Y-%m-%d}"
+    elif run_days and own_releases and release_day(own_releases[0]) > first:
+        caption += f" · {run.detector} first ran {run_days[0]:%Y-%m-%d}"
     st.caption(caption)
     try:
         run_dirs = cached_fetch_runs_windowed(
@@ -276,4 +280,5 @@ def pick_trend_window(base_url: str, run: RunSelection, cache_dir: str) -> Trend
     except Exception as err:
         st.warning(f"Could not load trend data: {err}")
         run_dirs = ()
-    return TrendWindow((start, end), run_dirs)
+    last_night = max([release_day(releases[-1]), *report_days])
+    return TrendWindow(report_span(selected, releases, last_night), run_dirs)
