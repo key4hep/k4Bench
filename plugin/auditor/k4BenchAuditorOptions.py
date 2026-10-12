@@ -10,6 +10,8 @@ from the environment the k4Bench runner sets:
 """
 
 import os
+import atexit
+import sys
 
 from Configurables import ApplicationMgr, AuditorSvc, JobOptionsSvc
 
@@ -23,3 +25,24 @@ AuditorSvc().Auditors += ["k4BenchAuditor/k4BenchAuditor"]
 
 if dump := os.environ.get("K4BENCH_JOBOPTIONS"):
     JobOptionsSvc().DUMPFILE = dump
+
+
+def _record_python_modules():
+    """Include imported Python code after the auditor's mapped-file snapshot."""
+    path = os.environ.get("K4BENCH_LOADED_PATHS")
+    if not path or not os.path.isfile(path):
+        return
+    try:
+        paths = sorted({
+            os.path.realpath(module.__file__)
+            for module in list(sys.modules.values())
+            if isinstance(getattr(module, "__file__", None), str)
+        })
+        with open(path, "a") as handoff:
+            for name in paths:
+                handoff.write(name + "\n")
+    except Exception:
+        pass
+
+
+atexit.register(_record_python_modules)

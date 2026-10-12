@@ -615,6 +615,7 @@ public:
     describeComponents();
     writeComponents();
     writeEvents(peak_vmem_kb);
+    k4bench::write_loaded_paths();
     return StatusCode::SUCCESS;
   }
 

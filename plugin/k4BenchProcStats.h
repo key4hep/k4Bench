@@ -12,11 +12,48 @@
 #include <unistd.h>
 
 #include <fstream>
+#include <cstdlib>
+#include <set>
 #include <sstream>
 #include <string>
 
 namespace k4bench
 {
+
+  // Ephemeral handoff to the runner, outside every timed region. Hidden files
+  // are never uploaded; run_info reduces their union to manifest packages.
+  inline void write_loaded_paths() noexcept
+  {
+    try
+    {
+      const char *target = std::getenv("K4BENCH_LOADED_PATHS");
+      if (!target) return;
+      std::ifstream maps("/proc/self/maps");
+      if (!maps) return;
+      std::set<std::string> paths;
+      std::string line;
+      while (std::getline(maps, line))
+      {
+        std::istringstream fields(line);
+        std::string field;
+        for (int i = 0; i < 5; ++i) fields >> field;
+        std::getline(fields >> std::ws, field);
+        if (!field.empty() && field.front() == '/') paths.insert(field);
+      }
+      if (maps.bad()) return;
+      std::ofstream out(target);
+      out << "# k4bench loaded paths v1\n";
+      for (const auto &path : paths) out << path << '\n';
+      for (char **variable = ::environ; *variable; ++variable)
+      {
+        const std::string entry(*variable);
+        const auto equals = entry.find('=');
+        if (entry.rfind("G4", 0) == 0 && equals >= 6 &&
+            entry.substr(equals - 4, 4) == "DATA") out << entry << '\n';
+      }
+    }
+    catch (...) {}
+  }
 
   struct RssValues
   {

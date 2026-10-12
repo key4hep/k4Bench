@@ -31,6 +31,9 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from k4bench.provenance.diff import CHANGED, diff_stacks
+from k4bench.provenance.stack import StackSnapshot
+
 from k4bench.regression.models import (
     HostFact,
     HostLevel,
@@ -42,6 +45,34 @@ from k4bench.regression.models import (
     looks_like_container_id,
     unjudged_cause,
 )
+
+
+@dataclass(frozen=True, order=True)
+class ExternalChange:
+    """A measured environment change, never a pull-request candidate."""
+
+    scope: str
+    name: str
+    before: str
+    after: str
+    kind: str
+
+
+def external_changes(
+    base: StackSnapshot | None, head: StackSnapshot | None, *, scope: str,
+) -> tuple[ExternalChange, ...]:
+    """Known version changes of loaded pins, configured Geant4 data and OS.
+
+    A package observed on only one side supplies no evidence of its previous
+    version. Missing instrumentation never means that nothing was loaded.
+    """
+    if base is None or head is None:
+        return ()
+    return tuple(sorted(
+        ExternalChange(scope, c.name, c.base_value or "—", c.head_value or "—", c.kind)
+        for c in diff_stacks(base, head)
+        if c.kind != "head" and (c.status == CHANGED or c.kind == "dataset") and c.loaded is True
+    ))
 
 
 # ── The metric's own history ──────────────────────────────────────────────────

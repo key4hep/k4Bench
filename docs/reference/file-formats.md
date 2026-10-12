@@ -186,10 +186,81 @@ Legacy Spack records use `k4h_stack_root` instead of `k4h_stack_manifest`.
 LCG build metadata does not carry source URLs, so `repo_url` is read from the
 exact LCGCMake toolchain revision that built the view (including its inherited
 `heptools-*` files). Because a nightly is incremental, installs record several
-revisions and the modal one is used. That lookup is best-effort: if CERN GitLab
+revisions and each package's own build revision is used. That lookup is best-effort: if CERN GitLab
 is unavailable the commits are still recorded, but their repository links are
 `null`. `k4h_packages` is absent for runs predating provenance capture, and an
 empty map means *unknown*, never *unchanged*.
+
+### Measured stack and externals
+
+Each captured run also contains `LCG_externals.txt.gz` and `LCG_contrib.txt.gz`,
+byte-for-byte copies of that view's manifests compressed with gzip. They record
+the full stack's versions, build hashes, install paths and dependencies. Header
+lines describe the platform, toolchain and compiler. Relative contrib install
+paths are rooted at `/cvmfs/sft.cern.ch/lcg/contrib/`. These files live beside
+`run_info.json`; readers never need the weekday slot to remain on CVMFS.
+
+The small additions to `run_info.json` are:
+
+```json
+"k4h_stack_capture": 1,
+"k4h_loaded_packages": {
+  "Geant4": {"version": "11.4.3", "githash": "e411040b8"},
+  "gcc": {"version": "16.1.0", "githash": "8ef9376e8"},
+  "k4geo": {"version": "HEAD", "commit": "e1ba7bc", "githash": "e411040b8", "repo_url": "https://github.com/key4hep/k4geo.git"}
+},
+"g4_datasets": {"G4LEDATA": "G4EMLOW8.8"}
+```
+
+`k4h_stack_capture: 1` means both compressed manifests were saved. The loaded
+map is the union across every measured config that produced a result CSV;
+geometry sweeps and reconstruction variants can load different code. Missing
+instrumentation or a missing handoff makes this map **absent**, never an empty
+set. Version and available upstream/build revisions come from each matched
+manifest install. `k4h_packages` retains its existing HEAD-only contract.
+
+The timing action's destructor and the auditor's `finalize()` read unique file
+paths from `/proc/self/maps`. The k4run options file also appends imported Python
+module paths at exit: reconstruction imports packages without mapped libraries.
+Executed staged options files are mapped through their recorded source paths.
+Paths match resolved manifest install directories by longest prefix, including
+stable releases and the contrib compiler. Unmatched CVMFS paths are logged.
+Private `.LABEL.loaded` handoffs are consumed and deleted before writing
+`run_info.json`, and hidden files are excluded by the upload glob even if cleanup
+fails. Event and component JSON retain schema version 1; their format is unchanged.
+
+`g4_datasets` records directory names for the job's `G4*DATA` environment. With
+instrumentation these come from the actual child process, including any sourced
+setup. These are **configured datasets**, not a claim that every dataset was
+opened. They can override the toolkit’s default dataset lookup independently
+of its version ([Geant4 installation guide](https://geant4.web.cern.ch/documentation/dev/ig_html/InstallationGuide/postinstall.html#environment-variables-for-datasets)).
+Without instrumentation the job environment is still recorded. `os` in
+`machine_info.json` describes `/etc/os-release` inside the container; the host's
+kernel is not used as an OS version.
+
+Stack Changes uses the selected ddsim detector/sample's latest run at each
+endpoint, with a union of their measured loaded sets. The whole-platform toggle
+only widens regression results. HEAD rows retain their forge compare links.
+Loaded pinned rows link to package-filtered lcgcmake history at the head build,
+for example `-/commits/e411040b8?search=Geant4`; unloaded pins have no link.
+Hash-only rebuilds are counted separately. An uncaptured endpoint falls back to
+the HEAD table with an explicit note. The k4run page remains separate and its
+captures live in the existing `_k4run/` tree.
+
+A cold comparison adds one run-date listing and four GETs per endpoint
+(`run_info`, two manifests, `machine_info`), or two requests per legacy endpoint.
+The existing platform release discovery and regression-report reads are unchanged.
+The scope-specific snapshot is cached for an hour; no per-config remote reads
+are needed.
+
+Blame reads only the two exact runs' small metadata files. Loaded pinned version
+changes, compiler, configured Geant4 data and OS changes are stored as an optional
+`external_changes` list on each `BlameEntry`, with `scope`, `name`, `before`,
+`after` and `kind` (`pin`, `dataset`, `os`). They are facts, never PR candidates.
+The existing `real_change` assessment can name one as the explanation, including
+a fixed-seed sample's re-rolled long events. No new assessment value is introduced.
+With no external changes the field and prompt block are omitted, and the comment
+facts digest and rendered comments are unchanged.
 
 ### Reading across the Spack-to-LCG boundary
 

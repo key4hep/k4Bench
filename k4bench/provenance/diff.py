@@ -15,8 +15,9 @@ expected to say so rather than present an empty list as "nothing found".
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.parse import quote
 
-from k4bench.provenance.stack import RepoRef, parse_repo
+from k4bench.provenance.stack import RepoRef, StackSnapshot, parse_repo
 
 #: A package present in only one of the two stacks. Added and removed packages
 #: are rare (a dependency enters or leaves the stack) but are real changes, and
@@ -39,12 +40,31 @@ class PackageChange:
     head_commit: str | None
     version: str = ""
     repo_url: str | None = None
+    base_version: str | None = None
+    head_version: str | None = None
+    head_githash: str | None = None
+    kind: str = "head"
+    loaded: bool | None = None
+
+    @property
+    def base_value(self) -> str | None:
+        return self.base_commit if self.kind == "head" else self.base_version
+
+    @property
+    def head_value(self) -> str | None:
+        return self.head_commit if self.kind == "head" else self.head_version
 
     @property
     def status(self) -> str:
-        if self.base_commit is None:
+        if self.base_version is not None or self.head_version is not None:
+            if self.base_version is None:
+                return ADDED
+            if self.head_version is None:
+                return REMOVED
+            return CHANGED
+        if self.base_value is None:
             return ADDED
-        if self.head_commit is None:
+        if self.head_value is None:
             return REMOVED
         return CHANGED
 
@@ -55,12 +75,16 @@ class PackageChange:
 
     @property
     def compare_url(self) -> str | None:
-        """The forge's compare view for the range, or ``None``.
-
-        Only a *changed* package has a range to compare — an added or removed
-        one has no second endpoint.
-        """
-        if self.status != CHANGED or not (repo := self.repo):
+        """HEAD forge comparison or loaded pin's filtered build history."""
+        if self.status != CHANGED:
+            return None
+        if self.kind == "pin":
+            if self.loaded and self.head_githash:
+                return ("https://gitlab.cern.ch/sft/stacks/lcgcmake/-/commits/"
+                        f"{self.head_githash}?search={quote(self.name, safe='')}")
+            return None
+        if (self.kind != "head" or not self.base_commit or not self.head_commit
+                or not (repo := self.repo)):
             return None
         return repo.compare_url(self.base_commit, self.head_commit)
 
@@ -134,4 +158,61 @@ def unchanged_packages(base: dict, head: dict) -> list[str]:
         name for name, before, after in _paired(base, head)
         if before is not None and after is not None
         and _same_commit((before or {}).get("commit"), (after or {}).get("commit"))
+    )
+
+
+def diff_stacks(base: StackSnapshot, head: StackSnapshot) -> list[PackageChange]:
+    """Version/commit changes only; build hashes alone never manufacture a row.
+
+    Loaded means observed at either endpoint in this benchmark scope. If either
+    capture is absent, an unobserved package's load status remains unknown.
+    """
+    loaded = {_package_key(n) for n in (base.loaded or frozenset()) | (head.loaded or frozenset())}
+    complete_loads = base.loaded is not None and head.loaded is not None
+    changes = []
+    for name, before, after in _paired(base.packages, head.packages):
+        b, h = before or {}, after or {}
+        is_head = b.get("version") == "HEAD" or h.get("version") == "HEAD"
+        if before is not None and after is not None:
+            if is_head and b.get("version") == h.get("version") and not (
+                b.get("commit") and h.get("commit")
+            ):
+                continue
+            if b.get("version") == h.get("version") and (
+                not is_head or _same_commit(b.get("commit"), h.get("commit"))
+            ):
+                continue
+        # A HEAD/pin transition is represented by versions and any known commit.
+        kind = "head" if is_head and all(p.get("version") == "HEAD" for p in (b, h) if p) else "pin"
+        changes.append(PackageChange(
+            name, b.get("commit"), h.get("commit"),
+            version=h.get("version", b.get("version", "")),
+            repo_url=h.get("repo_url") or b.get("repo_url"),
+            base_version=b.get("version"), head_version=h.get("version"),
+            head_githash=h.get("githash"), kind=kind,
+            loaded=True if _package_key(name) in loaded else False if complete_loads else None,
+        ))
+    if base.datasets is not None and head.datasets is not None:
+        for name in sorted(base.datasets.keys() | head.datasets.keys()):
+            before, after = base.datasets.get(name), head.datasets.get(name)
+            if before != after:
+                changes.append(PackageChange(
+                    name, None, None, base_version=before, head_version=after, kind="dataset",
+                    loaded=True if "geant4" in loaded else False if complete_loads else None,
+                ))
+    if base.os and head.os and base.os != head.os:
+        changes.append(PackageChange(
+            "OS", None, None, base_version=base.os, head_version=head.os, kind="os", loaded=True,
+        ))
+    order = {CHANGED: 0, ADDED: 1, REMOVED: 2}
+    return sorted(changes, key=lambda c: (c.loaded is not True, order[c.status], c.name.lower()))
+
+
+def hash_only_rebuilds(base: StackSnapshot, head: StackSnapshot) -> int:
+    changed = {_package_key(c.name) for c in diff_stacks(base, head)}
+    return sum(
+        b is not None and h is not None and _package_key(name) not in changed
+        and (b.get("version") != "HEAD" or bool(b.get("commit") and h.get("commit")))
+        and bool(b.get("hash") and h.get("hash") and b["hash"] != h["hash"])
+        for name, b, h in _paired(base.packages, head.packages)
     )

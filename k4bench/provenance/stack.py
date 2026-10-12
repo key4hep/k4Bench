@@ -8,6 +8,7 @@ an empty result rather than failing the benchmark they describe.
 
 from __future__ import annotations
 
+import gzip
 import logging
 import re
 from dataclasses import dataclass
@@ -28,6 +29,154 @@ _EXTERNAL_RE = re.compile(
 _INCLUDE_RE = re.compile(r"^\s*include\((heptools-[A-Za-z0-9_-]+)\)", re.M)
 _URL_RE = re.compile(r"^(?:https?://(?:www\.)?|git@)(?P<host>[^/:]+)[:/](?P<slug>.+?)(?:\.git)?/?$")
 _FORGE_INFIX = {"github": "", "gitlab": "/-"}
+CONTRIB_ROOT = Path("/cvmfs/sft.cern.ch/lcg/contrib")
+STACK_MANIFESTS = ("LCG_externals.txt.gz", "LCG_contrib.txt.gz")
+
+
+def loaded_paths_file(run_dir: Path, label: str) -> Path:
+    return run_dir / f".{label}.loaded"
+
+
+def capture_stack(run_dir: Path, info: dict, env: dict[str, str]) -> None:
+    """Save the manifests and reduce all measured configs' private path lists.
+
+    Missing instrumentation on any measured config makes the union unknown.
+    Dataset directories come from the instrumented process's environment;
+    the job environment also records them when instrumentation is unavailable.
+    """
+    info["g4_datasets"] = {
+        key: Path(value).name for key, value in sorted(env.items())
+        if key.startswith("G4") and key.endswith("DATA") and value
+    }
+    handoffs = [loaded_paths_file(run_dir, label) for label in info.get("configs", [])]
+    try:
+        manifest = _manifest(Path(env["K4H_STACK_SETUP"]).resolve())
+        if manifest is None:
+            return
+        sources = [manifest, manifest.with_name(manifest.name.replace("externals", "contrib"))]
+        packages = {}
+        for source, filename in zip(sources, STACK_MANIFESTS):
+            raw = source.read_bytes()
+            (run_dir / filename).write_bytes(gzip.compress(raw, mtime=0))
+            packages.update(parse_manifest(raw.decode()))
+        info["k4h_stack_capture"] = 1
+        paths, datasets = [], None
+        for handoff in handoffs:
+            rows = handoff.read_text().splitlines()
+            if not rows or rows[0] != "# k4bench loaded paths v1":
+                return
+            paths.extend(re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), row)
+                         for row in rows[1:] if row.startswith("/"))
+            config_data = {key: Path(value).name for row in rows[1:]
+                           if row.startswith("G4") and "=" in row
+                           for key, value in [row.split("=", 1)]}
+            if datasets is not None and config_data != datasets:
+                _log.warning("Geant4 dataset environment differs across configs")
+                return
+            datasets = config_data
+        if not handoffs or not paths:
+            return
+        # Gaudi executes these options before enabling the auditor. Staged
+        # copies have local paths, so retain the source paths the job recorded.
+        if info.get("tool") == "k4run":
+            stage = Path(info.get("resolved_stage_dir") or ".")
+            paths.extend(str(stage / option) for option in info.get("options", []))
+        loaded, unknown = mapped_packages(paths, packages)
+        unmatched = [path for path in unknown if path.startswith("/cvmfs/")]
+        if unmatched:
+            _log.warning("Mapped CVMFS paths absent from manifests: %s", unmatched)
+        info["k4h_loaded_packages"] = {
+            name: {"version": packages[name]["version"], **build_info(packages[name]["install_path"]),
+                   **info.get("k4h_packages", {}).get(name, {})}
+            for name in sorted(loaded)
+        }
+        info["g4_datasets"] = datasets
+    except Exception as exc:
+        _log.warning("Loaded stack provenance not recorded: %s", exc)
+    finally:
+        for path in handoffs:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                _log.warning("Could not remove private provenance handoff %s", path)
+
+
+def parse_manifest(source: str, *, contrib_root: Path = CONTRIB_ROOT) -> dict[str, dict]:
+    """Read package rows, ignoring the manifest's platform/compiler headers."""
+    packages = {}
+    for row in source.splitlines():
+        fields = [field.strip() for field in row.split(";")]
+        if len(fields) < 4 or not fields[0] or not fields[3]:
+            continue
+        name, build_hash, version, install = fields[:4]
+        path = Path(install)
+        packages[name] = {
+            "version": version, "hash": build_hash,
+            "install_path": str(path if path.is_absolute() else contrib_root / path),
+        }
+    return packages
+
+
+def build_info(install: str) -> dict[str, str]:
+    """Available upstream and toolchain revisions of one installed build."""
+    try:
+        source = next(Path(install).glob(".buildinfo_*.txt")).read_text()
+    except (OSError, StopIteration):
+        return {}
+    return {
+        key: match.group(1)
+        for key, pattern in (("commit", _REVISION_RE), ("githash", _GITHASH_RE))
+        if (match := pattern.search(source))
+    }
+
+
+def mapped_packages(paths: list[str], packages: dict[str, dict]) -> tuple[set[str], list[str]]:
+    """Resolve view symlinks and match the longest manifest install prefix.
+
+    Unmatched paths are returned to the caller, including OS and harness files.
+    No CVMFS location is assumed: contrib and stable releases use the same match.
+    """
+    prefixes = sorted(
+        ((str(Path(p["install_path"]).resolve()).rstrip("/") + "/", name)
+         for name, p in packages.items()),
+        key=lambda item: -len(item[0]),
+    )
+    loaded, unknown = set(), []
+    for path in sorted(set(paths)):
+        real = str(Path(path.removesuffix(" (deleted)")).resolve())
+        name = next((name for prefix, name in prefixes if real.startswith(prefix)), None)
+        if name is None:
+            unknown.append(path)
+        else:
+            loaded.add(name)
+    return loaded, unknown
+
+
+@dataclass(frozen=True)
+class StackSnapshot:
+    """One recorded stack and the measured scope that supplied it."""
+
+    packages: dict[str, dict]
+    loaded: frozenset[str] | None = None
+    datasets: dict[str, str] | None = None
+    os: str | None = None
+    complete: bool = False
+
+
+def stack_snapshot(info: dict, machine: dict, manifests: list[str] | tuple[str, ...] = ()) -> StackSnapshot:
+    """Combine immutable artifacts without resolving their now-rotating paths."""
+    packages = {}
+    for source in manifests:
+        packages.update(parse_manifest(source))
+    for name, package in info.get("k4h_packages", {}).items():
+        packages.setdefault(name, {}).update(package)
+    loaded = info.get("k4h_loaded_packages")
+    for name, package in (loaded or {}).items():
+        packages.setdefault(name, {}).update(package)
+    return StackSnapshot(
+        packages, frozenset(loaded) if isinstance(loaded, dict) else None,
+        info.get("g4_datasets"), machine.get("os") or None, len(manifests) == 2,
+    )
 
 
 def stack_identity(stack_setup: str | Path) -> tuple[str, str]:
@@ -131,23 +280,14 @@ def read_stack(stack_setup: str | Path) -> tuple[Path | None, dict[str, dict]]:
 
     packages: dict[str, dict] = {}
     build_revisions: dict[str, str] = {}
-    for row in rows:
-        fields = [field.strip() for field in row.split(";")]
-        if len(fields) < 4 or fields[2] != "HEAD":
+    for name, package in parse_manifest("\n".join(rows)).items():
+        if package["version"] != "HEAD":
             continue
-        name, install = fields[0], Path(fields[3])
-        try:
-            buildinfo = next(install.glob(".buildinfo_*.txt")).read_text()
-        except (OSError, StopIteration):
-            continue
-        config = _GITHASH_RE.search(buildinfo)
-        revision = _REVISION_RE.search(buildinfo)
-        if revision:
-            build_revisions[name] = config.group(1) if config else ""
+        metadata = build_info(package["install_path"])
+        if metadata.get("commit"):
+            build_revisions[name] = metadata.get("githash", "")
             packages[name] = {
-                "commit": revision.group(1),
-                "version": "HEAD",
-                "repo_url": None,
+                "commit": metadata["commit"], "version": "HEAD", "repo_url": None,
             }
     # Incremental builds can use different toolchains within one view. Resolve
     # each package against its own build, fetching each distinct revision once.

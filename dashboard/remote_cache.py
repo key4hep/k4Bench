@@ -133,6 +133,16 @@ def cached_fetch_stack_packages(
     return _keep_complete(_fetch_stack_packages, base_url, detector, platform, stack)
 
 
+@st.cache_data(show_spinner="Fetching measured stack...", ttl=3600)
+def _fetch_stack_snapshot(base_url: str, detector: str, platform: str, stack: str, sample: str | None):
+    from k4bench.remote import fetch_stack_snapshot
+    return fetch_stack_snapshot(base_url, detector, platform, stack, sample, strict=True)
+
+
+def cached_fetch_stack_snapshot(base_url: str, detector: str, platform: str, stack: str, sample: str | None):
+    return _keep_complete(_fetch_stack_snapshot, base_url, detector, platform, stack, sample)
+
+
 @st.cache_data(show_spinner="Listing regression reports...", ttl=600)
 def cached_list_report_dates(base_url: str) -> list[str]:
     """Cached :func:`k4bench.remote.list_report_dates`, which raises — and so

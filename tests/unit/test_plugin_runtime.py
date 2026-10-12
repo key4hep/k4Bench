@@ -211,20 +211,17 @@ class TestFindPluginLibDir:
 
 
 # ---------------------------------------------------------------------------
-# ensure_plugin_built  (unchanged behavior, message text updated)
+# ensure_plugin_built
 # ---------------------------------------------------------------------------
 
 
 class TestEnsurePluginBuilt:
-    """ensure_plugin_built builds the plugins only when libraries are absent."""
+    """The build script checks freshness, even when installed libraries exist."""
 
-    def test_already_built_skips_subprocess(self, tmp_path):
-        with (
-            patch.object(plugin_runtime, "find_plugin_lib_dir", return_value=tmp_path),
-            patch("k4bench.plugin.runtime.subprocess.run") as mock_run,
-        ):
+    def test_installed_plugin_still_checks_source_freshness(self):
+        with patch.object(plugin_runtime, "_run_build_script") as build:
             ensure_plugin_built()
-            mock_run.assert_not_called()
+        build.assert_called_once_with("ddg4")
 
     def test_missing_build_script_raises(self, tmp_path):
         with (
@@ -531,6 +528,7 @@ class TestSetupAuditorEnvironment:
             "K4BENCH_COMPONENTS_JSON": str((tmp_path / "x_components.json").resolve()),
             "K4BENCH_EVENT_JSON": str((tmp_path / "x_events.json").resolve()),
             "K4BENCH_JOBOPTIONS": str((tmp_path / "x_joboptions.opts").resolve()),
+            "K4BENCH_LOADED_PATHS": str((tmp_path / ".x.loaded").resolve()),
         }
 
     def test_sets_plugin_path_when_absent(self, tmp_path):

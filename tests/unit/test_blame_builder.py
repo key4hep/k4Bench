@@ -1800,3 +1800,29 @@ def test_a_migration_history_counts_changes_on_the_platform_that_measured_each_r
     blame = build_blame_report(report, packages_for_release=provenance, github=GitHubClient())
 
     assert blame.entries[0].boundary_changes == {"2026-07-03": 1, "2026-07-04": 1}
+
+
+def test_external_only_window_is_assessed_without_creating_candidates():
+    from tests.unit.test_stack_capture import snapshots
+    base, head = snapshots()
+    # Fix HEAD revisions, leaving the measured Geant4 version as the only change.
+    packages = {"k4geo": {"commit": "e1ba7bc", "version": "HEAD", "repo_url": _GH}}
+    v = _verdict(base="2026-10-02", onset="2026-10-03")
+    requests = []
+    class Ranker:
+        def rank(self, request):
+            requests.append(request)
+            return RankResult(assessment=RankStepAssessment("real_change", "Geant4 re-rolled long events"))
+    blame = build_blame_report(
+        _report([v]), packages_for_release=lambda *a: packages,
+        provenance_for_run=lambda d, p, r, s, run: base if r == "2026-10-02" else head,
+        ranker=Ranker(), github=None,
+    )
+    assert len(requests) == 1
+    assert requests[0].candidates == ()
+    assert [c.name for c in requests[0].external_changes] == ["Geant4"]
+    entry = blame.entries[0]
+    assert entry.candidates == [] and entry.repos == ()
+    assert entry.assessment.verdict == "real_change"
+    assert entry.to_dict()["external_changes"][0]["before"] == "11.4.2"
+    assert type(entry).from_dict(entry.to_dict()) == entry

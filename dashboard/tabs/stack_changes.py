@@ -1,9 +1,10 @@
 """Stack Changes tab — what moved in Key4hep between two nightlies.
 
 The package diff is cross-detector: a Key4hep release is one stack, sourced
-identically by every detector benchmarked against it, so only the platform
-scopes it. Which detector supplied the answer is an implementation detail —
-the tab reads whichever run it finds first. The *reverse* view below the diff
+identically by every detector benchmarked against it. Its measured loaded set
+is scoped to the sidebar's detector/sample, across both endpoints. Another
+scope can supply package versions when needed, but not its runtime facts.
+The *reverse* view below the diff
 (the regressions whose onset falls in the range) is scoped to the sidebar's
 detector and sample like every other judged view, with a toggle to widen it
 back to the whole platform.
@@ -24,7 +25,10 @@ import pandas as pd
 import streamlit as st
 
 from k4bench.blame.models import BlameReport, BlameSchemaError
-from k4bench.provenance.diff import ADDED, CHANGED, REMOVED, diff_packages, unchanged_packages
+from k4bench.provenance.diff import (
+    ADDED, CHANGED, REMOVED, diff_packages, unchanged_packages, diff_stacks, hash_only_rebuilds,
+)
+from k4bench.provenance.stack import StackSnapshot
 from k4bench.regression.models import MetricVerdict, NightlyReport
 from k4bench.labels import pretty_release, pretty_sample
 from k4bench.layout import stack_dir
@@ -34,6 +38,7 @@ from remote_cache import (
     cached_fetch_reports,
     cached_fetch_runs_windowed,
     cached_fetch_stack_packages,
+    cached_fetch_stack_snapshot,
     cached_list_detectors,
     cached_list_report_dates,
     cached_list_run_dates,
@@ -300,6 +305,15 @@ def packages_for_release(data_url: str, platform: str, release: str) -> dict | N
     return _packages(data_url, platform, stack_dir(release))
 
 
+def _snapshot(data_url: str, platform: str, stack: str, detector: str, sample: str):
+    snapshot = cached_fetch_stack_snapshot(data_url, detector, platform, stack, sample)
+    if snapshot is not None:
+        return snapshot
+    for source in dict.fromkeys([detector, *cached_list_detectors(data_url)]):
+        snapshot = cached_fetch_stack_snapshot(data_url, source, platform, stack, None)
+        if snapshot is not None:
+            return snapshot
+    return None
 
 
 def render(
@@ -365,8 +379,14 @@ def render(
         return None
 
     span = _span(releases, base_release, head_release)
-    base = _packages(data_url, platform, stack_dir(base_release))
-    head = _packages(data_url, platform, stack_dir(head_release))
+    snapshots = [
+        _snapshot(data_url, platform, stack_dir(release), detector, sample)
+        for release in (base_release, head_release)
+    ]
+    base, head = [
+        snapshot.packages if snapshot else _packages(data_url, platform, stack_dir(release))
+        for snapshot, release in zip(snapshots, (base_release, head_release))
+    ]
     missing = [r for r, p in ((base_release, base), (head_release, head)) if not p]
     provenance_state: _ProvenanceState
     if missing:
@@ -378,10 +398,24 @@ def render(
             "regressions with onset in this range are still listed below.",
             icon="❔",
         )
-    else:
-        provenance_state = _render_diff(
-            base, head, base_release, head_release, span,
+    elif all(snapshot is not None and snapshot.complete for snapshot in snapshots):
+        provenance_state = _render_snapshot_diff(
+            *snapshots, base_release, head_release, span,
+            scope=f"ddsim · {detector} · {pretty_sample(sample)}",
         )
+    else:
+        # With one uncaptured endpoint only the shared HEAD evidence is comparable.
+        base_head, head_head = [
+            {n: p for n, p in packages.items()
+             if p.get("commit") and (snapshot is None or not snapshot.complete or p.get("version") == "HEAD")}
+            for packages, snapshot in zip((base, head), snapshots)
+        ]
+        provenance_state = _render_diff(
+            base_head, head_head, base_release, head_release, span,
+        )
+        absent = [release for snapshot, release in zip(snapshots, (base_release, head_release))
+                  if snapshot is None or not snapshot.complete]
+        st.caption(f"Externals were not recorded for {', '.join(absent)}; only git commits are compared.")
     # Independent of the package diff: the reverse view is built from the
     # regression reports, so it renders even when provenance is unavailable. A
     # non-empty span means the *selected range* spans more than one release
@@ -760,7 +794,7 @@ def _render_diff(
         # may have moved in an intermediate release and then returned.
         if span:
             st.success(
-                f"**The selected endpoint stacks are identical.** All {len(same)} "
+                f"**The selected endpoint tracked git commits are identical.** All {len(same)} "
                 "tracked packages end at the same commit. An intermediate release "
                 "may still have moved and later returned; inspect a metric's exact "
                 "blame window before ruling that out.",
@@ -768,21 +802,33 @@ def _render_diff(
             )
         else:
             st.success(
-                f"**These two releases are the identical stack.** All {len(same)} "
-                "tracked packages sit at the same commit, so a metric that moved at "
-                "this boundary moved for another reason — the host, the sample, or "
-                "noise.",
+                f"**These releases’ tracked git commits are identical.** All {len(same)} "
+                "tracked packages sit at the same commit. Unrecorded externals, the "
+                "host, the sample or the harness may still explain a movement.",
                 icon="✅",
             )
         return "identical"
 
+    _render_rows(changes)
+    if same:
+        st.caption(
+            f"{_plural(len(same), 'tracked package')} unchanged between these releases."
+        )
+    return "changed"
+
+
+def _render_rows(changes, *, show_loaded: bool = False) -> None:
     df = pd.DataFrame([
         {
             "": _STATUS_BADGE[c.status],
             "Package": c.name,
-            "From": (c.base_commit or "—")[:12],
-            "To": (c.head_commit or "—")[:12],
+            "From": (c.base_value or "—")[:12] if c.kind == "head" else c.base_value or "—",
+            "To": (c.head_value or "—")[:12] if c.kind == "head" else c.head_value or "—",
             "Compare": c.compare_url,
+            **({"Loaded": ("Configured data" if c.kind == "dataset" and c.loaded else
+                            "Runtime" if c.kind == "os" else
+                            "Yes" if c.loaded else "No" if c.loaded is False else "Unknown")}
+               if show_loaded else {}),
         }
         for c in changes
     ])
@@ -793,25 +839,66 @@ def _render_diff(
         column_config={
             "": st.column_config.TextColumn(
                 "", width="small",
-                help="🔄 moved to a new commit · ➕ entered the stack · ➖ left it",
+                help="🔄 version or commit changed · ➕ entered the stack · ➖ left it",
             ),
             "Package": st.column_config.TextColumn("Package", width="medium"),
             "From": st.column_config.TextColumn(
-                "From", help="The package's commit in the older release.",
+                "From", help="Version or upstream commit in the older release.",
             ),
             "To": st.column_config.TextColumn(
-                "To", help="The package's commit in the newer release.",
+                "To", help="Version or upstream commit in the newer release.",
             ),
             "Compare": st.column_config.LinkColumn(
                 "Compare", display_text="↗ commits", width="small",
-                help="Every commit in this package's range, on its forge. Absent for a "
+                help="Upstream commits for HEAD packages; package-filtered lcgcmake history at the head build for loaded pinned versions. Absent for a "
                      "package that was added or removed (there is no range to compare), "
                      "or hosted on a forge whose URL layout we do not know.",
             ),
         },
     )
-    if same:
-        st.caption(
-            f"{_plural(len(same), 'tracked package')} unchanged between these releases."
-        )
-    return "changed"
+
+
+def _render_snapshot_diff(
+    base: StackSnapshot, head: StackSnapshot, base_release: str, head_release: str,
+    span: str, *, scope: str,
+) -> Literal["changed", "identical", "unavailable"]:
+    changes = diff_stacks(base, head)
+    st.markdown(f"##### Stack diff · {base_release} → {head_release}")
+    if span:
+        st.caption(span)
+    st.markdown(f"**{_plural(len(changes), 'change')}** · "
+                f"{len(head.packages)} packages in the newer stack")
+    st.caption(f"Loaded by {scope} · union of measured configs at either endpoint. "
+               "Dataset rows describe the configured Geant4 data environment.")
+    unknown = base.loaded is None or head.loaded is None
+    missing_commits = sum(
+        p.get("version") == "HEAD" and not p.get("commit")
+        for snapshot in (base, head) for p in snapshot.packages.values()
+    )
+    if unknown:
+        st.caption("Loaded packages were not captured at one or both endpoints; unobserved rows are unknown.")
+    if missing_commits:
+        st.caption("Some HEAD revisions were not recorded; commit changes may be incomplete.")
+    if not changes:
+        if (not missing_commits and base.datasets is not None and head.datasets is not None
+                and base.os and head.os):
+            st.success("**The selected endpoint stacks are identical** in package versions, "
+                       "commits, Geant4 datasets and OS."
+                       + (" Intermediate releases may still have moved and returned." if span else ""))
+        else:
+            st.info("No recorded version or commit changes; commit, dataset or OS provenance is incomplete.")
+            return "unavailable"
+    loaded = [c for c in changes if c.loaded is True]
+    other = [c for c in changes if c.loaded is not True]
+    if loaded:
+        _render_rows(loaded, show_loaded=True)
+    elif changes:
+        st.info("No changes in packages known to be loaded by this benchmark.")
+    if other:
+        suffix = "load status unknown" if unknown else "not loaded by this benchmark"
+        with st.expander(f"{len(other)} other changes in the stack, {suffix}", expanded=False):
+            _render_rows(other, show_loaded=True)
+    rebuilt = hash_only_rebuilds(base, head)
+    if rebuilt:
+        st.caption(f"{rebuilt} hash-only rebuilds omitted; their versions and commits did not change.")
+    return "changed" if changes else "identical"

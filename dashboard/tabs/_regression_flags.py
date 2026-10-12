@@ -500,6 +500,12 @@ def render_candidate_ranking(
     state. Returns whether a ranking was rendered.
     """
     entry = blame.entry_for(verdict) if blame is not None else None
+    if entry is not None and entry.external_changes:
+        st.caption("Recorded external changes: " + "; ".join(
+            f"{c.name} {c.before} → {c.after}" for c in entry.external_changes
+        ))
+        if not has_ranking(entry.candidates):
+            render_step_assessment(entry)
     if entry is None or not has_ranking(entry.candidates):
         if show_empty:
             st.caption("🤖 No AI PR ranking is stored for this regression.")

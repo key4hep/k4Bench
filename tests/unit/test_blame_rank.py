@@ -1059,3 +1059,20 @@ def test_the_system_prompt_carries_the_weighing_rules():
     assert WEIGHING_RULE in rank_mod._SYSTEM_PROMPT
     assert "Same change, different outcome" in WEIGHING_RULE
     assert "only for a step in the typical event or in memory" in WEIGHING_RULE
+
+
+def test_external_facts_and_rule_are_conditional_and_need_no_pr_candidates():
+    from tests.unit.test_stack_capture import snapshots
+    from k4bench.blame.evidence import external_changes
+    base, head = snapshots()
+    facts = external_changes(base, head, scope="ILD · Zbb")
+    request = dataclasses.replace(_request(candidates=()), external_changes=facts)
+    ranker = _ranker([_completion('{"rankings": [], "step_assessment": {"verdict": "real_change", "reason": "Geant4 11.4.2 → 11.4.3 re-rolled long events"}}')])
+    result = ranker.rank(request)
+    assert result.assessment.verdict == "real_change"
+    messages = _calls(ranker)[0].json["messages"]
+    assert "re-roll" in messages[0]["content"]
+    assert "Geant4 11.4.2 → 11.4.3" in messages[1]["content"]
+    unchanged = external_changes(base, base, scope="ILD · Zbb")
+    assert unchanged == ()
+    assert _build_user_prompt(_request()) == _build_user_prompt(dataclasses.replace(_request(), external_changes=unchanged))

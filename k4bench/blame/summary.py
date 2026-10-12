@@ -25,6 +25,7 @@ from collections.abc import Mapping, Sequence
 from k4bench.blame.evidence import MetricHistory
 from k4bench.blame.geometry import DetectorTouch, FileChange, geometry_tree
 from k4bench.blame.prompt import host_sentences, pct_phrase
+
 from k4bench.blame.sweep import (
     ELSEWHERE,
     FAILED,
@@ -948,3 +949,13 @@ def representative(
                     if label == "baseline" and wanted(metric):
                         return label, metric, item
     return candidates[0]
+
+
+def external_change_lines(changes) -> list[str]:
+    """One short block of external facts, absent when the window has none."""
+    if not changes:
+        return []
+    return [
+        "", "Recorded external changes (loaded code / configured data / OS; not PR candidates):",
+        *(f"- {c.scope}: {c.name} {c.before} → {c.after}" for c in sorted(set(changes))),
+    ]

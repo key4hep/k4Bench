@@ -25,8 +25,10 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, NamedTuple
+
+from k4bench.blame.evidence import ExternalChange
 
 
 #: The mandatory qualifier on every rendered ranking — a lead to verify, never
@@ -449,6 +451,7 @@ class BlameEntry:
     #: from whichever entry it happens to hold. It is never a candidate list:
     #: these pull requests shipped before the window opened.
     historical_evidence: tuple[HistoricalRef, ...] = ()
+    external_changes: tuple[ExternalChange, ...] = ()
 
     @property
     def key(self) -> tuple:
@@ -500,6 +503,8 @@ class BlameEntry:
             ),
             "boundary_changes": dict(sorted(self.boundary_changes.items())),
             "historical_evidence": [h.to_dict() for h in self.historical_evidence],
+            **({"external_changes": [asdict(c) for c in self.external_changes]}
+               if self.external_changes else {}),
         }
 
     @classmethod
@@ -524,6 +529,7 @@ class BlameEntry:
             historical_evidence=tuple(
                 HistoricalRef.from_dict(h) for h in raw_historical or ()
             ),
+            external_changes=tuple(ExternalChange(**c) for c in d.get("external_changes") or ()),
         )
 
 
