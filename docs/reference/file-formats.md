@@ -234,7 +234,8 @@ instrumentation these come from the actual child process, including any sourced
 setup. These are **configured datasets**, not a claim that every dataset was
 opened. They can override the toolkit’s default dataset lookup independently
 of its version ([Geant4 installation guide](https://geant4.web.cern.ch/documentation/dev/ig_html/InstallationGuide/postinstall.html#environment-variables-for-datasets)).
-Without instrumentation the job environment is still recorded. `os` in
+Without instrumentation the job environment is still recorded. When measured
+configs report different dataset environments, `g4_datasets` is absent. `os` in
 `machine_info.json` describes `/etc/os-release` inside the container; the host's
 kernel is not used as an OS version.
 

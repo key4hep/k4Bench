@@ -143,6 +143,26 @@ def test_capture_unions_configs_and_removes_private_paths(tmp_path, monkeypatch,
         assert info["g4_datasets"] == {"G4LEDATA": "G4EMLOW8.8"}
 
 
+def test_conflicting_config_datasets_leave_no_job_environment_claim(tmp_path, monkeypatch):
+    setup = tmp_path / "lcg/views/devkey-head/Mon/platform/setup.sh"
+    setup.parent.mkdir(parents=True)
+    setup.touch()
+    nightly = tmp_path / "lcg/nightlies/devkey-head/Mon"
+    nightly.mkdir(parents=True)
+    for source, kind in zip(manifests(), ("externals", "contrib")):
+        (nightly / f"LCG_{kind}_platform.txt").write_text(source)
+    run = tmp_path / "run"
+    run.mkdir()
+    for label, data in (("baseline", "G4EMLOW8.8"), ("no_TPC", "G4EMLOW8.7")):
+        stack.loaded_paths_file(run, label).write_text(
+            f"# k4bench loaded paths v1\n/{label}/library.so\nG4LEDATA=/data/{data}\n")
+    info = {"configs": ["baseline", "no_TPC"]}
+    env = {"K4H_STACK_SETUP": str(setup), "G4LEDATA": "/data/G4EMLOW8.8"}
+    stack.capture_stack(run, info, env)
+    assert "g4_datasets" not in info and "k4h_loaded_packages" not in info
+    assert stack.stack_snapshot(info, {}).datasets is None
+
+
 def test_missing_head_revision_is_not_a_change_or_a_meaningful_link():
     base, _ = snapshots()
     packages = {n: dict(p) for n, p in base.packages.items()}

@@ -71,7 +71,9 @@ def capture_stack(run_dir: Path, info: dict, env: dict[str, str]) -> None:
                            if row.startswith("G4") and "=" in row
                            for key, value in [row.split("=", 1)]}
             if datasets is not None and config_data != datasets:
+                # The job environment would now name data some config did not use.
                 _log.warning("Geant4 dataset environment differs across configs")
+                info.pop("g4_datasets", None)
                 return
             datasets = config_data
         if not handoffs or not paths:
