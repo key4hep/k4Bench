@@ -1,9 +1,9 @@
 """Pure trend-window resolution (no Streamlit), so it can be unit-tested.
 
-The sidebar offers presets that count back over the Key4hep releases, plus a
-custom range of them; this module turns the choice into the releases the window
-holds, the report nights that judged them, and the run listing cut to the runs
-the caller downloads for them.
+The sidebar picks a range of Key4hep releases on a slider; this module gives
+the range it opens on, and turns a range into the releases the window holds,
+the report nights that judged them, and the run listing cut to the runs the
+caller downloads for them.
 """
 
 from __future__ import annotations
@@ -15,16 +15,8 @@ import pandas as pd
 
 from k4bench.labels import pretty_release
 
-# Trend-window presets → how many of the newest releases each covers; ``None``
-# means special handling.
-WINDOW_PRESETS: dict[str, int | None] = {
-    "Last 5 releases":  5,
-    "Last 10 releases": 10,
-    "Last 20 releases": 20,
-    "Last 50 releases": 50,
-    "All":              None,
-    "Custom…":          None,
-}
+#: How many of the newest releases the window opens on.
+DEFAULT_RELEASES = 10
 
 
 def _parse_day(raw: str) -> date | None:
@@ -53,39 +45,32 @@ def dated_releases(stacks: Iterable[str]) -> list[str]:
     )
 
 
-def select_releases(
-    preset: str,
-    releases: list[str],
-    custom_range: tuple[str, str] | None,
-    anchor: date | None = None,
+def default_releases(
+    releases: list[str], anchor: date | None, count: int = DEFAULT_RELEASES,
 ) -> list[str]:
-    """The releases a preset (or custom range) covers, as a contiguous,
-    oldest-first slice of *releases*.
+    """The releases the window opens on, as an oldest-first slice of *releases*.
 
     *releases* is every release benchmarked on the platform, oldest first (see
     :func:`dated_releases`), not the selected detector's: the cross-detector
-    Overview draws every detector over this one window, so a preset has to
-    cover the same releases whichever detector the sidebar has selected.
+    Overview draws every detector over this one window, so it has to open on
+    the same releases whichever detector the sidebar has selected.
 
-    A preset of *N* takes the *N* newest releases tagged on or before *anchor*
-    — the newest nightly **report** night — and every newer release on top.
-    A release that tonight's batch is still uploading has no report yet, and
-    counting it would push the oldest release, and with it the Overview's
-    oldest night, out of the window until the report lands. A window can
-    therefore hold a release more than its label while a batch outruns the
-    reports. With no *anchor*, the count starts at the newest release.
+    That is the *count* newest releases tagged on or before *anchor* — the
+    newest nightly **report** night — and every newer release on top. A release
+    that tonight's batch is still uploading has no report yet, and counting it
+    would push the oldest release, and with it the Overview's oldest night, out
+    of the window until the report lands. The window therefore holds one
+    release more than *count* while a batch outruns the reports. With no
+    *anchor*, the count starts at the newest release.
     """
-    if preset == "All":
-        return list(releases)
-    if preset == "Custom…":
-        if custom_range is None:
-            return list(releases)
-        lo, hi = custom_range
-        return releases[releases.index(lo):releases.index(hi) + 1]
-    count = WINDOW_PRESETS[preset]
     reported = [r for r in releases if anchor is None or release_day(r) <= anchor]
     ahead = [r for r in releases if anchor is not None and release_day(r) > anchor]
     return reported[-count:] + ahead
+
+
+def releases_between(releases: list[str], lo: str, hi: str) -> list[str]:
+    """*lo*, *hi* and every release of *releases* between them, oldest first."""
+    return releases[releases.index(lo):releases.index(hi) + 1]
 
 
 def report_span(
