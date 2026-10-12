@@ -73,18 +73,28 @@ class PageContext:
         return self.selection
 
 
-def pick_section(section_names: list[str]) -> str:
-    """The section bar, returning the active section.
+def current_section(section_names: list[str]) -> str:
+    """The active section, readable before the section bar is drawn — the
+    sidebar, which is drawn first, scopes its trend window by it.
 
     ``?tab=...`` (used by the nightly regression email's "view in dashboard"
     links, see ``k4bench.regression.render.dashboard_link``) seeds
     session_state the same way as ``seed_query_param`` (see its docstring) —
-    case-insensitively here, since section names are matched by label.
+    case-insensitively here, since section names are matched by label. A click
+    on the bar is in session_state before the rerun it starts, so this already
+    names the section being opened.
     """
     if "active_section" not in st.session_state:
         requested = (st.query_params.get("tab") or "").strip().lower()
         matched = next((name for name in section_names if name.lower() == requested), None)
         st.session_state["active_section"] = matched or section_names[0]
+    # Clicking the active section again deselects it.
+    return st.session_state["active_section"] or section_names[0]
+
+
+def pick_section(section_names: list[str]) -> str:
+    """The section bar, returning the active section (see :func:`current_section`)."""
+    current_section(section_names)
     active = st.segmented_control(
         "Section", section_names,
         key="active_section", label_visibility="collapsed", width="stretch",

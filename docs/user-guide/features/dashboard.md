@@ -152,26 +152,23 @@ Plots a metric over time. The x-axis is anchored on the **Key4hep release date**
 (falling back to the run date), so you see regressions aligned with releases.
 A sidebar **release slider** controls how much history is downloaded and shown:
 every run of the Key4hep releases between its two handles, including a release
-re-run on later nights. It ranges over **every release benchmarked on the
-platform**, not the selected detector's, so the same range covers the same
-releases whichever detector the sidebar has selected, and switching detector
-keeps it. This matters most for the cross-detector Overview tab, which draws
-every detector over this one window, from the night the oldest release was
-tagged: a range over one detector's releases would shrink to that detector's
-history whenever a recently added one was picked, and detectors that had run
-for longer would silently lose their history from its charts. The slider opens
-on the **10 newest releases**, counted from the newest nightly *report* night;
-a release that tonight's batch is still uploading is added on top, so it can
-open on 11 until the report lands. When a new release is published, or a
-report lands, it reopens on the newest releases rather than staying on a range
-that stops at yesterday's. The window is not part of the page URL. A detector
-benchmarked for fewer releases than the window holds fills only part of it —
-after a detector version bump, every range longer than the new version's
-history shows the same runs — and the sidebar caption counts the releases it
-ran in and names the night it first ran; if it has no run in the window, it
-names the night it last ran (see
-[`trend_window`](../../reference/api/analysis/index.md) — pure logic,
-unit-tested).
+re-run on later nights. What it ranges over follows the open tab. On the
+cross-detector **Overview** it is **every release benchmarked on the platform**,
+by any detector, so the same range covers the same releases whichever detector
+the sidebar has selected, and switching detector keeps it: a range over one
+detector's releases would shrink to that detector's history whenever a recently
+added one was picked, and detectors that had run for longer would silently lose
+their history from its charts. On every other tab it is the releases the
+**selected detector** was benchmarked with, so after a detector version bump the
+slider holds only the new version's releases rather than a range it has no runs
+in. The slider opens on the **10 newest releases**, counted from the newest
+nightly *report* night; a release that tonight's batch is still uploading is
+added on top, so it can open on 11 until the report lands. When a new release
+is published, a report lands, or the tab or detector changes what it ranges
+over, it reopens on the newest releases rather than staying on a range picked
+for something else. The window is not part of the page URL. (Its resolution
+lives in [`trend_window`](../../reference/api/analysis/index.md) — pure logic,
+unit-tested.)
 
 Nights the nightly regression detector **confirmed** a step are ringed in red
 on the lines, and nights it flagged but hasn't confirmed are ringed as ⚠️ watch

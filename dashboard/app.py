@@ -22,8 +22,8 @@ from data import (
     run_metadata,
 )
 from k4bench.results.reliability_evidence import run_reliability_map
-from section_dispatch import RENDERERS, PageContext, pick_section
-from sections import visible_sections
+from section_dispatch import RENDERERS, PageContext, current_section, pick_section
+from sections import SCOPED, SECTION_SCOPE, visible_sections
 from sidebar import RunSelection, TrendWindow, pick_run, pick_trend_window
 from tabs._reliability import render_sidebar_run_quality
 from ui_chrome import (
@@ -45,6 +45,13 @@ def main() -> None:
     run_meta: dict | None = None
     window = TrendWindow()
     run: RunData | None = None
+    # Trends-capable sections are gated on *remote mode*, not on whether the
+    # current trend window happens to have data. This keeps the section set and
+    # each one's view selector stable across trend-window changes, so the active
+    # section / sub-view is preserved when the user only adjusts the window; an
+    # empty window shows an in-view "widen the window" message instead of
+    # removing the option.
+    sections = visible_sections(bool(config.data_url))
 
     with st.sidebar:
         st.header("Data Source")
@@ -71,7 +78,14 @@ def main() -> None:
             render_sidebar_run_quality(
                 load_machine_info(data_dir), cached_load_results(data_dir)
             )
-            window = pick_trend_window(config.data_url, selection, config.cache_dir)
+            # A section that spans every detector draws the window over every
+            # release on the platform; the others read the selected detector's.
+            across_detectors = (
+                SECTION_SCOPE[current_section(sections)].detector is not SCOPED
+            )
+            window = pick_trend_window(
+                config.data_url, selection, config.cache_dir, across_detectors,
+            )
         else:
             data_dir = st.text_input("Data directory", value=config.data_dir)
 
@@ -117,13 +131,7 @@ def main() -> None:
     # machine info is available, in which case the filter is a no-op.
     reliability = run_reliability_map(run.trend_results, trend_machine)
 
-    # Trends-capable sections are gated on *remote mode*, not on whether the
-    # current trend window happens to have data. This keeps the section set and
-    # each one's view selector stable across trend-window changes, so the active
-    # section / sub-view is preserved when the user only adjusts the window; an
-    # empty window shows an in-view "widen the window" message instead of
-    # removing the option.
-    active_section = pick_section(visible_sections(bool(config.data_url)))
+    active_section = pick_section(sections)
 
     # One muted line naming what the active section is actually showing. Driven
     # by sections.SECTION_SCOPE, so it states only the dimensions that section
