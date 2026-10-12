@@ -1826,3 +1826,7 @@ def test_external_only_window_is_assessed_without_creating_candidates():
     assert entry.assessment.verdict == "real_change"
     assert entry.to_dict()["external_changes"][0]["before"] == "11.4.2"
     assert type(entry).from_dict(entry.to_dict()) == entry
+    # A field added by a newer writer is dropped, not fatal to this reader.
+    newer = entry.to_dict()
+    newer["external_changes"][0]["future_field"] = "ignored"
+    assert type(entry).from_dict(newer) == entry

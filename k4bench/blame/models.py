@@ -529,7 +529,10 @@ class BlameEntry:
             historical_evidence=tuple(
                 HistoricalRef.from_dict(h) for h in raw_historical or ()
             ),
-            external_changes=tuple(ExternalChange(**c) for c in d.get("external_changes") or ()),
+            external_changes=tuple(
+                ExternalChange(**_only_known(ExternalChange, c))
+                for c in d.get("external_changes") or ()
+            ),
         )
 
 
