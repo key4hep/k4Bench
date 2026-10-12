@@ -46,10 +46,10 @@ def _pick_run_app(dashboard_dir, store, plat, fail) -> None:
             raise OSError("listing timed out")
         return sorted(store)
 
-    sidebar._cached_list_detectors = _list_detectors
-    sidebar._cached_list_platforms = lambda url, det: [plat]
-    sidebar._cached_scan_stack_samples = lambda url, det, p: store[det]
-    sidebar._cached_fetch_latest_run = (
+    sidebar.cached_list_detectors = _list_detectors
+    sidebar.cached_list_platforms = lambda url, det: [plat]
+    sidebar.cached_scan_stack_samples = lambda url, det, p: store[det]
+    sidebar.cached_fetch_latest_run = (
         lambda url, det, p, stack, sample, cache: None if fail == "run"
         else f"/cache/{det}/{stack}/{sample}"
     )
@@ -124,9 +124,9 @@ def _window_app(dashboard_dir, run_dates, report_nights) -> None:
 
     import sidebar
 
-    sidebar._cached_list_run_dates = lambda url, det, plat, sample: run_dates
-    sidebar._cached_list_report_dates = lambda url: report_nights
-    sidebar._cached_fetch_runs_windowed = (
+    sidebar.cached_list_run_dates = lambda url, det, plat, sample: run_dates
+    sidebar.cached_list_report_dates = lambda url: report_nights
+    sidebar.cached_fetch_runs_windowed = (
         lambda url, det, plat, sample, cache, items: tuple(
             f"/cache/{stack}/{d}" for stack, dates in items for d in dates
         )

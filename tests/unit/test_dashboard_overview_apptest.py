@@ -113,14 +113,14 @@ def _app(dashboard_dir, dates, reports, window) -> None:
 
     from tabs import detectors_overview as ov
 
-    ov._cached_list_report_dates = lambda url: dates
+    ov.cached_list_report_dates = lambda url: dates
     from k4bench.regression.render import from_json
-    ov._cached_fetch_reports = lambda url, nights: {
+    ov.cached_fetch_reports = lambda url, nights: {
         n: from_json(reports[n]) for n in nights if n in reports
     }
     # No blame sidecar: the Nightly Report view's mail then renders unranked,
     # which is what most nights actually look like.
-    ov._nightly_email._cached_fetch_blame = lambda url, night: None
+    ov._nightly_email.cached_fetch_blame = lambda url, night: None
     ov.render(
         "https://example.invalid", "https://dash.invalid",
         "PLAT", "single_e_10GeV", window,
@@ -297,12 +297,12 @@ def _status_scope_app(dashboard_dir, dates, scenarios, window) -> None:
     from tabs import detectors_overview as ov
 
     reports = scenarios[_st.session_state.get("_scenario", 0)]
-    ov._cached_list_report_dates = lambda url: dates
+    ov.cached_list_report_dates = lambda url: dates
     from k4bench.regression.render import from_json
-    ov._cached_fetch_reports = lambda url, nights: {
+    ov.cached_fetch_reports = lambda url, nights: {
         n: from_json(reports[n]) for n in nights if n in reports
     }
-    ov._nightly_email._cached_fetch_blame = lambda url, night: None
+    ov._nightly_email.cached_fetch_blame = lambda url, night: None
     ov.render(
         "https://example.invalid", "https://dash.invalid",
         "PLAT", "single_e_10GeV", window,
@@ -425,12 +425,12 @@ def _status_sample_app(dashboard_dir, dates, reports, window) -> None:
     import streamlit as _st
     from tabs import detectors_overview as ov
 
-    ov._cached_list_report_dates = lambda url: dates
+    ov.cached_list_report_dates = lambda url: dates
     from k4bench.regression.render import from_json
-    ov._cached_fetch_reports = lambda url, nights: {
+    ov.cached_fetch_reports = lambda url, nights: {
         n: from_json(reports[n]) for n in nights if n in reports
     }
-    ov._nightly_email._cached_fetch_blame = lambda url, night: None
+    ov._nightly_email.cached_fetch_blame = lambda url, night: None
     ov.render("https://example.invalid", "https://dash.invalid", "PLAT",
               _st.session_state.get("_sample", "single_e_10GeV"), window)
 
@@ -1002,12 +1002,12 @@ def test_email_view_renders_when_the_scope_has_no_benchmarks():
 
         from tabs import detectors_overview as ov
 
-        ov._cached_list_report_dates = lambda url: dates
+        ov.cached_list_report_dates = lambda url: dates
         from k4bench.regression.render import from_json
-        ov._cached_fetch_reports = lambda url, nights: {
+        ov.cached_fetch_reports = lambda url, nights: {
             n: from_json(reports[n]) for n in nights if n in reports
         }
-        ov._nightly_email._cached_fetch_blame = lambda url, night: None
+        ov._nightly_email.cached_fetch_blame = lambda url, night: None
         ov.render(
             "https://example.invalid", "https://dash.invalid",
             "OTHER_PLAT", "single_e_10GeV", window,
@@ -1070,7 +1070,7 @@ def test_a_listing_that_did_not_answer_is_not_reported_as_no_reports():
         def _listing(url):
             raise TimeoutError("read timed out")
 
-        ov._cached_list_report_dates = _listing
+        ov.cached_list_report_dates = _listing
         ov.render(
             "https://example.invalid", "https://dash.invalid",
             "PLAT", "single_e_10GeV", window,

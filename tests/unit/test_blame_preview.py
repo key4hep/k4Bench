@@ -42,6 +42,46 @@ def preview():
 _PLAN_NIGHT = "2026-06-27"
 
 
+def _draft():
+    """A real draft for ``key4hep/k4geo#607`` and the 2026-06-24 → 2026-06-25
+    window — one ranked row, rendered by the production renderer."""
+    from k4bench.blame.comment import CommentDraft, CommentPlan, RegressionRow, marker_for
+    from k4bench.blame.models import CandidatePR
+    from k4bench.regression.models import Direction, MetricVerdict, Severity
+
+    verdict = MetricVerdict(
+        detector="ALLEGRO_o1_v03", platform="x86_64-almalinux9-gcc14.2.0-opt",
+        sample="single_e-_10GeV", label="baseline", metric_family="time",
+        metric="mean_time_s", sub_detector=None, run_id=_PLAN_NIGHT,
+        run_date="2026-06-25", value=120.0, baseline_median=100.0,
+        baseline_mad=1.0, pct_change=0.20, z_score=6.0,
+        severity=Severity.CONFIRMED, direction=Direction.UP, reason="step",
+        onset_run_id="2026-06-25", onset_run_date="2026-06-25",
+        last_accepted_run_id="2026-06-24", last_accepted_run_date="2026-06-24",
+        first_confirmed_run_id=_PLAN_NIGHT,
+    )
+    subject = CandidatePR(
+        repo="key4hep/k4geo", number=607, title="Change detector dimensions",
+        author="alice", url="https://github.com/key4hep/k4geo/pull/607",
+        merged_at="2026-06-24T09:00:00Z", files=("a.xml",), additions=1,
+        deletions=1, score=91.0, ranked=True,
+    )
+    plan = CommentPlan(
+        repo="key4hep/k4geo", number=607, subject=subject,
+        base_release="2026-06-24", onset_release="2026-06-25",
+        report_night=_PLAN_NIGHT,
+        rows=[RegressionRow(
+            verdict=verdict, stack="key4hep-2026-06-25", fact_id="r1",
+            scope_score=91.0, scope_state="ranked",
+        )],
+    )
+    return CommentDraft(
+        repo="key4hep/k4geo", number=607,
+        marker=marker_for("2026-06-24", "2026-06-25"), plan=plan,
+        attribution=None, facts_payload={"window": ["2026-06-24", "2026-06-25"]},
+    )
+
+
 @pytest.fixture
 def wired(monkeypatch, preview):
     """The script with every I/O boundary replaced: EOS reads, the selection,
@@ -49,7 +89,6 @@ def wired(monkeypatch, preview):
     from k4bench.blame import comment as comment_mod
     from k4bench.blame import github as github_mod
     from k4bench.blame import publish as publish_mod
-    from k4bench.blame.comment import PRComment
     from k4bench.blame.models import BlameReport
     from k4bench import remote as remote_mod
 
@@ -65,13 +104,8 @@ def wired(monkeypatch, preview):
         repo, number = "key4hep/k4geo", 607
 
     monkeypatch.setattr(comment_mod, "select", lambda *_a, **_k: [_Plan()])
-    marker = "<!-- k4bench-blame-comment:v1 window=2026-06-24..2026-06-25 -->"
-    rendered = PRComment(
-        repo="key4hep/k4geo", number=607, marker=marker,
-        body=f"{marker}\nthe rendered body naming key4hep/k4geo#607", score=91.0,
-    )
     monkeypatch.setattr(
-        comment_mod, "build_comments", lambda *_a, **_k: [rendered]
+        comment_mod, "build_comments", lambda *_a, **_k: [_draft()]
     )
     monkeypatch.setattr(github_mod, "GitHubClient", lambda **_k: object())
 
@@ -128,7 +162,10 @@ def test_post_writes_and_redirects_the_body_untouched(preview, wired, llm):
     assert call["dry_run"] is False
     (comment,) = call["comments"]
     assert (comment.repo, comment.number) == ("key4hep/k4Bench", 106)
-    assert comment.body.endswith("the rendered body naming key4hep/k4geo#607")
+    # Everything under the re-keyed marker is the body rendered for --only.
+    _, _, body = comment.render().body.partition("\n")
+    _, _, original = _draft().render().body.partition("\n")
+    assert body == original
 
 
 def test_two_previews_of_one_window_do_not_overwrite_each_other(preview, wired, llm):
@@ -142,7 +179,7 @@ def test_two_previews_of_one_window_do_not_overwrite_each_other(preview, wired, 
     assert "preview-of=key4hep/k4geo#607" in comment.marker
     # The upsert only recognises a marker on the body's first line, so the body
     # carries the same re-keying — and a re-run still edits its own comment.
-    assert comment.body.startswith(comment.marker + "\n")
+    assert comment.render().body.startswith(comment.marker + "\n")
     assert "window=2026-06-24..2026-06-25" in comment.marker
 
 
@@ -155,20 +192,15 @@ def test_a_rerendered_preview_updates_even_though_the_facts_are_the_same(
     # instead — otherwise improving the renderer would leave the test comment
     # showing the old one. Runs the real upsert, not a stub of it.
     from k4bench.blame import publish as publish_mod
-    from k4bench.blame.comment import PRComment
     from k4bench.blame.github import IssueComment
 
-    marker = "<!-- k4bench-blame-comment:v1 window=2026-06-24..2026-06-25 -->"
-    digest = "<!-- k4bench-blame-facts:abc123 -->"
-    rendered = PRComment(
-        repo="key4hep/k4geo", number=607, marker=marker,
-        body=f"{marker}\n{digest}\nthe newly worded body", score=91.0,
-        facts_digest="abc123",
-    )
-    posted = preview._redirect(rendered, "key4hep/k4Bench", 106)
+    posted = preview._redirect(_draft(), "key4hep/k4Bench", 106)
+    body = posted.render().body
+    # The digest line is still in the body, so the two share their facts.
+    assert "<!-- k4bench-blame-facts:" in body.split("\n")[1]
+    heading = "Possible performance change traced to this pull request"
     already_there = IssueComment(
-        42, posted.body.replace("the newly worded body", "an older wording"),
-        author="k4bench-bot",
+        42, body.replace(heading, "An older wording"), author="k4bench-bot",
     )
     updated: list[tuple[int, str]] = []
     monkeypatch.setattr(publish_mod, "authenticated_login", lambda _c: "k4bench-bot")
@@ -181,12 +213,12 @@ def test_a_rerendered_preview_updates_even_though_the_facts_are_the_same(
     )
     result = publish_mod.publish(object(), [posted])
     assert result.updated == ["key4hep/k4Bench#106"]
-    assert "the newly worded body" in updated[0][1]
+    assert heading in updated[0][1]
 
     # …and a preview that really is identical still performs no write.
     monkeypatch.setattr(
         publish_mod, "list_issue_comments",
-        lambda *_a: [IssueComment(42, posted.body, author="k4bench-bot")],
+        lambda *_a: [IssueComment(42, body, author="k4bench-bot")],
     )
     assert publish_mod.publish(object(), [posted]).unchanged == ["key4hep/k4Bench#106"]
 

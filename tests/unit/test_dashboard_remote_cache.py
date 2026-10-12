@@ -62,13 +62,13 @@ def test_report_window_with_a_stalled_night_is_read_again(monkeypatch):
     nights = ("2026-09-24", "2026-09-23")
 
     # The night that answered is shown; the stalled one is simply absent…
-    assert _nights(remote_cache._cached_fetch_reports(BASE, nights)) == {
+    assert _nights(remote_cache.cached_fetch_reports(BASE, nights)) == {
         "2026-09-24": "2026-09-24",
     }
     # …and not remembered as absent: the next call asks again, and only for it.
     stalled.clear()
     calls.clear()
-    assert _nights(remote_cache._cached_fetch_reports(BASE, nights)) == {
+    assert _nights(remote_cache.cached_fetch_reports(BASE, nights)) == {
         "2026-09-24": "2026-09-24",
         "2026-09-23": "2026-09-23",
     }
@@ -77,9 +77,9 @@ def test_report_window_with_a_stalled_night_is_read_again(monkeypatch):
     # A complete window is cached as before, and so is every night of it on
     # its own: a window sharing nights with it reads only its new ones.
     calls.clear()
-    remote_cache._cached_fetch_reports(BASE, nights)
+    remote_cache.cached_fetch_reports(BASE, nights)
     assert calls == []
-    remote_cache._cached_fetch_reports(BASE, ("2026-09-25", "2026-09-24"))
+    remote_cache.cached_fetch_reports(BASE, ("2026-09-25", "2026-09-24"))
     assert calls == ["2026-09-25"]
 
 
@@ -94,11 +94,11 @@ def test_report_window_keeps_a_night_that_is_absent(monkeypatch):
 
     monkeypatch.setattr(remote, "fetch_report", fetch_report)
     nights = ("2026-09-24", "2026-09-23", "2026-09-22")
-    remote_cache._cached_fetch_reports(BASE, nights)
+    remote_cache.cached_fetch_reports(BASE, nights)
     calls.clear()
     # A 404 or an unparseable report is an answer: cached like any other, and
     # costing only its own night.
-    assert _nights(remote_cache._cached_fetch_reports(BASE, nights)) == {
+    assert _nights(remote_cache.cached_fetch_reports(BASE, nights)) == {
         "2026-09-24": "2026-09-24",
     }
     assert calls == []
@@ -118,13 +118,13 @@ def test_report_listing_that_did_not_answer_is_not_cached(monkeypatch):
 
     monkeypatch.setattr(remote, "list_report_dates", list_report_dates)
     with pytest.raises(remote.requests.ReadTimeout):
-        remote_cache._cached_list_report_dates(BASE)
-    assert remote_cache._cached_list_report_dates(BASE) == ["2026-09-24", "2026-09-23"]
+        remote_cache.cached_list_report_dates(BASE)
+    assert remote_cache.cached_list_report_dates(BASE) == ["2026-09-24", "2026-09-23"]
 
 
 @pytest.mark.parametrize("name, wrapper, args", [
-    ("list_run_dates_all_stacks", "_cached_list_run_dates", (BASE, "DET", "PLAT", "single_e")),
-    ("scan_stack_samples", "_cached_scan_stack_samples", (BASE, "DET", "PLAT")),
+    ("list_run_dates_all_stacks", "cached_list_run_dates", (BASE, "DET", "PLAT", "single_e")),
+    ("scan_stack_samples", "cached_scan_stack_samples", (BASE, "DET", "PLAT")),
 ])
 def test_discovery_that_stopped_short_raises_and_is_read_again(monkeypatch, name, wrapper, args):
     # A listing missing the newest release would make an older one look newest,
@@ -159,7 +159,7 @@ def test_partial_trend_download_returns_the_runs_that_landed(monkeypatch):
         raise remote.IncompleteFetch(landed, ["S/2026-09-23: read timed out"])
 
     monkeypatch.setattr(remote, "fetch_runs_windowed", fetch_runs_windowed)
-    got = remote_cache._cached_fetch_runs_windowed(
+    got = remote_cache.cached_fetch_runs_windowed(
         BASE, "DET", "PLAT", "single_e", "/cache",
         (("S", ("2026-09-23", "2026-09-24")),),
     )
@@ -167,8 +167,8 @@ def test_partial_trend_download_returns_the_runs_that_landed(monkeypatch):
 
 
 @pytest.mark.parametrize("name, wrapper, args", [
-    ("fetch_blame", "_cached_fetch_blame", (BASE, "2026-09-24")),
-    ("fetch_stack_packages", "_cached_fetch_stack_packages", (BASE, "DET", "PLAT", "S")),
+    ("fetch_blame", "cached_fetch_blame", (BASE, "2026-09-24")),
+    ("fetch_stack_packages", "cached_fetch_stack_packages", (BASE, "DET", "PLAT", "S")),
 ])
 def test_other_wrappers_do_not_keep_a_stall(monkeypatch, name, wrapper, args):
     calls = []

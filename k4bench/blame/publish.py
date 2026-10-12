@@ -16,13 +16,12 @@ lives in one readable place:
   the body: part of the body is model prose regenerated every night, and a
   reworded sentence about the same regression is not a change anyone wants a
   notification for.
-* **Keep the observations an edit replaces.** Before a material edit, the new
-  body carries forward a compact history of earlier versions, each linked to its
-  archived report, and the retained-row state that lets a row confirmed in an
-  earlier version stay visible after it stops being confirmed
-  (:func:`~k4bench.blame.comment.materialize`). The renderer keeps tonight's
-  observation outside its stable body until this boundary decides a write is
-  already warranted.
+* **Keep the observations an edit replaces.** A comment is rendered only here,
+  against the comparable comments already posted
+  (:meth:`~k4bench.blame.comment.CommentDraft.render`), so the new body carries
+  forward a compact history of earlier versions, each linked to its archived
+  report, and the retained-row state that lets a row confirmed in an earlier
+  version stay visible after it stops being confirmed.
 * **Never post blind.** If the existing comments could not be read
   (:func:`~k4bench.blame.github.list_issue_comments` returning ``None``), the PR
   is skipped: a duplicate comment is worse than a missing one.
@@ -49,9 +48,8 @@ import logging
 from dataclasses import dataclass, field
 
 from k4bench.blame.comment import (
-    PRComment,
+    CommentDraft,
     facts_digest_of,
-    materialize,
     window_contains,
     window_from_marker,
 )
@@ -101,7 +99,7 @@ class PublishResult:
 
 
 def publish(
-    client: GitHubClient, comments: list[PRComment], *, dry_run: bool = False
+    client: GitHubClient, comments: list[CommentDraft], *, dry_run: bool = False
 ) -> PublishResult:
     """Upsert every comment in *comments*, returning what happened to each.
 
@@ -144,10 +142,10 @@ def publish(
             return result
     for comment in comments:
         if dry_run:
-            comment = materialize(comment)
+            rendered = comment.render()
             _log.info(
                 "publish: [dry run] would comment on %s (likelihood %d%%):\n%s",
-                comment.target, round(comment.score), comment.body,
+                rendered.target, round(rendered.score), rendered.body,
             )
             result.planned.append(comment.target)
             continue
@@ -164,7 +162,7 @@ def publish(
 
 def _upsert(
     client: GitHubClient,
-    comment: PRComment,
+    draft: CommentDraft,
     result: PublishResult,
     *,
     login: str,
@@ -172,7 +170,7 @@ def _upsert(
     """Create, edit, or leave alone the bot's comment for this window lineage.
 
     A comment counts as the bot's own only when its *first line* is the marker
-    (the shape :func:`~k4bench.blame.comment._render` always produces) **and** it
+    (the shape :func:`~k4bench.blame.comment.render._render` always produces) **and** it
     was written by *login* — a marker quoted inside someone else's comment
     matches neither test, so it cannot divert the edit. An exact marker wins;
     otherwise the nearest containing or contained window is migrated by replacing
@@ -188,26 +186,26 @@ def _upsert(
     Whether it needs rewriting is decided on the hidden facts digest
     (:func:`~k4bench.blame.comment.facts_digest_of`) rather than the body, so a
     freshly-worded summary of the same regressions is left alone. Before that
-    comparison, the body is materialised
-    (:func:`~k4bench.blame.comment.materialize`) with its current and prior
-    observations, and with the retained rows the comparable prior bodies carry;
-    the digest — finalized by that same step — still wins when available, so an
-    unchanged new report date alone performs no edit. Every comment this module
+    comparison, the body is rendered
+    (:meth:`~k4bench.blame.comment.CommentDraft.render`) against the comparable
+    prior bodies, whose observations and retained rows it carries forward; the
+    digest it computes still wins when available, so an unchanged new report
+    date alone performs no edit. Every comment this module
     writes carries a digest; a standing comment whose digest line cannot be read
     falls back to comparing whole bodies, which errs towards an edit rather than
     towards leaving a stale body in place."""
-    existing = list_issue_comments(client, comment.repo, comment.number)
+    existing = list_issue_comments(client, draft.repo, draft.number)
     if existing is None:
         _log.warning(
             "publish: could not read %s's comments — skipping rather than "
-            "risking a duplicate", comment.target,
+            "risking a duplicate", draft.target,
         )
-        result.failed.append(comment.target)
+        result.failed.append(draft.target)
         return
 
     owned = [c for c in existing if c.author == login]
     exact = [
-        c for c in owned if c.body.partition("\n")[0] == comment.marker
+        c for c in owned if c.body.partition("\n")[0] == draft.marker
     ]
     if len(exact) > 1:
         # Two comments the bot owns for one window: the upsert's identity
@@ -219,15 +217,15 @@ def _upsert(
             "publish: %s carries %d comments with this window's marker "
             "(ids %s) — editing an arbitrary one would leave the others "
             "stale; skipping",
-            comment.target, len(exact), ", ".join(str(c.id) for c in exact),
+            draft.target, len(exact), ", ".join(str(c.id) for c in exact),
         )
-        result.failed.append(comment.target)
+        result.failed.append(draft.target)
         return
 
     existing_comment = exact[0] if exact else None
     migrating = False
     lineage_bodies: list[str] = []
-    current_window = window_from_marker(comment.marker)
+    current_window = window_from_marker(draft.marker)
     if existing_comment is None and current_window is not None:
         lineage = [
             (c, window)
@@ -273,10 +271,10 @@ def _upsert(
                 "publish: %s carries duplicate comments at its nearest lineage "
                 "window (ids %s) — editing an arbitrary one would leave the "
                 "others stale; skipping",
-                comment.target,
+                draft.target,
                 ", ".join(str(candidate.id) for candidate in duplicate_nearest),
             )
-            result.failed.append(comment.target)
+            result.failed.append(draft.target)
             return
         duplicated_windows = {
             window
@@ -288,7 +286,7 @@ def _upsert(
                 "publish: %s carries duplicate comments at distant lineage "
                 "window(s) (ids %s) — ignoring them and migrating the unique "
                 "nearest comment; the duplicates need a human to remove",
-                comment.target,
+                draft.target,
                 ", ".join(
                     str(candidate.id)
                     for candidate, window in lineage
@@ -306,7 +304,7 @@ def _upsert(
                     "publish: %s has %d equally near lineage comments (ids %s); "
                     "migrating most recently updated id %s and leaving the "
                     "others as historical comments",
-                    comment.target,
+                    draft.target,
                     len(nearest),
                     ", ".join(str(candidate.id) for candidate, _ in nearest),
                     existing_comment.id,
@@ -326,7 +324,7 @@ def _upsert(
 
     if not lineage_bodies and existing_comment is not None:
         lineage_bodies = [existing_comment.body]
-    comment = materialize(comment, lineage_bodies)
+    comment = draft.render(lineage_bodies)
     if len(comment.body.encode()) > _MAX_COMMENT_BYTES:
         # Measure only after carrying the existing observation history forward:
         # that is the actual body GitHub would receive.

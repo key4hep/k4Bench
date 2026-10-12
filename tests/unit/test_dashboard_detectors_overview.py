@@ -46,11 +46,17 @@ def _load_module():
         _DASHBOARD_DIR / "tabs" / "detectors_overview.py",
     )
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
     return mod
 
 
 ov = _load_module()
+
+# Imported after the dashboard directory is on sys.path (see _load_module).
+from tabs import _overview_data as data  # noqa: E402
+from tabs import _regression_status as status  # noqa: E402
+from tabs import _reliability as reliability  # noqa: E402
 
 
 def _verdict(**overrides) -> MetricVerdict:
@@ -84,8 +90,8 @@ def _collapsed_history(night_frames, platform, sample, label) -> pd.DataFrame:
     Production always filters runs between the two calls, so there is no helper
     that composes them; these tests exercise the composition itself.
     """
-    return ov.collapse_history(
-        ov.history_rows(night_frames, platform, sample, label)
+    return data.collapse_history(
+        data.history_rows(night_frames, platform, sample, label)
     )
 
 
@@ -134,12 +140,12 @@ def _report() -> NightlyReport:
 # ── report_metrics_frame ───────────────────────────────────────────────────────
 
 def test_metrics_frame_filters_and_columns():
-    df = ov.report_metrics_frame(_report())
-    assert list(df.columns) == ov._FRAME_COLUMNS
+    df = data.report_metrics_frame(_report())
+    assert list(df.columns) == data._FRAME_COLUMNS
     # Region, returncode, cpu_efficiency and None-valued rows are dropped. The
     # CLD config's raw values are retained but display as FAILURE because that
     # same config carries the canonical returncode failure verdict.
-    assert set(df["metric"]) <= set(ov._METRIC_ORDER)
+    assert set(df["metric"]) <= set(data.METRIC_ORDER)
     assert not df[df["metric"] == "mean_time_s"]["value"].eq(0.01).any()
     assert df["value"].map(math.isfinite).all()
     assert set(df["severity"]) == {"OK", "FAILURE", "UNKNOWN"}
@@ -154,15 +160,15 @@ def test_metrics_frame_filters_and_columns():
 
 
 def test_metrics_frame_empty_report_keeps_columns():
-    df = ov.report_metrics_frame(NightlyReport(generated_at=""))
+    df = data.report_metrics_frame(NightlyReport(generated_at=""))
     assert df.empty
-    assert list(df.columns) == ov._FRAME_COLUMNS
+    assert list(df.columns) == data._FRAME_COLUMNS
 
 
 def test_flag_choices_relabel_stale_metric_flags_for_failed_config():
     group = _report().groups[0]
 
-    choices = ov._flag_choices([group])
+    choices = status._flag_choices([group])
 
     assert choices
     assert {v.severity for v in choices} == {Severity.FAILURE}
@@ -186,9 +192,9 @@ def test_reliability_frame_keeps_unjudged_unreliable_group():
         _group("SiD", [_verdict(detector="SiD")], reliable=True),
     ])
     # The unreliable group is invisible to the metric frame …
-    assert "CLD" not in set(ov.report_metrics_frame(rep)["detector"])
+    assert "CLD" not in set(data.report_metrics_frame(rep)["detector"])
     # … but present in the reliability frame.
-    rf = ov.report_reliability_frame(rep)
+    rf = data.report_reliability_frame(rep)
     assert list(rf.columns) == [
         "detector", "platform", "sample", "run_date", "k4h_release",
         "missing_run", "reliable",
@@ -198,19 +204,19 @@ def test_reliability_frame_keeps_unjudged_unreliable_group():
 
 
 def test_reliability_history_scopes_and_drops_missing_runs():
-    rf1 = ov.report_reliability_frame(NightlyReport(generated_at="", groups=[
+    rf1 = data.report_reliability_frame(NightlyReport(generated_at="", groups=[
         _group("CLD", [], run_date="2026-01-12", reliable=False),
         # Wrong sample → out of scope.
         _group("SiD", [], run_date="2026-01-12", reliable=False, sample="other"),
     ]))
-    rf2 = ov.report_reliability_frame(NightlyReport(generated_at="", groups=[
+    rf2 = data.report_reliability_frame(NightlyReport(generated_at="", groups=[
         _group("CLD", [], run_date="2026-01-13", reliable=True),
         # Carried forward for a run that never arrived — an absence, not a run,
         # so it is dropped however its (old) night's flag reads.
         _group("IDEA", [], run_date="2026-01-12", reliable=False,
                job_failures=["no run uploaded for 2026-01-13 (latest is 2026-01-12)"]),
     ]))
-    hist = ov.reliability_history(
+    hist = data.reliability_history(
         [("2026-01-12", rf1), ("2026-01-13", rf2)], "PLAT", "single_e"
     )
     assert list(hist.columns) == ["night", "run_night", "detector", "reliable"]
@@ -227,14 +233,14 @@ def test_reliability_history_keeps_a_cross_midnight_run_under_its_own_date():
     # report and keeps its verdicts and its reliability. Dropping it for the
     # date mismatch — the way a real missing run is dropped — would leave that
     # contended run unfilterable while its values stayed in the history.
-    rf = ov.report_reliability_frame(NightlyReport(generated_at="", groups=[
+    rf = data.report_reliability_frame(NightlyReport(generated_at="", groups=[
         _group("CLD", [], run_date="2026-01-12", k4h_release="key4hep-2026-01-13",
                reliable=False,
                notes=["run is dated 2026-01-12, this report 2026-01-13"]),
         _group("SiD", [], run_date="2026-01-13", k4h_release="key4hep-2026-01-13",
                reliable=True),
     ]))
-    hist = ov.reliability_history([("2026-01-13", rf)], "PLAT", "single_e")
+    hist = data.reliability_history([("2026-01-13", rf)], "PLAT", "single_e")
     # Both runs are present, each keyed on the night it actually ran — which is
     # how history_rows addresses them too.
     assert set(zip(hist["run_night"], hist["detector"])) == {
@@ -242,7 +248,7 @@ def test_reliability_history_keeps_a_cross_midnight_run_under_its_own_date():
     }
     # …and they share the nightly tag, so the chart still shows one point.
     assert set(hist["night"]) == {"2026-01-13"}
-    assert ov.unreliable_pairs(hist) == {("2026-01-12", "CLD")}
+    assert reliability.unreliable_pairs(hist) == {("2026-01-12", "CLD")}
 
 
 def test_reliability_history_dedupes_a_run_reported_twice():
@@ -250,12 +256,12 @@ def test_reliability_history_dedupes_a_run_reported_twice():
     # next one; one run, one row.
     group = _group("CLD", [], run_date="2026-01-12",
                    k4h_release="key4hep-2026-01-12", reliable=False)
-    rf = ov.report_reliability_frame(NightlyReport(generated_at="", groups=[group]))
-    hist = ov.reliability_history(
+    rf = data.report_reliability_frame(NightlyReport(generated_at="", groups=[group]))
+    hist = data.reliability_history(
         [("2026-01-12", rf), ("2026-01-13", rf)], "PLAT", "single_e"
     )
     assert len(hist) == 1
-    assert ov.unreliable_pairs(hist) == {("2026-01-12", "CLD")}
+    assert reliability.unreliable_pairs(hist) == {("2026-01-12", "CLD")}
 
 
 def test_reliability_history_keeps_same_tag_reruns_apart():
@@ -264,15 +270,15 @@ def test_reliability_history_keeps_same_tag_reruns_apart():
     # property of the run, so the two stay separate rows sharing a tag date —
     # collapsing them would let the contended run condemn its reliable sibling,
     # and the exclusion could no longer say which measurement it drops.
-    rf1 = ov.report_reliability_frame(NightlyReport(generated_at="", groups=[
+    rf1 = data.report_reliability_frame(NightlyReport(generated_at="", groups=[
         _group("ALLEGRO", [], run_date="2026-07-01",
                k4h_release="key4hep-2026-07-01", reliable=False),
     ]))
-    rf2 = ov.report_reliability_frame(NightlyReport(generated_at="", groups=[
+    rf2 = data.report_reliability_frame(NightlyReport(generated_at="", groups=[
         _group("ALLEGRO", [], run_date="2026-07-02",
                k4h_release="key4hep-2026-07-01", reliable=True),
     ]))
-    hist = ov.reliability_history(
+    hist = data.reliability_history(
         [("2026-07-01", rf1), ("2026-07-02", rf2)], "PLAT", "single_e"
     )
     assert list(zip(hist["night"], hist["run_night"], hist["reliable"])) == [
@@ -284,11 +290,11 @@ def test_reliability_history_keeps_same_tag_reruns_apart():
 def test_history_collapses_same_tag_reruns():
     # First run of the tag CONFIRMED a step; the rerun's report shows OK (a
     # marginal night, or a report predating the release-grouped engine).
-    n1 = ov.report_metrics_frame(NightlyReport(generated_at="", groups=[
+    n1 = data.report_metrics_frame(NightlyReport(generated_at="", groups=[
         _group("CLD", [_verdict(value=100.0, severity=Severity.CONFIRMED)],
                run_date="2026-07-01", k4h_release="key4hep-2026-07-01"),
     ]))
-    n2 = ov.report_metrics_frame(NightlyReport(generated_at="", groups=[
+    n2 = data.report_metrics_frame(NightlyReport(generated_at="", groups=[
         _group("CLD", [_verdict(value=200.0, severity=Severity.OK)],
                run_date="2026-07-02", k4h_release="key4hep-2026-07-01"),
     ]))
@@ -305,15 +311,15 @@ def test_history_collapses_same_tag_reruns():
 def _same_tag_rerun_rows() -> pd.DataFrame:
     """One nightly tag benchmarked twice: the 07-01 run CONFIRMED a step, the
     07-02 rerun of the same tag came out OK."""
-    n1 = ov.report_metrics_frame(NightlyReport(generated_at="", groups=[
+    n1 = data.report_metrics_frame(NightlyReport(generated_at="", groups=[
         _group("CLD", [_verdict(value=100.0, severity=Severity.CONFIRMED)],
                run_date="2026-07-01", k4h_release="key4hep-2026-07-01"),
     ]))
-    n2 = ov.report_metrics_frame(NightlyReport(generated_at="", groups=[
+    n2 = data.report_metrics_frame(NightlyReport(generated_at="", groups=[
         _group("CLD", [_verdict(value=200.0, severity=Severity.OK)],
                run_date="2026-07-02", k4h_release="key4hep-2026-07-01"),
     ]))
-    return ov.history_rows(
+    return data.history_rows(
         [("2026-07-01", n1), ("2026-07-02", n2)], "PLAT", "single_e", "baseline"
     )
 
@@ -337,16 +343,16 @@ def _same_tag_failure_rows(failed_first: bool) -> pd.DataFrame:
     )
     groups = [failed, healthy] if failed_first else [healthy, failed]
     frames = [
-        (g.run_date, ov.report_metrics_frame(NightlyReport(generated_at="", groups=[g])))
+        (g.run_date, data.report_metrics_frame(NightlyReport(generated_at="", groups=[g])))
         for g in groups
     ]
-    return ov.history_rows(frames, "PLAT", "single_e", "baseline")
+    return data.history_rows(frames, "PLAT", "single_e", "baseline")
 
 
 @pytest.mark.parametrize("failed_first", [True, False])
 def test_same_tag_failure_is_separate_from_healthy_line(failed_first):
     rows = _same_tag_failure_rows(failed_first)
-    hist = ov.collapse_history(rows)
+    hist = data.collapse_history(rows)
     failures = rows[rows["severity"] == Severity.FAILURE.value]
 
     assert hist["value"].tolist() == [100.0]
@@ -364,7 +370,7 @@ def test_same_tag_failure_is_separate_from_healthy_line(failed_first):
     assert list(line.y) == [100.0]
     assert failed_marks and all(list(t.y) == [5.0] for t in failed_marks)
 
-    preview = ov._flag_trend_figure(
+    preview = status._flag_trend_figure(
         hist,
         _verdict(
             metric="mean_time_s", value=5.0, severity=Severity.FAILURE,
@@ -391,10 +397,10 @@ def test_dropping_an_unreliable_run_takes_its_flag_with_it():
     # The run that earned the CONFIRMED is excluded; the tag keeps its point,
     # measured by the reliable rerun — and the flag goes with the run that
     # earned it rather than ringing on a measurement that was never flagged.
-    kept = ov.drop_unreliable_runs(
+    kept = data.drop_unreliable_runs(
         _same_tag_rerun_rows(), {("2026-07-01", "CLD")}
     )
-    hist = ov.collapse_history(kept)
+    hist = data.collapse_history(kept)
     assert hist["night"].tolist() == ["2026-07-01"]
     assert hist["value"].tolist() == [200.0]
     assert hist["severity"].tolist() == ["OK"]
@@ -403,21 +409,21 @@ def test_dropping_an_unreliable_run_takes_its_flag_with_it():
 def test_dropping_the_reliable_rerun_leaves_the_flagged_run_standing():
     # The mirror case: excluding the quiet rerun leaves the tag on the
     # contended run's own measurement, flag included.
-    kept = ov.drop_unreliable_runs(
+    kept = data.drop_unreliable_runs(
         _same_tag_rerun_rows(), {("2026-07-02", "CLD")}
     )
-    hist = ov.collapse_history(kept)
+    hist = data.collapse_history(kept)
     assert hist["value"].tolist() == [100.0]
     assert hist["severity"].tolist() == ["CONFIRMED"]
 
 
 def _flag_trend_series(monkeypatch, *, exclude: bool) -> pd.DataFrame:
     """The series the Regression Status trend preview would plot."""
-    n1 = ov.report_metrics_frame(NightlyReport(generated_at="", groups=[
+    n1 = data.report_metrics_frame(NightlyReport(generated_at="", groups=[
         _group("CLD", [_verdict(value=100.0, severity=Severity.CONFIRMED)],
                run_date="2026-07-01", k4h_release="key4hep-2026-07-01"),
     ]))
-    n2 = ov.report_metrics_frame(NightlyReport(generated_at="", groups=[
+    n2 = data.report_metrics_frame(NightlyReport(generated_at="", groups=[
         _group("CLD", [_verdict(value=200.0, severity=Severity.OK)],
                run_date="2026-07-02", k4h_release="key4hep-2026-07-01"),
     ]))
@@ -425,18 +431,18 @@ def _flag_trend_series(monkeypatch, *, exclude: bool) -> pd.DataFrame:
     groups = [_group("CLD", [flagged], run_date="2026-07-02")]
 
     monkeypatch.setattr(
-        ov, "_render_reliability_filter",
+        status, "render_run_reliability_filter",
         lambda rel_hist, *, key, slot=None: ({("2026-07-01", "CLD")}, exclude),
     )
-    monkeypatch.setattr(ov, "_reset_widget_on_scope", lambda *a, **kw: None)
+    monkeypatch.setattr(status, "reset_widget_on_scope", lambda *a, **kw: None)
     # The picker's own behaviour is the Regressions tab's to test; here it just
     # has to land on the flag so the history pipeline below runs.
     monkeypatch.setattr(
-        ov, "render_metric_picker", lambda choices, **kw: choices[0],
+        status, "render_metric_picker", lambda choices, **kw: choices[0],
     )
     captured = {}
     monkeypatch.setattr(
-        ov, "_flag_trend_figure",
+        status, "_flag_trend_figure",
         lambda series, v, failures=None: captured.setdefault("series", series),
     )
 
@@ -456,8 +462,8 @@ def _flag_trend_series(monkeypatch, *, exclude: bool) -> pd.DataFrame:
         )
         container = staticmethod(lambda *a, **kw: _Container())
 
-    monkeypatch.setattr(ov, "st", _St)
-    ov._render_flag_trend(
+    monkeypatch.setattr(status, "st", _St)
+    status._render_flag_trend(
         groups, [("2026-07-01", n1), ("2026-07-02", n2)],
         "PLAT", "single_e", pd.DataFrame(),
     )
@@ -482,33 +488,33 @@ def test_status_trend_preview_keeps_every_run_when_exclusion_is_off(monkeypatch)
 
 def test_drop_unreliable_runs_is_a_no_op_without_pairs():
     rows = _same_tag_rerun_rows()
-    assert len(ov.drop_unreliable_runs(rows, set())) == len(rows)
-    empty = ov.history_rows([], "PLAT", "single_e", "baseline")
-    assert ov.drop_unreliable_runs(empty, {("2026-07-01", "CLD")}).empty
-    assert ov.collapse_history(empty).empty
+    assert len(data.drop_unreliable_runs(rows, set())) == len(rows)
+    empty = data.history_rows([], "PLAT", "single_e", "baseline")
+    assert data.drop_unreliable_runs(empty, {("2026-07-01", "CLD")}).empty
+    assert data.collapse_history(empty).empty
 
 
 # ── latest_snapshot ────────────────────────────────────────────────────────────
 
 def _two_night_hist() -> pd.DataFrame:
     """CLD measured on both nights, IDEA only on the older one."""
-    n1 = ov.report_metrics_frame(_report())
+    n1 = data.report_metrics_frame(_report())
     night2 = NightlyReport(generated_at="", groups=[
         _group("CLD", [
             _verdict(value=130.0),
             _verdict(metric="peak_rss_mb", metric_family="memory", value=2100.0),
         ], run_date="2026-01-13"),
     ])
-    n2 = ov.report_metrics_frame(night2)
-    return ov.history_rows(
+    n2 = data.report_metrics_frame(night2)
+    return data.history_rows(
         [("2026-01-12", n1), ("2026-01-13", n2)], "PLAT", "single_e", "baseline"
     )
 
 
 def test_latest_snapshot_takes_each_detectors_newest_night():
-    wide, as_of = ov.latest_snapshot(_two_night_hist())
+    wide, as_of = data.latest_snapshot(_two_night_hist())
     assert set(wide.index) == {"CLD", "IDEA"}
-    assert set(wide.columns) <= set(ov._METRIC_ORDER)
+    assert set(wide.columns) <= set(data.METRIC_ORDER)
     # CLD moves to its second night; IDEA keeps its last measured one rather
     # than dropping off the snapshot.
     assert wide.loc["CLD", "wall_time_s"] == 130.0
@@ -519,7 +525,7 @@ def test_latest_snapshot_takes_each_detectors_newest_night():
 def test_latest_snapshot_coordinates_come_from_one_run():
     # CLD's newest night has no mean_time_s: the metric is absent rather than
     # back-filled from the older night, so a point never mixes two runs.
-    wide, _ = ov.latest_snapshot(_two_night_hist())
+    wide, _ = data.latest_snapshot(_two_night_hist())
     assert pd.isna(wide.loc["CLD", "mean_time_s"])
     assert wide.loc["IDEA", "mean_time_s"] == 0.8
 
@@ -529,22 +535,22 @@ def test_latest_snapshot_ignores_a_partial_same_tag_rerun():
     # and memory, the rerun only memory. The point must come from *one* of
     # them, not take memory from the rerun and time from the original — which
     # is exactly what the per-metric collapse behind the trend lines would do.
-    first = ov.report_metrics_frame(NightlyReport(generated_at="", groups=[
+    first = data.report_metrics_frame(NightlyReport(generated_at="", groups=[
         _group("CLD", [
             _verdict(metric="mean_time_s", value=0.6),
             _verdict(metric="peak_rss_mb", metric_family="memory", value=2000.0),
         ], run_date="2026-07-01", k4h_release="key4hep-2026-07-01"),
     ]))
-    rerun = ov.report_metrics_frame(NightlyReport(generated_at="", groups=[
+    rerun = data.report_metrics_frame(NightlyReport(generated_at="", groups=[
         _group("CLD", [
             _verdict(metric="peak_rss_mb", metric_family="memory", value=2100.0),
         ], run_date="2026-07-02", k4h_release="key4hep-2026-07-01"),
     ]))
-    rows = ov.history_rows(
+    rows = data.history_rows(
         [("2026-07-01", first), ("2026-07-02", rerun)],
         "PLAT", "single_e", "baseline",
     )
-    wide, as_of = ov.latest_snapshot(rows)
+    wide, as_of = data.latest_snapshot(rows)
     # The rerun is the newest run of the tag and carries only memory, so the
     # time coordinate is missing rather than borrowed from the earlier run.
     assert wide.loc["CLD", "peak_rss_mb"] == 2100.0
@@ -552,7 +558,7 @@ def test_latest_snapshot_ignores_a_partial_same_tag_rerun():
     assert as_of == {"CLD": "2026-07-01"}   # still labelled with the tag date
     # The trend lines keep their per-metric collapse: the older run's time is a
     # real measurement of that tag and stays on the chart.
-    assert set(ov.collapse_history(rows)["metric"]) == {"mean_time_s", "peak_rss_mb"}
+    assert set(data.collapse_history(rows)["metric"]) == {"mean_time_s", "peak_rss_mb"}
 
 
 def test_snapshot_runs_picks_one_run_per_detector():
@@ -563,18 +569,18 @@ def test_snapshot_runs_picks_one_run_per_detector():
         "metric":    ["mean_time_s", "peak_rss_mb", "mean_time_s"],
         "value":     [0.6, 2000.0, 0.9],
     })
-    chosen = ov.snapshot_runs(rows)
+    chosen = data.snapshot_runs(rows)
     # CLD's tag was rerun: only the newest run night survives. IDEA's single
     # run is untouched.
     assert list(zip(chosen["detector"], chosen["run_night"])) == [
         ("CLD", "2026-07-02"), ("IDEA", "2026-07-02"),
     ]
-    assert ov.snapshot_runs(rows.iloc[0:0]).empty
+    assert data.snapshot_runs(rows.iloc[0:0]).empty
 
 
 def test_latest_snapshot_empty_history():
-    wide, as_of = ov.latest_snapshot(
-        ov.history_rows([], "PLAT", "single_e", "baseline")
+    wide, as_of = data.latest_snapshot(
+        data.history_rows([], "PLAT", "single_e", "baseline")
     )
     assert wide.empty
     assert as_of == {}
@@ -591,10 +597,10 @@ def test_unreliable_pairs_only_collects_explicit_failures():
         "detector":  ["CLD", "IDEA", "CLD", "CLD"],
         "reliable":  [False, None, True, False],
     })
-    assert ov.unreliable_pairs(rel) == {
+    assert reliability.unreliable_pairs(rel) == {
         ("2026-01-12", "CLD"), ("2026-01-14", "CLD"),
     }
-    assert ov.unreliable_pairs(rel.iloc[0:0]) == set()
+    assert reliability.unreliable_pairs(rel.iloc[0:0]) == set()
 
 
 # ── scatter_points ─────────────────────────────────────────────────────────────
@@ -604,10 +610,10 @@ def test_scatter_points_requires_both_coordinates():
         {"mean_time_s": [0.5, 0.8, None], "peak_rss_mb": [2000.0, None, 900.0]},
         index=["A", "B", "C"],
     )
-    pts = ov.scatter_points(wide, "mean_time_s", "peak_rss_mb")
+    pts = data.scatter_points(wide, "mean_time_s", "peak_rss_mb")
     assert list(pts.index) == ["A"]
     no_rss = wide.drop(columns=["peak_rss_mb"])
-    assert ov.scatter_points(no_rss, "mean_time_s", "peak_rss_mb").empty
+    assert data.scatter_points(no_rss, "mean_time_s", "peak_rss_mb").empty
 
 
 # ── stale_run_nights ───────────────────────────────────────────────────────────
@@ -623,12 +629,12 @@ def test_stale_run_nights_names_each_missed_detectors_last_run():
         # Another scope entirely — never fetched on this tab's behalf.
         _group("SiD", [], run_date="2026-01-09", sample="other"),
     ])
-    assert ov.stale_run_nights(report, "2026-01-13", "PLAT", "single_e") == ["2026-01-10"]
+    assert data.stale_run_nights(report, "2026-01-13", "PLAT", "single_e") == ["2026-01-10"]
     # Nothing stale → nothing extra to fetch.
     fresh = NightlyReport(generated_at="", groups=[
         _group("CLD", [_verdict()], run_date="2026-01-13"),
     ])
-    assert ov.stale_run_nights(fresh, "2026-01-13", "PLAT", "single_e") == []
+    assert data.stale_run_nights(fresh, "2026-01-13", "PLAT", "single_e") == []
 
 
 def test_stale_run_nights_ignores_a_cross_midnight_run():
@@ -640,7 +646,7 @@ def test_stale_run_nights_ignores_a_cross_midnight_run():
                k4h_release="key4hep-2026-01-13",
                notes=["run is dated 2026-01-12, this report 2026-01-13"]),
     ])
-    assert ov.stale_run_nights(report, "2026-01-13", "PLAT", "single_e") == []
+    assert data.stale_run_nights(report, "2026-01-13", "PLAT", "single_e") == []
 
 
 # ── _flag_trend_frames ─────────────────────────────────────────────────────────
@@ -651,9 +657,9 @@ def test_flag_trend_frames_keeps_the_window_and_the_selected_night():
     window = ["2026-01-10", "2026-01-05", "2026-01-01"]
     # A historical night inside the window: the much newer report outside it is
     # not dragged in beside the verdict's baseline band.
-    assert [n for n, _ in ov._flag_trend_frames(frames, window, "2026-01-05")] == window
+    assert [n for n, _ in status._flag_trend_frames(frames, window, "2026-01-05")] == window
     # The default night sits outside the window and keeps its own point.
-    assert [n for n, _ in ov._flag_trend_frames(frames, window, "2026-01-27")] == [
+    assert [n for n, _ in status._flag_trend_frames(frames, window, "2026-01-27")] == [
         "2026-01-27", *window
     ]
 
@@ -663,23 +669,23 @@ def test_flag_trend_frames_keeps_the_window_and_the_selected_night():
 def test_nights_in_window_filters_and_orders():
     dates = ["2026-01-10", "2026-01-13", "2026-01-11", "2026-01-12"]
     window = (date(2026, 1, 11), date(2026, 1, 12))
-    assert ov.nights_in_window(dates, window) == ["2026-01-12", "2026-01-11"]
+    assert data.nights_in_window(dates, window) == ["2026-01-12", "2026-01-11"]
     # No window → newest first, capped at the fallback night count.
     many = [f"2026-01-{d:02d}" for d in range(1, 32)] + [f"2026-02-{d:02d}" for d in range(1, 29)]
-    fallback = ov.nights_in_window(many, None)
-    assert len(fallback) == ov._FALLBACK_NIGHTS
+    fallback = data.nights_in_window(many, None)
+    assert len(fallback) == data._FALLBACK_NIGHTS
     assert fallback[0] == "2026-02-28"
 
 
 # ── history_rows / relative_history ───────────────────────────────────────────
 
 def test_history_rows_scope_and_gaps():
-    n1 = ov.report_metrics_frame(_report())
+    n1 = data.report_metrics_frame(_report())
     # Second night: only IDEA has the scope combo (a distinct nightly tag).
     night2 = NightlyReport(generated_at="", groups=[
         _group("IDEA", [_verdict(detector="IDEA", value=95.0)], run_date="2026-01-13"),
     ])
-    n2 = ov.report_metrics_frame(night2)
+    n2 = data.report_metrics_frame(night2)
     hist = _collapsed_history(
         [("2026-01-12", n1), ("2026-01-13", n2)], "PLAT", "single_e", "baseline"
     )
@@ -706,12 +712,12 @@ def test_relative_history_rescales_per_series():
         "metric": ["wall_time_s"] * 3,
         "value": [90.0, 99.0, 0.0],
     })
-    rel = ov.relative_history(hist)
+    rel = data.relative_history(hist)
     a = rel[rel["detector"] == "A"].sort_values("night")["value"].tolist()
     assert a == pytest.approx([100.0, 110.0])
     # A zero first value yields NaN, not infinities.
     assert rel[rel["detector"] == "B"]["value"].isna().all()
-    assert ov.relative_history(hist.iloc[0:0]).empty
+    assert data.relative_history(hist.iloc[0:0]).empty
 
 
 def test_relative_history_does_not_invent_a_failed_only_baseline():
@@ -723,21 +729,21 @@ def test_relative_history_does_not_invent_a_failed_only_baseline():
         "severity": [Severity.FAILURE.value],
     })
 
-    assert ov.relative_history(failed)["value"].isna().all()
+    assert data.relative_history(failed)["value"].isna().all()
 
 
 # ── detector_family / detector_styles ──────────────────────────────────────────
 
 def test_detector_family_split():
-    assert ov.detector_family("ALLEGRO_o1_v03") == ("ALLEGRO", "o1_v03")
-    assert ov.detector_family("CLD_o2_v08") == ("CLD", "o2_v08")
-    assert ov.detector_family("ILD_FCCee_v01") == ("ILD_FCCee", "v01")
-    assert ov.detector_family("SiD") == ("SiD", "")
+    assert data.detector_family("ALLEGRO_o1_v03") == ("ALLEGRO", "o1_v03")
+    assert data.detector_family("CLD_o2_v08") == ("CLD", "o2_v08")
+    assert data.detector_family("ILD_FCCee_v01") == ("ILD_FCCee", "v01")
+    assert data.detector_family("SiD") == ("SiD", "")
 
 
 def test_detector_styles_family_colour_version_dash():
     palette = ["#111111", "#222222"]
-    styles = ov.detector_styles(
+    styles = data.detector_styles(
         ["ALLEGRO_o2_v01", "SiD", "ALLEGRO_o1_v03"], palette
     )
     c1, d1, s1 = styles["ALLEGRO_o1_v03"]
@@ -748,7 +754,7 @@ def test_detector_styles_family_colour_version_dash():
     assert d1 == "solid"  # first version keeps the plain line style
     assert styles["SiD"][0] == "#222222"
     # Stable regardless of input order.
-    assert styles == ov.detector_styles(
+    assert styles == data.detector_styles(
         ["SiD", "ALLEGRO_o1_v03", "ALLEGRO_o2_v01"], palette
     )
 
@@ -806,7 +812,7 @@ def test_detector_legends_use_fewer_columns_for_long_labels():
 # ── The two figures (smoke tests) ───────────────────────────────────────────────
 
 def _fixture_frames():
-    n1 = ov.report_metrics_frame(_report())
+    n1 = data.report_metrics_frame(_report())
     # Second night: only IDEA has the scope combo, and its mean event time
     # confirmed as a regression that night (a distinct nightly tag). CLD's
     # landscape point therefore comes from the first night, IDEA's from the
@@ -819,21 +825,21 @@ def _fixture_frames():
                      value=1400.0),
         ], run_date="2026-01-13"),
     ])
-    n2 = ov.report_metrics_frame(night2)
+    n2 = data.report_metrics_frame(night2)
     nights = [("2026-01-12", n1), ("2026-01-13", n2)]
-    rows = ov.history_rows(nights, "PLAT", "single_e", "baseline")
-    hist = ov.collapse_history(rows)
+    rows = data.history_rows(nights, "PLAT", "single_e", "baseline")
+    hist = data.collapse_history(rows)
     failures = rows[rows["severity"] == Severity.FAILURE.value]
-    wide, _ = ov.latest_snapshot(rows)
+    wide, _ = data.latest_snapshot(rows)
     detectors = sorted(set(wide.index) | set(hist["detector"]))
-    styles = ov.detector_styles(detectors, ["#111111", "#222222"])
+    styles = data.detector_styles(detectors, ["#111111", "#222222"])
     return wide, hist, failures, styles, detectors
 
 
 def test_history_figure_trace_counts_and_legend():
     wide, hist, failures, styles, detectors = _fixture_frames()
     plot = pd.concat([hist, failures], ignore_index=True)
-    _, plot_disp = ov._to_display_units(wide, plot)
+    plot_disp = ov._history_in_display_units(plot)
     hist_disp = plot_disp[plot_disp["severity"] != Severity.FAILURE.value]
     failures_disp = plot_disp[plot_disp["severity"] == Severity.FAILURE.value]
     fig = ov._history_figure(
@@ -880,14 +886,14 @@ def test_history_figure_trace_counts_and_legend():
 
 def test_history_figure_linear_and_relative_toggles():
     wide, hist, _failures, styles, detectors = _fixture_frames()
-    _, hist_disp = ov._to_display_units(wide, hist)
+    hist_disp = ov._history_in_display_units(hist)
     fig = ov._history_figure(hist_disp, "mean_time_s", "peak_rss_mb",
                              styles, detectors, log=False)
     for axis in ("yaxis", "yaxis2"):
         assert fig.layout[axis].type != "log"
     # Relative view rescales trend values to first night = 100% (linear axes,
     # percent title).
-    rel_hist = ov.relative_history(hist_disp)
+    rel_hist = data.relative_history(hist_disp)
     fig = ov._history_figure(rel_hist, "mean_time_s", "peak_rss_mb",
                              styles, detectors, relative=True)
     assert fig.layout.yaxis.title.text == "Mean event time (% of first night)"
@@ -900,7 +906,7 @@ def test_history_figure_linear_and_relative_toggles():
 
 def test_history_figure_handles_partial_data():
     wide, hist, _failures, styles, detectors = _fixture_frames()
-    _, hist_disp = ov._to_display_units(wide, hist)
+    hist_disp = ov._history_in_display_units(hist)
     # A memory metric with no values: its panel stays empty but the figure
     # still builds from the time panel.
     fig = ov._history_figure(hist_disp, "mean_time_s", "mean_rss_mb", styles, detectors)
@@ -914,7 +920,7 @@ def test_history_figure_handles_partial_data():
 def test_landscape_figure_points_units_and_axes():
     wide, hist, _failures, styles, detectors = _fixture_frames()
     as_of = {"CLD": "2026-01-12", "IDEA": "2026-01-13"}
-    wide_disp, _ = ov._to_display_units(wide, hist)
+    wide_disp = ov._wide_in_display_units(wide)
     fig = ov._landscape_figure(wide_disp, "mean_time_s", "peak_rss_mb", styles,
                                detectors, as_of=as_of)
     assert len(fig.data) == 2  # one point per detector (CLD, IDEA)
@@ -958,7 +964,7 @@ def test_last_run_nights_ignores_the_reliability_flag():
         "detector":  ["SiD", "SiD", "CLD"],
         "reliable":  [True, False, True],
     })
-    assert ov.last_run_nights(rel) == {"SiD": "2026-07-11", "CLD": "2026-07-11"}
+    assert data.last_run_nights(rel) == {"SiD": "2026-07-11", "CLD": "2026-07-11"}
 
 
 def test_last_run_nights_takes_the_newest_run_of_the_newest_tag():
@@ -968,8 +974,8 @@ def test_last_run_nights_takes_the_newest_run_of_the_newest_tag():
         "detector":  ["SiD"] * 3,
         "reliable":  [True] * 3,
     })
-    assert ov.last_run_nights(rel) == {"SiD": "2026-07-11"}
-    assert ov.last_run_nights(rel.iloc[0:0]) == {}
+    assert data.last_run_nights(rel) == {"SiD": "2026-07-11"}
+    assert data.last_run_nights(rel.iloc[0:0]) == {}
 
 
 # ── _trend_notes ───────────────────────────────────────────────────────────────
@@ -1053,21 +1059,21 @@ def test_baseline_label_matches_benchmark():
     # Pinned to the literal too: the histories on EOS carry "baseline"
     # forever, so a rename must not silently retarget the tab.
     from k4bench.labels import BASELINE_LABEL
-    assert ov._BASELINE_LABEL == BASELINE_LABEL == "baseline"
+    assert data._BASELINE_LABEL == BASELINE_LABEL == "baseline"
 
 
 def test_selectable_metrics_are_recorded_by_the_report():
     # Names and units come from k4bench.metrics (see test_metrics.py); what
     # this tab owns is which recorded metrics it offers.
     report_metrics = set(RUN_VALUE_METRICS) | set(EVENT_VALUE_METRICS)
-    assert set(ov._METRIC_ORDER) <= report_metrics
+    assert set(data.METRIC_ORDER) <= report_metrics
 
 
 def test_memory_panels_are_shown_in_gigabytes():
     assert ov._metric_title("peak_vmem_mb") == "Peak virtual memory (GB)"
     assert ov._metric_title("wall_time_s") == "Wall time (s)"
     # The flag chart draws the report's own MB numbers.
-    assert ov._flag_axis_title(_verdict(metric="peak_vmem_mb", metric_family="memory")) == "Peak virtual memory (MB)"
+    assert status._flag_axis_title(_verdict(metric="peak_vmem_mb", metric_family="memory")) == "Peak virtual memory (MB)"
 
 
 def test_report_roundtrip_preserves_reliable_flag():
@@ -1094,7 +1100,7 @@ def test_status_rows_order_worst_first_and_pick_the_worst_flag():
         ]),
         _group("FAILED", [], job_failures=["no run uploaded"]),
     ]
-    rows = ov.detector_status_rows(groups, "PLAT", "single_e", "2026-01-12")
+    rows = data.detector_status_rows(groups, "PLAT", "single_e", "2026-01-12")
     assert [r["Detector"] for r in rows] == ["FAILED", "REGRESSED", "WATCHING", "QUIET"]
     regressed = rows[1]
     assert regressed[""] == "🔴"
@@ -1107,7 +1113,7 @@ def test_status_rows_order_worst_first_and_pick_the_worst_flag():
 def test_status_rows_delta_is_blank_for_a_percentless_flag():
     # An absolute-floor metric has no meaningful relative change; its Δ must be
     # None (blank cell), never +0.0 %.
-    rows = ov.detector_status_rows(
+    rows = data.detector_status_rows(
         [_group("CLD", [_verdict(severity=Severity.CONFIRMED, pct_change=None)])],
         "PLAT", "single_e", "2026-01-12",
     )
@@ -1121,7 +1127,7 @@ def test_status_rows_link_carries_the_triple_stack_and_report_night():
     # report night, so the link lands on this row's report even after a rerun.
     from urllib.parse import parse_qsl
 
-    rows = ov.detector_status_rows(
+    rows = data.detector_status_rows(
         [_group("CLD", [_verdict()])], "PLAT", "single_e", "2026-01-12"
     )
     q = dict(parse_qsl(rows[0]["Inspect"].lstrip("?")))
@@ -1135,7 +1141,7 @@ def test_status_rows_link_omits_stack_for_a_release_less_group():
     # report night, just without a stack= to seed the sidebar.
     from urllib.parse import parse_qsl
 
-    rows = ov.detector_status_rows(
+    rows = data.detector_status_rows(
         [_group("CLD", [], k4h_release="", job_failures=["no run uploaded"])],
         "PLAT", "single_e", "2026-01-12",
     )

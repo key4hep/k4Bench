@@ -88,23 +88,23 @@ def _app(dashboard_dir, reports_map, blame_map, dates, stacks_dates,
 
     from tabs import regressions as _tab
 
-    _tab._cached_list_report_dates = lambda url: list(dates)
+    _tab.cached_list_report_dates = lambda url: list(dates)
     # The tab batch-fetches the release's candidate nights; a night absent from
     # reports_map models a report that could not be loaded (dropped silently).
     from k4bench.regression.render import from_json
-    _tab._cached_fetch_reports = lambda url, nights: {
+    _tab.cached_fetch_reports = lambda url, nights: {
         n: from_json(reports_map[n]) for n in nights if reports_map.get(n) is not None
     }
     # Absent on most nights; the blame sidecar is best-effort, so the stub
     # returns None unless a test supplies one.
-    _tab._cached_fetch_blame = lambda url, night: blame_map.get(night)
+    _tab.cached_fetch_blame = lambda url, night: blame_map.get(night)
     # Doubles as both the report-night lookup (which release ran when) and the
     # trend preview's history fetch; the windowed-run fetch below returns
     # nothing so the drill-down warns instead of downloading anything.
-    _tab._cached_list_run_dates = (
+    _tab.cached_list_run_dates = (
         lambda url, det, plat, samp: {k: list(v) for k, v in stacks_dates}
     )
-    _tab._cached_fetch_runs_windowed = lambda *a, **k: ()
+    _tab.cached_fetch_runs_windowed = lambda *a, **k: ()
     # The forward blame card's live provenance lookup; stubbed to avoid the
     # network so a windowed verdict's card renders without a real EOS fetch.
     _tab.packages_for_release = lambda data_url, platform, release: None
@@ -495,17 +495,17 @@ def _scope_app(dashboard_dir, platform, scenarios, reports_map, dates):
     import streamlit as st
     from tabs import regressions as _tab
 
-    _tab._cached_list_report_dates = lambda url: list(dates)
+    _tab.cached_list_report_dates = lambda url: list(dates)
     from k4bench.regression.render import from_json
-    _tab._cached_fetch_reports = lambda url, nights: {
+    _tab.cached_fetch_reports = lambda url, nights: {
         n: from_json(reports_map[n]) for n in nights if reports_map.get(n) is not None
     }
-    _tab._cached_fetch_blame = lambda url, night: None
-    _tab._cached_fetch_runs_windowed = lambda *a, **k: ()
+    _tab.cached_fetch_blame = lambda url, night: None
+    _tab.cached_fetch_runs_windowed = lambda *a, **k: ()
     _tab.packages_for_release = lambda *a, **k: None
 
     detector, stack, run_dates = scenarios[st.session_state.get("_i", 0)]
-    _tab._cached_list_run_dates = lambda url, det, plat, samp: {
+    _tab.cached_list_run_dates = lambda url, det, plat, samp: {
         k: list(v) for k, v in run_dates.items()
     }
     _tab.render("https://example.invalid", "/tmp/cache", detector, platform, "single_e", stack)
@@ -630,15 +630,15 @@ def _listing_failure_app(dashboard_dir, report_json, night, platform, stack):
     import requests as _requests
     from tabs import regressions as _tab
 
-    _tab._cached_list_report_dates = lambda url: [night]
+    _tab.cached_list_report_dates = lambda url: [night]
     # Production batch-fetches candidate nights; patch that path, not the
     # removed singular fetch, so this test is hermetic (independent of what
     # a prior test left on the shared module).
     from k4bench.regression.render import from_json
-    _tab._cached_fetch_reports = lambda url, nights: {
+    _tab.cached_fetch_reports = lambda url, nights: {
         n: from_json(report_json) for n in nights
     }
-    _tab._cached_fetch_blame = lambda url, n: None
+    _tab.cached_fetch_blame = lambda url, n: None
 
     calls = {"n": 0}
     def _raise_once(url, det, plat, samp):
@@ -646,8 +646,8 @@ def _listing_failure_app(dashboard_dir, report_json, night, platform, stack):
         if calls["n"] == 1:
             raise _requests.ConnectionError("EOS unreachable")
         return {}
-    _tab._cached_list_run_dates = _raise_once
-    _tab._cached_fetch_runs_windowed = lambda *a, **k: ()
+    _tab.cached_list_run_dates = _raise_once
+    _tab.cached_fetch_runs_windowed = lambda *a, **k: ()
     _tab.packages_for_release = lambda *a, **k: None
     import streamlit as _st
     _st.session_state["_scope_override"] = _tab.render(

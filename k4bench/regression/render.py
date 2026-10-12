@@ -55,27 +55,27 @@ _BADGES = {
 }
 
 
-def _fmt(value: float | None) -> str:
+def format_value(value: float | None) -> str:
     if value is None or (isinstance(value, float) and not math.isfinite(value)):
         return "—"
     return f"{value:.4g}"
 
 
-def _fmt_pct(value: float | None) -> str:
+def format_pct(value: float | None) -> str:
     if value is None or not math.isfinite(value):
         return "—"
     return f"{value:+.1%}"
 
 
-def _metric_name(v: MetricVerdict) -> str:
+def metric_name(v: MetricVerdict) -> str:
     return f"{v.metric} [{v.sub_detector}]" if v.sub_detector else v.metric
 
 
-def _badge(v: MetricVerdict) -> str:
+def severity_badge(v: MetricVerdict) -> str:
     return _BADGES.get(v.severity, v.severity.value)
 
 
-def _detector_badge(groups: list[RunGroupReport]) -> str:
+def detector_badge(groups: list[RunGroupReport]) -> str:
     """One glance-able status emoji for a whole detector (which can span
     several (platform, sample) run groups) — worst-first, matching the
     severity ordering everywhere else in the report."""
@@ -93,11 +93,11 @@ def _detector_badge(groups: list[RunGroupReport]) -> str:
     return "✅"
 
 
-def _group_title(group: RunGroupReport) -> str:
+def group_title(group: RunGroupReport) -> str:
     return f"{pretty_sample(group.sample)} · {pretty_platform(group.platform)}"
 
 
-def _dashboard_link(dashboard_url: str, **params: str) -> str:
+def dashboard_link(dashboard_url: str, **params: str) -> str:
     """*dashboard_url* with *params* merged into its query string (overriding
     any of the same name already present), so it works whether the caller
     passed a bare base URL or one that already carries its own query —
@@ -175,7 +175,7 @@ def window_href(
         params["stack"] = stack
     if report_night:
         params["report"] = report_night
-    return _dashboard_link(dashboard_url, tab="Regressions", **params)
+    return dashboard_link(dashboard_url, tab="Regressions", **params)
 
 
 def nightly_report_href(dashboard_url: str | None, report_night: str) -> str | None:
@@ -218,7 +218,7 @@ def stack_changes_href(
     }
     if base_release:
         params["from"] = base_release
-    return _dashboard_link(dashboard_url, **params)
+    return dashboard_link(dashboard_url, **params)
 
 
 def regression_href(
@@ -271,7 +271,7 @@ def regression_href(
     }
     if verdict.sub_detector:
         params["reg_region"] = verdict.sub_detector
-    return _dashboard_link(base, **params)
+    return dashboard_link(base, **params)
 
 
 # ── JSON (EOS artifact) ───────────────────────────────────────────────────────
@@ -547,27 +547,3 @@ def from_json(data: dict) -> NightlyReport:
         generated_at=data.get("generated_at", ""), groups=groups,
         night=str(data.get("night") or ""),
     )
-
-
-# Compatibility shims for callers that imported the old public renderer path.
-# Imports are deliberately lazy: ``email`` imports the shared helpers above, so
-# importing it at module load time here would create a cycle.
-def to_html(report: NightlyReport, **kwargs) -> str:
-    """Render the HTML email via :mod:`k4bench.regression.email`.
-
-    New code should import from ``k4bench.regression.email`` directly; this
-    wrapper keeps existing integrations working after the renderer split.
-    """
-    from k4bench.regression.email import to_html as render_email_html
-
-    return render_email_html(report, **kwargs)
-
-
-def to_markdown(report: NightlyReport, **kwargs) -> str:
-    """Render the text alternative via :mod:`k4bench.regression.email`.
-
-    See :func:`to_html` for why this compatibility wrapper is lazy.
-    """
-    from k4bench.regression.email import to_markdown as render_email_markdown
-
-    return render_email_markdown(report, **kwargs)

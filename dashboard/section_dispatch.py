@@ -33,13 +33,13 @@ from tabs import (
     event_memory,
     event_timing,
     impact,
+    logs,
     machine_info,
     region_timing,
     regressions,
     stack_changes,
     trends,
 )
-from ui_chrome import render_logs_tab
 
 
 @dataclass(frozen=True)
@@ -77,7 +77,7 @@ def pick_section(section_names: list[str]) -> str:
     """The section bar, returning the active section.
 
     ``?tab=...`` (used by the nightly regression email's "view in dashboard"
-    links, see ``k4bench.regression.render._dashboard_link``) seeds
+    links, see ``k4bench.regression.render.dashboard_link``) seeds
     session_state the same way as ``seed_query_param`` (see its docstring) —
     case-insensitively here, since section names are matched by label.
     """
@@ -186,7 +186,7 @@ def _machine_info(ctx: PageContext) -> SectionScope | None:
 
 def _logs(ctx: PageContext) -> None:
     """Per-config status and the log explorer."""
-    render_logs_tab(ctx.run.results, ctx.data_dir, ctx.run_meta)
+    logs.render(ctx.run.results, ctx.data_dir, ctx.run_meta)
 
 
 #: How each section is drawn. A section that offers a control over its own

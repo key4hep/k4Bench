@@ -71,7 +71,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 # verbatim so this preview fetches diffs and reads the allowlist exactly as
 # production does (rate-limit latching included). The script's own directory is
 # first on sys.path, so the sibling imports by module name.
-_blame_comment = importlib.import_module("blame_comment")
+blame_comment = importlib.import_module("blame_comment")
 
 _log = logging.getLogger(__name__)
 
@@ -94,39 +94,36 @@ def _parse_pr(value: str) -> tuple[str, int]:
         raise argparse.ArgumentTypeError(f"not a pull-request number: {number!r}") from None
 
 
-def _redirect(comment, repo: str, number: int):
-    """*comment* addressed to ``repo#number``, body untouched but re-keyed.
+def _redirect(draft, repo: str, number: int):
+    """*draft* addressed to ``repo#number``, its body unchanged but re-keyed.
 
-    The body is left exactly as rendered — it still names ``--only`` everywhere,
-    which is the point of the redirect — while the hidden marker gains the source
-    pull request. Production keys a comment on the change window alone, because
-    on the real pull request the window *is* the identity. On a shared test pull
-    request it is not: two source PRs from the same night carry the same window,
-    and the window-only key would make previewing the second silently edit away
-    the preview of the first. Keying on both keeps them side by side while a
-    re-run of the same preview still edits its own comment in place.
+    The body is rendered exactly as for ``--only`` — it still names ``--only``
+    everywhere, which is the point of the redirect — while the hidden marker
+    gains the source pull request. Production keys a comment on the change
+    window alone, because on the real pull request the window *is* the identity.
+    On a shared test pull request it is not: two source PRs from the same night
+    carry the same window, and the window-only key would make previewing the
+    second silently edit away the preview of the first. Keying on both keeps them
+    side by side while a re-run of the same preview still edits its own comment
+    in place. The marker is the body's first line, which is what the upsert
+    recognises (``publish._upsert``), so re-keying the draft re-keys both.
 
-    The marker has to be the body's first line for the upsert to recognise it
-    (``publish._upsert``), so both copies move together.
-
-    The facts digest is *dropped*, which flips the upsert to comparing whole
-    bodies. Production wants the opposite — the digest is what stops a reworded
-    summary of the same regressions from re-notifying everyone watching a pull
-    request every night — but here the facts are deliberately held still while
-    the rendering changes, and a preview that refuses to update after a renderer
-    change is a preview of the wrong thing. The body still carries its digest
-    line, so what is being previewed is unchanged; only this run's decision to
-    rewrite is.
+    The decision to rewrite is taken on the whole body rather than the facts
+    digest (``keyed_by_facts``). Production wants the opposite — the digest is
+    what stops a reworded summary of the same regressions from re-notifying
+    everyone watching a pull request every night — but here the facts are
+    deliberately held still while the rendering changes, and a preview that
+    refuses to update after a renderer change is a preview of the wrong thing.
+    The body still carries its digest line, so what is being previewed is
+    unchanged; only this run's decision to rewrite is.
     """
-    if (repo, number) == (comment.repo, comment.number):
-        return comment
-    marker = comment.marker.replace(
-        " -->", f" preview-of={comment.repo}#{comment.number} -->"
+    if (repo, number) == (draft.repo, draft.number):
+        return draft
+    marker = draft.marker.replace(
+        " -->", f" preview-of={draft.repo}#{draft.number} -->"
     )
-    body = comment.body.replace(comment.marker, marker, 1)
     return replace(
-        comment, repo=repo, number=number, marker=marker, body=body,
-        facts_digest="",
+        draft, repo=repo, number=number, marker=marker, keyed_by_facts=False,
     )
 
 
@@ -236,7 +233,7 @@ def main(argv: list[str] | None = None) -> int:
     post_repo, post_number = args.post_to or args.only
 
     try:
-        policy = _blame_comment._load_policy(
+        policy = blame_comment.load_policy(
             Path(args.config), {"min_score": args.min_score, "max_comments": None}
         )
     except CommentConfigError as exc:
@@ -315,12 +312,12 @@ def main(argv: list[str] | None = None) -> int:
     comments = build_comments(
         plans,
         attributor=attributor,
-        **_blame_comment._review_inputs(args.read_token, attributor),
-        run_info_for=_blame_comment._run_info_source(args.data_url),
+        **blame_comment.review_inputs(args.read_token, attributor),
+        run_info_for=blame_comment.run_info_source(args.data_url),
         # Publishing is gated on --post for the same reason posting is: a run
         # that writes nothing must write nothing here either, and it still
         # renders the link so the preview is a preview of the real comment.
-        reproducer_url_for=_blame_comment._reproducer_publisher(
+        reproducer_url_for=blame_comment.reproducer_publisher(
             args.reproducer_dir, args.data_url, dry_run=not args.post,
         ),
         dashboard_url=args.dashboard_url,
@@ -336,7 +333,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     redirected = [
-        _redirect(comment, post_repo, post_number) for comment in comments
+        _redirect(draft, post_repo, post_number) for draft in comments
     ]
 
     dry_run = not args.post

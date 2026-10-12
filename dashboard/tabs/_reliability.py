@@ -210,3 +210,53 @@ def render_reliability_filter(
     return resolve_reliability_filter(
         df, reliability, key=key, date_col=date_col, slot=slot,
     )[0]
+
+
+def unreliable_pairs(rel_hist: pd.DataFrame) -> set[tuple[str, str]]:
+    """The ``(run_night, detector)`` runs that failed the host-reliability
+    check. ``None`` (no evidence) never counts as unreliable.
+
+    Addresses runs, not tags, so :func:`drop_unreliable_runs` can drop a
+    contended run without taking a reliable rerun of the same nightly with it.
+    """
+    if rel_hist.empty:
+        return set()
+    flagged = (
+        rel_hist.loc[rel_hist["reliable"].eq(False), ["run_night", "detector"]]
+        .drop_duplicates()
+    )
+    return set(map(tuple, flagged.itertuples(index=False, name=None)))
+
+
+def render_run_reliability_filter(
+    rel_hist: pd.DataFrame, *, key: str, inline: bool = False, slot=None,
+) -> tuple[set[tuple[str, str]], bool]:
+    """A single explicit choice between reliable-only and all runs.
+
+    The Overview tab's variant of :func:`render_reliability_filter`.
+    *rel_hist* has columns ``night, run_night, detector, reliable`` (see
+    :func:`tabs._overview_data.reliability_history` — built per run group
+    precisely because the flag belongs to the group and to no metric verdict);
+    :func:`render_reliability_filter` keys on a global ``{run_id: verdict}``
+    map, which cannot express a cross-detector frame where the same night is
+    reliable for one detector and not another.
+    ``None`` (no evidence) never excludes. The shared selector keeps this
+    cross-detector view identical to every other historical dashboard view.
+
+    Returns the unreliable ``(run_night, detector)`` pairs and whether exclusion
+    is active, so the caller can drop those *runs* from its history rows
+    before it collapses them. The count is of runs — the thing that actually gets
+    dropped, and what the sentence says — while the dates listed are the nightly
+    **tags** those runs carry, which is what the reader sees on the x-axis.
+    """
+    pairs = unreliable_pairs(rel_hist)
+    if not pairs:
+        return set(), False
+
+    n = len(pairs)
+    dates = sorted(
+        rel_hist.loc[rel_hist["reliable"].eq(False), "night"].unique()
+    )
+    return pairs, render_reliability_scope(
+        n, dates, key=key, inline=inline, slot=slot,
+    )

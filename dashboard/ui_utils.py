@@ -10,30 +10,25 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Callable
 
-import numpy as np
 import pandas as pd
 import plotly.colors as _pc
-import plotly.graph_objects as go
 import streamlit as st
 from plotly.colors import qualitative as _ql
-from plotly.subplots import make_subplots
 
 from k4bench.analysis.plots import BinCountOptions, event_bin_options
-from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
+from k4bench.analysis.plots._theme import PALETTE
 from k4bench.analysis.plots._utils import _default_baseline
-from k4bench.metrics import metric_unit
-from k4bench.regression.engine import BASELINE_WINDOW_RUNS, NOISE_WINDOW_RUNS
-from stats import build_stability_table, select_top_n_by_ratio
+from stats import select_top_n_by_ratio
 
 
 # ── Data-validation helpers ────────────────────────────────────────────────────
 
-def _is_valid_df(df: "pd.DataFrame | None") -> bool:
+def is_valid_df(df: "pd.DataFrame | None") -> bool:
     """Return *True* iff *df* is a non-``None``, non-empty :class:`~pandas.DataFrame`."""
     return df is not None and not df.empty
 
 
-def _reset_widget_on_scope(
+def reset_widget_on_scope(
     key: str, scope: object, *, reset_unscoped: bool = False,
     query_param: str | None = None,
 ) -> None:
@@ -68,7 +63,7 @@ def _reset_widget_on_scope(
 
 # ── Colour helper ──────────────────────────────────────────────────────────────
 
-def _to_rgba(color: str, alpha: float) -> str:
+def to_rgba(color: str, alpha: float) -> str:
     """Convert any Plotly colour string to ``rgba(…)`` with the given alpha."""
     color = color.strip()
     if color.startswith("rgba("):
@@ -107,7 +102,7 @@ _TAB20C_10 = ["#3182bd","#e6550d","#31a354","#756bb1","#636363",
 _TAB30 = _TAB20 + _TAB20B_10
 _TAB40 = _TAB30 + _TAB20C_10
 
-_PALETTES: dict[str, list[str]] = {
+PALETTES: dict[str, list[str]] = {
     "Matplotlib":       PALETTE,
     "Matplotlib tab20": _TAB20,
     "Matplotlib tab30": _TAB30,
@@ -121,11 +116,11 @@ _PALETTES: dict[str, list[str]] = {
     "Safe":             _ql.Safe,
     "Bold":             _ql.Bold,
 }
-_PALETTE_NAMES = list(_PALETTES.keys())
+PALETTE_NAMES = list(PALETTES.keys())
 
 
-def _auto_palette_index(n: int) -> int:
-    """Return the *_PALETTES* index for the smallest Matplotlib tab-N that fits *n*
+def auto_palette_index(n: int) -> int:
+    """Return the *PALETTES* index for the smallest Matplotlib tab-N that fits *n*
     items without colour cycling.  Used as the ``index`` default for palette
     selectboxes so the dropdown already shows the right entry on first render.
     The user can always switch back to plain "Matplotlib" (10-colour cycling).
@@ -139,7 +134,7 @@ def _auto_palette_index(n: int) -> int:
     else:
         name = "Matplotlib tab40"
     try:
-        return _PALETTE_NAMES.index(name)
+        return PALETTE_NAMES.index(name)
     except ValueError:
         return 0
 
@@ -152,7 +147,7 @@ def _auto_palette_index(n: int) -> int:
 _DEFAULT_N_CONFIGS = 2
 
 
-def _baseline_selector_control(key_prefix: str, current_labels: list[str]) -> str:
+def baseline_selector_control(key_prefix: str, current_labels: list[str]) -> str:
     """Render the "Baseline" selectbox and return the chosen label.
 
     Defaults to :func:`~k4bench.analysis.plots._utils._default_baseline`
@@ -182,7 +177,7 @@ def _baseline_selector_control(key_prefix: str, current_labels: list[str]) -> st
     )
 
 
-def _config_selector_control(
+def config_selector_control(
     key_prefix: str,
     event_data: dict,
     current_labels: list[str],
@@ -202,7 +197,7 @@ def _config_selector_control(
     The baseline itself is not one of the selectable options: it is always
     included in what gets plotted, so the ratio panel it anchors can never be
     left without a reference by an incidental deselection. Changing the
-    baseline (in :func:`_baseline_selector_control`) resets this selection back
+    baseline (in :func:`baseline_selector_control`) resets this selection back
     to the fresh top-N-by-ratio default for the new reference, rather than
     keeping a manual pick that was made relative to the old one.
     """
@@ -212,7 +207,7 @@ def _config_selector_control(
     # baseline moves out of the options and the old one moves in. A change in
     # which configurations the run offers does not reset a still-valid manual
     # pick; Streamlit drops values that disappear from ``options`` itself.
-    _reset_widget_on_scope(
+    reset_widget_on_scope(
         key, baseline_label, reset_unscoped=True,
     )
 
@@ -253,7 +248,7 @@ _HIST_DEFAULT_ALPHA = 0.25
 
 
 @st.cache_data(show_spinner=False)
-def _cached_event_bin_options(
+def cached_event_bin_options(
     event_data: dict[str, pd.DataFrame],
     column: str,
     labels: tuple[str, ...],
@@ -295,7 +290,7 @@ def _validate_bin_count(
     st.session_state[custom_key] = bins != int(st.session_state[auto_key])
 
 
-def _view_control_row(
+def view_control_row(
     options: list[str], *, key: str,
 ) -> tuple[str, Any, Any]:
     """Render the dashboard's canonical tab-local view header.
@@ -335,21 +330,21 @@ def _view_control_row(
 # metric, view, report night — and the controls that change *how it is drawn*
 # read identically everywhere instead of teaching a new layout per tab.
 #
-# A control is declared once, as a :class:`_DisplayControl` that carries its own
-# default, and :func:`_display_options` derives the "Reset to defaults" button
+# A control is declared once, as a :class:`DisplayControl` that carries its own
+# default, and :func:`display_options` derives the "Reset to defaults" button
 # from those declarations. A second, hand-maintained copy of the defaults would
 # be free to drift from what the widgets actually do — and would have to be
 # written out again for every view that adopts the popover.
 
 
 @dataclass(frozen=True)
-class _DisplayControl:
+class DisplayControl:
     """One appearance control: where its state lives, and how to draw it.
 
     Attributes
     ----------
     name : str
-        Key under which :func:`_display_options` returns this control's value,
+        Key under which :func:`display_options` returns this control's value,
         so callers read results by name rather than by position and reordering
         a declaration list cannot silently rebind them.
     key : str
@@ -359,7 +354,7 @@ class _DisplayControl:
     render : callable
         Draws the widget inside the popover and returns its value. Anything the
         widget needs done to ``session_state`` first — a
-        :func:`_reset_widget_on_scope` call, seeding an automatic value —
+        :func:`reset_widget_on_scope` call, seeding an automatic value —
         belongs in here rather than in the factory, so constructing a control
         stays free of side effects and the order a caller declares them in
         cannot matter.
@@ -375,7 +370,7 @@ class _DisplayControl:
     on_reset: Callable[[], None] | None = None
 
 
-def _reset_display_controls(controls: tuple[_DisplayControl, ...]) -> None:
+def _reset_display_controls(controls: tuple[DisplayControl, ...]) -> None:
     """Restore every control in *controls* to the default it declared."""
     for control in controls:
         st.session_state[control.key] = control.default
@@ -383,8 +378,8 @@ def _reset_display_controls(controls: tuple[_DisplayControl, ...]) -> None:
             control.on_reset()
 
 
-def _display_options(
-    *controls: _DisplayControl,
+def display_options(
+    *controls: DisplayControl,
     key_prefix: str,
     slot=None,
 ) -> dict[str, Any]:
@@ -432,12 +427,12 @@ def _display_options(
     return values
 
 
-def _palette_control(key: str, n_items: int | None = None) -> _DisplayControl:
+def palette_control(key: str, n_items: int | None = None) -> DisplayControl:
     """Declare the qualitative "Colour palette" selectbox.
 
     *n_items* is how many series the figure will colour: the default is the
     smallest Matplotlib tab-N that covers them without cycling
-    (:func:`_auto_palette_index`), and that automatic choice is re-applied
+    (:func:`auto_palette_index`), and that automatic choice is re-applied
     whenever the series count crosses a palette boundary.
 
     Pass ``None`` when the view has no data to size the palette from — an empty
@@ -448,17 +443,17 @@ def _palette_control(key: str, n_items: int | None = None) -> _DisplayControl:
     data reads as a size change and answers by discarding the palette the user
     picked.
     """
-    index = 0 if n_items is None else _auto_palette_index(n_items)
+    index = 0 if n_items is None else auto_palette_index(n_items)
 
     def render() -> str:
         if n_items is not None:
-            _reset_widget_on_scope(key, index, reset_unscoped=True)
+            reset_widget_on_scope(key, index, reset_unscoped=True)
         return st.selectbox(
-            "Colour palette", options=_PALETTE_NAMES, index=index, key=key,
+            "Colour palette", options=PALETTE_NAMES, index=index, key=key,
         )
 
-    return _DisplayControl(
-        name="palette", key=key, default=_PALETTE_NAMES[index], render=render,
+    return DisplayControl(
+        name="palette", key=key, default=PALETTE_NAMES[index], render=render,
     )
 
 
@@ -474,7 +469,7 @@ _STYLE_CYCLING_HELP = (
 )
 
 
-def _style_cycling_control(key: str) -> _DisplayControl:
+def style_cycling_control(key: str) -> DisplayControl:
     """Declare the "Style cycling" selectbox for multi-line trend figures."""
 
     def render() -> str:
@@ -486,12 +481,12 @@ def _style_cycling_control(key: str) -> _DisplayControl:
             help=_STYLE_CYCLING_HELP,
         )
 
-    return _DisplayControl(
+    return DisplayControl(
         name="style", key=key, default=_STYLE_CYCLING_OPTIONS[0], render=render,
     )
 
 
-def _style_cycling_flags(style_cycling: str) -> tuple[bool, bool]:
+def style_cycling_flags(style_cycling: str) -> tuple[bool, bool]:
     """Split a "Style cycling" choice into ``(use_dash, use_marker)``."""
     return (
         style_cycling in ("Colour + Dash", "Colour + Dash + Marker"),
@@ -499,14 +494,14 @@ def _style_cycling_flags(style_cycling: str) -> tuple[bool, bool]:
     )
 
 
-def _opacity_control(
+def opacity_control(
     key: str,
     *,
     label: str = "Opacity",
     default: float = 0.85,
     minimum: float = 0.1,
     help: str | None = None,
-) -> _DisplayControl:
+) -> DisplayControl:
     """Declare an opacity slider.
 
     Bounds and default are per-view rather than shared: a histogram's fills
@@ -525,10 +520,10 @@ def _opacity_control(
             help=help,
         )
 
-    return _DisplayControl(name="alpha", key=key, default=default, render=render)
+    return DisplayControl(name="alpha", key=key, default=default, render=render)
 
 
-def _smooth_lines_control(key: str) -> _DisplayControl:
+def smooth_lines_control(key: str) -> DisplayControl:
     """Declare the "Smooth lines" toggle (spline instead of straight segments)."""
 
     def render() -> bool:
@@ -542,14 +537,14 @@ def _smooth_lines_control(key: str) -> _DisplayControl:
             ),
         )
 
-    return _DisplayControl(name="smooth", key=key, default=False, render=render)
+    return DisplayControl(name="smooth", key=key, default=False, render=render)
 
 
 #: How many detector regions the current-run region timing chart ranks.
-_TOP_N_DEFAULT = 8
+TOP_N_DEFAULT = 8
 
 
-def _top_n_control(key: str) -> _DisplayControl:
+def top_n_control(key: str) -> DisplayControl:
     """Declare the "Top N detectors" slider — a plot-density knob like *bins*."""
 
     def render() -> int:
@@ -557,7 +552,7 @@ def _top_n_control(key: str) -> _DisplayControl:
             "Top N detectors",
             min_value=3,
             max_value=15,
-            value=_TOP_N_DEFAULT,
+            value=TOP_N_DEFAULT,
             key=key,
             help=(
                 "How many of the most expensive detector regions the chart "
@@ -565,12 +560,12 @@ def _top_n_control(key: str) -> _DisplayControl:
             ),
         )
 
-    return _DisplayControl(
-        name="top_n", key=key, default=_TOP_N_DEFAULT, render=render,
+    return DisplayControl(
+        name="top_n", key=key, default=TOP_N_DEFAULT, render=render,
     )
 
 
-def _bin_count_control(key: str, options: BinCountOptions) -> _DisplayControl:
+def _bin_count_control(key: str, options: BinCountOptions) -> DisplayControl:
     """Declare the bin-count field, seeded automatically until the user edits it.
 
     *options.automatic* is the count the plot would have picked on its own.
@@ -630,13 +625,13 @@ def _bin_count_control(key: str, options: BinCountOptions) -> _DisplayControl:
         st.session_state[custom_key] = False
         st.session_state.pop(warning_key, None)
 
-    return _DisplayControl(
+    return DisplayControl(
         name="bins", key=key, default=bins_default,
         render=render, on_reset=on_reset,
     )
 
 
-def _error_bars_control(key: str) -> _DisplayControl:
+def _error_bars_control(key: str) -> DisplayControl:
     """Declare the "Histogram error bars" toggle."""
 
     def render() -> bool:
@@ -647,10 +642,10 @@ def _error_bars_control(key: str) -> _DisplayControl:
             help="Poisson √N error bars on the bin contents.",
         )
 
-    return _DisplayControl(name="errors", key=key, default=False, render=render)
+    return DisplayControl(name="errors", key=key, default=False, render=render)
 
 
-def _mean_lines_control(key: str) -> _DisplayControl:
+def _mean_lines_control(key: str) -> DisplayControl:
     """Declare the "Histogram mean lines" toggle."""
 
     def render() -> bool:
@@ -661,12 +656,12 @@ def _mean_lines_control(key: str) -> _DisplayControl:
             help="Dashed vertical line at each configuration's mean.",
         )
 
-    return _DisplayControl(
+    return DisplayControl(
         name="mean_lines", key=key, default=True, render=render,
     )
 
 
-def _histogram_display_controls(
+def histogram_display_controls(
     key_prefix: str,
     bin_options: BinCountOptions,
     n_configs: int,
@@ -678,9 +673,9 @@ def _histogram_display_controls(
     cannot drift apart; they differ only in *key_prefix*, since a bin count for
     timing means nothing for memory.
     """
-    values = _display_options(
+    values = display_options(
         _bin_count_control(f"{key_prefix}_hist_bins", bin_options),
-        _opacity_control(
+        opacity_control(
             f"{key_prefix}_hist_alpha",
             label="Bar opacity",
             default=_HIST_DEFAULT_ALPHA,
@@ -694,7 +689,7 @@ def _histogram_display_controls(
         ),
         _error_bars_control(f"{key_prefix}_hist_errors"),
         _mean_lines_control(f"{key_prefix}_hist_mean_lines"),
-        _palette_control(f"{key_prefix}_palette", n_configs),
+        palette_control(f"{key_prefix}_palette", n_configs),
         key_prefix=f"{key_prefix}_hist",
         slot=slot,
     )
@@ -704,22 +699,22 @@ def _histogram_display_controls(
     )
 
 
-_DASHES  = ["solid", "dash", "dot", "dashdot"]
-_SYMBOLS = ["circle", "square", "diamond", "cross",
+DASHES  = ["solid", "dash", "dot", "dashdot"]
+SYMBOLS = ["circle", "square", "diamond", "cross",
             "triangle-up", "star", "pentagon", "hexagon"]
 
 
 # ── Legend helpers ─────────────────────────────────────────────────────────────
 
 #: Bottom margin (px) reserved for tick labels + horizontal legend.
-#: Kept as a floor for the dynamic sizing in :func:`_legend_below`.
+#: Kept as a floor for the dynamic sizing in :func:`legend_below`.
 _LEGEND_B_MARGIN = 160
 
 #: Breathing room (px) between the x-tick labels and the legend, on top of the
 #: per-chart ``tick_clearance``.  ~75 px ≈ 2 cm at 96 DPI.
 _LEGEND_GAP = 75
 
-def _legend_below(
+def legend_below(
     plot_h: int,
     n_entries: int,
     *,
@@ -794,235 +789,3 @@ def _legend_below(
         font=dict(size=font_size),
     )
     return legend, b_margin
-
-
-# ── Shared historical-trends renderer ─────────────────────────────────────────
-
-def _render_stability_expander(
-    df: pd.DataFrame | None,
-    metrics: list[str],
-    reliability: dict[str, bool | None] | None,
-    *,
-    key: str,
-) -> None:
-    """Collapsed per-config table of how much *metrics* move between runs.
-
-    *df* must still hold every run (before any one-point-per-tag collapse):
-    the same-release repeats the headline column is built from are exactly the
-    runs such a collapse drops. Nothing renders when none of *metrics* is in
-    *df*, so old data without them shows no empty box. Display-only; nothing
-    here is written back to results or reports.
-    """
-    if not _is_valid_df(df):
-        return
-    table = build_stability_table(
-        df, {m: metric_unit(m) for m in metrics}, reliability,
-    )
-    if table.empty:
-        return
-    with st.expander("Run-to-run variability", expanded=False, key=key):
-        st.caption(
-            "**Same-release spread**: typical change between consecutive reliable "
-            "runs of the *same* Key4hep release, over the last "
-            f"{BASELINE_WINDOW_RUNS} such pairs in the trend window. Stack changes "
-            "are excluded, but not k4Bench-side changes: runs of one release can "
-            "come from different k4Bench commits, so it can contain harness, "
-            "plugin or configuration changes as well as measurement noise. "
-            "**Recent movement**: the "
-            f"same statistic over the last {NOISE_WINDOW_RUNS} reliable runs "
-            "regardless of release, so it also contains stack changes. "
-            "Runs are ordered by release date, then run, as the regression engine "
-            "orders them: a later rerun of an old release counts with that release. "
-            "Neither is an uncertainty or a confidence interval."
-        )
-        st.dataframe(table, width="stretch")
-
-
-def _render_historical_trends(
-    trend_df: pd.DataFrame,
-    filtered_labels: list[str],
-    stats_spec: list[tuple[str, str]],
-    *,
-    std_col: str,
-    n_col_candidates: list[str],
-    unit: str,
-    key_prefix: str,
-    no_data_msg: str = "",
-    display_options_slot=None,
-    error_sources: dict[str, tuple[str, str]] | None = None,
-    units: dict[str, str] | None = None,
-) -> None:
-    """Render historical statistics in a grid of up to three columns.
-
-    Shared implementation for the Event Timing and Event Memory historical
-    sub-views.  Both tabs have an identical figure structure; only the column
-    names, units, and Streamlit widget keys differ.
-
-    Parameters
-    ----------
-    trend_df : pd.DataFrame
-        Full long-form trend DataFrame (will be filtered to ``filtered_labels``).
-    filtered_labels : list[str]
-        Config labels to plot (already validated against ``trend_df``).
-    stats_spec : list of (col, panel_title)
-        Statistic columns to show and their subplot headings.
-    std_col : str
-        Name of the standard-deviation column used for error bars.
-    n_col_candidates : list[str]
-        Column names tried in order to find the event count (first hit wins).
-    unit : str
-        Physical unit string shown in hover-tips (e.g. ``"s"``, ``"MB"``).
-    key_prefix : str
-        Prefix for all Streamlit widget keys (must be unique per tab).
-    no_data_msg : str
-        Warning shown when the filtered DataFrame is empty after deduplication.
-    display_options_slot :
-        Placeholder for the Display options trigger, reserved by the tab on the
-        row that carries its View selector, so the popover sits in the same
-        place in this view as in the tab's current-run view.
-    error_sources :
-        Optional mapping from statistic column to (standard deviation, event
-        count) columns. When supplied, unlisted statistics have no error bars.
-        Otherwise all statistics use ``std_col`` and ``n_col_candidates``.
-    units :
-        Optional per-statistic hover unit, for a panel whose unit is not
-        ``unit`` (e.g. a slope in MB/event on a memory tab).
-    """
-    # ── Display options ───────────────────────────────────────────────────────
-    # The opacity slider is keyed ``…_line_alpha`` rather than ``…_alpha``: the
-    # tab passes *key_prefix* ``evt_timing_hist``, and the current-run view's
-    # "Bar opacity" slider is ``evt_timing`` + ``_hist_alpha`` — the same string.
-    # Sharing one slot would carry each view's value into the other on a view
-    # switch, where the two sliders mean different things and start at different
-    # defaults.
-    values = _display_options(
-        _palette_control(f"{key_prefix}_palette", len(filtered_labels)),
-        _style_cycling_control(f"{key_prefix}_style"),
-        _opacity_control(f"{key_prefix}_line_alpha"),
-        key_prefix=f"{key_prefix}_display",
-        slot=display_options_slot,
-    )
-    palette = _PALETTES[values["palette"]]
-    alpha = values["alpha"]
-    use_dash, use_marker = _style_cycling_flags(values["style"])
-
-    # ── Data prep ─────────────────────────────────────────────────────────────
-    df = trend_df[trend_df["label"].isin(filtered_labels)].copy()
-    df["x_date"]  = pd.to_datetime(df["x_date"])
-    df["run_date"] = pd.to_datetime(df["run_date"])
-    df = df.loc[df.groupby(["label", "x_date"])["run_date"].idxmax()].reset_index(drop=True)
-    if df.empty:
-        st.warning(no_data_msg or "No trend data for the selected configurations.")
-        return
-
-    unique_dates = sorted(df["x_date"].dropna().unique())
-    tick_labels  = [pd.Timestamp(d).strftime("%Y-%m-%d") for d in unique_dates]
-
-    # ── Figure ────────────────────────────────────────────────────────────────
-    n_cols = min(3, len(stats_spec))
-    n_rows = math.ceil(len(stats_spec) / n_cols)
-    fig = make_subplots(
-        rows=n_rows,
-        cols=n_cols,
-        shared_xaxes="all",
-        horizontal_spacing=0.06,
-        vertical_spacing=0.12 if n_rows > 1 else 0.0,
-        subplot_titles=[lbl for _, lbl in stats_spec],
-    )
-
-    marker_alpha = max(0.1, alpha - 0.2)
-    for cfg_idx, cfg_label in enumerate(filtered_labels):
-        cfg_df = df[df["label"] == cfg_label].sort_values("x_date")
-        if cfg_df.empty:
-            continue
-        n_colors     = len(palette)
-        cycle        = cfg_idx // n_colors
-        color        = palette[cfg_idx % n_colors]
-        line_color   = _to_rgba(color, alpha)
-        marker_color = _to_rgba(color, marker_alpha)
-        dash         = _DASHES [cycle % len(_DASHES) ] if use_dash   else "solid"
-        symbol       = _SYMBOLS[cycle % len(_SYMBOLS)] if use_marker else "circle"
-        run_date_str = cfg_df["run_date"].dt.strftime("%Y-%m-%d").fillna("unknown")
-        k4h_release  = cfg_df.get("k4h_release", pd.Series(["unknown"] * len(cfg_df))).fillna("unknown")
-        custom       = list(zip(run_date_str, k4h_release))
-
-        for col_idx, (stat_col, stat_label) in enumerate(stats_spec):
-            if stat_col not in cfg_df.columns:
-                continue
-            n_col = next((c for c in n_col_candidates if c in cfg_df.columns), None)
-            source = error_sources.get(stat_col) if error_sources is not None else (std_col, n_col)
-            sem = None
-            if source is not None and all(c in cfg_df.columns for c in source):
-                std = cfg_df[source[0]].to_numpy(dtype=float)
-                n = cfg_df[source[1]].to_numpy(dtype=float)
-                statistic = stat_col.partition("_")[0]
-                valid = n > (2 if statistic == "std" else 1)
-                sem = np.full(len(n), np.nan)
-                if statistic == "std":
-                    sem[valid] = std[valid] / np.sqrt(2 * (n[valid] - 1))
-                elif statistic in ("mean", "median"):
-                    sem[valid] = std[valid] / np.sqrt(n[valid])
-                    if statistic == "median":
-                        sem *= np.sqrt(np.pi / 2)
-                else:
-                    sem = None
-            err_y = None
-            if sem is not None:
-                err_y = dict(
-                    type="data",
-                    array=sem,
-                    arrayminus=sem,
-                    visible=True,
-                    color=_to_rgba(color, 0.3),
-                    thickness=1.5,
-                    width=4,
-                )
-            fig.add_trace(
-                go.Scatter(
-                    x=cfg_df["x_date"],
-                    y=cfg_df[stat_col],
-                    mode="lines+markers",
-                    name=cfg_label,
-                    legendgroup=cfg_label,
-                    showlegend=(col_idx == 0),
-                    line=dict(color=line_color, width=2, dash=dash),
-                    marker=dict(
-                        size=7, color=marker_color, symbol=symbol, line=dict(color=color, width=1.5)
-                    ),
-                    error_y=err_y,
-                    customdata=custom,
-                    hovertemplate=(
-                        f"<b>{cfg_label}</b><br>"
-                        "Tag: %{customdata[1]} (%{x|%Y-%m-%d})<br>"
-                        f"{stat_label}: %{{y:.4g}} {(units or {}).get(stat_col, unit)}<br>"
-                        "CI run: %{customdata[0]}<extra></extra>"
-                    ),
-                ),
-                row=col_idx // n_cols + 1,
-                col=col_idx % n_cols + 1,
-            )
-
-    fig.update_xaxes(
-        type="date",
-        tickmode="array",
-        tickvals=unique_dates,
-        ticktext=tick_labels,
-        tickangle=-30,
-        title_text="Key4hep Nightly Tag",
-    )
-
-    # ── Legend & margins ──────────────────────────────────────────────────────
-    # tick_clearance=75: rotated (-30°) date ticks + "Key4hep Nightly Tag" title.
-    _PLOT_H = 380 * n_rows
-    _T_MARGIN = 40
-    _legend, _B_MARGIN = _legend_below(
-        _PLOT_H, len(filtered_labels), t_margin=_T_MARGIN, tick_clearance=75,
-    )
-    fig.update_layout(
-        template=_TEMPLATE,
-        height=_PLOT_H + _T_MARGIN + _B_MARGIN,
-        margin=dict(l=20, r=20, t=_T_MARGIN, b=_B_MARGIN),
-        legend=_legend,
-    )
-
-    st.plotly_chart(fig, width="stretch", key=f"{key_prefix}_chart")

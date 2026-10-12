@@ -259,6 +259,22 @@ def pct_phrase(fraction: float | None, *, signed: bool = True) -> str:
     return f"{fraction * 100:+.1f}%" if signed else f"{fraction * 100:.1f}%"
 
 
+def movement(pct_change: float | None) -> float:
+    """A step's size, with a missing or non-finite change counting as no
+    movement. Sort keys use it: a NaN compares false against everything and
+    would leave the order dependent on input order."""
+    if pct_change is None or not math.isfinite(pct_change):
+        return 0.0
+    return abs(pct_change)
+
+
+def metric_subject(metric: str, label: str, sub_detector: str | None = None) -> str:
+    """``"mean_time_s (baseline) [ECal]"`` — one metric of one configuration,
+    as every prompt names it."""
+    subject = f"{metric} ({label})"
+    return f"{subject} [{sub_detector}]" if sub_detector else subject
+
+
 def measurement_phrase(
     value: float | None,
     baseline_median: float | None,

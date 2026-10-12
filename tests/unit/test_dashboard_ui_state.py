@@ -20,7 +20,7 @@ def test_scope_change_clears_a_still_valid_old_widget_value(monkeypatch):
     state = {"picker": "still-valid", "_picker_scope": ("old",)}
     monkeypatch.setattr(ui_utils.st, "session_state", state)
 
-    ui_utils._reset_widget_on_scope("picker", ("new",))
+    ui_utils.reset_widget_on_scope("picker", ("new",))
 
     assert state == {"_picker_scope": ("new",)}
 
@@ -29,7 +29,7 @@ def test_first_scope_preserves_a_preseeded_value(monkeypatch):
     state = {"picker": "deep-linked"}
     monkeypatch.setattr(ui_utils.st, "session_state", state)
 
-    ui_utils._reset_widget_on_scope("picker", ("first",))
+    ui_utils.reset_widget_on_scope("picker", ("first",))
 
     assert state["picker"] == "deep-linked"
 
@@ -38,7 +38,7 @@ def test_automatic_widget_can_reset_unscoped_placeholder_state(monkeypatch):
     state = {"palette": "Matplotlib"}
     monkeypatch.setattr(ui_utils.st, "session_state", state)
 
-    ui_utils._reset_widget_on_scope("palette", 1, reset_unscoped=True)
+    ui_utils.reset_widget_on_scope("palette", 1, reset_unscoped=True)
 
     assert state == {"_palette_scope": 1}
 
@@ -53,7 +53,7 @@ def test_scope_change_also_clears_the_widgets_query_param(monkeypatch):
     monkeypatch.setattr(ui_utils.st, "session_state", state)
     monkeypatch.setattr(ui_utils.st, "query_params", params)
 
-    ui_utils._reset_widget_on_scope("picker", ("new",), query_param="report")
+    ui_utils.reset_widget_on_scope("picker", ("new",), query_param="report")
 
     assert state == {"_picker_scope": ("new",)}
     assert params == {}
@@ -65,13 +65,13 @@ def test_first_scope_keeps_the_deep_linked_query_param(monkeypatch):
     monkeypatch.setattr(ui_utils.st, "session_state", state)
     monkeypatch.setattr(ui_utils.st, "query_params", params)
 
-    ui_utils._reset_widget_on_scope("picker", ("first",), query_param="report")
+    ui_utils.reset_widget_on_scope("picker", ("first",), query_param="report")
 
     assert params == {"report": "2026-07-09"}
 
 
 
-# ── _drop_stale_selection / _render_scope_reset ───────────────────────────────
+# ── drop_stale_selection / render_scope_reset ───────────────────────────────
 
 def test_drop_stale_selection_reports_the_value_it_dropped(monkeypatch):
     # The caller needs the old value to say *what* moved: switching detector can
@@ -81,7 +81,7 @@ def test_drop_stale_selection_reports_the_value_it_dropped(monkeypatch):
     state = {"sb_sample": "single_e_10GeV"}
     monkeypatch.setattr(ui_chrome.st, "session_state", state)
 
-    dropped = ui_chrome._drop_stale_selection("sb_sample", ["single_mu_10GeV"])
+    dropped = ui_chrome.drop_stale_selection("sb_sample", ["single_mu_10GeV"])
 
     assert dropped == "single_e_10GeV"
     assert "sb_sample" not in state
@@ -93,12 +93,12 @@ def test_drop_stale_selection_is_silent_when_the_value_survives(monkeypatch):
     state = {"sb_sample": "single_e_10GeV"}
     monkeypatch.setattr(ui_chrome.st, "session_state", state)
 
-    assert ui_chrome._drop_stale_selection(
+    assert ui_chrome.drop_stale_selection(
         "sb_sample", ["single_e_10GeV", "single_mu_10GeV"]
     ) is None
     assert state == {"sb_sample": "single_e_10GeV"}
     # Nothing dropped and nothing to say.
-    assert ui_chrome._drop_stale_selection("sb_missing", ["a"]) is None
+    assert ui_chrome.drop_stale_selection("sb_missing", ["a"]) is None
 
 
 def test_scope_reset_notice_only_fires_on_a_real_change(monkeypatch):
@@ -107,11 +107,11 @@ def test_scope_reset_notice_only_fires_on_a_real_change(monkeypatch):
     said: list[str] = []
     monkeypatch.setattr(ui_chrome.st, "caption", said.append)
 
-    ui_chrome._render_scope_reset(None, "b", "isn't benchmarked for CLD")
-    ui_chrome._render_scope_reset("b", "b", "isn't benchmarked for CLD")
+    ui_chrome.render_scope_reset(None, "b", "isn't benchmarked for CLD")
+    ui_chrome.render_scope_reset("b", "b", "isn't benchmarked for CLD")
     assert said == []
 
-    ui_chrome._render_scope_reset("a", "b", "isn't benchmarked for CLD")
+    ui_chrome.render_scope_reset("a", "b", "isn't benchmarked for CLD")
     assert said == ["⚠️ `a` isn't benchmarked for CLD — showing `b`."]
 
 

@@ -31,14 +31,14 @@ from k4bench.labels import pretty_release, pretty_sample
 from k4bench.layout import stack_dir
 from sections import STACK_CHANGES_PLATFORM_WIDE, SectionScope
 from remote_cache import (
-    _cached_fetch_blame,
-    _cached_fetch_reports,
-    _cached_fetch_runs_windowed,
-    _cached_fetch_stack_packages,
-    _cached_list_detectors,
-    _cached_list_report_dates,
-    _cached_list_run_dates,
-    _cached_list_stacks,
+    cached_fetch_blame,
+    cached_fetch_reports,
+    cached_fetch_runs_windowed,
+    cached_fetch_stack_packages,
+    cached_list_detectors,
+    cached_list_report_dates,
+    cached_list_run_dates,
+    cached_list_stacks,
 )
 from tabs import _blame
 from tabs._regression_flags import attention_key, render_candidate_ranking
@@ -288,9 +288,9 @@ def _stacks_for_platform(data_url: str, platform: str) -> list[str]:
     releases.
     """
     stacks: set[str] = set()
-    for detector in _cached_list_detectors(data_url):
+    for detector in cached_list_detectors(data_url):
         try:
-            stacks.update(_cached_list_stacks(data_url, detector, platform))
+            stacks.update(cached_list_stacks(data_url, detector, platform))
         except requests.RequestException:
             # A detector never benchmarked on this platform has no such
             # directory to list. Only that is expected here — a broader catch
@@ -305,8 +305,8 @@ def _packages(data_url: str, platform: str, stack: str) -> dict | None:
     Detectors are tried in turn because any one of them may have skipped this
     release, or may have run it before provenance capture existed.
     """
-    for detector in _cached_list_detectors(data_url):
-        packages = _cached_fetch_stack_packages(data_url, detector, platform, stack)
+    for detector in cached_list_detectors(data_url):
+        packages = cached_fetch_stack_packages(data_url, detector, platform, stack)
         if packages:
             return packages
     return None
@@ -469,7 +469,7 @@ def _reports_since(
 ) -> list[NightlyReport]:
     """Batch-fetch the parseable reports at/after *base_release*."""
     report_dates = tuple(date for date in dates if date >= base_release)
-    report_map = _cached_fetch_reports(data_url, report_dates)
+    report_map = cached_fetch_reports(data_url, report_dates)
     return [report_map[date] for date in report_dates if date in report_map]
 
 
@@ -498,7 +498,7 @@ def _render_regressions_in_range(
     package range is never mistaken for that metric's attribution interval.
     """
     try:
-        dates = _cached_list_report_dates(data_url)
+        dates = cached_list_report_dates(data_url)
     except Exception as err:
         st.markdown("##### Regressions in this range")
         st.warning(
@@ -664,8 +664,8 @@ def _render_regressions_in_range(
 
     render_metric_trend(
         selected, data_url, cache_dir,
-        list_run_dates=_cached_list_run_dates,
-        fetch_runs_windowed=_cached_fetch_runs_windowed,
+        list_run_dates=cached_list_run_dates,
+        fetch_runs_windowed=cached_fetch_runs_windowed,
         widget_namespace=f"stack_regr_{base_release}_{head_release}",
         include_scope=show_all,
         reliability_slot=reliability_slot,
@@ -725,7 +725,7 @@ def _blame_for_verdict(
         verdict.first_confirmed_run_id, verdict.run_id,
     )))
     for night in nights:
-        raw = _cached_fetch_blame(data_url, night)
+        raw = cached_fetch_blame(data_url, night)
         if not raw:
             continue
         try:

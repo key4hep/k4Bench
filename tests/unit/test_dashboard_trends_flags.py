@@ -83,7 +83,7 @@ def test_severity_lookup_scopes_and_keys(monkeypatch):
         _group("2026-05-21", [_verdict("wall_time_s", Severity.CONFIRMED)],
                detector="IDEA"),
     ])
-    monkeypatch.setattr(tr, "_cached_fetch_reports",
+    monkeypatch.setattr(tr, "cached_fetch_reports",
                         lambda url, ids: {"2026-05-21": report})
 
     lookup = tr._severity_lookup(
@@ -287,7 +287,7 @@ def _app(
 
     from tabs import trends as _trends
 
-    _trends._cached_fetch_reports = lambda url, ids: reports
+    _trends.cached_fetch_reports = lambda url, ids: reports
 
     # *same_tag* makes the two runs reruns of one nightly tag: same x_date and
     # release, different run dates — what the dedup below collapses to a point.

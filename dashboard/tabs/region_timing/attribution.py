@@ -9,11 +9,11 @@ from plotly.subplots import make_subplots
 
 from k4bench.analysis.plots._theme import _TEMPLATE
 from ui_utils import (
-    _display_options,
-    _legend_below,
-    _palette_control,
-    _PALETTES,
-    _to_rgba,
+    display_options,
+    legend_below,
+    palette_control,
+    PALETTES,
+    to_rgba,
 )
 
 # Fixed colours for source / sink — independent of user palette
@@ -73,10 +73,10 @@ def _render_attribution_analysis(region_data: dict, display_options_slot=None) -
 
         ``None`` means this render has no ranking to size against, which keeps
         the palette's stored value alive without letting an empty render
-        re-default it (see :func:`~ui_utils._palette_control`).
+        re-default it (see :func:`~ui_utils.palette_control`).
         """
-        return _display_options(
-            _palette_control("ss_palette", n_detectors),
+        return display_options(
+            palette_control("ss_palette", n_detectors),
             key_prefix="ss_display",
             slot=display_options_slot,
         )
@@ -109,7 +109,7 @@ def _render_attribution_analysis(region_data: dict, display_options_slot=None) -
         return
 
     n = len(det_list)
-    palette = _PALETTES[_display_controls(n)["palette"]]
+    palette = PALETTES[_display_controls(n)["palette"]]
 
     st.divider()
     _attribution_explainer()
@@ -141,9 +141,9 @@ def _render_attribution_analysis(region_data: dict, display_options_slot=None) -
         if np.isnan(p):
             bar_colors.append("rgba(160,160,160,0.55)")  # grey — signal too small
         elif p >= 0:
-            bar_colors.append(_to_rgba(_SINK_COLOR,   0.82))
+            bar_colors.append(to_rgba(_SINK_COLOR,   0.82))
         else:
-            bar_colors.append(_to_rgba(_SOURCE_COLOR, 0.82))
+            bar_colors.append(to_rgba(_SOURCE_COLOR, 0.82))
 
     pt_colors = [palette[i % len(palette)] for i in range(n)]
 
@@ -283,7 +283,7 @@ def _render_attribution_analysis(region_data: dict, display_options_slot=None) -
     # b_margin to the total. groupclick lets a legend click toggle each detector's
     # scatter point and asymmetry bar together.
     fig_h = int(np.clip(90 + n * 26, 440, 820))
-    legend, b_margin = _legend_below(
+    legend, b_margin = legend_below(
         fig_h, n, t_margin=45, tick_clearance=50, entry_width=200, font_size=12,
     )
     legend["groupclick"] = "togglegroup"

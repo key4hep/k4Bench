@@ -22,7 +22,7 @@ _DASHBOARD_DIR = Path(__file__).resolve().parents[2] / "dashboard"
 if str(_DASHBOARD_DIR) not in sys.path:
     sys.path.insert(0, str(_DASHBOARD_DIR))
 
-from ui_utils import _DisplayControl, _display_options  # noqa: E402
+from ui_utils import DisplayControl, display_options  # noqa: E402
 
 
 def _app(dashboard_dir, n_items):
@@ -33,20 +33,20 @@ def _app(dashboard_dir, n_items):
     import streamlit as st
 
     from ui_utils import (
-        _display_options,
-        _opacity_control,
-        _palette_control,
-        _smooth_lines_control,
-        _style_cycling_control,
-        _top_n_control,
+        display_options,
+        opacity_control,
+        palette_control,
+        smooth_lines_control,
+        style_cycling_control,
+        top_n_control,
     )
 
-    st.session_state["_values"] = _display_options(
-        _palette_control("t_palette", n_items),
-        _style_cycling_control("t_style"),
-        _opacity_control("t_alpha", default=0.75),
-        _smooth_lines_control("t_smooth"),
-        _top_n_control("t_top_n"),
+    st.session_state["_values"] = display_options(
+        palette_control("t_palette", n_items),
+        style_cycling_control("t_style"),
+        opacity_control("t_alpha", default=0.75),
+        smooth_lines_control("t_smooth"),
+        top_n_control("t_top_n"),
         key_prefix="t_display",
     )
 
@@ -57,15 +57,15 @@ def _run(n_items):
     ).run()
 
 
-def _control(name: str, key: str) -> _DisplayControl:
-    return _DisplayControl(
+def _control(name: str, key: str) -> DisplayControl:
+    return DisplayControl(
         name=name, key=key, default=None, render=lambda: None,
     )
 
 
 def test_duplicate_control_names_fail_before_rendering_widgets():
     with pytest.raises(ValueError, match="control names must be unique: alpha"):
-        _display_options(
+        display_options(
             _control("alpha", "first"),
             _control("alpha", "second"),
             key_prefix="duplicate_names",
@@ -74,7 +74,7 @@ def test_duplicate_control_names_fail_before_rendering_widgets():
 
 def test_duplicate_control_keys_fail_before_streamlits_duplicate_key_error():
     with pytest.raises(ValueError, match="widget keys must be unique: shared"):
-        _display_options(
+        display_options(
             _control("alpha", "shared"),
             _control("beta", "shared"),
             key_prefix="duplicate_keys",

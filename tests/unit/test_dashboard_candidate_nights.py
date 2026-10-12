@@ -37,7 +37,7 @@ def _no_network(monkeypatch):
         if plat == _ACTIVE:
             return {f"key4hep-{_SUCCESSOR_RUN}": [_SUCCESSOR_RUN]}
         return dict(_STACKS_DATES)
-    monkeypatch.setattr(regressions, "_cached_list_run_dates", listing)
+    monkeypatch.setattr(regressions, "cached_list_run_dates", listing)
 
 
 def _nights(platform, dates, stack=_NEWEST_STACK):
@@ -85,7 +85,7 @@ def test_a_listing_missing_the_newest_release_falls_back_to_the_latest_report(mo
     def listing(url, det, plat, samp):
         raise IncompleteFetch(partial, [f"{_NEWEST_STACK}: read timed out"])
 
-    monkeypatch.setattr(regressions, "_cached_list_run_dates", listing)
+    monkeypatch.setattr(regressions, "cached_list_run_dates", listing)
     warned = []
     monkeypatch.setattr(regressions.st, "warning", lambda text, **_kw: warned.append(text))
     nights, is_release, stacks_dates = regressions._candidate_nights(

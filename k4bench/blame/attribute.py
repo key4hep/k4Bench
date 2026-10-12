@@ -60,7 +60,6 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-import math
 import re
 from dataclasses import dataclass, field
 from collections.abc import Sequence
@@ -97,6 +96,8 @@ from k4bench.blame.prompt import (
     host_sentences,
     log_prompt_size,
     measurement_phrase,
+    metric_subject,
+    movement,
     outcome_lines,
     parse_assessment,
     platform_line,
@@ -451,7 +452,7 @@ _SUBJECT_DIFF_FLOOR = 12000
 #: rather than going unscored, and competitors are cut by strength first.
 _MAX_ATTRIBUTED_ROWS = 500
 #: Public, because the caller must cut the field to this *before* fetching a diff
-#: for each competitor (:func:`k4bench.blame.comment._attribution_request`) —
+#: for each competitor (:func:`k4bench.blame.comment.build._attribution_request`) —
 #: fetching a hundred patches to prompt with thirty is a hundred GitHub round
 #: trips inside one shared timeout.
 MAX_COMPETITORS = 30
@@ -636,8 +637,7 @@ def _system_prompt(request: AttributionRequest) -> str:
     are analogues.
 
     Composed rather than constant so a review that carries no historical evidence
-    is asked in exactly the words it was asked in before this feature existed. A
-    standing rule about material the prompt does not contain is at best noise and
+    is asked without the rule at all. A standing rule about material the prompt does not contain is at best noise and
     at worst an invitation to hunt for it."""
     if not request.historical:
         return _SYSTEM_PROMPT
@@ -697,10 +697,8 @@ def _by_movement(fact: RegressionFact) -> tuple:
     """Biggest step first, identity breaking ties. A missing or non-finite change
     counts as no movement rather than comparing false against everything, which
     would leave the order dependent on input order."""
-    pct = fact.pct_change
-    magnitude = abs(pct) if pct is not None and math.isfinite(pct) else 0.0
     return (
-        -magnitude, fact.detector, fact.platform, fact.sample,
+        -movement(fact.pct_change), fact.detector, fact.platform, fact.sample,
         fact.label, fact.metric, fact.sub_detector or "",
     )
 
@@ -754,25 +752,8 @@ def _regression_lines(request: AttributionRequest) -> list[str]:
         lines.append(sample_line(sample, prefix="  "))
         lines.append(platform_line(platform, prefix="  "))
         for fact in facts:
-            subject = f"{fact.metric} ({fact.label})"
-            if fact.sub_detector:
-                subject += f" [{fact.sub_detector}]"
-            detail = measurement_phrase(
-                fact.value, fact.baseline_median, fact.z_score,
-            )
-            lines.append(
-                f"  - [{fact.id}] {subject} {fact.metric_family} "
-                f"{direction_phrase(fact.direction, fact.pct_change)}"
-                + (f" ({detail})" if detail else "")
-            )
-            lines.append(f"      prior: {_prior_phrase(fact)}")
-            # One clause per row, a full table for a few (below): a row whose
-            # series wobbles weekly and a row whose series has never moved must
-            # not arrive looking identical, and at this width only the clause
-            # fits on every row.
-            clause = history_clause(fact.history)
-            if clause:
-                lines.append(f"      history: {clause}")
+            head, *history = _fact_line(fact)
+            lines += [head, f"      prior: {_prior_phrase(fact)}", *history]
     return lines
 
 
@@ -801,9 +782,10 @@ def _history_lines(request: AttributionRequest) -> list[str]:
         "behaves when nothing is done to it:",
     ]
     for fact in shown:
-        subject = f"{fact.detector} · {fact.metric} ({fact.label})"
-        if fact.sub_detector:
-            subject += f" [{fact.sub_detector}]"
+        subject = (
+            f"{fact.detector} · "
+            f"{metric_subject(fact.metric, fact.label, fact.sub_detector)}"
+        )
         scope = _fact_scope(fact)
         lines.append("")
         lines += history_block(
@@ -881,9 +863,13 @@ def _unplaced(sweep: ScopeSweep | None, facts: Sequence[RegressionFact]) -> list
 
 
 def _fact_line(fact: RegressionFact) -> list[str]:
-    subject = f"{fact.metric} ({fact.label})"
-    if fact.sub_detector:
-        subject += f" [{fact.sub_detector}]"
+    """One regression row: its id, measurement and a one-line history clause.
+
+    The clause rides on every row while full tables are kept for a few: a row
+    whose series wobbles weekly and a row whose series has never moved must not
+    arrive looking identical, and at this width only the clause fits on every
+    row."""
+    subject = metric_subject(fact.metric, fact.label, fact.sub_detector)
     detail = measurement_phrase(fact.value, fact.baseline_median, fact.z_score)
     lines = [
         f"  - [{fact.id}] {subject} {fact.metric_family} "

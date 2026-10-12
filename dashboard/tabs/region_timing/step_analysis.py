@@ -8,12 +8,12 @@ from plotly.subplots import make_subplots
 
 from k4bench.analysis.plots._theme import _TEMPLATE
 from ui_utils import (
-    _display_options,
-    _legend_below,
-    _palette_control,
-    _PALETTES,
-    _SYMBOLS,
-    _to_rgba,
+    display_options,
+    legend_below,
+    palette_control,
+    PALETTES,
+    SYMBOLS,
+    to_rgba,
 )
 
 
@@ -42,10 +42,10 @@ def _render_step_analysis(region_data: dict, display_options_slot=None) -> None:
 
         ``None`` means this render has no ranking to size against, which keeps
         the palette's stored value alive without letting an empty render
-        re-default it (see :func:`~ui_utils._palette_control`).
+        re-default it (see :func:`~ui_utils.palette_control`).
         """
-        return _display_options(
-            _palette_control("sa_palette", n_detectors),
+        return display_options(
+            palette_control("sa_palette", n_detectors),
             key_prefix="sa_display",
             slot=display_options_slot,
         )
@@ -87,7 +87,7 @@ def _render_step_analysis(region_data: dict, display_options_slot=None) -> None:
 
     n = len(det_list)
 
-    palette    = _PALETTES[_display_controls(n)["palette"]]
+    palette    = PALETTES[_display_controls(n)["palette"]]
     total_time    = np.array([float(al_means[d])             for d in det_list])  # s
     raw_step_cnt  = np.array([float(steps_means.get(d, 0.0)) for d in det_list])  # steps
     plot_step_cnt = np.maximum(raw_step_cnt, 0.1)            # floored for the log x-axis only
@@ -128,7 +128,7 @@ def _render_step_analysis(region_data: dict, display_options_slot=None) -> None:
         cycle  = pt_cycles[i]
         # Change marker symbol and border for each palette cycle so repeated
         # colours are still visually distinguishable in the legend and scatter.
-        symbol       = _SYMBOLS[cycle % len(_SYMBOLS)]
+        symbol       = SYMBOLS[cycle % len(SYMBOLS)]
         border_color = pt_colors[i] if cycle > 0 else "white"
         fig.add_trace(
             go.Scatter(
@@ -236,7 +236,7 @@ def _render_step_analysis(region_data: dict, display_options_slot=None) -> None:
                 name=det,
                 legendgroup=det,
                 showlegend=False,
-                marker_color=_to_rgba(pt_colors[i], 0.80),
+                marker_color=to_rgba(pt_colors[i], 0.80),
                 marker_line_color=pt_colors[i] if cycle > 0 else "rgba(0,0,0,0)",
                 marker_line_width=2.0 if cycle > 0 else 0,
                 customdata=[(det, float(raw_step_cnt[i]))],
@@ -260,7 +260,7 @@ def _render_step_analysis(region_data: dict, display_options_slot=None) -> None:
                 name=det,
                 legendgroup=det,
                 showlegend=False,
-                marker_color=_to_rgba(pt_colors[i], 0.80),
+                marker_color=to_rgba(pt_colors[i], 0.80),
                 marker_line_color=pt_colors[i] if cycle > 0 else "rgba(0,0,0,0)",
                 marker_line_width=2.0 if cycle > 0 else 0,
                 customdata=[(det, float(tps_us[i]))],
@@ -281,7 +281,7 @@ def _render_step_analysis(region_data: dict, display_options_slot=None) -> None:
         "Bubble area is proportional to total mean simulation time per event. "
         "Log x-axis — step counts span several orders of magnitude."
     )
-    legend, b_margin = _legend_below(
+    legend, b_margin = legend_below(
         fig_h, n, t_margin=45, tick_clearance=50, entry_width=200, font_size=12,
     )
     legend["groupclick"] = "togglegroup"   # legend click toggles point + both bars
