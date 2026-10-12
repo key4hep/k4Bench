@@ -1,0 +1,322 @@
+{
+  "DD4hep": {
+    "commit": "a987279",
+    "version": "HEAD",
+    "repo_url": "https://github.com/AIDASoft/DD4hep.git"
+  },
+  "acts": {
+    "commit": "80b66a5",
+    "version": "HEAD",
+    "repo_url": "https://github.com/acts-project/acts.git"
+  },
+  "SIO": {
+    "commit": "53dd768",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/SIO.git"
+  },
+  "fcalclusterer": {
+    "commit": "13d1461",
+    "version": "HEAD",
+    "repo_url": "https://github.com/FCalSW/FCalClusterer.git"
+  },
+  "simsipm": {
+    "commit": "8f06541",
+    "version": "HEAD",
+    "repo_url": "https://github.com/EdoPro98/SimSiPM.git"
+  },
+  "cldconfig": {
+    "commit": "8d52b46",
+    "version": "HEAD",
+    "repo_url": "https://github.com/key4hep/CLDConfig.git"
+  },
+  "k4fwcore": {
+    "commit": "1d56cbd",
+    "version": "HEAD",
+    "repo_url": "https://github.com/key4hep/k4FWCore.git"
+  },
+  "k4geo": {
+    "commit": "e1ba7bc",
+    "version": "HEAD",
+    "repo_url": "https://github.com/key4hep/k4geo.git"
+  },
+  "k4marlinwrapper": {
+    "commit": "a808658",
+    "version": "HEAD",
+    "repo_url": "https://github.com/key4hep/k4MarlinWrapper.git"
+  },
+  "k4_project_template": {
+    "commit": "7c25f68",
+    "version": "HEAD",
+    "repo_url": "https://github.com/key4hep/k4-project-template.git"
+  },
+  "k4reco": {
+    "commit": "de71eb6",
+    "version": "HEAD",
+    "repo_url": "https://github.com/key4hep/k4Reco.git"
+  },
+  "k4rectracker": {
+    "commit": "1b8b597",
+    "version": "HEAD",
+    "repo_url": "https://github.com/key4hep/k4RecTracker.git"
+  },
+  "k4simdelphes": {
+    "commit": "b85e1d3",
+    "version": "HEAD",
+    "repo_url": "https://github.com/key4hep/k4SimDelphes.git"
+  },
+  "ced": {
+    "commit": "96ec13f",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/CED.git"
+  },
+  "cedviewer": {
+    "commit": "863b91d",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/CEDViewer.git"
+  },
+  "clicperformance": {
+    "commit": "c4a1570",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/CLICPerformance.git"
+  },
+  "clupatra": {
+    "commit": "02e9806",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/Clupatra.git"
+  },
+  "conformaltracking": {
+    "commit": "ea7da45",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/ConformalTracking.git"
+  },
+  "ddkaltest": {
+    "commit": "26a6083",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/DDKalTest.git"
+  },
+  "ddmarlinpandora": {
+    "commit": "821384f",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/DDMarlinPandora.git"
+  },
+  "forwardtracking": {
+    "commit": "bd6ef3f",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/ForwardTracking.git"
+  },
+  "garlic": {
+    "commit": "32edf27",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/Garlic.git"
+  },
+  "ilcutil": {
+    "commit": "a2fe787",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/ILCUtil.git"
+  },
+  "ildperformance": {
+    "commit": "3a2d552",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/ILDPerformance.git"
+  },
+  "kitrackmarlin": {
+    "commit": "cace90b",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/KiTrackMarlin.git"
+  },
+  "lcfiplus": {
+    "commit": "1e6460c",
+    "version": "HEAD",
+    "repo_url": "https://github.com/lcfiplus/LCFIPlus.git"
+  },
+  "marlindd4hep": {
+    "commit": "9341889",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/MarlinDD4hep.git"
+  },
+  "marlinfastjet": {
+    "commit": "1599f99",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/MarlinFastjet.git"
+  },
+  "marlinkinfit": {
+    "commit": "c253947",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/MarlinKinfit.git"
+  },
+  "marlinkinfitprocessors": {
+    "commit": "916c2b7",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/MarlinKinfitProcessors.git"
+  },
+  "marlintrk": {
+    "commit": "34fe6b2",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/MarlinTrk.git"
+  },
+  "marlintrkprocessors": {
+    "commit": "8db293b",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/MarlinTrkProcessors.git"
+  },
+  "marlinutil": {
+    "commit": "31aed51",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/MarlinUtil.git"
+  },
+  "overlay": {
+    "commit": "edf5344",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/Overlay.git"
+  },
+  "pandoraanalysis": {
+    "commit": "61b8993",
+    "version": "HEAD",
+    "repo_url": "https://github.com/PandoraPFAOrg/LCPandoraAnalysis.git"
+  },
+  "aidatt": {
+    "commit": "8da3d75",
+    "version": "HEAD",
+    "repo_url": "https://github.com/AIDASoft/aidaTT.git"
+  },
+  "fcc_config": {
+    "commit": "309a4b0",
+    "version": "HEAD",
+    "repo_url": "https://github.com/HEP-FCC/FCC-config.git"
+  },
+  "k4gen": {
+    "commit": "bc82cca",
+    "version": "HEAD",
+    "repo_url": "https://github.com/key4hep/k4Gen.git"
+  },
+  "k4simgeant4": {
+    "commit": "5427299",
+    "version": "HEAD",
+    "repo_url": "https://github.com/key4hep/k4SimGeant4.git"
+  },
+  "fccanalyses": {
+    "commit": "37da2c4",
+    "version": "HEAD",
+    "repo_url": "https://github.com/HEP-FCC/FCCAnalyses.git"
+  },
+  "opendatadetector": {
+    "commit": "446d612",
+    "version": "HEAD",
+    "repo_url": "https://github.com/OpenDataDetector/OpenDataDetector.git"
+  },
+  "k4gaudipandora": {
+    "commit": "2afd7e6",
+    "version": "HEAD",
+    "repo_url": "https://github.com/key4hep/k4GaudiPandora.git"
+  },
+  "conddbmysql": {
+    "commit": "1a58d48",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/CondDBMySQL.git"
+  },
+  "kitrack": {
+    "commit": "a54980f",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/KiTrack.git"
+  },
+  "lccd": {
+    "commit": "2c7541e",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/LCCD.git"
+  },
+  "lctuple": {
+    "commit": "e42add5",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/LCTuple.git"
+  },
+  "marlin": {
+    "commit": "cd0ad3c",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/Marlin.git"
+  },
+  "k4clue": {
+    "commit": "1f25bfb",
+    "version": "HEAD",
+    "repo_url": "https://github.com/key4hep/k4Clue.git"
+  },
+  "marlinreco": {
+    "commit": "4f6aef2",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/MarlinReco.git"
+  },
+  "k4actstracking": {
+    "commit": "504dd58",
+    "version": "HEAD",
+    "repo_url": "https://github.com/key4hep/k4ActsTracking.git"
+  },
+  "ddml": {
+    "commit": "ad52025",
+    "version": "HEAD",
+    "repo_url": "https://github.com/key4hep/DDML.git"
+  },
+  "k4mljettagger": {
+    "commit": "ff220d6",
+    "version": "HEAD",
+    "repo_url": "https://github.com/key4hep/k4MLJetTagger.git"
+  },
+  "LCIO": {
+    "commit": "9adc7fe",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/LCIO.git"
+  },
+  "gear": {
+    "commit": "23a6ab7",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/GEAR.git"
+  },
+  "kaltest": {
+    "commit": "32ba508",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/KalTest.git"
+  },
+  "physsim": {
+    "commit": "5f2c34d",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/PhysSim.git"
+  },
+  "raida": {
+    "commit": "97ae2e1",
+    "version": "HEAD",
+    "repo_url": "https://github.com/iLCSoft/RAIDA.git"
+  },
+  "lccontent": {
+    "commit": "79a966f",
+    "version": "HEAD",
+    "repo_url": "https://github.com/PandoraPFAOrg/lccontent.git"
+  },
+  "k4generatorsconfig": {
+    "commit": "3765286",
+    "version": "HEAD",
+    "repo_url": "https://github.com/key4hep/k4GeneratorsConfig.git"
+  },
+  "k4reccalorimeter": {
+    "commit": "f1f7243",
+    "version": "HEAD",
+    "repo_url": "https://github.com/HEP-FCC/k4RecCalorimeter.git"
+  },
+  "EDM4hep": {
+    "commit": "f25ac8d",
+    "version": "HEAD",
+    "repo_url": "https://github.com/key4hep/EDM4hep.git"
+  },
+  "podio": {
+    "commit": "8e55a7a",
+    "version": "HEAD",
+    "repo_url": "https://github.com/AIDASoft/podio.git"
+  },
+  "k4edm4hep2lcioconv": {
+    "commit": "641e125",
+    "version": "HEAD",
+    "repo_url": "https://github.com/key4hep/k4EDM4hep2LcioConv.git"
+  },
+  "Garfield++": {
+    "commit": "60c55ca",
+    "version": "HEAD",
+    "repo_url": "https://gitlab.cern.ch/garfield/garfieldpp.git"
+  }
+}

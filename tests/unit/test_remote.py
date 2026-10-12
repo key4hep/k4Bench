@@ -6,6 +6,7 @@ is a thin re-export shim kept for the dashboard's flat imports.
 
 from __future__ import annotations
 
+import gzip
 import json
 from pathlib import Path
 
@@ -745,3 +746,159 @@ def test_fetch_run_commit_none_when_the_run_is_absent(monkeypatch):
     assert remote.fetch_run_commit(
         BASE, "DET", "PLAT", "key4hep-2026-05-20", "single_e", "2026-05-22"
     ) is None
+
+
+def test_measured_stack_costs_one_listing_and_four_gets_per_endpoint(monkeypatch):
+    from tests.unit.test_stack_capture import FIXTURES
+    root = f"{BASE}/ILD/platform/key4hep-2026-10-03/Zbb"
+    run = f"{root}/2026-10-03"
+    info = {
+        "k4h_stack_capture": 1,
+        "k4h_packages": json.loads((FIXTURES / "HEAD-2026-10-03.json").read_text()),
+        "k4h_loaded_packages": json.loads((FIXTURES / "loaded.json").read_text()),
+        "g4_datasets": {},
+    }
+    web = FakeWeb({
+        root: ["2026-10-03/"],
+        f"{run}/run_info.json": json.dumps(info).encode(),
+        f"{run}/machine_info.json": b'{"os": "AlmaLinux 9.8"}',
+        f"{run}/LCG_externals.txt.gz": (FIXTURES / "LCG_externals.txt.gz").read_bytes(),
+        f"{run}/LCG_contrib.txt.gz": (FIXTURES / "LCG_contrib.txt.gz").read_bytes(),
+    })
+    _use_session(monkeypatch, web.get)
+    snapshot = remote.fetch_stack_snapshot(BASE, "ILD", "platform", "key4hep-2026-10-03", "Zbb", strict=True)
+    assert snapshot.complete and "Geant4" in snapshot.loaded
+    assert len(web.requested) == 5
+    assert not any("LCG_builds" in path for path in web.requested)
+    # Old runs have no manifest requests or machine fetch added to their cost.
+    info.pop("k4h_stack_capture")
+    info.pop("k4h_loaded_packages")
+    web.tree[f"{run}/run_info.json"] = json.dumps(info).encode()
+    web.requested.clear()
+    legacy = remote.fetch_stack_snapshot(BASE, "ILD", "platform", "key4hep-2026-10-03", "Zbb", strict=True)
+    assert legacy.loaded is None and not legacy.complete
+    assert len(web.requested) == 2
+
+
+def test_measured_stack_timeout_is_not_a_cacheable_absence(monkeypatch):
+    _use_session(monkeypatch, _timed_out)
+    with pytest.raises(remote.IncompleteFetch):
+        remote.fetch_stack_snapshot(BASE, "ILD", "platform", "release", "Zbb", strict=True)
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize("truncated", [False, True])
+@pytest.mark.parametrize("missing", [
+    "run_info.json", "LCG_externals.txt.gz", "LCG_contrib.txt.gz", "machine_info.json",
+])
+def test_measured_stack_skips_partial_newest_run(monkeypatch, strict, truncated, missing):
+    from tests.unit.test_stack_capture import FIXTURES
+    root = f"{BASE}/ILD/platform/release/Zbb"
+    newest, older = f"{root}/2026-10-04", f"{root}/2026-10-03"
+    artifacts = {
+        "run_info.json": json.dumps({
+            "k4h_stack_capture": 1,
+            "k4h_loaded_packages": json.loads((FIXTURES / "loaded.json").read_text()),
+            "g4_datasets": {"G4LEDATA": "G4EMLOW8.8"},
+        }).encode(),
+        "machine_info.json": b'{"os": "AlmaLinux 9.8"}',
+        **{name: (FIXTURES / name).read_bytes()
+           for name in ("LCG_externals.txt.gz", "LCG_contrib.txt.gz")},
+    }
+    web = FakeWeb({
+        root: ["2026-10-03/", "2026-10-04/"],
+        **{f"{run}/{name}": content for run in (newest, older)
+           for name, content in artifacts.items()},
+    })
+
+    if truncated:
+        web.tree[f"{newest}/{missing}"] = artifacts[missing][: len(artifacts[missing]) // 2]
+
+    def get(url, timeout=None):
+        if url == f"{newest}/{missing}" and not truncated:
+            web.requested.append(url)
+            raise _http_error(url, 404)
+        return web.get(url, timeout)
+
+    _use_session(monkeypatch, get)
+    snapshot = remote.fetch_stack_snapshot(BASE, "ILD", "platform", "release", "Zbb", strict=strict)
+    assert snapshot is not None and snapshot.complete
+    assert "Geant4" in snapshot.loaded
+    assert snapshot.datasets == {"G4LEDATA": "G4EMLOW8.8"}
+    assert snapshot.os == "AlmaLinux 9.8"
+    assert web.requested[1] == f"{newest}/run_info.json"
+    assert web.requested.count(f"{root}/") == 1
+    assert all(f"{older}/{name}" in web.requested for name in artifacts)
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize("name", ["LCG_externals.txt.gz", "LCG_contrib.txt.gz"])
+@pytest.mark.parametrize("content", [
+    pytest.param(b"", id="empty-bytes"),
+    pytest.param(gzip.compress(b""), id="empty-manifest"),
+    pytest.param(b"not a gzip archive", id="bad-header"),
+    pytest.param(gzip.compress(b"x" * 64)[:10] + b"\xff" * 30, id="corrupt-payload"),
+])
+def test_measured_stack_skips_a_corrupt_or_empty_newest_manifest(monkeypatch, strict, name, content):
+    from tests.unit.test_stack_capture import FIXTURES
+    root = f"{BASE}/ILD/platform/release/Zbb"
+    newest, older = f"{root}/2026-10-04", f"{root}/2026-10-03"
+    artifacts = {
+        "run_info.json": json.dumps({
+            "k4h_stack_capture": 1,
+            "k4h_loaded_packages": json.loads((FIXTURES / "loaded.json").read_text()),
+        }).encode(),
+        "machine_info.json": b'{"os": "AlmaLinux 9.8"}',
+        **{manifest: (FIXTURES / manifest).read_bytes()
+           for manifest in ("LCG_externals.txt.gz", "LCG_contrib.txt.gz")},
+    }
+    web = FakeWeb({
+        root: ["2026-10-03/", "2026-10-04/"],
+        **{f"{run}/{artifact}": data for run in (newest, older)
+           for artifact, data in artifacts.items()},
+    })
+    web.tree[f"{newest}/{name}"] = content
+    _use_session(monkeypatch, web.get)
+    snapshot = remote.fetch_stack_snapshot(BASE, "ILD", "platform", "release", "Zbb", strict=strict)
+    assert snapshot is not None and snapshot.complete
+    assert snapshot.packages["Geant4"]["version"]
+    assert f"{older}/{name}" in web.requested
+
+
+@pytest.mark.parametrize("failure", ["timeout", "server_error"])
+def test_measured_stack_does_not_skip_transiently_unreadable_newest_run(monkeypatch, failure):
+    root = f"{BASE}/ILD/platform/release/Zbb"
+    newest = f"{root}/2026-10-04/run_info.json"
+    web = FakeWeb({root: ["2026-10-03/", "2026-10-04/"]})
+
+    def get(url, timeout=None):
+        if url == newest:
+            if failure == "timeout":
+                raise remote.requests.ReadTimeout(url)
+            raise _http_error(url, 503)
+        return web.get(url, timeout)
+
+    _use_session(monkeypatch, get)
+    with pytest.raises(remote.IncompleteFetch):
+        remote.fetch_stack_snapshot(BASE, "ILD", "platform", "release", "Zbb", strict=True)
+
+
+def test_other_scope_supplies_versions_without_claiming_loaded_packages(monkeypatch):
+    from tests.unit.test_stack_capture import FIXTURES
+    root = f"{BASE}/ILD/platform/release"
+    run = f"{root}/Zbb/2026-10-03"
+    web = FakeWeb({
+        root: ["Zbb/"], f"{root}/Zbb": ["2026-10-03/"],
+        f"{run}/run_info.json": json.dumps({
+            "k4h_stack_capture": 1,
+            "k4h_loaded_packages": {"Geant4": {"version": "11.4.3"}},
+            "g4_datasets": {"G4LEDATA": "G4EMLOW8.8"},
+        }).encode(),
+        f"{run}/machine_info.json": b'{"os":"AlmaLinux 9.8"}',
+        **{f"{run}/{name}": (FIXTURES / name).read_bytes()
+           for name in ("LCG_externals.txt.gz", "LCG_contrib.txt.gz")},
+    })
+    _use_session(monkeypatch, web.get)
+    snapshot = remote.fetch_stack_snapshot(BASE, "ILD", "platform", "release", None)
+    assert snapshot.complete and snapshot.packages["Geant4"]["version"] == "11.4.3"
+    assert snapshot.loaded is None and snapshot.datasets is None and snapshot.os is None

@@ -76,7 +76,10 @@ from k4bench.blame.llm import (
     one_line,
     parse_score,
 )
+from k4bench.blame.evidence import ExternalChange
+from k4bench.blame.summary import external_change_lines
 from k4bench.blame.prompt import (
+    EXTERNAL_CHANGE_RULE,
     ASSESSMENT_RULE,
     HISTORICAL_ANALOGUE_RULE,
     NOISE_RULE,
@@ -285,6 +288,7 @@ class AttributionRequest:
     regressions: tuple[RegressionFact, ...] = ()
     outcomes: tuple[ScopeOutcome, ...] = ()
     competitors: tuple[CompetingPR, ...] = ()
+    external_changes: tuple[ExternalChange, ...] = ()
     #: The release diff, kept **per build platform** rather than unioned.
     #: Provenance is recorded per platform, so two platforms can carry different
     #: package sets, different unchanged counts, and different statuses for the
@@ -639,9 +643,9 @@ def _system_prompt(request: AttributionRequest) -> str:
     Composed rather than constant so a review that carries no historical evidence
     is asked without the rule at all. A standing rule about material the prompt does not contain is at best noise and
     at worst an invitation to hunt for it."""
-    if not request.historical:
-        return _SYSTEM_PROMPT
-    return _SYSTEM_PROMPT + HISTORICAL_ANALOGUE_RULE
+    return (_SYSTEM_PROMPT
+            + (HISTORICAL_ANALOGUE_RULE if request.historical else "")
+            + (EXTERNAL_CHANGE_RULE if request.external_changes else ""))
 
 
 def attributor_from_env() -> Attributor | None:
@@ -1218,6 +1222,7 @@ def build_user_prompt(
         f"The pull request under review: {request.slug} — {request.title} ({size}).",
         "",
         *_summary_lines(request),
+        *external_change_lines(request.external_changes),
         "",
         "Details:",
         *_sweep_detail_lines(request),

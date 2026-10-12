@@ -56,7 +56,7 @@ _STACKS = {
 
 def _app(dashboard_dir, stack_names, packages, from_release, to_release,
          report_dates, reports_map, blame_map, query_params,
-         detector, sample, selected_stack):
+         detector, sample, selected_stack, snapshots=None):
     """The tab, rendered standalone with every remote call stubbed.
 
     ``AppTest.from_function`` re-executes this source in its own script
@@ -72,6 +72,7 @@ def _app(dashboard_dir, stack_names, packages, from_release, to_release,
 
     from tabs import stack_changes as _tab
 
+    _tab.cached_fetch_stack_snapshot = lambda url, detector, platform, stack, sample: (snapshots or {}).get(stack)
     _tab.cached_list_detectors = lambda url: ["IDEA"]
     _tab.list_platform_stacks = lambda url, platform: sorted(set(stack_names), reverse=True)
     _tab.cached_fetch_stack_packages = (
@@ -113,7 +114,7 @@ def _app(dashboard_dir, stack_names, packages, from_release, to_release,
 def _run(stack_names=None, packages=None, from_release=None, to_release=None,
          report_dates=(), reports_map=None, detector="CLD",
          sample="single_e", selected_stack=None, blame_map=None,
-         query_params=None) -> AppTest:
+         query_params=None, snapshots=None) -> AppTest:
     names = sorted(_STACKS, reverse=True) if stack_names is None else stack_names
     at = AppTest.from_function(
         _app,
@@ -130,6 +131,7 @@ def _run(stack_names=None, packages=None, from_release=None, to_release=None,
             detector,
             sample,
             selected_stack or names[0],
+            snapshots,
         ),
         default_timeout=30,
     )
@@ -379,7 +381,7 @@ def test_identical_consecutive_stacks_rule_out_an_upstream_boundary_change():
         report_dates=("2026-07-09",), reports_map={"2026-07-09": report},
     )
 
-    assert any("identical stack" in s.value for s in at.success)
+    assert any("tracked git commits are identical" in s.value for s in at.success)
     assert any(
         "rule out a tracked upstream package change at this boundary" in c.value
         for c in at.caption
@@ -681,7 +683,7 @@ def test_identical_releases_are_called_out_not_left_empty():
     # upstream commit out entirely, rather than showing an empty table.
     at = _run(from_release="2026-07-08", to_release="2026-07-09")
     body = " ".join(s.value for s in at.success)
-    assert "identical stack" in body and "moved for another reason" in body
+    assert "tracked git commits are identical" in body and "externals" in body
     assert not at.dataframe
 
 
@@ -1254,3 +1256,64 @@ def test_deep_link_carries_the_sample_when_given():
     assert q["sample"] == "single_e"
 
 
+
+
+def _snapshot_app(dashboard_dir, base, head):
+    import sys
+    if dashboard_dir not in sys.path:
+        sys.path.insert(0, dashboard_dir)
+    from tabs.stack_changes import _render_snapshot_diff
+    _render_snapshot_diff(base, head, "2026-10-02", "2026-10-03", "",
+                          scope="ddsim · ILD_FCCee_v02 · Z→bb")
+
+
+def test_measured_stack_app_loaded_first_context_collapsed_and_links_preserved():
+    from tests.unit.test_stack_capture import snapshots
+    base, head = snapshots()
+    at = AppTest.from_function(_snapshot_app, args=(str(_DASHBOARD_DIR), base, head)).run()
+    assert not at.exception
+    assert at.dataframe[0].value.iloc[0]["Package"] == "Geant4"
+    assert at.dataframe[0].value.iloc[0]["Compare"] == (
+        "https://gitlab.cern.ch/sft/stacks/lcgcmake/-/commits/e411040b8?search=Geant4"
+    )
+    assert "not loaded by this benchmark" in at.expander[0].label
+    assert not at.expander[0].proto.expanded
+    acts = at.expander[0].dataframe[0].value.set_index("Package").loc["acts"]
+    assert acts["Compare"] == "https://github.com/acts-project/acts/compare/80b66a5...6f2940a"
+    import json
+    assert json.loads(at.dataframe[0].proto.columns)["Compare"]["type_config"]["display_text"] == "↗ commits"
+    assert any("ILD_FCCee_v02 · Z→bb" in c.value for c in at.caption)
+
+
+def test_captured_endpoint_does_not_add_pins_to_legacy_commit_diff():
+    from k4bench.provenance.stack import StackSnapshot
+    from tests.unit.test_stack_capture import snapshots
+    base, head = snapshots()
+    base = StackSnapshot({n: p for n, p in base.packages.items() if p['version'] == 'HEAD'})
+    # The real Gaudi pin has an upstream REVISION, though old k4h_packages omits it.
+    assert head.packages['Gaudi']['commit']
+    captured = {'key4hep-2026-10-02': base, 'key4hep-2026-10-03': head}
+    at = _run(stack_names=sorted(captured, reverse=True), snapshots=captured)
+    names = set(at.dataframe[0].value['Package'])
+    assert 'acts' in names
+    assert not names & {'Gaudi', 'Geant4'}
+    assert any('Externals were not recorded for 2026-10-02' in c.value for c in at.caption)
+
+
+@pytest.mark.parametrize("unknown_endpoint", ["base", "head", "both", None])
+def test_stack_changes_distinguishes_unknown_loads_from_known_unloaded_changes(unknown_endpoint):
+    from dataclasses import replace
+    from tests.unit.test_stack_capture import snapshots
+    base, head = snapshots()
+    base = replace(base, loaded=None if unknown_endpoint in ("base", "both") else frozenset())
+    head = replace(head, loaded=None if unknown_endpoint in ("head", "both") else frozenset())
+    at = AppTest.from_function(_snapshot_app, args=(str(_DASHBOARD_DIR), base, head)).run()
+    assert not at.exception
+    messages = " ".join(i.value for i in at.info)
+    if unknown_endpoint:
+        assert "Load status is unknown" in messages
+        assert "No changes in packages known to be loaded" not in messages
+        assert "load status unknown" in at.expander[0].label
+    else:
+        assert "No changes in packages known to be loaded" in messages
+        assert "not loaded by this benchmark" in at.expander[0].label

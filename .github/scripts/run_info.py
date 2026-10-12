@@ -213,6 +213,11 @@ def write_run_info(output_dir: Path, job: Job, env: dict[str, str], *, date: str
         labels=configured_labels(job),
     )
     add_stack_provenance(run_info, env["K4H_STACK_SETUP"])
+    try:
+        from k4bench.provenance.stack import capture_stack
+        capture_stack(output_dir, run_info, env)
+    except Exception as exc:
+        print(f"WARNING: loaded stack provenance not recorded: {exc}")
 
     path = output_dir / RUN_INFO
     path.write_text(json.dumps(run_info, indent=2))

@@ -7,6 +7,18 @@ from pathlib import Path
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _loaded_paths_environment(env: dict[str, str], event_json_path: Path) -> None:
+    """Name and clear the private per-config provenance handoff."""
+    from k4bench.provenance.stack import loaded_paths_file
+
+    path = loaded_paths_file(event_json_path.parent, event_json_path.name.removesuffix("_events.json"))
+    try:
+        path.unlink(missing_ok=True)
+        env["K4BENCH_LOADED_PATHS"] = str(path.resolve())
+    except OSError:
+        env.pop("K4BENCH_LOADED_PATHS", None)
+
+
 # Plugin library filenames (glob patterns). Each tuple is
 # (env_var_name, library_pattern, friendly_name).
 _PLUGINS = (
@@ -138,11 +150,6 @@ def auditor_options_file() -> Path:
 
 def ensure_plugin_built() -> None:
     """Build the k4Bench plugins if needed."""
-    try:
-        find_plugin_lib_dir()
-        return
-    except FileNotFoundError:
-        pass
     _run_build_script("ddg4")
 
 
@@ -204,6 +211,7 @@ def setup_plugin_environment(
         False if ddsim should run without per-event timing.
     """
     try:
+        _loaded_paths_environment(env, event_json_path)
         ensure_plugin_built()
         lib_dir = str(find_plugin_lib_dir())
 
@@ -224,6 +232,7 @@ def setup_plugin_environment(
         RuntimeError,
         subprocess.SubprocessError,
     ) as exc:
+        env.pop("K4BENCH_LOADED_PATHS", None)
         print(
             f"NOTE: k4Bench timing plugins unavailable ({exc}); continuing "
             f"without per-event timing and without the virtual-peak and "
@@ -271,9 +280,11 @@ def setup_auditor_environment(
         run without per-component and per-event measurements.
     """
     try:
+        _loaded_paths_environment(env, event_json_path)
         ensure_auditor_built()
         plugin_dir = str(find_auditor_dir())
     except (FileNotFoundError, RuntimeError, subprocess.SubprocessError) as exc:
+        env.pop("K4BENCH_LOADED_PATHS", None)
         print(
             f"NOTE: k4Bench auditor unavailable ({exc}); continuing without "
             f"per-component and per-event measurements."

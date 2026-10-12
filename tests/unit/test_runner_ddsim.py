@@ -231,7 +231,10 @@ class TestVerboseReturncode:
 
     def _run(self, tmp_path: Path, verbose: bool):
         mock_proc = self._make_proc()
-        with patch("k4bench.runner.process.subprocess.Popen", return_value=mock_proc):
+        with (
+            patch("k4bench.runner.process.subprocess.Popen", return_value=mock_proc),
+            patch("k4bench.runner.ddsim.setup_plugin_environment", return_value=False),
+        ):
             return run_ddsim(
                 xml_path=XML,
                 label="test",

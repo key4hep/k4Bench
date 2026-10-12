@@ -499,6 +499,92 @@ def fetch_stack_packages(
     return None
 
 
+def fetch_stack_snapshot(
+    base_url: str, detector: str, platform: str, stack: str, sample: str | None,
+    *, strict: bool = False,
+):
+    """Latest available run's stack for one scope, skipping partial uploads.
+
+    Only captured runs need the two compressed manifests and machine snapshot.
+    A complete newest run costs one listing and four GETs.
+    Other detectors cannot stand in for this scope's measured loaded set.
+    """
+    import gzip
+    import zlib
+    from dataclasses import replace
+    from k4bench.provenance.stack import STACK_MANIFESTS, parse_manifest, stack_snapshot
+
+    def manifest(content: bytes) -> str:
+        # A corrupt or empty archive is a partial upload, not an empty stack.
+        try:
+            source = gzip.decompress(content).decode()
+        except (gzip.BadGzipFile, zlib.error) as exc:
+            raise ValueError(f"unreadable manifest: {exc}") from exc
+        if not parse_manifest(source):
+            raise ValueError("manifest lists no packages")
+        return source
+
+    root = run_url(base_url, detector, platform, stack, sample)
+    try:
+        if sample is None:
+            for candidate in sorted(_list_subdirs(root)):
+                snapshot = fetch_stack_snapshot(
+                    base_url, detector, platform, stack, candidate, strict=strict,
+                )
+                if snapshot is not None:
+                    # Another scope can supply the platform's package versions,
+                    # but cannot establish what this benchmark loaded or ran on.
+                    return replace(snapshot, loaded=None, datasets=None, os=None)
+            return None
+        dates = sorted(_list_subdirs(root), reverse=True)
+        for date in dates:
+            url = f"{root}/{date}"
+
+            def get(name):
+                response = _get_session().get(f"{url}/{name}", timeout=_TIMEOUT)
+                response.raise_for_status()
+                return response
+
+            try:
+                info = get(RUN_INFO).json()
+                if not info.get("k4h_packages") and not info.get("k4h_stack_capture"):
+                    continue
+                if not info.get("k4h_stack_capture"):
+                    return stack_snapshot(info, {})
+                manifests = [manifest(get(name).content) for name in STACK_MANIFESTS]
+                return stack_snapshot(info, get("machine_info.json").json(), manifests)
+            except (requests.RequestException, ValueError, EOFError) as exc:
+                # A truncated file is a partial upload too; requests' JSON
+                # decode error is a ValueError as well as a RequestException.
+                if not isinstance(exc, (ValueError, EOFError)) and not _is_absent(exc):
+                    raise
+                _log.debug("fetch_stack_snapshot: incomplete run %s — %s", url, exc)
+    except (requests.RequestException, ValueError, OSError, EOFError) as exc:
+        if strict and not (isinstance(exc, requests.RequestException) and _is_absent(exc)):
+            raise IncompleteFetch(None, [f"{root}: {exc}"]) from exc
+        _log.debug("fetch_stack_snapshot: %s — %s", root, exc)
+    return None
+
+
+def fetch_run_provenance(
+    base_url: str, detector: str, platform: str, stack: str, sample: str, run_id: str,
+):
+    """Only the small, run-specific loaded facts needed by blame (two GETs)."""
+    from k4bench.provenance.stack import stack_snapshot
+
+    info = fetch_run_info(base_url, detector, platform, stack, sample, run_id)
+    if not info or not info.get("k4h_stack_capture"):
+        return None
+    url = f"{run_url(base_url, detector, platform, stack, sample, run_id)}/machine_info.json"
+    try:
+        response = _get_session().get(url, timeout=_TIMEOUT)
+        response.raise_for_status()
+        machine = response.json()
+    except (requests.RequestException, ValueError):
+        machine = {}
+    return stack_snapshot(info, machine)
+
+
 def fetch_run_info(
     base_url: str, detector: str, platform: str, stack: str, sample: str,
     run_id: str,

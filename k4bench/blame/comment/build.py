@@ -523,6 +523,7 @@ def _attribution_request(
             for other, scope in _sorted_others(plan)[:MAX_COMPETITORS]
         ),
         packages_by_platform=plan.packages_by_platform,
+        external_changes=tuple(sorted(plan.external_changes)),
         unchanged_by_platform=dict(plan.unchanged),
         packages_unavailable_on=plan.packages_unavailable_on,
         platform_switches=tuple(sorted(plan.platform_switches)),

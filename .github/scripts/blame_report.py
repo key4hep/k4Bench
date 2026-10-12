@@ -160,6 +160,34 @@ def _make_k4bench_commit_for_run(roots: list[str], data_url: str | None):
     return k4bench_commit_for_run
 
 
+def _make_provenance_for_run(roots: list[str], data_url: str | None):
+    """Loaded environment of the verdict's exact run, without full manifests."""
+    from k4bench.provenance.stack import stack_snapshot
+
+    def provenance_for_run(detector, platform, release, sample, run_id):
+        if not release or not run_id:
+            return None
+        for root in roots:
+            directory = Path(root) / run_path(detector, platform, stack_dir(release), sample, run_id)
+            try:
+                info = json.loads((directory / RUN_INFO).read_text())
+            except (OSError, ValueError):
+                continue
+            if not info.get("k4h_stack_capture"):
+                return None
+            try:
+                machine = json.loads((directory / "machine_info.json").read_text())
+            except (OSError, ValueError):
+                machine = {}
+            return stack_snapshot(info, machine)
+        if data_url:
+            from k4bench.remote import fetch_run_provenance
+            return fetch_run_provenance(data_url, detector, platform, stack_dir(release), sample, run_id)
+        return None
+
+    return provenance_for_run
+
+
 def _historical_diffs(
     enabled: bool, env_name: str, *, ranking: bool, can_read: bool
 ) -> bool:
@@ -286,6 +314,7 @@ def main(argv: list[str] | None = None) -> int:
 
     blame = build_blame_report(
         report, packages_for_release=packages_for_release,
+        provenance_for_run=_make_provenance_for_run(roots, args.data_url),
         k4bench_commit_for_run=_make_k4bench_commit_for_run(roots, args.data_url),
         github=github,
         ranker=ranker,

@@ -182,6 +182,7 @@ namespace dd4hep
         writeArray(out, "event_rss_file_end_mb", m_rssFileEndValues, 3, 1.0 / 1024.0, /*last=*/true);
 
         out << "}\n";
+        k4bench::write_loaded_paths();
 
         printout(
             INFO,

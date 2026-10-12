@@ -222,6 +222,10 @@ def _facts_payload(
             ],
         },
     }
+    if plan.external_changes:
+        payload["external_changes"] = [
+            [c.scope, c.name, c.before, c.after, c.kind] for c in sorted(plan.external_changes)
+        ]
     return payload
 
 

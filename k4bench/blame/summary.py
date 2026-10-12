@@ -948,3 +948,13 @@ def representative(
                     if label == "baseline" and wanted(metric):
                         return label, metric, item
     return candidates[0]
+
+
+def external_change_lines(changes) -> list[str]:
+    """One short block of external facts, absent when the window has none."""
+    if not changes:
+        return []
+    return [
+        "", "Recorded external changes (loaded code / configured data / OS; not PR candidates):",
+        *(f"- {c.scope}: {c.name} {c.before} → {c.after}" for c in sorted(set(changes))),
+    ]

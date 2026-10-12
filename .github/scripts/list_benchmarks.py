@@ -60,22 +60,28 @@ TOOL_KEYS = {
 
 
 def _scalar(v) -> str:
-    if v is None:           return ""
-    if isinstance(v, bool): return str(v).lower()
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return str(v).lower()
     return str(v).strip()
 
 
 def _bool(v, key: str, loc: str) -> str:
-    if v is None:           return "false"
-    if isinstance(v, bool): return str(v).lower()
+    if v is None:
+        return "false"
+    if isinstance(v, bool):
+        return str(v).lower()
     if isinstance(v, str) and v.strip().lower() in ("true", "false"):
         return v.strip().lower()
     _die(f"{key} must be true or false, got {v!r} ({loc})")
 
 
 def _list(v) -> str:
-    if v is None:           return ""
-    if isinstance(v, list): return " ".join(str(x) for x in v)
+    if v is None:
+        return ""
+    if isinstance(v, list):
+        return " ".join(str(x) for x in v)
     return str(v).strip()
 
 
@@ -155,9 +161,12 @@ def expand(path: Path) -> list[dict]:
 
         loc = f"{path}::{name}"
         rec = {"config": config, "sample": name}
-        for k in SCALAR_KEYS: rec[k] = _scalar(merge(k))
-        for k in BOOL_KEYS:   rec[k] = _bool(merge(k), k, loc)
-        for k in LIST_KEYS:   rec[k] = _list(merge(k))
+        for k in SCALAR_KEYS:
+            rec[k] = _scalar(merge(k))
+        for k in BOOL_KEYS:
+            rec[k] = _bool(merge(k), k, loc)
+        for k in LIST_KEYS:
+            rec[k] = _list(merge(k))
         rec["tool"] = rec["tool"] or "ddsim"
         rec["variants"] = _variants(merge("variants"), loc)
         _check_tool_keys(rec, cfg, s, loc)

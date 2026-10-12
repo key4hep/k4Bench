@@ -4624,3 +4624,29 @@ def test_a_long_review_summary_is_cut_at_a_sentence_end():
     assert _sentences("short.", 200) == "short."
     # With no sentence end in reach, the plain clip still bounds it.
     assert _sentences("x" * 500, 200).endswith("…")
+
+
+def test_external_facts_reach_review_and_digest_without_becoming_targets():
+    from dataclasses import replace
+    from k4bench.blame.evidence import ExternalChange
+    from k4bench.blame.attribute import build_user_prompt, _system_prompt
+    from k4bench.blame.comment.build import _attribution_request
+    from k4bench.blame.comment.digest import _facts_payload
+    v = _verdict()
+    report = _report(v)
+    blame = _blame([v], [_candidate()])
+    original = _plans(report, blame)
+    fact = ExternalChange("ILD · Zbb", "Geant4", "11.4.2", "11.4.3", "pin")
+    updated = replace(blame, entries=tuple(replace(e, external_changes=(fact,)) for e in blame.entries))
+    plans = _plans(report, updated)
+    assert [(p.repo, p.number) for p in plans] == [(p.repo, p.number) for p in original]
+    old = _attribution_request(original[0], lambda *a: "", lambda *a: "")
+    new = _attribution_request(plans[0], lambda *a: "", lambda *a: "")
+    assert "Geant4 11.4.2 → 11.4.3" in build_user_prompt(new)
+    assert "re-roll" in _system_prompt(new)
+    assert "external_changes" not in _facts_payload(original[0], old, None)
+    assert _facts_payload(plans[0], new, None)["external_changes"]
+    absent = replace(old, external_changes=())
+    assert build_user_prompt(old) == build_user_prompt(absent)
+    assert _system_prompt(old) == _system_prompt(absent)
+    assert _comments(report, blame)[0] == _comments(report, replace(blame, entries=tuple(replace(e, external_changes=()) for e in blame.entries)))[0]

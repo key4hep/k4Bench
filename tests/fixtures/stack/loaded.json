@@ -1,0 +1,138 @@
+{
+  "Boost": {
+    "version": "1.92.0",
+    "githash": "c0a971ea5",
+    "install_path": "/cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Mon/Boost/1.92.0/x86_64-el9-gcc16-opt"
+  },
+  "DD4hep": {
+    "version": "HEAD",
+    "commit": "78ca69c",
+    "githash": "2200ffca6",
+    "install_path": "/cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Mon/DD4hep/HEAD/x86_64-el9-gcc16-opt"
+  },
+  "EDM4hep": {
+    "version": "HEAD",
+    "commit": "682d691",
+    "githash": "8691c8f46",
+    "install_path": "/cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Mon/EDM4hep/HEAD/x86_64-el9-gcc16-opt"
+  },
+  "Gaudi": {
+    "version": "v41r0",
+    "commit": "bdbe774",
+    "githash": "bb2068f90",
+    "install_path": "/cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Mon/Gaudi/v41r0/x86_64-el9-gcc16-opt"
+  },
+  "Geant4": {
+    "version": "11.4.3",
+    "githash": "e411040b8",
+    "install_path": "/cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Mon/Geant4/11.4.3/x86_64-el9-gcc16-opt"
+  },
+  "Python": {
+    "version": "3.13.11",
+    "githash": "d694bf890",
+    "install_path": "/cvmfs/sft.cern.ch/lcg/releases/Python/3.13.11-41c2c/x86_64-el9-gcc16-opt"
+  },
+  "ROOT": {
+    "version": "6.40.04",
+    "githash": "bb2068f90",
+    "install_path": "/cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Mon/ROOT/6.40.04/x86_64-el9-gcc16-opt"
+  },
+  "SIO": {
+    "version": "HEAD",
+    "commit": "53dd768",
+    "githash": "ad08c47e7",
+    "install_path": "/cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Mon/SIO/HEAD/x86_64-el9-gcc16-opt"
+  },
+  "XercesC": {
+    "version": "3.3.0",
+    "githash": "d694bf890",
+    "install_path": "/cvmfs/sft.cern.ch/lcg/releases/XercesC/3.3.0-ff50f/x86_64-el9-gcc16-opt"
+  },
+  "arrow": {
+    "version": "25.0.1",
+    "githash": "a41493f9c",
+    "install_path": "/cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Mon/arrow/25.0.1/x86_64-el9-gcc16-opt"
+  },
+  "assimp": {
+    "version": "6.0.5",
+    "githash": "4fb7fe98e",
+    "install_path": "/cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Mon/assimp/6.0.5/x86_64-el9-gcc16-opt"
+  },
+  "brotli": {
+    "version": "1.2.0",
+    "githash": "ad08c47e7",
+    "install_path": "/cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Mon/brotli/1.2.0/x86_64-el9-gcc16-opt"
+  },
+  "clhep": {
+    "version": "2.4.7.2",
+    "githash": "d694bf890",
+    "install_path": "/cvmfs/sft.cern.ch/lcg/releases/clhep/2.4.7.2-b5151/x86_64-el9-gcc16-opt"
+  },
+  "fmt": {
+    "version": "12.2.0",
+    "githash": "a315664a9",
+    "install_path": "/cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Mon/fmt/12.2.0/x86_64-el9-gcc16-opt"
+  },
+  "fontconfig": {
+    "version": "2.17.1",
+    "githash": "2c8fdd4ea",
+    "install_path": "/cvmfs/sft.cern.ch/lcg/releases/fontconfig/2.17.1-95a8a/x86_64-el9-gcc16-opt"
+  },
+  "freetype": {
+    "version": "2.14.3",
+    "githash": "2c8fdd4ea",
+    "install_path": "/cvmfs/sft.cern.ch/lcg/releases/freetype/2.14.3-21330/x86_64-el9-gcc16-opt"
+  },
+  "gcc": {
+    "version": "16.1.0",
+    "githash": "8ef9376e8",
+    "install_path": "/cvmfs/sft.cern.ch/lcg/releases/gcc/16.1.0-43042/x86_64-el9"
+  },
+  "hepmc3": {
+    "version": "3.3.1",
+    "githash": "bb2068f90",
+    "install_path": "/cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Mon/hepmc3/3.3.1/x86_64-el9-gcc16-opt"
+  },
+  "k4geo": {
+    "version": "HEAD",
+    "commit": "e1ba7bc",
+    "githash": "2200ffca6",
+    "install_path": "/cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Mon/k4geo/HEAD/x86_64-el9-gcc16-opt"
+  },
+  "libffi": {
+    "version": "3.4.2",
+    "githash": "d694bf890",
+    "install_path": "/cvmfs/sft.cern.ch/lcg/releases/libffi/3.4.2-a3607/x86_64-el9-gcc16-opt"
+  },
+  "pcre2": {
+    "version": "10.49",
+    "githash": "b7bdac982",
+    "install_path": "/cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Mon/pcre2/10.49/x86_64-el9-gcc16-opt"
+  },
+  "png": {
+    "version": "1.6.55",
+    "githash": "2c8fdd4ea",
+    "install_path": "/cvmfs/sft.cern.ch/lcg/releases/png/1.6.55-919fd/x86_64-el9-gcc16-opt"
+  },
+  "podio": {
+    "version": "HEAD",
+    "commit": "a80a6a1",
+    "githash": "8691c8f46",
+    "install_path": "/cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Mon/podio/HEAD/x86_64-el9-gcc16-opt"
+  },
+  "snappy": {
+    "version": "1.2.2",
+    "githash": "a41493f9c",
+    "install_path": "/cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Mon/snappy/1.2.2/x86_64-el9-gcc16-opt"
+  },
+  "tbb": {
+    "version": "2023.1.0",
+    "githash": "a315664a9",
+    "install_path": "/cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Mon/tbb/2023.1.0/x86_64-el9-gcc16-opt"
+  },
+  "vdt": {
+    "version": "0.4.4",
+    "githash": "4fb7fe98e",
+    "install_path": "/cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Mon/vdt/0.4.4/x86_64-el9-gcc16-opt"
+  }
+}

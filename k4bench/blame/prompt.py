@@ -155,6 +155,21 @@ NOISE_RULE = (
 #: The verdicts :data:`ASSESSMENT_RULE` allows, and the parsers accept.
 ASSESSMENT_VALUES = ("real_change", "likely_noise", "insufficient_evidence")
 
+#: Added only when the window contains measured external changes. An unchanged
+#: window keeps exactly the same model input and comment basis.
+EXTERNAL_CHANGE_RULE = (
+    "The recorded external changes are facts, never PR candidates. You may name "
+    "one as the explanation in step_assessment.reason and decline all PRs. A "
+    "simulation-library or physics-data version change can re-roll the long "
+    "events of a fixed-seed sample, moving configurations in opposite directions "
+    "while their typical event stays stable. When that recorded change explains "
+    "the pattern, assess it as real_change and name the version change; the "
+    "tail-only noise criterion alone does not make it likely_noise. Distinguish "
+    "a changed event sample from slower typical events. A version bump by itself "
+    "does not establish causality or implicate any bundled fix. Never score an "
+    "external change or recommend commenting on it. "
+)
+
 #: Asking for the judgement of the *movement* separately from the judgement of
 #: the candidates. Without a place to say "this step is noise", a model scoring
 #: candidates can only express it by scoring everything low — which reads

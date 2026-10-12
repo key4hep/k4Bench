@@ -41,7 +41,7 @@ import logging
 from collections.abc import Callable
 from datetime import datetime, timezone
 
-from k4bench.blame.evidence import history_from_verdict, outcomes_for_window
+from k4bench.blame.evidence import ExternalChange, external_changes, history_from_verdict, outcomes_for_window
 from k4bench.blame.geometry import benchmarked_geometry, detector_touches
 from k4bench.blame.github import (
     GitHubClient,
@@ -153,6 +153,7 @@ def build_blame_report(
     *,
     packages_for_release: PackagesForRelease,
     k4bench_commit_for_run: K4BenchCommitForRun | None = None,
+    provenance_for_run: Callable | None = None,
     github: GitHubClient | None = None,
     ranker: Ranker | None = None,
     generated_at: str | None = None,
@@ -178,6 +179,7 @@ def build_blame_report(
     night = _NightBlame(
         report,
         packages_for_release=_memoized(packages_for_release),
+        provenance_for_run=_memoized(provenance_for_run) if provenance_for_run else None,
         k4bench_commit_for_run=(
             _memoized(k4bench_commit_for_run)
             if k4bench_commit_for_run is not None else None
@@ -212,10 +214,13 @@ class _NightBlame:
         *,
         packages_for_release: PackagesForRelease,
         k4bench_commit_for_run: K4BenchCommitForRun | None,
+        provenance_for_run: Callable | None,
         github: GitHubClient | None,
         ranker: Ranker | None,
         historical_diffs: bool,
     ) -> None:
+        self.provenance_for_run = provenance_for_run
+        self.external_cache = {}
         self.report = report
         self.packages_for_release = packages_for_release
         self.k4bench_commit_for_run = k4bench_commit_for_run
@@ -547,7 +552,12 @@ class _NightBlame:
             # ``n_unchanged`` stays untouched too — it counts the *stack*, and
             # the harness is not one of its packages.
             changes = [*changes, harness]
-        if not changes:
+        if rank_group not in self.external_cache:
+            self.external_cache[rank_group] = _external_facts(
+                self.verdicts_by_rank_group[rank_group], self.provenance_for_run,
+            )
+        externals = self.external_cache[rank_group]
+        if not changes and not externals:
             # The releases differ but every tracked package is identical, and
             # the harness (if it could be read at all) did not move either.
             return None
@@ -586,6 +596,7 @@ class _NightBlame:
                 history=self.historical_index(group_verdicts, window),
                 sweeps=_sweeps(self.report, v, self.sweep_cache),
                 geometry=self.geometry,
+                externals=externals,
             )
             if result.rankings:
                 repos = [_apply_rankings(r, result.rankings) for r in repos]
@@ -614,6 +625,7 @@ class _NightBlame:
                 if count is not None
             },
             historical_evidence=historical,
+            external_changes=externals,
         )
 
 
@@ -963,6 +975,7 @@ def _rank_group(
     history: HistoricalIndex | None = None,
     sweeps: tuple[ScopeSweep, ...] = (),
     geometry: dict[str, str] | None = None,
+    externals: tuple[ExternalChange, ...] = (),
 ) -> RankResult:
     """The ranker's judgement of one rank group: a score per candidate, and its
     read of the step itself.
@@ -1013,7 +1026,7 @@ def _rank_group(
             ranker, verdicts, repos, texts,
             outcomes=outcomes, changed_count=changed_count,
             n_unchanged=n_unchanged, geometry_path=geometry_path,
-            history=history, sweeps=sweeps, geometry=geometry,
+            history=history, sweeps=sweeps, geometry=geometry, externals=externals,
         )
     return rank_cache[rank_group]
 
@@ -1031,6 +1044,7 @@ def _run_ranker(
     history: HistoricalIndex | None = None,
     sweeps: tuple[ScopeSweep, ...] = (),
     geometry: dict[str, str] | None = None,
+    externals: tuple[ExternalChange, ...] = (),
 ) -> RankResult:
     """One guarded rank call. Any exception degrades to an empty result and is
     cached as such, so a broken ranker is asked at most once per detector/
@@ -1041,9 +1055,9 @@ def _run_ranker(
             verdicts, repos, texts,
             outcomes=outcomes, changed_count=changed_count,
             n_unchanged=n_unchanged, geometry_path=geometry_path,
-            history=history, sweeps=sweeps, geometry=geometry,
+            history=history, sweeps=sweeps, geometry=geometry, externals=externals,
         )
-        if not request.candidates:
+        if not request.candidates and not request.external_changes:
             return RankResult()
         result = ranker.rank(request)
         _warn_if_miscalibrated(request, result)
@@ -1114,6 +1128,7 @@ def _rank_request(
     history: HistoricalIndex | None = None,
     sweeps: tuple[ScopeSweep, ...] = (),
     geometry: dict[str, str] | None = None,
+    externals: tuple[ExternalChange, ...] = (),
 ) -> RankRequest:
     """Assemble the ranker's input: every metric that stepped across the shared
     window with its own recent history, the configurations that measured the
@@ -1195,6 +1210,7 @@ def _rank_request(
         history=history,
         sweep=next((sweep for sweep in sweeps if sweep.scope == scope), None),
         window_sweeps=sweeps,
+        external_changes=externals,
     )
 
 
@@ -1252,3 +1268,20 @@ def _apply_rankings(
         for pr in repo.candidates
     )
     return dataclasses.replace(repo, candidates=candidates)
+
+
+def _external_facts(verdicts, lookup) -> tuple[ExternalChange, ...]:
+    if lookup is None:
+        return ()
+    facts = set()
+    for v in verdicts:
+        try:
+            base = lookup(v.base_detector, v.base_platform, v.last_accepted_run_date,
+                          v.sample, v.last_accepted_run_id)
+            head = lookup(v.onset_run_detector, v.onset_run_platform, v.onset_run_date,
+                          v.sample, v.onset_run_id)
+            facts.update(external_changes(base, head,
+                         scope=f"{v.detector} · {v.sample} · {v.platform}"))
+        except Exception:
+            _log.exception("blame: could not read loaded environment facts")
+    return tuple(sorted(facts))

@@ -27,6 +27,7 @@ from k4bench.blame.comment.state import (
 )
 from k4bench.blame.evidence import (
     ScopeOutcome,
+    ExternalChange,
     outcomes_for_window,
     steps_in_window,
 )
@@ -261,6 +262,8 @@ class CommentPlan:
     #: of each competing pull request, and which run scope judged it that way.
     others: dict[tuple[str, int], tuple[CandidatePR, str]] = field(default_factory=dict)
     outcomes: tuple[ScopeOutcome, ...] = ()
+    #: Loaded environment changes observed within this comment's window.
+    external_changes: set[ExternalChange] = field(default_factory=set)
     #: ``platform -> {(package, status): compare_url}`` — one release diff per
     #: platform, exactly as provenance recorded it.
     package_facts: dict[str, dict[tuple[str, str], str | None]] = field(
@@ -666,6 +669,7 @@ def _collect_window(confirmed: list[_Confirmed], plan: CommentPlan) -> None:
             # read ever produced.
             if (entry.base_release, entry.onset_release) == window:
                 _record_packages(plan, entry, platform)
+                plan.external_changes.update(entry.external_changes)
                 # Same window rule as the packages, and for the same reason: only
                 # an entry that examined *this* window read the historical
                 # evidence this comment's first-pass score rests on. An entry

@@ -59,7 +59,10 @@ from k4bench.blame.llm import (
     one_line,
     parse_score,
 )
+from k4bench.blame.evidence import ExternalChange
+from k4bench.blame.summary import external_change_lines
 from k4bench.blame.prompt import (
+    EXTERNAL_CHANGE_RULE,
     ASSESSMENT_RULE,
     HARNESS_PACKAGE_NOTE,
     HISTORICAL_ANALOGUE_RULE,
@@ -242,6 +245,7 @@ class RankRequest:
     #: included: what the other detectors a candidate reaches did, and what the
     #: rest of the suite did in the same window.
     window_sweeps: tuple[ScopeSweep, ...] = ()
+    external_changes: tuple[ExternalChange, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -418,7 +422,7 @@ class OpenAICompatRanker:
         before judging, and publishing the judgement it made *without* it would
         be publishing a score under an expectation the application refused.
         """
-        if not request.candidates:
+        if not request.candidates and not request.external_changes:
             return RankResult()
         index = request.history
         if index is None or not index:
@@ -617,7 +621,7 @@ class OpenAICompatRanker:
         return self.client.complete(
             _SYSTEM_PROMPT + (
                 HISTORICAL_ANALOGUE_RULE if evidence is not None else ""
-            ),
+            ) + (EXTERNAL_CHANGE_RULE if request.external_changes else ""),
             _build_user_prompt(
                 request, offer=offer, offer_omitted=offer_omitted, evidence=evidence,
             ),
@@ -926,6 +930,7 @@ def _build_user_prompt(
         *_context_lines(request),
         "",
         *_summary_lines(request),
+        *external_change_lines(request.external_changes),
         "",
         "Details:",
         *_detail_lines(request),
@@ -933,7 +938,8 @@ def _build_user_prompt(
         # The denominator bounds the search: whatever caused this is in the
         # packages that moved, or in something k4Bench does not track.
         f"{len(packages)} of {len(packages) + request.n_unchanged} tracked "
-        f"package(s) moved across this window; the rest stood still.",
+        + ("git-built package(s) moved across this window; external changes are listed above."
+         if request.external_changes else "package(s) moved across this window; the rest stood still."),
     ]
     if request.harness_repo:
         # Said whether or not any harness pull request survived as a candidate:
