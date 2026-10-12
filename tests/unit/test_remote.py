@@ -6,6 +6,7 @@ is a thin re-export shim kept for the dashboard's flat imports.
 
 from __future__ import annotations
 
+import gzip
 import json
 from pathlib import Path
 
@@ -828,6 +829,40 @@ def test_measured_stack_skips_partial_newest_run(monkeypatch, strict, truncated,
     assert web.requested[1] == f"{newest}/run_info.json"
     assert web.requested.count(f"{root}/") == 1
     assert all(f"{older}/{name}" in web.requested for name in artifacts)
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize("name", ["LCG_externals.txt.gz", "LCG_contrib.txt.gz"])
+@pytest.mark.parametrize("content", [
+    pytest.param(b"", id="empty-bytes"),
+    pytest.param(gzip.compress(b""), id="empty-manifest"),
+    pytest.param(b"not a gzip archive", id="bad-header"),
+    pytest.param(gzip.compress(b"x" * 64)[:10] + b"\xff" * 30, id="corrupt-payload"),
+])
+def test_measured_stack_skips_a_corrupt_or_empty_newest_manifest(monkeypatch, strict, name, content):
+    from tests.unit.test_stack_capture import FIXTURES
+    root = f"{BASE}/ILD/platform/release/Zbb"
+    newest, older = f"{root}/2026-10-04", f"{root}/2026-10-03"
+    artifacts = {
+        "run_info.json": json.dumps({
+            "k4h_stack_capture": 1,
+            "k4h_loaded_packages": json.loads((FIXTURES / "loaded.json").read_text()),
+        }).encode(),
+        "machine_info.json": b'{"os": "AlmaLinux 9.8"}',
+        **{manifest: (FIXTURES / manifest).read_bytes()
+           for manifest in ("LCG_externals.txt.gz", "LCG_contrib.txt.gz")},
+    }
+    web = FakeWeb({
+        root: ["2026-10-03/", "2026-10-04/"],
+        **{f"{run}/{artifact}": data for run in (newest, older)
+           for artifact, data in artifacts.items()},
+    })
+    web.tree[f"{newest}/{name}"] = content
+    _use_session(monkeypatch, web.get)
+    snapshot = remote.fetch_stack_snapshot(BASE, "ILD", "platform", "release", "Zbb", strict=strict)
+    assert snapshot is not None and snapshot.complete
+    assert snapshot.packages["Geant4"]["version"]
+    assert f"{older}/{name}" in web.requested
 
 
 @pytest.mark.parametrize("failure", ["timeout", "server_error"])

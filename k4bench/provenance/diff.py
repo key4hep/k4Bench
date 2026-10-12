@@ -46,11 +46,19 @@ class PackageChange:
 
     @property
     def base_value(self) -> str | None:
-        return self.base_commit if self.kind == "head" else self.base_version
+        return self._value(self.base_version, self.base_commit)
 
     @property
     def head_value(self) -> str | None:
-        return self.head_commit if self.kind == "head" else self.head_version
+        return self._value(self.head_version, self.head_commit)
+
+    def _value(self, version: str | None, commit: str | None) -> str | None:
+        if self.kind == "head":
+            return commit
+        # An unchanged pin only appears because its upstream revision moved.
+        if self.kind == "pin" and commit and self.base_version == self.head_version:
+            return f"{version} ({commit[:12]})"
+        return version
 
     @property
     def status(self) -> str:
@@ -100,14 +108,15 @@ def _same_commit(a: str | None, b: str | None) -> bool:
 
 
 def _code_changed(before: dict, after: dict) -> bool | None:
-    """Compare versions and HEAD revisions; None means a revision is missing."""
+    """Compare versions and revisions; None means a HEAD revision is missing.
+
+    A pin's recorded upstream revision still counts when both sides have one,
+    so a same-version rebuild from different code is not a hash-only rebuild."""
     if before.get("version") != after.get("version"):
         return True
-    if before.get("version") != "HEAD":
-        return False
     base_commit, head_commit = before.get("commit"), after.get("commit")
     if not base_commit or not head_commit:
-        return None
+        return None if before.get("version") == "HEAD" else False
     return not _same_commit(base_commit, head_commit)
 
 

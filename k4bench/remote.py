@@ -510,8 +510,19 @@ def fetch_stack_snapshot(
     Other detectors cannot stand in for this scope's measured loaded set.
     """
     import gzip
+    import zlib
     from dataclasses import replace
-    from k4bench.provenance.stack import STACK_MANIFESTS, stack_snapshot
+    from k4bench.provenance.stack import STACK_MANIFESTS, parse_manifest, stack_snapshot
+
+    def manifest(content: bytes) -> str:
+        # A corrupt or empty archive is a partial upload, not an empty stack.
+        try:
+            source = gzip.decompress(content).decode()
+        except (gzip.BadGzipFile, zlib.error) as exc:
+            raise ValueError(f"unreadable manifest: {exc}") from exc
+        if not parse_manifest(source):
+            raise ValueError("manifest lists no packages")
+        return source
 
     root = run_url(base_url, detector, platform, stack, sample)
     try:
@@ -540,7 +551,7 @@ def fetch_stack_snapshot(
                     continue
                 if not info.get("k4h_stack_capture"):
                     return stack_snapshot(info, {})
-                manifests = [gzip.decompress(get(name).content).decode() for name in STACK_MANIFESTS]
+                manifests = [manifest(get(name).content) for name in STACK_MANIFESTS]
                 return stack_snapshot(info, get("machine_info.json").json(), manifests)
             except (requests.RequestException, ValueError, EOFError) as exc:
                 # A truncated file is a partial upload too; requests' JSON

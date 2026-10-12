@@ -175,6 +175,19 @@ def test_rebuild_count_distinguishes_same_code_from_a_version_or_commit_change(n
     assert hash_only_rebuilds(base, rebuilt) == 0
 
 
+def test_pinned_version_with_changed_upstream_revision_is_a_code_change():
+    base, _ = snapshots()
+    before = {n: dict(p) for n, p in base.packages.items()}
+    before["Geant4"]["commit"] = "aaaaaaa"
+    after = {n: dict(p) for n, p in before.items()}
+    after["Geant4"].update(commit="bbbbbbb", hash=before["Geant4"]["hash"] + "-rebuilt")
+    base, head = replace(base, packages=before), replace(base, packages=after)
+    change, = diff_stacks(base, head)
+    assert (change.name, change.kind, change.status) == ("Geant4", "pin", "changed")
+    assert (change.base_value, change.head_value) == ("11.4.2 (aaaaaaa)", "11.4.2 (bbbbbbb)")
+    assert hash_only_rebuilds(base, head) == 0
+
+
 @pytest.mark.parametrize("added", [True, False])
 def test_head_package_presence_is_known_without_its_revision(added):
     base, _ = snapshots()
