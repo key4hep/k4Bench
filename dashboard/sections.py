@@ -98,7 +98,7 @@ class SectionScope:
 #: second copy in the chrome line would either duplicate it or — on the tabs
 #: whose sub-views switch between the latest run and the trend window — contradict
 #: it. Run Trends and Machine Info print a "Data range"; Overview prints "Latest
-#: night · trend window" and, off the newest night, "Historical view · report
+#: night · Data range" and, off the newest night, "Historical view · report
 #: night"; Regressions prints the night on its picker and blame cards; Logs
 #: prints the run's release, date and commit. The sidebar itself captions the
 #: trend window. So the note carries the hierarchy and nothing else.

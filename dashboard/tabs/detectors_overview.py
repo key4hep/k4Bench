@@ -584,7 +584,7 @@ def render(
     (``None`` only when the store has no release yet) — in that case
     :func:`nights_in_window` falls back to the latest
     :data:`_FALLBACK_NIGHTS`. It carries no detector scope: on this tab it
-    ranges over every release benchmarked on the platform (see
+    ranges over every reported release benchmarked on the platform (see
     ``sidebar.pick_trend_window``), so the range this tab draws stays put
     when the sidebar detector changes rather than shrinking to that detector's
     releases and dropping the more recently benchmarked detectors off the
@@ -892,12 +892,18 @@ def _render_trends(inputs: OverviewInputs, choice: _FigureChoice) -> None:
         ]))
         return
     st.plotly_chart(fig, width="stretch", key="det_ov_hist_chart")
-    nights = inputs.window_nights
+    # The span of the x-axis, in nightly tags like Run Trends' "Data range" —
+    # not of the report nights read, which run past the newest tag whenever a
+    # night re-ran it.
+    drawn = pd.concat([hist_shown, failed_shown], ignore_index=True)
+    tags = sorted(drawn.loc[
+        drawn["metric"].isin((choice.time_metric, choice.mem_metric)), "night"
+    ].unique())
     span = (
-        f"Latest night: **{inputs.latest_night}** · trend window: "
-        f"**{nights[-1]}** → **{nights[0]}** "
-        f"({len(nights)} night{'s' if len(nights) != 1 else ''})."
-        if nights else f"Latest night: **{inputs.latest_night}**."
+        f"Latest night: **{inputs.latest_night}** · Data range: "
+        f"**{tags[0]}** → **{tags[-1]}** "
+        f"({len(tags)} nightly tag{'s' if len(tags) != 1 else ''})."
+        if tags else f"Latest night: **{inputs.latest_night}**."
     )
     st.caption(" ".join([span, *notes]))
 

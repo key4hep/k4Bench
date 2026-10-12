@@ -131,7 +131,10 @@ def _window_app(dashboard_dir, run_dates, report_nights, platform_stacks, across
         return [*st.session_state.get("new_stacks", []), *platform_stacks]
 
     sidebar.cached_list_run_dates = lambda url, det, plat, sample: run_dates
-    sidebar.cached_list_report_dates = lambda url: report_nights
+    # A test lands a report mid-session through "new_nights".
+    sidebar.cached_list_report_dates = (
+        lambda url: [*report_nights, *st.session_state.get("new_nights", [])]
+    )
     sidebar.list_platform_stacks = _platform_stacks
     sidebar.cached_fetch_runs_windowed = (
         lambda url, det, plat, sample, cache, items: tuple(
@@ -188,25 +191,26 @@ def _run_window(
 
 
 def test_across_detectors_the_window_opens_on_the_platforms_last_10_releases():
-    # 10-12 was uploaded ahead of its report: it is added on top of the ten
-    # releases counted back from the newest report night, so the window
-    # reaches it without dropping 09-22.
     at = _run_window(NEW_DETECTOR_RUNS)
     window = at.session_state["window"]
+    # 10-12 was uploaded ahead of its report, so the Overview has nothing of
+    # it to draw yet: it is not offered, even though this detector ran it.
     assert at.select_slider[0].options == [
-        p.removeprefix("key4hep-") for p in reversed(PLATFORM_STACKS)
+        p.removeprefix("key4hep-") for p in reversed(PLATFORM_STACKS[1:])
     ]
-    assert at.select_slider[0].value == (_rel("09-22"), _rel("10-12"))
-    assert window.dates == (date(2026, 9, 22), date(2026, 10, 12))
+    assert at.select_slider[0].value == (_rel("09-22"), _rel("10-10"))
+    # The 10-10 release was re-run on the newest report night.
+    assert window.dates == (date(2026, 9, 22), date(2026, 10, 11))
     # The window is not part of the deep link.
     assert _query(at) == {}
     # The selected detector's runs are no part of what the Overview draws.
-    assert at.caption[0].value == "2026-09-22 → 2026-10-12 · 11 release(s)"
+    assert at.caption[0].value == "2026-09-22 → 2026-10-10 · 10 release(s)"
 
 
 def test_for_one_detector_the_window_ranges_over_its_own_releases():
     # The new detector's three releases are the whole slider, so no range can
     # reach back past its history and show the same runs as a shorter one.
+    # 10-12 is offered although no report has judged it: its run is plotted.
     at = _run_window(NEW_DETECTOR_RUNS, platform_stacks=None, across=False)
     slider = at.select_slider[0]
     assert slider.options == ["2026-10-08", "2026-10-10", "2026-10-12"]
@@ -258,13 +262,17 @@ def test_across_detectors_a_picked_range_survives_switching_detector():
     assert at.session_state["window"].dates == (date(2026, 9, 24), date(2026, 9, 29))
 
 
-def test_a_new_release_reopens_the_window_on_the_newest_releases():
+def test_across_detectors_a_new_report_reopens_the_window_on_the_newest_releases():
     # A range picked yesterday would otherwise stop short of tonight's release.
     at = _run_window(LONG_RUNS)
     at.select_slider[0].set_value((_rel("09-24"), _rel("09-28"))).run()
     at.session_state["new_stacks"] = [_rel("10-14")]
     at.run()
-    assert at.select_slider[0].value == (_rel("09-22"), _rel("10-14"))
+    # Uploaded but not yet reported: nothing changes.
+    assert at.select_slider[0].value == (_rel("09-24"), _rel("09-28"))
+    at.session_state["new_nights"] = ["2026-10-14"]
+    at.run()
+    assert at.select_slider[0].value == (_rel("09-26"), _rel("10-14"))
 
 
 def test_changing_scope_reopens_the_window_on_the_newest_releases():

@@ -158,7 +158,9 @@ def test_default_view_renders_the_trends_figure_and_controls():
     assert at.segmented_control(key="det_ov_exclude_unreliable").value == "Reliable only"
     captions = "\n".join(str(c.value) for c in at.caption)
     assert "Latest night: **2026-07-11**" in captions
-    assert "**2026-07-09** → **2026-07-11** (3 nights)" in captions
+    # The x-axis span in nightly tags, not the three report nights read: one
+    # of them re-ran a tag.
+    assert "Data range: **2026-07-09** → **2026-07-11** (2 nightly tags)." in captions
     # The selected comparison is deep-linkable (AppTest stores param values
     # as lists).
     assert at.query_params["tmetric"] == ["mean_time_s"]

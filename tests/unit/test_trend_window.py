@@ -1,5 +1,5 @@
-"""Unit tests for ``dashboard/trend_window.py``: the release range the window
-opens on, the report nights that judged a range, and the run listing cut to
+"""Unit tests for ``dashboard/trend_window.py``: the releases a report can
+have judged, the report nights that judged a range, and the run listing cut to
 it.
 
 ``trend_window`` is a pure, Streamlit-free module, so it is loaded in isolation
@@ -51,39 +51,22 @@ def test_release_day_reads_the_tag_date():
     assert tw.release_day("key4hep-latest") is None
 
 
-# ── default_releases ─────────────────────────────────────────────────────────
+# ── reported_releases ────────────────────────────────────────────────────────
 
-def test_the_window_opens_on_the_newest_ten_releases():
-    assert tw.default_releases(_RELEASES, None) == _RELEASES[-10:]
-    assert tw.default_releases(_RELEASES, None, count=5) == _RELEASES[-5:]
-
-
-def test_a_history_shorter_than_the_count_opens_on_all_of_it():
-    assert tw.default_releases(_RELEASES, None, count=50) == _RELEASES
-    one = [_rel("10-05")]
-    assert tw.default_releases(one, None) == one
-
-
-def test_a_release_ahead_of_the_newest_report_is_added_on_top():
-    """A release tonight's batch is still uploading has no report yet. Counting
-    it would push the oldest release out of the window until the report lands,
-    taking the Overview's oldest night with it; it is added on top instead."""
+def test_a_release_ahead_of_the_newest_report_is_left_out():
+    """A release tonight's batch is still uploading has no report yet, so the
+    reports have nothing of it to draw."""
     uploading = [*_RELEASES, _rel("10-06")]
-    newest_report = date(2026, 10, 5)
-    assert tw.default_releases(uploading, newest_report, count=5) == [
-        *_RELEASES[-5:], _rel("10-06"),
-    ]
+    assert tw.reported_releases(uploading, date(2026, 10, 5)) == _RELEASES
 
 
-def test_an_anchor_on_a_rerun_night_counts_the_release_it_reran():
-    # The 10-04 report re-ran the 10-03 release: 10-05 has no report yet.
-    assert tw.default_releases(
-        _RELEASES, date(2026, 10, 4), count=5,
-    ) == _RELEASES[-6:]
+def test_a_release_re_run_on_the_newest_report_night_is_kept():
+    # The 10-04 report re-ran the 10-03 release; 10-05 has no report yet.
+    assert tw.reported_releases(_RELEASES, date(2026, 10, 4)) == _RELEASES[:-1]
 
 
-def test_an_anchor_past_every_release_counts_from_the_newest():
-    assert tw.default_releases(_RELEASES, date(2027, 1, 1), count=5) == _RELEASES[-5:]
+def test_a_report_past_every_release_keeps_them_all():
+    assert tw.reported_releases(_RELEASES, date(2027, 1, 1)) == _RELEASES
 
 
 # ── releases_between ─────────────────────────────────────────────────────────

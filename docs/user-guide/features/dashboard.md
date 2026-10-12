@@ -161,13 +161,14 @@ added one was picked, and detectors that had run for longer would silently lose
 their history from its charts. On every other tab it is the releases the
 **selected detector** was benchmarked with, so after a detector version bump the
 slider holds only the new version's releases rather than a range it has no runs
-in. The slider opens on the **10 newest releases**, counted from the newest
-nightly *report* night; a release that tonight's batch is still uploading is
-added on top, so it can open on 11 until the report lands. When a new release
-is published, a report lands, or the tab or detector changes what it ranges
-over, it reopens on the newest releases rather than staying on a range picked
-for something else. The window is not part of the page URL. (Its resolution
-lives in [`trend_window`](../../reference/api/analysis/index.md) — pure logic,
+in. The slider opens on the **10 newest releases**. On the Overview a release
+is offered once a nightly report has judged it: the Overview draws the reports,
+so a release tonight's batch is still uploading has nothing to show there
+until its report lands. On the other tabs it is offered as soon as the selected
+detector's run is uploaded. When a new release becomes available, or the tab or
+detector changes what the slider ranges over, it reopens on the newest releases
+rather than staying on a range picked for something else. The window is not
+part of the page URL. (Its resolution lives in [`trend_window`](../../reference/api/analysis/index.md) — pure logic,
 unit-tested.)
 
 Nights the nightly regression detector **confirmed** a step are ringed in red
