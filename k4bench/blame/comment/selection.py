@@ -262,9 +262,10 @@ class CommentPlan:
     #: of each competing pull request, and which run scope judged it that way.
     others: dict[tuple[str, int], tuple[CandidatePR, str]] = field(default_factory=dict)
     outcomes: tuple[ScopeOutcome, ...] = ()
+    #: Loaded environment changes observed within this comment's window.
+    external_changes: set[ExternalChange] = field(default_factory=set)
     #: ``platform -> {(package, status): compare_url}`` — one release diff per
     #: platform, exactly as provenance recorded it.
-    external_changes: set[ExternalChange] = field(default_factory=set)
     package_facts: dict[str, dict[tuple[str, str], str | None]] = field(
         default_factory=dict
     )

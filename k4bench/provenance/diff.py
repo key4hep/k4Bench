@@ -6,10 +6,8 @@ benchmark sources the newest one available, so several consecutive run dates
 routinely share one identical stack. Comparing run dates would invent changes
 that never happened.
 
-That makes the *empty* diff as informative as a full one. Two nights that share
-a stack cannot differ by an upstream commit, so a metric that stepped between
-them moved for some other reason — the host, the sample, or noise. Callers are
-expected to say so rather than present an empty list as "nothing found".
+An empty diff means no recorded changes. Callers distinguish complete captures
+from missing provenance before claiming that the endpoint stacks are identical.
 """
 
 from __future__ import annotations
@@ -31,8 +29,8 @@ CHANGED = "changed"
 class PackageChange:
     """One package's difference between two stacks.
 
-    ``base_commit`` is ``None`` for a package that appeared, ``head_commit`` is
-    ``None`` for one that went away; both are set when it simply moved.
+    A recorded version or commit establishes presence at an endpoint. HEAD
+    revisions can be unknown even when a manifest records the package.
     """
 
     name: str
@@ -56,15 +54,9 @@ class PackageChange:
 
     @property
     def status(self) -> str:
-        if self.base_version is not None or self.head_version is not None:
-            if self.base_version is None:
-                return ADDED
-            if self.head_version is None:
-                return REMOVED
-            return CHANGED
-        if self.base_value is None:
+        if self.base_version is None and self.base_commit is None:
             return ADDED
-        if self.head_value is None:
+        if self.head_version is None and self.head_commit is None:
             return REMOVED
         return CHANGED
 
@@ -107,6 +99,18 @@ def _same_commit(a: str | None, b: str | None) -> bool:
     return a.startswith(b) or b.startswith(a)
 
 
+def _code_changed(before: dict, after: dict) -> bool | None:
+    """Compare versions and HEAD revisions; None means a revision is missing."""
+    if before.get("version") != after.get("version"):
+        return True
+    if before.get("version") != "HEAD":
+        return False
+    base_commit, head_commit = before.get("commit"), after.get("commit")
+    if not base_commit or not head_commit:
+        return None
+    return not _same_commit(base_commit, head_commit)
+
+
 def _paired(base: dict, head: dict) -> list[tuple[str, dict | None, dict | None]]:
     """``(name, base entry, head entry)`` per package across both maps, matched
     on :func:`_package_key` and named as the head spells it."""
@@ -127,7 +131,7 @@ def diff_packages(base: dict, head: dict) -> list[PackageChange]:
 
     Changed packages come first (they are what a regression hunt is looking
     for), then added, then removed; alphabetical within each group. An empty
-    result means the two stacks are identical — see the module docstring.
+    result means the tracked git commits are identical.
     """
     changes: list[PackageChange] = []
     for name, before, after in _paired(base, head):
@@ -167,30 +171,24 @@ def diff_stacks(base: StackSnapshot, head: StackSnapshot) -> list[PackageChange]
     Loaded means observed at either endpoint in this benchmark scope. If either
     capture is absent, an unobserved package's load status remains unknown.
     """
-    loaded = {_package_key(n) for n in (base.loaded or frozenset()) | (head.loaded or frozenset())}
-    complete_loads = base.loaded is not None and head.loaded is not None
+    loaded_names = (base.loaded or frozenset()) | (head.loaded or frozenset())
+    loaded = {_package_key(name) for name in loaded_names}
+    unobserved = False if base.loaded is not None and head.loaded is not None else None
     changes = []
     for name, before, after in _paired(base.packages, head.packages):
-        b, h = before or {}, after or {}
-        is_head = b.get("version") == "HEAD" or h.get("version") == "HEAD"
         if before is not None and after is not None:
-            if is_head and b.get("version") == h.get("version") and not (
-                b.get("commit") and h.get("commit")
-            ):
-                continue
-            if b.get("version") == h.get("version") and (
-                not is_head or _same_commit(b.get("commit"), h.get("commit"))
-            ):
+            if _code_changed(before, after) is not True:
                 continue
         # A HEAD/pin transition is represented by versions and any known commit.
-        kind = "head" if is_head and all(p.get("version") == "HEAD" for p in (b, h) if p) else "pin"
+        versions = {p.get("version") for p in (before, after) if p is not None}
+        b, h = before or {}, after or {}
         changes.append(PackageChange(
-            name, b.get("commit"), h.get("commit"),
+            name=name, base_commit=b.get("commit"), head_commit=h.get("commit"),
             version=h.get("version", b.get("version", "")),
             repo_url=h.get("repo_url") or b.get("repo_url"),
             base_version=b.get("version"), head_version=h.get("version"),
-            head_githash=h.get("githash"), kind=kind,
-            loaded=True if _package_key(name) in loaded else False if complete_loads else None,
+            head_githash=h.get("githash"), kind="head" if versions == {"HEAD"} else "pin",
+            loaded=True if _package_key(name) in loaded else unobserved,
         ))
     if base.datasets is not None and head.datasets is not None:
         for name in sorted(base.datasets.keys() | head.datasets.keys()):
@@ -198,7 +196,7 @@ def diff_stacks(base: StackSnapshot, head: StackSnapshot) -> list[PackageChange]
             if before != after:
                 changes.append(PackageChange(
                     name, None, None, base_version=before, head_version=after, kind="dataset",
-                    loaded=True if "geant4" in loaded else False if complete_loads else None,
+                    loaded=True if "geant4" in loaded else unobserved,
                 ))
     if base.os and head.os and base.os != head.os:
         changes.append(PackageChange(
@@ -209,10 +207,14 @@ def diff_stacks(base: StackSnapshot, head: StackSnapshot) -> list[PackageChange]
 
 
 def hash_only_rebuilds(base: StackSnapshot, head: StackSnapshot) -> int:
-    changed = {_package_key(c.name) for c in diff_stacks(base, head)}
-    return sum(
-        b is not None and h is not None and _package_key(name) not in changed
-        and (b.get("version") != "HEAD" or bool(b.get("commit") and h.get("commit")))
-        and bool(b.get("hash") and h.get("hash") and b["hash"] != h["hash"])
-        for name, b, h in _paired(base.packages, head.packages)
-    )
+    """Count changed build hashes only when the recorded code stayed the same."""
+    count = 0
+    for _, before, after in _paired(base.packages, head.packages):
+        if before is None or after is None:
+            continue
+        base_hash, head_hash = before.get("hash"), after.get("hash")
+        if not base_hash or not head_hash or base_hash == head_hash:
+            continue
+        if _code_changed(before, after) is False:
+            count += 1
+    return count

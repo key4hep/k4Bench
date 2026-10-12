@@ -25,7 +25,6 @@ from collections.abc import Mapping, Sequence
 from k4bench.blame.evidence import MetricHistory
 from k4bench.blame.geometry import DetectorTouch, FileChange, geometry_tree
 from k4bench.blame.prompt import host_sentences, pct_phrase
-
 from k4bench.blame.sweep import (
     ELSEWHERE,
     FAILED,

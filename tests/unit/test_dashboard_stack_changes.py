@@ -1298,3 +1298,22 @@ def test_captured_endpoint_does_not_add_pins_to_legacy_commit_diff():
     assert 'acts' in names
     assert not names & {'Gaudi', 'Geant4'}
     assert any('Externals were not recorded for 2026-10-02' in c.value for c in at.caption)
+
+
+@pytest.mark.parametrize("unknown_endpoint", ["base", "head", "both", None])
+def test_stack_changes_distinguishes_unknown_loads_from_known_unloaded_changes(unknown_endpoint):
+    from dataclasses import replace
+    from tests.unit.test_stack_capture import snapshots
+    base, head = snapshots()
+    base = replace(base, loaded=None if unknown_endpoint in ("base", "both") else frozenset())
+    head = replace(head, loaded=None if unknown_endpoint in ("head", "both") else frozenset())
+    at = AppTest.from_function(_snapshot_app, args=(str(_DASHBOARD_DIR), base, head)).run()
+    assert not at.exception
+    messages = " ".join(i.value for i in at.info)
+    if unknown_endpoint:
+        assert "Load status is unknown" in messages
+        assert "No changes in packages known to be loaded" not in messages
+        assert "load status unknown" in at.expander[0].label
+    else:
+        assert "No changes in packages known to be loaded" in messages
+        assert "not loaded by this benchmark" in at.expander[0].label

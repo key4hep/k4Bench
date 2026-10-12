@@ -503,9 +503,10 @@ def fetch_stack_snapshot(
     base_url: str, detector: str, platform: str, stack: str, sample: str | None,
     *, strict: bool = False,
 ):
-    """Latest run's stack for one scope: one listing and at most four GETs.
+    """Latest available run's stack for one scope, skipping partial uploads.
 
     Only captured runs need the two compressed manifests and machine snapshot.
+    A complete newest run costs one listing and four GETs.
     Other detectors cannot stand in for this scope's measured loaded set.
     """
     import gzip
@@ -533,13 +534,18 @@ def fetch_stack_snapshot(
                 response.raise_for_status()
                 return response
 
-            info = get(RUN_INFO).json()
-            if not info.get("k4h_packages") and not info.get("k4h_stack_capture"):
-                continue
-            if not info.get("k4h_stack_capture"):
-                return stack_snapshot(info, {})
-            manifests = [gzip.decompress(get(name).content).decode() for name in STACK_MANIFESTS]
-            return stack_snapshot(info, get("machine_info.json").json(), manifests)
+            try:
+                info = get(RUN_INFO).json()
+                if not info.get("k4h_packages") and not info.get("k4h_stack_capture"):
+                    continue
+                if not info.get("k4h_stack_capture"):
+                    return stack_snapshot(info, {})
+                manifests = [gzip.decompress(get(name).content).decode() for name in STACK_MANIFESTS]
+                return stack_snapshot(info, get("machine_info.json").json(), manifests)
+            except requests.RequestException as exc:
+                if not _is_absent(exc):
+                    raise
+                _log.debug("fetch_stack_snapshot: incomplete run %s — %s", url, exc)
     except (requests.RequestException, ValueError, OSError, EOFError) as exc:
         if strict and not (isinstance(exc, requests.RequestException) and _is_absent(exc)):
             raise IncompleteFetch(None, [f"{root}: {exc}"]) from exc

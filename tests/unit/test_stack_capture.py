@@ -159,3 +159,31 @@ def test_unloaded_pinned_version_has_no_history_link():
     head = replace(head, loaded=frozenset())
     geant4 = next(c for c in diff_stacks(base, head) if c.name == "Geant4")
     assert geant4.compare_url is None
+
+
+@pytest.mark.parametrize("name", ["Geant4", "acts"])
+def test_rebuild_count_distinguishes_same_code_from_a_version_or_commit_change(name):
+    base, changed = snapshots()
+    packages = {n: dict(p) for n, p in base.packages.items()}
+    packages[name]["hash"] += "-rebuilt"
+    rebuilt = replace(base, packages=packages)
+    assert diff_stacks(base, rebuilt) == []
+    assert hash_only_rebuilds(base, rebuilt) == 1
+
+    packages[name] = {**changed.packages[name], "hash": packages[name]["hash"]}
+    assert [c.name for c in diff_stacks(base, rebuilt)] == [name]
+    assert hash_only_rebuilds(base, rebuilt) == 0
+
+
+@pytest.mark.parametrize("added", [True, False])
+def test_head_package_presence_is_known_without_its_revision(added):
+    base, _ = snapshots()
+    packages = {n: dict(p) for n, p in base.packages.items()}
+    packages["acts"].pop("commit")
+    present = replace(base, packages=packages)
+    absent = replace(base, packages={n: p for n, p in packages.items() if n != "acts"})
+    before, after = (absent, present) if added else (present, absent)
+    change, = diff_stacks(before, after)
+    assert change.kind == "head"
+    assert change.status == ("added" if added else "removed")
+    assert change.compare_url is None

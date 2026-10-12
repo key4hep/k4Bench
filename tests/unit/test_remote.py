@@ -785,6 +785,65 @@ def test_measured_stack_timeout_is_not_a_cacheable_absence(monkeypatch):
         remote.fetch_stack_snapshot(BASE, "ILD", "platform", "release", "Zbb", strict=True)
 
 
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize("missing", [
+    "run_info.json", "LCG_externals.txt.gz", "LCG_contrib.txt.gz", "machine_info.json",
+])
+def test_measured_stack_skips_partial_newest_run(monkeypatch, strict, missing):
+    from tests.unit.test_stack_capture import FIXTURES
+    root = f"{BASE}/ILD/platform/release/Zbb"
+    newest, older = f"{root}/2026-10-04", f"{root}/2026-10-03"
+    artifacts = {
+        "run_info.json": json.dumps({
+            "k4h_stack_capture": 1,
+            "k4h_loaded_packages": json.loads((FIXTURES / "loaded.json").read_text()),
+            "g4_datasets": {"G4LEDATA": "G4EMLOW8.8"},
+        }).encode(),
+        "machine_info.json": b'{"os": "AlmaLinux 9.8"}',
+        **{name: (FIXTURES / name).read_bytes()
+           for name in ("LCG_externals.txt.gz", "LCG_contrib.txt.gz")},
+    }
+    web = FakeWeb({
+        root: ["2026-10-03/", "2026-10-04/"],
+        **{f"{run}/{name}": content for run in (newest, older)
+           for name, content in artifacts.items()},
+    })
+
+    def get(url, timeout=None):
+        if url == f"{newest}/{missing}":
+            web.requested.append(url)
+            raise _http_error(url, 404)
+        return web.get(url, timeout)
+
+    _use_session(monkeypatch, get)
+    snapshot = remote.fetch_stack_snapshot(BASE, "ILD", "platform", "release", "Zbb", strict=strict)
+    assert snapshot is not None and snapshot.complete
+    assert "Geant4" in snapshot.loaded
+    assert snapshot.datasets == {"G4LEDATA": "G4EMLOW8.8"}
+    assert snapshot.os == "AlmaLinux 9.8"
+    assert web.requested[1] == f"{newest}/run_info.json"
+    assert web.requested.count(f"{root}/") == 1
+    assert all(f"{older}/{name}" in web.requested for name in artifacts)
+
+
+@pytest.mark.parametrize("failure", ["timeout", "server_error"])
+def test_measured_stack_does_not_skip_transiently_unreadable_newest_run(monkeypatch, failure):
+    root = f"{BASE}/ILD/platform/release/Zbb"
+    newest = f"{root}/2026-10-04/run_info.json"
+    web = FakeWeb({root: ["2026-10-03/", "2026-10-04/"]})
+
+    def get(url, timeout=None):
+        if url == newest:
+            if failure == "timeout":
+                raise remote.requests.ReadTimeout(url)
+            raise _http_error(url, 503)
+        return web.get(url, timeout)
+
+    _use_session(monkeypatch, get)
+    with pytest.raises(remote.IncompleteFetch):
+        remote.fetch_stack_snapshot(BASE, "ILD", "platform", "release", "Zbb", strict=True)
+
+
 def test_other_scope_supplies_versions_without_claiming_loaded_packages(monkeypatch):
     from tests.unit.test_stack_capture import FIXTURES
     root = f"{BASE}/ILD/platform/release"

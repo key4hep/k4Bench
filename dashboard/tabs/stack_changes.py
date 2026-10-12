@@ -316,6 +316,13 @@ def _snapshot(data_url: str, platform: str, stack: str, detector: str, sample: s
     return None
 
 
+def _git_packages(packages: dict, snapshot: StackSnapshot | None) -> dict:
+    """The tracked git packages comparable with an uncaptured endpoint."""
+    if snapshot is not None and snapshot.complete:
+        packages = {name: p for name, p in packages.items() if p.get("version") == "HEAD"}
+    return {name: p for name, p in packages.items() if p.get("commit")}
+
+
 def render(
     data_url: str, cache_dir: str, platform: str, detector: str, sample: str,
     stack: str,
@@ -405,11 +412,8 @@ def render(
         )
     else:
         # With one uncaptured endpoint only the shared HEAD evidence is comparable.
-        base_head, head_head = [
-            {n: p for n, p in packages.items()
-             if p.get("commit") and (snapshot is None or not snapshot.complete or p.get("version") == "HEAD")}
-            for packages, snapshot in zip((base, head), snapshots)
-        ]
+        base_head = _git_packages(base, snapshots[0])
+        head_head = _git_packages(head, snapshots[1])
         provenance_state = _render_diff(
             base_head, head_head, base_release, head_release, span,
         )
@@ -893,7 +897,10 @@ def _render_snapshot_diff(
     if loaded:
         _render_rows(loaded, show_loaded=True)
     elif changes:
-        st.info("No changes in packages known to be loaded by this benchmark.")
+        if unknown:
+            st.info("Load status is unknown; these stack changes may affect packages used by this benchmark.")
+        else:
+            st.info("No changes in packages known to be loaded by this benchmark.")
     if other:
         suffix = "load status unknown" if unknown else "not loaded by this benchmark"
         with st.expander(f"{len(other)} other changes in the stack, {suffix}", expanded=False):
