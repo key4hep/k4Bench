@@ -21,7 +21,6 @@ from typing import Literal
 from urllib.parse import urlencode
 
 import pandas as pd
-import requests
 import streamlit as st
 
 from k4bench.blame.models import BlameReport, BlameSchemaError
@@ -38,7 +37,7 @@ from remote_cache import (
     cached_list_detectors,
     cached_list_report_dates,
     cached_list_run_dates,
-    cached_list_stacks,
+    list_platform_stacks,
 )
 from tabs import _blame
 from tabs._regression_flags import attention_key, render_candidate_ranking
@@ -280,25 +279,6 @@ def _forget_stale_stack_scope(platform: str, stack: str) -> None:
             st.query_params.pop(param, None)
 
 
-def _stacks_for_platform(data_url: str, platform: str) -> list[str]:
-    """Every release benchmarked on *platform*, newest first.
-
-    Unioned across detectors rather than read from one: detectors join and
-    leave the matrix, so no single detector's history is the full set of
-    releases.
-    """
-    stacks: set[str] = set()
-    for detector in cached_list_detectors(data_url):
-        try:
-            stacks.update(cached_list_stacks(data_url, detector, platform))
-        except requests.RequestException:
-            # A detector never benchmarked on this platform has no such
-            # directory to list. Only that is expected here — a broader catch
-            # would bury a bug in the listing itself as "no releases".
-            continue
-    return sorted(stacks, reverse=True)
-
-
 def _packages(data_url: str, platform: str, stack: str) -> dict | None:
     """The release's package map, from whichever detector has it recorded.
 
@@ -333,7 +313,7 @@ def render(
     compared: the toggle's remembered state says nothing about a view that was
     never drawn.
     """
-    stacks = _stacks_for_platform(data_url, platform)
+    stacks = list_platform_stacks(data_url, platform)
     # Before the release-count guard: a platform with too few releases to
     # compare must still drop the previous platform's picker and toggle state,
     # or returning to a comparable platform resumes a scope the reader left

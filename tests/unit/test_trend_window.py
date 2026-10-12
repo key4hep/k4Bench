@@ -1,5 +1,6 @@
-"""Unit tests for ``dashboard/trend_window.py``: preset → date-window resolution,
-and the run listing cut to a window.
+"""Unit tests for ``dashboard/trend_window.py``: preset → release-window
+resolution, the report nights that judged the window, and the run listing cut
+to it.
 
 ``trend_window`` is a pure, Streamlit-free module, so it is loaded in isolation
 by file path (its siblings ``app``/``data`` pull in Streamlit).
@@ -10,6 +11,8 @@ from __future__ import annotations
 import importlib.util
 from datetime import date
 from pathlib import Path
+
+import pytest
 
 _TW_PATH = Path(__file__).resolve().parents[2] / "dashboard" / "trend_window.py"
 
@@ -23,110 +26,115 @@ def _load_tw():
 
 tw = _load_tw()
 
-# A spread of dates; ``hi`` (the anchor) is 2026-05-21, ``lo`` is 2026-01-01.
-_DATES = [
-    date(2026, 1, 1),
-    date(2026, 3, 15),
-    date(2026, 5, 14),
-    date(2026, 5, 15),
-    date(2026, 5, 21),
-]
+
+def _rel(day: str) -> str:
+    return f"key4hep-2026-{day}"
 
 
-def test_last_7_days_spans_exactly_seven_inclusive_days():
-    start, end = tw.resolve_window("Last 7 days", _DATES, None)
-    assert end == date(2026, 5, 21)
-    # 7 calendar days inclusive: 05-15 .. 05-21 (the off-by-one guard).
-    assert start == date(2026, 5, 15)
-    assert (end - start).days == 6
+#: Twelve releases, oldest first, with the gaps of nights that re-ran one.
+_RELEASES = [_rel(d) for d in (
+    "09-19", "09-21", "09-22", "09-23", "09-24", "09-26",
+    "09-28", "09-29", "09-30", "10-01", "10-03", "10-05",
+)]
 
 
-def test_last_30_days_anchors_on_latest_date_not_today():
-    start, end = tw.resolve_window("Last 30 days", _DATES, None)
-    assert end == date(2026, 5, 21)
-    assert start == date(2026, 4, 22)  # 30 inclusive days back from the anchor
+# ── dated_releases ───────────────────────────────────────────────────────────
+
+def test_dated_releases_sorts_oldest_first_dedupes_and_drops_undated_names():
+    stacks = [_rel("10-05"), "key4hep-latest", _rel("09-19"), _rel("10-05")]
+    assert tw.dated_releases(stacks) == [_rel("09-19"), _rel("10-05")]
+    assert tw.dated_releases([]) == []
 
 
-def test_all_returns_full_extent():
-    assert tw.resolve_window("All", _DATES, None) == (date(2026, 1, 1), date(2026, 5, 21))
+def test_release_day_reads_the_tag_date():
+    assert tw.release_day(_rel("10-05")) == date(2026, 10, 5)
+    assert tw.release_day("key4hep-latest") is None
 
 
-def test_custom_range_is_passed_through():
-    rng = (date(2026, 2, 1), date(2026, 4, 1))
-    assert tw.resolve_window("Custom…", _DATES, rng) == rng
+# ── select_releases ──────────────────────────────────────────────────────────
+
+def test_a_preset_takes_the_newest_n_releases():
+    assert tw.select_releases("Last 5 releases", _RELEASES, None) == _RELEASES[-5:]
+    assert tw.select_releases("Last 10 releases", _RELEASES, None) == _RELEASES[-10:]
 
 
-def test_custom_without_range_falls_back_to_full_extent():
-    assert tw.resolve_window("Custom…", _DATES, None) == (date(2026, 1, 1), date(2026, 5, 21))
+def test_a_preset_longer_than_the_history_takes_all_of_it():
+    assert tw.select_releases("Last 50 releases", _RELEASES, None) == _RELEASES
+    one = [_rel("10-05")]
+    assert tw.select_releases("Last 5 releases", one, None) == one
 
 
-def test_single_date_collapses_to_a_point_window():
-    one = [date(2026, 5, 21)]
-    assert tw.resolve_window("Last 7 days", one, None) == (date(2026, 5, 15), date(2026, 5, 21))
-    assert tw.resolve_window("All", one, None) == (date(2026, 5, 21), date(2026, 5, 21))
+def test_all_takes_every_release():
+    assert tw.select_releases("All", _RELEASES, None) == _RELEASES
 
 
-# ── window_domain ─────────────────────────────────────────────────────────────
-
-def test_window_domain_unions_and_sorts_uniquely():
-    runs = [date(2026, 5, 14), date(2026, 5, 12), date(2026, 5, 14)]
-    nights = [date(2026, 5, 15), date(2026, 5, 12)]
-    assert tw.window_domain(runs, nights) == [
-        date(2026, 5, 12), date(2026, 5, 14), date(2026, 5, 15),
+def test_custom_range_takes_both_ends_and_everything_between():
+    picked = (_rel("09-22"), _rel("09-28"))
+    assert tw.select_releases("Custom…", _RELEASES, picked) == [
+        _rel("09-22"), _rel("09-23"), _rel("09-24"), _rel("09-26"), _rel("09-28"),
     ]
+    single = (_rel("10-01"), _rel("10-01"))
+    assert tw.select_releases("Custom…", _RELEASES, single) == [_rel("10-01")]
 
 
-def test_window_domain_anchor_ignores_a_lagging_detector():
-    """The whole point: a detector whose last run predates the newest report
-    night must not drag the window back with it — otherwise the cross-detector
-    Overview loses every detector that ran more recently."""
-    nights = [date(2026, 5, d) for d in range(15, 22)]
-    lagging = tw.window_domain([date(2026, 5, 16)], nights)
-    current = tw.window_domain([date(2026, 5, 21)], nights)
-    assert tw.resolve_window("Last 7 days", lagging, None) == \
-           tw.resolve_window("Last 7 days", current, None)
-    assert tw.resolve_window("Last 7 days", lagging, None)[1] == date(2026, 5, 21)
+def test_custom_without_range_falls_back_to_every_release():
+    assert tw.select_releases("Custom…", _RELEASES, None) == _RELEASES
 
 
-def test_preset_anchor_ignores_a_run_newer_than_the_latest_report():
-    """A run uploaded ahead of tonight's report must not move the window's
-    start: only the detector that uploaded it would see the shift, which is the
-    detector-dependence the anchor exists to remove. The *end* still stretches
-    to that run so Run Trends keeps it."""
-    reports = [date(2026, 5, d) for d in range(15, 22)]   # newest report 05-21
-    ahead = tw.window_domain([date(2026, 5, 22)], reports)   # run 05-22
-    behind = tw.window_domain([date(2026, 5, 20)], reports)
+def test_a_release_ahead_of_the_newest_report_is_added_on_top():
+    """A release tonight's batch is still uploading has no report yet. Counting
+    it would push the oldest release out of the window until the report lands,
+    taking the Overview's oldest night with it; it is added on top instead."""
+    uploading = [*_RELEASES, _rel("10-06")]
+    newest_report = date(2026, 10, 5)
+    assert tw.select_releases(
+        "Last 5 releases", uploading, None, anchor=newest_report,
+    ) == [*_RELEASES[-5:], _rel("10-06")]
 
-    start_ahead, end_ahead = tw.resolve_window(
-        "Last 7 days", ahead, None, anchor=reports[-1]
+
+def test_an_anchor_on_a_rerun_night_counts_the_release_it_reran():
+    # The 10-04 report re-ran the 10-03 release: 10-05 has no report yet.
+    assert tw.select_releases(
+        "Last 5 releases", _RELEASES, None, anchor=date(2026, 10, 4),
+    ) == _RELEASES[-6:]
+
+
+def test_no_anchor_counts_from_the_newest_release():
+    assert tw.select_releases("Last 5 releases", _RELEASES, None, anchor=None) == \
+           tw.select_releases("Last 5 releases", _RELEASES, None)
+
+
+def test_an_anchor_past_every_release_counts_from_the_newest():
+    assert tw.select_releases(
+        "Last 5 releases", _RELEASES, None, anchor=date(2027, 1, 1),
+    ) == _RELEASES[-5:]
+
+
+# ── report_span ──────────────────────────────────────────────────────────────
+
+def test_report_span_of_the_newest_releases_reaches_the_last_night():
+    # 10-05's release is still re-run on 10-06 and 10-07 while no newer tag exists.
+    selected = _RELEASES[-3:]
+    assert tw.report_span(selected, _RELEASES, date(2026, 10, 7)) == (
+        date(2026, 10, 1), date(2026, 10, 7),
     )
-    start_behind, _ = tw.resolve_window(
-        "Last 7 days", behind, None, anchor=reports[-1]
+
+
+def test_report_span_ends_the_night_before_the_next_newer_release():
+    # The 09-24 release was re-run on 09-25; 09-26 judged the next release.
+    selected = [_rel("09-22"), _rel("09-23"), _rel("09-24")]
+    assert tw.report_span(selected, _RELEASES, date(2026, 10, 7)) == (
+        date(2026, 9, 22), date(2026, 9, 25),
     )
-    assert start_ahead == start_behind == date(2026, 5, 15)
-    assert end_ahead == date(2026, 5, 22)   # the newer run stays in view
 
 
-def test_preset_anchor_defaults_to_the_domain_end():
-    # No reports to anchor on: unchanged behaviour, counted back from the end.
-    assert tw.resolve_window("Last 7 days", _DATES, None, anchor=None) == \
-           tw.resolve_window("Last 7 days", _DATES, None)
-
-
-def test_preset_anchor_never_reaches_past_the_domain():
-    # A report night beyond every known date cannot push the start past the end.
-    start, end = tw.resolve_window(
-        "Last 7 days", _DATES, None, anchor=date(2027, 1, 1)
+def test_report_span_of_one_release():
+    assert tw.report_span([_rel("09-21")], _RELEASES, date(2026, 10, 7)) == (
+        date(2026, 9, 21), date(2026, 9, 21),
     )
-    assert end == date(2026, 5, 21) and start == date(2026, 5, 15)
 
 
-def test_window_domain_falls_back_to_either_side_alone():
-    runs = [date(2026, 5, 21)]
-    assert tw.window_domain(runs, []) == runs
-    assert tw.window_domain([], runs) == runs
-    assert tw.window_domain([], []) == []
-
+# ── to_dates / runs_in_window ────────────────────────────────────────────────
 
 def test_to_dates_sorts_dedupes_and_drops_unparseable_names():
     assert tw.to_dates(["2026-05-21", "latest", "2026-01-01", "2026-05-21"]) == [
@@ -135,21 +143,28 @@ def test_to_dates_sorts_dedupes_and_drops_unparseable_names():
     assert tw.to_dates([]) == []
 
 
-def test_runs_in_window_keeps_inclusive_bounds_in_sorted_hashable_form():
+def test_runs_in_window_keeps_every_run_of_the_selected_releases():
     stacks_dates = {
-        "key4hep-2026-05-20": ["2026-05-21", "2026-05-14", "2026-05-15"],
-        "key4hep-2026-03-01": ["2026-03-15"],
-        "key4hep-2026-01-01": ["2026-01-01", "not-a-date"],
+        "key4hep-2026-05-20": ["2026-05-21", "2026-05-20", "not-a-date"],
+        "key4hep-2026-03-01": ["2026-03-01", "2026-05-22"],
+        "key4hep-2026-01-01": ["2026-01-01"],
+        "key4hep-2026-02-01": ["not-a-date"],
     }
-    windowed = tw.runs_in_window(stacks_dates, date(2026, 3, 15), date(2026, 5, 15))
-    # Both bounds count; a stack with nothing inside is dropped, not left empty.
+    windowed = tw.runs_in_window(
+        stacks_dates,
+        ["key4hep-2026-02-01", "key4hep-2026-03-01", "key4hep-2026-05-20"],
+    )
+    # A release re-run long after its tag keeps the late run; a release outside
+    # the window is dropped whatever night it ran, and one left with no dated
+    # run is dropped rather than left empty.
     assert windowed == (
-        ("key4hep-2026-03-01", ("2026-03-15",)),
-        ("key4hep-2026-05-20", ("2026-05-14", "2026-05-15")),
+        ("key4hep-2026-03-01", ("2026-03-01", "2026-05-22")),
+        ("key4hep-2026-05-20", ("2026-05-20", "2026-05-21")),
     )
     # The download cache keys on it, so it must hash.
     hash(windowed)
 
 
-def test_runs_in_window_of_an_empty_listing_is_empty():
-    assert tw.runs_in_window({}, date(2026, 1, 1), date(2026, 12, 31)) == ()
+@pytest.mark.parametrize("releases", [[], ["key4hep-2026-01-01"]])
+def test_runs_in_window_of_an_empty_listing_is_empty(releases):
+    assert tw.runs_in_window({}, releases) == ()

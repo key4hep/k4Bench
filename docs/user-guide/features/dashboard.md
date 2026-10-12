@@ -150,21 +150,24 @@ two attribution views (`at_location` and `by_birth`) and adds:
 
 Plots a metric over time. The x-axis is anchored on the **Key4hep release date**
 (falling back to the run date), so you see regressions aligned with releases.
-A sidebar **look-back window** (`Last 7 days`, `14` — the default — `30`, `90`,
-`6 months`, `All`, or a custom range) controls how much history is downloaded
-and shown. A preset counts back from the *latest available* nightly, not today,
-so it always shows data even if the nightly hasn't run recently. That anchor is
-deliberately **detector-independent**: it is the newest nightly *report* night,
-which every detector shares, so the same preset covers the same dates whichever
-detector the sidebar has selected — including while a batch is still uploading
-and one detector's run is already newer than the last report. (The window's
-*end* does stretch to that run, so it stays visible in Run Trends; a window can
-therefore be a day or two longer than its label.) This matters most for the
-cross-detector Overview tab, which draws every detector over this one window: an
-anchor that followed the selected detector's last run would pull the window back
-whenever a lagging detector was picked, and detectors that had run more recently
-would silently vanish from its charts. If the selected detector has no runs in
-the window, the sidebar caption says so and names the night it last ran (see
+A sidebar **release window** (`Last 5 releases`, `10` — the default — `20`,
+`50`, `All`, or a custom range picked on a release slider) controls how much
+history is downloaded and shown: every run of the Key4hep releases in the
+window, including a release re-run on later nights. A preset counts back over
+**every release benchmarked on the platform**, not the selected detector's, so
+the same preset covers the same releases whichever detector the sidebar has
+selected. This matters most for the cross-detector Overview tab, which draws
+every detector over this one window, from the night the oldest release was
+tagged: a window counted over one detector's releases would shrink to that
+detector's history whenever a recently added one was picked, and detectors that
+had run for longer would silently lose their history from its charts. The
+count starts at the newest nightly *report* night; a release that tonight's
+batch is still uploading is added on top, so a window can hold one release more
+than its label until the report lands. A detector benchmarked for fewer
+releases than the window holds fills only part of it — after a detector version
+bump, every preset longer than the new version's history shows the same runs —
+and the sidebar caption counts the releases it ran in and names the night it
+first ran; if it has no run in the window, it names the night it last ran (see
 [`trend_window`](../../reference/api/analysis/index.md) — pure logic,
 unit-tested).
 

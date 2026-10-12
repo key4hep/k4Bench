@@ -580,14 +580,14 @@ def render(
     """The tab's four views (:data:`_VIEWS`), dispatched by a View switcher like
     the other multi-view tabs. *platform* and *sample* are the sidebar's
     selections, the same scoping as Run Trends. *window* is the sidebar's
-    shared Trend window (``None`` only when the sidebar hasn't resolved one
-    yet, e.g. a mid-edit custom range) — in that case
+    shared Trend window, as the report nights that judged its releases
+    (``None`` only when the store has no release yet) — in that case
     :func:`nights_in_window` falls back to the latest
-    :data:`_FALLBACK_NIGHTS`. It carries no detector scope: its preset resolves
-    against the nightly report nights as well as the selected detector's runs
-    (see ``trend_window.window_domain``), so the range this tab draws stays put
-    when the sidebar detector changes rather than sliding to that detector's
-    last run and dropping the more recently benchmarked detectors off the
+    :data:`_FALLBACK_NIGHTS`. It carries no detector scope: its preset counts
+    over every release benchmarked on the platform (see
+    ``trend_window.select_releases``), so the range this tab draws stays put
+    when the sidebar detector changes rather than shrinking to that detector's
+    releases and dropping the more recently benchmarked detectors off the
     charts. The window sets which report nights are fetched,
     and so how far back the Regression Status and Nightly Report pickers reach;
     the landscape reads whichever of them measured each detector last, plus the

@@ -73,7 +73,7 @@ def _app(dashboard_dir, stack_names, packages, from_release, to_release,
     from tabs import stack_changes as _tab
 
     _tab.cached_list_detectors = lambda url: ["IDEA"]
-    _tab.cached_list_stacks = lambda url, detector, platform: stack_names
+    _tab.list_platform_stacks = lambda url, platform: sorted(set(stack_names), reverse=True)
     _tab.cached_fetch_stack_packages = (
         lambda url, detector, platform, stack: packages.get(stack)
     )
@@ -573,46 +573,6 @@ def test_first_stack_changes_render_preserves_deep_link_dates(monkeypatch):
     stack_changes._forget_stale_stack_scope(PLAT, "key4hep-2026-07-05")
 
     assert query == {"from": "2026-06-20", "to": "2026-06-25"}
-
-
-def test_stacks_are_unioned_across_detectors(monkeypatch):
-    # Detectors join and leave the matrix, so no single detector's history is
-    # the full set of releases.
-    per_detector = {"IDEA": ["key4hep-2026-07-10"], "SiD": ["key4hep-2026-07-09"]}
-    monkeypatch.setattr(stack_changes, "cached_list_detectors", lambda url: ["IDEA", "SiD"])
-    monkeypatch.setattr(
-        stack_changes, "cached_list_stacks",
-        lambda url, detector, platform: per_detector[detector],
-    )
-    assert stack_changes._stacks_for_platform("u", PLAT) == [
-        "key4hep-2026-07-10", "key4hep-2026-07-09",
-    ]
-
-
-def test_a_detector_without_the_platform_is_skipped(monkeypatch):
-    import requests
-
-    def _stacks(url, detector, platform):
-        if detector == "SiD":
-            raise requests.RequestException("404")  # never ran on this platform
-        return ["key4hep-2026-07-10"]
-
-    monkeypatch.setattr(stack_changes, "cached_list_detectors", lambda url: ["IDEA", "SiD"])
-    monkeypatch.setattr(stack_changes, "cached_list_stacks", _stacks)
-    # One detector missing a platform must not blank the whole tab.
-    assert stack_changes._stacks_for_platform("u", PLAT) == ["key4hep-2026-07-10"]
-
-
-def test_an_unexpected_listing_error_is_not_swallowed(monkeypatch):
-    def _stacks(url, detector, platform):
-        raise TypeError("a bug in the listing code")
-
-    monkeypatch.setattr(stack_changes, "cached_list_detectors", lambda url: ["IDEA"])
-    monkeypatch.setattr(stack_changes, "cached_list_stacks", _stacks)
-    # Only an absent directory is expected here. Anything else is a bug, and
-    # must surface rather than read as "this platform has no releases".
-    with pytest.raises(TypeError):
-        stack_changes._stacks_for_platform("u", PLAT)
 
 
 def test_packages_fall_back_to_another_detector(monkeypatch):

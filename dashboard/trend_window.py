@@ -1,8 +1,9 @@
 """Pure trend-window resolution (no Streamlit), so it can be unit-tested.
 
-The sidebar offers a set of look-back presets plus a custom range; this module
-turns a chosen preset into a concrete inclusive ``(start, end)`` date window and
-cuts the run listing to the runs the caller downloads for it.
+The sidebar offers presets that count back over the Key4hep releases, plus a
+custom range of them; this module turns the choice into the releases the window
+holds, the report nights that judged them, and the run listing cut to the runs
+the caller downloads for them.
 """
 
 from __future__ import annotations
@@ -12,15 +13,17 @@ from datetime import date, timedelta
 
 import pandas as pd
 
-# Trend-window presets → look-back length in days; ``None`` means special handling.
+from k4bench.labels import pretty_release
+
+# Trend-window presets → how many of the newest releases each covers; ``None``
+# means special handling.
 WINDOW_PRESETS: dict[str, int | None] = {
-    "Last 7 days":   7,
-    "Last 14 days":  14,
-    "Last 30 days":  30,
-    "Last 90 days":  90,
-    "Last 6 months": 182,
-    "All":           None,
-    "Custom…":       None,
+    "Last 5 releases":  5,
+    "Last 10 releases": 10,
+    "Last 20 releases": 20,
+    "Last 50 releases": 50,
+    "All":              None,
+    "Custom…":          None,
 }
 
 
@@ -36,76 +39,87 @@ def to_dates(raw: Iterable[str]) -> list[date]:
     return sorted({day for day in map(_parse_day, raw) if day is not None})
 
 
+def release_day(stack: str) -> date | None:
+    """The date a ``key4hep-YYYY-MM-DD`` release directory was tagged, or ``None``."""
+    return _parse_day(pretty_release(stack))
+
+
+def dated_releases(stacks: Iterable[str]) -> list[str]:
+    """Release directory names, unique and oldest first, dropping any whose
+    name carries no date."""
+    return sorted(
+        {stack for stack in stacks if release_day(stack) is not None},
+        key=lambda stack: (release_day(stack), stack),
+    )
+
+
+def select_releases(
+    preset: str,
+    releases: list[str],
+    custom_range: tuple[str, str] | None,
+    anchor: date | None = None,
+) -> list[str]:
+    """The releases a preset (or custom range) covers, as a contiguous,
+    oldest-first slice of *releases*.
+
+    *releases* is every release benchmarked on the platform, oldest first (see
+    :func:`dated_releases`), not the selected detector's: the cross-detector
+    Overview draws every detector over this one window, so a preset has to
+    cover the same releases whichever detector the sidebar has selected.
+
+    A preset of *N* takes the *N* newest releases tagged on or before *anchor*
+    — the newest nightly **report** night — and every newer release on top.
+    A release that tonight's batch is still uploading has no report yet, and
+    counting it would push the oldest release, and with it the Overview's
+    oldest night, out of the window until the report lands. A window can
+    therefore hold a release more than its label while a batch outruns the
+    reports. With no *anchor*, the count starts at the newest release.
+    """
+    if preset == "All":
+        return list(releases)
+    if preset == "Custom…":
+        if custom_range is None:
+            return list(releases)
+        lo, hi = custom_range
+        return releases[releases.index(lo):releases.index(hi) + 1]
+    count = WINDOW_PRESETS[preset]
+    reported = [r for r in releases if anchor is None or release_day(r) <= anchor]
+    ahead = [r for r in releases if anchor is not None and release_day(r) > anchor]
+    return reported[-count:] + ahead
+
+
+def report_span(
+    selected: list[str], releases: list[str], last_night: date
+) -> tuple[date, date]:
+    """The inclusive ``(start, end)`` of the nights whose reports judged the
+    *selected* releases.
+
+    A release is benchmarked from the night it is tagged until the next one is:
+    a night without a new tag re-runs the newest release. So the span starts on
+    the oldest selected release's tag date and ends the night before the next
+    newer release in *releases*, or on *last_night* — the newest night the
+    store knows of — when the newest release is selected.
+    """
+    start = release_day(selected[0])
+    newer = releases[releases.index(selected[-1]) + 1:]
+    end = release_day(newer[0]) - timedelta(days=1) if newer else last_night
+    return start, end
+
+
 def runs_in_window(
-    stacks_dates: Mapping[str, Iterable[str]], start: date, end: date
+    stacks_dates: Mapping[str, Iterable[str]], releases: Iterable[str]
 ) -> tuple[tuple[str, tuple[str, ...]], ...]:
-    """The ``{stack: [date, ...]}`` run listing cut to the inclusive window, as
-    the hashable ``((stack, (date, ...)), ...)`` the windowed download caches
-    on: stacks and dates sorted, stacks left with no run dropped."""
+    """The ``{stack: [date, ...]}`` run listing cut to the window's *releases*
+    — every run of each, whichever night it ran on — as the hashable
+    ``((stack, (date, ...)), ...)`` the windowed download caches on: stacks and
+    dates sorted, run directories without a date and stacks left with no run
+    dropped."""
+    wanted = set(releases)
     windowed = {
-        stack: sorted(
-            raw for raw in dates
-            if (day := _parse_day(raw)) is not None and start <= day <= end
-        )
+        stack: sorted(raw for raw in dates if _parse_day(raw) is not None)
         for stack, dates in stacks_dates.items()
+        if stack in wanted
     }
     return tuple(
         (stack, tuple(dates)) for stack, dates in sorted(windowed.items()) if dates
     )
-
-
-def window_domain(
-    run_dates: Iterable[date], report_nights: Iterable[date]
-) -> list[date]:
-    """The dates a preset resolves against: the selected detector's run dates
-    **union** the nightly report nights, ascending.
-
-    The union is what makes one sidebar window mean one date range: it has to
-    reach both the oldest run a preset may look back to and the newest date
-    either source knows about. Run dates alone would end the window at the
-    selected detector's last run, hiding every later nightly report from the
-    cross-detector Overview; report nights alone would end it before a run
-    uploaded ahead of tonight's report, hiding that run from Run Trends.
-
-    The domain is only the *extent*, though — where a preset starts counting is
-    :func:`resolve_window`'s *anchor*, which must stay detector-independent.
-    """
-    return sorted({*run_dates, *report_nights})
-
-
-def resolve_window(
-    preset: str,
-    all_dates: list[date],
-    custom_range: tuple[date, date] | None,
-    anchor: date | None = None,
-) -> tuple[date, date]:
-    """Resolve a preset (or custom range) to an inclusive ``(start, end)`` window.
-
-    *all_dates* is the domain from :func:`window_domain`; the window ends at the
-    latest date in it, not today, so the default preset always shows data even
-    if the nightly has not run recently.
-
-    A preset of *N* days counts back *N* inclusive calendar days from *anchor*
-    — the newest nightly **report** night — defaulting to the end of the domain
-    when there is no report to anchor on. Only the start is anchored, because
-    the two dates answer different questions. ``start`` decides which report
-    nights the cross-detector Overview draws, so it must not move with the
-    sidebar detector; ``end`` has to reach the newest data, and a run can be
-    newer than the last report (uploaded while tonight's batch is still going,
-    or after a failed report). Anchoring both would drop that run from Run
-    Trends; anchoring neither would let a detector that has already uploaded
-    pull ``start`` forward and push the oldest night off the Overview.
-    A window may therefore be a day or two longer than its label when a run has
-    outrun the reports.
-    """
-    lo, hi = min(all_dates), max(all_dates)
-    if preset == "All":
-        return lo, hi
-    if preset == "Custom…":
-        if custom_range is None:
-            return lo, hi
-        start, end = custom_range
-        return start, end
-    days = WINDOW_PRESETS[preset] or 0
-    counted_from = min(anchor, hi) if anchor is not None else hi
-    return counted_from - timedelta(days=max(days - 1, 0)), hi
