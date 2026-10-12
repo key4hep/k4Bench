@@ -384,6 +384,19 @@ def evaluate_series(
     swing upward does not push the base of a later downward step back past it,
     and the sibling metrics of one run group, which usually step together,
     keep agreeing on one window instead of fanning out over their own noise.
+
+    A change can be **confirmed late**: a step too small to clear the gates
+    while the baseline window still holds an older level clears them once
+    that level has aged out and the spread has narrowed, with nothing new in
+    the measurement. The nights before the WATCH then sat at the changed level
+    too, and the base the walk tracked is one of them. So when the base,
+    judged against the snapshot that confirmed the change, trips the same
+    way, the window is moved back over every preceding night already at the
+    changed level — closer to it than to the baseline median, or tripping the
+    same way — and based on the newest night before them that was not. The
+    move never crosses a re-anchor: a segment at the changed level from its
+    start is based on the re-anchor's seed night, and one that never settled
+    stays open-ended.
     """
     floor = EFFECT_FLOOR[series.metric_family]
     abs_delta_floor = ABS_DELTA_FLOOR.get(series.metric_family, 0.0)
@@ -408,7 +421,49 @@ def evaluate_series(
     }
     anchor_date: str | None = None      # date of the last confirmed change-point
     anchor_mad: float = 0.0             # pre-change spread, proxy while re-anchoring
+    #: Every reliable judged night since the last re-anchor, in night order, as
+    #: ``(identity, value)``: what a late confirmation's window is moved back
+    #: over.
+    judged_nights: list[tuple[tuple[str, str], float]] = []
+    #: The re-anchor's seed night, bounding a window moved back to the start of
+    #: ``judged_nights``; ``None`` before any re-anchor.
+    segment_base: tuple[str, str] | None = None
     verdicts: list[MetricVerdict] = []
+
+    def _tripped_way(value: float, med: float, mad: float) -> Direction | None:
+        """The way *value* clears both gates against ``(med, mad)``, if it does."""
+        delta = value - med
+        pct_change, z = robust_change(value, med, mad)
+        effect = abs(pct_change) if pct_change is not None else 0.0
+        if abs(z) > Z_THRESHOLD and effect > floor and abs(delta) >= abs_delta_floor:
+            return Direction.UP if delta > 0 else Direction.DOWN
+        return None
+
+    def _late_window(
+        onset: tuple[str, str], base: tuple[str, str] | None,
+        direction: Direction, x: float, med: float, mad: float,
+    ) -> tuple[tuple[str, str], tuple[str, str] | None] | None:
+        """``(onset, base)`` of a change confirmed late tonight at *x*, or
+        ``None`` when the base the walk tracked does not trip against the
+        confirming snapshot ``(med, mad)``."""
+        ids = [identity for identity, _ in judged_nights]
+        if base not in ids or onset not in ids:
+            return None
+        if _tripped_way(judged_nights[ids.index(base)][1], med, mad) is not direction:
+            return None
+        k = ids.index(onset)
+        # The changed level: the WATCH night and every night that kept it
+        # pending through tonight, all of which tripped this way.
+        new_level = float(np.median([v for _, v in judged_nights[k:]] + [x]))
+        midpoint = (med + new_level) / 2
+
+        def changed(value: float) -> bool:
+            beyond = value < midpoint if direction is Direction.DOWN else value > midpoint
+            return beyond or _tripped_way(value, med, mad) is direction
+
+        while k > 0 and changed(judged_nights[k - 1][1]):
+            k -= 1
+        return judged_nights[k][0], judged_nights[k - 1][0] if k > 0 else segment_base
 
     def _verdict(row, **kw) -> MetricVerdict:
         run_id, run_date = _identity(row)
@@ -536,9 +591,7 @@ def evaluate_series(
             med, mad, reanchoring, n_base = snapshot
             delta = x - med
             pct_change, z = robust_change(x, med, mad)
-
-            effect = abs(pct_change) if pct_change is not None else 0.0
-            tripped = abs(z) > Z_THRESHOLD and effect > floor and abs(delta) >= abs_delta_floor
+            tripped = _tripped_way(x, med, mad) is not None
 
             # Balance-of-evidence gate: both *retaining* an existing
             # confirmation and *creating* a new one require the median of the
@@ -558,12 +611,7 @@ def evaluate_series(
             if release_windows or tripped:
                 release_median = float(np.median(np.asarray(release_values + [x])))
                 median_delta = release_median - med
-                pct_m, z_m = robust_change(release_median, med, mad)
-                effect_m = abs(pct_m) if pct_m is not None else 0.0
-                median_trips = (
-                    abs(z_m) > Z_THRESHOLD and effect_m > floor
-                    and abs(median_delta) >= abs_delta_floor
-                )
+                median_trips = _tripped_way(release_median, med, mad) is not None
 
             def _median_supports(d: Direction) -> bool:
                 right_way = median_delta > 0 if d is Direction.UP else median_delta < 0
@@ -626,7 +674,11 @@ def evaluate_series(
                             if pending_run is not None
                             else _identity(row)
                         )
-                        window = (onset, last_absent[direction])
+                        # Unless the confirmation came late, with the base
+                        # already at the changed level (see the docstring).
+                        window = _late_window(
+                            onset, last_absent[direction], direction, x, med, mad,
+                        ) or (onset, last_absent[direction])
                         first_confirmed = _identity(row)
                         release_windows[direction] = (window, first_confirmed)
                         pending = pending_run = None
@@ -676,6 +728,7 @@ def evaluate_series(
             ))
             release_values.append(x)
             release_last_reliable = _identity(row)
+            judged_nights.append((_identity(row), x))
             if severity is Severity.CONFIRMED:
                 release_last_at_new_level = _identity(row)
 
@@ -705,6 +758,10 @@ def evaluate_series(
             last_absent[Direction.UP] = last_absent[Direction.DOWN] = (
                 release_last_at_new_level or release_last_reliable
             )
+            # Nights before the re-anchor measured an accepted level, so a late
+            # window is never moved back past it.
+            segment_base = last_absent[Direction.UP]
+            judged_nights.clear()
         else:
             # No confirmation: the release's judged values age into the
             # baseline in night order (a WATCH value included — one outlier

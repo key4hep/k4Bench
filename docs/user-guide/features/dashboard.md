@@ -301,6 +301,14 @@ step-change detector (`k4bench/regression/`):
   release — and falls quiet from the next release on, instead of alerting every
   night until the window rolls over. A second change right afterwards is still
   caught.
+- **Late confirmations keep the right window.** A step too small to clear the
+  gates while the baseline still holds an older level can clear them days
+  later, once that level has rolled out of the baseline, with nothing new in
+  the measurement. Its watch night is then not where the step landed: when the
+  night the window would start from is itself flagged by the baseline that
+  confirmed the step, the window is moved back to the first night already at
+  the new level. The baseline median line still shows the level the step was
+  judged against.
 - **Continued series across a platform migration.** A platform is a separate
   series, so a new one would have no baseline for its first week. A platform
   that **replaces** another instead continues its series: the old platform's
