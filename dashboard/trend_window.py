@@ -1,9 +1,9 @@
 """Pure trend-window resolution (no Streamlit), so it can be unit-tested.
 
 The sidebar picks a range of Key4hep releases on a slider; this module gives
-the range it opens on, and turns a range into the releases the window holds,
-the report nights that judged them, and the run listing cut to the runs the
-caller downloads for them.
+the releases the Overview can offer, and turns a range into the releases the
+window holds, the report nights that judged them, and the run listing cut to
+the runs the caller downloads for them.
 """
 
 from __future__ import annotations
@@ -45,23 +45,14 @@ def dated_releases(stacks: Iterable[str]) -> list[str]:
     )
 
 
-def default_releases(
-    releases: list[str], anchor: date | None, count: int = DEFAULT_RELEASES,
-) -> list[str]:
-    """The releases the window opens on, as an oldest-first slice of
-    *releases* (see :func:`dated_releases`).
+def reported_releases(releases: list[str], newest_report: date) -> list[str]:
+    """The releases of *releases* tagged on or before *newest_report*, the
+    newest nightly report night: those a report can have judged.
 
-    That is the *count* newest releases tagged on or before *anchor* — the
-    newest nightly **report** night — and every newer release on top. A release
-    that tonight's batch is still uploading has no report yet, and counting it
-    would push the oldest release, and with it the Overview's oldest night, out
-    of the window until the report lands. The window therefore holds one
-    release more than *count* while a batch outruns the reports. With no
-    *anchor*, the count starts at the newest release.
+    A release that tonight's batch is still uploading has no report yet, so a
+    view drawn from the reports has nothing of it to show until one lands.
     """
-    reported = [r for r in releases if anchor is None or release_day(r) <= anchor]
-    ahead = [r for r in releases if anchor is not None and release_day(r) > anchor]
-    return reported[-count:] + ahead
+    return [r for r in releases if release_day(r) <= newest_report]
 
 
 def releases_between(releases: list[str], lo: str, hi: str) -> list[str]:

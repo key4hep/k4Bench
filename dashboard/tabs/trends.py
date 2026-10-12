@@ -407,15 +407,7 @@ def _trends_body(
     # actually reach the plot is decided by _tag_severity, not here.
     all_run_ids = tuple(sorted(df["run_id"].dropna().unique())) if "run_id" in df.columns else ()
 
-    # ── Data freshness ────────────────────────────────────────────────────────
-    earliest = df["x_date"].min()
-    latest   = df["x_date"].max()
-    if pd.notna(earliest) and pd.notna(latest):
-        st.caption(
-            f"Data range: **{earliest.strftime('%Y-%m-%d')}** → "
-            f"**{latest.strftime('%Y-%m-%d')}** "
-            f"({df['x_date'].nunique()} nightly tags)"
-        )
+    window_tags = df["x_date"].nunique()
 
     # Derived metrics are needed for both the healthy line and failed markers.
     df = with_cpu_efficiency(df)
@@ -434,6 +426,21 @@ def _trends_body(
         judgeable_runs, reliability,
         key="trends_exclude_unreliable", slot=reliability_slot,
     )
+
+    # ── Data range ──────────────────────────────────────────────────────────────
+    # The tags on the chart: a line point or a failed-config marker each. A tag
+    # whose every run the filter dropped has neither, so it is counted apart
+    # rather than left in a range the chart does not show.
+    shown_tags = pd.concat([healthy_runs["x_date"], failed_runs["x_date"]])
+    if not shown_tags.empty:
+        n_shown = shown_tags.nunique()
+        hidden = window_tags - n_shown
+        st.caption(
+            f"Data range: **{shown_tags.min():%Y-%m-%d}** → "
+            f"**{shown_tags.max():%Y-%m-%d}** "
+            f"({n_shown} nightly tag{'s' if n_shown != 1 else ''}"
+            + (f" · {hidden} hidden as unreliable" if hidden else "") + ")"
+        )
     if healthy_runs.empty and failed_runs.empty:
         return
 

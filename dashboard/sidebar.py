@@ -25,11 +25,12 @@ from remote_cache import (
     list_platform_stacks,
 )
 from trend_window import (
+    DEFAULT_RELEASES,
     dated_releases,
-    default_releases,
     release_day,
     releases_between,
     report_span,
+    reported_releases,
     runs_in_window,
     to_dates,
 )
@@ -211,33 +212,37 @@ def pick_trend_window(
     # The selected detector's own releases are folded into the platform's so
     # a listing that missed one cannot hide its runs.
     releases = dated_releases([*platform_stacks, *stacks_dates])
-    if not releases:
-        return TrendWindow()
 
     # The nightly report nights — one cached directory listing, the same one
-    # the Overview tab reads. The newest is where the opening range starts
-    # counting, and they bound the nights the Overview draws.
+    # the Overview tab reads. They bound the nights the Overview draws.
     try:
         report_nights = cached_list_report_dates(base_url)
     except Exception as err:
         st.warning(f"Could not list nightly reports: {err}")
         report_nights = []
     report_days = to_dates(report_nights)
+    if across_detectors and report_days:
+        # The Overview draws the reports, so a release tonight's batch is still
+        # uploading has nothing to show there until its report lands.
+        releases = reported_releases(releases, report_days[-1])
+    if not releases:
+        return TrendWindow()
 
     st.header("Trend window")
-    opening = default_releases(releases, report_days[-1] if report_days else None)
+    opening = releases[-DEFAULT_RELEASES:]
     # No key: a widget without one is identified by its options and default,
-    # so a new release or a newly landed report re-opens the slider on the
-    # newest releases rather than leaving it on a range that stopped at
-    # yesterday's. So does a change of scope — another section, or a detector
-    # with other releases — while the same releases keep the range.
+    # so a new release — on the Overview, a newly reported one — re-opens the
+    # slider on the newest releases rather than leaving it on a range that
+    # stopped at yesterday's. So does a change of scope — another section, or
+    # a detector with other releases — while the same releases keep the range.
     lo, hi = st.select_slider(
         "Releases", releases,
         value=(opening[0], opening[-1]),
         format_func=pretty_release,
         help=(
             "The Key4hep releases this tab draws, out of every release "
-            "benchmarked on the platform by any detector."
+            "benchmarked on the platform by any detector and judged by a "
+            "nightly report."
             if across_detectors else
             "The Key4hep releases the trend views read, out of those the "
             "selected detector was benchmarked with."
