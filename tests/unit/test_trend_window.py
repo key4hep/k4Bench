@@ -1,6 +1,6 @@
-"""Unit tests for ``dashboard/trend_window.py``: preset → release-window
-resolution, the report nights that judged the window, and the run listing cut
-to it.
+"""Unit tests for ``dashboard/trend_window.py``: the release range the window
+opens on, the report nights that judged a range, and the run listing cut to
+it.
 
 ``trend_window`` is a pure, Streamlit-free module, so it is loaded in isolation
 by file path (its siblings ``app``/``data`` pull in Streamlit).
@@ -51,34 +51,17 @@ def test_release_day_reads_the_tag_date():
     assert tw.release_day("key4hep-latest") is None
 
 
-# ── select_releases ──────────────────────────────────────────────────────────
+# ── default_releases ─────────────────────────────────────────────────────────
 
-def test_a_preset_takes_the_newest_n_releases():
-    assert tw.select_releases("Last 5 releases", _RELEASES, None) == _RELEASES[-5:]
-    assert tw.select_releases("Last 10 releases", _RELEASES, None) == _RELEASES[-10:]
+def test_the_window_opens_on_the_newest_ten_releases():
+    assert tw.default_releases(_RELEASES, None) == _RELEASES[-10:]
+    assert tw.default_releases(_RELEASES, None, count=5) == _RELEASES[-5:]
 
 
-def test_a_preset_longer_than_the_history_takes_all_of_it():
-    assert tw.select_releases("Last 50 releases", _RELEASES, None) == _RELEASES
+def test_a_history_shorter_than_the_count_opens_on_all_of_it():
+    assert tw.default_releases(_RELEASES, None, count=50) == _RELEASES
     one = [_rel("10-05")]
-    assert tw.select_releases("Last 5 releases", one, None) == one
-
-
-def test_all_takes_every_release():
-    assert tw.select_releases("All", _RELEASES, None) == _RELEASES
-
-
-def test_custom_range_takes_both_ends_and_everything_between():
-    picked = (_rel("09-22"), _rel("09-28"))
-    assert tw.select_releases("Custom…", _RELEASES, picked) == [
-        _rel("09-22"), _rel("09-23"), _rel("09-24"), _rel("09-26"), _rel("09-28"),
-    ]
-    single = (_rel("10-01"), _rel("10-01"))
-    assert tw.select_releases("Custom…", _RELEASES, single) == [_rel("10-01")]
-
-
-def test_custom_without_range_falls_back_to_every_release():
-    assert tw.select_releases("Custom…", _RELEASES, None) == _RELEASES
+    assert tw.default_releases(one, None) == one
 
 
 def test_a_release_ahead_of_the_newest_report_is_added_on_top():
@@ -87,27 +70,29 @@ def test_a_release_ahead_of_the_newest_report_is_added_on_top():
     taking the Overview's oldest night with it; it is added on top instead."""
     uploading = [*_RELEASES, _rel("10-06")]
     newest_report = date(2026, 10, 5)
-    assert tw.select_releases(
-        "Last 5 releases", uploading, None, anchor=newest_report,
-    ) == [*_RELEASES[-5:], _rel("10-06")]
+    assert tw.default_releases(uploading, newest_report, count=5) == [
+        *_RELEASES[-5:], _rel("10-06"),
+    ]
 
 
 def test_an_anchor_on_a_rerun_night_counts_the_release_it_reran():
     # The 10-04 report re-ran the 10-03 release: 10-05 has no report yet.
-    assert tw.select_releases(
-        "Last 5 releases", _RELEASES, None, anchor=date(2026, 10, 4),
+    assert tw.default_releases(
+        _RELEASES, date(2026, 10, 4), count=5,
     ) == _RELEASES[-6:]
 
 
-def test_no_anchor_counts_from_the_newest_release():
-    assert tw.select_releases("Last 5 releases", _RELEASES, None, anchor=None) == \
-           tw.select_releases("Last 5 releases", _RELEASES, None)
-
-
 def test_an_anchor_past_every_release_counts_from_the_newest():
-    assert tw.select_releases(
-        "Last 5 releases", _RELEASES, None, anchor=date(2027, 1, 1),
-    ) == _RELEASES[-5:]
+    assert tw.default_releases(_RELEASES, date(2027, 1, 1), count=5) == _RELEASES[-5:]
+
+
+# ── releases_between ─────────────────────────────────────────────────────────
+
+def test_releases_between_takes_both_ends_and_everything_between():
+    assert tw.releases_between(_RELEASES, _rel("09-22"), _rel("09-28")) == [
+        _rel("09-22"), _rel("09-23"), _rel("09-24"), _rel("09-26"), _rel("09-28"),
+    ]
+    assert tw.releases_between(_RELEASES, _rel("10-01"), _rel("10-01")) == [_rel("10-01")]
 
 
 # ── report_span ──────────────────────────────────────────────────────────────

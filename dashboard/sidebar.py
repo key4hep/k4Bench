@@ -25,12 +25,12 @@ from remote_cache import (
     list_platform_stacks,
 )
 from trend_window import (
-    WINDOW_PRESETS,
     dated_releases,
+    default_releases,
     release_day,
+    releases_between,
     report_span,
     runs_in_window,
-    select_releases,
     to_dates,
 )
 from ui_chrome import (
@@ -42,10 +42,6 @@ from ui_chrome import (
     resource_link_card,
     seed_query_param,
 )
-
-#: The preset a first visit opens on, when the URL names none.
-DEFAULT_PRESET = "Last 10 releases"
-
 
 @dataclass(frozen=True)
 class RunSelection:
@@ -185,16 +181,6 @@ def pick_run(base_url: str, cache_dir: str) -> RunSelection | None:
     return RunSelection(detector, platform, sample, stack, data_dir)
 
 
-def _pick_custom_range(releases: list[str], opening: list[str]) -> tuple[str, str]:
-    """The custom range's oldest and newest release, opening on *opening*."""
-    lo, hi = st.select_slider(
-        "Releases", releases,
-        value=(opening[0], opening[-1]),
-        format_func=pretty_release,
-    )
-    return lo, hi
-
-
 def pick_trend_window(base_url: str, run: RunSelection, cache_dir: str) -> TrendWindow:
     """The Trend window section, and the runs it covers for *run*'s
     detector, platform and sample.
@@ -211,9 +197,9 @@ def pick_trend_window(base_url: str, run: RunSelection, cache_dir: str) -> Trend
         stacks_dates = {}
     run_days = to_dates(dt for dates in stacks_dates.values() for dt in dates)
 
-    # Every release benchmarked on the platform, by any detector: the presets
-    # count over these so that they cover the same releases whichever detector
-    # is selected (see `trend_window.select_releases`). The selected
+    # Every release benchmarked on the platform, by any detector: the slider
+    # ranges over these so that it covers the same releases whichever
+    # detector is selected (see `trend_window.default_releases`). The selected
     # detector's own releases are folded in so a listing that missed one
     # cannot hide its runs.
     try:
@@ -226,8 +212,8 @@ def pick_trend_window(base_url: str, run: RunSelection, cache_dir: str) -> Trend
         return TrendWindow()
 
     # The nightly report nights — one cached directory listing, the same one
-    # the Overview tab reads. The newest is where a preset starts counting,
-    # and they bound the nights the Overview draws.
+    # the Overview tab reads. The newest is where the opening range starts
+    # counting, and they bound the nights the Overview draws.
     try:
         report_nights = cached_list_report_dates(base_url)
     except Exception as err:
@@ -236,26 +222,21 @@ def pick_trend_window(base_url: str, run: RunSelection, cache_dir: str) -> Trend
     report_days = to_dates(report_nights)
 
     st.header("Trend window")
-    presets = list(WINDOW_PRESETS)
-    seed_query_param("sb_trend_preset", "range", presets)
-    st.session_state.setdefault("sb_trend_preset", DEFAULT_PRESET)
-    preset = st.selectbox(
-        "Range", presets,
-        key="sb_trend_preset",
+    opening = default_releases(releases, report_days[-1] if report_days else None)
+    # No key: a widget without one is identified by its options and default,
+    # so a new release or a newly landed report re-opens the slider on the
+    # newest releases rather than leaving it on a range that stopped at
+    # yesterday's. Switching detector changes neither, so it keeps the range.
+    lo, hi = st.select_slider(
+        "Releases", releases,
+        value=(opening[0], opening[-1]),
+        format_func=pretty_release,
         help="Limits the Key4hep releases plotted in the Trends and "
-             "Overview tabs. Counted over every release benchmarked on the "
+             "Overview tabs. Ranges over every release benchmarked on the "
              "platform, so it covers the same releases whichever detector "
              "is selected. Smaller windows load faster.",
     )
-    st.query_params["range"] = preset
-    anchor = report_days[-1] if report_days else None
-    custom_range = None
-    if preset == "Custom…":
-        custom_range = _pick_custom_range(
-            releases, select_releases(DEFAULT_PRESET, releases, None, anchor),
-        )
-
-    selected = select_releases(preset, releases, custom_range, anchor)
+    selected = releases_between(releases, lo, hi)
     windowed = runs_in_window(stacks_dates, selected)
     n_runs = sum(len(dates) for _, dates in windowed)
     first, last = release_day(selected[0]), release_day(selected[-1])

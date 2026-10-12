@@ -150,24 +150,26 @@ two attribution views (`at_location` and `by_birth`) and adds:
 
 Plots a metric over time. The x-axis is anchored on the **Key4hep release date**
 (falling back to the run date), so you see regressions aligned with releases.
-A sidebar **release window** (`Last 5 releases`, `10` — the default — `20`,
-`50`, `All`, or a custom range picked on a release slider) controls how much
-history is downloaded and shown: every run of the Key4hep releases in the
-window, including a release re-run on later nights. A preset counts back over
-**every release benchmarked on the platform**, not the selected detector's, so
-the same preset covers the same releases whichever detector the sidebar has
-selected. This matters most for the cross-detector Overview tab, which draws
+A sidebar **release slider** controls how much history is downloaded and shown:
+every run of the Key4hep releases between its two handles, including a release
+re-run on later nights. It ranges over **every release benchmarked on the
+platform**, not the selected detector's, so the same range covers the same
+releases whichever detector the sidebar has selected, and switching detector
+keeps it. This matters most for the cross-detector Overview tab, which draws
 every detector over this one window, from the night the oldest release was
-tagged: a window counted over one detector's releases would shrink to that
-detector's history whenever a recently added one was picked, and detectors that
-had run for longer would silently lose their history from its charts. The
-count starts at the newest nightly *report* night; a release that tonight's
-batch is still uploading is added on top, so a window can hold one release more
-than its label until the report lands. A detector benchmarked for fewer
-releases than the window holds fills only part of it — after a detector version
-bump, every preset longer than the new version's history shows the same runs —
-and the sidebar caption counts the releases it ran in and names the night it
-first ran; if it has no run in the window, it names the night it last ran (see
+tagged: a range over one detector's releases would shrink to that detector's
+history whenever a recently added one was picked, and detectors that had run
+for longer would silently lose their history from its charts. The slider opens
+on the **10 newest releases**, counted from the newest nightly *report* night;
+a release that tonight's batch is still uploading is added on top, so it can
+open on 11 until the report lands. When a new release is published, or a
+report lands, it reopens on the newest releases rather than staying on a range
+that stops at yesterday's. The window is not part of the page URL. A detector
+benchmarked for fewer releases than the window holds fills only part of it —
+after a detector version bump, every range longer than the new version's
+history shows the same runs — and the sidebar caption counts the releases it
+ran in and names the night it first ran; if it has no run in the window, it
+names the night it last ran (see
 [`trend_window`](../../reference/api/analysis/index.md) — pure logic,
 unit-tested).
 
@@ -364,8 +366,7 @@ date it is stamped with should not decide whether the filter can see it.
 A `?report=YYYY-MM-DD` query parameter pins one report night directly and is
 authoritative when valid — this is the stable deep link the nightly email and
 the Overview roster generate, so a link to a confirmed regression keeps
-pointing at the exact report the email described. (The Run Trends
-`range=` window is unrelated and does not select a regression report.)
+pointing at the exact report the email described.
 
 The selected run group renders flat: an at-a-glance banner (regressed / watch
 / failures / within-baseline counts) and a **trend preview** that plots a

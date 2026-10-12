@@ -127,7 +127,8 @@ def _window_app(dashboard_dir, run_dates, report_nights, platform_stacks) -> Non
     def _platform_stacks(url, plat):
         if platform_stacks is None:
             raise OSError("listing timed out")
-        return platform_stacks
+        # A test publishes a release mid-session through "new_stacks".
+        return [*st.session_state.get("new_stacks", []), *platform_stacks]
 
     sidebar.cached_list_run_dates = lambda url, det, plat, sample: run_dates
     sidebar.cached_list_report_dates = lambda url: report_nights
@@ -138,7 +139,8 @@ def _window_app(dashboard_dir, run_dates, report_nights, platform_stacks) -> Non
         )
     )
     selection = sidebar.RunSelection(
-        "CLD_o2_v09", "PLAT", "single_e-_10GeV", "key4hep-2026-10-10", "/cache/run"
+        st.session_state.get("detector", "CLD_o2_v09"),
+        "PLAT", "single_e-_10GeV", "key4hep-2026-10-10", "/cache/run",
     )
     st.session_state["window"] = sidebar.pick_trend_window(
         "https://store.invalid", selection, "/cache"
@@ -159,15 +161,13 @@ REPORT_NIGHTS = ["2026-10-10", "2026-10-11"]
 
 
 def _run_window(
-    run_dates, report_nights=REPORT_NIGHTS, platform_stacks=PLATFORM_STACKS, params=None,
+    run_dates, report_nights=REPORT_NIGHTS, platform_stacks=PLATFORM_STACKS,
 ) -> AppTest:
     at = AppTest.from_function(
         _window_app,
         args=(str(_DASHBOARD_DIR), run_dates, report_nights, platform_stacks),
         default_timeout=30,
     )
-    for key, value in (params or {}).items():
-        at.query_params[key] = value
     at.run()
     assert not at.exception, at.exception
     return at
@@ -192,8 +192,9 @@ def test_trend_window_opens_on_the_last_10_releases_of_the_platform():
         f"/cache/{_rel('10-10')}/2026-10-11",
         f"/cache/{_rel('10-12')}/2026-10-12",
     )
-    assert at.selectbox(key="sb_trend_preset").value == "Last 10 releases"
-    assert _query(at) == {"range": "Last 10 releases"}
+    assert at.select_slider[0].value == (_rel("09-22"), _rel("10-12"))
+    # The window is not part of the deep link.
+    assert _query(at) == {}
     assert at.caption[0].value == (
         "2026-09-22 → 2026-10-12 · 11 release(s) · 4 run(s) in 3 of them"
     )
@@ -201,7 +202,7 @@ def test_trend_window_opens_on_the_last_10_releases_of_the_platform():
 
 def test_trend_window_names_when_a_new_detector_first_ran():
     # A detector added two releases ago fills only part of any window, which
-    # is why every preset longer than its history shows the same runs.
+    # is why every range longer than its history shows the same runs.
     at = _run_window({_rel("10-10"): ["2026-10-10"], _rel("10-12"): ["2026-10-12"]})
     assert at.caption[0].value == (
         "2026-09-22 → 2026-10-12 · 11 release(s) · 2 run(s) in 2 of them"
@@ -211,10 +212,8 @@ def test_trend_window_names_when_a_new_detector_first_ran():
 
 def test_trend_window_does_not_name_a_detector_that_ran_its_oldest_release():
     # The oldest release ran the night after it was tagged: still the whole window.
-    at = _run_window(
-        {_rel("09-20"): ["2026-09-21"], _rel("10-12"): ["2026-10-12"]},
-        params={"range": "All"},
-    )
+    at = _run_window({_rel("09-20"): ["2026-09-21"], _rel("10-12"): ["2026-10-12"]})
+    at.select_slider[0].set_value((_rel("09-20"), _rel("10-12"))).run()
     assert at.caption[0].value == (
         "2026-09-20 → 2026-10-12 · 12 release(s) · 2 run(s) in 2 of them"
     )
@@ -229,7 +228,7 @@ def test_trend_window_names_the_last_run_of_a_detector_outside_it():
 def test_trend_window_is_absent_until_something_has_run():
     at = _run_window({}, [], [])
     assert at.session_state["window"] == sidebar.TrendWindow()
-    assert not at.header and not at.selectbox
+    assert not at.header and not at.select_slider
 
 
 def test_trend_window_falls_back_to_the_detectors_releases():
@@ -240,16 +239,33 @@ def test_trend_window_falls_back_to_the_detectors_releases():
     assert window.run_dirs == (f"/cache/{_rel('10-10')}/2026-10-10",)
 
 
-def test_custom_range_spans_the_releases_between_its_two_ends():
-    run_dates = {_rel(d): [f"2026-{d}"] for d in ("09-24", "09-26", "09-28", "10-10")}
-    at = _run_window(run_dates, params={"range": "Custom…"})
-    slider = at.select_slider[0]
-    # Opens on the releases the default preset covers.
-    assert slider.value == (_rel("09-22"), _rel("10-12"))
-    slider.set_value((_rel("09-24"), _rel("09-28"))).run()
+_PICKED_RUNS = {_rel(d): [f"2026-{d}"] for d in ("09-24", "09-26", "09-28", "10-10")}
+
+
+def test_a_picked_range_spans_the_releases_between_its_two_ends():
+    at = _run_window(_PICKED_RUNS)
+    at.select_slider[0].set_value((_rel("09-24"), _rel("09-28"))).run()
     window = at.session_state["window"]
     # The 09-28 release was benchmarked until 09-30 was tagged.
     assert window.dates == (date(2026, 9, 24), date(2026, 9, 29))
     assert window.run_dirs == tuple(
         f"/cache/{_rel(d)}/2026-{d}" for d in ("09-24", "09-26", "09-28")
     )
+
+
+def test_a_picked_range_survives_switching_detector():
+    at = _run_window(_PICKED_RUNS)
+    at.select_slider[0].set_value((_rel("09-24"), _rel("09-28"))).run()
+    at.session_state["detector"] = "ALLEGRO_o1_v04"
+    at.run()
+    assert at.select_slider[0].value == (_rel("09-24"), _rel("09-28"))
+    assert at.session_state["window"].dates == (date(2026, 9, 24), date(2026, 9, 29))
+
+
+def test_a_new_release_reopens_the_window_on_the_newest_releases():
+    # A range picked yesterday would otherwise stop short of tonight's release.
+    at = _run_window(_PICKED_RUNS)
+    at.select_slider[0].set_value((_rel("09-24"), _rel("09-28"))).run()
+    at.session_state["new_stacks"] = [_rel("10-14")]
+    at.run()
+    assert at.select_slider[0].value == (_rel("09-22"), _rel("10-14"))
