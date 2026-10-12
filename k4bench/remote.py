@@ -542,8 +542,10 @@ def fetch_stack_snapshot(
                     return stack_snapshot(info, {})
                 manifests = [gzip.decompress(get(name).content).decode() for name in STACK_MANIFESTS]
                 return stack_snapshot(info, get("machine_info.json").json(), manifests)
-            except requests.RequestException as exc:
-                if not _is_absent(exc):
+            except (requests.RequestException, ValueError, EOFError) as exc:
+                # A truncated file is a partial upload too; requests' JSON
+                # decode error is a ValueError as well as a RequestException.
+                if not isinstance(exc, (ValueError, EOFError)) and not _is_absent(exc):
                     raise
                 _log.debug("fetch_stack_snapshot: incomplete run %s — %s", url, exc)
     except (requests.RequestException, ValueError, OSError, EOFError) as exc:

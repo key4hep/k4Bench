@@ -786,10 +786,11 @@ def test_measured_stack_timeout_is_not_a_cacheable_absence(monkeypatch):
 
 
 @pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize("truncated", [False, True])
 @pytest.mark.parametrize("missing", [
     "run_info.json", "LCG_externals.txt.gz", "LCG_contrib.txt.gz", "machine_info.json",
 ])
-def test_measured_stack_skips_partial_newest_run(monkeypatch, strict, missing):
+def test_measured_stack_skips_partial_newest_run(monkeypatch, strict, truncated, missing):
     from tests.unit.test_stack_capture import FIXTURES
     root = f"{BASE}/ILD/platform/release/Zbb"
     newest, older = f"{root}/2026-10-04", f"{root}/2026-10-03"
@@ -809,8 +810,11 @@ def test_measured_stack_skips_partial_newest_run(monkeypatch, strict, missing):
            for name, content in artifacts.items()},
     })
 
+    if truncated:
+        web.tree[f"{newest}/{missing}"] = artifacts[missing][: len(artifacts[missing]) // 2]
+
     def get(url, timeout=None):
-        if url == f"{newest}/{missing}":
+        if url == f"{newest}/{missing}" and not truncated:
             web.requested.append(url)
             raise _http_error(url, 404)
         return web.get(url, timeout)
