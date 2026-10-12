@@ -482,6 +482,40 @@ def test_excluding_the_flagged_run_takes_its_markers_off_the_chart():
     assert _marker_modes(at).count("markers") == 4
 
 
+def _data_range(at: AppTest) -> str:
+    return next(c.value for c in at.caption if c.value.startswith("Data range"))
+
+
+def test_data_range_counts_the_tags_on_the_chart():
+    at = _run(_reports_stub(confirmed=False))
+    assert _data_range(at) == "Data range: **2026-05-20** → **2026-05-21** (2 nightly tags)"
+
+
+def test_data_range_names_a_tag_hidden_as_unreliable():
+    # The 05-21 tag's only run failed the host check: the chart ends on 05-20,
+    # and so does the range, with the dropped tag counted apart.
+    at = _run(_reports_stub(confirmed=False), {"2026-05-21": False})
+    assert _data_range(at) == (
+        "Data range: **2026-05-20** → **2026-05-20** "
+        "(1 nightly tag · 1 hidden as unreliable)"
+    )
+    at.segmented_control(key="trends_exclude_unreliable").set_value("All runs").run()
+    assert _data_range(at) == "Data range: **2026-05-20** → **2026-05-21** (2 nightly tags)"
+
+
+def test_data_range_keeps_a_tag_with_a_reliable_rerun():
+    # Dropping one of a tag's runs leaves its point, so nothing is hidden.
+    at = _run(_reports_stub(confirmed=False), {"2026-05-21": False}, same_tag=True)
+    assert _data_range(at) == "Data range: **2026-05-21** → **2026-05-21** (1 nightly tag)"
+
+
+def test_data_range_keeps_a_tag_shown_by_its_failure_marker():
+    # A failed config is plotted as a marker whatever its host verdict, so its
+    # tag is on the chart.
+    at = _run(_reports_stub(confirmed=False), {"2026-05-21": False}, failed=True)
+    assert _data_range(at) == "Data range: **2026-05-20** → **2026-05-21** (2 nightly tags)"
+
+
 def test_virtual_peak_is_visible_and_flagged():
     df = _trend_df().assign(peak_vmem_mb=[2000.0, 2400.0])
     severity = {

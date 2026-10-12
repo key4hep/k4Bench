@@ -182,7 +182,10 @@ regression, inverted); user CPU, peak RSS, CPU efficiency and context switches
 are recorded only and carry none. Runs that
 failed the host-reliability check are excluded by default with the same
 **Runs · ⚠ N unreliable** selector as every other historical view: **Reliable
-only** (the default) or **All runs**. Palette, style cycling, opacity
+only** (the default) or **All runs**. The **Data range** caption above the
+chart spans the nightly tags actually plotted; a tag whose every run was
+excluded is counted apart (`9 nightly tags · 1 hidden as unreliable`), so the
+caption and the chart never disagree. Palette, style cycling, opacity
 and line smoothing sit in this tab's [Display options](#display-options)
 popover, alongside the pills on the same row.
 
