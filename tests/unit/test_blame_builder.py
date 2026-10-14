@@ -1833,16 +1833,23 @@ def test_external_only_window_is_assessed_without_creating_candidates():
     assert type(entry).from_dict(newer) == entry
 
 
-def test_only_changed_packages_a_window_run_loaded_become_candidates(monkeypatch):
+def _loaded_window(moved: str):
+    """The real 2026-10-02 → 10-03 HEAD maps and captured endpoint stacks.
+
+    Their five real moves are packages ddsim never loaded; *moved*, one it
+    loaded, is moved beside them."""
     import json
     from tests.unit.test_stack_capture import FIXTURES, snapshots
-    base, head = snapshots()
     packages = {
         release: json.loads((FIXTURES / f"HEAD-{release}.json").read_text())
         for release in ("2026-10-02", "2026-10-03")
     }
-    # Move one package ddsim loaded beside the five real moves it did not.
-    packages["2026-10-03"]["k4geo"] = {**packages["2026-10-03"]["k4geo"], "commit": "c" * 7}
+    packages["2026-10-03"][moved] = {**packages["2026-10-03"][moved], "commit": "c" * 7}
+    return packages, *snapshots()
+
+
+def test_only_changed_packages_a_window_run_loaded_become_candidates(monkeypatch):
+    packages, base, head = _loaded_window("k4geo")
     resolved = []
     _stub_resolve(monkeypatch, lambda client, slug, *a: resolved.append(slug) or RepoResolution())
 
@@ -1863,3 +1870,48 @@ def test_only_changed_packages_a_window_run_loaded_become_candidates(monkeypatch
     assert sorted(r.package for r in entry.repos) == [
         "acts", "ddml", "k4actstracking", "k4geo", "k4reco", "marlintrkprocessors",
     ]
+
+
+def test_the_harness_is_never_filtered_by_the_loaded_stack(monkeypatch):
+    packages, base, head = _loaded_window("k4geo")
+    packages["2026-10-03"]["k4geo"] = packages["2026-10-02"]["k4geo"]
+    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+    blame = build_blame_report(
+        _report([_verdict(base="2026-10-02", onset="2026-10-03")]),
+        packages_for_release=lambda platform, release: packages[release],
+        provenance_for_run=lambda d, p, r, s, run: base if r == "2026-10-02" else head,
+        k4bench_commit_for_run=_commits({
+            _hkey("2026-10-02", "2026-10-02"): ("1" * 40, _RUN_URL),
+            _hkey("2026-10-03", "2026-10-03"): ("2" * 40, _RUN_URL),
+        }),
+        github=GitHubClient(),
+    )
+    # Every stack move was unloaded; the harness is not a stack package at all.
+    assert [r.package for r in blame.entries[0].repos] == ["k4bench"]
+
+
+def test_scopes_sharing_a_release_window_are_filtered_by_their_own_loaded_set(monkeypatch):
+    packages, base, head = _loaded_window("SIO")
+    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+
+    def provenance(detector, platform, release, sample, run):
+        snapshot = base if release == "2026-10-02" else head
+        if detector == "IDEA_o1_v04":
+            return dataclasses.replace(snapshot, loaded=snapshot.loaded - {"SIO"})
+        return snapshot
+
+    # The scope that never loaded SIO is built first: filtering it must not
+    # drop SIO from the release diff the other scope reads from the same cache.
+    blame = build_blame_report(
+        _report_groups(*(
+            (detector, "single_e", [_verdict(base="2026-10-02", onset="2026-10-03",
+                                             detector=detector)])
+            for detector in ("IDEA_o1_v04", "IDEA_o2_v01")
+        )),
+        packages_for_release=lambda platform, release: packages[release],
+        provenance_for_run=provenance,
+        github=GitHubClient(),
+    )
+    repos = {e.detector: [r.package for r in e.repos] for e in blame.entries}
+    # The recorded Geant4 move keeps an entry for the scope with no candidates.
+    assert repos == {"IDEA_o1_v04": [], "IDEA_o2_v01": ["SIO"]}
