@@ -89,7 +89,7 @@ class PackageChange:
         return repo.compare_url(self.base_commit, self.head_commit)
 
 
-def _package_key(name: str) -> str:
+def package_key(name: str) -> str:
     """A package name as both stacks can agree on it.
 
     Spack lower-cases and hyphenates (``dd4hep``, ``fcc-config``,
@@ -122,9 +122,9 @@ def _code_changed(before: dict, after: dict) -> bool | None:
 
 def _paired(base: dict, head: dict) -> list[tuple[str, dict | None, dict | None]]:
     """``(name, base entry, head entry)`` per package across both maps, matched
-    on :func:`_package_key` and named as the head spells it."""
-    base_by_key = {_package_key(name): name for name in base}
-    head_by_key = {_package_key(name): name for name in head}
+    on :func:`package_key` and named as the head spells it."""
+    base_by_key = {package_key(name): name for name in base}
+    head_by_key = {package_key(name): name for name in head}
     return [
         (
             head_by_key.get(key) or base_by_key[key],
@@ -181,7 +181,7 @@ def diff_stacks(base: StackSnapshot, head: StackSnapshot) -> list[PackageChange]
     capture is absent, an unobserved package's load status remains unknown.
     """
     loaded_names = (base.loaded or frozenset()) | (head.loaded or frozenset())
-    loaded = {_package_key(name) for name in loaded_names}
+    loaded = {package_key(name) for name in loaded_names}
     unobserved = False if base.loaded is not None and head.loaded is not None else None
     changes = []
     for name, before, after in _paired(base.packages, head.packages):
@@ -197,7 +197,7 @@ def diff_stacks(base: StackSnapshot, head: StackSnapshot) -> list[PackageChange]
             repo_url=h.get("repo_url") or b.get("repo_url"),
             base_version=b.get("version"), head_version=h.get("version"),
             head_githash=h.get("githash"), kind="head" if versions == {"HEAD"} else "pin",
-            loaded=True if _package_key(name) in loaded else unobserved,
+            loaded=True if package_key(name) in loaded else unobserved,
         ))
     if base.datasets is not None and head.datasets is not None:
         for name in sorted(base.datasets.keys() | head.datasets.keys()):

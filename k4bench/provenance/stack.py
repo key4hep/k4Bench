@@ -96,6 +96,14 @@ def capture_stack(run_dir: Path, info: dict, env: dict[str, str]) -> None:
                    **info.get("k4h_packages", {}).get(name, {})}
             for name in sorted(loaded)
         }
+        # k4run appends its imported Python modules; ddsim records only mapped
+        # files, so a HEAD package without a shared library is never seen even
+        # when the steering file imports it. Blame keeps those as candidates.
+        info["k4h_unmappable_packages"] = [] if info.get("tool") == "k4run" else sorted(
+            name for name, package in packages.items()
+            if package["version"] == "HEAD" and name not in loaded
+            and not any(Path(package["install_path"]).glob("lib*/**/*.so*"))
+        )
         info["g4_datasets"] = datasets
     except Exception as exc:
         _log.warning("Loaded stack provenance not recorded: %s", exc)
@@ -167,6 +175,7 @@ class StackSnapshot:
     datasets: dict[str, str] | None = None
     os: str | None = None
     complete: bool = False
+    unmappable: frozenset[str] | None = None
 
 
 def stack_snapshot(info: dict, machine: dict, manifests: list[str] | tuple[str, ...] = ()) -> StackSnapshot:
@@ -179,9 +188,11 @@ def stack_snapshot(info: dict, machine: dict, manifests: list[str] | tuple[str, 
     loaded = info.get("k4h_loaded_packages")
     for name, package in (loaded or {}).items():
         packages.setdefault(name, {}).update(package)
+    unmappable = info.get("k4h_unmappable_packages")
     return StackSnapshot(
         packages, frozenset(loaded) if isinstance(loaded, dict) else None,
         info.get("g4_datasets"), machine.get("os") or None, len(manifests) == 2,
+        frozenset(unmappable) if isinstance(unmappable, list) else None,
     )
 
 

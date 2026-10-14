@@ -27,6 +27,7 @@ def snapshots():
         info = {
             "k4h_packages": json.loads((FIXTURES / f"HEAD-2026-10-{day}.json").read_text()),
             "k4h_loaded_packages": {n: dict(p) for n, p in loaded.items()},
+            "k4h_unmappable_packages": [],
             "g4_datasets": datasets,
         }
         info["k4h_loaded_packages"]["Geant4"]["version"] = version
@@ -163,6 +164,46 @@ def test_capture_matches_the_executed_ddsim_steering_file(tmp_path, monkeypatch)
     info = {"tool": "ddsim", "configs": ["baseline"], "resolved_steering_file": steering}
     stack.capture_stack(run, info, {"K4H_STACK_SETUP": str(setup)})
     assert steering in seen
+
+
+@pytest.mark.parametrize("tool", ["ddsim", "k4run"])
+def test_ddsim_capture_lists_head_packages_it_could_run_unmapped(tmp_path, monkeypatch, tool):
+    setup = tmp_path / "lcg/views/devkey-head/Mon/platform/setup.sh"
+    setup.parent.mkdir(parents=True)
+    setup.touch()
+    nightly = tmp_path / "lcg/nightlies/devkey-head/Mon"
+    nightly.mkdir(parents=True)
+    for kind in ("externals", "contrib"):
+        (nightly / f"LCG_{kind}_platform.txt").write_text("")
+    packages = {}
+    for name, version, library in (
+        ("k4geo", "HEAD", "lib/libk4geo.so"),        # loaded
+        ("k4reco", "HEAD", "lib64/libk4reco.so.1"),  # unloaded library
+        ("cldconfig", "HEAD", None),                 # Python-only
+        ("Eigen", "3.4.0", None),                    # pinned, never a candidate
+    ):
+        install = tmp_path / "install" / name
+        (install / "share").mkdir(parents=True)
+        if library:
+            (install / library).parent.mkdir(parents=True, exist_ok=True)
+            (install / library).touch()
+        packages[name] = {"version": version, "hash": "h", "install_path": str(install)}
+    monkeypatch.setattr(stack, "parse_manifest", lambda source: packages)
+    monkeypatch.setattr(stack, "mapped_packages", lambda paths, packages: ({"k4geo"}, []))
+    run = tmp_path / "run"
+    run.mkdir()
+    stack.loaded_paths_file(run, "baseline").write_text("# k4bench loaded paths v1\n/lib/library.so\n")
+    info = {"tool": tool, "configs": ["baseline"]}
+    stack.capture_stack(run, info, {"K4H_STACK_SETUP": str(setup)})
+    # k4run appends its imported Python modules, so nothing escapes its loaded set.
+    assert info["k4h_unmappable_packages"] == (["cldconfig"] if tool == "ddsim" else [])
+    snapshot = stack.stack_snapshot(info, {})
+    assert snapshot.unmappable == frozenset(info["k4h_unmappable_packages"])
+
+
+def test_capture_without_the_unmappable_list_is_unknown_coverage():
+    info = {"k4h_loaded_packages": {"k4geo": {"version": "HEAD"}}}
+    assert stack.stack_snapshot(info, {}).unmappable is None
 
 
 def test_conflicting_config_datasets_leave_no_job_environment_claim(tmp_path, monkeypatch):

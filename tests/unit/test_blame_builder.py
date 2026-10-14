@@ -8,8 +8,9 @@ from pathlib import Path
 
 import yaml
 
-from k4bench.blame import builder as builder_mod
-from k4bench.blame.builder import build_blame_report
+from k4bench.blame.builder import build_blame_report, night
+from k4bench.blame.builder.night import _detector_switch_boundaries
+from k4bench.blame.builder.ranking import _packages_changed
 from k4bench.blame.comment import CommentPolicy
 from k4bench.blame.github import (
     FilePatch,
@@ -84,7 +85,7 @@ def _provenance(mapping):
 
 
 def _stub_resolve(monkeypatch, fn):
-    monkeypatch.setattr(builder_mod, "resolve_repo_prs", fn)
+    monkeypatch.setattr(night, "resolve_repo_prs", fn)
 
 
 def test_bounded_window_collects_candidates(monkeypatch):
@@ -169,9 +170,9 @@ def test_a_detector_switch_inside_the_history_is_no_stack_boundary():
         ReleasePoint("2026-07-03", 110.0, 1, 1, Severity.OK, Direction.NONE),
     )
     v = dataclasses.replace(_verdict(detector="ALLEGRO_o1_v04"), history=history)
-    changed = builder_mod._packages_changed(v, lambda *a: 0)
+    changed = _packages_changed(v, lambda *a: 0)
     assert changed == {"2026-07-01": None, "2026-07-02": None, "2026-07-03": 0}
-    assert builder_mod._detector_switch_boundaries([v]) == {
+    assert _detector_switch_boundaries([v]) == {
         (_PLAT, "2026-07-01", _PLAT, "2026-07-02"),
     }
 
@@ -1332,7 +1333,7 @@ def test_the_harness_filter_keeps_everything_that_can_touch_a_measurement():
     # workflow, the timing plugin, packaging — is exactly what an allowlist
     # forgets first, and a filter that hides the true culprit fails in the
     # direction this feature exists to fix.
-    from k4bench.blame.builder import _harness_candidate_signal
+    from k4bench.blame.builder.runs import _harness_candidate_signal
 
     kept = [
         ("k4bench/geometry/patcher.py",),
@@ -1625,7 +1626,7 @@ def test_a_degenerate_harness_range_is_refused(monkeypatch, caplog):
     # carry them). If the narrowing ever produced a base run at or after the
     # onset run, the compare URL would be reversed — silently, confidently
     # wrong. Refuse instead.
-    from k4bench.blame.builder import _harness_change
+    from k4bench.blame.builder.runs import _harness_change
 
     v1 = dataclasses.replace(
         _verdict(), last_accepted_run_id="2026-07-03", onset_run_id="2026-07-06",
@@ -1830,3 +1831,109 @@ def test_external_only_window_is_assessed_without_creating_candidates():
     newer = entry.to_dict()
     newer["external_changes"][0]["future_field"] = "ignored"
     assert type(entry).from_dict(newer) == entry
+
+
+def _loaded_window(moved: str):
+    """The real 2026-10-02 → 10-03 HEAD maps and captured endpoint stacks.
+
+    Their five real moves are packages ddsim never loaded; *moved*, one it
+    loaded, is moved beside them."""
+    import json
+    from tests.unit.test_stack_capture import FIXTURES, snapshots
+    packages = {
+        release: json.loads((FIXTURES / f"HEAD-{release}.json").read_text())
+        for release in ("2026-10-02", "2026-10-03")
+    }
+    packages["2026-10-03"][moved] = {**packages["2026-10-03"][moved], "commit": "c" * 7}
+    return packages, *snapshots()
+
+
+def test_only_changed_packages_a_window_run_loaded_become_candidates(monkeypatch):
+    packages, base, head = _loaded_window("k4geo")
+    resolved = []
+    _stub_resolve(monkeypatch, lambda client, slug, *a: resolved.append(slug) or RepoResolution())
+
+    def build(head_snapshot):
+        resolved.clear()
+        return build_blame_report(
+            _report([_verdict(base="2026-10-02", onset="2026-10-03")]),
+            packages_for_release=lambda platform, release: packages[release],
+            provenance_for_run=lambda d, p, r, s, run: base if r == "2026-10-02" else head_snapshot,
+            github=GitHubClient(),
+        ).entries[0]
+
+    entry = build(head)
+    assert [r.package for r in entry.repos] == ["k4geo"]
+    assert resolved == ["key4hep/k4geo"]
+    # A run without a loaded set cannot rule anything out.
+    entry = build(dataclasses.replace(head, loaded=None))
+    assert sorted(r.package for r in entry.repos) == [
+        "acts", "ddml", "k4actstracking", "k4geo", "k4reco", "marlintrkprocessors",
+    ]
+
+
+def test_unmappable_packages_and_unknown_coverage_stay_candidates(monkeypatch):
+    packages, base, head = _loaded_window("cldconfig")
+    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+    every = ["acts", "cldconfig", "ddml", "k4actstracking", "k4reco", "marlintrkprocessors"]
+
+    def repos(head_snapshot):
+        entry = build_blame_report(
+            _report([_verdict(base="2026-10-02", onset="2026-10-03")]),
+            packages_for_release=lambda platform, release: packages[release],
+            provenance_for_run=lambda d, p, r, s, run: base if r == "2026-10-02" else head_snapshot,
+            github=GitHubClient(),
+        ).entries[0]
+        return sorted(r.package for r in entry.repos)
+
+    # ddsim maps no Python-only package, even one its steering file imports.
+    assert repos(dataclasses.replace(head, unmappable=frozenset({"cldconfig"}))) == ["cldconfig"]
+    # A capture that cannot say what escaped its maps rules nothing out.
+    assert repos(dataclasses.replace(head, unmappable=None)) == every
+    # Every run maps stack libraries: an empty loaded set is a failed mapping.
+    assert repos(dataclasses.replace(head, loaded=frozenset())) == every
+
+
+def test_the_harness_is_never_filtered_by_the_loaded_stack(monkeypatch):
+    packages, base, head = _loaded_window("k4geo")
+    packages["2026-10-03"]["k4geo"] = packages["2026-10-02"]["k4geo"]
+    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+    blame = build_blame_report(
+        _report([_verdict(base="2026-10-02", onset="2026-10-03")]),
+        packages_for_release=lambda platform, release: packages[release],
+        provenance_for_run=lambda d, p, r, s, run: base if r == "2026-10-02" else head,
+        k4bench_commit_for_run=_commits({
+            _hkey("2026-10-02", "2026-10-02"): ("1" * 40, _RUN_URL),
+            _hkey("2026-10-03", "2026-10-03"): ("2" * 40, _RUN_URL),
+        }),
+        github=GitHubClient(),
+    )
+    # Every stack move was unloaded; the harness is not a stack package at all.
+    assert [r.package for r in blame.entries[0].repos] == ["k4bench"]
+
+
+def test_scopes_sharing_a_release_window_are_filtered_by_their_own_loaded_set(monkeypatch):
+    packages, base, head = _loaded_window("SIO")
+    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+
+    def provenance(detector, platform, release, sample, run):
+        snapshot = base if release == "2026-10-02" else head
+        if detector == "IDEA_o1_v04":
+            return dataclasses.replace(snapshot, loaded=snapshot.loaded - {"SIO"})
+        return snapshot
+
+    # The scope that never loaded SIO is built first: filtering it must not
+    # drop SIO from the release diff the other scope reads from the same cache.
+    blame = build_blame_report(
+        _report_groups(*(
+            (detector, "single_e", [_verdict(base="2026-10-02", onset="2026-10-03",
+                                             detector=detector)])
+            for detector in ("IDEA_o1_v04", "IDEA_o2_v01")
+        )),
+        packages_for_release=lambda platform, release: packages[release],
+        provenance_for_run=provenance,
+        github=GitHubClient(),
+    )
+    repos = {e.detector: [r.package for r in e.repos] for e in blame.entries}
+    # The recorded Geant4 move keeps an entry for the scope with no candidates.
+    assert repos == {"IDEA_o1_v04": [], "IDEA_o2_v01": ["SIO"]}

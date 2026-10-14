@@ -536,8 +536,7 @@ def test_blame_report_with_ranker_over_local_tree(tmp_path, monkeypatch):
         capture_output=True, text=True,
     ).returncode == 0
 
-    from k4bench.blame import builder as builder_mod
-    from k4bench.blame.builder import build_blame_report
+    from k4bench.blame.builder import build_blame_report, night
     from k4bench.blame.github import GitHubClient, RepoResolution
     from k4bench.blame.models import CandidatePR
     from k4bench.blame.rank import Ranking, RankResult, StepAssessment
@@ -563,7 +562,7 @@ def test_blame_report_with_ranker_over_local_tree(tmp_path, monkeypatch):
             )],
             patches={1234: "@@ -1 +1 @@\n+ more steps"},
         )
-    monkeypatch.setattr(builder_mod, "resolve_repo_prs", fake_resolve)
+    monkeypatch.setattr(night, "resolve_repo_prs", fake_resolve)
 
     class _FakeRanker:
         def rank(self, request):
@@ -666,9 +665,8 @@ def test_the_whole_evidence_chain_reaches_the_cross_configuration_review(
         capture_output=True, text=True,
     ).returncode == 0
 
-    from k4bench.blame import builder as builder_mod
+    from k4bench.blame.builder import build_blame_report, night
     from k4bench.blame.attribute import Attribution, StepAssessment as ReviewAssessment
-    from k4bench.blame.builder import build_blame_report
     from k4bench.blame.comment import CommentPolicy, build_comments, select
     from k4bench.blame.github import GitHubClient, RepoResolution
     from k4bench.blame.models import CandidatePR
@@ -690,7 +688,7 @@ def test_the_whole_evidence_chain_reaches_the_cross_configuration_review(
     packages_for_release = blame_cli._make_packages_for_release(
         [str(data_dir)], None, {_PLAT: ["DET"]}
     )
-    monkeypatch.setattr(builder_mod, "resolve_repo_prs", lambda *a, **k: RepoResolution(
+    monkeypatch.setattr(night, "resolve_repo_prs", lambda *a, **k: RepoResolution(
         candidates=[CandidatePR(
             repo="key4hep/k4geo", number=1234, title="Lower the step limit",
             author="alice", url="https://github.com/key4hep/k4geo/pull/1234",
@@ -851,9 +849,8 @@ def test_historical_evidence_travels_from_provenance_to_the_public_review(
         capture_output=True, text=True,
     ).returncode == 0
 
-    from k4bench.blame import builder as builder_mod
+    from k4bench.blame.builder import build_blame_report, night
     from k4bench.blame.attribute import Attribution, StepAssessment as ReviewAssessment
-    from k4bench.blame.builder import build_blame_report
     from k4bench.blame.comment import CommentPolicy, build_comments, select
     from k4bench.blame.attribute import build_user_prompt
     from k4bench.blame.github import GitHubClient, RepoResolution
@@ -892,7 +889,7 @@ def test_historical_evidence_travels_from_provenance_to_the_public_review(
             patches={777: _ANALOGUE},
             bodies={777: "Denser HCAL absorber; expect a little more time."},
         )
-    monkeypatch.setattr(builder_mod, "resolve_repo_prs", resolve)
+    monkeypatch.setattr(night, "resolve_repo_prs", resolve)
 
     blame_cli = _load_script(_BLAME_SCRIPT)
     packages_for_release = blame_cli._make_packages_for_release(

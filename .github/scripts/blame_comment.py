@@ -242,7 +242,7 @@ def _text_source(token: str | None):
     A rate limit *latches*: it is a statement about the whole token budget, not
     about one pull request, so every later fetch skips the call rather than
     spending a round trip on an answer already known — the same rule
-    :meth:`k4bench.blame.builder._NightBlame.resolve` follows during the nightly build.
+    :meth:`k4bench.blame.builder.night._NightBlame.resolve` follows during the nightly build.
     """
     from k4bench.blame.github import GitHubClient, PRText, RateLimitError, fetch_pr
 
