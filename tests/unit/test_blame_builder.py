@@ -8,8 +8,9 @@ from pathlib import Path
 
 import yaml
 
-from k4bench.blame import builder as builder_mod
-from k4bench.blame.builder import build_blame_report
+from k4bench.blame.builder import build_blame_report, night
+from k4bench.blame.builder.night import _detector_switch_boundaries
+from k4bench.blame.builder.ranking import _packages_changed
 from k4bench.blame.comment import CommentPolicy
 from k4bench.blame.github import (
     FilePatch,
@@ -84,7 +85,7 @@ def _provenance(mapping):
 
 
 def _stub_resolve(monkeypatch, fn):
-    monkeypatch.setattr(builder_mod, "resolve_repo_prs", fn)
+    monkeypatch.setattr(night, "resolve_repo_prs", fn)
 
 
 def test_bounded_window_collects_candidates(monkeypatch):
@@ -169,9 +170,9 @@ def test_a_detector_switch_inside_the_history_is_no_stack_boundary():
         ReleasePoint("2026-07-03", 110.0, 1, 1, Severity.OK, Direction.NONE),
     )
     v = dataclasses.replace(_verdict(detector="ALLEGRO_o1_v04"), history=history)
-    changed = builder_mod._packages_changed(v, lambda *a: 0)
+    changed = _packages_changed(v, lambda *a: 0)
     assert changed == {"2026-07-01": None, "2026-07-02": None, "2026-07-03": 0}
-    assert builder_mod._detector_switch_boundaries([v]) == {
+    assert _detector_switch_boundaries([v]) == {
         (_PLAT, "2026-07-01", _PLAT, "2026-07-02"),
     }
 
@@ -1332,7 +1333,7 @@ def test_the_harness_filter_keeps_everything_that_can_touch_a_measurement():
     # workflow, the timing plugin, packaging — is exactly what an allowlist
     # forgets first, and a filter that hides the true culprit fails in the
     # direction this feature exists to fix.
-    from k4bench.blame.builder import _harness_candidate_signal
+    from k4bench.blame.builder.runs import _harness_candidate_signal
 
     kept = [
         ("k4bench/geometry/patcher.py",),
@@ -1625,7 +1626,7 @@ def test_a_degenerate_harness_range_is_refused(monkeypatch, caplog):
     # carry them). If the narrowing ever produced a base run at or after the
     # onset run, the compare URL would be reversed — silently, confidently
     # wrong. Refuse instead.
-    from k4bench.blame.builder import _harness_change
+    from k4bench.blame.builder.runs import _harness_change
 
     v1 = dataclasses.replace(
         _verdict(), last_accepted_run_id="2026-07-03", onset_run_id="2026-07-06",
@@ -1830,3 +1831,35 @@ def test_external_only_window_is_assessed_without_creating_candidates():
     newer = entry.to_dict()
     newer["external_changes"][0]["future_field"] = "ignored"
     assert type(entry).from_dict(newer) == entry
+
+
+def test_only_changed_packages_a_window_run_loaded_become_candidates(monkeypatch):
+    import json
+    from tests.unit.test_stack_capture import FIXTURES, snapshots
+    base, head = snapshots()
+    packages = {
+        release: json.loads((FIXTURES / f"HEAD-{release}.json").read_text())
+        for release in ("2026-10-02", "2026-10-03")
+    }
+    # Move one package ddsim loaded beside the five real moves it did not.
+    packages["2026-10-03"]["k4geo"] = {**packages["2026-10-03"]["k4geo"], "commit": "c" * 7}
+    resolved = []
+    _stub_resolve(monkeypatch, lambda client, slug, *a: resolved.append(slug) or RepoResolution())
+
+    def build(head_snapshot):
+        resolved.clear()
+        return build_blame_report(
+            _report([_verdict(base="2026-10-02", onset="2026-10-03")]),
+            packages_for_release=lambda platform, release: packages[release],
+            provenance_for_run=lambda d, p, r, s, run: base if r == "2026-10-02" else head_snapshot,
+            github=GitHubClient(),
+        ).entries[0]
+
+    entry = build(head)
+    assert [r.package for r in entry.repos] == ["k4geo"]
+    assert resolved == ["key4hep/k4geo"]
+    # A run without a loaded set cannot rule anything out.
+    entry = build(dataclasses.replace(head, loaded=None))
+    assert sorted(r.package for r in entry.repos) == [
+        "acts", "ddml", "k4actstracking", "k4geo", "k4reco", "marlintrkprocessors",
+    ]

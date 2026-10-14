@@ -264,6 +264,11 @@ a fixed-seed sample's re-rolled long events. No new assessment value is introduc
 With no external changes the field and prompt block are omitted, and the comment
 facts digest and rendered comments are unchanged.
 
+The same two runs limit the candidates: a changed HEAD package that neither run
+loaded is dropped before PR discovery, so its pull requests are never ranked,
+shown or commented on. When either run has no `k4h_loaded_packages`, every
+changed package stays a candidate.
+
 ### Reading across the Spack-to-LCG boundary
 
 Runs recorded from a Spack release and runs recorded from an LCG view are not

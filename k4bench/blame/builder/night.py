@@ -1,37 +1,10 @@
-"""Assemble a :class:`~k4bench.blame.models.BlameReport` from a nightly report.
+"""One night's blame build, keyed by release.
 
-For each confirmed regression whose blame window spans two *different* releases,
-diff the two releases' package maps, resolve each changed GitHub repo's commit
-range to its pull requests, and rank them for that regression. The result is the
-sidecar the CLI uploads to ``_reports/{night}/blame.json``.
-
-Two dependencies are injected rather than imported, which is what keeps this
-module offline-testable and lets CI reuse work it has already done:
-
-* ``packages_for_release(platform, release) -> dict | None`` — a release's
-  ``k4h_packages`` map. In CI this reads the run cache the report build already
-  populated; the integration test reads a local tree. ``None`` means the release
-  predates provenance capture or has aged off CVMFS — its regressions get no
-  blame rather than a wrong one.
-* ``github`` — a :class:`~k4bench.blame.github.GitHubClient`, or ``None`` to skip
-  PR resolution entirely (no token available): the diffs are still recorded, the
-  repos just carry no candidates.
-* ``k4bench_commit_for_run(detector, platform, release, sample, run_id) ->
-  (sha, run_url) | None`` — the harness's own commit at one exact *run*.
-  k4Bench is not in any release's package map (it measures the stack, it is
-  not part of it), yet its changes move measurements too; this lookup is what
-  lets the window's diff include it. ``None`` — not injected, or a run that
-  cannot be read — means the harness's movement is unknown and no entry claims
-  anything about it.
-
-Windows that cannot be attributed are dropped, not recorded empty: an open-ended
-window (no settled baseline), a window whose provenance is missing, and a window
-where nothing at all moved are handled live by the dashboard from ``report.json``
-alone. A *same-release* window is attributed exactly when the harness's own
-commits moved between its two runs — the upstream stack is identical by
-construction, so the harness is the only thing a diff can name. ``blame.json``
-exists only to carry the one thing the dashboard cannot compute itself — the
-ranked PRs.
+The stack diff across a release boundary, the pull requests resolved for each
+changed repository and the historical retrieval are shared by every rank group
+of the night, so :class:`_NightBlame` caches them once. What a single run
+recorded is read in :mod:`.runs`; the ranker's input is assembled in
+:mod:`.ranking`.
 """
 
 from __future__ import annotations
@@ -41,15 +14,28 @@ import logging
 from collections.abc import Callable
 from datetime import datetime, timezone
 
-from k4bench.blame.evidence import ExternalChange, external_changes, history_from_verdict, outcomes_for_window
-from k4bench.blame.geometry import benchmarked_geometry, detector_touches
+from k4bench.blame.builder.ranking import (
+    _apply_rankings,
+    _assessment,
+    _geometry_path,
+    _outcomes,
+    _packages_changed,
+    _rank_group,
+    _sweeps,
+)
+from k4bench.blame.builder.runs import (
+    K4BenchCommitForRun,
+    _external_facts,
+    _harness_candidate_signal,
+    _harness_change,
+    _loaded_packages,
+)
+from k4bench.blame.geometry import benchmarked_geometry
 from k4bench.blame.github import (
     GitHubClient,
     PRText,
     RateLimitError,
     RepoResolution,
-    diff_sample,
-    low_signal_path,
     resolve_repo_prs,
 )
 from k4bench.blame.history import (
@@ -69,67 +55,23 @@ from k4bench.blame.models import (
     StepAssessment,
     rank_group_key,
 )
-from k4bench.blame.prompt import HARNESS_PACKAGE, compact_dir, geometry_tree
-from k4bench.blame.sweep import ScopeSweep, window_sweeps
 from k4bench.blame.rank import (
-    MetricStep,
-    RankCandidate,
     Ranker,
-    Ranking,
-    RankRequest,
     RankResult,
 )
-from k4bench.provenance.diff import CHANGED, PackageChange, diff_packages, unchanged_packages
+from k4bench.blame.sweep import ScopeSweep
+from k4bench.provenance.diff import (
+    CHANGED,
+    PackageChange,
+    diff_packages,
+    package_key,
+    unchanged_packages,
+)
 from k4bench.regression.models import MetricVerdict, NightlyReport
 
 _log = logging.getLogger(__name__)
 
 PackagesForRelease = Callable[[str, str], "dict | None"]
-
-#: ``(detector, platform, release, sample, run_id) -> (commit_sha,
-#: github_run_url)`` — what one exact *run* recorded about the k4Bench
-#: checkout that produced it, or ``None`` when that run's ``run_info.json``
-#: cannot be read. Keyed by run rather than by release because the harness's
-#: commit varies per run: several consecutive runs routinely share one Key4hep
-#: release, each benchmarked by a different k4Bench commit, so the
-#: release-keyed :data:`PackagesForRelease` shape would answer with whichever
-#: run it happened to read first. And keyed down to detector and sample —
-#: naming one ``run_info.json`` — rather than "any run of that night": a
-#: manual dispatch or a partially failed re-run can leave the same date
-#: carrying different commits under different benchmark groups, and the group
-#: being attributed must read its own run's provenance, never a sibling's.
-#: ``github_run_url`` may be ``None`` on runs that predate the field; the
-#: commit alone still places the run in the default repository.
-K4BenchCommitForRun = Callable[
-    [str, str, str, str, str], "tuple[str, str | None] | None"
-]
-
-#: Where the harness lives when a run's own provenance does not say. Every
-#: current run records its workflow URL and the repository is parsed from it
-#: (:func:`_repo_url_from_run_url`); this constant covers only runs written
-#: before that field existed.
-_K4BENCH_REPO_URL = "https://github.com/key4hep/k4Bench.git"
-
-#: Harness paths that provably cannot move a measurement: documentation, the
-#: dashboard and its assets/deployment, the test suite, and the blame pipeline
-#: itself (it reads reports after the fact; nothing it computes feeds a
-#: measured value). Everything else is kept — the geometry patcher, the runner,
-#: the timing plugin, the nightly scripts and workflows, packaging — because
-#: the filter is written by *exclusion*: an exhaustive list of what CAN move a
-#: measurement would silently rot the first time a measurement-relevant file
-#: was added, and a filter that hides the true culprit fails in exactly the
-#: direction this feature exists to fix. A surviving irrelevant candidate only
-#: costs the ranker a dismissal.
-_HARNESS_LOW_SIGNAL_PREFIXES = (
-    "docs/",
-    "doc/",
-    "dashboard/",
-    "assets/",
-    "openshift/",
-    "tests/",
-    "k4bench/blame/",
-    "mkdocs.",
-)
 
 
 def _attributable(v: MetricVerdict) -> bool:
@@ -144,8 +86,6 @@ def _attributable(v: MetricVerdict) -> bool:
     (no settled baseline) has nothing to anchor either end on and is dropped."""
     base, onset = v.last_accepted_run_date, v.onset_run_date
     return bool(onset and base and base <= onset)
-
-
 
 
 def build_blame_report(
@@ -221,6 +161,7 @@ class _NightBlame:
     ) -> None:
         self.provenance_for_run = provenance_for_run
         self.external_cache = {}
+        self.loaded_cache: dict[RankGroupKey, frozenset[str] | None] = {}
         self.report = report
         self.packages_for_release = packages_for_release
         self.k4bench_commit_for_run = k4bench_commit_for_run
@@ -541,6 +482,15 @@ class _NightBlame:
             # is unknown would read as "the stack was checked and stood still".
             return None
         rank_group = rank_group_key(v)
+        if rank_group not in self.loaded_cache:
+            self.loaded_cache[rank_group] = _loaded_packages(
+                self.verdicts_by_rank_group[rank_group], self.provenance_for_run,
+            )
+        loaded = self.loaded_cache[rank_group]
+        if loaded is not None:
+            # A package neither end of this group's runs mapped cannot have
+            # moved its measurements, so its pull requests are never candidates.
+            changes = [c for c in changes if package_key(c.name) in loaded]
         if rank_group not in self.harness_cache:
             self.harness_cache[rank_group] = _harness_change(
                 self.k4bench_commit_for_run, self.verdicts_by_rank_group[rank_group]
@@ -650,143 +600,6 @@ def _memoized(lookup):
     return memoized
 
 
-def _repo_url_from_run_url(run_url: str | None) -> str | None:
-    """The harness repository behind a run's recorded workflow URL, or ``None``.
-
-    ``github_run_url`` looks like
-    ``https://github.com/key4hep/k4Bench/actions/runs/30603409866`` — the first
-    two path segments are the repository. Derived rather than assumed so a fork
-    running its own benchmarks blames its own pull requests, not upstream's."""
-    if not run_url:
-        return None
-    prefix = "https://github.com/"
-    if not run_url.startswith(prefix):
-        return None
-    segments = [s for s in run_url[len(prefix):].split("/") if s]
-    if len(segments) < 2:
-        return None
-    return f"https://github.com/{segments[0]}/{segments[1]}.git"
-
-
-def _harness_change(
-    k4bench_commit_for_run, verdicts: list[MetricVerdict]
-) -> PackageChange | None:
-    """k4Bench's own movement across one rank group's window, or ``None``.
-
-    The endpoints come from the *run ids* already on the verdicts — the base
-    end is the run named by ``last_accepted_run_id`` (a run of the base
-    release), the onset end the run named by ``onset_run_id`` (a run of the
-    onset release) — never from a release-keyed lookup: a release is routinely
-    measured by several runs at different harness commits, and "the first
-    readable run under the release" would pick one essentially at random. Each
-    endpoint is read from this group's own run — the lookup is keyed down to
-    detector and sample — so a same-day re-run that left a sibling group at a
-    different commit cannot leak into this group's range.
-
-    A *same-release* group agrees on its run ids by construction — they are
-    part of its key (:func:`rank_group_key`). A cross-release group is keyed on
-    release dates only, so nothing enforces agreement there; when its verdicts
-    disagree, the narrowest range consistent with all of them wins (newest base
-    run, oldest onset run) — a false negative is cheaper than accusing a pull
-    request that merged after the step was already measured — and the
-    disagreement is logged.
-
-    ``None`` — no lookup injected, an endpoint that cannot be read, a harness
-    that did not move, or two endpoints belonging to different repositories
-    (a compare range across two forks would be meaningless; an end with no
-    recorded workflow URL counts as the default repository, not as a wildcard
-    matching whatever the other end says) — must leave the report exactly as
-    it was before this lookup existed."""
-    if k4bench_commit_for_run is None:
-        return None
-    v = verdicts[0]
-    base_ids = {m.last_accepted_run_id for m in verdicts if m.last_accepted_run_id}
-    onset_ids = {m.onset_run_id for m in verdicts if m.onset_run_id}
-    if not base_ids or not onset_ids:
-        return None
-    if len(base_ids) > 1 or len(onset_ids) > 1:
-        _log.warning(
-            "blame: %s/%s %s..%s — verdicts sharing this rank group carry "
-            "disagreeing run ids (base %s, onset %s); using the narrowest "
-            "harness range consistent with all of them",
-            v.detector, v.sample, v.last_accepted_run_date, v.onset_run_date,
-            sorted(base_ids), sorted(onset_ids),
-        )
-    base_id, onset_id = max(base_ids), min(onset_ids)
-    if base_id >= onset_id:
-        # The narrowing collapsed or inverted the range. Run ids are dates, so
-        # a base run at or after the onset run describes no interval at all —
-        # and a reversed compare URL is silently, confidently wrong, which is
-        # the one output this whole feature exists to avoid.
-        _log.warning(
-            "blame: %s/%s %s..%s — the harness range narrowed to %s..%s, which "
-            "is not an interval; not attributing the harness for this window",
-            v.detector, v.sample, v.last_accepted_run_date, v.onset_run_date,
-            base_id, onset_id,
-        )
-        return None
-    # Each end is read under the platform it ran on: a window opened on a
-    # replaced platform keeps its base run's provenance there.
-    base_end = next(m for m in verdicts if m.last_accepted_run_id == base_id)
-    onset_end = next(m for m in verdicts if m.onset_run_id == onset_id)
-    base = k4bench_commit_for_run(
-        base_end.base_detector, base_end.base_platform,
-        base_end.last_accepted_run_date, v.sample, base_id,
-    )
-    onset = k4bench_commit_for_run(
-        onset_end.onset_run_detector, onset_end.onset_run_platform,
-        onset_end.onset_run_date, v.sample, onset_id,
-    )
-    if base is None or onset is None:
-        return None
-    base_sha, base_url = base
-    onset_sha, onset_url = onset
-    if not base_sha or not onset_sha or base_sha == onset_sha:
-        return None
-    # A run with no recorded workflow URL *means* the default repository (see
-    # :data:`_K4BENCH_REPO_URL`), so each end is resolved to a concrete
-    # repository before they are compared. Comparing the raw parses instead
-    # would skip the check whenever one end lacked a URL and then resolve both
-    # commits in the other end's repository — a fork's onset paired with an
-    # upstream base would silently become a fork-only range.
-    base_repo = _repo_url_from_run_url(base_url) or _K4BENCH_REPO_URL
-    onset_repo = _repo_url_from_run_url(onset_url) or _K4BENCH_REPO_URL
-    if base_repo != onset_repo:
-        _log.warning(
-            "blame: %s/%s %s..%s — the window's runs were produced by "
-            "different harness repositories (%s vs %s); a compare range "
-            "across them would be meaningless, so the harness is not "
-            "attributed for this window",
-            v.detector, v.sample, v.last_accepted_run_date, v.onset_run_date,
-            base_repo, onset_repo,
-        )
-        return None
-    return PackageChange(
-        name=HARNESS_PACKAGE,
-        base_commit=base_sha,
-        head_commit=onset_sha,
-        version="",  # the harness has no stack version string
-        repo_url=onset_repo,  # == base_repo, checked above
-    )
-
-
-def _harness_candidate_signal(files: tuple[str, ...]) -> bool:
-    """Whether a harness pull request could move a measurement at all.
-
-    Most k4Bench pull requests in any window are dashboard or documentation
-    work. A candidate is dropped only when **every** changed file is provably
-    irrelevant (:data:`_HARNESS_LOW_SIGNAL_PREFIXES`, plus the shared
-    documentation-basename judgement of :func:`low_signal_path`); one file
-    outside those areas keeps it, and a candidate with **no** file list is
-    kept too — an unreadable change cannot be proven harmless."""
-    if not files:
-        return True
-    return not all(
-        low_signal_path(f) or f.startswith(_HARNESS_LOW_SIGNAL_PREFIXES)
-        for f in files
-    )
-
-
 def _diff_window(
     packages_for_release: PackagesForRelease,
     base_platform: str, base: str, onset_platform: str, onset: str,
@@ -829,101 +642,6 @@ def _repo_blame(change: PackageChange, resolution: RepoResolution) -> RepoBlame:
     )
 
 
-def _outcomes(
-    report: NightlyReport, verdict: MetricVerdict, cache: dict[tuple, tuple]
-) -> tuple:
-    """The configurations that measured *verdict*'s window and did not confirm.
-
-    The cross-configuration evidence the first pass previously had none of: it
-    ranks one run group at a time, so without this it cannot tell a step that hit
-    every detector from one that hit only this one — and those two windows point
-    at opposite kinds of cause. Cached per ``(scope, window)``, since every metric
-    of a run group shares both and the walk covers the whole report.
-
-    The controls are drawn from the *whole* report, not just this scope: a
-    detector that stayed flat is only informative because it is a different
-    detector. Ordering puts this scope's own configurations first — the
-    ``baseline`` vs. ``no_<detector>`` comparison is the sharpest control the
-    suite produces, and it must survive the prompt's cap.
-
-    A same-release window is also read and cached by its two runs, as
-    :func:`_sweeps` reads it: its releases alone are the empty interval
-    ``(D, D]``, which would offer the step that formed it as a clean control.
-    """
-    scope = (verdict.detector, verdict.platform, verdict.sample)
-    base_run = onset_run = None
-    if verdict.last_accepted_run_date == verdict.onset_run_date:
-        base_run, onset_run = verdict.last_accepted_run_id, verdict.onset_run_id
-    key = (scope, verdict.last_accepted_run_date, verdict.onset_run_date, base_run, onset_run)
-    if key not in cache:
-        stacks = _stacks(report, verdict)
-        cache[key] = outcomes_for_window(
-            report,
-            base_release=verdict.last_accepted_run_date,
-            onset_release=verdict.onset_run_date or "",
-            stacks=stacks,
-            regressed_scopes={scope},
-            base_run=base_run,
-            onset_run=onset_run,
-        )
-    return cache[key]
-
-
-def _stacks(report: NightlyReport, verdict: MetricVerdict) -> set[str]:
-    """The releases *verdict*'s run group measured — what makes another group a
-    like-for-like measurement of the same window."""
-    scope = (verdict.detector, verdict.platform, verdict.sample)
-    return {
-        g.k4h_release for g in report.groups
-        if (g.detector, g.platform, g.sample) == scope and g.k4h_release
-    }
-
-
-def _sweeps(
-    report: NightlyReport, verdict: MetricVerdict, cache: dict[tuple, tuple],
-) -> tuple[ScopeSweep, ...]:
-    """Every scope that measured *verdict*'s window, cached per window.
-
-    A same-release window is also read and cached by its two runs, as
-    :func:`rank_group_key` groups it: its releases alone are the empty interval
-    ``(D, D]``, which would place the step that formed it in another window."""
-    stacks = _stacks(report, verdict)
-    base_run = onset_run = None
-    if verdict.last_accepted_run_date == verdict.onset_run_date:
-        base_run, onset_run = verdict.last_accepted_run_id, verdict.onset_run_id
-    key = (
-        verdict.last_accepted_run_date, verdict.onset_run_date,
-        base_run, onset_run, frozenset(stacks),
-    )
-    if key not in cache:
-        cache[key] = window_sweeps(
-            report,
-            base_release=verdict.last_accepted_run_date,
-            onset_release=verdict.onset_run_date or "",
-            stacks=stacks,
-            base_run=base_run,
-            onset_run=onset_run,
-        )
-    return cache[key]
-
-
-def _geometry_path(report: NightlyReport, verdict: MetricVerdict) -> str:
-    """The compact geometry file the run group behind *verdict* loads.
-
-    Read off the report rather than carried on the verdict: it is a property of
-    the *run*, not of one metric, and every group in a night records it once.
-    Empty for runs benchmarked before the path was captured — the prompt then
-    states nothing about geometry reach rather than guessing at it."""
-    scope = (verdict.detector, verdict.platform, verdict.sample)
-    return next(
-        (
-            g.geometry_path for g in report.groups
-            if (g.detector, g.platform, g.sample) == scope and g.geometry_path
-        ),
-        "",
-    )
-
-
 def _historical_ref(pr: HistoricalPR) -> HistoricalRef:
     """One retrieved analogue as the sidecar stores it — a reference, never the
     text.
@@ -946,161 +664,6 @@ def _historical_ref(pr: HistoricalPR) -> HistoricalRef:
     )
 
 
-def _assessment(result: RankResult) -> StepAssessment | None:
-    """The sidecar's view of the ranker's step assessment.
-
-    Re-shaped rather than passed through: :mod:`k4bench.blame.rank` owns the
-    model contract and :mod:`k4bench.blame.models` owns what ``blame.json``
-    stores, and letting one class serve both would tie the on-disk schema every
-    dashboard parses to the wording of a prompt."""
-    if result.assessment is None:
-        return None
-    return StepAssessment(
-        verdict=result.assessment.verdict, reason=result.assessment.reason
-    )
-
-
-def _rank_group(
-    ranker: Ranker,
-    verdicts: list[MetricVerdict],
-    repos: list[RepoBlame],
-    texts: dict[tuple[str, int], PRText],
-    rank_group: RankGroupKey,
-    rank_cache: dict[RankGroupKey, RankResult],
-    *,
-    outcomes: tuple,
-    changed_count: Callable[..., int | None],
-    n_unchanged: int = 0,
-    geometry_path: str = "",
-    history: HistoricalIndex | None = None,
-    sweeps: tuple[ScopeSweep, ...] = (),
-    geometry: dict[str, str] | None = None,
-    externals: tuple[ExternalChange, ...] = (),
-) -> RankResult:
-    """The ranker's judgement of one rank group: a score per candidate, and its
-    read of the step itself.
-
-    Memoized on *rank_group* (:func:`rank_group_key`) — detector, platform,
-    sample and the window, plus the window's run ids when its two ends are one
-    release; never just the release boundary: every confirmed metric of *one run group*
-    that stepped across one release boundary shares one diff and one candidate
-    set, so it needs a single inference rather than one per metric — *every*
-    metric in *verdicts* rides in the one prompt (see
-    :class:`~k4bench.blame.rank.MetricStep`), so the model judges the
-    candidates against that group's full picture, and the dashboard/email show
-    that one verdict for every metric sharing the group, not a table each. A
-    *different* detector or sample can share the same platform and release
-    dates (one library regressing several detectors at once) — grouping on the
-    release boundary alone would silently merge their unrelated metrics into
-    one prompt mislabelled with a single detector/sample. ``label`` (a removal
-    sweep's ``baseline`` vs. ``no_<detector>`` runs) is deliberately
-    *not* part of this key — those still collapse into one verdict, each
-    metric just carries its own label into the prompt.
-
-    Ranking is skipped entirely when any repo's candidate discovery or file
-    evidence came back incomplete (unavailable or truncated): the model would
-    judge a partial or partially evidenced set, and its "most likely" would
-    overclaim. An empty result (the ranker declined, raised, or was skipped)
-    leaves the candidates unranked.
-    """
-    if any(
-        r.commits_unavailable or r.truncated or r.truncation_reasons
-        for r in repos
-    ):
-        details = ", ".join(
-            f"{r.repo or r.package}: "
-            f"{', '.join(r.truncation_reasons) if r.truncation_reasons else 'unspecified'}"
-            for r in repos
-            if r.commits_unavailable or r.truncated or r.truncation_reasons
-        )
-        _log.warning(
-            "blame: %s/%s %s: candidate discovery or file evidence incomplete "
-            "— leaving unranked (%s)",
-            verdicts[0].detector, verdicts[0].sample,
-            ", ".join(f"{v.metric} ({v.label})" for v in verdicts),
-            details,
-        )
-        return RankResult()
-    if rank_group not in rank_cache:
-        rank_cache[rank_group] = _run_ranker(
-            ranker, verdicts, repos, texts,
-            outcomes=outcomes, changed_count=changed_count,
-            n_unchanged=n_unchanged, geometry_path=geometry_path,
-            history=history, sweeps=sweeps, geometry=geometry, externals=externals,
-        )
-    return rank_cache[rank_group]
-
-
-def _run_ranker(
-    ranker: Ranker,
-    verdicts: list[MetricVerdict],
-    repos: list[RepoBlame],
-    texts: dict[tuple[str, int], PRText],
-    *,
-    outcomes: tuple,
-    changed_count: Callable[..., int | None],
-    n_unchanged: int = 0,
-    geometry_path: str = "",
-    history: HistoricalIndex | None = None,
-    sweeps: tuple[ScopeSweep, ...] = (),
-    geometry: dict[str, str] | None = None,
-    externals: tuple[ExternalChange, ...] = (),
-) -> RankResult:
-    """One guarded rank call. Any exception degrades to an empty result and is
-    cached as such, so a broken ranker is asked at most once per detector/
-    platform/sample/window and never aborts the report — blame's best-effort
-    isolation, extended to the model."""
-    try:
-        request = _rank_request(
-            verdicts, repos, texts,
-            outcomes=outcomes, changed_count=changed_count,
-            n_unchanged=n_unchanged, geometry_path=geometry_path,
-            history=history, sweeps=sweeps, geometry=geometry, externals=externals,
-        )
-        if not request.candidates and not request.external_changes:
-            return RankResult()
-        result = ranker.rank(request)
-        _warn_if_miscalibrated(request, result)
-        return result
-    except Exception:
-        _log.exception("blame: ranker raised — leaving this window's candidates unranked")
-        return RankResult()
-
-
-def _packages_changed(
-    verdict: MetricVerdict,
-    changed_count: Callable[..., int | None],
-) -> dict[str, int | None]:
-    """``release -> tracked packages that moved entering it`` across one
-    verdict's history tail.
-
-    The annotation that turns a list of numbers into a calibration: a release
-    where the metric moved and *nothing* in the stack changed measures this
-    series' own noise directly, with the software held fixed. The oldest point
-    has no predecessor in the tail and therefore no boundary — ``None``, unread,
-    which is what the prompt says about it. So is a boundary where the detector
-    config changed: the geometry moved there whatever the stack did.
-    """
-    changed: dict[str, int | None] = {}
-    previous: str | None = None
-    previous_platform: str | None = None
-    previous_detector: str | None = None
-    for point in verdict.history:
-        platform = point.platform or verdict.platform
-        detector = point.detector or verdict.detector
-        changed[point.run_date] = (
-            changed_count(
-                platform, previous, point.run_date,
-                None if previous_platform == platform else previous_platform,
-            )
-            if previous and previous_detector == detector else None
-        )
-        previous, previous_platform, previous_detector = (
-            point.run_date, platform, detector,
-        )
-    return changed
-
-
 def _detector_switch_boundaries(verdicts: list[MetricVerdict]) -> set[tuple]:
     """``(base platform, base, onset platform, onset)`` for every boundary in
     *verdicts*' history tails where the detector config changed — a geometry
@@ -1114,174 +677,3 @@ def _detector_switch_boundaries(verdicts: list[MetricVerdict]) -> set[tuple]:
                     later.platform or v.platform, later.run_date,
                 ))
     return switches
-
-
-def _rank_request(
-    verdicts: list[MetricVerdict],
-    repos: list[RepoBlame],
-    texts: dict[tuple[str, int], PRText],
-    *,
-    outcomes: tuple,
-    changed_count: Callable[..., int | None],
-    n_unchanged: int = 0,
-    geometry_path: str = "",
-    history: HistoricalIndex | None = None,
-    sweeps: tuple[ScopeSweep, ...] = (),
-    geometry: dict[str, str] | None = None,
-    externals: tuple[ExternalChange, ...] = (),
-) -> RankRequest:
-    """Assemble the ranker's input: every metric that stepped across the shared
-    window with its own recent history, the configurations that measured the
-    same window without stepping, and every candidate PR across the changed
-    repos, each carried with its transient patch. *verdicts* all share the run
-    group (detector, platform, sample) and window, so the first stands in for
-    those shared facts; each metric keeps its own ``label`` (verdicts sharing a
-    group and window can still come from different benchmark configs, e.g. a
-    removal sweep's ``baseline`` and ``no_<detector>`` runs).
-
-    A verdict from a report written before histories were recorded simply
-    carries none, and the prompt renders without that block — the ranking path
-    must not depend on a field a historical backfill cannot supply.
-
-    Each candidate's diff sample reads this run's own compact directory first,
-    then its geometry tree (:func:`~k4bench.blame.github.diff_sample`): a pull
-    request touching several detector variants would otherwise spend its sample
-    on whichever sort first, and the variant this run loads could be missing
-    from it. Without per-file hunks, the generic sample stands.
-
-    *sweeps* are every scope that measured the window (this one included) and
-    *geometry* the compact file each benchmarked detector loads: together they
-    are the sweep table, the other detectors each candidate reaches
-    (:func:`~k4bench.blame.geometry.detector_touches`), and what those did."""
-    v = verdicts[0]
-    metrics = tuple(
-        MetricStep(
-            metric=m.metric, metric_family=m.metric_family,
-            direction=m.direction.value, pct_change=m.pct_change,
-            label=m.label, sub_detector=m.sub_detector,
-            value=m.value, baseline_median=m.baseline_median, z_score=m.z_score,
-            history=history_from_verdict(
-                m, packages_changed=_packages_changed(m, changed_count)
-            ),
-            regions=m.region_deltas,
-        )
-        for m in verdicts
-    )
-    own_dirs = (compact_dir(geometry_path),)
-    trees = (geometry_tree(geometry_path),)
-
-    def patch(text: PRText) -> str:
-        if not text.files:
-            return text.patch
-        return diff_sample(text.files, own_dirs=own_dirs, trees=trees)
-
-    candidates = tuple(
-        RankCandidate(
-            repo=pr.repo, number=pr.number, title=pr.title,
-            files=pr.files,
-            patch=patch(texts.get((pr.repo, pr.number), PRText())),
-            body=texts.get((pr.repo, pr.number), PRText()).body,
-            additions=pr.additions, deletions=pr.deletions,
-            touches=detector_touches(
-                pr.files, texts.get((pr.repo, pr.number), PRText()).files,
-                geometry or {},
-            ),
-        )
-        for repo in repos
-        for pr in repo.candidates
-    )
-    scope = (v.detector, v.platform, v.sample)
-    return RankRequest(
-        metrics=metrics,
-        detector=v.detector, platform=v.platform, sample=v.sample,
-        base_release=v.last_accepted_run_date,
-        onset_release=v.onset_run_date,
-        base_platform=v.last_accepted_platform,
-        onset_platform=v.onset_platform,
-        base_detector=v.last_accepted_detector,
-        onset_detector=v.onset_detector,
-        candidates=candidates,
-        outcomes=outcomes,
-        n_unchanged=n_unchanged,
-        geometry_tree=geometry_path,
-        harness_repo=next(
-            (r.repo or "" for r in repos if r.package == HARNESS_PACKAGE), ""
-        ),
-        history=history,
-        sweep=next((sweep for sweep in sweeps if sweep.scope == scope), None),
-        window_sweeps=sweeps,
-        external_changes=externals,
-    )
-
-
-#: A score above this on a candidate that changes nothing a benchmark executes
-#: is a calibration failure worth a line in the log. Set above the comment
-#: threshold's neighbourhood on purpose: a model idly putting a docs change at
-#: 30 is ordinary hedging, while one putting it at 70 is not reading the diff.
-_CANARY_SCORE = 60.0
-
-
-def _warn_if_miscalibrated(request: RankRequest, result: RankResult) -> None:
-    """Log when the ranker scores a change that cannot have caused a runtime
-    regression.
-
-    Every window carries a few candidates that are structurally incapable of
-    moving a benchmark — documentation, licences, CI configuration — and how a
-    model treats *those* is a free, ground-truth-free read on whether it is
-    reading diffs or matching words. Diagnostic only: it never suppresses a
-    ranking or moves a score, because a rule confident enough to act on would
-    have to classify paths confidently enough to be wrong about a real one."""
-    by_key = {(c.repo, c.number): c for c in request.candidates}
-    suspect = [
-        f"{repo}#{number} ({ranking.score:.0f})"
-        for (repo, number), ranking in result.rankings.items()
-        if ranking.score >= _CANARY_SCORE
-        and (candidate := by_key.get((repo, number))) is not None
-        and candidate.files
-        and all(low_signal_path(f) for f in candidate.files)
-    ]
-    if suspect:
-        _log.warning(
-            "blame: %s/%s %s — the ranker scored documentation/CI-only "
-            "change(s) at or above %.0f: %s. That window's ranking is not "
-            "reading the diffs; treat its scores with suspicion.",
-            request.detector, request.sample, request.onset_release,
-            _CANARY_SCORE, ", ".join(sorted(suspect)),
-        )
-
-
-def _apply_rankings(
-    repo: RepoBlame, rankings: dict[tuple[str, int], Ranking]
-) -> RepoBlame:
-    """Fold the ranker's verdict onto a repo's candidates, matched on
-    ``(repo, number)``. A candidate the ranking omitted — a partial response
-    leaves some out — keeps ``ranked=False``, the *no judgement* state, rather
-    than a 0.0 that would read as one; a ranking keyed to a PR not in this repo
-    is never looked up, so unknown keys drop out here as required."""
-    candidates = tuple(
-        dataclasses.replace(
-            pr, score=ranking.score, description=ranking.description,
-            against=ranking.against, ranked=True,
-        )
-        if (ranking := rankings.get((pr.repo, pr.number))) is not None
-        else pr
-        for pr in repo.candidates
-    )
-    return dataclasses.replace(repo, candidates=candidates)
-
-
-def _external_facts(verdicts, lookup) -> tuple[ExternalChange, ...]:
-    if lookup is None:
-        return ()
-    facts = set()
-    for v in verdicts:
-        try:
-            base = lookup(v.base_detector, v.base_platform, v.last_accepted_run_date,
-                          v.sample, v.last_accepted_run_id)
-            head = lookup(v.onset_run_detector, v.onset_run_platform, v.onset_run_date,
-                          v.sample, v.onset_run_id)
-            facts.update(external_changes(base, head,
-                         scope=f"{v.detector} · {v.sample} · {v.platform}"))
-        except Exception:
-            _log.exception("blame: could not read loaded environment facts")
-    return tuple(sorted(facts))
