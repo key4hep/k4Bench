@@ -1872,6 +1872,28 @@ def test_only_changed_packages_a_window_run_loaded_become_candidates(monkeypatch
     ]
 
 
+def test_unmappable_packages_and_unknown_coverage_stay_candidates(monkeypatch):
+    packages, base, head = _loaded_window("cldconfig")
+    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+    every = ["acts", "cldconfig", "ddml", "k4actstracking", "k4reco", "marlintrkprocessors"]
+
+    def repos(head_snapshot):
+        entry = build_blame_report(
+            _report([_verdict(base="2026-10-02", onset="2026-10-03")]),
+            packages_for_release=lambda platform, release: packages[release],
+            provenance_for_run=lambda d, p, r, s, run: base if r == "2026-10-02" else head_snapshot,
+            github=GitHubClient(),
+        ).entries[0]
+        return sorted(r.package for r in entry.repos)
+
+    # ddsim maps no Python-only package, even one its steering file imports.
+    assert repos(dataclasses.replace(head, unmappable=frozenset({"cldconfig"}))) == ["cldconfig"]
+    # A capture that cannot say what escaped its maps rules nothing out.
+    assert repos(dataclasses.replace(head, unmappable=None)) == every
+    # Every run maps stack libraries: an empty loaded set is a failed mapping.
+    assert repos(dataclasses.replace(head, loaded=frozenset())) == every
+
+
 def test_the_harness_is_never_filtered_by_the_loaded_stack(monkeypatch):
     packages, base, head = _loaded_window("k4geo")
     packages["2026-10-03"]["k4geo"] = packages["2026-10-02"]["k4geo"]

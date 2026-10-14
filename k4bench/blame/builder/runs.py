@@ -232,7 +232,11 @@ def _external_facts(verdicts, lookup) -> tuple[ExternalChange, ...]:
 
 def _loaded_packages(verdicts, lookup) -> frozenset[str] | None:
     """Keys of every package the base or onset run of any of *verdicts*
-    mapped, or ``None`` when any of those runs did not record its loaded set."""
+    mapped or could have run unmapped, or ``None`` when any of those runs did
+    not record both sets.
+
+    An empty loaded set is a failed mapping, since every run maps stack
+    libraries, so it rules nothing out either."""
     if lookup is None:
         return None
     loaded = set()
@@ -243,7 +247,7 @@ def _loaded_packages(verdicts, lookup) -> frozenset[str] | None:
             _log.exception("blame: could not read loaded packages")
             return None
         for snapshot in snapshots:
-            if snapshot is None or snapshot.loaded is None:
+            if snapshot is None or not snapshot.loaded or snapshot.unmappable is None:
                 return None
-            loaded.update(package_key(name) for name in snapshot.loaded)
+            loaded.update(package_key(name) for name in snapshot.loaded | snapshot.unmappable)
     return frozenset(loaded)

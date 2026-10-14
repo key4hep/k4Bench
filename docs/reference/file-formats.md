@@ -209,6 +209,7 @@ The small additions to `run_info.json` are:
   "gcc": {"version": "16.1.0", "githash": "8ef9376e8"},
   "k4geo": {"version": "HEAD", "commit": "e1ba7bc", "githash": "e411040b8", "repo_url": "https://github.com/key4hep/k4geo.git"}
 },
+"k4h_unmappable_packages": ["cldconfig", "fcc_config"],
 "g4_datasets": {"G4LEDATA": "G4EMLOW8.8"}
 ```
 
@@ -266,7 +267,11 @@ facts digest and rendered comments are unchanged.
 
 The same two runs limit the candidates: a changed HEAD package that neither run
 loaded is dropped before PR discovery, so its pull requests are never ranked,
-shown or commented on. When either run has no `k4h_loaded_packages`, every
+shown or commented on. ddsim does not record the Python modules its steering file
+imports, so a ddsim capture also lists `k4h_unmappable_packages`: HEAD packages
+it did not load that install no shared library under `lib*/`. These stay
+candidates. A k4run capture records an empty list. When either run has no
+`k4h_unmappable_packages`, or has no or an empty `k4h_loaded_packages`, every
 changed package stays a candidate.
 
 ### Reading across the Spack-to-LCG boundary

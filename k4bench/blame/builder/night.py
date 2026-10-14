@@ -488,8 +488,9 @@ class _NightBlame:
             )
         loaded = self.loaded_cache[rank_group]
         if loaded is not None:
-            # A package neither end of this group's runs mapped cannot have
-            # moved its measurements, so its pull requests are never candidates.
+            # A package neither end of this group's runs mapped, and that has
+            # no unmapped code they could have run, cannot have moved its
+            # measurements, so its pull requests are never candidates.
             changes = [c for c in changes if package_key(c.name) in loaded]
         if rank_group not in self.harness_cache:
             self.harness_cache[rank_group] = _harness_change(
