@@ -12,7 +12,8 @@
 # The input is a frozen CLD_o2_v09 simulation (100 p8_ee_Zbb_ecm91 events,
 # ddsim --random.seed 42 --random.enableEventSeed, steered by cld_steer.py,
 # LCG devkey-head 2026-10-10). Its provenance and the script that produced it
-# sit next to it in inputs/reco/CLD/CLD_o2_v09/. Reconstructing a fixed input
+# sit next to it in inputs/reco/CLD/CLD_o2_v09/ (re-filed from _inputs/ by
+# .github/scripts/migrate_store_layout.py). Reconstructing a fixed input
 # keeps simulation changes out of the reconstruction numbers. xml: stays pinned
 # to the geometry the input was simulated with; detector bumps cover the sim
 # suite only.

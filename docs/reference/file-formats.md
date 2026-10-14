@@ -478,6 +478,26 @@ window it reproduces rather than for a night, so re-publishing the same window
 replaces the same file and a standing comment's link keeps working — see
 [PR comments → Reproducing the measurement](../user-guide/features/pr-comments.md#reproducing-the-measurement).
 
+### Migrating a store from the flat layout
+
+Stores written before suites hold sim runs at `{detector}/...`, reco runs at
+`_k4run/{detector}/...`, reports at `_reports/{night}/`, recipes at
+`_reproducers/` and frozen inputs at `_inputs/{detector}/`. No reader looks
+there any more, so a store must be re-filed once, before the first nightly
+that writes the suite layout — otherwise the dashboard and the regression
+report find no history and the reco benchmark cannot fetch its input. On the
+EOS FUSE mount:
+
+```bash
+python .github/scripts/migrate_store_layout.py /eos/user/j/jbeirer/k4bench          # print the plan
+python .github/scripts/migrate_store_layout.py /eos/user/j/jbeirer/k4bench --apply  # carry it out
+```
+
+Runs, reports and inputs are moved unchanged; recipes are copied, so the links
+standing pull-request comments carry keep working. The script refuses to
+overwrite an existing destination and finds nothing to do once a store is
+migrated.
+
 ### The night a report covers (`report.json`)
 
 `reports/sim/{YYYY-MM-DD}/` is named for the night the report covers, and
