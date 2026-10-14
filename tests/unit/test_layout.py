@@ -171,6 +171,9 @@ def test_nightly_upload_writes_the_layout():
 def test_report_upload_writes_the_layout():
     script = (ROOT / ".github" / "scripts" / "regression_report.sh").read_text()
     assert "from k4bench.layout import SIM, report_path, reproducer_path" in script
+    # Split from an assignment, so a failed lookup aborts under `set -e`
+    # instead of leaving both paths empty.
+    assert 'read -r REPORT_DIR REPRODUCER_DIR <<< "${LAYOUT_DIRS}"' in script
     assert 'EOS_REPORT_DIR="${EOS_ROOT}/${REPORT_DIR}"' in script
     assert '--reproducer-dir "root://${EOS_FQDN}/${EOS_ROOT}/${REPRODUCER_DIR}"' in script
 

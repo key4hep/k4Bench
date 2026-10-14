@@ -125,9 +125,15 @@ unset X509_USER_CERT
 unset X509_USER_KEY
 
 # The report and recipe directories k4bench/layout.py defines for the sim suite.
-read -r REPORT_DIR REPRODUCER_DIR <<< "$(python -c \
+# Assigned before `read` splits them: a failure inside a here-string's command
+# substitution would not trip `set -e`, and empty paths would publish at the
+# store root.
+LAYOUT_DIRS="$(python -c \
     'import sys; from k4bench.layout import SIM, report_path, reproducer_path; print(report_path(SIM, sys.argv[1]), reproducer_path(SIM))' \
     "${NIGHT}")"
+read -r REPORT_DIR REPRODUCER_DIR <<< "${LAYOUT_DIRS}"
+[[ -n "${REPORT_DIR}" && -n "${REPRODUCER_DIR}" ]] \
+    || { echo "ERROR: could not resolve the report and reproducer directories" >&2; exit 1; }
 EOS_REPORT_DIR="${EOS_ROOT}/${REPORT_DIR}"
 xrdfs "root://${EOS_FQDN}" mkdir -p "${EOS_REPORT_DIR}"
 xrdcp --force report/report.json "root://${EOS_FQDN}/${EOS_REPORT_DIR}/report.json"
