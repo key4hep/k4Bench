@@ -41,16 +41,16 @@ def _pick_run_app(dashboard_dir, store, plat, fail) -> None:
 
     import sidebar
 
-    def _list_detectors(url):
+    def _list_detectors(url, suite):
         if fail == "detectors":
             raise OSError("listing timed out")
         return sorted(store)
 
     sidebar.cached_list_detectors = _list_detectors
-    sidebar.cached_list_platforms = lambda url, det: [plat]
-    sidebar.cached_scan_stack_samples = lambda url, det, p: store[det]
+    sidebar.cached_list_platforms = lambda url, suite, det: [plat]
+    sidebar.cached_scan_stack_samples = lambda url, suite, det, p: store[det]
     sidebar.cached_fetch_latest_run = (
-        lambda url, det, p, stack, sample, cache: None if fail == "run"
+        lambda url, suite, det, p, stack, sample, cache: None if fail == "run"
         else f"/cache/{det}/{stack}/{sample}"
     )
     st.session_state["picked"] = sidebar.pick_run("https://store.invalid", "/cache")
@@ -124,20 +124,20 @@ def _window_app(dashboard_dir, run_dates, report_nights, platform_stacks, across
 
     import sidebar
 
-    def _platform_stacks(url, plat):
+    def _platform_stacks(url, suite, plat):
         if platform_stacks is None:
             raise OSError("listing timed out")
         # A test publishes a release mid-session through "new_stacks".
         return [*st.session_state.get("new_stacks", []), *platform_stacks]
 
-    sidebar.cached_list_run_dates = lambda url, det, plat, sample: run_dates
+    sidebar.cached_list_run_dates = lambda url, suite, det, plat, sample: run_dates
     # A test lands a report mid-session through "new_nights".
     sidebar.cached_list_report_dates = (
-        lambda url: [*report_nights, *st.session_state.get("new_nights", [])]
+        lambda url, suite: [*report_nights, *st.session_state.get("new_nights", [])]
     )
     sidebar.list_platform_stacks = _platform_stacks
     sidebar.cached_fetch_runs_windowed = (
-        lambda url, det, plat, sample, cache, items: tuple(
+        lambda url, suite, det, plat, sample, cache, items: tuple(
             f"/cache/{stack}/{d}" for stack, dates in items for d in dates
         )
     )

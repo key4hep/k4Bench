@@ -1,13 +1,14 @@
 #!/bin/bash
 #
 # Runs a single k4bench benchmark and uploads results to CERN EOS.
-# The matrix in .github/workflows/nightly.yml expands .github/benchmarks/*.yml
-# into a flat set of jobs (see .github/scripts/list_benchmarks.py). This script
+# The matrix in .github/workflows/nightly.yml expands the benchmark configs
+# below .github/benchmarks/ into a flat set of jobs (see
+# .github/scripts/list_benchmarks.py). This script
 # sources the Key4hep stack, installs k4bench, has benchmark_job.py run the job
 # and record it, and uploads the result.
 #
 # Required env vars (set by the workflow):
-#   BENCHMARK_CONFIG  — config file stem, e.g. "ALLEGRO_o1_v04"
+#   BENCHMARK_CONFIG  — config id, e.g. "sim/ALLEGRO/ALLEGRO_o1_v04"
 #   BENCHMARK_SAMPLE  — sample name, e.g. "single_e-_10GeV"
 #   BENCHMARK_JOB     — the job's record from list_benchmarks.py, as JSON
 #   X509_USER_CERT, X509_USER_KEY — EOS service certificate paths
@@ -17,8 +18,8 @@
 #   K4H_RELEASE_REQUESTED — publication date resolved once per night
 #   K4H_STACK_SETUP       — exact LCG view setup.sh resolved with that date
 #
-# EOS layout written by this script (below {EOS_ROOT}/_k4run/ for a k4run job):
-#   {EOS_ROOT}/{detector}/{platform}/key4hep-{release}/{sample}/{YYYY-MM-DD}/
+# EOS layout written by this script (k4bench/layout.py):
+#   {EOS_ROOT}/runs/{suite}/{concept}/{detector}/{platform}/key4hep-{release}/{sample}/{YYYY-MM-DD}/
 #     run_info.json
 #     machine_info.json
 #     {config}_results.csv
@@ -130,9 +131,10 @@ python3 .github/scripts/benchmark_job.py "${OUTPUT_DIR}"
 BENCH_RC=$?
 set -e
 [[ -f "${OUTPUT_DIR}/run_info.json" ]] || { echo "ERROR: the benchmark job did not start; nothing to upload" >&2; exit 1; }
-# The run's tool, detector and date, as recorded: the EOS path must agree with them.
-read -r TOOL DETECTOR DATE <<< "$(python3 -c \
-    'import json, sys; info = json.load(open(sys.argv[1])); print(info["tool"], info["detector"], info["date"])' \
+# The run directory k4bench/layout.py files the run under, read off the run as
+# recorded, so the upload cannot disagree with where the readers look for it.
+RUN_DIR="$(python3 -c \
+    'import json, sys; from k4bench.layout import run_dir_of; print(run_dir_of(json.load(open(sys.argv[1]))))' \
     "${OUTPUT_DIR}/run_info.json")"
 
 # ── 9. Upload to EOS ──────────────────────────────────────────────────────────
@@ -149,13 +151,7 @@ voms-proxy-init \
 unset X509_USER_CERT
 unset X509_USER_KEY
 
-# The run directory k4bench/layout.py defines: {detector}/{platform}/key4hep-{release}/{sample}/{date},
-# for a k4run job below its reserved tree, which no reader of the ddsim runs walks.
-EOS_TREE="${EOS_ROOT}"
-if [[ "${TOOL}" == "k4run" ]]; then
-    EOS_TREE="${EOS_ROOT}/_k4run"
-fi
-EOS_RUN="${EOS_TREE}/${DETECTOR}/${K4H_PLATFORM}/key4hep-${K4H_RELEASE}/${SAMPLE}/${DATE}"
+EOS_RUN="${EOS_ROOT}/${RUN_DIR}"
 EOS_URL="root://${EOS_FQDN}/${EOS_RUN}"
 
 command -v xrdfs >/dev/null || { echo "ERROR: xrdfs not found" >&2; exit 1; }

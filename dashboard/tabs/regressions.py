@@ -2,7 +2,7 @@
 
 Scoped, like the trend views, by the sidebar's detector/platform/sample
 selection: the tab renders the matching run group from the precomputed
-``_reports/{date}/report.json`` written to EOS by the nightly
+``reports/sim/{date}/report.json`` written to EOS by the nightly
 ``regression-report`` CI job (see ``k4bench/regression/``). The sidebar's
 *release* selects which report nights are on offer (see
 :func:`_candidate_nights`): several nights routinely re-benchmark one fixed
@@ -35,6 +35,7 @@ from k4bench.regression.models import (
     unjudged_cause,
 )
 from k4bench.labels import pretty_sample
+from k4bench.layout import SIM
 from sections import SectionScope, regressions_derived_release
 from k4bench.regression.render import (
     WINDOW_WATCH_TOKEN,
@@ -81,7 +82,7 @@ def render(
     :func:`sections.regressions_derived_release`).
     """
     try:
-        dates = cached_list_report_dates(data_url)
+        dates = cached_list_report_dates(data_url, SIM)
     except Exception as err:
         st.warning(
             f"Could not list the nightly reports on EOS: {err}. "
@@ -209,7 +210,7 @@ def _load_reports(
 ) -> tuple[dict[str, NightlyReport], list[str]]:
     """The parseable reports of *nights*, and the nights that could not be
     loaded."""
-    reports = cached_fetch_reports(data_url, tuple(nights))
+    reports = cached_fetch_reports(data_url, SIM, tuple(nights))
     return reports, [n for n in nights if n not in reports]
 
 
@@ -228,7 +229,7 @@ def _candidate_nights(
     belongs to the release — the tab then reports the release the rendered
     night actually carries.
 
-    A report is written per *run*, under ``_reports/{run_date}`` — so several
+    A report is written per *run*, under ``reports/sim/{run_date}`` — so several
     nights routinely re-benchmark one fixed release, and while the engine
     judges them all against the same frozen baseline, their reports can still
     differ (a WATCH night preceding the confirming one, a marginal OK night,
@@ -245,7 +246,7 @@ def _candidate_nights(
     empty listing — the only sensible fallback left.
     """
     try:
-        stacks_dates = cached_list_run_dates(data_url, detector, platform, sample)
+        stacks_dates = cached_list_run_dates(data_url, SIM, detector, platform, sample)
     except requests.RequestException:
         # Only a listing failure falls back silently-to-the-reader-but-not-to-us:
         # the sidebar may have an old release selected, so showing the latest
@@ -293,7 +294,7 @@ def _replaced_by(
     for successor_detector, successor_platform in successor_series(detector, platform):
         try:
             listing = cached_list_run_dates(
-                data_url, successor_detector, successor_platform, sample,
+                data_url, SIM, successor_detector, successor_platform, sample,
             )
         except requests.RequestException:
             continue
@@ -387,7 +388,7 @@ class _WindowAttribution:
 def _blame_for_night(data_url: str, night: str) -> BlameReport | None:
     """The night's sidecar, or ``None`` — absent and malformed are both normal
     (blame is best-effort and most nights have none)."""
-    raw = cached_fetch_blame(data_url, night)
+    raw = cached_fetch_blame(data_url, SIM, night)
     if not raw:
         return None
     try:

@@ -1342,7 +1342,7 @@ def test_the_harness_filter_keeps_everything_that_can_touch_a_measurement():
         (".github/scripts/nightly_benchmark.sh",),
         (".github/workflows/benchmark-detector.yml",),
         (".github/workflows/nightly.yml",),
-        (".github/benchmarks/sid.yml",),
+        (".github/benchmarks/sim/SiD/SiD.yml",),
         ("pyproject.toml",),
         ("docs/x.md", "k4bench/benchmark/metrics.py"),  # one real file keeps it
         (),  # no file list: cannot be proven harmless

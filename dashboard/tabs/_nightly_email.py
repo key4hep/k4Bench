@@ -43,6 +43,7 @@ import logging
 import streamlit as st
 
 from k4bench.blame.models import BlameReport, BlameSchemaError
+from k4bench.layout import SIM
 from k4bench.regression.email import to_html
 from k4bench.regression.models import NightlyReport
 from k4bench.regression.render import detector_badge
@@ -172,12 +173,12 @@ def render(
     report = reports[night]
     historical_blame_raw = {}
     for first_night in historical_nights(report):
-        raw = cached_fetch_blame(data_url, first_night)
+        raw = cached_fetch_blame(data_url, SIM, first_night)
         if raw:
             historical_blame_raw[first_night] = raw
 
     document = email_document(
-        report, cached_fetch_blame(data_url, night), historical_blame_raw,
+        report, cached_fetch_blame(data_url, SIM, night), historical_blame_raw,
         dashboard_url, night,
     )
     # An iframe, not st.markdown: the mail's own inline styles then render

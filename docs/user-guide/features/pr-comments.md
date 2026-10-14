@@ -296,7 +296,7 @@ five-row table can show.
 
 The table's **Reproduce** column links a runnable recipe: a plain-text file
 published beside the nightly data at
-`{K4BENCH_DATA_URL}/_reproducers/{name}.txt`, holding the two shell commands
+`{K4BENCH_DATA_URL}/reproducers/sim/{name}.txt`, holding the two shell commands
 that re-measure that row's before and after. It is a link rather than a
 fold-out block because the commands are a page of shell script that almost no
 reader of the comment wants inline, and because a `.txt` file is read, copied

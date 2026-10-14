@@ -8,6 +8,9 @@ resolved (K4H_STACK_SETUP, K4H_PLATFORM, K4H_RELEASE) and the runner's CPU set
 
 Besides the job parameters, the record holds:
 
+  suite              the benchmark suite the run belongs to (sim or reco),
+                     whose run tree it is uploaded to (absent on runs that
+                     predate suites; their tree says which)
   tool               what the job ran: ddsim, or k4run (absent on runs that
                      predate k4run benchmarks, which were all ddsim)
   configs            labels that produced a result CSV in <output_dir>
@@ -128,6 +131,7 @@ def build_run_info(
     run_id = env["GITHUB_RUN_ID"]
     release = env["K4H_RELEASE"]
     record = {
+        "suite":            rec["suite"],
         "tool":             job.tool,
         "date":             date,
         "platform":         env["K4H_PLATFORM"],

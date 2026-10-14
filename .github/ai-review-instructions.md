@@ -35,7 +35,9 @@ whole repository: if a finding depends on code you cannot see, do not report it.
   discovery and download.
 - `dashboard/`: Streamlit app that reads EOS over HTTPS and renders the report.
   It never recomputes verdicts.
-- `.github/benchmarks/*.yml`: the nightly workload, one file per detector.
+- `.github/benchmarks/{suite}/{concept}/{detector}.yml`: the nightly workload,
+  one file per suite (`sim`, `reco`) and detector; its path is the EOS run
+  tree its jobs upload to (`k4bench/layout.py`).
 - `.github/scripts/nightly_benchmark.sh`, `benchmark_job.py`, `run_info.py`,
   `resolve_release.sh`, `regression_report.sh` and `regression_report.py`: the
   nightly pipeline, run inside the Key4hep container.
@@ -97,7 +99,7 @@ semantics. Check for:
   or `runner/k4run.py` that perturb the quantity being measured;
 - changes that make detector or sweep configurations no longer comparable.
 
-Any edit to `.github/benchmarks/*.yml` that changes `n_events`, `ddsim_args`
+Any edit to a `.github/benchmarks/` config that changes `n_events`, `ddsim_args`
 (including the seed), `input_files`, `steering_file`, `xml` or the sweep list
 changes the measured workload. Affected series can step on the next night
 and be reported as regressions; blame cannot attribute the workload change

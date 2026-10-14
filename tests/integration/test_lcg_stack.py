@@ -146,7 +146,7 @@ def test_every_configured_benchmark_resolves_inside_the_view(tmp_path):
     env = _sourced_env(_current_lcg_setup(tmp_path))
     k4geo = Path(env["K4GEO"])
     missing, checked = [], 0
-    for config in sorted(_BENCHMARKS.glob("*.yml")):
+    for config in sorted(_BENCHMARKS.rglob("*.yml")):
         data = yaml.safe_load(config.read_text()) or {}
         for key in ("xml", "steering_file"):
             if not (raw := data.get(key)):
@@ -158,4 +158,4 @@ def test_every_configured_benchmark_resolves_inside_the_view(tmp_path):
                 missing.append(f"{config.name}: {key} {raw} -> {resolved}")
     assert not missing, "not resolvable in the LCG view:\n" + "\n".join(missing)
     # A matrix that resolved to nothing would pass every assertion above.
-    assert checked >= len(list(_BENCHMARKS.glob("*.yml"))) > 0
+    assert checked >= len(list(_BENCHMARKS.rglob("*.yml"))) > 0

@@ -1,6 +1,6 @@
 """The Overview tab's data, shaped from the nightly reports — no rendering.
 
-Everything here turns the precomputed ``_reports/{date}/report.json`` files
+Everything here turns the precomputed ``reports/sim/{date}/report.json`` files
 into the frames, rosters and styles the tab's views draw (:func:`overview_inputs`),
 and is the tab's unit-test surface. The figures and the render flow live in
 :mod:`tabs.detectors_overview`, the Regression Status view in

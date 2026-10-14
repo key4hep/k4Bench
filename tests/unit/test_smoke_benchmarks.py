@@ -20,9 +20,15 @@ def smoke(monkeypatch):
     return module
 
 
+def _config(root: Path, relative: str, text: str) -> Path:
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
 def test_sample_overrides_are_covered_and_shared_pairs_run_once(smoke, tmp_path):
-    config = tmp_path / "IDEA_o1_v04.yml"
-    config.write_text("""xml: old.xml
+    config = _config(tmp_path, "sim/IDEA/IDEA_o1_v04.yml", """xml: old/IDEA_o1_v04.xml
 steering_file: common.py
 n_events: 100
 samples:
@@ -32,24 +38,24 @@ samples:
   - name: other_steering
     steering_file: other.py
   - name: other_geometry
-    xml: other.xml
+    xml: other/IDEA_o1_v04.xml
 """)
     assert smoke.pairs([config]) == {
-        ("old.xml", "common.py"): ("IDEA_o1_v04/gun", 5),
-        ("old.xml", "other.py"): ("IDEA_o1_v04/other_steering", 5),
-        ("other.xml", "common.py"): ("IDEA_o1_v04/other_geometry", 5),
+        ("old/IDEA_o1_v04.xml", "common.py"): ("sim/IDEA/IDEA_o1_v04/gun", 5),
+        ("old/IDEA_o1_v04.xml", "other.py"): ("sim/IDEA/IDEA_o1_v04/other_steering", 5),
+        ("other/IDEA_o1_v04.xml", "common.py"): ("sim/IDEA/IDEA_o1_v04/other_geometry", 5),
     }
 
 
 def test_a_benchmark_can_allow_slow_geometry_construction(smoke, tmp_path):
-    fast = tmp_path / "fast.yml"
-    fast.write_text("xml: shared.xml\nn_events: 1\nsamples:\n  - name: gun\n")
-    slow = tmp_path / "slow.yml"
-    slow.write_text(fast.read_text() + "smoke_timeout: 45\n")
-    assert smoke.pairs([fast, slow]) == {("shared.xml", ""): ("fast/gun", 45)}
-    slow.write_text(fast.read_text() + "smoke_timeout: 0\n")
+    text = "xml: SiD.xml\nn_events: 1\nsamples:\n  - name: gun\n"
+    config = _config(tmp_path, "sim/SiD/SiD.yml", text)
+    assert smoke.pairs([config]) == {("SiD.xml", ""): ("sim/SiD/SiD/gun", 5)}
+    config.write_text(text + "smoke_timeout: 45\n")
+    assert smoke.pairs([config]) == {("SiD.xml", ""): ("sim/SiD/SiD/gun", 45)}
+    config.write_text(text + "smoke_timeout: 0\n")
     with pytest.raises(ValueError, match="smoke_timeout"):
-        smoke.pairs([slow])
+        smoke.pairs([config])
 
 
 @pytest.fixture
@@ -99,9 +105,7 @@ def test_failed_simulation_never_passes(smoke, paths, monkeypatch, failure):
 
 
 def test_k4run_benchmarks_have_no_simulation_to_smoke(smoke, tmp_path):
-    reco = tmp_path / "CLD_o2_v09_reco.yml"
-    reco.write_text("""tool: k4run
-xml: CLD_o2_v09.xml
+    reco = _config(tmp_path, "reco/CLD/CLD_o2_v09.yml", """xml: CLD_o2_v09.xml
 options: CLDReconstruction.py
 samples:
   - name: p8_ee_Zbb_ecm91

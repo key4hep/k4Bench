@@ -1,14 +1,14 @@
 name: Detector Benchmark
 
-# Reusable workflow that runs every sample for one detector in parallel.
-# Called from nightly.yml once per detector so the Actions UI nests sample
-# jobs under their detector instead of showing one flat list.
+# Reusable workflow that runs every sample of one benchmark config in parallel.
+# Called from nightly.yml once per config so the Actions UI nests sample jobs
+# under their config instead of showing one flat list.
 
 on:
   workflow_call:
     inputs:
-      detector:
-        description: detector config name (a file stem from .github/benchmarks)
+      config:
+        description: benchmark config id, its path below .github/benchmarks without .yml (e.g. sim/CLD/CLD_o2_v09)
         required: true
         type: string
       samples_json:
@@ -87,7 +87,7 @@ jobs:
         env:
           K4H_RELEASE_REQUESTED: ${{ inputs.release }}
           K4H_STACK_SETUP: ${{ inputs.stack_setup }}
-          BENCHMARK_CONFIG: ${{ inputs.detector }}
+          BENCHMARK_CONFIG: ${{ inputs.config }}
           BENCHMARK_SAMPLE: ${{ matrix.sample }}
           # The whole record list_benchmarks.py expanded for this job.
           BENCHMARK_JOB:    ${{ toJSON(matrix) }}

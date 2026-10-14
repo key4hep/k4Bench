@@ -4,17 +4,22 @@ The WebEOS site serves an Apache-style directory listing at K4BENCH_DATA_URL,
 laid out as :mod:`k4bench.layout` defines::
 
     {base_url}/
-      {detector}/                                   e.g. ALLEGRO_o1_v03/
-        {platform}/                                 e.g. x86_64-almalinux9-gcc14.2.0-opt/
-          {stack}/                                  e.g. key4hep-2026-05-19/
-            {sample}/                               e.g. single_e-_10GeV/
-              {YYYY-MM-DD}/                         e.g. 2026-05-23/
-                run_info.json
-                machine_info.json
-                {config}_results.csv
-                {config}_events.json
-                {config}_regions.json
-                {config}.log
+      runs/{suite}/                                 e.g. runs/sim/
+        {concept}/                                  e.g. ALLEGRO/
+          {detector}/                               e.g. ALLEGRO_o1_v03/
+            {platform}/                             e.g. x86_64-el9-gcc16-opt/
+              {stack}/                              e.g. key4hep-2026-05-19/
+                {sample}/                           e.g. single_e-_10GeV/
+                  {YYYY-MM-DD}/                     e.g. 2026-05-23/
+                    run_info.json
+                    machine_info.json
+                    {config}_results.csv
+                    {config}_events.json
+                    {config}_regions.json
+                    {config}.log
+      reports/{suite}/{YYYY-MM-DD}/report.json, blame.json
+
+Every function reading runs takes the suite it reads right after *base_url*.
 """
 
 from __future__ import annotations
@@ -33,7 +38,9 @@ import requests
 from urllib3.util import Retry
 
 from k4bench.artifacts import RUN_INFO
-from k4bench.layout import is_reserved, run_path, run_url
+from k4bench.layout import (
+    concept_of, concept_path, report_path, run_path, run_url, store_url,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -186,28 +193,48 @@ def _list_files(url: str) -> list[str]:
 
 # ── Discovery helpers (one per hierarchy level) ───────────────────────────────
 
-def list_detectors(base_url: str) -> list[str]:
-    """Return available detector names.
+def list_detectors(base_url: str, suite: str) -> list[str]:
+    """Return the detector names benchmarked in *suite*, sorted.
 
-    Underscore-prefixed directories at the top level (e.g. ``_reports/``, where
-    the nightly regression reports live) are reserved for non-detector data and
-    skipped.
+    One listing for the suite's concepts, then one per concept. A suite with no
+    run tree yet (a 404) has no detectors. A concept listing the server does
+    not answer raises :class:`IncompleteFetch` carrying the detectors listed so
+    far: a detector missing from the answer would read as one no longer run.
     """
-    return [d for d in _list_subdirs(base_url) if not is_reserved(d)]
+    try:
+        concepts = _list_subdirs(run_url(base_url, suite))
+    except requests.RequestException as exc:
+        if not _is_absent(exc):
+            raise
+        _log.debug("list_detectors: no %s run tree — %s", suite, exc)
+        return []
+    listed, failures = _list_each(
+        {concept: store_url(base_url, concept_path(suite, concept)) for concept in concepts},
+        strict=True, caller="list_detectors",
+    )
+    detectors = sorted(
+        detector
+        for concept, names in listed.items()
+        for detector in names
+        if concept_of(detector) == concept
+    )
+    if failures:
+        raise IncompleteFetch(detectors, failures)
+    return detectors
 
 
-def list_platforms(base_url: str, detector: str) -> list[str]:
+def list_platforms(base_url: str, suite: str, detector: str) -> list[str]:
     """Return available platforms for *detector*."""
-    return _list_subdirs(run_url(base_url, detector))
+    return _list_subdirs(run_url(base_url, suite, detector))
 
 
-def list_samples(base_url: str, detector: str, platform: str, stack: str) -> list[str]:
+def list_samples(base_url: str, suite: str, detector: str, platform: str, stack: str) -> list[str]:
     """Return available physics samples for *(detector, platform, stack)*."""
-    return sorted(_list_subdirs(run_url(base_url, detector, platform, stack)))
+    return sorted(_list_subdirs(run_url(base_url, suite, detector, platform, stack)))
 
 
 def scan_stack_samples(
-    base_url: str, detector: str, platform: str, *, strict: bool = False,
+    base_url: str, suite: str, detector: str, platform: str, *, strict: bool = False,
 ) -> dict[str, list[str]]:
     """Return ``{stack: [samples]}`` for *(detector, platform)*, newest stack first.
 
@@ -219,9 +246,9 @@ def scan_stack_samples(
     *strict*, the first that fails without an answer stops the scan and raises
     :class:`IncompleteFetch` carrying what was listed.
     """
-    stacks = sorted(_list_subdirs(run_url(base_url, detector, platform)), reverse=True)
+    stacks = sorted(_list_subdirs(run_url(base_url, suite, detector, platform)), reverse=True)
     listed, failures = _list_each(
-        {stack: run_url(base_url, detector, platform, stack) for stack in stacks},
+        {stack: run_url(base_url, suite, detector, platform, stack) for stack in stacks},
         strict=strict, caller="scan_stack_samples",
     )
     out = {stack: sorted(samples) for stack, samples in listed.items()}
@@ -232,18 +259,20 @@ def scan_stack_samples(
 
 def list_runs(
     base_url: str,
+    suite: str,
     detector: str,
     platform: str,
     stack: str,
     sample: str,
 ) -> list[str]:
     """Return available run dates for a *(detector, platform, stack, sample)* combination, newest first."""
-    runs = _list_subdirs(run_url(base_url, detector, platform, stack, sample))
+    runs = _list_subdirs(run_url(base_url, suite, detector, platform, stack, sample))
     return sorted(runs, reverse=True)
 
 
 def list_run_dates_all_stacks(
     base_url: str,
+    suite: str,
     detector: str,
     platform: str,
     sample: str,
@@ -260,9 +289,9 @@ def list_run_dates_all_stacks(
     skipped; with *strict*, the first that fails without an answer stops the
     scan and raises :class:`IncompleteFetch` carrying what was listed.
     """
-    stacks = _list_subdirs(run_url(base_url, detector, platform))
+    stacks = _list_subdirs(run_url(base_url, suite, detector, platform))
     listed, failures = _list_each(
-        {stack: run_url(base_url, detector, platform, stack, sample) for stack in stacks},
+        {stack: run_url(base_url, suite, detector, platform, stack, sample) for stack in stacks},
         strict=strict, caller="list_run_dates_all_stacks",
     )
     out = {stack: sorted(runs) for stack, runs in listed.items() if runs}
@@ -283,6 +312,7 @@ def _default_cache_root() -> Path:
 
 def ensure_run_cached(
     base_url: str,
+    suite: str,
     detector: str,
     platform: str,
     stack: str,
@@ -301,12 +331,12 @@ def ensure_run_cached(
     behind (the temp dir is discarded) rather than a dir that looks cached.
     """
     root = Path(cache_root) if cache_root else _default_cache_root()
-    run_dir = root / run_path(detector, platform, stack, sample, date)
+    run_dir = root / run_path(suite, detector, platform, stack, sample, date)
     sentinel = run_dir / ".complete"
     if sentinel.exists():
         return run_dir
 
-    url = run_url(base_url, detector, platform, stack, sample, date)
+    url = run_url(base_url, suite, detector, platform, stack, sample, date)
     run_dir.parent.mkdir(parents=True, exist_ok=True)
     # Stage in a sibling temp dir (same filesystem, so the publish rename is atomic).
     tmp_dir = Path(tempfile.mkdtemp(prefix=f".{date}.tmp-", dir=run_dir.parent))
@@ -355,6 +385,7 @@ def _publish_run_dir(tmp_dir: Path, run_dir: Path, sentinel: Path) -> None:
 
 def fetch_runs_windowed(
     base_url: str,
+    suite: str,
     detector: str,
     platform: str,
     sample: str,
@@ -399,7 +430,7 @@ def fetch_runs_windowed(
         futures = {
             pool.submit(
                 ensure_run_cached,
-                base_url, detector, platform, stack, sample, date, cache_root,
+                base_url, suite, detector, platform, stack, sample, date, cache_root,
             ): (stack, date)
             for stack, date in tasks
         }
@@ -434,17 +465,17 @@ def fetch_runs_windowed(
     return results
 
 
-def list_stacks(base_url: str, detector: str, platform: str) -> list[str]:
+def list_stacks(base_url: str, suite: str, detector: str, platform: str) -> list[str]:
     """Return the Key4hep releases benchmarked for *(detector, platform)*, newest first.
 
     Directory names as stored (``key4hep-{YYYY-MM-DD}``). Discovery only — one
     listing, no downloads.
     """
-    return sorted(_list_subdirs(run_url(base_url, detector, platform)), reverse=True)
+    return sorted(_list_subdirs(run_url(base_url, suite, detector, platform)), reverse=True)
 
 
 def fetch_stack_packages(
-    base_url: str, detector: str, platform: str, stack: str, *, strict: bool = False,
+    base_url: str, suite: str, detector: str, platform: str, stack: str, *, strict: bool = False,
 ) -> dict | None:
     """Return the ``k4h_packages`` map of a release, or ``None``.
 
@@ -459,7 +490,7 @@ def fetch_stack_packages(
     server does not answer stops the walk and raises :class:`IncompleteFetch`
     instead: the ``None`` it would otherwise end in might not be the answer.
     """
-    root = run_url(base_url, detector, platform, stack)
+    root = run_url(base_url, suite, detector, platform, stack)
 
     def _stop_if_strict(where: str, exc: requests.RequestException) -> None:
         if strict and not _is_absent(exc):
@@ -473,14 +504,14 @@ def fetch_stack_packages(
         return None
 
     for sample in samples:
-        sample_url = run_url(base_url, detector, platform, stack, sample)
+        sample_url = run_url(base_url, suite, detector, platform, stack, sample)
         try:
             dates = sorted(_list_subdirs(sample_url), reverse=True)
         except requests.RequestException as exc:
             _stop_if_strict(sample_url, exc)
             continue
         for date in dates:
-            url = f"{run_url(base_url, detector, platform, stack, sample, date)}/{RUN_INFO}"
+            url = f"{run_url(base_url, suite, detector, platform, stack, sample, date)}/{RUN_INFO}"
             try:
                 resp = _get_session().get(url, timeout=_TIMEOUT)
                 resp.raise_for_status()
@@ -500,7 +531,7 @@ def fetch_stack_packages(
 
 
 def fetch_stack_snapshot(
-    base_url: str, detector: str, platform: str, stack: str, sample: str | None,
+    base_url: str, suite: str, detector: str, platform: str, stack: str, sample: str | None,
     *, strict: bool = False,
 ):
     """Latest available run's stack for one scope, skipping partial uploads.
@@ -524,12 +555,12 @@ def fetch_stack_snapshot(
             raise ValueError("manifest lists no packages")
         return source
 
-    root = run_url(base_url, detector, platform, stack, sample)
+    root = run_url(base_url, suite, detector, platform, stack, sample)
     try:
         if sample is None:
             for candidate in sorted(_list_subdirs(root)):
                 snapshot = fetch_stack_snapshot(
-                    base_url, detector, platform, stack, candidate, strict=strict,
+                    base_url, suite, detector, platform, stack, candidate, strict=strict,
                 )
                 if snapshot is not None:
                     # Another scope can supply the platform's package versions,
@@ -567,15 +598,15 @@ def fetch_stack_snapshot(
 
 
 def fetch_run_provenance(
-    base_url: str, detector: str, platform: str, stack: str, sample: str, run_id: str,
+    base_url: str, suite: str, detector: str, platform: str, stack: str, sample: str, run_id: str,
 ):
     """Only the small, run-specific loaded facts needed by blame (two GETs)."""
     from k4bench.provenance.stack import stack_snapshot
 
-    info = fetch_run_info(base_url, detector, platform, stack, sample, run_id)
+    info = fetch_run_info(base_url, suite, detector, platform, stack, sample, run_id)
     if not info or not info.get("k4h_stack_capture"):
         return None
-    url = f"{run_url(base_url, detector, platform, stack, sample, run_id)}/machine_info.json"
+    url = f"{run_url(base_url, suite, detector, platform, stack, sample, run_id)}/machine_info.json"
     try:
         response = _get_session().get(url, timeout=_TIMEOUT)
         response.raise_for_status()
@@ -586,7 +617,7 @@ def fetch_run_provenance(
 
 
 def fetch_run_info(
-    base_url: str, detector: str, platform: str, stack: str, sample: str,
+    base_url: str, suite: str, detector: str, platform: str, stack: str, sample: str,
     run_id: str,
 ) -> dict | None:
     """Return one exact run's parsed ``run_info.json``, or ``None``.
@@ -595,7 +626,7 @@ def fetch_run_info(
     dispatches and partial re-runs can leave neighbouring run directories with
     different workloads and harness commits.
     """
-    url = f"{run_url(base_url, detector, platform, stack, sample, run_id)}/{RUN_INFO}"
+    url = f"{run_url(base_url, suite, detector, platform, stack, sample, run_id)}/{RUN_INFO}"
     try:
         resp = _get_session().get(url, timeout=_TIMEOUT)
         resp.raise_for_status()
@@ -607,7 +638,7 @@ def fetch_run_info(
 
 
 def fetch_run_commit(
-    base_url: str, detector: str, platform: str, stack: str, sample: str,
+    base_url: str, suite: str, detector: str, platform: str, stack: str, sample: str,
     run_id: str,
 ) -> tuple[str, str | None] | None:
     """Return k4Bench's own ``(commit_sha, github_run_url)`` at one exact run,
@@ -623,7 +654,7 @@ def fetch_run_commit(
     ``None`` covers "no such run" and "that run predates the field" — the
     harness's position is unknown either way.
     """
-    info = fetch_run_info(base_url, detector, platform, stack, sample, run_id)
+    info = fetch_run_info(base_url, suite, detector, platform, stack, sample, run_id)
     if info is None:
         return None
     sha = info.get("commit_sha")
@@ -632,21 +663,21 @@ def fetch_run_commit(
     return None
 
 
-def list_report_dates(base_url: str) -> list[str]:
-    """Return available nightly regression-report dates (newest first).
+def list_report_dates(base_url: str, suite: str) -> list[str]:
+    """Return *suite*'s nightly regression-report dates (newest first).
 
-    Reports live at ``{base_url}/_reports/{YYYY-MM-DD}/report.json``, written
-    by the nightly ``regression-report`` CI job. An absent ``_reports/`` tree
+    Reports live at ``{base_url}/reports/{suite}/{YYYY-MM-DD}/report.json``,
+    written by the nightly ``regression-report`` CI job. An absent report tree
     (a 404: no report generated yet) is not an error — it returns an empty
     list. Any other failure raises: a listing the server did not answer says
     nothing about whether reports exist, and must not read as "none yet".
     """
     try:
-        return sorted(_list_subdirs(f"{base_url.rstrip('/')}/_reports"), reverse=True)
+        return sorted(_list_subdirs(store_url(base_url, report_path(suite))), reverse=True)
     except requests.RequestException as exc:
         if not _is_absent(exc):
             raise
-        _log.debug("list_report_dates: no _reports tree — %s", exc)
+        _log.debug("list_report_dates: no %s report tree — %s", suite, exc)
         return []
 
 
@@ -675,19 +706,24 @@ def _fetch_json(url: str, *, strict: bool, missing_is_normal: bool) -> dict | No
         return None
 
 
-def fetch_report(base_url: str, date: str, *, strict: bool = False) -> dict | None:
-    """Fetch and parse one nightly regression report, or ``None`` on failure.
+def fetch_report(
+    base_url: str, suite: str, date: str, *, strict: bool = False,
+) -> dict | None:
+    """Fetch and parse one of *suite*'s nightly regression reports, or ``None``
+    on failure.
 
     With *strict*, a transient failure raises :class:`IncompleteFetch` instead
     of returning ``None``."""
-    url = f"{base_url.rstrip('/')}/_reports/{date}/report.json"
+    url = store_url(base_url, f"{report_path(suite, date)}/report.json")
     return _fetch_json(url, strict=strict, missing_is_normal=False)
 
 
-def fetch_blame(base_url: str, date: str, *, strict: bool = False) -> dict | None:
+def fetch_blame(
+    base_url: str, suite: str, date: str, *, strict: bool = False,
+) -> dict | None:
     """Fetch and parse one night's blame sidecar, or ``None`` when absent.
 
-    Blame lives beside the report at ``_reports/{date}/blame.json``, written
+    Blame lives beside the report at ``reports/{suite}/{date}/blame.json``, written
     best-effort by the nightly ``regression-report`` job only on nights with a
     confirmed regression it could attribute — so **most nights have none**, and a
     404 here is the common case, not an error (logged at debug, returns ``None``).
@@ -697,12 +733,13 @@ def fetch_blame(base_url: str, date: str, *, strict: bool = False) -> dict | Non
     With *strict*, a transient failure raises :class:`IncompleteFetch` instead
     of returning ``None``.
     """
-    url = f"{base_url.rstrip('/')}/_reports/{date}/blame.json"
+    url = store_url(base_url, f"{report_path(suite, date)}/blame.json")
     return _fetch_json(url, strict=strict, missing_is_normal=True)
 
 
 def ensure_latest_run_cached(
     base_url: str,
+    suite: str,
     detector: str,
     platform: str,
     stack: str,
@@ -714,9 +751,9 @@ def ensure_latest_run_cached(
     Single-run tabs only ever display the latest run, so there is no need to
     download the full date history for the selected stack.
     """
-    runs = list_runs(base_url, detector, platform, stack, sample)  # newest first
+    runs = list_runs(base_url, suite, detector, platform, stack, sample)  # newest first
     if not runs:
         return None
     return ensure_run_cached(
-        base_url, detector, platform, stack, sample, runs[0], cache_root
+        base_url, suite, detector, platform, stack, sample, runs[0], cache_root
     )

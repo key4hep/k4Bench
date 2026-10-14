@@ -3,7 +3,8 @@
 These are thin ``@st.cache_data`` shims kept out of ``app.py`` so the entry
 point stays focused on layout and data-source resolution. Each wrapper imports
 its underlying ``k4bench.remote`` function lazily so importing this module is
-cheap.
+cheap. Like those functions, each takes the suite it reads (see
+:mod:`k4bench.layout`) right after the base URL.
 
 ``st.cache_data`` and ``st.cache_resource`` keep whatever their function
 returns, for everyone, until the TTL runs out — and never an exception. So every
@@ -58,54 +59,56 @@ def _keep_complete(cached, *args):
 
 
 @st.cache_data(show_spinner="Fetching detectors...", ttl=3600)
-def cached_list_detectors(base_url: str) -> list[str]:
+def cached_list_detectors(base_url: str, suite: str) -> list[str]:
     from k4bench.remote import list_detectors
-    return list_detectors(base_url)
+    return list_detectors(base_url, suite)
 
 
 @st.cache_data(show_spinner="Fetching platforms...", ttl=3600)
-def cached_list_platforms(base_url: str, detector: str) -> list[str]:
+def cached_list_platforms(base_url: str, suite: str, detector: str) -> list[str]:
     from k4bench.remote import list_platforms
-    return list_platforms(base_url, detector)
+    return list_platforms(base_url, suite, detector)
 
 
 @st.cache_data(show_spinner="Scanning releases...", ttl=3600)
 def cached_scan_stack_samples(
-    base_url: str, detector: str, platform: str
+    base_url: str, suite: str, detector: str, platform: str
 ) -> dict[str, list[str]]:
     """Raises :class:`~k4bench.remote.IncompleteFetch` rather than return a
     scan missing a release: the sidebar would drop a selection that is valid."""
     from k4bench.remote import scan_stack_samples
-    return scan_stack_samples(base_url, detector, platform, strict=True)
+    return scan_stack_samples(base_url, suite, detector, platform, strict=True)
 
 
 @st.cache_data(show_spinner="Scanning run dates...", ttl=600)
 def cached_list_run_dates(
-    base_url: str, detector: str, platform: str, sample: str
+    base_url: str, suite: str, detector: str, platform: str, sample: str
 ) -> dict[str, list[str]]:
     """Raises :class:`~k4bench.remote.IncompleteFetch` rather than return a
     listing missing a release: callers read the newest release off it."""
     from k4bench.remote import list_run_dates_all_stacks
-    return list_run_dates_all_stacks(base_url, detector, platform, sample, strict=True)
+    return list_run_dates_all_stacks(
+        base_url, suite, detector, platform, sample, strict=True,
+    )
 
 
 @st.cache_data(show_spinner="Scanning Key4hep releases...", ttl=600)
-def cached_list_stacks(base_url: str, detector: str, platform: str) -> list[str]:
+def cached_list_stacks(base_url: str, suite: str, detector: str, platform: str) -> list[str]:
     from k4bench.remote import list_stacks
-    return list_stacks(base_url, detector, platform)
+    return list_stacks(base_url, suite, detector, platform)
 
 
-def list_platform_stacks(base_url: str, platform: str) -> list[str]:
-    """Every release benchmarked on *platform*, newest first.
+def list_platform_stacks(base_url: str, suite: str, platform: str) -> list[str]:
+    """Every release *suite* benchmarked on *platform*, newest first.
 
     Unioned across detectors rather than read from one: detectors join and
     leave the matrix, so no single detector's history is the full set of
     releases.
     """
     stacks: set[str] = set()
-    for detector in cached_list_detectors(base_url):
+    for detector in cached_list_detectors(base_url, suite):
         try:
-            stacks.update(cached_list_stacks(base_url, detector, platform))
+            stacks.update(cached_list_stacks(base_url, suite, detector, platform))
         except requests.RequestException:
             # A detector never benchmarked on this platform has no such
             # directory to list. Only that is expected here — a broader catch
@@ -116,49 +119,55 @@ def list_platform_stacks(base_url: str, platform: str) -> list[str]:
 
 @st.cache_data(show_spinner="Fetching stack provenance...", ttl=3600)
 def _fetch_stack_packages(
-    base_url: str, detector: str, platform: str, stack: str
+    base_url: str, suite: str, detector: str, platform: str, stack: str
 ) -> dict | None:
     from k4bench.remote import fetch_stack_packages
-    return fetch_stack_packages(base_url, detector, platform, stack, strict=True)
+    return fetch_stack_packages(base_url, suite, detector, platform, stack, strict=True)
 
 
 def cached_fetch_stack_packages(
-    base_url: str, detector: str, platform: str, stack: str
+    base_url: str, suite: str, detector: str, platform: str, stack: str
 ) -> dict | None:
     """Cached :func:`k4bench.remote.fetch_stack_packages`.
 
     A release is immutable once published, so this is cached for the full hour
     — the same stack is re-read every time it is an endpoint of a comparison.
     """
-    return _keep_complete(_fetch_stack_packages, base_url, detector, platform, stack)
+    return _keep_complete(_fetch_stack_packages, base_url, suite, detector, platform, stack)
 
 
 @st.cache_data(show_spinner="Fetching measured stack...", ttl=3600)
-def _fetch_stack_snapshot(base_url: str, detector: str, platform: str, stack: str, sample: str | None):
+def _fetch_stack_snapshot(
+    base_url: str, suite: str, detector: str, platform: str, stack: str, sample: str | None,
+):
     from k4bench.remote import fetch_stack_snapshot
-    return fetch_stack_snapshot(base_url, detector, platform, stack, sample, strict=True)
+    return fetch_stack_snapshot(base_url, suite, detector, platform, stack, sample, strict=True)
 
 
-def cached_fetch_stack_snapshot(base_url: str, detector: str, platform: str, stack: str, sample: str | None):
-    return _keep_complete(_fetch_stack_snapshot, base_url, detector, platform, stack, sample)
+def cached_fetch_stack_snapshot(
+    base_url: str, suite: str, detector: str, platform: str, stack: str, sample: str | None,
+):
+    return _keep_complete(
+        _fetch_stack_snapshot, base_url, suite, detector, platform, stack, sample,
+    )
 
 
 @st.cache_data(show_spinner="Listing regression reports...", ttl=600)
-def cached_list_report_dates(base_url: str) -> list[str]:
+def cached_list_report_dates(base_url: str, suite: str) -> list[str]:
     """Cached :func:`k4bench.remote.list_report_dates`, which raises — and so
     is not cached — when the listing did not answer; callers say so rather
     than "no reports yet"."""
     from k4bench.remote import list_report_dates
-    return list_report_dates(base_url)
+    return list_report_dates(base_url, suite)
 
 
 @st.cache_data(show_spinner="Fetching blame...", ttl=600)
-def _fetch_blame(base_url: str, date: str) -> dict | None:
+def _fetch_blame(base_url: str, suite: str, date: str) -> dict | None:
     from k4bench.remote import fetch_blame
-    return fetch_blame(base_url, date, strict=True)
+    return fetch_blame(base_url, suite, date, strict=True)
 
 
-def cached_fetch_blame(base_url: str, date: str) -> dict | None:
+def cached_fetch_blame(base_url: str, suite: str, date: str) -> dict | None:
     """Cached :func:`k4bench.remote.fetch_blame`.
 
     Most nights have no ``blame.json`` (only a confirmed, attributable
@@ -169,11 +178,11 @@ def cached_fetch_blame(base_url: str, date: str) -> dict | None:
     hide the freshly landed ranking for the rest of an hour. One small GET per
     viewed night per TTL is the whole cost.
     """
-    return _keep_complete(_fetch_blame, base_url, date)
+    return _keep_complete(_fetch_blame, base_url, suite, date)
 
 
 @st.cache_resource(show_spinner=False, ttl=3600)
-def _fetch_report(base_url: str, date: str) -> NightlyReport | None:
+def _fetch_report(base_url: str, suite: str, date: str) -> NightlyReport | None:
     """One night's report, parsed; ``None`` when it is absent or malformed.
 
     A report is several MB of JSON and takes far longer to parse than to read,
@@ -185,7 +194,7 @@ def _fetch_report(base_url: str, date: str) -> NightlyReport | None:
     from k4bench.regression.render import from_json
     from k4bench.remote import fetch_report
 
-    raw = fetch_report(base_url, date, strict=True)
+    raw = fetch_report(base_url, suite, date, strict=True)
     if not raw:
         return None
     try:
@@ -195,7 +204,9 @@ def _fetch_report(base_url: str, date: str) -> NightlyReport | None:
         return None
 
 
-def _fetch_reports(base_url: str, dates: tuple[str, ...]) -> dict[str, NightlyReport]:
+def _fetch_reports(
+    base_url: str, suite: str, dates: tuple[str, ...]
+) -> dict[str, NightlyReport]:
     """Every night of *dates* with a report, parsed and keyed by date.
 
     A night missing from the cache costs a request, so the nights are read in
@@ -221,7 +232,7 @@ def _fetch_reports(base_url: str, dates: tuple[str, ...]) -> dict[str, NightlyRe
         # window — logged (dashboard convention) but not surfaced as a UI
         # warning, since the night is simply absent from the result.
         try:
-            return date, _fetch_report(base_url, date)
+            return date, _fetch_report(base_url, suite, date)
         except IncompleteFetch as exc:
             failures.extend(exc.failures)
             return date, None
@@ -239,20 +250,21 @@ def _fetch_reports(base_url: str, dates: tuple[str, ...]) -> dict[str, NightlyRe
 
 
 def cached_fetch_reports(
-    base_url: str, dates: tuple[str, ...]
+    base_url: str, suite: str, dates: tuple[str, ...]
 ) -> dict[str, NightlyReport]:
     """:func:`_fetch_reports`; when a night could not be read, the others with
     a toast instead of an exception."""
-    return _keep_complete(_fetch_reports, base_url, dates)
+    return _keep_complete(_fetch_reports, base_url, suite, dates)
 
 
 @st.cache_data(show_spinner="Downloading latest run...", ttl=3600)
 def cached_fetch_latest_run(
-    base_url: str, detector: str, platform: str, stack: str, sample: str, cache_dir: str
+    base_url: str, suite: str, detector: str, platform: str, stack: str, sample: str,
+    cache_dir: str,
 ) -> str | None:
     from k4bench.remote import ensure_latest_run_cached
     p = ensure_latest_run_cached(
-        base_url, detector, platform, stack, sample, cache_root=cache_dir
+        base_url, suite, detector, platform, stack, sample, cache_root=cache_dir
     )
     return str(p) if p else None
 
@@ -260,6 +272,7 @@ def cached_fetch_latest_run(
 @st.cache_data(show_spinner="Downloading trend data...", ttl=3600)
 def _fetch_runs_windowed(
     base_url: str,
+    suite: str,
     detector: str,
     platform: str,
     sample: str,
@@ -276,7 +289,7 @@ def _fetch_runs_windowed(
     stacks_dates = {stack: list(dates) for stack, dates in stacks_dates_items}
     try:
         runs = fetch_runs_windowed(
-            base_url, detector, platform, sample, stacks_dates,
+            base_url, suite, detector, platform, sample, stacks_dates,
             cache_root=cache_dir, strict=True,
         )
     except IncompleteFetch as exc:
@@ -288,6 +301,7 @@ def _fetch_runs_windowed(
 
 def cached_fetch_runs_windowed(
     base_url: str,
+    suite: str,
     detector: str,
     platform: str,
     sample: str,
@@ -297,5 +311,5 @@ def cached_fetch_runs_windowed(
     """:func:`_fetch_runs_windowed`, cached only when every run landed."""
     return _keep_complete(
         _fetch_runs_windowed,
-        base_url, detector, platform, sample, cache_dir, stacks_dates_items,
+        base_url, suite, detector, platform, sample, cache_dir, stacks_dates_items,
     )

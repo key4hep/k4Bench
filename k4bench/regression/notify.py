@@ -27,6 +27,7 @@ from email.utils import formatdate, make_msgid
 from pathlib import Path
 
 from k4bench.blame.models import BlameReport, BlameSchemaError
+from k4bench.layout import SIM
 from k4bench.regression.email import subject as email_subject
 from k4bench.regression.email import to_html, to_markdown
 from k4bench.regression.models import NightlyReport
@@ -169,7 +170,7 @@ def _load_historical_blame(
     }
     out: dict[str, BlameReport] = {}
     for night in sorted(nights):
-        raw = fetch_blame(data_url, night)
+        raw = fetch_blame(data_url, SIM, night)
         if not raw:
             continue
         try:

@@ -21,11 +21,13 @@ that need *history* and *comparison*:
 ## Where the data comes from
 
 Every night, CI runs a curated set of benchmarks (defined in
-`.github/benchmarks/*.yml`), uploads each result to CERN EOS, and the dashboard
-reads them over HTTPS from a WebEOS endpoint. The EOS layout is hierarchical:
+`.github/benchmarks/{suite}/{concept}/{detector}.yml`), uploads each result to
+CERN EOS, and the dashboard reads the sim suite's over HTTPS from a WebEOS
+endpoint. The EOS layout is hierarchical (see
+[File formats → EOS layout](../../reference/file-formats.md#eos-layout)):
 
 ```text
-{detector}/{platform}/key4hep-{release}/{sample}/{YYYY-MM-DD}/
+runs/sim/{concept}/{detector}/{platform}/key4hep-{release}/{sample}/{YYYY-MM-DD}/
     run_info.json  machine_info.json
     {config}_results.csv  {config}_events.json  {config}_regions.json  {config}.log
 ```
@@ -75,9 +77,9 @@ names the run directory instead.
 | **Event memory** | per-event RSS and growth | `*_events.json` |
 | **Region timing** | per-subdetector stepping time, `at_location` vs `by_birth`, step counts, attribution analysis | `*_regions.json` |
 | **Trends** | metrics over time across releases | many runs, windowed |
-| **Regressions** | the nightly regression report for the selected detector/platform/sample | `_reports/{date}/report.json` |
+| **Regressions** | the nightly regression report for the selected detector/platform/sample | `reports/sim/{date}/report.json` |
 | **Stack Changes** | which Key4hep packages moved between two nightly releases | `run_info.json` (`k4h_packages`) |
-| **Overview** | cross-detector comparison: performance trends, landscape, regression status & the nightly mail | `_reports/{date}/report.json` |
+| **Overview** | cross-detector comparison: performance trends, landscape, regression status & the nightly mail | `reports/sim/{date}/report.json` |
 | **Machine info** | the host the benchmark ran on (CPU, RAM, governor, throttling) | `machine_info.json` |
 | **Logs** | the raw `ddsim` log for the selected run | `*.log` |
 
@@ -520,7 +522,7 @@ this one compares the detectors *against each other* — always on their
 sidebar's trend window (the same scoping as Run Trends, minus the detector —
 and the window is anchored detector-independently, so switching the sidebar
 detector never changes which detectors this tab shows).
-It reads the same nightly `_reports/{date}/report.json` as the Regressions
+It reads the same nightly `reports/sim/{date}/report.json` as the Regressions
 tab — whose verdicts carry the raw nightly value of every run and per-event
 metric for all detectors — so the whole comparison loads from one small JSON
 per night, with no per-detector run downloads.

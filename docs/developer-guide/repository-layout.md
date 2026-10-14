@@ -61,7 +61,7 @@ k4Bench/
 ├── .github/
 │   ├── workflows/            #   ci.yml, nightly.yml, benchmark-detector.yml,
 │   │                         #   deploy-dashboard.yml, on-release-main.yml, docs.yml
-│   ├── benchmarks/           #   *.yml nightly benchmark configs (one per detector)
+│   ├── benchmarks/           #   nightly benchmark configs, {suite}/{concept}/{detector}.yml
 │   └── scripts/              #   nightly_benchmark.sh, benchmark_job.py, list_benchmarks.py,
 │                             #   machine_info.py, run_info.py, …
 │

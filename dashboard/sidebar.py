@@ -14,6 +14,7 @@ from datetime import date
 import streamlit as st
 
 from k4bench.labels import pretty_release
+from k4bench.layout import SIM
 from remote_cache import (
     cached_fetch_latest_run,
     cached_fetch_runs_windowed,
@@ -98,7 +99,7 @@ def pick_run(base_url: str, cache_dir: str) -> RunSelection | None:
     )
 
     try:
-        detectors = cached_list_detectors(base_url)
+        detectors = cached_list_detectors(base_url, SIM)
     except Exception as err:
         st.error(f"Failed to list detectors: {err}")
         return None
@@ -113,7 +114,7 @@ def pick_run(base_url: str, cache_dir: str) -> RunSelection | None:
     render_example_detector_badge(detector)
 
     try:
-        platforms = cached_list_platforms(base_url, detector)
+        platforms = cached_list_platforms(base_url, SIM, detector)
     except Exception as err:
         st.error(f"Failed to list platforms: {err}")
         return None
@@ -130,7 +131,7 @@ def pick_run(base_url: str, cache_dir: str) -> RunSelection | None:
     # Scan the release tree once; derive both the sample union and the
     # per-sample stack list from the same {stack: [samples]} map.
     try:
-        stack_samples = cached_scan_stack_samples(base_url, detector, platform)
+        stack_samples = cached_scan_stack_samples(base_url, SIM, detector, platform)
     except Exception as err:
         st.error(f"Failed to scan releases: {err}")
         return None
@@ -171,7 +172,7 @@ def pick_run(base_url: str, cache_dir: str) -> RunSelection | None:
     # stack — fetch just that one (cached), not the whole date history.
     try:
         data_dir = cached_fetch_latest_run(
-            base_url, detector, platform, stack, sample, cache_dir
+            base_url, SIM, detector, platform, stack, sample, cache_dir
         )
     except Exception as err:
         st.error(f"Failed to download latest run: {err}")
@@ -197,7 +198,7 @@ def pick_trend_window(
     """
     try:
         stacks_dates = cached_list_run_dates(
-            base_url, run.detector, run.platform, run.sample
+            base_url, SIM, run.detector, run.platform, run.sample
         )
     except Exception as err:
         st.warning(f"Could not scan trend run dates: {err}")
@@ -206,7 +207,7 @@ def pick_trend_window(
     platform_stacks: list[str] = []
     if across_detectors:
         try:
-            platform_stacks = list_platform_stacks(base_url, run.platform)
+            platform_stacks = list_platform_stacks(base_url, SIM, run.platform)
         except Exception as err:
             st.warning(f"Could not list the platform's releases: {err}")
     # The selected detector's own releases are folded into the platform's so
@@ -216,7 +217,7 @@ def pick_trend_window(
     # The nightly report nights — one cached directory listing, the same one
     # the Overview tab reads. They bound the nights the Overview draws.
     try:
-        report_nights = cached_list_report_dates(base_url)
+        report_nights = cached_list_report_dates(base_url, SIM)
     except Exception as err:
         st.warning(f"Could not list nightly reports: {err}")
         report_nights = []
@@ -257,7 +258,7 @@ def pick_trend_window(
     st.caption(caption)
     try:
         run_dirs = cached_fetch_runs_windowed(
-            base_url, run.detector, run.platform, run.sample, cache_dir, windowed,
+            base_url, SIM, run.detector, run.platform, run.sample, cache_dir, windowed,
         )
     except Exception as err:
         st.warning(f"Could not load trend data: {err}")

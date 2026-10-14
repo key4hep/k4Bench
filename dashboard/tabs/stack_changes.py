@@ -31,7 +31,7 @@ from k4bench.provenance.diff import (
 from k4bench.provenance.stack import StackSnapshot
 from k4bench.regression.models import MetricVerdict, NightlyReport
 from k4bench.labels import pretty_release, pretty_sample
-from k4bench.layout import stack_dir
+from k4bench.layout import SIM, stack_dir
 from sections import STACK_CHANGES_PLATFORM_WIDE, SectionScope
 from remote_cache import (
     cached_fetch_blame,
@@ -290,8 +290,8 @@ def _packages(data_url: str, platform: str, stack: str) -> dict | None:
     Detectors are tried in turn because any one of them may have skipped this
     release, or may have run it before provenance capture existed.
     """
-    for detector in cached_list_detectors(data_url):
-        packages = cached_fetch_stack_packages(data_url, detector, platform, stack)
+    for detector in cached_list_detectors(data_url, SIM):
+        packages = cached_fetch_stack_packages(data_url, SIM, detector, platform, stack)
         if packages:
             return packages
     return None
@@ -306,11 +306,11 @@ def packages_for_release(data_url: str, platform: str, release: str) -> dict | N
 
 
 def _snapshot(data_url: str, platform: str, stack: str, detector: str, sample: str):
-    snapshot = cached_fetch_stack_snapshot(data_url, detector, platform, stack, sample)
+    snapshot = cached_fetch_stack_snapshot(data_url, SIM, detector, platform, stack, sample)
     if snapshot is not None:
         return snapshot
-    for source in dict.fromkeys([detector, *cached_list_detectors(data_url)]):
-        snapshot = cached_fetch_stack_snapshot(data_url, source, platform, stack, None)
+    for source in dict.fromkeys([detector, *cached_list_detectors(data_url, SIM)]):
+        snapshot = cached_fetch_stack_snapshot(data_url, SIM, source, platform, stack, None)
         if snapshot is not None:
             return snapshot
     return None
@@ -334,7 +334,7 @@ def render(
     compared: the toggle's remembered state says nothing about a view that was
     never drawn.
     """
-    stacks = list_platform_stacks(data_url, platform)
+    stacks = list_platform_stacks(data_url, SIM, platform)
     # Before the release-count guard: a platform with too few releases to
     # compare must still drop the previous platform's picker and toggle state,
     # or returning to a comparable platform resumes a scope the reader left
@@ -487,7 +487,7 @@ def _reports_since(
 ) -> list[NightlyReport]:
     """Batch-fetch the parseable reports at/after *base_release*."""
     report_dates = tuple(date for date in dates if date >= base_release)
-    report_map = cached_fetch_reports(data_url, report_dates)
+    report_map = cached_fetch_reports(data_url, SIM, report_dates)
     return [report_map[date] for date in report_dates if date in report_map]
 
 
@@ -516,7 +516,7 @@ def _render_regressions_in_range(
     package range is never mistaken for that metric's attribution interval.
     """
     try:
-        dates = cached_list_report_dates(data_url)
+        dates = cached_list_report_dates(data_url, SIM)
     except Exception as err:
         st.markdown("##### Regressions in this range")
         st.warning(
@@ -743,7 +743,7 @@ def _blame_for_verdict(
         verdict.first_confirmed_run_id, verdict.run_id,
     )))
     for night in nights:
-        raw = cached_fetch_blame(data_url, night)
+        raw = cached_fetch_blame(data_url, SIM, night)
         if not raw:
             continue
         try:

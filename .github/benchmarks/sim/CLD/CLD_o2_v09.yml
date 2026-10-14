@@ -1,0 +1,41 @@
+# k4Bench nightly benchmark config — CLD o2_v09
+#
+# A sim-suite benchmark: the nightly runs each sample below as one ddsim job and
+# uploads it to EOS under runs/sim/{concept}/{detector}/, the run tree this
+# file's path names (.github/benchmarks/sim/{concept}/{detector}.yml). Keys:
+# docs/reference/configuration-reference.md#nightly-benchmark-yaml-keys
+#
+# CLD_o2_v09 is the FCC-ee CLD detector concept (silicon vertex/tracker,
+# ECal/HCal, solenoid, muon yoke). Docs (CERN SSO):
+# https://fcc-ee-detector-full-sim.docs.cern.ch/CLD/
+# Steering comes from CLDConfig (github.com/key4hep/CLDConfig), shipped by
+# Key4hep under $CLDCONFIG; our xml: below overrides the steering file's own
+# hardcoded compactFile default, same pattern IDEA already relies on.
+
+# xml:           https://github.com/key4hep/k4geo/blob/main/FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
+# steering_file: https://github.com/key4hep/CLDConfig/blob/main/CLDConfig/cld_steer.py
+xml: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
+steering_file: $CLDCONFIG/share/CLDConfig/cld_steer.py
+
+verbose: false
+
+timeout: 600  # 10 hours — a job past this is stuck, not merely slow
+sweep: true
+
+# Fixed event seed to minimize random fluctuations in nightly benchmarks
+ddsim_args: >-
+  --random.seed 42
+  --random.enableEventSeed
+
+samples:
+  - name: single_e-_10GeV
+    n_events: 1300
+    ddsim_args: >-
+      --enableGun
+      --gun.particle e-
+      --gun.distribution uniform
+      --gun.energy 10*GeV
+
+  - name: p8_ee_Zbb_ecm91
+    n_events: 100
+    input_files: root://eospublic.cern.ch//eos/experiment/fcc/ee/generation/hepmc/p8_ee_Zbb_ecm91/events_noVtxSmear.hepmc

@@ -53,7 +53,8 @@ def k4geo(tmp_path, monkeypatch):
 
 def _record(**overrides) -> dict[str, str]:
     return {
-        "config": "minimal", "sample": "single_e-_10GeV", "xml": "FCCee/minimal.xml",
+        "config": "sim/minimal/minimal", "suite": "sim", "detector": "minimal",
+        "sample": "single_e-_10GeV", "xml": "FCCee/minimal.xml",
         "n_events": "10", "ddsim_args": "--enableGun", "steering_file": "", "timeout": "",
         "verbose": "false", "sweep": "false", "input_files": "", "sweep_detectors": "",
         "include_only": "", "exclude_only": "", **overrides,
@@ -278,6 +279,7 @@ def test_failed_machine_info_records_no_run(job_module, k4geo, tmp_path, monkeyp
 
 def _k4run_record(**overrides) -> dict:
     return _record(**{
+        "config": "reco/minimal/minimal", "suite": "reco",
         "tool": "k4run", "ddsim_args": "", "options": "CLDReconstruction.py", "stage_dir": "",
         "k4run_args": "--compactFile $DETECTOR_XML --inputFiles $LOCAL_INPUT_FILES",
         "variants": {"truth_tracking": "--truthTracking", "pinned": "--compactFile ${DETECTOR_XML}"},
@@ -396,7 +398,7 @@ def test_every_repository_record_resolves_into_a_command(job_module, monkeypatch
     # record list_benchmarks.py writes.
     list_benchmarks = _load("list_benchmarks")
     records = [
-        r for path in sorted((ROOT / ".github" / "benchmarks").glob("*.yml"))
+        r for path in list_benchmarks.config_paths(ROOT / ".github" / "benchmarks")
         for r in list_benchmarks.expand(path)
     ]
     assert records
@@ -416,26 +418,27 @@ def test_workflow_hands_the_whole_record_to_the_container():
     assert "-e BENCHMARK_JOB" in workflow
 
 
-@pytest.mark.parametrize("tool, tree", [("ddsim", "/eos"), ("k4run", "/eos/_k4run")])
-def test_nightly_uploads_under_the_recorded_tool_detector_and_date(tmp_path, tool, tree):
+@pytest.mark.parametrize("suite", ["sim", "reco"])
+def test_nightly_uploads_under_the_recorded_suite_detector_and_date(tmp_path, suite):
     script = (ROOT / ".github" / "scripts" / "nightly_benchmark.sh").read_text()
     assert 'python3 .github/scripts/benchmark_job.py "${OUTPUT_DIR}"' in script
-    start = script.index("read -r TOOL DETECTOR DATE")
-    snippet = script[start : script.index('/run_info.json")"', start) + len('/run_info.json")"')]
-    start = script.index('EOS_TREE="${EOS_ROOT}"')
-    upload = script[start : script.index("\n", script.index("EOS_RUN=", start))]
-    (tmp_path / "run_info.json").write_text(
-        json.dumps({"tool": tool, "detector": "CLD_o2_v09", "date": "2026-10-10"})
-    )
+    start = script.index('RUN_DIR="$(python3 -c')
+    run_dir = script[start : script.index('/run_info.json")"', start) + len('/run_info.json")"')]
+    start = script.index("EOS_RUN=", start)
+    upload = run_dir + "\n" + script[start : script.index("\n", start)]
+    (tmp_path / "run_info.json").write_text(json.dumps({
+        "suite": suite, "detector": "CLD_o2_v09", "platform": "x86_64-el9-gcc16-opt",
+        "k4h_release": "key4hep-2026-10-10", "sample": "p8_ee_Zbb_ecm91", "date": "2026-10-10",
+    }))
     done = subprocess.run(
-        ["bash", "-c", f'set -euo pipefail\n{snippet}\n{upload}\necho "$EOS_RUN"'],
+        ["bash", "-c", f'set -euo pipefail\n{upload}\necho "$EOS_RUN"'],
         env={
             **os.environ, "OUTPUT_DIR": str(tmp_path), "EOS_ROOT": "/eos",
-            "K4H_PLATFORM": "x86_64-el9-gcc16-opt", "K4H_RELEASE": "2026-10-10",
-            "SAMPLE": "p8_ee_Zbb_ecm91",
+            "PYTHONPATH": str(ROOT),
         },
         capture_output=True, text=True, check=True,
     )
     assert done.stdout.strip() == (
-        f"{tree}/CLD_o2_v09/x86_64-el9-gcc16-opt/key4hep-2026-10-10/p8_ee_Zbb_ecm91/2026-10-10"
+        f"/eos/runs/{suite}/CLD/CLD_o2_v09/x86_64-el9-gcc16-opt/key4hep-2026-10-10/"
+        "p8_ee_Zbb_ecm91/2026-10-10"
     )

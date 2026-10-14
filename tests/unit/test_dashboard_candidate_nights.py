@@ -33,7 +33,7 @@ _REPORTS = [*_BEFORE, "2026-09-10"]
 
 @pytest.fixture(autouse=True)
 def _no_network(monkeypatch):
-    def listing(url, det, plat, samp):
+    def listing(url, suite, det, plat, samp):
         if plat == _ACTIVE:
             return {f"key4hep-{_SUCCESSOR_RUN}": [_SUCCESSOR_RUN]}
         return dict(_STACKS_DATES)
@@ -82,7 +82,7 @@ def test_a_listing_missing_the_newest_release_falls_back_to_the_latest_report(mo
 
     partial = {k: v for k, v in _STACKS_DATES.items() if k != _NEWEST_STACK}
 
-    def listing(url, det, plat, samp):
+    def listing(url, suite, det, plat, samp):
         raise IncompleteFetch(partial, [f"{_NEWEST_STACK}: read timed out"])
 
     monkeypatch.setattr(regressions, "cached_list_run_dates", listing)

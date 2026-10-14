@@ -11,11 +11,27 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
+# Executing a file below ``.github/scripts`` otherwise puts that directory—not
+# the checkout root—first on sys.path. The bump job installs no k4bench, so the
+# layout is read from the checkout itself.
+try:
+    sys.path.remove(str(ROOT))
+except ValueError:
+    pass
+sys.path.insert(0, str(ROOT))
+
+from k4bench.layout import SIM, concept_of  # noqa: E402
+
+#: The sim suite's benchmark configs, the only ones bumped: a reco benchmark
+#: reconstructs a frozen input simulated with its geometry, so that geometry
+#: stays.
+BENCHMARKS = Path(".github/benchmarks") / SIM
 VERSION = re.compile(r"([A-Za-z0-9_-]+)_v(\d+)")
 # GITHUB_TOKEN cannot edit workflow files; their examples are version-independent.
 EXAMPLES = (".github/scripts/nightly_benchmark.sh",)
@@ -33,13 +49,9 @@ def detect(root: Path, k4geo: Path, family: str | None = None) -> list[Bump]:
     if not k4geo.is_dir():
         raise ValueError(f"Missing K4GEO directory: {k4geo}")
     current = {}
-    for path in sorted((root / ".github/benchmarks").glob("*.yml")):
+    for path in sorted((root / BENCHMARKS).glob("*/*.yml")):
         match = VERSION.fullmatch(path.stem)
         cfg = yaml.safe_load(path.read_text())
-        # A k4run benchmark reconstructs a frozen input simulated with its
-        # geometry, so that geometry is never bumped.
-        if cfg.get("tool", "ddsim") != "ddsim":
-            continue
         xml = cfg["xml"]
         if not match or xml.startswith("$") or Path(xml).is_absolute():
             continue
@@ -162,13 +174,18 @@ def edit_benchmark(text: str, bump: Bump, fcc_config: Path) -> tuple[str, list[s
     return replace_references(text, replacements), notes or ["No steering file configured."]
 
 
+def config_path(root: Path, detector: str) -> Path:
+    """The sim benchmark config of *detector*, in its concept's directory."""
+    return root / BENCHMARKS / concept_of(detector) / f"{detector}.yml"
+
+
 def prepare(root: Path, bump: Bump, fcc_config: Path) -> tuple[dict[Path, str], list[str]]:
     """Return all proposed edits and review notes without mutating files or the bump."""
-    source = root / f".github/benchmarks/{bump.old}.yml"
+    source = config_path(root, bump.old)
     text, notes = edit_benchmark(source.read_text(), bump, fcc_config)
     lineage = root / "k4bench/regression/lineage.py"
     edits = {
-        root / f".github/benchmarks/{bump.new}.yml": text,
+        config_path(root, bump.new): text,
         lineage: edit_lineage(lineage.read_text(), bump.old, bump.new),
     }
     for name in EXAMPLES:
@@ -222,8 +239,8 @@ def main() -> None:
         edits, notes = prepare(ROOT, bump, args.fcc_config)
         summaries.append({**asdict(bump), "notes": notes})
         if args.apply:
-            old = ROOT / f".github/benchmarks/{bump.old}.yml"
-            new = ROOT / f".github/benchmarks/{bump.new}.yml"
+            old = config_path(ROOT, bump.old)
+            new = config_path(ROOT, bump.new)
             if new.exists():
                 raise ValueError(f"Refusing to overwrite {new}")
             subprocess.run(["git", "mv", str(old), str(new)], cwd=ROOT, check=True)

@@ -72,19 +72,19 @@ def _app(dashboard_dir, stack_names, packages, from_release, to_release,
 
     from tabs import stack_changes as _tab
 
-    _tab.cached_fetch_stack_snapshot = lambda url, detector, platform, stack, sample: (snapshots or {}).get(stack)
-    _tab.cached_list_detectors = lambda url: ["IDEA"]
-    _tab.list_platform_stacks = lambda url, platform: sorted(set(stack_names), reverse=True)
+    _tab.cached_fetch_stack_snapshot = lambda url, suite, detector, platform, stack, sample: (snapshots or {}).get(stack)
+    _tab.cached_list_detectors = lambda url, suite: ["IDEA"]
+    _tab.list_platform_stacks = lambda url, suite, platform: sorted(set(stack_names), reverse=True)
     _tab.cached_fetch_stack_packages = (
-        lambda url, detector, platform, stack: packages.get(stack)
+        lambda url, suite, detector, platform, stack: packages.get(stack)
     )
     # The reverse view reads the nightly reports; stub those too so the tab is
     # hermetic (default: no reports, so the reverse section is empty).
-    _tab.cached_list_report_dates = lambda url: report_dates
-    _tab.cached_fetch_reports = lambda url, dates: {
+    _tab.cached_list_report_dates = lambda url, suite: report_dates
+    _tab.cached_fetch_reports = lambda url, suite, dates: {
         date: reports_map[date] for date in dates if reports_map.get(date)
     }
-    _tab.cached_fetch_blame = lambda url, date: blame_map.get(date)
+    _tab.cached_fetch_blame = lambda url, suite, date: blame_map.get(date)
     # Trend history is tested by the shared Regressions component. Keep this
     # tab's app tests network-free while still exercising its picker/ranking.
     _tab.cached_list_run_dates = lambda *a: {}
@@ -270,7 +270,7 @@ def test_regressions_in_range_skips_missing_reports():
 def test_reports_since_fetches_the_historical_window_in_one_batch(monkeypatch):
     seen = {}
 
-    def _batch(url, dates):
+    def _batch(url, suite, dates):
         seen["dates"] = dates
         return {date: {"night": date} for date in dates if date != "2026-07-09"}
 
@@ -580,16 +580,16 @@ def test_first_stack_changes_render_preserves_deep_link_dates(monkeypatch):
 def test_packages_fall_back_to_another_detector(monkeypatch):
     # A detector may have skipped a release, or run it before provenance
     # capture; any other detector's run answers for the same stack.
-    def _fetch(url, detector, platform, stack):
+    def _fetch(url, suite, detector, platform, stack):
         return _STACKS[stack] if detector == "SiD" else None
 
-    monkeypatch.setattr(stack_changes, "cached_list_detectors", lambda url: ["IDEA", "SiD"])
+    monkeypatch.setattr(stack_changes, "cached_list_detectors", lambda url, suite: ["IDEA", "SiD"])
     monkeypatch.setattr(stack_changes, "cached_fetch_stack_packages", _fetch)
     assert stack_changes._packages("u", PLAT, "key4hep-2026-07-10") == _STACKS["key4hep-2026-07-10"]
 
 
 def test_packages_none_when_no_detector_has_it(monkeypatch):
-    monkeypatch.setattr(stack_changes, "cached_list_detectors", lambda url: ["IDEA"])
+    monkeypatch.setattr(stack_changes, "cached_list_detectors", lambda url, suite: ["IDEA"])
     monkeypatch.setattr(
         stack_changes, "cached_fetch_stack_packages", lambda *a: None,
     )

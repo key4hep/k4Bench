@@ -20,6 +20,7 @@ pytest.importorskip("streamlit")
 import streamlit as st  # noqa: E402
 
 from k4bench import remote  # noqa: E402
+from k4bench.layout import SIM  # noqa: E402
 
 _DASHBOARD_DIR = Path(__file__).resolve().parents[2] / "dashboard"
 if str(_DASHBOARD_DIR) not in sys.path:
@@ -52,7 +53,7 @@ def test_report_window_with_a_stalled_night_is_read_again(monkeypatch):
     calls: list[str] = []
     stalled = {"2026-09-23"}
 
-    def fetch_report(base_url, date, *, strict=False):
+    def fetch_report(base_url, suite, date, *, strict=False):
         calls.append(date)
         if date in stalled:
             raise _timeout(date)
@@ -62,13 +63,13 @@ def test_report_window_with_a_stalled_night_is_read_again(monkeypatch):
     nights = ("2026-09-24", "2026-09-23")
 
     # The night that answered is shown; the stalled one is simply absent…
-    assert _nights(remote_cache.cached_fetch_reports(BASE, nights)) == {
+    assert _nights(remote_cache.cached_fetch_reports(BASE, SIM, nights)) == {
         "2026-09-24": "2026-09-24",
     }
     # …and not remembered as absent: the next call asks again, and only for it.
     stalled.clear()
     calls.clear()
-    assert _nights(remote_cache.cached_fetch_reports(BASE, nights)) == {
+    assert _nights(remote_cache.cached_fetch_reports(BASE, SIM, nights)) == {
         "2026-09-24": "2026-09-24",
         "2026-09-23": "2026-09-23",
     }
@@ -77,16 +78,16 @@ def test_report_window_with_a_stalled_night_is_read_again(monkeypatch):
     # A complete window is cached as before, and so is every night of it on
     # its own: a window sharing nights with it reads only its new ones.
     calls.clear()
-    remote_cache.cached_fetch_reports(BASE, nights)
+    remote_cache.cached_fetch_reports(BASE, SIM, nights)
     assert calls == []
-    remote_cache.cached_fetch_reports(BASE, ("2026-09-25", "2026-09-24"))
+    remote_cache.cached_fetch_reports(BASE, SIM, ("2026-09-25", "2026-09-24"))
     assert calls == ["2026-09-25"]
 
 
 def test_report_window_keeps_a_night_that_is_absent(monkeypatch):
     calls: list[str] = []
 
-    def fetch_report(base_url, date, *, strict=False):
+    def fetch_report(base_url, suite, date, *, strict=False):
         calls.append(date)
         if date == "2026-09-22":
             return {"groups": [{"detector": "CLD"}]}  # half-written: no platform
@@ -94,11 +95,11 @@ def test_report_window_keeps_a_night_that_is_absent(monkeypatch):
 
     monkeypatch.setattr(remote, "fetch_report", fetch_report)
     nights = ("2026-09-24", "2026-09-23", "2026-09-22")
-    remote_cache.cached_fetch_reports(BASE, nights)
+    remote_cache.cached_fetch_reports(BASE, SIM, nights)
     calls.clear()
     # A 404 or an unparseable report is an answer: cached like any other, and
     # costing only its own night.
-    assert _nights(remote_cache.cached_fetch_reports(BASE, nights)) == {
+    assert _nights(remote_cache.cached_fetch_reports(BASE, SIM, nights)) == {
         "2026-09-24": "2026-09-24",
     }
     assert calls == []
@@ -110,7 +111,7 @@ def test_report_listing_that_did_not_answer_is_not_cached(monkeypatch):
         ["2026-09-24", "2026-09-23"],
     ])
 
-    def list_report_dates(base_url):
+    def list_report_dates(base_url, suite):
         answer = next(answers)
         if isinstance(answer, Exception):
             raise answer
@@ -118,13 +119,13 @@ def test_report_listing_that_did_not_answer_is_not_cached(monkeypatch):
 
     monkeypatch.setattr(remote, "list_report_dates", list_report_dates)
     with pytest.raises(remote.requests.ReadTimeout):
-        remote_cache.cached_list_report_dates(BASE)
-    assert remote_cache.cached_list_report_dates(BASE) == ["2026-09-24", "2026-09-23"]
+        remote_cache.cached_list_report_dates(BASE, SIM)
+    assert remote_cache.cached_list_report_dates(BASE, SIM) == ["2026-09-24", "2026-09-23"]
 
 
 @pytest.mark.parametrize("name, wrapper, args", [
-    ("list_run_dates_all_stacks", "cached_list_run_dates", (BASE, "DET", "PLAT", "single_e")),
-    ("scan_stack_samples", "cached_scan_stack_samples", (BASE, "DET", "PLAT")),
+    ("list_run_dates_all_stacks", "cached_list_run_dates", (BASE, SIM, "DET", "PLAT", "single_e")),
+    ("scan_stack_samples", "cached_scan_stack_samples", (BASE, SIM, "DET", "PLAT")),
 ])
 def test_discovery_that_stopped_short_raises_and_is_read_again(monkeypatch, name, wrapper, args):
     # A listing missing the newest release would make an older one look newest,
@@ -160,15 +161,15 @@ def test_partial_trend_download_returns_the_runs_that_landed(monkeypatch):
 
     monkeypatch.setattr(remote, "fetch_runs_windowed", fetch_runs_windowed)
     got = remote_cache.cached_fetch_runs_windowed(
-        BASE, "DET", "PLAT", "single_e", "/cache",
+        BASE, SIM, "DET", "PLAT", "single_e", "/cache",
         (("S", ("2026-09-23", "2026-09-24")),),
     )
     assert got == ("/cache/S/2026-09-24",)
 
 
 @pytest.mark.parametrize("name, wrapper, args", [
-    ("fetch_blame", "cached_fetch_blame", (BASE, "2026-09-24")),
-    ("fetch_stack_packages", "cached_fetch_stack_packages", (BASE, "DET", "PLAT", "S")),
+    ("fetch_blame", "cached_fetch_blame", (BASE, SIM, "2026-09-24")),
+    ("fetch_stack_packages", "cached_fetch_stack_packages", (BASE, SIM, "DET", "PLAT", "S")),
 ])
 def test_other_wrappers_do_not_keep_a_stall(monkeypatch, name, wrapper, args):
     calls = []
@@ -252,12 +253,12 @@ def test_stacks_are_unioned_across_detectors(monkeypatch):
     # Detectors join and leave the matrix, so no single detector's history is
     # the full set of releases.
     per_detector = {"IDEA": ["key4hep-2026-07-10"], "SiD": ["key4hep-2026-07-09"]}
-    monkeypatch.setattr(remote_cache, "cached_list_detectors", lambda url: ["IDEA", "SiD"])
+    monkeypatch.setattr(remote_cache, "cached_list_detectors", lambda url, suite: ["IDEA", "SiD"])
     monkeypatch.setattr(
         remote_cache, "cached_list_stacks",
-        lambda url, detector, platform: per_detector[detector],
+        lambda url, suite, detector, platform: per_detector[detector],
     )
-    assert remote_cache.list_platform_stacks("u", "PLAT") == [
+    assert remote_cache.list_platform_stacks("u", SIM, "PLAT") == [
         "key4hep-2026-07-10", "key4hep-2026-07-09",
     ]
 
@@ -265,24 +266,24 @@ def test_stacks_are_unioned_across_detectors(monkeypatch):
 def test_a_detector_without_the_platform_is_skipped(monkeypatch):
     import requests
 
-    def _stacks(url, detector, platform):
+    def _stacks(url, suite, detector, platform):
         if detector == "SiD":
             raise requests.RequestException("404")  # never ran on this platform
         return ["key4hep-2026-07-10"]
 
-    monkeypatch.setattr(remote_cache, "cached_list_detectors", lambda url: ["IDEA", "SiD"])
+    monkeypatch.setattr(remote_cache, "cached_list_detectors", lambda url, suite: ["IDEA", "SiD"])
     monkeypatch.setattr(remote_cache, "cached_list_stacks", _stacks)
     # One detector missing a platform must not blank the whole list.
-    assert remote_cache.list_platform_stacks("u", "PLAT") == ["key4hep-2026-07-10"]
+    assert remote_cache.list_platform_stacks("u", SIM, "PLAT") == ["key4hep-2026-07-10"]
 
 
 def test_an_unexpected_listing_error_is_not_swallowed(monkeypatch):
-    def _stacks(url, detector, platform):
+    def _stacks(url, suite, detector, platform):
         raise TypeError("a bug in the listing code")
 
-    monkeypatch.setattr(remote_cache, "cached_list_detectors", lambda url: ["IDEA"])
+    monkeypatch.setattr(remote_cache, "cached_list_detectors", lambda url, suite: ["IDEA"])
     monkeypatch.setattr(remote_cache, "cached_list_stacks", _stacks)
     # Only an absent directory is expected here. Anything else is a bug, and
     # must surface rather than read as "this platform has no releases".
     with pytest.raises(TypeError):
-        remote_cache.list_platform_stacks("u", "PLAT")
+        remote_cache.list_platform_stacks("u", SIM, "PLAT")

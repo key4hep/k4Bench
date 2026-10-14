@@ -198,7 +198,7 @@ def _trends_app(dashboard_dir, with_vmem):
 
     from tabs import trends
 
-    trends.cached_fetch_reports = lambda url, ids: {}
+    trends.cached_fetch_reports = lambda url, suite, ids: {}
     n = 6
     df = _pd.DataFrame(
         {
