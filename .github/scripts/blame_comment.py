@@ -61,11 +61,14 @@ _log = logging.getLogger(__name__)
 
 
 def _benchmark_inputs(root: Path = _REPO_ROOT / ".github" / "benchmarks") -> dict:
-    """Legacy run-info supplements keyed by ``(detector, sample)``."""
+    """Legacy run-info supplements keyed by ``(detector, sample)``, from the sim
+    suite's benchmark configs."""
     import yaml
 
+    from k4bench.layout import SIM
+
     inputs = {}
-    for path in sorted(root.glob("*.yml")):
+    for path in sorted(root.glob(f"{SIM}/*/*.yml")):
         try:
             data = yaml.safe_load(path.read_text()) or {}
         except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
@@ -87,6 +90,7 @@ def run_info_source(data_url: str | None):
     """Memoized exact-run reader, enriched for pre-metadata HepMC runs."""
     if not data_url:
         return None
+    from k4bench.layout import SIM
     from k4bench.remote import fetch_run_info
 
     fallback = _benchmark_inputs()
@@ -97,7 +101,7 @@ def run_info_source(data_url: str | None):
     ) -> dict | None:
         key = (detector, platform, stack, sample, run_id)
         if key not in cache:
-            info = fetch_run_info(data_url, *key)
+            info = fetch_run_info(data_url, SIM, *key)
             if info is not None:
                 info = dict(info)
                 legacy = fallback.get((detector, sample), {})
@@ -117,7 +121,7 @@ def reproducer_publisher(
 ):
     """``(facts) -> url`` that publishes one recipe beside the nightly data.
 
-    The recipe is a plain-text file under ``{EOS_ROOT}/_reproducers/``, named
+    The recipe is a plain-text file under ``{EOS_ROOT}/reproducers/sim/``, named
     for the measurement and window it reproduces, and read back over the same
     WebEOS host the dashboard uses. Both ends are needed: without a write
     target there is nowhere to put it, and without a read base there is no link
@@ -136,6 +140,7 @@ def reproducer_publisher(
     if not eos_dir or not data_url:
         return None
     from k4bench.blame.reproduce import artifact_name, render_text
+    from k4bench.layout import SIM, reproducer_path, store_url
 
     made = {"dir": False}
 
@@ -146,7 +151,7 @@ def reproducer_publisher(
                       facts.label)
             return None
         name = artifact_name(facts)
-        target = f"{data_url.rstrip('/')}/_reproducers/{name}"
+        target = store_url(data_url, f"{reproducer_path(SIM)}/{name}")
         if dry_run:
             _log.info("blame_comment: dry run — would publish %s", target)
             return target
@@ -317,7 +322,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--reproducer-dir", default=os.environ.get("K4BENCH_REPRODUCER_EOS_DIR"),
         help="xrootd URL of the directory the runnable recipes are published to, "
-             "e.g. root://eosuser.cern.ch//eos/user/j/jbeirer/k4bench/_reproducers "
+             "e.g. root://eosuser.cern.ch//eos/user/j/jbeirer/k4bench/reproducers/sim "
              "(default: $K4BENCH_REPRODUCER_EOS_DIR). Without it — or without "
              "--data-url to read them back — the comments carry no recipe link",
     )

@@ -227,6 +227,7 @@ def main(argv: list[str] | None = None) -> int:
     from k4bench.blame.models import BlameReport, BlameSchemaError
     from k4bench.blame.publish import publish
     from k4bench.regression.render import from_json
+    from k4bench.layout import SIM, report_path, store_url
     from k4bench.remote import fetch_blame, fetch_report
 
     only_repo, only_number = args.only
@@ -253,14 +254,15 @@ def main(argv: list[str] | None = None) -> int:
     # Read the report and its sidecar straight from EOS: this is the same data
     # the dashboard and the nightly commenter see, so the preview rests on real
     # measurements rather than a hand-built fixture.
-    raw_report = fetch_report(args.data_url, args.night)
+    raw_report = fetch_report(args.data_url, SIM, args.night)
     if raw_report is None:
         print(
-            f"ERROR: no report at {args.data_url}/_reports/{args.night}/report.json",
+            "ERROR: no report at "
+            f"{store_url(args.data_url, report_path(SIM, args.night))}/report.json",
             file=sys.stderr,
         )
         return 1
-    raw_blame = fetch_blame(args.data_url, args.night)
+    raw_blame = fetch_blame(args.data_url, SIM, args.night)
     if raw_blame is None:
         print(
             f"ERROR: no blame sidecar for {args.night} — that night attributed no "

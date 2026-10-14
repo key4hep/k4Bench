@@ -7,6 +7,7 @@ from plotly.subplots import make_subplots
 
 from k4bench.analysis.loader import failed_config_mask, with_cpu_efficiency
 from k4bench.analysis.plots._theme import _TEMPLATE
+from k4bench.layout import SIM
 from k4bench.metrics import metric_title
 from remote_cache import cached_fetch_reports
 from tabs._historical_trends import render_stability_expander
@@ -80,7 +81,7 @@ def _severity_lookup(
     """
     if not (data_url and detector and platform and sample and run_ids):
         return {}
-    reports = cached_fetch_reports(data_url, run_ids)
+    reports = cached_fetch_reports(data_url, SIM, run_ids)
     lookup: dict[tuple[str, str, str], str] = {}
     for report in reports.values():
         for g in report.groups:

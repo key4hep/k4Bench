@@ -13,6 +13,7 @@ import requests
 
 import pandas as pd
 
+from k4bench.layout import SIM, run_path
 from k4bench.regression.engine import BASELINE_WINDOW_RUNS
 from k4bench.regression.lineage import DETECTOR_SUCCESSORS, PLATFORM_SUCCESSORS
 from k4bench.regression.models import (
@@ -535,7 +536,7 @@ def test_first_ever_night_with_no_results_and_no_roster_is_not_reported(tmp_path
 
 
 def _local_tree(root: Path, detector: str, sample: str) -> Path:
-    return root / detector / _PLAT / _STACK / sample
+    return root / run_path(SIM, detector) / _PLAT / _STACK / sample
 
 
 def test_local_report_flags_missing_run_and_drops_retired(tmp_path):
@@ -1045,25 +1046,25 @@ def _migration_tree(
     old_nights = _nights(10, start=start)
     for night in old_nights:
         _write_run(
-            root / "DET" / _OLD_PLAT / _STACK / "single_e" / night,
+            root / run_path(SIM, "DET") / _OLD_PLAT / _STACK / "single_e" / night,
             night=night, wall_time_s=100.0, platform=_OLD_PLAT,
         )
     new_nights = _nights(len(new_walls), start=_nights(11, start=start)[-1])
     for night, wall in zip(new_nights, new_walls):
         _write_run(
-            root / "DET" / _NEW_PLAT / _STACK / "single_e" / night,
+            root / run_path(SIM, "DET") / _NEW_PLAT / _STACK / "single_e" / night,
             night=night, wall_time_s=wall, platform=_NEW_PLAT,
         )
     return root
 
 
 def _new_platform_runs(root: Path) -> tuple[str, ...]:
-    sample_root = root / "DET" / _NEW_PLAT / _STACK / "single_e"
+    sample_root = root / run_path(SIM, "DET") / _NEW_PLAT / _STACK / "single_e"
     return tuple(str(p) for p in sorted(sample_root.iterdir()))
 
 
 def _old_platform_runs(root: Path):
-    sample_root = root / "DET" / _OLD_PLAT / _STACK / "single_e"
+    sample_root = root / run_path(SIM, "DET") / _OLD_PLAT / _STACK / "single_e"
     return predecessor_runs(
         "DET", _OLD_PLAT, tuple(str(p) for p in sorted(sample_root.iterdir()))
     )
@@ -1111,7 +1112,7 @@ def test_a_migration_step_is_bounded_by_the_predecessors_last_night(tmp_path):
 
 def test_a_watch_on_the_replaced_platforms_last_night_does_not_open_the_window(tmp_path):
     _migration_tree(tmp_path, new_walls=[120.0, 120.5])
-    last_old = tmp_path / "DET" / _OLD_PLAT / _STACK / "single_e" / "2026-01-10"
+    last_old = tmp_path / run_path(SIM, "DET") / _OLD_PLAT / _STACK / "single_e" / "2026-01-10"
     results = pd.read_csv(last_old / "baseline_results.csv")
     results["wall_time_s"], results["user_cpu_s"] = 120.0, 118.0
     results.to_csv(last_old / "baseline_results.csv", index=False)
@@ -1145,7 +1146,7 @@ def test_a_predecessor_release_dated_like_the_successors_first_is_left_out(tmp_p
     # release, the old build's night would be judged as a repeat measurement of
     # the new one; it is dropped from the continued series instead.
     _migration_tree(tmp_path, new_walls=[120.0, 120.5])
-    last_old = tmp_path / "DET" / _OLD_PLAT / _STACK / "single_e" / "2026-01-10"
+    last_old = tmp_path / run_path(SIM, "DET") / _OLD_PLAT / _STACK / "single_e" / "2026-01-10"
     info = json.loads((last_old / "run_info.json").read_text())
     info["k4h_release"] = "key4hep-2026-01-11"
     (last_old / "run_info.json").write_text(json.dumps(info))
@@ -1173,7 +1174,7 @@ def test_a_later_rerun_on_the_replaced_platform_cannot_change_successor_verdicts
     before = judged()
     assert ("wall_time_s", Severity.CONFIRMED, "2026-01-10") in before
     for night in _nights(3, start="2026-01-13"):
-        rerun = tmp_path / "DET" / _OLD_PLAT / _STACK / "single_e" / night
+        rerun = tmp_path / run_path(SIM, "DET") / _OLD_PLAT / _STACK / "single_e" / night
         _write_run(rerun, night=night, wall_time_s=120.0, platform=_OLD_PLAT)
         info = json.loads((rerun / "run_info.json").read_text())
         info["k4h_release"] = "key4hep-2026-01-10"
@@ -1284,19 +1285,19 @@ def _version_switch_tree(root: Path, *, new_walls: list[float]) -> Path:
     """Ten nights of the old detector config, then *new_walls* nights of the new."""
     for night in _nights(10):
         _write_run(
-            root / _OLD_DET / _PLAT / _STACK / "single_e" / night,
+            root / run_path(SIM, _OLD_DET) / _PLAT / _STACK / "single_e" / night,
             night=night, wall_time_s=100.0,
         )
     for night, wall in zip(_nights(len(new_walls), start="2026-01-11"), new_walls):
         _write_run(
-            root / _NEW_DET / _PLAT / _STACK / "single_e" / night,
+            root / run_path(SIM, _NEW_DET) / _PLAT / _STACK / "single_e" / night,
             night=night, wall_time_s=wall,
         )
     return root
 
 
 def _detector_runs(root: Path, detector: str) -> tuple[str, ...]:
-    sample_root = root / detector / _PLAT / _STACK / "single_e"
+    sample_root = root / run_path(SIM, detector) / _PLAT / _STACK / "single_e"
     return tuple(str(p) for p in sorted(sample_root.iterdir()))
 
 
@@ -1326,7 +1327,7 @@ def _same_release_switch_tree(root: Path) -> Path:
     all measure release 2026-01-10; the new one's third measures 2026-01-13."""
     for night in _nights(10):
         _write_run(
-            root / _OLD_DET / _PLAT / _STACK / "single_e" / night,
+            root / run_path(SIM, _OLD_DET) / _PLAT / _STACK / "single_e" / night,
             night=night, wall_time_s=100.0,
             release="2026-01-10" if night >= "2026-01-08" else None,
         )
@@ -1336,7 +1337,7 @@ def _same_release_switch_tree(root: Path) -> Path:
         ("2026-01-13", 120.2, None),
     ):
         _write_run(
-            root / _NEW_DET / _PLAT / _STACK / "single_e" / night,
+            root / run_path(SIM, _NEW_DET) / _PLAT / _STACK / "single_e" / night,
             night=night, wall_time_s=wall, release=release,
         )
     return root
@@ -1413,7 +1414,7 @@ def test_a_retired_detector_is_not_reported_as_missing_after_two_bumps(tmp_path,
         (v05, _nights(2, start="2026-01-14")),
     ):
         for night in nights:
-            _write_run(tmp_path / detector / _PLAT / _STACK / "single_e" / night, night=night)
+            _write_run(tmp_path / run_path(SIM, detector) / _PLAT / _STACK / "single_e" / night, night=night)
 
     report = build_nightly_report_local(str(tmp_path))
     assert {g.detector for g in report.groups} == {v05}
@@ -1438,7 +1439,7 @@ def test_a_retired_detector_is_not_reported_as_missing_when_its_successor_never_
         (v05, _nights(2, start="2026-01-14")),
     ):
         for night in nights:
-            _write_run(tmp_path / detector / _PLAT / _STACK / "single_e" / night, night=night)
+            _write_run(tmp_path / run_path(SIM, detector) / _PLAT / _STACK / "single_e" / night, night=night)
 
     report = build_nightly_report_local(str(tmp_path))
     assert {g.detector for g in report.groups} == {v05}
@@ -1616,7 +1617,7 @@ def test_a_seed_change_across_the_migration_is_noted(tmp_path):
     # The window's base run is the predecessor's; its seed is read from there.
     _migration_tree(tmp_path, new_walls=[120.0, 120.5])
     for night in _nights(2, start="2026-01-11"):
-        info_path = tmp_path / "DET" / _NEW_PLAT / _STACK / "single_e" / night / "run_info.json"
+        info_path = tmp_path / run_path(SIM, "DET") / _NEW_PLAT / _STACK / "single_e" / night / "run_info.json"
         info = json.loads(info_path.read_text())
         info["random_seed"] = 42
         info_path.write_text(json.dumps(info))

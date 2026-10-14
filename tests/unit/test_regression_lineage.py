@@ -100,12 +100,13 @@ def test_detector_succession_does_not_chain():
 
 
 def test_every_successor_detector_is_a_benchmarked_config():
-    # A successor names a config file in .github/benchmarks/; a typo would
+    # A successor names a sim config in .github/benchmarks/sim/; a typo would
     # silently leave the new version cold and the old one reported missing.
     from pathlib import Path
 
     configs = {
-        p.stem for p in (Path(__file__).parents[2] / ".github" / "benchmarks").glob("*.yml")
+        p.stem
+        for p in (Path(__file__).parents[2] / ".github" / "benchmarks" / "sim").glob("*/*.yml")
     }
     assert set(DETECTOR_SUCCESSORS) <= configs
     assert not set(DETECTOR_SUCCESSORS.values()) & configs

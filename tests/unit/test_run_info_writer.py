@@ -47,7 +47,8 @@ def job_type(run_info):
 
 def _job(job_type, **record):
     rec = {
-        "config": "minimal", "sample": "single_e-_10GeV", "xml": "minimal.xml",
+        "config": "sim/minimal/minimal", "suite": "sim", "detector": "minimal",
+        "sample": "single_e-_10GeV", "xml": "minimal.xml",
         "n_events": "10", "ddsim_args": "", "steering_file": "", "timeout": "",
         "verbose": "false", "sweep": "false", "input_files": "", "sweep_detectors": "",
         "include_only": "", "exclude_only": "", **record,
@@ -194,10 +195,33 @@ def test_unreadable_stack_provenance_does_not_fail_the_job(run_info, job_type, t
     assert "k4h_packages" not in info
 
 
-def test_ddsim_record_names_its_tool(run_info, job_type, tmp_path, monkeypatch):
+@pytest.mark.parametrize("suite, record", [
+    ("sim", {"tool": "ddsim"}),
+    ("reco", {"tool": "k4run", "options": "CLDReconstruction.py", "stage_dir": ""}),
+])
+def test_a_record_names_the_run_directory_its_suite_reads(run_info, job_type, tmp_path, monkeypatch, suite, record):
+    # nightly_benchmark.sh uploads to run_dir_of(run_info.json): the record
+    # must spell the same directory the readers of its suite list.
+    from k4bench.layout import iter_run_dirs, run_dir_of
+
+    monkeypatch.setattr(run_info, "add_stack_provenance", lambda *_: None)
+    (tmp_path / "out").mkdir()
+    info = _write(run_info, _job(job_type, suite=suite, **record), tmp_path / "out")
+    store = tmp_path / "store"
+    (store / run_dir_of(info)).mkdir(parents=True)
+
+    (run,) = iter_run_dirs(store, suite)
+    assert (run.detector, run.platform, run.stack, run.sample, run.date) == (
+        "minimal", ENV["K4H_PLATFORM"], f"key4hep-{ENV['K4H_RELEASE']}", "single_e-_10GeV",
+        "2026-10-05",
+    )
+
+
+def test_ddsim_record_names_its_suite_and_tool(run_info, job_type, tmp_path, monkeypatch):
     monkeypatch.setattr(run_info, "add_stack_provenance", lambda *_: None)
     info = _write(run_info, _job(job_type, tool="ddsim"), tmp_path)
-    assert next(iter(info)) == "tool" and info["tool"] == "ddsim"
+    assert list(info)[:2] == ["suite", "tool"]
+    assert (info["suite"], info["tool"]) == ("sim", "ddsim")
     assert "k4run_args" not in info
 
 
@@ -206,7 +230,7 @@ def test_k4run_record_carries_the_job_and_its_roster(run_info, job_type, tmp_pat
     (tmp_path / "baseline_results.csv").write_text("label\nbaseline\n")
     job = dataclasses.replace(
         _job(
-            job_type, tool="k4run", options="CLDReconstruction.py",
+            job_type, suite="reco", tool="k4run", options="CLDReconstruction.py",
             stage_dir="$CLDCONFIG/share/CLDConfig",
             input_files="https://example.org/sim.root",
         ),

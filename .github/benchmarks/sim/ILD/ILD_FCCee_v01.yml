@@ -1,0 +1,38 @@
+# k4Bench nightly benchmark config — ILD_FCCee v01
+#
+# A sim-suite benchmark: the nightly runs each sample below as one ddsim job and
+# uploads it to EOS under runs/sim/{concept}/{detector}/, the run tree this
+# file's path names (.github/benchmarks/sim/{concept}/{detector}.yml). Keys:
+# docs/reference/configuration-reference.md#nightly-benchmark-yaml-keys
+#
+# ILD_FCCee_v01 adapts the ILC-era ILD_l5_v02 model (see $K4GEO/ILD/compact) to
+# the FCC-ee MDI: vertex detector, inner tracker and LumiCal are swapped in from
+# CLD, and the TPC inner radius is opened up to clear the 150 mrad MDI cone.
+# Marked "experimental" upstream (see $K4GEO/FCCee/ILD_FCCee/compact/README.md);
+# no steering file needed — it runs with plain ddsim defaults, same as ALLEGRO.
+# ~37 top-level subdetectors, so --sweep is comparable in cost to ALLEGRO's.
+
+# xml:           https://github.com/key4hep/k4geo/blob/main/FCCee/ILD_FCCee/compact/ILD_FCCee_v01/ILD_FCCee_v01.xml
+xml: FCCee/ILD_FCCee/compact/ILD_FCCee_v01/ILD_FCCee_v01.xml
+verbose: false
+
+timeout: 600  # 10 hours — a job past this is stuck, not merely slow
+sweep: true
+
+# Fixed event seed to minimize random fluctuations in nightly benchmarks
+ddsim_args: >-
+  --random.seed 42
+  --random.enableEventSeed
+
+samples:
+  - name: single_e-_10GeV
+    n_events: 1000
+    ddsim_args: >-
+      --enableGun
+      --gun.particle e-
+      --gun.distribution uniform
+      --gun.energy 10*GeV
+
+  - name: p8_ee_Zbb_ecm91
+    n_events: 100
+    input_files: root://eospublic.cern.ch//eos/experiment/fcc/ee/generation/hepmc/p8_ee_Zbb_ecm91/events_noVtxSmear.hepmc

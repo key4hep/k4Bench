@@ -13,7 +13,7 @@ on:
         type: string
         default: ''
       configs:
-        description: 'Jobs to run, space-separated "config" or "config/sample", e.g. "SiD/single_e-_10GeV"; config names come from .github/benchmarks (empty: all)'
+        description: 'Jobs to run, space-separated path prefixes of {suite}/{concept}/{detector}/{sample} below .github/benchmarks, e.g. "sim/CLD reco" or "sim/SiD/SiD/single_e-_10GeV" (empty: all)'
         required: false
         type: string
         default: ''
@@ -22,10 +22,11 @@ permissions:
   contents: read
 
 jobs:
-  # ── Discover detectors and their samples from .github/benchmarks/*.yml ─────
-  # All YAML parsing and validation happens here; the output groups samples
-  # under their detector so the matrix below fans out one reusable-workflow
-  # call per detector (nests samples beneath it in the Actions UI).
+  # ── Discover the benchmark configs and their samples ───────────────────────
+  # .github/benchmarks/{suite}/{concept}/{detector}.yml. All YAML parsing and
+  # validation happens here; the output groups samples under their config so
+  # the matrix below fans out one reusable-workflow call per config (nests
+  # samples beneath it in the Actions UI).
   discover:
     runs-on: ubuntu-latest
     outputs:
@@ -70,17 +71,17 @@ jobs:
           RELEASE_REQUESTED: ${{ inputs.release }}
         run: bash .github/scripts/resolve_release.sh
 
-  # ── One reusable-workflow call per detector ───────────────────────────────
+  # ── One reusable-workflow call per benchmark config ───────────────────────
   benchmark:
     needs: [discover, resolve-release]
-    name: ${{ matrix.group.detector }}
+    name: ${{ matrix.group.config }}
     strategy:
       matrix:
         group: ${{ fromJson(needs.discover.outputs.configs) }}
       fail-fast: false
     uses: ./.github/workflows/benchmark-detector.yml
     with:
-      detector:     ${{ matrix.group.detector }}
+      config:       ${{ matrix.group.config }}
       samples_json: ${{ toJson(matrix.group.samples) }}
       release:      ${{ needs.resolve-release.outputs.release }}
       stack_setup:  ${{ needs.resolve-release.outputs.setup }}

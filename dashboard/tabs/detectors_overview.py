@@ -35,6 +35,7 @@ from plotly.subplots import make_subplots
 
 from k4bench.analysis.plots._theme import _TEMPLATE
 from k4bench.labels import BASELINE_LABEL
+from k4bench.layout import SIM
 from k4bench.metrics import is_megabytes, metric_label, metric_title
 from k4bench.regression.models import Severity
 from remote_cache import cached_fetch_reports, cached_list_report_dates
@@ -607,7 +608,7 @@ def render(
     reachable — a scope with no data is often exactly when it is worth
     reading."""
     try:
-        dates = cached_list_report_dates(data_url)
+        dates = cached_list_report_dates(data_url, SIM)
     except Exception as err:
         st.warning(
             f"Could not list the nightly reports on EOS: {err}. "
@@ -635,7 +636,7 @@ def render(
             return
         # A PR comment's archived report can lie outside the sidebar trend range.
         fetch_nights = tuple(dict.fromkeys([*fetch_nights, pinned_report]))
-    reports = cached_fetch_reports(data_url, fetch_nights)
+    reports = cached_fetch_reports(data_url, SIM, fetch_nights)
     if pinned_mail and pinned_report not in reports:
         st.error(f"Could not load the requested report ({pinned_report}) from EOS.")
         return
@@ -667,7 +668,7 @@ def render(
         if n in dates and n not in reports
     )
     if stragglers:
-        reports.update(cached_fetch_reports(data_url, stragglers))
+        reports.update(cached_fetch_reports(data_url, SIM, stragglers))
 
     _views(data_url, dashboard_url, overview_inputs(
         reports,

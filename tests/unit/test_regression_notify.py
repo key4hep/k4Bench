@@ -290,7 +290,7 @@ def test_historical_blame_fetched_once_per_unique_night(fake_smtp, tmp_path, mon
     report_path = _reconfirmed_report_path(tmp_path, "2026-01-05", "2026-01-04")
     calls: list[str] = []
 
-    def fake_fetch(data_url, date):
+    def fake_fetch(data_url, suite, date):
         calls.append(date)
         return _blame_sidecar().to_json() if date == "2026-01-05" else None
 
@@ -304,7 +304,7 @@ def test_historical_blame_fetched_once_per_unique_night(fake_smtp, tmp_path, mon
 
 def test_reused_first_confirmation_ranking_surfaces_in_body(fake_smtp, tmp_path, monkeypatch):
     report_path = _reconfirmed_report_path(tmp_path)
-    monkeypatch.setattr(notify, "fetch_blame", lambda url, date: _blame_sidecar().to_json())
+    monkeypatch.setattr(notify, "fetch_blame", lambda url, suite, date: _blame_sidecar().to_json())
     assert notify.main([
         str(report_path), "--to", "egroup@cern.ch", "--from-addr", "noreply@cern.ch",
         "--data-url", "https://data.example",
@@ -335,7 +335,7 @@ def test_omitting_data_url_stays_offline(fake_smtp, tmp_path, monkeypatch):
 
 def test_malformed_historical_sidecar_degrades_cleanly(fake_smtp, tmp_path, monkeypatch):
     report_path = _reconfirmed_report_path(tmp_path)
-    monkeypatch.setattr(notify, "fetch_blame", lambda url, date: {"entries": [{"detector": "X"}]})
+    monkeypatch.setattr(notify, "fetch_blame", lambda url, suite, date: {"entries": [{"detector": "X"}]})
     assert notify.main([
         str(report_path), "--to", "egroup@cern.ch", "--from-addr", "noreply@cern.ch",
         "--data-url", "https://data.example",

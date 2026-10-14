@@ -44,9 +44,9 @@ from k4bench.geometry.scanner import resolve_includes
 K4GEO = os.environ.get("K4GEO", "")
 DD4HEP = os.environ.get("DD4hepINSTALL", "")
 
-#: The geometries the nightly benchmarks (see .github/benchmarks/*.yml).
+#: The geometries the nightly simulates (see .github/benchmarks/sim/).
 _GEOMETRIES = {}
-for _config in sorted((Path(__file__).parents[2] / ".github/benchmarks").glob("*.yml")):
+for _config in sorted((Path(__file__).parents[2] / ".github/benchmarks/sim").glob("*/*.yml")):
     _xml = yaml.safe_load(_config.read_text())["xml"]
     if not _xml.startswith("$") and not Path(_xml).is_absolute():
         _GEOMETRIES[_config.stem] = _xml

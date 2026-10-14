@@ -1,0 +1,45 @@
+# k4Bench nightly benchmark config — CLD o2_v09 reconstruction (k4run)
+#
+# A reco-suite benchmark: k4Bench runs the job's options files with k4run under
+# the k4Bench Gaudi auditor, which records per-event and per-component
+# (algorithm and service) time and memory. k4Bench knows nothing about the job
+# itself; everything experiment-specific is in this file. The nightly runs each
+# sample below as one job and uploads it to EOS under
+# runs/reco/{concept}/{detector}/, the run tree this file's path names
+# (.github/benchmarks/reco/{concept}/{detector}.yml). Nothing reads that tree
+# yet. Keys: docs/reference/configuration-reference.md#nightly-benchmark-yaml-keys
+#
+# The input is a frozen CLD_o2_v09 simulation (100 p8_ee_Zbb_ecm91 events,
+# ddsim --random.seed 42 --random.enableEventSeed, steered by cld_steer.py,
+# LCG devkey-head 2026-10-10). Its provenance and the script that produced it
+# sit next to it in inputs/reco/CLD/CLD_o2_v09/. Reconstructing a fixed input
+# keeps simulation changes out of the reconstruction numbers. xml: stays pinned
+# to the geometry the input was simulated with; detector bumps cover the sim
+# suite only.
+#
+# CLDReconstruction.py must run from a copy of its CLDConfig directory, and
+# defaults --compactFile to an older CLD, so both are given explicitly.
+
+# options: https://github.com/key4hep/CLDConfig/blob/main/CLDConfig/CLDReconstruction.py
+xml: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
+stage_dir: $CLDCONFIG/share/CLDConfig
+options: CLDReconstruction.py
+
+verbose: false
+
+timeout: 120
+
+k4run_args: >-
+  --compactFile $DETECTOR_XML
+  --inputFiles $LOCAL_INPUT_FILES
+  --outputBasename reco
+
+variants:
+  - name: truth_tracking
+    k4run_args: --truthTracking
+
+samples:
+  - name: p8_ee_Zbb_ecm91
+    n_events: 100
+    input_files: https://k4bench-data.web.cern.ch/inputs/reco/CLD/CLD_o2_v09/p8_ee_Zbb_ecm91_100ev_seed42.edm4hep.root
+    k4run_args: --cms 91

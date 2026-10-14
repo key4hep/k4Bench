@@ -18,7 +18,6 @@ spec.loader.exec_module(bump)
 @pytest.fixture
 def tree(tmp_path):
     root = tmp_path / "repo"
-    (root / ".github/benchmarks").mkdir(parents=True)
     (root / "k4bench/regression").mkdir(parents=True)
     (root / "k4bench/regression/lineage.py").write_text(
         'DETECTOR_SUCCESSORS: dict[str, str] = {\n    "IDEA_o1_v03": "IDEA_o1_v02",\n}\n'
@@ -29,7 +28,9 @@ def tree(tmp_path):
     fcc.mkdir()
 
     def config(name):
-        (root / f".github/benchmarks/{name}.yml").write_text(
+        path = bump.config_path(root, name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
             f"# {name.replace('_', ' ')}\n"
             f"xml: FCCee/IDEA/compact/{name}/{name}.xml\n"
             f"steering_file: $FCCCONFIG/{name}/SteeringFile_{name}.py\n"
@@ -54,7 +55,7 @@ def test_detection_and_steering_retention(tree):
     assert [(p.family, p.new) for p in plans] == [("IDEA_o1", "IDEA_o1_v04")]
     assert bump.detect(root, geo, "CLD_o5") == []
     edits, notes = bump.prepare(root, plans[0], fcc)
-    text = edits[root / ".github/benchmarks/IDEA_o1_v04.yml"]
+    text = edits[bump.config_path(root, "IDEA_o1_v04")]
     assert "# IDEA o1 v04" in text
     assert "xml: FCCee/IDEA/compact/IDEA_o1_v04/IDEA_o1_v04.xml" in text
     assert "steering_file: $FCCCONFIG/IDEA_o1_v03/SteeringFile_IDEA_o1_v03.py" in text
@@ -72,7 +73,7 @@ def test_steering_upgrade(tree):
     edits, notes = bump.prepare(root, plan, fcc)
     assert (
         "steering_file: $FCCCONFIG/IDEA_o1_v04/"
-        in edits[root / ".github/benchmarks/IDEA_o1_v04.yml"]
+        in edits[bump.config_path(root, "IDEA_o1_v04")]
     )
 
 
@@ -84,7 +85,9 @@ def test_side_by_side_and_numeric_versions(tree):
         geometry(name)
     (plan,) = bump.detect(root, geo, "ILD_FCCee")
     assert (plan.old, plan.new) == ("ILD_FCCee_v02", "ILD_FCCee_v10")
-    (root / ".github/benchmarks/SiD_v01.yml").write_text("xml: $DD4hepINSTALL/SiD.xml\n")
+    sid = bump.config_path(root, "SiD_v01")
+    sid.parent.mkdir()
+    sid.write_text("xml: $DD4hepINSTALL/SiD.xml\n")
     assert len(bump.detect(root, geo)) == 2
 
 
@@ -94,7 +97,7 @@ def test_unexpected_lineage_fails_before_writes(tree):
     lineage.write_text("DETECTOR_SUCCESSORS = dict()\n")
     with pytest.raises(ValueError, match="Unexpected"):
         bump.prepare(root, bump.detect(root, geo)[0], fcc)
-    assert (root / ".github/benchmarks/IDEA_o1_v03.yml").exists()
+    assert (bump.config_path(root, "IDEA_o1_v03")).exists()
 
 
 def test_cli_dry_run_and_apply(tree, monkeypatch, capsys, tmp_path):
@@ -111,8 +114,8 @@ def test_cli_dry_run_and_apply(tree, monkeypatch, capsys, tmp_path):
     subprocess.run(["git", "add", "."], cwd=root, check=True)
     monkeypatch.setattr(sys, "argv", args + ["--apply", "--family", "IDEA_o1"])
     bump.main()
-    assert not (root / ".github/benchmarks/IDEA_o1_v03.yml").exists()
-    assert (root / ".github/benchmarks/IDEA_o1_v04.yml").exists()
+    assert not (bump.config_path(root, "IDEA_o1_v03")).exists()
+    assert (bump.config_path(root, "IDEA_o1_v04")).exists()
     assert "Geometry trees:" in (tmp_path / "bump-IDEA_o1.md").read_text()
     assert bump.detect(root, geo) == []
 
@@ -174,7 +177,7 @@ def test_a_rejected_version_lets_the_next_family_through(tree, monkeypatch, caps
 
 def test_older_steering_and_sample_overrides(tree):
     root, geo, fcc, _, _ = tree
-    config = root / ".github/benchmarks/IDEA_o1_v03.yml"
+    config = bump.config_path(root, "IDEA_o1_v03")
     config.write_text(
         config.read_text().replace(
             "$FCCCONFIG/IDEA_o1_v03/SteeringFile_IDEA_o1_v03.py",
@@ -189,7 +192,7 @@ def test_older_steering_and_sample_overrides(tree):
     target.touch()
     plan = bump.detect(root, geo)[0]
     edits, notes = bump.prepare(root, plan, fcc)
-    text = edits[root / ".github/benchmarks/IDEA_o1_v04.yml"]
+    text = edits[bump.config_path(root, "IDEA_o1_v04")]
     assert "steering_file: $FCCCONFIG/IDEA_o1_v04/SteeringFile_IDEA_o1_v04.py" in text
     assert "# steering: https://example.org/IDEA_o1_v04/SteeringFile_IDEA_o1_v04.py" in text
     assert "steering_file: $FCCCONFIG/IDEA_o1_v03/missing.py" in text
@@ -236,15 +239,17 @@ def test_retained_relative_steering_path_stays_intact(tree):
     assert "retained" in notes[0]
 
 
-def test_k4run_benchmark_keeps_the_geometry_of_its_frozen_input(tree):
+def test_reco_benchmark_keeps_the_geometry_of_its_frozen_input(tree):
     root, geo, _, _, _ = tree
-    reco = root / ".github/benchmarks/CLD_o5_v98.yml"
+    reco = root / ".github/benchmarks/reco/CLD/CLD_o5_v98.yml"
+    reco.parent.mkdir(parents=True)
     reco.write_text(
-        "tool: k4run\n"
         "xml: FCCee/IDEA/compact/CLD_o5_v98/CLD_o5_v98.xml\n"
         "options: Reco.py\n"
     )
     assert bump.detect(root, geo, "CLD_o5") == []
-    # The same config simulating would be bumped to the newer geometry.
-    reco.write_text("xml: FCCee/IDEA/compact/CLD_o5_v98/CLD_o5_v98.xml\n")
+    # The same geometry simulated would be bumped to the newer one.
+    sim = bump.config_path(root, "CLD_o5_v98")
+    sim.parent.mkdir()
+    sim.write_text("xml: FCCee/IDEA/compact/CLD_o5_v98/CLD_o5_v98.xml\n")
     assert [p.new for p in bump.detect(root, geo, "CLD_o5")] == ["CLD_o5_v99"]

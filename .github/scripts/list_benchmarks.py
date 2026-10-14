@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
 """
-Expand .github/benchmarks/*.yml into benchmark jobs and print them as JSON
-on stdout. Two output shapes:
+Expand the benchmark configs below .github/benchmarks/ into benchmark jobs and
+print them as JSON on stdout. Two output shapes:
 
-  default  — flat list, one record per (detector, sample)
-  --grouped — list of {detector, samples: [...]} so the nightly workflow can
-              fan out one reusable-workflow call per detector and nest the
+  default  — flat list, one record per (config, sample)
+  --grouped — list of {config, samples: [...]} so the nightly workflow can
+              fan out one reusable-workflow call per config and nest the
               sample matrix beneath it in the Actions UI
 
---only "A B/sample" keeps just the named jobs: a bare config name selects all
-of its samples, "config/sample" one of them. A name matching no job is an error.
+A config lives at {suite}/{concept}/{detector}.yml, the path of the run tree
+its jobs upload to (see k4bench/layout.py): the suite is one of
+layout.SUITES, the concept the detector's (layout.concept_of), and the file is
+named after the compact file its xml: names. Its config id is that path
+without the extension, e.g. "sim/CLD/CLD_o2_v09".
+
+--only "A B" keeps just the jobs whose {suite}/{concept}/{detector}/{sample}
+path starts with one of the space-separated selectors, compared segment by
+segment: "sim" selects a whole suite, "sim/CLD" a concept,
+"sim/CLD/CLD_o2_v09" one config and "sim/CLD/CLD_o2_v09/single_e-_10GeV" one
+of its samples. A selector matching no job is an error.
 
 Each sample record is a fully-merged config, handed to its nightly job whole
 as JSON (benchmark_job.py reads it) — no YAML parsing happens after this script
@@ -23,9 +32,9 @@ joined to space-separated strings, boolean keys are always "true" or "false"
 (an absent key is "false"), and every other value is a string except k4run
 variants, an object {name: k4run_args}.
 
-`tool` selects what a benchmark runs: ddsim (the default) or k4run. Each tool
-has keys of its own, and a key of the other tool is an error rather than
-silently ignored.
+`tool` selects what a benchmark runs: ddsim or k4run, by default the one its
+suite runs (DEFAULT_TOOL). Each tool has keys of its own, and a key of the
+other tool is an error rather than silently ignored.
 """
 from __future__ import annotations
 
@@ -38,11 +47,25 @@ from pathlib import Path
 
 import yaml
 
+# Executing a file below ``.github/scripts`` otherwise puts that directory—not
+# the checkout root—first on sys.path. The discover job installs no k4bench, so
+# the layout is read from the checkout itself.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+try:
+    sys.path.remove(str(_REPO_ROOT))
+except ValueError:
+    pass
+sys.path.insert(0, str(_REPO_ROOT))
+
+from k4bench.layout import SUITES, concept_of  # noqa: E402
+
 BENCH_DIR = Path(".github/benchmarks")
 CONFIG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 SAMPLE_RE = re.compile(r"^[A-Za-z0-9_.+-]+$")
 
 TOOLS = ("ddsim", "k4run")
+#: The tool a config runs when it names none, per suite.
+DEFAULT_TOOL = {"sim": "ddsim", "reco": "k4run"}
 SCALAR_KEYS = (
     "tool", "xml", "n_events", "ddsim_args", "steering_file", "timeout",
     "stage_dir", "k4run_args",
@@ -127,10 +150,23 @@ def _die(msg: str) -> None:
     sys.exit(1)
 
 
+def config_identity(path: Path) -> tuple[str, str, str]:
+    """The ``(suite, concept, detector)`` a config at
+    ``{suite}/{concept}/{detector}.yml`` names, refusing any other place."""
+    detector, concept, suite = path.stem, path.parent.name, path.parent.parent.name
+    if not CONFIG_RE.match(detector):
+        _die(f"invalid config name {detector!r} (from {path})")
+    if suite not in SUITES:
+        _die(f"{path} is in no suite: a config lives at {{suite}}/{{concept}}/{{detector}}.yml "
+             f"with suite one of {', '.join(SUITES)}")
+    if concept != concept_of(detector):
+        _die(f"{path} belongs in {suite}/{concept_of(detector)}/, its detector's concept")
+    return suite, concept, detector
+
+
 def expand(path: Path) -> list[dict]:
-    config = path.stem
-    if not CONFIG_RE.match(config):
-        _die(f"invalid config name {config!r} (from {path})")
+    suite, concept, detector = config_identity(path)
+    config = f"{suite}/{concept}/{detector}"
 
     cfg = yaml.safe_load(path.read_text()) or {}
     if not isinstance(cfg, dict):
@@ -160,16 +196,20 @@ def expand(path: Path) -> list[dict]:
             return s[k] if k in s else cfg.get(k)
 
         loc = f"{path}::{name}"
-        rec = {"config": config, "sample": name}
+        rec = {"config": config, "suite": suite, "detector": detector, "sample": name}
         for k in SCALAR_KEYS:
             rec[k] = _scalar(merge(k))
         for k in BOOL_KEYS:
             rec[k] = _bool(merge(k), k, loc)
         for k in LIST_KEYS:
             rec[k] = _list(merge(k))
-        rec["tool"] = rec["tool"] or "ddsim"
+        rec["tool"] = rec["tool"] or DEFAULT_TOOL.get(suite, "")
         rec["variants"] = _variants(merge("variants"), loc)
         _check_tool_keys(rec, cfg, s, loc)
+        # The run tree is named after the compact file the job loads
+        # (benchmark_job.py's Job.detector), so the config must be too.
+        if (compact := Path(rec["xml"]).name.removesuffix(".xml")) != detector:
+            _die(f"{path} must be named after its compact file: {compact}.yml ({loc})")
 
         if not rec["n_events"].isdigit() or int(rec["n_events"]) <= 0:
             _die(f"n_events must be a positive integer ({loc})")
@@ -190,74 +230,79 @@ def expand(path: Path) -> list[dict]:
     return records
 
 
-def _eos_directory(rec: dict) -> tuple[str, str, str]:
-    """The ``(tool, detector, sample)`` part of the EOS directory *rec* uploads to.
-
-    benchmark_job.py names the detector directory after the compact file
-    (``Job.detector``), not after the benchmark config, and the nightly puts
-    k4run runs in a tree of their own.
-    """
-    return rec["tool"], Path(rec["xml"]).name.removesuffix(".xml"), rec["sample"]
-
-
 def _check_unique_destinations(items: list[dict]) -> None:
     """Refuse two jobs that would upload into the same EOS run directory.
 
-    Two benchmark configs of one tool naming compact files with one basename,
-    and sharing a sample name, write ``run_info.json`` and every
-    ``{label}_results.csv`` to the same
-    ``{detector}/{platform}/{release}/{sample}/{date}/`` — whichever job uploads
-    last silently replaces the other's results.
+    A config's path is its run tree, so only one config can name a
+    ``(suite, detector)``; two of its samples sharing a name would still write
+    ``run_info.json`` and every ``{label}_results.csv`` to the same
+    ``{platform}/{release}/{sample}/{date}/`` — whichever job uploads last
+    silently replaces the other's results.
     """
-    seen: dict[tuple[str, str, str], str] = {}
+    seen: set[tuple[str, str, str]] = set()
     for rec in items:
-        where = _eos_directory(rec)
+        where = rec["suite"], rec["detector"], rec["sample"]
         if where in seen:
-            _die(
-                f"configs {seen[where]!r} and {rec['config']!r} both upload {where[0]} sample "
-                f"{rec['sample']!r} to EOS detector directory {where[1]!r}; "
-                "rename the sample in one of them"
-            )
-        seen[where] = rec["config"]
+            _die(f"config {rec['config']!r} defines sample {rec['sample']!r} twice")
+        seen.add(where)
+
+
+def _job_path(rec: dict) -> list[str]:
+    """The ``{suite}/{concept}/{detector}/{sample}`` segments a selector matches."""
+    return [*rec["config"].split("/"), rec["sample"]]
 
 
 def _select(items: list[dict], only: str) -> list[dict]:
-    """The jobs named by *only*, or every job when it is blank."""
-    names = only.split()
-    if not names:
+    """The jobs selected by *only* (see the module docstring), or every job
+    when it is blank."""
+    selectors = [selector.strip("/").split("/") for selector in only.split()]
+    if not selectors:
         return items
+
+    def selected(rec: dict, selector: list[str]) -> bool:
+        return _job_path(rec)[: len(selector)] == selector
+
     unknown = [
-        n for n in names
-        if not any(n in (i["config"], f"{i['config']}/{i['sample']}") for i in items)
+        "/".join(selector) for selector in selectors
+        if not any(selected(rec, selector) for rec in items)
     ]
     if unknown:
         _die(f"no benchmark job matches {', '.join(map(repr, unknown))}")
-    return [
-        i for i in items
-        if i["config"] in names or f"{i['config']}/{i['sample']}" in names
-    ]
+    return [rec for rec in items if any(selected(rec, selector) for selector in selectors)]
 
 
-def _group_by_detector(items: list[dict]) -> list[dict]:
+def _group_by_config(items: list[dict]) -> list[dict]:
     grouped: dict[str, list[dict]] = {}
     for item in items:
         grouped.setdefault(item["config"], []).append(item)
-    return [{"detector": d, "samples": s} for d, s in grouped.items()]
+    return [{"config": c, "samples": s} for c, s in grouped.items()]
+
+
+def config_paths(bench_dir: Path) -> list[Path]:
+    """Every benchmark config below *bench_dir*, refusing a YAML file anywhere
+    but ``{suite}/{concept}/{detector}.yml`` rather than leaving it out."""
+    paths = sorted(bench_dir.rglob("*.yml"))
+    if misplaced := [p for p in paths if len(p.relative_to(bench_dir).parts) != 3]:
+        _die(f"benchmark configs outside {{suite}}/{{concept}}/: {', '.join(map(str, misplaced))}")
+    return paths
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--grouped", action="store_true")
-    parser.add_argument("--only", default="",
-                        help='space-separated "config" or "config/sample" names')
+    parser.add_argument(
+        "--only", default="",
+        help='space-separated path prefixes of {suite}/{concept}/{detector}/{sample}, '
+             'e.g. "sim/CLD reco"',
+    )
     args = parser.parse_args()
-    paths = sorted(BENCH_DIR.glob("*.yml"))
+    paths = config_paths(BENCH_DIR)
     if not paths:
         _die(f"no benchmark configs found in {BENCH_DIR}/")
     items = [r for p in paths for r in expand(p)]
     _check_unique_destinations(items)
     items = _select(items, args.only)
-    print(json.dumps(_group_by_detector(items) if args.grouped else items))
+    print(json.dumps(_group_by_config(items) if args.grouped else items))
 
 
 if __name__ == "__main__":

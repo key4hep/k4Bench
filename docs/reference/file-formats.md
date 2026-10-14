@@ -153,9 +153,10 @@ dashboard.
   carries `options`, `stage_dir` and `resolved_stage_dir`, `k4run_args` (with
   `$VAR`s expanded, i.e. the local input paths the job read) and `variants`
   (`{name: k4run_args}`); its `configured_labels` are `baseline` and
-  `variant_<name>`. k4run runs are uploaded to their own tree,
-  [`_k4run/`](#eos-layout), which the dashboard, the regression report and
-  blame do not read.
+  `variant_<name>`. `suite` names the benchmark suite the run belongs to
+  (`sim` or `reco`) and so its run tree (see [EOS layout](#eos-layout));
+  reco runs land in `runs/reco/`, which the dashboard, the regression report
+  and blame do not read yet.
 - **`machine_info.json`** — the benchmark host and its state *around* the run:
   CPU model/cores, RAM/swap totals, and `_start`/`_end` snapshots of load,
   available memory, CPU frequency, and thermal throttling. The pairs let the
@@ -248,7 +249,7 @@ Loaded pinned rows link to package-filtered lcgcmake history at the head build,
 for example `-/commits/e411040b8?search=Geant4`; unloaded pins have no link.
 Hash-only rebuilds are counted separately. An uncaptured endpoint falls back to
 the HEAD table with an explicit note. The k4run page remains separate and its
-captures live in the existing `_k4run/` tree.
+captures live in the reco suite's run tree, `runs/reco/`.
 
 A cold comparison adds one run-date listing and four GETs per endpoint
 (`run_info`, two manifests, `machine_info`), or two requests per legacy endpoint.
@@ -281,7 +282,7 @@ directly comparable, and history keeps both:
 
 - **Platform.** The EOS path segment moved from
   `x86_64-almalinux9-gcc14.2.0-opt` to `x86_64-el9-gcc16-opt`. Results are
-  filed under `{detector}/{platform}/...`, so the LCG platform has its own tree,
+  filed under `{detector}/{platform}/...` in their suite's run tree, so the LCG platform has its own tree,
   metadata and report; the old tree stays readable and simply stops growing.
 
     For regression detection the LCG platform's metric series *continue* the
@@ -308,10 +309,12 @@ package has no base commit, so it yields no blame window.
 
 ## Benchmark YAML
 
-`.github/benchmarks/<detector>.yml` configures the nightly matrix; expanded by
-`list_benchmarks.py`. Keys are tabulated in the
-[Configuration reference](configuration-reference.md#nightly-benchmark-yaml-keys).
-Example:
+`.github/benchmarks/{suite}/{concept}/{detector}.yml` configures the nightly
+matrix; expanded by `list_benchmarks.py`. A config's path is the run tree its
+jobs upload to (see [EOS layout](#eos-layout)): `sim/CLD/CLD_o2_v09.yml`
+uploads to `runs/sim/CLD/CLD_o2_v09/`. Keys and location rules are tabulated in
+the [Configuration reference](configuration-reference.md#nightly-benchmark-yaml-keys).
+A sim example (`sim/IDEA/IDEA_o1_v03.yml`):
 
 ```yaml
 xml: FCCee/IDEA/compact/IDEA_o1_v03/IDEA_o1_v03.xml
@@ -327,12 +330,11 @@ samples:
     input_files: root://eospublic.cern.ch//eos/.../events_noVtxSmear.hepmc
 ```
 
-A k4run benchmark (`tool: k4run`) reconstructs a frozen input instead, and
-uploads to the [`_k4run/`](#eos-layout) tree, so its samples may share their
-names with the ddsim samples on the same `xml`:
+A reco benchmark (`reco/CLD/CLD_o2_v09.yml`) runs k4run on a frozen input
+instead, and uploads to the reco suite's own run tree, so its samples may share
+their names with the sim samples on the same `xml`:
 
 ```yaml
-tool: k4run
 xml: FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml
 stage_dir: $CLDCONFIG/share/CLDConfig
 options: CLDReconstruction.py
@@ -344,12 +346,12 @@ variants:
 samples:
   - name: p8_ee_Zbb_ecm91
     n_events: 100
-    input_files: https://k4bench-data.web.cern.ch/_inputs/CLD_o2_v09/p8_ee_Zbb_ecm91_100ev_seed42.edm4hep.root
+    input_files: https://k4bench-data.web.cern.ch/inputs/reco/CLD/CLD_o2_v09/p8_ee_Zbb_ecm91_100ev_seed42.edm4hep.root
     k4run_args: --cms 91
 ```
 
-Automated detector bumps skip k4run benchmarks: the frozen input was simulated
-with the geometry `xml` names.
+Automated detector bumps cover the sim suite only: a reco benchmark's frozen
+input was simulated with the geometry `xml` names.
 
 ### Automated detector version bumps
 
@@ -393,7 +395,7 @@ sample-specific simulation options still need review.
 To repeat a smoke test locally, source the nightly view and run:
 
 ```bash
-python3 .github/scripts/smoke_benchmarks.py .github/benchmarks/IDEA_o1_v04.yml
+python3 .github/scripts/smoke_benchmarks.py .github/benchmarks/sim/IDEA/IDEA_o1_v04.yml
 ```
 
 No GitHub App, PAT, or additional repository secrets are needed. The workflow
@@ -434,44 +436,51 @@ resulting draft ready for review, and check the `run` result.
 ## EOS layout
 
 Nightly results live under `EOS_ROOT = /eos/user/j/jbeirer/k4bench`, encoding
-every browse dimension in the path so discovery is just directory listing:
+every browse dimension in the path so discovery is just directory listing. The
+root holds one directory per kind of data, and each kind is split by suite
+first (`k4bench/layout.py` spells every path):
 
 ```text
-{detector}/{platform}/key4hep-{release}/{sample}/{YYYY-MM-DD}/
-    run_info.json  machine_info.json
-    {config}_results.csv  {config}_events.json  {config}_regions.json  {config}.log
-_k4run/{detector}/{platform}/key4hep-{release}/{sample}/{YYYY-MM-DD}/
-    run_info.json  machine_info.json
-    {config}_results.csv  {config}_events.json  {config}_components.json
-    {config}_joboptions.opts  {config}.log  [{config}_warm-up.log]
-_inputs/{detector}/
-    frozen inputs of k4run benchmarks, each with its provenance and producing script
-_reports/{YYYY-MM-DD}/
+runs/{suite}/{concept}/{detector}/{platform}/key4hep-{release}/{sample}/{YYYY-MM-DD}/
+    sim:   run_info.json  machine_info.json
+           {config}_results.csv  {config}_events.json  {config}_regions.json  {config}.log
+    reco:  run_info.json  machine_info.json
+           {config}_results.csv  {config}_events.json  {config}_components.json
+           {config}_joboptions.opts  {config}.log  [{config}_warm-up.log]
+reports/{suite}/{YYYY-MM-DD}/
     report.json
     blame.json   (only on nights with an attributable confirmed regression)
-_reproducers/
+reproducers/{suite}/
     {detector}-{sample}-{config}-{metric}-{base}-{onset}-{digest}.txt
+inputs/{suite}/{concept}/{detector}/
+    frozen inputs the suite's benchmarks fetch over WebEOS, each with its
+    provenance and producing script
 ```
 
+A **suite** is an independent benchmark pipeline with its own configs
+(`.github/benchmarks/{suite}/`), jobs, run tree, report and readers: `sim`
+(ddsim) and `reco` (k4run on a frozen input). No suite reads another suite's
+runs, and every reader names the suite it reads. A new suite is a new name at
+the second level of each kind; nothing else about the layout changes. The
+**concept** is the detector concept a detector config belongs to — its name up
+to the first underscore (`ALLEGRO_o1_v04` → `ALLEGRO`, `ILD_FCCee_v01` →
+`ILD`, `SiD` → `SiD`) — so the versions of one detector sit side by side.
+
 This is the integration contract between CI and the dashboard
-([data flow](../architecture/data-flow.md#nightly-eos-dashboard)).
-Underscore-prefixed top-level directories are reserved for non-detector data
-and are skipped by detector discovery: `_k4run/` holds the k4run benchmark runs
-in the same layout as the ddsim runs (nothing reads it yet: the dashboard, the
-regression report and blame see only the ddsim runs), `_inputs/` holds the
-frozen inputs k4run benchmarks fetch over WebEOS, `_reports/` holds the nightly regression
-report (written by the `regression-report` CI job, rendered by the dashboard's
-Regressions tab), and `_reproducers/` holds the runnable recipes the blame
-pull-request comments link to (written by the same job's comment step, read
-directly by whoever follows the link). A recipe is named for the measurement
-and change window it reproduces rather than for a night, so re-publishing the
-same window replaces the same file and a standing comment's link keeps working
-— see
+([data flow](../architecture/data-flow.md#nightly-eos-dashboard)). The
+dashboard, the regression report and blame read the `sim` suite; nothing reads
+`runs/reco/` yet. `reports/sim/` holds the nightly regression report (written
+by the `regression-report` CI job, rendered by the dashboard's Regressions tab),
+and `reproducers/sim/` holds the runnable recipes the blame pull-request
+comments link to (written by the same job's comment step, read directly by
+whoever follows the link). A recipe is named for the measurement and change
+window it reproduces rather than for a night, so re-publishing the same window
+replaces the same file and a standing comment's link keeps working — see
 [PR comments → Reproducing the measurement](../user-guide/features/pr-comments.md#reproducing-the-measurement).
 
 ### The night a report covers (`report.json`)
 
-`_reports/{YYYY-MM-DD}/` is named for the night the report covers, and
+`reports/sim/{YYYY-MM-DD}/` is named for the night the report covers, and
 `summary.report_night` repeats it. That is normally the newest run date the
 report holds. A night whose benchmarking uploaded *nothing* — every job of the
 fan-out failed — has no run to be named after, so its report carries the night

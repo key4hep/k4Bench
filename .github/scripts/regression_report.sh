@@ -1,8 +1,8 @@
 #!/bin/bash
 #
-# Builds the nightly regression report from the EOS run history, uploads it to
-# EOS ({EOS_ROOT}/_reports/{YYYY-MM-DD}/report.json, read back by the
-# dashboard's Regressions tab) and emails the CERN e-group when the report is
+# Builds the sim suite's nightly regression report from the EOS run history,
+# uploads it to EOS ({EOS_ROOT}/reports/sim/{YYYY-MM-DD}/report.json, read back
+# by the dashboard's Regressions tab) and emails the CERN e-group when the report is
 # alertable. Runs after every benchmark job of the nightly workflow — also on
 # partial failures, so a crashed detector job surfaces as a FAILURE verdict
 # (via its missing run) instead of vanishing, and also on a fan-out that
@@ -124,7 +124,17 @@ voms-proxy-init \
 unset X509_USER_CERT
 unset X509_USER_KEY
 
-EOS_REPORT_DIR="${EOS_ROOT}/_reports/${NIGHT}"
+# The report and recipe directories k4bench/layout.py defines for the sim suite.
+# Assigned before `read` splits them: a failure inside a here-string's command
+# substitution would not trip `set -e`, and empty paths would publish at the
+# store root.
+LAYOUT_DIRS="$(python -c \
+    'import sys; from k4bench.layout import SIM, report_path, reproducer_path; print(report_path(SIM, sys.argv[1]), reproducer_path(SIM))' \
+    "${NIGHT}")"
+read -r REPORT_DIR REPRODUCER_DIR <<< "${LAYOUT_DIRS}"
+[[ -n "${REPORT_DIR}" && -n "${REPRODUCER_DIR}" ]] \
+    || { echo "ERROR: could not resolve the report and reproducer directories" >&2; exit 1; }
+EOS_REPORT_DIR="${EOS_ROOT}/${REPORT_DIR}"
 xrdfs "root://${EOS_FQDN}" mkdir -p "${EOS_REPORT_DIR}"
 xrdcp --force report/report.json "root://${EOS_FQDN}/${EOS_REPORT_DIR}/report.json"
 echo "Uploaded to: ${EOS_REPORT_DIR}/report.json"
@@ -174,7 +184,7 @@ echo "::endgroup::"
 # why this step reads K4BENCH_LLM_* and GITHUB_TOKEN as well; with no model
 # configured the comments render from the sidecar's per-configuration scores.
 # It also publishes each comment's runnable recipe as a plain-text file under
-# {EOS_ROOT}/_reproducers/ — named for the measurement and window it
+# {EOS_ROOT}/reproducers/sim/ — named for the measurement and window it
 # reproduces, so a re-run replaces the file a standing comment already links —
 # and it does so *before* posting, so a comment never carries a link that 404s.
 # The proxy from step 5 is still valid here; a failed upload costs the link
@@ -199,7 +209,7 @@ if [[ -f report/blame.json ]]; then
               --report report/report.json \
               --blame report/blame.json \
               --config .github/blame-comments.yml \
-              --reproducer-dir "root://${EOS_FQDN}/${EOS_ROOT}/_reproducers" \
+              --reproducer-dir "root://${EOS_FQDN}/${EOS_ROOT}/${REPRODUCER_DIR}" \
               --dashboard-url "${K4BENCH_DASHBOARD_URL:-https://k4bench-dashboard.app.cern.ch}" \
           || echo "No pull-request comments this night (nothing attributed confidently, no enabled repo, missing PyYAML, timeout, or a failed write)." >&2
     } || echo "Pull-request comments step failed (best-effort; the report and email are unaffected)." >&2

@@ -16,6 +16,8 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
+from k4bench.layout import SIM, run_path
+
 _SCRIPTS = Path(__file__).resolve().parents[2] / ".github" / "scripts"
 _SCRIPT = _SCRIPTS / "regression_report.py"
 _BLAME_SCRIPT = _SCRIPTS / "blame_report.py"
@@ -59,7 +61,7 @@ def test_regression_report_cli_reports_an_outage_night(tmp_path):
     for i, wall in enumerate(walls):
         night = (d0 + timedelta(days=i)).isoformat()
         stack = f"key4hep-{night}"
-        _write_run(tmp_path / "data" / "DET" / _PLAT / stack / "single_e" / night,
+        _write_run(tmp_path / "data" / run_path(SIM, "DET") / _PLAT / stack / "single_e" / night,
                    night, wall, stack=stack)
 
     out_dir = tmp_path / "out"
@@ -92,7 +94,7 @@ def _write_history(
     for i, wall in enumerate(walls):
         night = (d0 + timedelta(days=i)).isoformat()
         stack = f"key4hep-{night}"
-        _write_run(data_dir / "DET" / platform / stack / "single_e" / night, night, wall,
+        _write_run(data_dir / run_path(SIM, "DET") / platform / stack / "single_e" / night, night, wall,
                    stack=stack, run_url=run_url if i == len(walls) - 1 else None,
                    platform=platform)
 
@@ -197,7 +199,7 @@ def test_regression_report_cli_local_mode(tmp_path):
     for i, wall in enumerate(walls):
         night = (d0 + timedelta(days=i)).isoformat()
         stack = f"key4hep-{night}"
-        _write_run(tmp_path / "data" / "DET" / _PLAT / stack / "single_e" / night,
+        _write_run(tmp_path / "data" / run_path(SIM, "DET") / _PLAT / stack / "single_e" / night,
                    night, wall, stack=stack)
 
     out_dir = tmp_path / "out"
@@ -247,7 +249,7 @@ def test_as_of_reproduces_each_night_of_a_rebenchmarked_release(tmp_path):
 
     steady = [100.0, 100.4, 99.6, 100.2, 99.8, 100.3, 99.7, 100.1, 99.9, 100.0]
     d0 = date.fromisoformat("2026-01-01")
-    root = tmp_path / "data" / "DET" / _PLAT
+    root = tmp_path / "data" / run_path(SIM, "DET") / _PLAT
     for i, wall in enumerate(steady):
         night = (d0 + timedelta(days=i)).isoformat()
         stack = f"key4hep-{night}"
@@ -293,7 +295,7 @@ def test_rerun_of_an_older_release_still_gets_tonights_verdict(tmp_path):
     steady = [100.0, 100.4, 99.6, 100.2, 99.8, 100.3, 99.7, 100.1, 99.9,
               100.0, 100.2, 99.8]
     d0 = date.fromisoformat("2026-01-01")
-    root = tmp_path / "data" / "DET" / _PLAT
+    root = tmp_path / "data" / run_path(SIM, "DET") / _PLAT
     for i, wall in enumerate(steady):
         night = (d0 + timedelta(days=i)).isoformat()
         stack = f"key4hep-{night}"
@@ -372,12 +374,12 @@ def test_blame_report_cli_local_mode(tmp_path):
         wall = 100.0 + (0.4 if i % 2 else -0.4)
         stack = f"key4hep-{night}"
         _write_run_with_provenance(
-            data_dir / "DET" / _PLAT / stack / "single_e" / night,
+            data_dir / run_path(SIM, "DET") / _PLAT / stack / "single_e" / night,
             night, stack, wall, "a" * 40,
         )
     for i, night in enumerate(("2026-01-11", "2026-01-12")):
         _write_run_with_provenance(
-            data_dir / "DET" / _PLAT / "key4hep-2026-01-11" / "single_e" / night,
+            data_dir / run_path(SIM, "DET") / _PLAT / "key4hep-2026-01-11" / "single_e" / night,
             night, "key4hep-2026-01-11", 120.0 + i * 0.5, "c" * 40,
         )
 
@@ -520,12 +522,12 @@ def test_blame_report_with_ranker_over_local_tree(tmp_path, monkeypatch):
         wall = 100.0 + (0.4 if i % 2 else -0.4)
         stack = f"key4hep-{night}"
         _write_run_with_provenance(
-            data_dir / "DET" / _PLAT / stack / "single_e" / night,
+            data_dir / run_path(SIM, "DET") / _PLAT / stack / "single_e" / night,
             night, stack, wall, "a" * 40,
         )
     for i, night in enumerate(("2026-01-11", "2026-01-12")):
         _write_run_with_provenance(
-            data_dir / "DET" / _PLAT / "key4hep-2026-01-11" / "single_e" / night,
+            data_dir / run_path(SIM, "DET") / _PLAT / "key4hep-2026-01-11" / "single_e" / night,
             night, "key4hep-2026-01-11", 120.0 + i * 0.5, "c" * 40,
         )
 
@@ -606,12 +608,12 @@ def test_local_run_commit_reads_the_exact_run_and_nothing_else(tmp_path):
     # partial re-run) must never answer for this group's run.
     blame_cli = _load_script(_BLAME_SCRIPT)
     run_url = "https://github.com/key4hep/k4Bench/actions/runs/1"
-    mine = tmp_path / "DET" / _PLAT / "key4hep-2026-01-01" / "single_e" / "2026-01-02"
+    mine = tmp_path / run_path(SIM, "DET") / _PLAT / "key4hep-2026-01-01" / "single_e" / "2026-01-02"
     mine.mkdir(parents=True)
     (mine / "run_info.json").write_text(json.dumps(
         {"commit_sha": "a" * 40, "github_run_url": run_url}
     ))
-    sibling = tmp_path / "DET2" / _PLAT / "key4hep-2026-01-01" / "single_e" / "2026-01-02"
+    sibling = tmp_path / run_path(SIM, "DET2") / _PLAT / "key4hep-2026-01-01" / "single_e" / "2026-01-02"
     sibling.mkdir(parents=True)
     (sibling / "run_info.json").write_text(json.dumps({"commit_sha": "b" * 40}))
 
@@ -649,12 +651,12 @@ def test_the_whole_evidence_chain_reaches_the_cross_configuration_review(
         wall = 100.0 + (0.4 if i % 2 else -0.4)
         stack = f"key4hep-{night}"
         _write_run_with_provenance(
-            data_dir / "DET" / _PLAT / stack / "single_e" / night,
+            data_dir / run_path(SIM, "DET") / _PLAT / stack / "single_e" / night,
             night, stack, wall, "a" * 40,
         )
     for i, night in enumerate(("2026-01-11", "2026-01-12")):
         _write_run_with_provenance(
-            data_dir / "DET" / _PLAT / "key4hep-2026-01-11" / "single_e" / night,
+            data_dir / run_path(SIM, "DET") / _PLAT / "key4hep-2026-01-11" / "single_e" / night,
             night, "key4hep-2026-01-11", 120.0 + i * 0.5, "c" * 40,
         )
 
@@ -832,13 +834,13 @@ def test_historical_evidence_travels_from_provenance_to_the_public_review(
         night = (d0 + timedelta(days=i)).isoformat()
         stack = f"key4hep-{night}"
         _write_run_with_provenance(
-            data_dir / "DET" / _PLAT / stack / "single_e" / night,
+            data_dir / run_path(SIM, "DET") / _PLAT / stack / "single_e" / night,
             night, stack, 100.0 + (0.4 if i % 2 else -0.4),
             ("a" if i < 5 else "b") * 40,
         )
     for i, night in enumerate(("2026-01-11", "2026-01-12")):
         _write_run_with_provenance(
-            data_dir / "DET" / _PLAT / "key4hep-2026-01-11" / "single_e" / night,
+            data_dir / run_path(SIM, "DET") / _PLAT / "key4hep-2026-01-11" / "single_e" / night,
             night, "key4hep-2026-01-11", 120.0 + i * 0.5, "c" * 40,
         )
 

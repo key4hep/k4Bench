@@ -1,7 +1,7 @@
-"""Assemble the nightly regression report from the EOS run history.
+"""Assemble the sim suite's nightly regression report from the EOS run history.
 
-Walks every ``(detector, platform, sample)`` triple found under the WebEOS
-data URL (the same hierarchy the dashboard's sidebar cascades through — these
+Walks every ``(detector, platform, sample)`` triple of the sim run tree below
+the WebEOS data URL (the same hierarchy the dashboard's sidebar cascades through — these
 triples have independent baselines and are never pooled), pulls a trailing
 window of runs into the local cache, rebuilds the trend frames with
 :mod:`k4bench.analysis.trend`, attaches per-run reliability verdicts with
@@ -36,7 +36,7 @@ from k4bench.analysis.trend import (
     parse_run_dir,
 )
 from k4bench.blame.models import rank_group_key
-from k4bench.layout import iter_run_dirs
+from k4bench.layout import SIM, iter_run_dirs
 from k4bench.regression.engine import (
     BASELINE_WINDOW_RUNS,
     evaluate_series,
@@ -723,7 +723,7 @@ def _fetch_run_dirs(
 ) -> tuple[str, ...]:
     """One triple's trailing run window, cached locally, oldest → newest.
     Empty when it has no runs, or none could be downloaded."""
-    stacks_dates = list_run_dates_all_stacks(data_url, detector, platform, sample)
+    stacks_dates = list_run_dates_all_stacks(data_url, SIM, detector, platform, sample)
     pairs = sorted(
         (date, stack) for stack, dates in stacks_dates.items() for date in dates
         if as_of is None or date <= as_of
@@ -733,7 +733,9 @@ def _fetch_run_dirs(
     window: dict[str, list[str]] = {}
     for date, stack in pairs:
         window.setdefault(stack, []).append(date)
-    runs = fetch_runs_windowed(data_url, detector, platform, sample, window, cache_root=cache_dir)
+    runs = fetch_runs_windowed(
+        data_url, SIM, detector, platform, sample, window, cache_root=cache_dir,
+    )
     return tuple(r["run_dir"] for r in sorted(runs, key=lambda r: r["date"]))
 
 
@@ -1170,9 +1172,9 @@ def build_nightly_report(
     :func:`_finalize_report`) — the outage seam.
     """
     groups: list[RunGroupReport] = []
-    for detector in list_detectors(data_url):
-        for platform in list_platforms(data_url, detector):
-            stack_samples = scan_stack_samples(data_url, detector, platform)
+    for detector in list_detectors(data_url, SIM):
+        for platform in list_platforms(data_url, SIM, detector):
+            stack_samples = scan_stack_samples(data_url, SIM, detector, platform)
             samples = sorted({s for ss in stack_samples.values() for s in ss})
             for sample in samples:
                 try:
@@ -1217,7 +1219,7 @@ def build_nightly_report_local(
     # can live under another platform or another detector config.
     # Each sample's run dirs are collected across all stacks.
     per_series: dict[tuple[str, str], dict[str, list[Path]]] = {}
-    for run in iter_run_dirs(root):
+    for run in iter_run_dirs(root, SIM):
         per_sample = per_series.setdefault((run.detector, run.platform), {})
         per_sample.setdefault(run.sample, []).append(run.path)
 

@@ -3,7 +3,7 @@
 Realistic scenarios beyond the basics: physics events, steering files, full-sim
 detectors, measurement stabilisation, and cross-release comparison. These mirror
 what the nightly CI does — see `.github/scripts/nightly_benchmark.sh` and
-`.github/benchmarks/*.yml` for the production versions.
+`.github/benchmarks/sim/` for the production versions.
 
 ## Benchmark with real physics events (HepMC)
 

@@ -70,7 +70,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 # Leaf modules that import only the standard library, so these imports cannot
 # fail on a broken dependency the way the blame modules imported below could.
 from k4bench.artifacts import RUN_INFO  # noqa: E402
-from k4bench.layout import run_path, stack_dir  # noqa: E402
+from k4bench.layout import SIM, run_path, stack_dir  # noqa: E402
 
 _log = logging.getLogger(__name__)
 
@@ -82,7 +82,7 @@ def _local_packages(roots: list[str], platform: str, release: str) -> dict | Non
     layout (:mod:`k4bench.layout`). Every run under one release recorded the
     same stack, so the first readable one answers the question."""
     for root in roots:
-        pattern = f"{root}/{run_path('*', platform, stack_dir(release), '*', '*')}/{RUN_INFO}"
+        pattern = f"{root}/{run_path(SIM, '*', platform, stack_dir(release), '*', '*')}/{RUN_INFO}"
         for path in sorted(glob.glob(pattern)):
             try:
                 packages = json.loads(Path(path).read_text()).get("k4h_packages")
@@ -106,7 +106,7 @@ def _make_packages_for_release(
             from k4bench.remote import fetch_stack_packages
             for detector in detectors_by_platform.get(platform, ()):
                 packages = fetch_stack_packages(
-                    data_url, detector, platform, stack_dir(release)
+                    data_url, SIM, detector, platform, stack_dir(release)
                 )
                 if packages:
                     return packages
@@ -128,7 +128,7 @@ def _local_run_commit(
     sibling groups carrying different commits, so "any run of that night" is
     not a safe stand-in for this group's own run."""
     for root in roots:
-        run_dir = run_path(detector, platform, stack_dir(release), sample, run_id)
+        run_dir = run_path(SIM, detector, platform, stack_dir(release), sample, run_id)
         path = Path(root) / run_dir / RUN_INFO
         try:
             info = json.loads(path.read_text())
@@ -153,7 +153,7 @@ def _make_k4bench_commit_for_run(roots: list[str], data_url: str | None):
         if data_url:
             from k4bench.remote import fetch_run_commit
             return fetch_run_commit(
-                data_url, detector, platform, stack_dir(release), sample, run_id
+                data_url, SIM, detector, platform, stack_dir(release), sample, run_id
             )
         return None
 
@@ -168,7 +168,9 @@ def _make_provenance_for_run(roots: list[str], data_url: str | None):
         if not release or not run_id:
             return None
         for root in roots:
-            directory = Path(root) / run_path(detector, platform, stack_dir(release), sample, run_id)
+            directory = Path(root) / run_path(
+                SIM, detector, platform, stack_dir(release), sample, run_id
+            )
             try:
                 info = json.loads((directory / RUN_INFO).read_text())
             except (OSError, ValueError):
@@ -182,7 +184,9 @@ def _make_provenance_for_run(roots: list[str], data_url: str | None):
             return stack_snapshot(info, machine)
         if data_url:
             from k4bench.remote import fetch_run_provenance
-            return fetch_run_provenance(data_url, detector, platform, stack_dir(release), sample, run_id)
+            return fetch_run_provenance(
+                data_url, SIM, detector, platform, stack_dir(release), sample, run_id
+            )
         return None
 
     return provenance_for_run

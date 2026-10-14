@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from k4bench import remote
+from k4bench.layout import SIM, run_path
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +116,8 @@ class FakeWeb:
 
 
 BASE = "https://eos.example/data"
+#: The sim suite's run tree below :data:`BASE`.
+RUNS = f"{BASE}/runs/sim"
 
 
 def _build_tree() -> dict[str, object]:
@@ -132,13 +135,13 @@ def _build_tree() -> dict[str, object]:
     provenance = '"k4h_packages": {"k4geo": {"commit": "%s"}}' % ("a" * 40)
     tree: dict[str, object] = {}
     # detector → platform → stacks
-    tree[f"{BASE}/{det}/{plat}"] = [f"{stackA}/", f"{stackB}/"]
+    tree[f"{RUNS}/{det}/{det}/{plat}"] = [f"{stackA}/", f"{stackB}/"]
     for stack, dates in runs.items():
         # stack → samples → dates
-        tree[f"{BASE}/{det}/{plat}/{stack}"] = [f"{sample}/"]
-        tree[f"{BASE}/{det}/{plat}/{stack}/{sample}"] = [f"{d}/" for d in dates]
+        tree[f"{RUNS}/{det}/{det}/{plat}/{stack}"] = [f"{sample}/"]
+        tree[f"{RUNS}/{det}/{det}/{plat}/{stack}/{sample}"] = [f"{d}/" for d in dates]
         for d in dates:
-            run_url = f"{BASE}/{det}/{plat}/{stack}/{sample}/{d}"
+            run_url = f"{RUNS}/{det}/{det}/{plat}/{stack}/{sample}/{d}"
             tree[run_url] = ["baseline_results.csv", "run_info.json"]
             tree[f"{run_url}/baseline_results.csv"] = b"label\nbaseline\n"
             extra = f", {provenance}" if stack == stackA else ""
@@ -160,21 +163,43 @@ def web(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_list_detectors_skips_underscore_dirs(monkeypatch):
-    # _reports/ (nightly regression reports) and any other _-prefixed dir at the
-    # top level are reserved for non-detector data and must not be listed.
-    fake = FakeWeb({BASE: ["ALLEGRO/", "_reports/", "CLD/"]})
+def test_list_detectors_walks_every_concept_of_the_suite(monkeypatch):
+    fake = FakeWeb({
+        RUNS: ["CLD/", "ALLEGRO/"],
+        f"{RUNS}/ALLEGRO": ["ALLEGRO_o2_v01/", "ALLEGRO_o1_v04/"],
+        # A detector filed under another concept is not the concept's.
+        f"{RUNS}/CLD": ["CLD_o2_v09/", "IDEA_o1_v04/"],
+    })
     _use_session(monkeypatch, fake.get)
-    assert remote.list_detectors(BASE) == ["ALLEGRO", "CLD"]
+    assert remote.list_detectors(BASE, SIM) == ["ALLEGRO_o1_v04", "ALLEGRO_o2_v01", "CLD_o2_v09"]
+
+
+def test_list_detectors_of_a_suite_without_runs_is_empty(monkeypatch):
+    _use_session(monkeypatch, _not_found)
+    assert remote.list_detectors(BASE, SIM) == []
+
+
+def test_list_detectors_raises_when_a_concept_does_not_answer(monkeypatch):
+    # A detector missing only because its concept's listing stalled would read
+    # as one no longer benchmarked.
+    def get(url, timeout=None):
+        if url.rstrip("/") == f"{RUNS}/CLD":
+            _timed_out(url)
+        return FakeWeb({RUNS: ["ALLEGRO/", "CLD/"], f"{RUNS}/ALLEGRO": ["ALLEGRO_o1_v04/"]}).get(url)
+
+    _use_session(monkeypatch, get)
+    with pytest.raises(remote.IncompleteFetch) as caught:
+        remote.list_detectors(BASE, SIM)
+    assert caught.value.partial == ["ALLEGRO_o1_v04"]
 
 
 def test_list_report_dates_newest_first_and_empty_when_absent(monkeypatch):
-    fake = FakeWeb({f"{BASE}/_reports": ["2026-05-20/", "2026-05-22/", "2026-05-21/"]})
+    fake = FakeWeb({f"{BASE}/reports/sim": ["2026-05-20/", "2026-05-22/", "2026-05-21/"]})
     _use_session(monkeypatch, fake.get)
-    assert remote.list_report_dates(BASE) == ["2026-05-22", "2026-05-21", "2026-05-20"]
+    assert remote.list_report_dates(BASE, SIM) == ["2026-05-22", "2026-05-21", "2026-05-20"]
 
     _use_session(monkeypatch, _not_found)
-    assert remote.list_report_dates(BASE) == []  # no _reports tree yet: not an error
+    assert remote.list_report_dates(BASE, SIM) == []  # no report tree yet: not an error
 
 
 @pytest.mark.parametrize("failure", ["timeout", "gateway"])
@@ -188,7 +213,7 @@ def test_list_report_dates_raises_when_the_listing_does_not_answer(monkeypatch, 
 
     _use_session(monkeypatch, get)
     with pytest.raises(remote.requests.RequestException):
-        remote.list_report_dates(BASE)
+        remote.list_report_dates(BASE, SIM)
 
 
 def test_fetch_report_parses_json(monkeypatch):
@@ -198,35 +223,35 @@ def test_fetch_report_parses_json(monkeypatch):
             return json.loads(self.content)
 
     def get(url, timeout=None):
-        assert url == f"{BASE}/_reports/2026-05-22/report.json"
+        assert url == f"{BASE}/reports/sim/2026-05-22/report.json"
         return _JsonResponse(content=b'{"generated_at": "x", "groups": []}')
 
     _use_session(monkeypatch, get)
-    assert remote.fetch_report(BASE, "2026-05-22") == {"generated_at": "x", "groups": []}
+    assert remote.fetch_report(BASE, SIM, "2026-05-22") == {"generated_at": "x", "groups": []}
 
 
 @pytest.mark.parametrize("fetch", [remote.fetch_report, remote.fetch_blame])
 def test_report_fetches_strict_raise_only_when_the_server_did_not_answer(monkeypatch, fetch):
     _use_session(monkeypatch, _not_found)
-    assert fetch(BASE, "2026-05-22", strict=True) is None  # absent: an answer
+    assert fetch(BASE, SIM, "2026-05-22", strict=True) is None  # absent: an answer
 
     _use_session(monkeypatch, lambda url, timeout=None: _FakeResponse(content=b"{not json"))
-    assert fetch(BASE, "2026-05-22", strict=True) is None  # malformed: no retry fixes it
+    assert fetch(BASE, SIM, "2026-05-22", strict=True) is None  # malformed: no retry fixes it
 
     _use_session(monkeypatch, _timed_out)
-    assert fetch(BASE, "2026-05-22") is None  # lenient: the CI email carries on
+    assert fetch(BASE, SIM, "2026-05-22") is None  # lenient: the CI email carries on
     with pytest.raises(remote.IncompleteFetch):
-        fetch(BASE, "2026-05-22", strict=True)
+        fetch(BASE, SIM, "2026-05-22", strict=True)
 
 
 def test_list_stacks_newest_first(web):
-    assert remote.list_stacks(BASE, "DET", "PLAT") == [
+    assert remote.list_stacks(BASE, SIM, "DET", "PLAT") == [
         "key4hep-2026-05-20", "key4hep-2026-05-10",
     ]
 
 
 def test_fetch_stack_packages_reads_one_run_info(web):
-    packages = remote.fetch_stack_packages(BASE, "DET", "PLAT", "key4hep-2026-05-20")
+    packages = remote.fetch_stack_packages(BASE, SIM, "DET", "PLAT", "key4hep-2026-05-20")
 
     assert packages == {"k4geo": {"commit": "a" * 40}}
     # Every detector on a release sourced the same stack, so one run answers it:
@@ -237,39 +262,39 @@ def test_fetch_stack_packages_reads_one_run_info(web):
 def test_fetch_stack_packages_none_when_the_run_predates_capture(web):
     # A run with no k4h_packages is not an empty stack — it is a run from
     # before provenance was recorded, which the caller must not diff.
-    assert remote.fetch_stack_packages(BASE, "DET", "PLAT", "key4hep-2026-05-10") is None
+    assert remote.fetch_stack_packages(BASE, SIM, "DET", "PLAT", "key4hep-2026-05-10") is None
 
 
 def test_fetch_stack_packages_skips_a_run_it_cannot_parse(web):
-    url = f"{BASE}/DET/PLAT/key4hep-2026-05-20/single_e/2026-05-21/run_info.json"
+    url = f"{RUNS}/DET/DET/PLAT/key4hep-2026-05-20/single_e/2026-05-21/run_info.json"
     web.tree[url] = b"{not json"
     # 2026-05-21 sorts first (newest); a corrupt run_info must not mask the
     # provenance an older run of the same release still carries.
-    assert remote.fetch_stack_packages(BASE, "DET", "PLAT", "key4hep-2026-05-20") == {
+    assert remote.fetch_stack_packages(BASE, SIM, "DET", "PLAT", "key4hep-2026-05-20") == {
         "k4geo": {"commit": "a" * 40}
     }
 
 
 def test_fetch_stack_packages_none_when_the_release_is_absent(monkeypatch):
     _use_session(monkeypatch, _not_found)
-    assert remote.fetch_stack_packages(BASE, "DET", "PLAT", "key4hep-1999-01-01") is None
+    assert remote.fetch_stack_packages(BASE, SIM, "DET", "PLAT", "key4hep-1999-01-01") is None
     # Absent is an answer, so a strict caller may keep it.
     assert remote.fetch_stack_packages(
-        BASE, "DET", "PLAT", "key4hep-1999-01-01", strict=True
+        BASE, SIM, "DET", "PLAT", "key4hep-1999-01-01", strict=True
     ) is None
 
 
 def test_fetch_stack_packages_strict_raises_when_a_stall_hid_the_answer(monkeypatch):
     _use_session(monkeypatch, _timed_out)
-    assert remote.fetch_stack_packages(BASE, "DET", "PLAT", "key4hep-2026-05-20") is None
+    assert remote.fetch_stack_packages(BASE, SIM, "DET", "PLAT", "key4hep-2026-05-20") is None
     with pytest.raises(remote.IncompleteFetch) as caught:
-        remote.fetch_stack_packages(BASE, "DET", "PLAT", "key4hep-2026-05-20", strict=True)
+        remote.fetch_stack_packages(BASE, SIM, "DET", "PLAT", "key4hep-2026-05-20", strict=True)
     assert caught.value.partial is None
 
 
 def test_fetch_stack_packages_strict_stops_at_the_first_stall(web, monkeypatch):
-    stalled = f"{BASE}/DET/PLAT/key4hep-2026-05-20/single_e/2026-05-21/run_info.json"
-    older = f"{BASE}/DET/PLAT/key4hep-2026-05-20/single_e/2026-05-20/run_info.json"
+    stalled = f"{RUNS}/DET/DET/PLAT/key4hep-2026-05-20/single_e/2026-05-21/run_info.json"
+    older = f"{RUNS}/DET/DET/PLAT/key4hep-2026-05-20/single_e/2026-05-20/run_info.json"
 
     def get(url, timeout=None):
         if url == stalled:
@@ -279,18 +304,18 @@ def test_fetch_stack_packages_strict_stops_at_the_first_stall(web, monkeypatch):
     _use_session(monkeypatch, get)
     # Lenient walks on past the stall and finds an older run's answer…
     assert remote.fetch_stack_packages(
-        BASE, "DET", "PLAT", "key4hep-2026-05-20"
+        BASE, SIM, "DET", "PLAT", "key4hep-2026-05-20"
     ) == {"k4geo": {"commit": "a" * 40}}
     # …strict stops there: on a degraded server every further read could cost
     # another timeout, and the uncached call is simply asked again next time.
     web.requested.clear()
     with pytest.raises(remote.IncompleteFetch):
-        remote.fetch_stack_packages(BASE, "DET", "PLAT", "key4hep-2026-05-20", strict=True)
+        remote.fetch_stack_packages(BASE, SIM, "DET", "PLAT", "key4hep-2026-05-20", strict=True)
     assert older not in web.requested
 
 
 def test_list_run_dates_all_stacks_lists_without_downloading_files(web):
-    out = remote.list_run_dates_all_stacks(BASE, "DET", "PLAT", "single_e")
+    out = remote.list_run_dates_all_stacks(BASE, SIM, "DET", "PLAT", "single_e")
     assert out == {
         "key4hep-2026-05-20": ["2026-05-20", "2026-05-21"],
         "key4hep-2026-05-10": ["2026-05-10"],
@@ -308,11 +333,11 @@ def test_list_run_dates_skips_stacks_missing_the_sample(web, monkeypatch):
         return orig_get(url, timeout=timeout)
 
     _use_session(monkeypatch, get)
-    out = remote.list_run_dates_all_stacks(BASE, "DET", "PLAT", "single_e")
+    out = remote.list_run_dates_all_stacks(BASE, SIM, "DET", "PLAT", "single_e")
     assert list(out) == ["key4hep-2026-05-20"]
     # A missing sample is an answer, not a failure, even for a strict caller.
     assert remote.list_run_dates_all_stacks(
-        BASE, "DET", "PLAT", "single_e", strict=True
+        BASE, SIM, "DET", "PLAT", "single_e", strict=True
     ) == out
 
 
@@ -328,11 +353,11 @@ def _stall_on(web, suffix):
 def test_list_run_dates_strict_raises_on_a_stalled_stack(web, monkeypatch):
     _use_session(monkeypatch, _stall_on(web, "key4hep-2026-05-10/single_e"))
     # Lenient (the nightly report builder): skip the stack and carry on.
-    lenient = remote.list_run_dates_all_stacks(BASE, "DET", "PLAT", "single_e")
+    lenient = remote.list_run_dates_all_stacks(BASE, SIM, "DET", "PLAT", "single_e")
     assert list(lenient) == ["key4hep-2026-05-20"]
     # Strict (the dashboard's cache): the same result, but flagged incomplete.
     with pytest.raises(remote.IncompleteFetch) as caught:
-        remote.list_run_dates_all_stacks(BASE, "DET", "PLAT", "single_e", strict=True)
+        remote.list_run_dates_all_stacks(BASE, SIM, "DET", "PLAT", "single_e", strict=True)
     # What was listed before the scan stopped: never more than the lenient
     # result, and never anything it would not have listed.
     assert caught.value.partial.items() <= lenient.items()
@@ -343,16 +368,16 @@ def test_list_run_dates_strict_raises_on_a_stalled_stack(web, monkeypatch):
 
 def test_scan_stack_samples_strict_raises_on_a_stalled_stack(web, monkeypatch):
     _use_session(monkeypatch, _stall_on(web, "key4hep-2026-05-10"))
-    lenient = remote.scan_stack_samples(BASE, "DET", "PLAT")
+    lenient = remote.scan_stack_samples(BASE, SIM, "DET", "PLAT")
     assert lenient == {"key4hep-2026-05-20": ["single_e"]}
     with pytest.raises(remote.IncompleteFetch) as caught:
-        remote.scan_stack_samples(BASE, "DET", "PLAT", strict=True)
+        remote.scan_stack_samples(BASE, SIM, "DET", "PLAT", strict=True)
     assert caught.value.partial.items() <= lenient.items()
 
 
 def test_strict_listing_stops_at_the_first_stall(monkeypatch):
     stacks = [f"key4hep-2026-05-{day:02d}" for day in range(1, 31)]
-    parent = f"{BASE}/DET/PLAT"
+    parent = f"{RUNS}/DET/DET/PLAT"
     tree: dict[str, object] = {parent: [f"{s}/" for s in stacks]}
     for stack in stacks:
         tree[f"{parent}/{stack}/single_e"] = ["2026-05-01/"]
@@ -363,13 +388,13 @@ def test_strict_listing_stops_at_the_first_stall(monkeypatch):
     ))
 
     with pytest.raises(remote.IncompleteFetch):
-        remote.list_run_dates_all_stacks(BASE, "DET", "PLAT", "single_e", strict=True)
+        remote.list_run_dates_all_stacks(BASE, SIM, "DET", "PLAT", "single_e", strict=True)
     # Nothing after the stall: on a degraded server each further listing could
     # cost another minute. (The stalled listing never reaches the fake.)
     assert fake.requested == [f"{parent}/"]
 
     fake.requested.clear()
-    remote.list_run_dates_all_stacks(BASE, "DET", "PLAT", "single_e")
+    remote.list_run_dates_all_stacks(BASE, SIM, "DET", "PLAT", "single_e")
     assert len(fake.requested) == 1 + (len(stacks) - 1)  # lenient lists the rest
 
 
@@ -380,7 +405,7 @@ def test_scan_stack_samples_strict_skips_an_absent_stack(web, monkeypatch):
         return web.get(url, timeout=timeout)
 
     _use_session(monkeypatch, get)
-    assert remote.scan_stack_samples(BASE, "DET", "PLAT", strict=True) == {
+    assert remote.scan_stack_samples(BASE, SIM, "DET", "PLAT", strict=True) == {
         "key4hep-2026-05-20": ["single_e"],
     }
 
@@ -392,19 +417,22 @@ def test_scan_stack_samples_strict_skips_an_absent_stack(web, monkeypatch):
 
 def test_ensure_run_cached_downloads_then_is_idempotent(web, tmp_path):
     run_dir = remote.ensure_run_cached(
-        BASE, "DET", "PLAT", "key4hep-2026-05-20", "single_e", "2026-05-21",
+        BASE, SIM, "DET", "PLAT", "key4hep-2026-05-20", "single_e", "2026-05-21",
         cache_root=str(tmp_path),
     )
     run_dir = Path(run_dir)
     assert (run_dir / "baseline_results.csv").read_bytes() == b"label\nbaseline\n"
     assert (run_dir / "run_info.json").exists()
     assert (run_dir / ".complete").exists()
-    # Stable, content-addressable-by-coordinates path.
-    assert run_dir == tmp_path / "DET" / "PLAT" / "key4hep-2026-05-20" / "single_e" / "2026-05-21"
+    # Stable, content-addressable-by-coordinates path: the store layout, so the
+    # cache is itself a store root.
+    assert run_dir == tmp_path / run_path(
+        SIM, "DET", "PLAT", "key4hep-2026-05-20", "single_e", "2026-05-21"
+    )
 
     n_after_first = len(web.requested)
     again = remote.ensure_run_cached(
-        BASE, "DET", "PLAT", "key4hep-2026-05-20", "single_e", "2026-05-21",
+        BASE, SIM, "DET", "PLAT", "key4hep-2026-05-20", "single_e", "2026-05-21",
         cache_root=str(tmp_path),
     )
     assert Path(again) == run_dir
@@ -413,12 +441,12 @@ def test_ensure_run_cached_downloads_then_is_idempotent(web, tmp_path):
 
 
 def test_ensure_run_cached_refetches_when_incomplete(web, tmp_path):
-    run_dir = tmp_path / "DET" / "PLAT" / "key4hep-2026-05-20" / "single_e" / "2026-05-21"
+    run_dir = tmp_path / run_path(SIM, "DET", "PLAT", "key4hep-2026-05-20", "single_e", "2026-05-21")
     run_dir.mkdir(parents=True)
     # Files present but no .complete sentinel → treated as a partial download.
     (run_dir / "stale.txt").write_text("partial")
     remote.ensure_run_cached(
-        BASE, "DET", "PLAT", "key4hep-2026-05-20", "single_e", "2026-05-21",
+        BASE, SIM, "DET", "PLAT", "key4hep-2026-05-20", "single_e", "2026-05-21",
         cache_root=str(tmp_path),
     )
     assert (run_dir / ".complete").exists()
@@ -435,12 +463,12 @@ def test_ensure_run_cached_refetches_when_incomplete(web, tmp_path):
 )
 def test_ensure_run_cached_rejects_unsafe_filename(monkeypatch, tmp_path, payload):
     fake = FakeWeb({
-        f"{BASE}/DET/PLAT/S/smp/2026-01-01": [payload],
+        f"{RUNS}/DET/DET/PLAT/S/smp/2026-01-01": [payload],
     })
     _use_session(monkeypatch, fake.get)
     with pytest.raises(ValueError, match="Unsafe filename"):
         remote.ensure_run_cached(
-            BASE, "DET", "PLAT", "S", "smp", "2026-01-01", cache_root=str(tmp_path)
+            BASE, SIM, "DET", "PLAT", "S", "smp", "2026-01-01", cache_root=str(tmp_path)
         )
 
 
@@ -452,7 +480,7 @@ def test_ensure_run_cached_rejects_unsafe_filename(monkeypatch, tmp_path, payloa
 def test_fetch_runs_windowed_fetches_only_given_runs(web, tmp_path):
     windowed = {"key4hep-2026-05-20": ["2026-05-21"]}  # one run, exclude the rest
     runs = remote.fetch_runs_windowed(
-        BASE, "DET", "PLAT", "single_e", windowed, cache_root=str(tmp_path)
+        BASE, SIM, "DET", "PLAT", "single_e", windowed, cache_root=str(tmp_path)
     )
     assert len(runs) == 1
     assert runs[0]["stack"] == "key4hep-2026-05-20"
@@ -480,7 +508,7 @@ def test_fetch_runs_windowed_strict_raises_after_the_rest_landed(web, monkeypatc
     windowed = {"key4hep-2026-05-20": ["2026-05-20", "2026-05-21"]}
     with pytest.raises(remote.IncompleteFetch) as caught:
         remote.fetch_runs_windowed(
-            BASE, "DET", "PLAT", "single_e", windowed,
+            BASE, SIM, "DET", "PLAT", "single_e", windowed,
             cache_root=str(tmp_path), strict=True,
         )
     # The run that landed is handed back and already sits in the on-disk
@@ -491,7 +519,7 @@ def test_fetch_runs_windowed_strict_raises_after_the_rest_landed(web, monkeypatc
     web.requested.clear()
     _use_session(monkeypatch, web.get)
     runs = remote.fetch_runs_windowed(
-        BASE, "DET", "PLAT", "single_e", windowed, cache_root=str(tmp_path), strict=True,
+        BASE, SIM, "DET", "PLAT", "single_e", windowed, cache_root=str(tmp_path), strict=True,
     )
     assert sorted(r["date"] for r in runs) == ["2026-05-20", "2026-05-21"]
     assert not any("/single_e/2026-05-20" in u for u in web.requested)
@@ -508,7 +536,7 @@ def test_fetch_runs_windowed_strict_starts_nothing_after_the_first_failure(monke
     started: list[str] = []
     lock = threading.Lock()
 
-    def ensure_run_cached(base_url, detector, platform, stack, sample, date, cache_root):
+    def ensure_run_cached(base_url, suite, detector, platform, stack, sample, date, cache_root):
         with lock:
             started.append(date)
         if date == dates[0]:
@@ -519,7 +547,7 @@ def test_fetch_runs_windowed_strict_starts_nothing_after_the_first_failure(monke
     monkeypatch.setattr(remote, "ensure_run_cached", ensure_run_cached)
     with pytest.raises(remote.IncompleteFetch) as caught:
         remote.fetch_runs_windowed(
-            BASE, "DET", "PLAT", "single_e", {"S": dates}, strict=True,
+            BASE, SIM, "DET", "PLAT", "single_e", {"S": dates}, strict=True,
         )
     # What was in flight, plus at most the one the failed worker picked up
     # before the rest was cancelled — not all 30.
@@ -534,22 +562,22 @@ def test_fetch_runs_windowed_strict_raises_a_local_error_as_itself(web, monkeypa
 
     real = remote.ensure_run_cached
 
-    def ensure_run_cached(base_url, detector, platform, stack, sample, date, cache_root):
+    def ensure_run_cached(base_url, suite, detector, platform, stack, sample, date, cache_root):
         if date == "2026-05-21":
             raise OSError(errno.ENOSPC, "No space left on device")
-        return real(base_url, detector, platform, stack, sample, date, cache_root)
+        return real(base_url, suite, detector, platform, stack, sample, date, cache_root)
 
     monkeypatch.setattr(remote, "ensure_run_cached", ensure_run_cached)
     windowed = {"key4hep-2026-05-20": ["2026-05-20", "2026-05-21"]}
     with pytest.raises(OSError) as caught:
         remote.fetch_runs_windowed(
-            BASE, "DET", "PLAT", "single_e", windowed, cache_root=str(tmp_path), strict=True,
+            BASE, SIM, "DET", "PLAT", "single_e", windowed, cache_root=str(tmp_path), strict=True,
         )
     assert not isinstance(caught.value, remote.IncompleteFetch)
     assert caught.value.errno == errno.ENOSPC
     # Lenient (the nightly report builder) still skips the run and carries on.
     runs = remote.fetch_runs_windowed(
-        BASE, "DET", "PLAT", "single_e", windowed, cache_root=str(tmp_path),
+        BASE, SIM, "DET", "PLAT", "single_e", windowed, cache_root=str(tmp_path),
     )
     assert [r["date"] for r in runs] == ["2026-05-20"]
 
@@ -557,10 +585,10 @@ def test_fetch_runs_windowed_strict_raises_a_local_error_as_itself(web, monkeypa
 def test_fetch_runs_windowed_strict_does_not_flag_an_unsafe_listing(web, monkeypatch, tmp_path):
     # An unsafe file name will be just as unsafe next time: skipped, but the
     # result is complete as far as the server can make it.
-    run = f"{BASE}/DET/PLAT/key4hep-2026-05-20/single_e/2026-05-21"
+    run = f"{RUNS}/DET/DET/PLAT/key4hep-2026-05-20/single_e/2026-05-21"
     web.tree[run] = ["%2e%2e%2fevil.csv"]
     runs = remote.fetch_runs_windowed(
-        BASE, "DET", "PLAT", "single_e", {"key4hep-2026-05-20": ["2026-05-21"]},
+        BASE, SIM, "DET", "PLAT", "single_e", {"key4hep-2026-05-20": ["2026-05-21"]},
         cache_root=str(tmp_path), strict=True,
     )
     assert runs == []
@@ -568,13 +596,13 @@ def test_fetch_runs_windowed_strict_does_not_flag_an_unsafe_listing(web, monkeyp
 
 def test_fetch_runs_windowed_empty_returns_empty(web, tmp_path):
     assert remote.fetch_runs_windowed(
-        BASE, "DET", "PLAT", "single_e", {}, cache_root=str(tmp_path)
+        BASE, SIM, "DET", "PLAT", "single_e", {}, cache_root=str(tmp_path)
     ) == []
 
 
 def test_ensure_latest_run_cached_picks_newest(web, tmp_path):
     run_dir = remote.ensure_latest_run_cached(
-        BASE, "DET", "PLAT", "key4hep-2026-05-20", "single_e", cache_root=str(tmp_path)
+        BASE, SIM, "DET", "PLAT", "key4hep-2026-05-20", "single_e", cache_root=str(tmp_path)
     )
     assert Path(run_dir).name == "2026-05-21"  # newest of the two dates
 
@@ -676,7 +704,7 @@ def test_shared_adapter_retries_once(local_server, first):
     # again, and the second answer is used.
     base, queue, hits = local_server
     queue.append(first)
-    assert remote.list_report_dates(base) == ["2026-09-24", "2026-09-23"]
+    assert remote.list_report_dates(base, SIM) == ["2026-09-24", "2026-09-23"]
     assert len(hits) == 2
 
 
@@ -685,7 +713,7 @@ def test_shared_adapter_gives_up_after_one_retry(local_server):
     base, queue, hits = local_server
     queue.extend([504, 504, 504])
     with pytest.raises(remote.requests.HTTPError):
-        remote.list_report_dates(base)
+        remote.list_report_dates(base, SIM)
     assert len(hits) == 2
 
 
@@ -704,11 +732,11 @@ def test_shared_adapter_blocks_rather_than_opening_extra_connections():
 
 def test_fetch_run_info_reads_and_returns_the_exact_record(monkeypatch):
     det, plat, stack, sample = "DET", "PLAT", "key4hep-2026-05-20", "single_e"
-    url = f"{BASE}/{det}/{plat}/{stack}/{sample}/run-17/run_info.json"
+    url = f"{RUNS}/{det}/{det}/{plat}/{stack}/{sample}/run-17/run_info.json"
     fake = FakeWeb({url: b'{"commit_sha":"abc","n_events":100}'})
     _use_session(monkeypatch, fake.get)
     assert remote.fetch_run_info(
-        BASE, det, plat, stack, sample, "run-17"
+        BASE, SIM, det, plat, stack, sample, "run-17"
     ) == {"commit_sha": "abc", "n_events": 100}
     assert fake.requested == [url]
 
@@ -716,14 +744,14 @@ def test_fetch_run_info_reads_and_returns_the_exact_record(monkeypatch):
 def test_fetch_run_commit_reads_exactly_one_run_info(monkeypatch):
     det, plat, stack, sample = "DET", "PLAT", "key4hep-2026-05-20", "single_e"
     run_url = "https://github.com/key4hep/k4Bench/actions/runs/9"
-    url = f"{BASE}/{det}/{plat}/{stack}/{sample}/2026-05-21/run_info.json"
+    url = f"{RUNS}/{det}/{det}/{plat}/{stack}/{sample}/2026-05-21/run_info.json"
     fake = FakeWeb({
         url: (
             '{"commit_sha": "%s", "github_run_url": "%s"}' % ("b" * 40, run_url)
         ).encode(),
     })
     _use_session(monkeypatch, fake.get)
-    got = remote.fetch_run_commit(BASE, det, plat, stack, sample, "2026-05-21")
+    got = remote.fetch_run_commit(BASE, SIM, det, plat, stack, sample, "2026-05-21")
     assert got == ("b" * 40, run_url)
     # The named run's own file, in one GET — no listing walked, no sibling
     # sample or stack consulted: a same-day re-run can leave siblings at a
@@ -734,7 +762,7 @@ def test_fetch_run_commit_reads_exactly_one_run_info(monkeypatch):
 def test_fetch_run_commit_none_when_the_run_predates_capture(web):
     # The shared tree's runs carry k4h_packages but no commit_sha.
     assert remote.fetch_run_commit(
-        BASE, "DET", "PLAT", "key4hep-2026-05-20", "single_e", "2026-05-20"
+        BASE, SIM, "DET", "PLAT", "key4hep-2026-05-20", "single_e", "2026-05-20"
     ) is None
 
 
@@ -744,13 +772,13 @@ def test_fetch_run_commit_none_when_the_run_is_absent(monkeypatch):
 
     _use_session(monkeypatch, _404)
     assert remote.fetch_run_commit(
-        BASE, "DET", "PLAT", "key4hep-2026-05-20", "single_e", "2026-05-22"
+        BASE, SIM, "DET", "PLAT", "key4hep-2026-05-20", "single_e", "2026-05-22"
     ) is None
 
 
 def test_measured_stack_costs_one_listing_and_four_gets_per_endpoint(monkeypatch):
     from tests.unit.test_stack_capture import FIXTURES
-    root = f"{BASE}/ILD/platform/key4hep-2026-10-03/Zbb"
+    root = f"{RUNS}/ILD/ILD/platform/key4hep-2026-10-03/Zbb"
     run = f"{root}/2026-10-03"
     info = {
         "k4h_stack_capture": 1,
@@ -766,7 +794,7 @@ def test_measured_stack_costs_one_listing_and_four_gets_per_endpoint(monkeypatch
         f"{run}/LCG_contrib.txt.gz": (FIXTURES / "LCG_contrib.txt.gz").read_bytes(),
     })
     _use_session(monkeypatch, web.get)
-    snapshot = remote.fetch_stack_snapshot(BASE, "ILD", "platform", "key4hep-2026-10-03", "Zbb", strict=True)
+    snapshot = remote.fetch_stack_snapshot(BASE, SIM, "ILD", "platform", "key4hep-2026-10-03", "Zbb", strict=True)
     assert snapshot.complete and "Geant4" in snapshot.loaded
     assert len(web.requested) == 5
     assert not any("LCG_builds" in path for path in web.requested)
@@ -775,7 +803,7 @@ def test_measured_stack_costs_one_listing_and_four_gets_per_endpoint(monkeypatch
     info.pop("k4h_loaded_packages")
     web.tree[f"{run}/run_info.json"] = json.dumps(info).encode()
     web.requested.clear()
-    legacy = remote.fetch_stack_snapshot(BASE, "ILD", "platform", "key4hep-2026-10-03", "Zbb", strict=True)
+    legacy = remote.fetch_stack_snapshot(BASE, SIM, "ILD", "platform", "key4hep-2026-10-03", "Zbb", strict=True)
     assert legacy.loaded is None and not legacy.complete
     assert len(web.requested) == 2
 
@@ -783,7 +811,7 @@ def test_measured_stack_costs_one_listing_and_four_gets_per_endpoint(monkeypatch
 def test_measured_stack_timeout_is_not_a_cacheable_absence(monkeypatch):
     _use_session(monkeypatch, _timed_out)
     with pytest.raises(remote.IncompleteFetch):
-        remote.fetch_stack_snapshot(BASE, "ILD", "platform", "release", "Zbb", strict=True)
+        remote.fetch_stack_snapshot(BASE, SIM, "ILD", "platform", "release", "Zbb", strict=True)
 
 
 @pytest.mark.parametrize("strict", [False, True])
@@ -793,7 +821,7 @@ def test_measured_stack_timeout_is_not_a_cacheable_absence(monkeypatch):
 ])
 def test_measured_stack_skips_partial_newest_run(monkeypatch, strict, truncated, missing):
     from tests.unit.test_stack_capture import FIXTURES
-    root = f"{BASE}/ILD/platform/release/Zbb"
+    root = f"{RUNS}/ILD/ILD/platform/release/Zbb"
     newest, older = f"{root}/2026-10-04", f"{root}/2026-10-03"
     artifacts = {
         "run_info.json": json.dumps({
@@ -821,7 +849,7 @@ def test_measured_stack_skips_partial_newest_run(monkeypatch, strict, truncated,
         return web.get(url, timeout)
 
     _use_session(monkeypatch, get)
-    snapshot = remote.fetch_stack_snapshot(BASE, "ILD", "platform", "release", "Zbb", strict=strict)
+    snapshot = remote.fetch_stack_snapshot(BASE, SIM, "ILD", "platform", "release", "Zbb", strict=strict)
     assert snapshot is not None and snapshot.complete
     assert "Geant4" in snapshot.loaded
     assert snapshot.datasets == {"G4LEDATA": "G4EMLOW8.8"}
@@ -841,7 +869,7 @@ def test_measured_stack_skips_partial_newest_run(monkeypatch, strict, truncated,
 ])
 def test_measured_stack_skips_a_corrupt_or_empty_newest_manifest(monkeypatch, strict, name, content):
     from tests.unit.test_stack_capture import FIXTURES
-    root = f"{BASE}/ILD/platform/release/Zbb"
+    root = f"{RUNS}/ILD/ILD/platform/release/Zbb"
     newest, older = f"{root}/2026-10-04", f"{root}/2026-10-03"
     artifacts = {
         "run_info.json": json.dumps({
@@ -859,7 +887,7 @@ def test_measured_stack_skips_a_corrupt_or_empty_newest_manifest(monkeypatch, st
     })
     web.tree[f"{newest}/{name}"] = content
     _use_session(monkeypatch, web.get)
-    snapshot = remote.fetch_stack_snapshot(BASE, "ILD", "platform", "release", "Zbb", strict=strict)
+    snapshot = remote.fetch_stack_snapshot(BASE, SIM, "ILD", "platform", "release", "Zbb", strict=strict)
     assert snapshot is not None and snapshot.complete
     assert snapshot.packages["Geant4"]["version"]
     assert f"{older}/{name}" in web.requested
@@ -867,7 +895,7 @@ def test_measured_stack_skips_a_corrupt_or_empty_newest_manifest(monkeypatch, st
 
 @pytest.mark.parametrize("failure", ["timeout", "server_error"])
 def test_measured_stack_does_not_skip_transiently_unreadable_newest_run(monkeypatch, failure):
-    root = f"{BASE}/ILD/platform/release/Zbb"
+    root = f"{RUNS}/ILD/ILD/platform/release/Zbb"
     newest = f"{root}/2026-10-04/run_info.json"
     web = FakeWeb({root: ["2026-10-03/", "2026-10-04/"]})
 
@@ -880,12 +908,12 @@ def test_measured_stack_does_not_skip_transiently_unreadable_newest_run(monkeypa
 
     _use_session(monkeypatch, get)
     with pytest.raises(remote.IncompleteFetch):
-        remote.fetch_stack_snapshot(BASE, "ILD", "platform", "release", "Zbb", strict=True)
+        remote.fetch_stack_snapshot(BASE, SIM, "ILD", "platform", "release", "Zbb", strict=True)
 
 
 def test_other_scope_supplies_versions_without_claiming_loaded_packages(monkeypatch):
     from tests.unit.test_stack_capture import FIXTURES
-    root = f"{BASE}/ILD/platform/release"
+    root = f"{RUNS}/ILD/ILD/platform/release"
     run = f"{root}/Zbb/2026-10-03"
     web = FakeWeb({
         root: ["Zbb/"], f"{root}/Zbb": ["2026-10-03/"],
@@ -899,6 +927,6 @@ def test_other_scope_supplies_versions_without_claiming_loaded_packages(monkeypa
            for name in ("LCG_externals.txt.gz", "LCG_contrib.txt.gz")},
     })
     _use_session(monkeypatch, web.get)
-    snapshot = remote.fetch_stack_snapshot(BASE, "ILD", "platform", "release", None)
+    snapshot = remote.fetch_stack_snapshot(BASE, SIM, "ILD", "platform", "release", None)
     assert snapshot.complete and snapshot.packages["Geant4"]["version"] == "11.4.3"
     assert snapshot.loaded is None and snapshot.datasets is None and snapshot.os is None

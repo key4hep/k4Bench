@@ -33,6 +33,7 @@ from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
 from k4bench.regression.engine import Z_THRESHOLD
 from k4bench.regression.models import MetricVerdict, Severity
 from k4bench.labels import pretty_sample
+from k4bench.layout import SIM
 from k4bench.metrics import metric_title
 from k4bench.regression.render import metric_name
 from k4bench.regression.report_builder import EVENT_VALUE_METRICS, RUN_VALUE_METRICS
@@ -191,7 +192,7 @@ def _metric_history(
 ] | None:
     """Fetch the shared release-budgeted history for one verdict series."""
     stacks_dates = list_run_dates(
-        data_url, verdict.detector, verdict.platform, verdict.sample
+        data_url, SIM, verdict.detector, verdict.platform, verdict.sample
     )
     all_pairs = sorted(
         (date, stack) for stack, dates in stacks_dates.items() for date in dates
@@ -204,7 +205,7 @@ def _metric_history(
         (stack, tuple(dates)) for stack, dates in window.items()
     ))
     run_dirs = fetch_runs_windowed(
-        data_url, verdict.detector, verdict.platform, verdict.sample,
+        data_url, SIM, verdict.detector, verdict.platform, verdict.sample,
         cache_dir, windowed_items,
     )
     if not run_dirs:

@@ -44,7 +44,7 @@ Nightly CI runs a curated benchmark set, uploads results to CERN EOS, and the da
 
 ## How do I add a new detector to the nightly?
 
-Drop a `<detector>.yml` in `.github/benchmarks/`. No workflow edits needed. The schema is in [File formats → benchmark YAML](reference/file-formats.md#benchmark-yaml).
+Drop a `<detector>.yml` in `.github/benchmarks/sim/<concept>/`, where `<detector>` is the basename of its compact file and `<concept>` the detector name up to its first underscore (e.g. `sim/CLD/CLD_o2_v09.yml`). No workflow edits needed. The schema is in [File formats → benchmark YAML](reference/file-formats.md#benchmark-yaml).
 
 ## Still stuck?
 

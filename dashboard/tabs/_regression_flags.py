@@ -10,7 +10,7 @@ import each other in one direction only, so a helper shared *across* them has
 to live below them all.)
 
 The verdict *severities* themselves come from the precomputed nightly reports
-(``_reports/{date}/report.json``); this module only draws them.
+(``reports/sim/{date}/report.json``); this module only draws them.
 """
 
 from __future__ import annotations

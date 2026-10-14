@@ -60,20 +60,20 @@ sequenceDiagram
     participant Mail as CERN e-group
     participant Dash as dashboard
 
-    Cron->>Job: expand .github/benchmarks/*.yml → matrix
+    Cron->>Job: expand .github/benchmarks/{suite}/{concept}/*.yml → matrix
     Cron->>Gate: wait for today's Key4hep stack on CVMFS
     Gate-->>Job: release every job of this night sources
-    Job->>K: run (per detector/sample, from benchmark_job.py)
+    Job->>K: run (per config/sample, from benchmark_job.py)
     K-->>Job: logs/benchmark/ (CSV + JSON + log)
     Job->>Job: write run_info.json + machine_info.json
-    Job->>EOS: upload to {detector}/{platform}/key4hep-{release}/{sample}/{date}/
-    Reg->>EOS: pull trailing run window per (detector, platform, sample)
+    Job->>EOS: upload to runs/{suite}/{concept}/{detector}/{platform}/key4hep-{release}/{sample}/{date}/
+    Reg->>EOS: pull trailing sim run window per (detector, platform, sample)
     Reg->>Reg: k4bench.regression: reliability-filtered step detection
-    Reg->>EOS: upload _reports/{date}/report.json
+    Reg->>EOS: upload reports/sim/{date}/report.json
     Reg-->>Mail: email on confirmed regressions/failures only
     Dash->>EOS: list + download runs over HTTPS (cached on disk)
     Dash->>Dash: load via k4bench.analysis; render tabs
-    Dash->>EOS: fetch _reports/{date}/report.json (Regressions tab)
+    Dash->>EOS: fetch reports/sim/{date}/report.json (Regressions tab)
 ```
 
 The `resolve-release` job (`.github/scripts/resolve_release.sh`) names one
@@ -101,7 +101,7 @@ It reuses the same pure building blocks as the dashboard (`k4bench.remote` for
 discovery/download, `k4bench.analysis.trend` for aggregation,
 `k4bench.results.reliability_evidence` for the per-run reliability verdict) and
 adds the step detector in `k4bench/regression/engine.py`. The precomputed
-`_reports/{date}/report.json` is what the dashboard's Regressions tab renders —
+`reports/sim/{date}/report.json` is what the dashboard's Regressions tab renders —
 it never recomputes verdicts live.
 
 ## Deployment
