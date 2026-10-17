@@ -1,0 +1,20 @@
+{
+  "suite": "reco",
+  "tool": "k4run",
+  "date": "2026-10-16",
+  "platform": "x86_64-el9-gcc16-opt",
+  "k4h_release": "key4hep-2026-10-16",
+  "k4h_release_date": "2026-10-16",
+  "k4h_stack_setup": "/cvmfs/sft-nightlies.cern.ch/lcg/views/devkey-head/Fri/x86_64-el9-gcc16-opt/setup.sh",
+  "k4h_stack_manifest": "/cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Fri/LCG_externals_x86_64-el9-gcc16-opt.txt",
+  "detector": "CLD_o2_v09",
+  "sample": "p8_ee_Zbb_ecm91",
+  "n_events": 100,
+  "input_files": [
+    "https://k4bench-data.web.cern.ch/inputs/reco/CLD/CLD_o2_v09/p8_ee_Zbb_ecm91_100ev_seed42.edm4hep.root"
+  ],
+  "configured_labels": [
+    "baseline",
+    "variant_truth_tracking"
+  ]
+}

@@ -135,3 +135,34 @@ def test_parse_run_dir_deduplicates_config_roster(tmp_path):
         "baseline",
         "no_ECal",
     ]
+
+
+# ── build_component_trend ─────────────────────────────────────────────────────
+
+_RECO_NIGHTS = Path(__file__).resolve().parents[1] / "fixtures" / "reco_nights"
+
+
+def test_build_component_trend_reads_every_night_label_and_metric():
+    nights = tuple(str(p) for p in sorted(_RECO_NIGHTS.iterdir()) if p.is_dir())
+    df = trend.build_component_trend(nights)
+    assert set(df["run_id"]) == {"2026-10-14", "2026-10-16", "2026-10-17"}
+    assert set(df["label"]) == {"baseline", "variant_truth_tracking"}
+    assert set(df["metric"]) == {
+        "wall_s", "cpu_s", "peak_rss_increase_mb", "instructions", "cycles", "allocations",
+    }
+    track = df[(df["run_id"] == "2026-10-16") & (df["label"] == "baseline")
+               & (df["metric"] == "wall_s") & (df["component"] == "MyConformalTracking")]
+    assert len(track) == 1
+    # Events 1–11: the warm-up event is left out.
+    assert track["n_events"].item() == 11
+    assert track["x_date"].item() == pd.Timestamp("2026-10-16")
+    # The variant has no conformal tracking to trend.
+    variant = df[df["label"] == "variant_truth_tracking"]
+    assert "MyConformalTracking" not in set(variant["component"])
+    assert "MyTruthTrackFinder" in set(variant["component"])
+
+
+def test_build_component_trend_skips_runs_without_component_files(tmp_path):
+    sim = _make_run(tmp_path, "2026-10-01", "key4hep-2026-10-01", 50.0)
+    assert trend.build_component_trend((str(sim),)) is None
+    assert trend.build_component_trend(()) is None
