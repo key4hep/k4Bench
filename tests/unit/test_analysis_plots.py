@@ -796,3 +796,13 @@ class TestPlotRegionTiming:
             for label in trace.y
         }
         assert "Other" in bar_y_labels, f"'Other' not in bar y-labels: {bar_y_labels}"
+
+
+def test_a_legend_below_the_plot_is_pinned_to_the_figure_bottom():
+    # Plotly lays it out at the drawn width: anchored to the container's bottom
+    # edge, its rows grow the margin instead of running off the figure.
+    from k4bench.analysis.plots._utils import bottom_legend
+
+    legend = bottom_legend(entry_width=200, font_size=12)
+    assert (legend["yref"], legend["y"], legend["yanchor"]) == ("container", 0, "bottom")
+    assert legend["entrywidth"] == 200 and legend["font"] == {"size": 12}

@@ -282,7 +282,7 @@ def _render_step_analysis(region_data: dict, display_options_slot=None) -> None:
         "Log x-axis — step counts span several orders of magnitude."
     )
     legend, b_margin = legend_below(
-        fig_h, n, t_margin=45, tick_clearance=50, entry_width=200, font_size=12,
+        n, tick_clearance=50, entry_width=200, font_size=12,
     )
     legend["groupclick"] = "togglegroup"   # legend click toggles point + both bars
     fig.update_layout(

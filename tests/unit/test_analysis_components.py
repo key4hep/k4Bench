@@ -344,3 +344,16 @@ class TestLoadComponentTiming:
         self._write(tmp_path, "default", _raw(schema_version=2))
         with pytest.raises(ValueError, match="default_components.json: unsupported future"):
             load_component_timing(tmp_path)
+
+
+def test_sequencers_are_the_components_others_are_nested_in(timing):
+    assert timing.sequencers() == ["Top"]
+
+
+def test_phase_component_seconds_sums_the_event_loop_over_its_events(timing):
+    loop = timing.phase_component_seconds("execute")
+    # Slow did not run in event 2, which costs it nothing.
+    assert loop["Slow"] == pytest.approx(2.5)
+    assert loop["Geo"] == 0.0
+    assert timing.phase_component_seconds("initialize")["Geo"] == 2.0
+    assert timing.phase_component_seconds("finalize").empty

@@ -282,6 +282,19 @@ class ComponentTiming:
             out[component] = total.where(own[component].notna())
         return pd.DataFrame(out, index=own.index)
 
+    def phase_component_seconds(self, phase: str) -> pd.Series:
+        """Each component's own wall time in *phase*: for ``execute``, summed
+        over the job's events (a component that did not run in an event
+        spent nothing there), otherwise its ``lifecycle`` call. Self times, so
+        they add up to the phase, but for the time between the event loop's
+        events, which no component is charged for. Empty for a phase the job
+        did not record."""
+        if phase == "execute":
+            return self.execute["wall_s"].sum()
+        if phase not in self.lifecycle:
+            return pd.Series(dtype=float)
+        return self.lifecycle[phase]["wall_s"]
+
     def phase_seconds(self) -> dict[str, float]:
         """Duration of each recorded phase, plus ``configure``: from process
         start to the first audited initialize, which is the Python options

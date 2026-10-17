@@ -276,3 +276,29 @@ def _build_stacked_arrays(
                 other_arr = other_arr + time_df[det].to_numpy()
         arrays["Other"] = other_arr
     return arrays
+
+
+def bottom_legend(*, entry_width: int = 220, font_size: int = 13) -> dict:
+    """A horizontal legend below the plot, laid out by Plotly at whatever width
+    the figure is drawn.
+
+    How many rows the legend wraps onto depends on that width, which only the
+    browser knows. Pinned to the bottom edge of the figure *container*
+    (``yref="container"``, ``y=0``, anchored at its bottom), the legend makes
+    Plotly's *automargin* grow the bottom margin to its rows, shrinking the plot
+    to make room, so it can neither be clipped nor reach the tick labels. A
+    legend placed below the data area (``yref="paper"``) instead moves with that
+    shrinking area, onto the ticks.
+    """
+    return dict(
+        orientation="h",
+        yref="container",
+        yanchor="bottom",
+        y=0,
+        xanchor="center",
+        x=0.5,
+        entrywidth=entry_width,
+        entrywidthmode="pixels",
+        tracegroupgap=0,
+        font=dict(size=font_size),
+    )

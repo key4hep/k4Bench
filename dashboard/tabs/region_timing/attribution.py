@@ -284,7 +284,7 @@ def _render_attribution_analysis(region_data: dict, display_options_slot=None) -
     # scatter point and asymmetry bar together.
     fig_h = int(np.clip(90 + n * 26, 440, 820))
     legend, b_margin = legend_below(
-        fig_h, n, t_margin=45, tick_clearance=50, entry_width=200, font_size=12,
+        n, tick_clearance=50, entry_width=200, font_size=12,
     )
     legend["groupclick"] = "togglegroup"
     fig.update_layout(

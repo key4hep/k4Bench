@@ -68,9 +68,14 @@ def test_pages_walk_their_own_suite_under_their_own_keys():
 def test_reco_page_has_no_report_backed_section():
     # Nothing judges the reco suite, so its trend window must not wait for reports.
     assert reco_page.RECO_PAGE.reports is False
-    assert not {"Overview", "Regressions", "Run Trends", "Stack Changes"} & set(
-        reco_page.RECO_PAGE.sections
-    )
+    assert not {"Regressions", "Run Trends", "Stack Changes"} & set(reco_page.RECO_PAGE.sections)
+    # Its Overview is its own, drawn from the runs rather than the nightly reports.
+    assert reco_page.RECO_PAGE.renderers["Overview"] is not sim_page.SIM_PAGE.renderers["Overview"]
+
+
+def test_only_the_reco_page_loads_component_costs():
+    assert reco_page.RECO_PAGE.components is True
+    assert sim_page.SIM_PAGE.components is False
 
 
 def _local_env(monkeypatch, run_dir: Path, cache_dir: Path) -> None:
@@ -148,7 +153,7 @@ def test_reco_page_draws_its_run_wide_sections_under_its_own_keys(monkeypatch, t
     at = _reco(tab)
     assert at.session_state["reco_active_section"] == tab
     assert "active_section" not in at.session_state
-    assert at.button_group[0].options == list(reco_page.RECO_PAGE.sections)
+    assert at.button_group[0].options == reco_page.RECO_PAGE.visible_sections(trends_enabled=False)
     assert at.text_input(key="reco_data_dir").value == str(RECO_RUN)
     assert not [w for w in at.warning if "holds a" in w.value]
 

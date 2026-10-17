@@ -298,7 +298,7 @@ def _render_timeseries(
     plot_h    = n_rows * 350
     # tick_clearance=75: rotated (-30°) date ticks + "Key4hep Nightly Tag" title.
     legend, b_margin = legend_below(
-        plot_h, len(labels), t_margin=t_margin, tick_clearance=75,
+        len(labels), tick_clearance=75,
         entry_width=200, font_size=12,
     )
     fig.update_layout(

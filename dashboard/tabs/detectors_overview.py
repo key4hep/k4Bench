@@ -732,6 +732,36 @@ def _views(data_url: str, dashboard_url: str, inputs: OverviewInputs) -> None:
         _render_landscape(inputs, choice)
 
 
+#: The views of a suite without nightly reports: the two figure views alone.
+FIGURE_VIEWS = _VIEWS[:2]
+
+
+@st.fragment
+def render_figures(inputs: OverviewInputs, *, key_prefix: str) -> None:
+    """The Performance Trends and Landscape views for a suite no nightly
+    report judges: *inputs* are built from its runs, whose values carry no
+    verdict, so the Regressions flags are left out. *key_prefix* keeps the
+    page's own selection, as for the sidebar."""
+    view_key = f"{key_prefix}{_VIEW_KEY}"
+    seed_query_param(view_key, "view", FIGURE_VIEWS)
+    if view_key not in st.session_state:
+        st.session_state[view_key] = FIGURE_VIEWS[0]
+    view = st.radio("**View**", FIGURE_VIEWS, horizontal=True, key=view_key) or FIGURE_VIEWS[0]
+    st.query_params["view"] = view
+    if inputs.scope_empty:
+        st.info(
+            f"No detector has {BASELINE_LABEL} results for "
+            f"**{inputs.sample}** on **{inputs.platform}** in the trend window — "
+            "pick another sample or platform, or widen the window in the sidebar."
+        )
+        return
+    choice = _figure_toolbar(view, inputs, key_prefix=key_prefix, flags=False)
+    if view == "Performance Trends":
+        _render_trends(inputs, choice, key_prefix)
+    else:
+        _render_landscape(inputs, choice, key_prefix)
+
+
 @dataclass(frozen=True)
 class _FigureChoice:
     """What the toolbar the two figure views share has selected."""
@@ -748,10 +778,14 @@ class _FigureChoice:
     exclude_unreliable: bool
 
 
-def _figure_toolbar(view: str, inputs: OverviewInputs) -> _FigureChoice:
+def _figure_toolbar(
+    view: str, inputs: OverviewInputs, *, key_prefix: str = "", flags: bool = True,
+) -> _FigureChoice:
     """The shaping controls shared by the two figure views. Same widget keys in
     both, so the chosen metrics survive a view switch; only Scale differs
-    (Relative % only makes sense for a time series)."""
+    (Relative % only makes sense for a time series). *key_prefix* prefixes
+    every key, so each page keeps its own choice; without *flags* the history
+    carries no regression verdicts to mark."""
     trends = view == "Performance Trends"
     show_confirmed = show_watch = False
     toolbar = st.container(
@@ -764,26 +798,26 @@ def _figure_toolbar(view: str, inputs: OverviewInputs) -> _FigureChoice:
             gap="small",
         )
         with comparison:
-            seed_query_param("det_ov_time_metric", "tmetric", TIME_METRICS)
+            seed_query_param(f"{key_prefix}det_ov_time_metric", "tmetric", TIME_METRICS)
             time_metric = st.selectbox(
-                "Time", TIME_METRICS, key="det_ov_time_metric",
+                "Time", TIME_METRICS, key=f"{key_prefix}det_ov_time_metric",
                 format_func=_metric_title, width=210,
                 help="Per-event means/medians exclude the warmup event; "
                      "wall time and user CPU cover the whole run including "
                      "initialization.",
             )
-            seed_query_param("det_ov_mem_metric", "mmetric", MEMORY_METRICS)
-            if "det_ov_mem_metric" not in st.session_state:
+            seed_query_param(f"{key_prefix}det_ov_mem_metric", "mmetric", MEMORY_METRICS)
+            if f"{key_prefix}det_ov_mem_metric" not in st.session_state:
                 memory_rows = inputs.hist_rows if trends else inputs.snap_rows
                 available = set(memory_rows["metric"])
-                st.session_state["det_ov_mem_metric"] = next(
+                st.session_state[f"{key_prefix}det_ov_mem_metric"] = next(
                     (metric for metric in MEMORY_METRICS if metric in available),
                     MEMORY_METRICS[0],
                 )
             mem_metric = st.selectbox(
                 "Memory",
                 MEMORY_METRICS,
-                key="det_ov_mem_metric",
+                key=f"{key_prefix}det_ov_mem_metric",
                 format_func=_metric_title,
                 width=210,
                 help="Anonymous RSS is averaged over events. Virtual peak includes "
@@ -792,7 +826,7 @@ def _figure_toolbar(view: str, inputs: OverviewInputs) -> _FigureChoice:
             if trends:
                 scale = st.segmented_control(
                     "Scale", ["Log", "Linear", "Relative %"],
-                    default="Log", key="det_ov_scale",
+                    default="Log", key=f"{key_prefix}det_ov_scale",
                     help="Log keeps the detectors' >1-decade spread readable; "
                          "Linear shows absolute values; Relative % rescales "
                          "each line to its first plotted night = 100%, so "
@@ -802,7 +836,7 @@ def _figure_toolbar(view: str, inputs: OverviewInputs) -> _FigureChoice:
             else:
                 scale = st.segmented_control(
                     "Scale", ["Log", "Linear"],
-                    default="Log", key="det_ov_scale_land",
+                    default="Log", key=f"{key_prefix}det_ov_scale_land",
                     help="Log keeps the detectors' >1-decade spread "
                          "readable; Linear shows absolute values.",
                 ) or "Log"
@@ -812,12 +846,12 @@ def _figure_toolbar(view: str, inputs: OverviewInputs) -> _FigureChoice:
             horizontal_alignment="right", gap="small",
         )
         with overlays:
-            if trends:
+            if trends and flags:
                 show_confirmed, show_watch = render_flag_pills(
-                    "det_ov_flags", label="Regressions",
+                    f"{key_prefix}det_ov_flags", label="Regressions",
                 )
             unreliable, exclude_unreliable = render_run_reliability_filter(
-                inputs.rel_hist, key="det_ov_exclude_unreliable", inline=True,
+                inputs.rel_hist, key=f"{key_prefix}det_ov_exclude_unreliable", inline=True,
             )
     # Make the selected comparison shareable: ?tmetric=...&mmetric=...
     st.query_params["tmetric"] = time_metric
@@ -834,7 +868,9 @@ def _figure_toolbar(view: str, inputs: OverviewInputs) -> _FigureChoice:
     )
 
 
-def _render_trends(inputs: OverviewInputs, choice: _FigureChoice) -> None:
+def _render_trends(
+    inputs: OverviewInputs, choice: _FigureChoice, key_prefix: str = "",
+) -> None:
     """The Performance Trends view: both metrics' history, captioned with every
     scoped detector the chart has no line for.
 
@@ -892,7 +928,7 @@ def _render_trends(inputs: OverviewInputs, choice: _FigureChoice) -> None:
             *notes,
         ]))
         return
-    st.plotly_chart(fig, width="stretch", key="det_ov_hist_chart")
+    st.plotly_chart(fig, width="stretch", key=f"{key_prefix}det_ov_hist_chart")
     # The span of the x-axis, in nightly tags like Run Trends' "Data range" —
     # not of the report nights read, which run past the newest tag whenever a
     # night re-ran it.
@@ -909,7 +945,9 @@ def _render_trends(inputs: OverviewInputs, choice: _FigureChoice) -> None:
     st.caption(" ".join([span, *notes]))
 
 
-def _render_landscape(inputs: OverviewInputs, choice: _FigureChoice) -> None:
+def _render_landscape(
+    inputs: OverviewInputs, choice: _FigureChoice, key_prefix: str = "",
+) -> None:
     """The Performance Landscape view: one point per detector at its own most
     recent run.
 
@@ -933,7 +971,7 @@ def _render_landscape(inputs: OverviewInputs, choice: _FigureChoice) -> None:
                if choice.exclude_unreliable and choice.unreliable else "")
         )
         return
-    st.plotly_chart(fig, width="stretch", key="det_ov_land_chart")
+    st.plotly_chart(fig, width="stretch", key=f"{key_prefix}det_ov_land_chart")
     st.caption(" ".join(_landscape_notes(
         wide, as_of, choice.time_metric, choice.mem_metric,
         inputs.scoped_detectors, inputs.excluded,

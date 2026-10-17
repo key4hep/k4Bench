@@ -3,18 +3,23 @@
 The configurations render as one row of clickable chips, failures first, and
 selecting one shows its extracted error, the k4Bench plugin messages and the
 full log, all read from the run's local cache.
+
+What counts as an error or a warning depends on what wrote the log: a ddsim
+log is Geant4's (:data:`GEANT4`), a k4run log Gaudi's and its components'
+(:data:`GAUDI`). Each page passes the :class:`LogFormat` of its suite.
 """
 
 from __future__ import annotations
 
 import hashlib
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from k4bench.artifacts import LOG_SUFFIX, label_path
+from k4bench.artifacts import JOBOPTIONS_SUFFIX, LOG_SUFFIX, label_path
 from ui_chrome import failed_labels
 
 # Every benchmark log ends with GNU time's verbose resource table, a tab-indented
@@ -44,6 +49,93 @@ _WARN_RE = re.compile(r"\bwarn(?:ing)?\b", re.IGNORECASE)
 # the same token inside the echoed ddsim command line is not matched.
 _K4BENCH_RE = re.compile(r"^(?:k4bench|dd4bench)\w*", re.IGNORECASE)
 
+# A Gaudi job's messages read "<Component>  <LEVEL> <msg>"; Marlin processors
+# wrapped by k4MarlinWrapper print "[ <LEVEL> "<processor>"] <msg>", k4run's own
+# logger "[k4run - <LEVEL>] <msg>" and ROOT "Error in <Class::method>: <msg>".
+# Only those levels count, never the word "error" in a message's prose (the
+# CLD reconstruction prints "[setVariable error]" in a WARN line).
+_GAUDI_ERROR_RE = re.compile(
+    r"^\S+\s+(?:ERROR|FATAL)\b"
+    r"|^\[\s*(?:ERROR|FATAL)\b"
+    r"|^\[k4run - (?:ERROR|CRITICAL)\]"
+    r"|^(?:Error|Fatal|SysError) in\b"
+    r"|(?i:traceback \(most recent call last\)"
+    r"|segmentation violation|segmentation fault|core dumped|terminate called|what\(\)\s*:"
+    r"|terminated with error|command exited with non-zero status)"
+)
+_GAUDI_WARN_RE = re.compile(
+    r"^\S+\s+(?:WARNING|WARN)\b|^\[\s*WARNING\b|^\[k4run - WARNING\]|^Warning in\b"
+)
+# What ends a Gaudi job: its first FATAL message, a crash or k4run's own error.
+# Marlin processors log ERROR lines that do not stop the job (the CLD tracking
+# prints them every few events), so the last error line is a poor guess at why
+# a job failed.
+_GAUDI_CAUSE_RE = re.compile(
+    r"^\S+\s+FATAL\b|^\[\s*FATAL\b|^\[k4run - (?:ERROR|CRITICAL)\]"
+    r"|(?i:segmentation violation|segmentation fault|terminate called|what\(\)\s*:"
+    r"|terminated with error)"
+)
+# The component a Gaudi or Marlin message names.
+_GAUDI_SOURCE_RE = re.compile(
+    r'^\[\s*(?:ERROR|FATAL|WARNING)\s+"(?P<processor>[^"]+)"\]'
+    r"|^(?P<component>[^\s\[]\S*)\s+(?:ERROR|FATAL|WARNING|WARN)\b"
+)
+
+
+@dataclass(frozen=True)
+class LogFormat:
+    """How one kind of log marks its errors and warnings, and what else the
+    tab shows next to it."""
+
+    error_re: re.Pattern
+    warn_re: re.Pattern
+    #: Help of the Severity filter, naming what each class keeps.
+    severity_help: str
+    #: Whether Geant4's multi-line ``G4Exception`` blocks are kept whole.
+    g4_exception_blocks: bool = False
+    #: Lines that end the job: the first one names a failure's cause better
+    #: than the last error line does. ``None`` reads the last error line.
+    cause_re: re.Pattern | None = None
+    #: Picks the component a message names: group ``processor`` or ``component``.
+    source_re: re.Pattern | None = None
+    #: Whether the k4Bench plugins log lines of their own to surface.
+    plugin_messages: bool = False
+    #: Whether the configuration's ``_joboptions.opts`` is offered.
+    joboptions: bool = False
+
+
+#: ddsim's logs.
+GEANT4 = LogFormat(
+    error_re=_ERROR_RE,
+    warn_re=_WARN_RE,
+    severity_help=(
+        "Keep only lines of the chosen severity. "
+        "Errors = ERROR/FATAL lines, Python tracebacks and Geant4 "
+        "G4Exception error blocks; Warnings = WARN lines and G4Exception "
+        "warning blocks (whole blocks are kept intact). Matches are found "
+        "across the full log, combined with the Filter box, then trimmed to "
+        "the last 'Max lines'."
+    ),
+    g4_exception_blocks=True,
+    plugin_messages=True,
+)
+
+#: k4run's logs.
+GAUDI = LogFormat(
+    error_re=_GAUDI_ERROR_RE,
+    warn_re=_GAUDI_WARN_RE,
+    severity_help=(
+        "Keep only lines of the chosen severity. "
+        "Errors = ERROR/FATAL messages of Gaudi components and Marlin "
+        "processors, ROOT errors, Python tracebacks and crashes; Warnings = "
+        "WARNING messages. Matches are found across the full log, combined "
+        "with the Filter box, then trimmed to the last 'Max lines'."
+    ),
+    cause_re=_GAUDI_CAUSE_RE,
+    source_re=_GAUDI_SOURCE_RE,
+    joboptions=True,
+)
+
 
 @st.cache_data(show_spinner=False)
 def _load_log(path: str, mtime: float, size: int) -> tuple[bytes, list[str]]:
@@ -71,7 +163,9 @@ def _log_body(lines: list[str]) -> list[str]:
     return lines
 
 
-def _extract_error_excerpt(lines: list[str], max_lines: int = 40) -> str | None:
+def _extract_error_excerpt(
+    lines: list[str], max_lines: int = 40, log_format: LogFormat = GEANT4,
+) -> str | None:
     """Best-effort isolation of the part of a log that explains a failure.
 
     Strategy, in order of preference:
@@ -80,8 +174,10 @@ def _extract_error_excerpt(lines: list[str], max_lines: int = 40) -> str | None:
        ``Traceback (most recent call last):`` through the end of the run output.
        Using the last (not first) traceback surfaces the fatal one in logs that
        recover from earlier tracebacks before ultimately failing.
-    2. Otherwise, a window centred on the last error-looking line.
-    3. Otherwise, the tail of the output.
+    2. Otherwise, for a format with a :attr:`LogFormat.cause_re`, a window
+       from just before its first match on.
+    3. Otherwise, a window centred on the last error-looking line.
+    4. Otherwise, the tail of the output.
 
     Returns ``None`` only for an empty log.
     """
@@ -97,7 +193,13 @@ def _extract_error_excerpt(lines: list[str], max_lines: int = 40) -> str | None:
         i = tb_starts[-1]
         return "\n".join(body[i:][-max_lines:]).strip() or None
 
-    hits = [i for i, ln in enumerate(body) if _ERROR_RE.search(ln)]
+    if log_format.cause_re is not None:
+        cause = next((i for i, ln in enumerate(body) if log_format.cause_re.search(ln)), None)
+        if cause is not None:
+            lo = max(0, cause - 6)
+            return "\n".join(body[lo:lo + max_lines]).strip() or None
+
+    hits = [i for i, ln in enumerate(body) if log_format.error_re.search(ln)]
     if hits:
         last = hits[-1]
         lo = max(0, last - max_lines + 6)
@@ -108,7 +210,8 @@ def _extract_error_excerpt(lines: list[str], max_lines: int = 40) -> str | None:
 
 
 def _filter_by_severity(
-    lines: list[str], want_errors: bool, want_warnings: bool
+    lines: list[str], want_errors: bool, want_warnings: bool,
+    log_format: LogFormat = GEANT4,
 ) -> list[str]:
     """Keep only error- and/or warning-related lines.
 
@@ -128,13 +231,14 @@ def _filter_by_severity(
 
     out: list[str] = []
     block: str | None = None  # severity class while inside a G4Exception block
+    blocks = log_format.g4_exception_blocks
     for ln in lines:
-        if "G4Exception-START" in ln:
+        if blocks and "G4Exception-START" in ln:
             block = "error" if "EEEE" in ln else "warning"
             if _wanted(block):
                 out.append(ln)
             continue
-        if "G4Exception-END" in ln:
+        if blocks and "G4Exception-END" in ln:
             if block is not None and _wanted(block):
                 out.append(ln)
             block = None
@@ -143,9 +247,9 @@ def _filter_by_severity(
             if _wanted(block):
                 out.append(ln)
             continue
-        if want_errors and _ERROR_RE.search(ln):
+        if want_errors and log_format.error_re.search(ln):
             out.append(ln)
-        elif want_warnings and _WARN_RE.search(ln):
+        elif want_warnings and log_format.warn_re.search(ln):
             out.append(ln)
     return out
 
@@ -207,10 +311,70 @@ def _autoscroll_log_to_bottom(nonce: str) -> None:
     )
 
 
+def _sources(lines: list[str], log_format: LogFormat) -> pd.DataFrame:
+    """How many error and warning messages each component logged, most
+    errors first."""
+    counts: dict[str, list[int]] = {}
+    for ln in lines:
+        is_error = bool(log_format.error_re.search(ln))
+        if not (is_error or log_format.warn_re.search(ln)):
+            continue
+        match = log_format.source_re.match(ln)
+        if match is None:
+            continue
+        name = match.group("processor") or match.group("component")
+        counts.setdefault(name, [0, 0])[0 if is_error else 1] += 1
+    frame = pd.DataFrame(
+        [(name, errors, warnings) for name, (errors, warnings) in counts.items()],
+        columns=["Component", "Errors", "Warnings"],
+    )
+    return frame.sort_values(["Errors", "Warnings", "Component"],
+                             ascending=[False, False, True], ignore_index=True)
+
+
+def _cause_source(excerpt: str, log_format: LogFormat) -> str | None:
+    """The component the excerpt's first ending line names, if any."""
+    if log_format.cause_re is None or log_format.source_re is None:
+        return None
+    for ln in excerpt.splitlines():
+        if log_format.cause_re.search(ln) and (match := log_format.source_re.match(ln)):
+            return match.group("processor") or match.group("component")
+    return None
+
+
+def _render_joboptions(run_dir: Path, label: str) -> None:
+    """The configuration's resolved job options, filterable, in an expander."""
+    path = label_path(run_dir, label, JOBOPTIONS_SUFFIX)
+    try:
+        stat = path.stat()
+    except OSError:
+        return
+    raw, lines = _load_log(str(path), stat.st_mtime, stat.st_size)
+    with st.expander(f"Job options · `{path.name}`"):
+        st.caption(
+            "Every property the job ran with, as Gaudi resolved it after the "
+            "options files ran: one `Component.Property = value;` per line."
+        )
+        f_search, f_dl = st.columns([5, 1.5], vertical_alignment="bottom")
+        query = f_search.text_input(
+            "Filter properties", key="logs_joboptions_filter",
+            placeholder="🔎 component or property, case-insensitive…",
+        )
+        f_dl.download_button(
+            "⬇ Download", raw, file_name=path.name, mime="text/plain",
+            use_container_width=True, key="logs_joboptions_download",
+        )
+        shown = [ln for ln in lines if query.lower() in ln.lower()] if query else lines
+        with st.container(height=420):
+            st.code("\n".join(shown) or "— no matching properties —", language="text")
+        st.caption(f"{len(shown):,} of {len(lines):,} lines · {stat.st_size / 1024:,.0f} KB")
+
+
 def render(
     results: "pd.DataFrame | None",
     run_dir: str | None,
     run_meta: dict | None = None,
+    log_format: LogFormat = GEANT4,
 ) -> None:
     """Status overview and log viewer for the selected run, merged into one flow.
 
@@ -311,9 +475,11 @@ def render(
     if chosen in failed_set:
         rc = rc_by_label.get(chosen)
         rc_txt = f"exit code {int(rc)}" if pd.notna(rc) else "no exit code"
-        excerpt = _extract_error_excerpt(all_lines)
+        excerpt = _extract_error_excerpt(all_lines, log_format=log_format)
         if excerpt:
-            st.error(f"**Likely cause of failure** ({rc_txt}):")
+            source = _cause_source(excerpt, log_format)
+            raised = f", raised by `{source}`" if source else ""
+            st.error(f"**Likely cause of failure** ({rc_txt}{raised}):")
             st.code(excerpt, language="log")
         else:
             st.error(
@@ -325,16 +491,32 @@ def render(
     # The timing/region plugins are the bench-specific instrumentation; pulling
     # their lines out confirms they ran (and where they wrote their JSON) without
     # scrolling the full ddsim log.
-    k4_lines = [ln for ln in all_lines if _K4BENCH_RE.match(ln)]
-    with st.container(border=True):
-        st.markdown("##### 🔧 k4Bench plugin messages")
-        if k4_lines:
-            st.code("\n".join(k4_lines), language="log")
-        else:
-            st.caption(
-                "No k4Bench plugin messages in this log — the timing/region "
-                "plugins may not have run (e.g. the config failed before events)."
-            )
+    if log_format.plugin_messages:
+        k4_lines = [ln for ln in all_lines if _K4BENCH_RE.match(ln)]
+        with st.container(border=True):
+            st.markdown("##### 🔧 k4Bench plugin messages")
+            if k4_lines:
+                st.code("\n".join(k4_lines), language="log")
+            else:
+                st.caption(
+                    "No k4Bench plugin messages in this log — the timing/region "
+                    "plugins may not have run (e.g. the config failed before events)."
+                )
+
+    # ── Errors and warnings by the component that logged them ───────────────────
+    if log_format.source_re is not None:
+        sources = _sources(_log_body(all_lines), log_format)
+        with st.container(border=True):
+            st.markdown("##### Errors and warnings by component")
+            if sources.empty:
+                st.caption("No component logged an error or a warning.")
+            else:
+                st.caption(
+                    "Messages each component logged at ERROR/FATAL or WARNING "
+                    "level. Not every error stops the job: the Severity filter "
+                    "below shows them in context."
+                )
+                st.dataframe(sources, hide_index=True, width="content")
 
     # ── Full log ────────────────────────────────────────────────────────────────
     st.markdown("##### Full log")
@@ -366,17 +548,12 @@ def render(
     severity = f_sev.selectbox(
         "Severity", ["All", "Errors", "Warnings", "Errors + warnings"],
         index=0,
-        help="Keep only lines of the chosen severity. "
-             "Errors = ERROR/FATAL lines, Python tracebacks and Geant4 "
-             "G4Exception error blocks; Warnings = WARN lines and G4Exception "
-             "warning blocks (whole blocks are kept intact). Matches are found "
-             "across the full log, combined with the Filter box, then trimmed to "
-             "the last 'Max lines'.",
+        help=log_format.severity_help,
     )
     show_errors = severity in ("Errors", "Errors + warnings")
     show_warnings = severity in ("Warnings", "Errors + warnings")
 
-    lines = _filter_by_severity(all_lines, show_errors, show_warnings)
+    lines = _filter_by_severity(all_lines, show_errors, show_warnings, log_format)
     if query:
         q = query.lower()
         lines = [ln for ln in lines if q in ln.lower()]
@@ -421,3 +598,6 @@ def render(
     elif truncated:
         cap += f"  —  showing last {max_lines:,} lines"
     st.caption(cap)
+
+    if log_format.joboptions:
+        _render_joboptions(Path(run_dir), chosen)

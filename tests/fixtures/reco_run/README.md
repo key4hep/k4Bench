@@ -9,3 +9,10 @@ The `_events.json`, `_results.csv` and `machine_info.json` files are copied
 unchanged. `run_info.json` keeps only the run's identity and k4run fields (the
 package lists are dropped), and each `.log` is an excerpt: its first lines, the
 first `ERROR` lines and its `/usr/bin/time` tail.
+
+Each `_components.json` keeps the first 12 events (0–11), the metrics
+`wall_s`, `cpu_s`, `peak_rss_increase_mb`, `instructions`, `cycles` and
+`allocations`, the `initialize` lifecycle, the `initialize` and `execute`
+phases, and each component's library file name only. Each `_joboptions.opts`
+keeps a few lines of the dump, among them k4Bench's own settings and a Marlin
+`Parameters` mapping.

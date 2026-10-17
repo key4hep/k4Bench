@@ -17,7 +17,7 @@ from plotly.colors import qualitative as _ql
 
 from k4bench.analysis.plots import BinCountOptions, event_bin_options
 from k4bench.analysis.plots._theme import PALETTE
-from k4bench.analysis.plots._utils import _default_baseline
+from k4bench.analysis.plots._utils import _default_baseline, bottom_legend
 from stats import select_top_n_by_ratio
 
 
@@ -544,25 +544,27 @@ def smooth_lines_control(key: str) -> DisplayControl:
 TOP_N_DEFAULT = 8
 
 
-def top_n_control(key: str) -> DisplayControl:
-    """Declare the "Top N detectors" slider — a plot-density knob like *bins*."""
+def top_n_control(
+    key: str, noun: str = "detectors", ranked: str = "detector regions",
+    default: int = TOP_N_DEFAULT,
+) -> DisplayControl:
+    """Declare the "Top N detectors" slider — a plot-density knob like *bins*.
+    *noun* names what is counted, *ranked* what the chart ranks."""
 
     def render() -> int:
         return st.slider(
-            "Top N detectors",
+            f"Top N {noun}",
             min_value=3,
             max_value=15,
-            value=TOP_N_DEFAULT,
+            value=default,
             key=key,
             help=(
-                "How many of the most expensive detector regions the chart "
+                f"How many of the most expensive {ranked} the chart "
                 "ranks; the remainder are left out of the figure."
             ),
         )
 
-    return DisplayControl(
-        name="top_n", key=key, default=TOP_N_DEFAULT, render=render,
-    )
+    return DisplayControl(name="top_n", key=key, default=default, render=render)
 
 
 def _bin_count_control(key: str, options: BinCountOptions) -> DisplayControl:
@@ -715,10 +717,8 @@ _LEGEND_B_MARGIN = 160
 _LEGEND_GAP = 75
 
 def legend_below(
-    plot_h: int,
     n_entries: int,
     *,
-    t_margin: int = 40,
     tick_clearance: int = 60,
     gap: int = _LEGEND_GAP,
     entry_width: int = 220,
@@ -728,41 +728,28 @@ def legend_below(
 ) -> tuple[dict, int]:
     """Build a horizontal legend below the plot and the bottom margin that fits it.
 
-    Returns ``(legend, b_margin)``.  The caller **must** use the returned
-    ``b_margin`` for both ``margin=dict(b=...)`` and the figure ``height``
-    (``height = plot_h + t_margin + b_margin``) so the reserved space matches the
-    legend exactly.
+    Returns ``(legend, b_margin)``: the caller uses ``b_margin`` for
+    ``margin=dict(b=...)`` and adds it to the figure's ``height``, so the plot
+    keeps its own height wherever the legend wraps as estimated.
 
     Why this is built this way
     --------------------------
-    The legend is anchored to the figure *container* (``yref="container"``), not
-    the data area (``yref="paper"``).  A paper-referenced horizontal legend below
-    the plot participates in Plotly's *automargin*: at narrow widths the legend
-    wraps onto more rows, automargin grows the bottom margin, and because the
-    figure ``height`` is fixed the plot area is shrunk to compensate — and the
-    paper-referenced legend, measured against that shrinking area, creeps onto the
-    data.  That settling is iterative and racy, so it shows up intermittently when
-    the window is resized.  Anchoring to the container removes the legend from the
-    automargin loop, so it can never reshape or overlap the plot.
-
-    The trade-off of container anchoring is that the legend can no longer grow the
-    figure to make room — so it would clip if the reserved margin were too small,
-    and it leaves whitespace below itself if the margin is too large.  We therefore
-    size ``b_margin`` to the row count the legend actually wraps to at ``ref_width``.
+    The legend is :func:`~k4bench.analysis.plots._utils.bottom_legend`, which
+    Plotly lays out at whatever width the figure is drawn, so it fits at any
+    width. ``b_margin`` is only the room the figure starts from: the ticks,
+    *gap* and the legend's rows at ``ref_width``. Where the legend wraps onto
+    more rows, automargin takes the extra room out of the gap and then the plot;
+    where onto fewer, the gap is wider.
 
     Parameters
     ----------
-    plot_h : data-area height in px.
     n_entries : number of legend items (e.g. configs or detectors plotted).
-    t_margin : the figure's top margin in px (needed to place the container ref).
     tick_clearance : px the x-tick labels / axis titles need below the plot
         (use ~70 for rotated date ticks).
     gap : extra breathing room between the ticks and the legend, on top of
         ``tick_clearance`` (default :data:`_LEGEND_GAP` ≈ 2 cm).
-    ref_width : assumed plot width (px) used to estimate items-per-row; defaults
-        to the wide-layout render width so the reserved margin matches the legend's
-        actual wrapped height (smaller ⇒ more reserved/whitespace, larger ⇒ risk of
-        clipping on narrow windows).
+    ref_width : plot width (px) the starting margin's row count is estimated
+        at; it sets the gap only, never whether the legend fits.
     """
     usable = max(1, ref_width - 2 * side_margin)
     per_row = max(1, usable // entry_width)
@@ -772,20 +759,4 @@ def legend_below(
     # Offset from the plot's bottom edge to the legend's top edge.
     offset = tick_clearance + gap
     b_margin = max(_LEGEND_B_MARGIN, offset + legend_h)
-    total_h = plot_h + t_margin + b_margin
-    legend = dict(
-        orientation="h",
-        yref="container",
-        yanchor="top",
-        # Legend top sits `offset` px below the plot's bottom edge, which is itself
-        # b_margin px above the figure bottom — expressed as a fraction of the full
-        # figure height.
-        y=(b_margin - offset) / total_h,
-        xanchor="center",
-        x=0.5,
-        entrywidth=entry_width,
-        entrywidthmode="pixels",
-        tracegroupgap=0,
-        font=dict(size=font_size),
-    )
-    return legend, b_margin
+    return bottom_legend(entry_width=entry_width, font_size=font_size), b_margin

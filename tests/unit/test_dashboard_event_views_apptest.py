@@ -62,12 +62,17 @@ def _app(dashboard_dir, view, current_labels, n_events=200, memory_split=False):
         st.session_state["_bin_max"] = options.maximum
         return options
 
+    # AppTest shares this process's modules: put the real helpers back so the
+    # stubs cannot leak into later tests.
+    plot_name = "plot_event_timing" if view == "timing" else "plot_event_memory"
+    real_plot = getattr(tab, plot_name)
     tab.cached_event_bin_options = _record_bin_options
-    if view == "timing":
-        tab.plot_event_timing = _stub
-    else:
-        tab.plot_event_memory = _stub
-    tab.render(data, None)
+    setattr(tab, plot_name, _stub)
+    try:
+        tab.render(data, None)
+    finally:
+        tab.cached_event_bin_options = real_bin_options
+        setattr(tab, plot_name, real_plot)
 
 
 def _run(view, current_labels, n_events=200):
@@ -152,8 +157,12 @@ def test_memory_component_drops_failed_reads():
             st.session_state["_plotted_min"] = float(data["baseline"][kwargs["column"]].min())
             return go.Figure()
 
+        real = event_memory.plot_event_memory
         event_memory.plot_event_memory = _stub
-        event_memory.render({"baseline": frame}, None)
+        try:
+            event_memory.render({"baseline": frame}, None)
+        finally:
+            event_memory.plot_event_memory = real
 
     at = AppTest.from_function(app, args=(str(_DASHBOARD_DIR),), default_timeout=30).run()
     assert not at.exception, at.exception
@@ -185,8 +194,12 @@ def _unusable_anon_app(dashboard_dir, anon_by_label):
         st.session_state["_plotted_column"] = kwargs["column"]
         return go.Figure()
 
+    real = event_memory.plot_event_memory
     event_memory.plot_event_memory = _stub
-    event_memory.render(data, None)
+    try:
+        event_memory.render(data, None)
+    finally:
+        event_memory.plot_event_memory = real
 
 
 @pytest.mark.parametrize(
