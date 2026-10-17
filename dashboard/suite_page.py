@@ -135,9 +135,10 @@ def render_page(page: SuitePage) -> None:
                 suite=page.suite, reports=page.reports,
             )
         else:
+            # Kept for the session, so each page returns to its own directory.
             data_dir = st.text_input(
                 "Data directory", value=config.data_dir,
-                key=f"{page.key_prefix}data_dir" if page.key_prefix else None,
+                key=f"{page.key_prefix}data_dir", persist_state="session",
             )
 
         if not (data_dir and Path(data_dir).is_dir()):
