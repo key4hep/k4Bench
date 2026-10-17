@@ -367,11 +367,12 @@ def classify_changes(
     - ``cause`` — for a significant change: ``added`` or ``removed`` for a
       component one side lacks; ``work`` when the instructions changed and
       account for at least :data:`WORK_EXPLAINS` of it, or, without them, the
-      allocation counts changed; ``host`` when the instructions stayed within
-      their floors and noise, or account for less; ``unknown`` when only
-      allocation counts were recorded and they did not change, which does not
-      show that the work stayed the same, or when the instructions' change is
-      uncertain yet large enough to account for it.
+      allocation counts changed; ``host`` when the instructions account for
+      less, or stayed within their floors and noise without being large
+      enough to account for it; ``unknown`` when only allocation counts were
+      recorded and they did not change, which does not show that the work
+      stayed the same, or when the instructions' change is uncertain, or
+      within their floors or noise, yet large enough to account for it.
     """
     out = significant_changes(time, TIME_FLOORS, time_noise)
     out["direction"] = pd.Series(np.where(time["delta"] > 0, "slower", "faster"),
@@ -399,7 +400,9 @@ def classify_changes(
 
     cause = pd.Series("unknown", index=time.index)
     cause[work_changed.eq(True)] = "work"
-    cause[counted & (unchanged | work_fraction.lt(WORK_EXPLAINS))] = "host"
+    # A change too small to confirm may still be what made the time move.
+    explains = work_fraction.ge(WORK_EXPLAINS)
+    cause[counted & ((unchanged & ~explains) | work_fraction.lt(WORK_EXPLAINS))] = "host"
     cause[time["status"] != "common"] = time["status"]
     out["cause"] = cause.where(out["significant"])
     return out

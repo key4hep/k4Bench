@@ -340,6 +340,20 @@ def test_a_change_from_or_to_nothing_is_judged_by_its_size():
     assert reasons["Tiny"] == "below_floor"  # nothing to nothing
 
 
+def test_a_work_change_within_noise_large_enough_to_explain_the_time_is_unknown():
+    a = job(COSTS, instructions=_instructions(COSTS))
+    b = job(_scaled(COSTS, {"Track": 1.2}), instructions=_instructions(COSTS, {"Track": 1.15}))
+    time = paired_deltas(a, b)
+    instructions = paired_deltas(a, b, "instructions")
+    verdict = classify_changes(
+        time, instructions=instructions, instruction_noise=pd.Series({"Track": 0.1}),
+    )
+    assert verdict.loc["Track", "significant"] == True  # noqa: E712
+    assert verdict.loc["Track", "work_changed"] == False  # noqa: E712
+    assert verdict.loc["Track", "work_fraction"] == pytest.approx(0.75)
+    assert verdict.loc["Track", "cause"] == "unknown"
+
+
 def test_more_allocations_from_none_are_the_work():
     allocations = {c: np.where(np.isnan(v), np.nan, 0.0) for c, v in COSTS.items()}
     a = job(COSTS, allocations=allocations)
