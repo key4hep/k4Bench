@@ -32,7 +32,7 @@ STORE = {
 }
 
 
-def _pick_run_app(dashboard_dir, store, plat, fail) -> None:
+def _pick_run_app(dashboard_dir, store, plat, fail, pick_kwargs) -> None:
     # No annotations: AppTest.from_function execs this body as a bare script.
     import sys as _sys
     if dashboard_dir not in _sys.path:
@@ -41,24 +41,45 @@ def _pick_run_app(dashboard_dir, store, plat, fail) -> None:
 
     import sidebar
 
+    # Every suite the listings were asked for, in call order.
+    st.session_state["suites"] = suites = []
+
     def _list_detectors(url, suite):
+        suites.append(suite)
         if fail == "detectors":
             raise OSError("listing timed out")
         return sorted(store)
 
+    def _list_platforms(url, suite, det):
+        suites.append(suite)
+        return [plat]
+
+    def _scan_stack_samples(url, suite, det, p):
+        suites.append(suite)
+        return store[det]
+
+    def _fetch_latest_run(url, suite, det, p, stack, sample, cache):
+        suites.append(suite)
+        return None if fail == "run" else f"/cache/{suite}/{det}/{stack}/{sample}"
+
     sidebar.cached_list_detectors = _list_detectors
-    sidebar.cached_list_platforms = lambda url, suite, det: [plat]
-    sidebar.cached_scan_stack_samples = lambda url, suite, det, p: store[det]
-    sidebar.cached_fetch_latest_run = (
-        lambda url, suite, det, p, stack, sample, cache: None if fail == "run"
-        else f"/cache/{det}/{stack}/{sample}"
+    sidebar.cached_list_platforms = _list_platforms
+    sidebar.cached_scan_stack_samples = _scan_stack_samples
+    sidebar.cached_fetch_latest_run = _fetch_latest_run
+    # "away" stands for the reader being on another page: nothing is picked,
+    # and the page switch cleared the URL the pickers mirror themselves in.
+    if st.session_state.get("away"):
+        st.query_params.clear()
+        return
+    st.session_state["picked"] = sidebar.pick_run(
+        "https://store.invalid", "/cache", **pick_kwargs
     )
-    st.session_state["picked"] = sidebar.pick_run("https://store.invalid", "/cache")
 
 
-def _run_pick(params=None, fail=None) -> AppTest:
+def _run_pick(params=None, fail=None, **pick_kwargs) -> AppTest:
     at = AppTest.from_function(
-        _pick_run_app, args=(str(_DASHBOARD_DIR), STORE, PLAT, fail), default_timeout=30
+        _pick_run_app, args=(str(_DASHBOARD_DIR), STORE, PLAT, fail, pick_kwargs),
+        default_timeout=30,
     )
     for key, value in (params or {}).items():
         at.query_params[key] = value
@@ -68,7 +89,9 @@ def _run_pick(params=None, fail=None) -> AppTest:
 
 
 def _query(at: AppTest) -> dict[str, str]:
-    return {k: at.query_params[k][0] for k in at.query_params.keys()}
+    """The URL's parameters, normalising AppTest's list-or-scalar values."""
+    values = {k: at.query_params[k] for k in at.query_params.keys()}
+    return {k: v[0] if isinstance(v, list) else v for k, v in values.items()}
 
 
 def test_pick_run_follows_the_deep_link_and_defaults_to_the_newest_release():
@@ -77,7 +100,7 @@ def test_pick_run_follows_the_deep_link_and_defaults_to_the_newest_release():
     assert (picked.detector, picked.platform, picked.sample, picked.stack) == (
         "CLD_o2_v09", PLAT, "single_e-_10GeV", NEW,
     )
-    assert picked.data_dir == f"/cache/CLD_o2_v09/{NEW}/single_e-_10GeV"
+    assert picked.data_dir == f"/cache/sim/CLD_o2_v09/{NEW}/single_e-_10GeV"
     # The address bar is written back to what is on screen.
     assert _query(at) == {
         "detector": "CLD_o2_v09", "platform": PLAT,
@@ -103,6 +126,39 @@ def test_pick_run_names_a_sample_that_switching_detector_dropped():
     ), notes
 
 
+def test_pick_run_walks_the_requested_suite_under_its_own_keys():
+    at = _run_pick(
+        {"detector": "CLD_o2_v09", "sample": "single_e-_10GeV"},
+        suite="reco", key_prefix="reco_",
+    )
+    assert set(at.session_state["suites"]) == {"reco"}
+    assert at.session_state["picked"].data_dir == f"/cache/reco/CLD_o2_v09/{NEW}/single_e-_10GeV"
+    assert [box.key for box in at.selectbox] == [
+        "reco_sb_detector", "reco_sb_platform", "reco_sb_sample", "reco_sb_stack",
+    ]
+    # Every page shares the URL's parameter names.
+    assert _query(at) == {
+        "detector": "CLD_o2_v09", "platform": PLAT,
+        "sample": "single_e-_10GeV", "stack": NEW,
+    }
+
+
+def test_pick_run_returns_to_the_run_a_reader_left_on_another_page():
+    # Neither is a default: ALLEGRO_o1_v04 is listed first, NEW is the newest.
+    at = _run_pick({"detector": "CLD_o2_v09"})
+    at.selectbox(key="sb_stack").set_value(OLD).run()
+    at.session_state["away"] = True
+    at.run()
+    assert _query(at) == {}
+    at.session_state["away"] = False
+    at.run()
+    picked = at.session_state["picked"]
+    assert (picked.detector, picked.stack) == ("CLD_o2_v09", OLD)
+    # The address bar is a deep link to it again.
+    assert _query(at)["detector"] == "CLD_o2_v09"
+    assert _query(at)["stack"] == OLD
+
+
 def test_pick_run_stops_where_the_store_cannot_be_read():
     at = _run_pick(fail="detectors")
     assert at.session_state["picked"] is None
@@ -116,7 +172,9 @@ def test_pick_run_stops_when_the_release_has_no_run():
     assert at.warning[0].value == "No runs found for the selected combination."
 
 
-def _window_app(dashboard_dir, run_dates, report_nights, platform_stacks, across) -> None:
+def _window_app(
+    dashboard_dir, run_dates, report_nights, platform_stacks, across, window_kwargs,
+) -> None:
     import sys as _sys
     if dashboard_dir not in _sys.path:
         _sys.path.insert(0, dashboard_dir)
@@ -130,17 +188,28 @@ def _window_app(dashboard_dir, run_dates, report_nights, platform_stacks, across
         # A test publishes a release mid-session through "new_stacks".
         return [*st.session_state.get("new_stacks", []), *platform_stacks]
 
-    sidebar.cached_list_run_dates = lambda url, suite, det, plat, sample: run_dates
+    # Every suite the run listings were asked for.
+    st.session_state["suites"] = suites = []
+
+    def _run_dates(url, suite, det, plat, sample):
+        suites.append(suite)
+        return run_dates
+
+    sidebar.cached_list_run_dates = _run_dates
     # A test lands a report mid-session through "new_nights".
-    sidebar.cached_list_report_dates = (
-        lambda url, suite: [*report_nights, *st.session_state.get("new_nights", [])]
-    )
+    def _report_dates(url, suite):
+        if report_nights is None:
+            raise OSError("no reports/ for this suite")
+        # A test lands a report mid-session through "new_nights".
+        return [*report_nights, *st.session_state.get("new_nights", [])]
+
+    sidebar.cached_list_report_dates = _report_dates
     sidebar.list_platform_stacks = _platform_stacks
-    sidebar.cached_fetch_runs_windowed = (
-        lambda url, suite, det, plat, sample, cache, items: tuple(
-            f"/cache/{stack}/{d}" for stack, dates in items for d in dates
-        )
-    )
+    def _fetch_runs_windowed(url, suite, det, plat, sample, cache, items):
+        suites.append(suite)
+        return tuple(f"/cache/{stack}/{d}" for stack, dates in items for d in dates)
+
+    sidebar.cached_fetch_runs_windowed = _fetch_runs_windowed
     selection = sidebar.RunSelection(
         st.session_state.get("detector", "CLD_o2_v09"),
         "PLAT", "single_e-_10GeV", "key4hep-2026-10-10", "/cache/run",
@@ -148,7 +217,7 @@ def _window_app(dashboard_dir, run_dates, report_nights, platform_stacks, across
     # A test changes section mid-session through "across".
     st.session_state["window"] = sidebar.pick_trend_window(
         "https://store.invalid", selection, "/cache",
-        st.session_state.get("across", across),
+        st.session_state.get("across", across), **window_kwargs,
     )
 
 
@@ -178,11 +247,14 @@ LONG_RUNS = {_rel(d): [f"2026-{d}"] for d in ("09-24", "09-26", "09-28", "10-10"
 
 def _run_window(
     run_dates, report_nights=REPORT_NIGHTS, platform_stacks=PLATFORM_STACKS,
-    across=True,
+    across=True, **window_kwargs,
 ) -> AppTest:
     at = AppTest.from_function(
         _window_app,
-        args=(str(_DASHBOARD_DIR), run_dates, report_nights, platform_stacks, across),
+        args=(
+            str(_DASHBOARD_DIR), run_dates, report_nights, platform_stacks, across,
+            window_kwargs,
+        ),
         default_timeout=30,
     )
     at.run()
@@ -226,6 +298,27 @@ def test_for_one_detector_the_window_ranges_over_its_own_releases():
     # The platform's releases are not listed at all: the failing stub would
     # have warned.
     assert not at.warning
+
+
+def test_a_suite_without_reports_bounds_the_window_by_its_runs():
+    # The failing report listing would have warned had it been read.
+    at = _run_window(
+        NEW_DETECTOR_RUNS, report_nights=None, platform_stacks=None, across=False,
+        suite="reco", reports=False,
+    )
+    assert not at.warning
+    assert at.session_state["suites"] == ["reco", "reco"]
+    window = at.session_state["window"]
+    assert window.dates == (date(2026, 10, 8), date(2026, 10, 12))
+    assert len(window.run_dirs) == 4
+
+
+def test_without_reports_the_window_runs_to_the_newest_rerun_of_its_release():
+    # 10-10 was the newest release and kept being re-run until 10-16.
+    runs = {_rel("10-08"): ["2026-10-08"], _rel("10-10"): ["2026-10-10", "2026-10-16"]}
+    at = _run_window(runs, report_nights=None, platform_stacks=None, across=False,
+                     suite="reco", reports=False)
+    assert at.session_state["window"].dates == (date(2026, 10, 8), date(2026, 10, 16))
 
 
 def test_trend_window_is_absent_until_something_has_run():

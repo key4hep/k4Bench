@@ -18,6 +18,7 @@ from k4bench.analysis.loader import (
     load_region_timing,
     load_results,
     recorded_config_rows,
+    run_suite,
     with_cpu_efficiency,
 )
 
@@ -572,3 +573,28 @@ def test_region_file_with_non_object_root_is_refused(tmp_path, root):
     (tmp_path / "baseline_regions.json").write_text(root)
     with pytest.raises(ValueError, match="root must be an object"):
         load_region_timing(tmp_path)
+
+
+# ── run_suite ────────────────────────────────────────────────────────────────
+
+_RECO_RUN = Path(__file__).resolve().parents[1] / "fixtures" / "reco_run"
+
+
+def test_a_nightly_run_is_of_the_suite_its_run_info_records():
+    assert run_suite(_RECO_RUN) == "reco"
+
+
+def test_a_recorded_suite_wins_over_the_files_present(tmp_path):
+    (tmp_path / "run_info.json").write_text(json.dumps({"suite": "sim"}))
+    (tmp_path / "baseline_components.json").write_text("{}")
+    assert run_suite(tmp_path) == "sim"
+
+
+@pytest.mark.parametrize("run_info", [None, "{}", '{"suite": "physics"}', "not json", "[1]"])
+def test_without_a_recorded_suite_the_auditors_output_marks_a_reco_run(tmp_path, run_info):
+    if run_info is not None:
+        (tmp_path / "run_info.json").write_text(run_info)
+    (tmp_path / "baseline_results.csv").write_text("label\n")
+    assert run_suite(tmp_path) == "sim"
+    (tmp_path / "baseline_components.json").write_text("{}")
+    assert run_suite(tmp_path) == "reco"

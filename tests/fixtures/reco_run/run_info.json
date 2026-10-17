@@ -1,0 +1,32 @@
+{
+  "suite": "reco",
+  "tool": "k4run",
+  "date": "2026-10-17",
+  "platform": "x86_64-el9-gcc16-opt",
+  "k4h_release": "key4hep-2026-10-17",
+  "k4h_release_date": "2026-10-17",
+  "detector": "CLD_o2_v09",
+  "sample": "p8_ee_Zbb_ecm91",
+  "github_run_url": "https://github.com/key4hep/k4Bench/actions/runs/38997784740",
+  "commit_sha": "ff78ca4ed918ab9c5584e6050fb0cc3ece412b54",
+  "n_events": 100,
+  "runner_cpu_set": "16-23",
+  "input_files": [
+    "https://k4bench-data.web.cern.ch/inputs/reco/CLD/CLD_o2_v09/p8_ee_Zbb_ecm91_100ev_seed42.edm4hep.root"
+  ],
+  "configs": [
+    "baseline",
+    "variant_truth_tracking"
+  ],
+  "configured_labels": [
+    "baseline",
+    "variant_truth_tracking"
+  ],
+  "options": [
+    "CLDReconstruction.py"
+  ],
+  "k4run_args": "--compactFile /cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Sat/k4geo/HEAD/x86_64-el9-gcc16-opt/share/k4geo/FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml --inputFiles /tmp/k4bench-inputs/aa2c432059f291bb/p8_ee_Zbb_ecm91_100ev_seed42.edm4hep.root --outputBasename reco --cms 91",
+  "variants": {
+    "truth_tracking": "--truthTracking"
+  }
+}

@@ -1,0 +1,44 @@
+[k4run - INFO] io_helpers.finalize_converters: Added an input converter (EDM4hep to LCIO) to the MyAIDAProcessor algorithm
+[k4run - INFO] io_helpers.finalize_converters: Added an output converter (LCIO to EDM4hep) to the CollPatcherREC algorithm
+[k4run - INFO] k4run.main: --> MyAIDAProcessor --> OverlayFalse --> VXDBarrelDigitiser --> VXDEndcapDigitiser --> InnerPlanarDigiProcessor --> InnerEndcapPlanarDigiProcessor --> OuterPlanarDigiProcessor --> OuterEndcapPlanarDigiProcessor --> MyConformalTracking --> ClonesAndSplitTracksFinder --> Refit --> MyDDCaloDigi_10ns --> MyDDSimpleMuonDigi --> MyDDMarlinPandora_10ns --> LumiCalReco --> MyRecoMCTruthLinker --> MyClicEfficiencyCalculator --> MyTrackChecker --> MyCLICPfoSelectorDefault --> MyCLICPfoSelectorLoose --> MyCLICPfoSelectorTight --> RenameCollection --> VertexFinder --> EventNumber --> CollPatcherREC
+[k4run - INFO] k4run.main: Option name: AuditorSvc.OutputLevel 0
+[k4run - INFO] k4run.main: Option name: CollPatcherREC.OutputConverter.OutputLevel 0
+[k4run - INFO] k4run.main: Option name: CollPatcherREC.OutputConverter.collNameMapping {'MCParticle': 'MCParticles'}
+[k4run - INFO] k4run.main: Option name: CollPatcherREC.OutputConverter.convertAll True
+[k4run - INFO] k4run.main: Option name: MyAIDAProcessor.OutputLevel 4
+[k4run - INFO] k4run.main: Option name: MyAIDAProcessor.Asynchronous False
+[k4run - INFO] k4run.main: Option name: MyAIDAProcessor.ProcessorType AIDAProcessor
+[k4run - INFO] k4run.main: Option name: MyAIDAProcessor.Parameters {'Compress': ['1'], 'FileName': ['reco_aida'], 'FileType': ['root']}
+[k4run - INFO] k4run.main: Option name: MyAIDAProcessor.Lcio2EDM4hepTool 
+[k4run - INFO] k4run.main: Option name: MyDDCaloDigi_10ns.OutputLevel 4
+[k4run - INFO] k4run.main: Option name: MyDDCaloDigi_10ns.Asynchronous False
+[k4run - INFO] k4run.main: Option name: MyDDCaloDigi_10ns.ProcessorType DDCaloDigi
+[… log excerpt …]
+[ ERROR "MyConformalTracking"]  ****  MarlinTrk::finaliseLCIOTrack:  could not add inner hit to track !!! 
+[ ERROR "MyConformalTracking"]  ****  MarlinTrk::finaliseLCIOTrack:  could not add inner hit to track !!! 
+[ ERROR "MyConformalTracking"]  ****  MarlinTrk::finaliseLCIOTrack:  could not add inner hit to track !!! 
+#sigma                    =      1.06264   +/-   0.0196486   
+CollPatcherREC        INFO Finalising MyAIDAProcessor
+	Command being timed: "k4run CLDReconstruction.py /workspace/plugin/auditor/k4BenchAuditorOptions.py --num-events=100 --compactFile /cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Sat/k4geo/HEAD/x86_64-el9-gcc16-opt/share/k4geo/FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml --inputFiles /tmp/k4bench-inputs/aa2c432059f291bb/p8_ee_Zbb_ecm91_100ev_seed42.edm4hep.root --outputBasename reco --cms 91"
+	User time (seconds): 484.79
+	System time (seconds): 2.46
+	Percent of CPU this job got: 99%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 8:09.85
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 1438828
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 3510
+	Minor (reclaiming a frame) page faults: 1235120
+	Voluntary context switches: 21074
+	Involuntary context switches: 1357
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 158048
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

@@ -15,9 +15,11 @@ from k4bench.artifacts import (
     EVENTS_SUFFIX,
     REGIONS_SUFFIX,
     RESULTS_SUFFIX,
+    RUN_INFO,
     label_path,
     labelled_files,
 )
+from k4bench.layout import RECO, SIM, SUITES
 from k4bench.plugin.schema import (
     validate_component_schema,
     validate_event_schema,
@@ -482,3 +484,20 @@ def load_component_timing(
         validate_component_schema(raw, source=path)
         out[label] = ComponentTiming.from_json(raw, source=path)
     return out
+
+
+def run_suite(run_dir: str | Path) -> str:
+    """The suite of the run in *run_dir*.
+
+    A nightly run records it in its ``run_info.json``. A run made with the
+    ``k4bench`` CLI, or a nightly run older than that field, records none: it
+    is a reco run exactly when the k4run auditor left a ``_components.json``.
+    """
+    try:
+        run_info = json.loads((Path(run_dir) / RUN_INFO).read_text())
+    except (OSError, ValueError):
+        run_info = None
+    suite = run_info.get("suite") if isinstance(run_info, dict) else None
+    if suite in SUITES:
+        return suite
+    return RECO if labelled_files(Path(run_dir), COMPONENTS_SUFFIX) else SIM

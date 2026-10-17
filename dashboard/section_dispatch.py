@@ -73,7 +73,12 @@ class PageContext:
         return self.selection
 
 
-def current_section(section_names: list[str]) -> str:
+#: Draws one section from the page's context, returning the scope it rendered
+#: when a control inside it changed that scope.
+Renderer = Callable[[PageContext], SectionScope | None]
+
+
+def current_section(section_names: list[str], key: str = "active_section") -> str:
     """The active section, readable before the section bar is drawn — the
     sidebar, which is drawn first, scopes its trend window by it.
 
@@ -84,20 +89,26 @@ def current_section(section_names: list[str]) -> str:
     on the bar is in session_state before the rerun it starts, so this already
     names the section being opened.
     """
-    if "active_section" not in st.session_state:
+    if key not in st.session_state:
         requested = (st.query_params.get("tab") or "").strip().lower()
         matched = next((name for name in section_names if name.lower() == requested), None)
-        st.session_state["active_section"] = matched or section_names[0]
+        st.session_state[key] = matched or section_names[0]
     # Clicking the active section again deselects it.
-    return st.session_state["active_section"] or section_names[0]
+    return st.session_state[key] or section_names[0]
 
 
-def pick_section(section_names: list[str]) -> str:
-    """The section bar, returning the active section (see :func:`current_section`)."""
-    current_section(section_names)
+def pick_section(section_names: list[str], key: str = "active_section") -> str:
+    """The section bar, returning the active section (see :func:`current_section`).
+
+    *key* holds the selection; each page passes its own, and it is kept for
+    the whole session, so returning from another page reopens the section it
+    left.
+    """
+    current_section(section_names, key)
     active = st.segmented_control(
         "Section", section_names,
-        key="active_section", label_visibility="collapsed", width="stretch",
+        key=key, label_visibility="collapsed", width="stretch",
+        persist_state="session",
     ) or section_names[0]
     st.query_params["tab"] = active
     return active
@@ -201,7 +212,7 @@ def _logs(ctx: PageContext) -> None:
 
 #: How each section is drawn. A section that offers a control over its own
 #: scope returns the scope it rendered, for the note under the section bar.
-RENDERERS: dict[str, Callable[[PageContext], SectionScope | None]] = {
+RENDERERS: dict[str, Renderer] = {
     "Overview": _overview,
     "Run Trends": _run_trends,
     "Regressions": _regressions,
