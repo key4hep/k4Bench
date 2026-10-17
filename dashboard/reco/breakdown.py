@@ -1,0 +1,233 @@
+"""Reconstruction Breakdown: where the job's time goes, phase by phase and
+component by component.
+
+Current Run gives each phase of the selected run as a card, then a donut each
+of its initialization, event loop and finalization by component, and the event
+loop event by event in the donuts' colours. Historical Trends draws one phase
+at a time across the trend window, its components as stacked columns or, with
+the trend views' shared renderer, as lines; configure, timed only as a whole,
+as one line.
+"""
+from __future__ import annotations
+
+import streamlit as st
+
+from data import cached_load_trend_phases
+from k4bench.analysis.plots import (
+    plot_event_composition,
+    plot_phase_component_pie,
+    plot_phase_history,
+)
+from k4bench.analysis.plots.phases import (
+    MIN_PHASE_S,
+    PHASE_NAMES,
+    phase_component_series,
+    top_components,
+)
+from section_dispatch import PageContext, judgeable_trend
+from sections import TREND_WINDOW_SCOPE, SectionScope
+from tabs._historical_trends import render_historical_trends
+from tabs._reliability import render_reliability_filter
+from ui_chrome import drop_stale_selection
+from ui_utils import (
+    PALETTE_NAMES,
+    PALETTES,
+    auto_palette_index,
+    display_options,
+    legend_below,
+    palette_control,
+    top_n_control,
+    view_control_row,
+)
+
+#: Components a phase's history names; the rest are one "Other" series.
+_TOP_N = 6
+_TOP_N_KEY = "reco_breakdown_hist_topn"
+
+#: The data-area height and top margin of the charts with a legend below, as
+#: the sim trend views size theirs for :func:`ui_utils.legend_below`.
+_PLOT_H = 380
+_T_MARGIN = 40
+
+#: Components each current-run donut names; the rest are one "Other" slice.
+_PIE_TOP_N = 5
+
+#: The phases broken down by component (``trend.COMPONENT_PHASES``), as their
+#: chart titles name them.
+_PHASE_TITLES = {
+    "initialize": "Initialization", "execute": "Event loop", "finalize": "Finalization",
+}
+
+#: The event that warms the job up (``component_stats.WARM_UP_EVENT``).
+_WARM_UP_EVENT = 0
+
+
+def _seconds(value: float) -> str:
+    return f"{value:.2f} s" if value < 100 else f"{value:,.0f} s"
+
+
+def _legend_below(fig, n_entries: int) -> None:
+    """Size *fig* for its legend below the plot, as the trend views do, its
+    entries in the order the series are drawn: Plotly lists a stack's
+    top-down otherwise."""
+    legend, bottom = legend_below(n_entries, tick_clearance=75)
+    legend["traceorder"] = "normal"
+    fig.update_layout(
+        height=_PLOT_H + _T_MARGIN + bottom,
+        margin=dict(l=20, r=20, t=_T_MARGIN, b=bottom),
+        legend=legend,
+    )
+
+
+def _render_current_run(ctx: PageContext) -> None:
+    labels = sorted(ctx.run.components)
+    if not labels:
+        st.info(
+            "No phase timing in this run: no configuration that succeeded "
+            "left a `_components.json`."
+        )
+        return
+    config = st.selectbox("Configuration", labels, key="reco_breakdown_config")
+    timing = ctx.run.components[config]
+    phases = timing.phase_seconds()
+    total = sum(phases.values())
+    shown = [p for p in PHASE_NAMES if phases.get(p, 0) >= MIN_PHASE_S]
+    for column, phase in zip(st.columns(len(shown)), shown):
+        with column, st.container(border=True, height="stretch"):
+            st.metric(PHASE_NAMES[phase], _seconds(phases[phase]))
+            st.caption(f"{phases[phase] / total:.1%} of the job")
+
+    # One colour per component across the donuts and the per-event chart: a
+    # component several phases show (the tracking initializes, runs and
+    # finalizes) keeps it.
+    per_phase = {phase: timing.phase_component_seconds(phase) for phase in _PHASE_TITLES}
+    named = list(dict.fromkeys(
+        name for seconds in per_phase.values() for name in top_components(seconds, _PIE_TOP_N)
+    ))
+    palette = PALETTES[PALETTE_NAMES[auto_palette_index(len(named))]]
+    colors = {name: palette[i % len(palette)] for i, name in enumerate(named)}
+    for column, (phase, title) in zip(st.columns(len(_PHASE_TITLES), gap="medium"),
+                                      _PHASE_TITLES.items()):
+        with column:
+            seconds = per_phase[phase]
+            if not (seconds > 0).any():
+                st.markdown(f"##### {title}")
+                st.caption(f"No component time recorded for {title.lower()}.")
+                continue
+            st.plotly_chart(
+                plot_phase_component_pie(
+                    seconds, top_n=_PIE_TOP_N, colors=colors, title=title,
+                ),
+                width="stretch", key=f"reco_breakdown_{phase}_chart",
+                config={"displayModeBar": False},
+            )
+
+    title_col, order_col = st.columns([3, 1], vertical_alignment="bottom")
+    with title_col:
+        st.markdown("##### Event loop, event by event")
+    with order_col:
+        order = st.segmented_control(
+            "Order", ["Event order", "Longest first"], default="Event order",
+            key="reco_breakdown_event_order", label_visibility="collapsed",
+        ) or "Event order"
+    fig = plot_event_composition(
+        timing.execute["wall_s"], top_components(per_phase["execute"], _PIE_TOP_N),
+        colors=colors, sort=order == "Longest first", warm_up=_WARM_UP_EVENT,
+    )
+    _legend_below(fig, len(fig.data))
+    st.plotly_chart(fig, width="stretch", key="reco_breakdown_events_chart")
+
+
+#: What each component of a phase's history is drawn as.
+_SCALES = {"Seconds": False, "Share of phase": True}
+_CHARTS = {"Bars": False, "Lines": True}
+
+
+def _render_historical(ctx: PageContext, reliability_slot, display_options_slot) -> None:
+    trend = judgeable_trend(ctx, cached_load_trend_phases)
+    if trend is None or trend.empty:
+        st.info(
+            "No phase timing in the selected window. Widen the trend window in "
+            "the sidebar."
+        )
+        return
+    trend = render_reliability_filter(
+        trend, ctx.reliability, key="reco_breakdown_hist_exclude_unreliable",
+        slot=reliability_slot,
+    )
+    if trend.empty:
+        return
+    config_col, phase_col, chart_col, scale_col = st.columns(
+        [2, 3, 1.4, 1.8], vertical_alignment="bottom",
+    )
+    with config_col:
+        config = st.selectbox(
+            "Configuration", sorted(trend["label"].unique()), key="reco_breakdown_hist_config",
+        )
+    rows = trend[trend["label"] == config]
+    totals = rows[rows["component"].isna()]
+    longest = totals.groupby("phase")["seconds"].max()
+    phases = [p for p in PHASE_NAMES if longest.get(p, 0) >= MIN_PHASE_S]
+    if not phases:
+        st.info(f"No phase timing for **{config}** in the selected window.")
+        return
+    drop_stale_selection("reco_breakdown_hist_phase", phases)
+    with phase_col:
+        phase = st.segmented_control(
+            "Phase", phases, default="initialize" if "initialize" in phases else phases[0],
+            format_func=PHASE_NAMES.get, key="reco_breakdown_hist_phase",
+        ) or phases[0]
+    components = rows[rows["phase"].eq(phase) & rows["component"].notna()]
+    by_component = not components.empty
+    lines, relative = True, False
+    if by_component:
+        with chart_col:
+            lines = _CHARTS[st.segmented_control(
+                "Chart", list(_CHARTS), default="Bars", key="reco_breakdown_hist_chart_type",
+            ) or "Bars"]
+        with scale_col:
+            relative = _SCALES[st.segmented_control(
+                "Show", list(_SCALES), default="Seconds", key="reco_breakdown_hist_scale",
+            ) or "Seconds"]
+    else:
+        # A phase timed only as a whole (configure) is one line: its total.
+        components = totals[totals["phase"] == phase].assign(component=PHASE_NAMES[phase])
+
+    # The Top N chooses the series before either chart draws its popover, in
+    # which it then sits; Streamlit has already restored the slider's value.
+    top_n = int(st.session_state.get(_TOP_N_KEY, _TOP_N))
+    series = phase_component_series(components, top_n)
+    top_n_control_ = top_n_control(_TOP_N_KEY, "components", "components", default=_TOP_N)
+    stat, title, unit = (
+        ("share_pct", "Share of the phase (%)", "%") if relative else ("seconds", "Time (s)", "s")
+    )
+    if lines:
+        render_historical_trends(
+            series, list(dict.fromkeys(series["label"])), [(stat, title)],
+            std_col="", n_col_candidates=[], unit=unit, error_sources={},
+            key_prefix="reco_breakdown_hist", display_options_slot=display_options_slot,
+            extra_controls=(top_n_control_,) if by_component else (),
+        )
+        return
+    display = display_options(
+        top_n_control_,
+        palette_control("reco_breakdown_hist_palette", top_n + 1),
+        key_prefix="reco_breakdown_hist_display",
+        slot=display_options_slot,
+    )
+    fig = plot_phase_history(series, palette=PALETTES[display["palette"]], relative=relative)
+    _legend_below(fig, series["label"].nunique())
+    st.plotly_chart(fig, width="stretch", key="reco_breakdown_hist_chart")
+
+
+def render(ctx: PageContext) -> SectionScope | None:
+    views = ["Current Run"] + (["Historical Trends"] if ctx.trends_enabled else [])
+    drop_stale_selection("reco_breakdown_view", views)
+    view, reliability_slot, display_options_slot = view_control_row(
+        views, key="reco_breakdown_view",
+    )
+    if view == "Historical Trends":
+        _render_historical(ctx, reliability_slot, display_options_slot)
+        return TREND_WINDOW_SCOPE
+    _render_current_run(ctx)
+    return None

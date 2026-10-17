@@ -26,6 +26,7 @@ from ._utils import (
     _default_baseline,
     _ensure_event_data,
     _prepare_event_arrays,
+    bottom_legend,
 )
 
 
@@ -317,9 +318,11 @@ def _plot_event_metric(
         fig.update_layout(barmode="overlay")
 
     # ── Legend & margin layout ─────────────────────────────────────────────────
-    # For multi-config plots use a fixed-width column layout below the figure
-    # (4 entries per row, 220 px each) — the same style as the Historical Trends
-    # views.  For single-config plots there is no legend at all.
+    # For multi-config plots a legend below the figure, in fixed-width entries
+    # (220 px) — the same style as the Historical Trends views, and laid out by
+    # Plotly at the width it is drawn (see bottom_legend). The margin starts from
+    # 4 entries per row; Plotly grows it when they wrap onto more. For
+    # single-config plots there is no legend at all.
     t_margin = 40
     if n > 1:
         n_legend_rows = max(1, -(-n // 4))       # ceiling(n / 4)
@@ -327,19 +330,7 @@ def _plot_event_metric(
         x_tick_gap    = 60                        # room for x-axis tick labels
         b_margin      = x_tick_gap + legend_px + 20
         total_h       = total_h + b_margin - 10  # grow figure; replace old b=10
-        plot_h        = total_h - t_margin - b_margin
-        y_legend      = -(x_tick_gap / plot_h)
-        legend_dict   = dict(
-            orientation="h",
-            yanchor="top",
-            y=y_legend,
-            xanchor="center",
-            x=0.5,
-            entrywidth=220,
-            entrywidthmode="pixels",
-            tracegroupgap=0,
-            font=dict(size=13),
-        )
+        legend_dict   = bottom_legend()
     else:
         b_margin    = 10
         legend_dict = {}

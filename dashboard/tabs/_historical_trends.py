@@ -87,6 +87,7 @@ def render_historical_trends(
     display_options_slot=None,
     error_sources: dict[str, tuple[str, str]] | None = None,
     units: dict[str, str] | None = None,
+    extra_controls: tuple = (),
 ) -> None:
     """Render historical statistics in a grid of up to three columns.
 
@@ -123,6 +124,10 @@ def render_historical_trends(
     units :
         Optional per-statistic hover unit, for a panel whose unit is not
         ``unit`` (e.g. a slope in MB/event on a memory tab).
+    extra_controls :
+        :class:`~ui_utils.DisplayControl` declarations of the caller's own,
+        drawn first in the same Display options popover (a Top N that chose
+        ``filtered_labels``, say).
     """
     # ── Display options ───────────────────────────────────────────────────────
     # The opacity slider is keyed ``…_line_alpha`` rather than ``…_alpha``: the
@@ -132,6 +137,7 @@ def render_historical_trends(
     # switch, where the two sliders mean different things and start at different
     # defaults.
     values = display_options(
+        *extra_controls,
         palette_control(f"{key_prefix}_palette", len(filtered_labels)),
         style_cycling_control(f"{key_prefix}_style"),
         opacity_control(f"{key_prefix}_line_alpha"),
@@ -252,7 +258,7 @@ def render_historical_trends(
     _PLOT_H = 380 * n_rows
     _T_MARGIN = 40
     _legend, _B_MARGIN = legend_below(
-        _PLOT_H, len(filtered_labels), t_margin=_T_MARGIN, tick_clearance=75,
+        len(filtered_labels), tick_clearance=75,
     )
     fig.update_layout(
         template=_TEMPLATE,

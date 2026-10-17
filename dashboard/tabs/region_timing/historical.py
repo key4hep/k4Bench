@@ -222,7 +222,7 @@ def _render_historical(
     # before the horizontal legend — same treatment as trends.py.
     # tick_clearance=75: rotated (-30°) date ticks + "Key4hep Nightly Tag" title.
     _legend, _b_margin = legend_below(
-        380, len(top_detectors), t_margin=40, tick_clearance=75,
+        len(top_detectors), tick_clearance=75,
         entry_width=180, font_size=12,
     )
     fig.update_layout(

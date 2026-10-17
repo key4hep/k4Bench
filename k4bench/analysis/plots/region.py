@@ -19,6 +19,21 @@ from ._utils import (
 )
 
 
+#: Width of one bar-label character, generous for a chart drawn narrower than
+#: its nominal width, and the room around a label,
+#: in pixels: what the gap left of the bars must hold for its labels.
+_LABEL_CHAR_PX = 9
+_LABEL_PAD_PX = 16
+
+
+def _label_gap(labels: list[str], px_w: int, minimum: float) -> float:
+    """The horizontal subplot spacing that keeps the longest of *labels*, the
+    bar chart's category labels, clear of the panel left of it: at least
+    *minimum*, at most a third of the figure."""
+    longest = max((len(label) for label in labels), default=0)
+    return min(1 / 3, max(minimum, (_LABEL_CHAR_PX * longest + _LABEL_PAD_PX) / px_w))
+
+
 def plot_region_timing(
     source: dict[str, dict] | str | Path | list[str | Path],
     *,
@@ -136,7 +151,8 @@ def plot_region_timing(
             # (and trimming the horizontal gap) lets the pie grow into the
             # otherwise-empty space without making the overall figure taller —
             # keep the total px_h fixed so the chart still fits without scrolling.
-            _v_sp, _h_sp = 0.16, 0.12
+            _v_sp = 0.16
+            _h_sp = _label_gap([*det_display, "Unaccounted"], px_w, 0.12)
             _r1_h, _r2_h = 0.50, 0.50
             fig = make_subplots(
                 rows=2, cols=2,

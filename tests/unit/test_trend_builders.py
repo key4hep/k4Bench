@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from k4bench.analysis.loader import failed_config_mask
 from k4bench.analysis import trend
@@ -137,32 +138,25 @@ def test_parse_run_dir_deduplicates_config_roster(tmp_path):
     ]
 
 
-# ── build_component_trend ─────────────────────────────────────────────────────
+# ── build_phase_trend ─────────────────────────────────────────────────────────
 
-_RECO_NIGHTS = Path(__file__).resolve().parents[1] / "fixtures" / "reco_nights"
+_RECO_RUN = Path(__file__).resolve().parents[1] / "fixtures" / "reco_run"
 
-
-def test_build_component_trend_reads_every_night_label_and_metric():
-    nights = tuple(str(p) for p in sorted(_RECO_NIGHTS.iterdir()) if p.is_dir())
-    df = trend.build_component_trend(nights)
-    assert set(df["run_id"]) == {"2026-10-14", "2026-10-16", "2026-10-17"}
-    assert set(df["label"]) == {"baseline", "variant_truth_tracking"}
-    assert set(df["metric"]) == {
-        "wall_s", "cpu_s", "peak_rss_increase_mb", "instructions", "cycles", "allocations",
-    }
-    track = df[(df["run_id"] == "2026-10-16") & (df["label"] == "baseline")
-               & (df["metric"] == "wall_s") & (df["component"] == "MyConformalTracking")]
-    assert len(track) == 1
-    # Events 1–11: the warm-up event is left out.
-    assert track["n_events"].item() == 11
-    assert track["x_date"].item() == pd.Timestamp("2026-10-16")
-    # The variant has no conformal tracking to trend.
-    variant = df[df["label"] == "variant_truth_tracking"]
-    assert "MyConformalTracking" not in set(variant["component"])
-    assert "MyTruthTrackFinder" in set(variant["component"])
+def test_build_phase_trend_gives_phases_and_their_components():
+    df = trend.build_phase_trend((str(_RECO_RUN),))
+    totals = df[df["component"].isna() & (df["label"] == "baseline")].set_index("phase")
+    # The fixture keeps the initialize and execute spans; configure is derived.
+    assert set(totals.index) == {"configure", "initialize", "execute"}
+    init = df[(df["phase"] == "initialize") & df["component"].notna()
+              & (df["label"] == "baseline")]
+    assert init["seconds"].sum() == pytest.approx(totals.loc["initialize", "seconds"], rel=1e-3)
+    assert (init["seconds"] > 0).all()
+    assert init.sort_values("seconds")["component"].iloc[-1] == "GeoSvc"
+    loop = df[(df["phase"] == "execute") & df["component"].notna()
+              & (df["label"] == "baseline")]
+    assert loop.sort_values("seconds")["component"].iloc[-1] == "MyConformalTracking"
 
 
-def test_build_component_trend_skips_runs_without_component_files(tmp_path):
+def test_build_phase_trend_skips_runs_without_component_files(tmp_path):
     sim = _make_run(tmp_path, "2026-10-01", "key4hep-2026-10-01", 50.0)
-    assert trend.build_component_trend((str(sim),)) is None
-    assert trend.build_component_trend(()) is None
+    assert trend.build_phase_trend((str(sim),)) is None

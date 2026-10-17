@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
+from k4bench.analysis.components import ComponentTiming
 from k4bench.analysis.loader import judgeable_config_data
-from k4bench.analysis.loader import load_event_timing, load_region_timing, load_results  # noqa: F401 (re-exported)
+from k4bench.analysis.loader import load_component_timing, load_event_timing, load_region_timing, load_results  # noqa: F401 (re-exported)
 from k4bench.analysis import trend as _trend
 from k4bench.analysis.trend import EXPECTED_LOAD_ERRORS as _EXPECTED_ERRORS
 from k4bench.analysis.trend import parse_run_dir as _parse_run_dir  # noqa: F401 (re-exported)
@@ -55,6 +56,21 @@ def cached_load_region_timing(data_dir: str) -> dict | None:
         return None
 
 
+# Each run's matrices are ~1 MB pickled; the bound keeps a long session's
+# comparisons from piling up in the pod's memory.
+@st.cache_data(show_spinner="Loading component costs...", max_entries=16)
+def cached_load_component_timing(data_dir: str) -> dict[str, ComponentTiming]:
+    """Every label's ``_components.json`` in *data_dir*; empty when it has none."""
+    try:
+        return load_component_timing(data_dir)
+    except _EXPECTED_ERRORS:
+        return {}
+    except Exception:
+        _log.exception("cached_load_component_timing: unexpected error loading '%s'", data_dir)
+        st.warning(f"Unexpected error loading component costs from '{data_dir}'. Check logs for details.")
+        return {}
+
+
 def run_metadata(run_dir: str) -> dict:
     """Return metadata for a single run (date) directory.
 
@@ -79,6 +95,12 @@ def cached_load_trend_results(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
 def cached_load_trend_region_timing(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
     """Cached :func:`k4bench.analysis.trend.build_region_timing_trend`."""
     return _trend.build_region_timing_trend(run_dirs)
+
+
+@st.cache_data(show_spinner="Loading job phase trends...", ttl=3600)
+def cached_load_trend_phases(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
+    """Cached :func:`k4bench.analysis.trend.build_phase_trend`."""
+    return _trend.build_phase_trend(run_dirs)
 
 
 @st.cache_data(show_spinner="Loading event timing trends...", ttl=3600)
@@ -110,13 +132,20 @@ class RunData:
     trend_results: pd.DataFrame | None
     #: Every configuration with data on screen, sorted.
     labels: list[str]
+    #: Each successful configuration's per-component costs; loaded only for a
+    #: page that reads them (k4run runs have them, ddsim runs none).
+    components: dict[str, ComponentTiming] = field(default_factory=dict)
 
 
-def load_run(data_dir: str, run_dirs: tuple[str, ...]) -> RunData:
-    """Load the run in *data_dir* and the results of the windowed *run_dirs*."""
+def load_run(
+    data_dir: str, run_dirs: tuple[str, ...], *, components: bool = False,
+) -> RunData:
+    """Load the run in *data_dir* and the results of the windowed *run_dirs*,
+    with the run's per-component costs when *components*."""
     results = cached_load_results(data_dir)
     event_data = cached_load_event_timing(data_dir)
     region_data = cached_load_region_timing(data_dir)
+    component_data = cached_load_component_timing(data_dir) if components else {}
     # Current-run event/region files can be partial leftovers from a
     # crashed config, or orphans with no result row at all. These views
     # present their inputs as ordinary evidence (unlike regression
@@ -124,6 +153,7 @@ def load_run(data_dir: str, run_dirs: tuple[str, ...]) -> RunData:
     # successful result-backed labels belong here.
     event_data = judgeable_config_data(event_data, results)
     region_data = judgeable_config_data(region_data, results)
+    component_data = judgeable_config_data(component_data, results) or {}
 
     labels: set[str] = set()
     if results is not None and "label" in results.columns:
@@ -138,4 +168,6 @@ def load_run(data_dir: str, run_dirs: tuple[str, ...]) -> RunData:
     trend_results = cached_load_trend_results(run_dirs) if run_dirs else None
     if trend_results is not None and "label" in trend_results.columns:
         labels.update(trend_results["label"])
-    return RunData(results, event_data, region_data, trend_results, sorted(labels))
+    return RunData(
+        results, event_data, region_data, trend_results, sorted(labels), component_data,
+    )

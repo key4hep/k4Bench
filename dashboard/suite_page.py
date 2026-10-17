@@ -67,6 +67,8 @@ class SuitePage:
     key_prefix: str = ""
     #: Whether the suite has nightly reports, which bound the trend window.
     reports: bool = True
+    #: Whether its sections read the run's per-component costs.
+    components: bool = False
 
     @property
     def title(self) -> str:
@@ -151,7 +153,7 @@ def render_page(page: SuitePage) -> None:
         elif not config.data_url and (suite := run_suite(Path(data_dir))) != page.suite:
             foreign_suite = suite
         else:
-            run = load_run(data_dir, window.run_dirs)
+            run = load_run(data_dir, window.run_dirs, components=page.components)
             # Remote mode shows the run-quality card under the Stack selector.
             if not config.data_url:
                 render_sidebar_run_quality(load_machine_info(data_dir), run.results)

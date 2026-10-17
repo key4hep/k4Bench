@@ -147,3 +147,12 @@ def test_an_unsized_palette_keeps_the_users_choice():
     at.run()
     assert not at.exception, at.exception
     assert at.selectbox(key="t_palette").value == "D3"
+
+
+def test_legend_below_pins_the_legend_to_the_figure_bottom():
+    from ui_utils import legend_below
+
+    legend, margin = legend_below(7, tick_clearance=75)
+    assert (legend["yref"], legend["y"], legend["yanchor"]) == ("container", 0, "bottom")
+    # More entries start from more room; Plotly grows it further when needed.
+    assert legend_below(30, tick_clearance=75)[1] > margin

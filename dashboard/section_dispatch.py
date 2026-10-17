@@ -162,7 +162,7 @@ def _config_impact(ctx: PageContext) -> None:
     impact.render(ctx.run.results)
 
 
-def _judgeable_trend(
+def judgeable_trend(
     ctx: PageContext, load: Callable[[tuple[str, ...]], pd.DataFrame | None]
 ) -> pd.DataFrame | None:
     """One per-event trend frame for the window, its failed configs dropped."""
@@ -173,7 +173,7 @@ def _judgeable_trend(
 def _region_timing(ctx: PageContext) -> SectionScope | None:
     return region_timing.render(
         ctx.run.region_data,
-        _judgeable_trend(ctx, cached_load_trend_region_timing),
+        judgeable_trend(ctx, cached_load_trend_region_timing),
         ctx.trends_enabled, ctx.reliability,
     )
 
@@ -181,7 +181,7 @@ def _region_timing(ctx: PageContext) -> SectionScope | None:
 def _event_timing(ctx: PageContext) -> SectionScope | None:
     return event_timing.render(
         ctx.run.event_data,
-        _judgeable_trend(ctx, cached_load_trend_event_timing),
+        judgeable_trend(ctx, cached_load_trend_event_timing),
         ctx.trends_enabled, ctx.reliability,
     )
 
@@ -189,7 +189,7 @@ def _event_timing(ctx: PageContext) -> SectionScope | None:
 def _event_memory(ctx: PageContext) -> SectionScope | None:
     return event_memory.render(
         ctx.run.event_data,
-        _judgeable_trend(ctx, cached_load_trend_event_timing),
+        judgeable_trend(ctx, cached_load_trend_event_timing),
         ctx.trends_enabled, ctx.reliability,
     )
 
