@@ -62,7 +62,7 @@ def test_dashboard_metrics_are_registered():
     displayed = (
         {column for column, _ in trends._METRICS}
         | set(trends._STABILITY_METRICS)
-        | set(event_memory._STABILITY_METRICS)
+        | {m for metrics in event_memory._STABILITY_METRICS.values() for m in metrics}
         | {metric.column for metric in impact._METRICS}
     )
     assert displayed <= set(METRICS), sorted(displayed - set(METRICS))

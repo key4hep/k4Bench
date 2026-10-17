@@ -536,9 +536,23 @@ def plot_event_timing(
     )
 
 
+#: Per-event RSS columns :func:`plot_event_memory` can draw, mapped to their
+#: (x-axis label, sequence-axis label, mean annotation prefix).
+EVENT_MEMORY_COLUMNS: dict[str, tuple[str, str, str]] = {
+    "rss_end_mb": ("Total RSS per event (MB)", "Total RSS (MB)", "μ<sub>RSS</sub>"),
+    "rss_anon_end_mb": (
+        "Anonymous RSS per event (MB)", "Anonymous RSS (MB)", "μ<sub>anon</sub>",
+    ),
+    "rss_file_end_mb": (
+        "File-backed RSS per event (MB)", "File-backed RSS (MB)", "μ<sub>file</sub>",
+    ),
+}
+
+
 def plot_event_memory(
     source: dict[str, pd.DataFrame] | str | Path | list[str | Path],
     *,
+    column: str = "rss_end_mb",
     labels: list[str] | None = None,
     baseline_label: str | None = None,
     show: str = "both",
@@ -555,14 +569,18 @@ def plot_event_memory(
 ) -> go.Figure:
     """Plot per-event memory (RSS) distributions for one or more runs.
 
-    Distribution panel shows a histogram of peak RSS per event.
-    Sequence panel shows peak RSS vs event number.
+    Distribution panel shows a histogram of the chosen RSS, sampled at the end
+    of each event. Sequence panel shows it vs event number.
 
     Parameters
     ----------
     source : dict[str, pd.DataFrame], str/Path, or list of str/Path
         Pre-loaded dict from :func:`~k4bench.analysis.loader.load_event_timing`,
         a single log-dir path, or a list of log-dir paths.
+    column : str
+        Which RSS to draw, one of :data:`EVENT_MEMORY_COLUMNS`: total RSS
+        (``"rss_end_mb"``, the default), anonymous RSS (``"rss_anon_end_mb"``)
+        or file-backed RSS (``"rss_file_end_mb"``).
     labels : list[str] or None
         Restrict to these run labels.
     baseline_label : str or None
@@ -599,12 +617,17 @@ def plot_event_memory(
     -------
     plotly.graph_objects.Figure
     """
+    if column not in EVENT_MEMORY_COLUMNS:
+        raise ValueError(
+            f"column must be one of {sorted(EVENT_MEMORY_COLUMNS)}, got {column!r}."
+        )
+    xlabel, yseq_label, stat_prefix = EVENT_MEMORY_COLUMNS[column]
     return _plot_event_metric(
         source,
-        column="rss_end_mb",
-        xlabel="Peak RSS per event (MB)",
-        yseq_label="Peak RSS (MB)",
-        stat_prefix="μ<sub>RSS</sub>",
+        column=column,
+        xlabel=xlabel,
+        yseq_label=yseq_label,
+        stat_prefix=stat_prefix,
         stat_unit="MB",
         warn_name="plot_event_memory",
         warn_unit="MB",

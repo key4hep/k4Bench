@@ -505,6 +505,18 @@ class TestHistogramDisplay:
         for tr, values in zip(outlines, data.values()):
             assert np.sum(_step_content(tr)) == len(values)
 
+    def test_memory_plots_the_requested_rss_column(self):
+        data = _memory_frames(n_cfg=2)
+        for frame in data.values():
+            frame["rss_anon_end_mb"] = frame["rss_end_mb"] - 40.0
+        fig = plot_event_memory(
+            data, column="rss_anon_end_mb", baseline_label="cfg0",
+            show="distribution", exclude_events=[],
+        )
+        assert fig.layout.xaxis.title.text == "Anonymous RSS per event (MB)"
+        with pytest.raises(ValueError, match="column must be one of"):
+            plot_event_memory(data, column="event_time_s")
+
     def test_bins_and_bin_width_together_rejected(self):
         with pytest.raises(ValueError, match="not both"):
             plot_event_timing(

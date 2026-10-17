@@ -170,16 +170,15 @@ def test_event_memory_history_renders_stability_on_old_and_new_data(with_new_met
     )
     assert not at.exception, at.exception
     assert [e.label for e in at.expander] == ["Run-to-run variability"]
+    # The table follows the memory kind, which defaults to anonymous RSS when
+    # the runs record it and to total RSS otherwise.
     metrics = set(at.dataframe[0].value["Metric"])
     new = {"Mean event anonymous RSS", "Anonymous RSS growth per event"}
-    assert "Mean event RSS" in metrics
-    assert (new <= metrics) is with_new_metrics
-    assert bool(new & metrics) is with_new_metrics
+    assert metrics == (new if with_new_metrics else {"Mean event RSS"})
     # Units come from the dashboard's shared unit table, so a metric missing
     # there would render as a bare number.
     table = at.dataframe[0].value.set_index("Metric")
     for column in (SAME_RELEASE_SPREAD_COL, MOVEMENT_COL):
-        assert " MB (" in table.loc["Mean event RSS", column]
         if with_new_metrics:
             assert " MB (" in table.loc["Mean event anonymous RSS", column]
             assert (
@@ -187,6 +186,8 @@ def test_event_memory_history_renders_stability_on_old_and_new_data(with_new_met
                 .split(" · ")[0]
                 .endswith(" MB/event")
             )
+        else:
+            assert " MB (" in table.loc["Mean event RSS", column]
 
 
 def _trends_app(dashboard_dir, with_vmem):

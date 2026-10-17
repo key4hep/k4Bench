@@ -92,16 +92,73 @@ def _widget_keys(at, prefix):
     return keys
 
 
-def test_memory_components_are_visible_in_current_run():
-    at = AppTest.from_function(
+def _run_split(n_events=5):
+    return AppTest.from_function(
         _app,
-        args=(str(_DASHBOARD_DIR), "memory", ["baseline"], 5, True),
+        args=(str(_DASHBOARD_DIR), "memory", ["baseline"], n_events, True),
         default_timeout=30,
     ).run()
+
+
+def test_memory_kind_defaults_to_anonymous_rss_with_one_table():
+    at = _run_split()
     assert not at.exception, at.exception
-    assert len(at.dataframe) == 3
-    assert at.dataframe[1].value.loc["baseline", "Mean (MB)"] == 80.0
-    assert at.dataframe[2].value.loc["baseline", "Mean (MB)"] == 30.0
+    kind = at.selectbox(key="evt_memory_kind")
+    assert list(kind.options) == ["Total RSS", "Anonymous RSS", "File-backed RSS"]
+    assert kind.value == "Anonymous RSS"
+    assert at.session_state["_captured_plot_kwargs"]["column"] == "rss_anon_end_mb"
+    assert len(at.dataframe) == 1
+
+
+@pytest.mark.parametrize(
+    ("kind", "column", "mean"),
+    [("Total RSS", "rss_end_mb", None), ("File-backed RSS", "rss_file_end_mb", 30.0)],
+)
+def test_memory_kind_selects_plot_and_table(kind, column, mean):
+    at = _run_split()
+    at.selectbox(key="evt_memory_kind").set_value(kind).run()
+    assert not at.exception, at.exception
+    assert at.session_state["_captured_plot_kwargs"]["column"] == column
+    assert len(at.dataframe) == 1
+    if mean is not None:
+        assert at.dataframe[0].value.loc["baseline", "Mean (MB)"] == mean
+
+
+def test_memory_kind_offers_only_recorded_components():
+    at = _run("memory", ["cfg_a", "cfg_b"])
+    assert not at.exception, at.exception
+    assert list(at.selectbox(key="evt_memory_kind").options) == ["Total RSS"]
+    assert at.session_state["_captured_plot_kwargs"]["column"] == "rss_end_mb"
+
+
+def test_memory_component_drops_failed_reads():
+    def app(dashboard_dir):
+        import sys as _sys
+        if dashboard_dir not in _sys.path:
+            _sys.path.insert(0, dashboard_dir)
+        import pandas as pd
+        import plotly.graph_objects as go
+        import streamlit as st
+        from tabs import event_memory
+
+        frame = pd.DataFrame({
+            "event_number": range(6),
+            "event_time_s": 1.0,
+            "rss_end_mb": 110.0,
+            "rss_anon_end_mb": [80.0, 80.0, -1.0, 80.0, 80.0, 80.0],
+        })
+
+        def _stub(data, **kwargs):
+            st.session_state["_plotted_min"] = float(data["baseline"][kwargs["column"]].min())
+            return go.Figure()
+
+        event_memory.plot_event_memory = _stub
+        event_memory.render({"baseline": frame}, None)
+
+    at = AppTest.from_function(app, args=(str(_DASHBOARD_DIR),), default_timeout=30).run()
+    assert not at.exception, at.exception
+    assert at.session_state["_plotted_min"] == 80.0
+    assert at.dataframe[0].value.loc["baseline", "Mean (MB)"] == 80.0
 
 
 @pytest.mark.parametrize(("view", "prefix"), [("timing", "evt_timing"), ("memory", "evt_memory")])
@@ -423,9 +480,10 @@ def test_both_tabs_expose_identical_histogram_controls():
     assert not timing.exception, timing.exception
     assert not memory.exception, memory.exception
     assert _widget_keys(timing, "evt_timing") == _widget_keys(memory, "evt_memory")
+    # Memory additionally names which RSS column it draws.
     assert (
         timing.session_state["_captured_plot_kwargs"].keys()
-        == memory.session_state["_captured_plot_kwargs"].keys()
+        == memory.session_state["_captured_plot_kwargs"].keys() - {"column"}
     )
 
 
@@ -529,15 +587,8 @@ def test_statistics_align_with_plot_and_offer_all_runs(view, prefix):
     assert len(at.dataframe[1].value) == len(labels)
 
 
-def test_historical_memory_uses_component_error_bars(monkeypatch):
-    import sys
-    import numpy as np
+def _historical_memory_df():
     import pandas as pd
-
-    if str(_DASHBOARD_DIR) not in sys.path:
-        sys.path.insert(0, str(_DASHBOARD_DIR))
-    import ui_utils
-    from tabs import event_memory
 
     df = pd.DataFrame(
         {
@@ -559,6 +610,89 @@ def test_historical_memory_uses_component_error_bars(monkeypatch):
     df["mean_rss_mb"] = df["median_rss_mb"] = 150.0
     df["std_rss_mb"] = 100.0
     df["n_events_rss"] = 16
+    return df
+
+
+def _historical_memory_app(dashboard_dir, df, drop=()):
+    import sys as _sys
+    if dashboard_dir not in _sys.path:
+        _sys.path.insert(0, dashboard_dir)
+    import streamlit as st
+
+    from tabs import event_memory
+
+    def _capture(frame, labels, stats_spec, **kwargs):
+        st.session_state["_hist_stats"] = [col for col, _ in stats_spec]
+
+    def _capture_stability(frame, metrics, *args, **kwargs):
+        st.session_state["_stability_metrics"] = list(metrics)
+
+    # AppTest shares this process's modules: put the real helpers back so the
+    # stubs cannot leak into later tests.
+    real = event_memory.render_historical_trends, event_memory.render_stability_expander
+    event_memory.render_historical_trends = _capture
+    event_memory.render_stability_expander = _capture_stability
+    try:
+        event_memory._render_historical(df.drop(columns=list(drop)))
+    finally:
+        event_memory.render_historical_trends, event_memory.render_stability_expander = real
+
+
+@pytest.mark.parametrize(
+    ("kind", "stats", "stability"),
+    [
+        ("Total RSS", ["median_rss_mb", "mean_rss_mb", "std_rss_mb"], ["mean_rss_mb"]),
+        (
+            "Anonymous RSS",
+            ["median_rss_anon_mb", "mean_rss_anon_mb", "std_rss_anon_mb",
+             "rss_anon_slope_mb_per_event"],
+            ["mean_rss_anon_mb", "rss_anon_slope_mb_per_event"],
+        ),
+        ("File-backed RSS", ["mean_rss_file_mb", "std_rss_file_mb"], ["mean_rss_file_mb"]),
+    ],
+)
+def test_historical_memory_kind_selects_panels_and_stability(kind, stats, stability):
+    at = AppTest.from_function(
+        _historical_memory_app,
+        args=(str(_DASHBOARD_DIR), _historical_memory_df()),
+        default_timeout=30,
+    ).run()
+    assert not at.exception, at.exception
+    assert at.selectbox(key="evt_memory_hist_kind").value == "Anonymous RSS"
+    at.selectbox(key="evt_memory_hist_kind").set_value(kind).run()
+    assert not at.exception, at.exception
+    assert at.session_state["_hist_stats"] == stats
+    assert at.session_state["_stability_metrics"] == stability
+
+
+def test_historical_memory_offers_only_recorded_kinds():
+    drop = [
+        "mean_rss_anon_mb", "median_rss_anon_mb", "std_rss_anon_mb",
+        "n_events_rss_anon", "rss_anon_slope_mb_per_event",
+        "mean_rss_file_mb", "std_rss_file_mb", "n_events_rss_file",
+    ]
+    at = AppTest.from_function(
+        _historical_memory_app,
+        args=(str(_DASHBOARD_DIR), _historical_memory_df(), drop),
+        default_timeout=30,
+    ).run()
+    assert not at.exception, at.exception
+    kind = at.selectbox(key="evt_memory_hist_kind")
+    assert list(kind.options) == ["Total RSS"]
+    assert kind.value == "Total RSS"
+
+
+@pytest.mark.parametrize("kind", ["Total RSS", "Anonymous RSS", "File-backed RSS"])
+def test_historical_memory_uses_component_error_bars(monkeypatch, kind):
+    import sys
+    import numpy as np
+
+    if str(_DASHBOARD_DIR) not in sys.path:
+        sys.path.insert(0, str(_DASHBOARD_DIR))
+    import ui_utils
+    from tabs import event_memory
+
+    df = _historical_memory_df()
     captured = []
     monkeypatch.setattr(
         ui_utils,
@@ -570,20 +704,27 @@ def test_historical_memory_uses_component_error_bars(monkeypatch):
         },
     )
     monkeypatch.setattr(event_memory, "render_reliability_filter", lambda frame, *a, **kw: frame)
+    monkeypatch.setattr(event_memory, "_memory_kind_control", lambda *a, **kw: kind)
     monkeypatch.setattr(ui_utils.st, "plotly_chart", lambda fig, **kw: captured.append(fig))
     event_memory._render_historical(df)
     fig = captured[0]
-    traces = dict(zip((col for col, _ in event_memory._HIST_STATS if col in df), fig.data))
-    assert traces["mean_rss_anon_mb"].error_y.array[1] == pytest.approx(2.0)
-    assert traces["median_rss_anon_mb"].error_y.array[1] == pytest.approx(2 * np.sqrt(np.pi / 2))
-    assert traces["std_rss_anon_mb"].error_y.array[1] == pytest.approx(4 / np.sqrt(6))
-    assert np.isnan(traces["mean_rss_anon_mb"].error_y.array[0])
-    assert traces["mean_rss_file_mb"].error_y.array[1] == pytest.approx(2.0)
-    assert np.isnan(traces["mean_rss_file_mb"].error_y.array[0])
-    assert traces["mean_rss_mb"].error_y.array[1] == 25.0
-    # The growth panel has no per-event spread to draw and its own unit.
-    assert traces["rss_anon_slope_mb_per_event"].error_y.array is None
-    assert "MB/event" in traces["rss_anon_slope_mb_per_event"].hovertemplate
-    assert "MB/event" not in traces["mean_rss_anon_mb"].hovertemplate
-    # Extra panels wrap into a new row instead of squeezing seven across.
-    assert fig.layout.yaxis4.domain[1] < fig.layout.yaxis.domain[0]
+    traces = dict(zip((col for col, _ in event_memory._HIST_STATS[kind]), fig.data))
+    if kind == "Total RSS":
+        assert traces["mean_rss_mb"].error_y.array[1] == 25.0
+    elif kind == "Anonymous RSS":
+        assert traces["mean_rss_anon_mb"].error_y.array[1] == pytest.approx(2.0)
+        assert traces["median_rss_anon_mb"].error_y.array[1] == pytest.approx(
+            2 * np.sqrt(np.pi / 2)
+        )
+        assert traces["std_rss_anon_mb"].error_y.array[1] == pytest.approx(4 / np.sqrt(6))
+        assert np.isnan(traces["mean_rss_anon_mb"].error_y.array[0])
+        # The growth panel has no per-event spread to draw and its own unit.
+        assert traces["rss_anon_slope_mb_per_event"].error_y.array is None
+        assert "MB/event" in traces["rss_anon_slope_mb_per_event"].hovertemplate
+        assert "MB/event" not in traces["mean_rss_anon_mb"].hovertemplate
+        # Four panels wrap into a new row instead of squeezing four across.
+        assert fig.layout.yaxis4.domain[1] < fig.layout.yaxis.domain[0]
+    else:
+        assert traces["mean_rss_file_mb"].error_y.array[1] == pytest.approx(2.0)
+        assert traces["std_rss_file_mb"].error_y.array[1] == pytest.approx(6 / np.sqrt(16))
+        assert np.isnan(traces["mean_rss_file_mb"].error_y.array[0])
