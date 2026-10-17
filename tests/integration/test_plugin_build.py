@@ -451,6 +451,36 @@ def test_auditor_measures_a_real_gaudi_job(built_plugin, tmp_path):
 
 @pytest.mark.integration
 @requires_gaudi
+@pytest.mark.skipif(
+    "libMarlinUtil" not in __import__("os").environ.get("MARLIN_DLL", ""),
+    reason="needs k4MarlinWrapper and MarlinUtil's processors on MARLIN_DLL",
+)
+def test_auditor_finds_the_library_of_a_wrapped_marlin_processor(built_plugin, tmp_path):
+    """A MarlinProcessorWrapper running MarlinUtil's Statusmonitor: the class
+    doing the work is the processor, defined in MarlinUtil's library, which the
+    auditor finds through Marlin's ProcessorMgr rather than naming the
+    wrapper's own library."""
+    from pathlib import Path
+
+    assert built_plugin.returncode == 0, "Skipped: build already failed"
+    timing, _ = _run_audited_job(
+        tmp_path,
+        "wrapped",
+        "from Configurables import ApplicationMgr, MarlinProcessorWrapper\n"
+        "status = MarlinProcessorWrapper('Status', ProcessorType='Statusmonitor',\n"
+        "                                Parameters={'HowOften': ['1']})\n"
+        "ApplicationMgr(EvtSel='NONE', EvtMax=1, TopAlg=[status])\n",
+    )
+
+    status = timing.components.loc["Status"]
+    assert status["type"] == "MarlinProcessorWrapper"
+    assert status["impl"] == "Statusmonitor"
+    assert Path(status["impl_library"]).name.startswith("libMarlinUtil.so")
+    assert status["impl_library"] != status["library"]
+
+
+@pytest.mark.integration
+@requires_gaudi
 def test_auditor_counts_each_components_heap_allocations(built_plugin, tmp_path):
     """An algorithm putting three objects into the event store per event: it
     allocates them and keeps them past its call, since the store is cleared

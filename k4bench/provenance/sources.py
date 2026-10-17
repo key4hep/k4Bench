@@ -79,8 +79,10 @@ def load_run_packages(run_dir: str | Path) -> dict[str, dict]:
 def package_of(library: str, packages: dict[str, dict]) -> PackageSource | None:
     """The package whose install holds *library*, by its longest install path.
 
-    Paths are compared as recorded: both were resolved when the run recorded
-    them, and LCG's rotating view names may point elsewhere now.
+    The auditor records *library* resolved through symlinks, so it is matched
+    against the install path the manifest names and against the directory that
+    path resolved to when the run was captured. Paths are compared as
+    recorded: LCG's rotating view names may point elsewhere now.
     """
     if not library:
         return None
@@ -88,7 +90,8 @@ def package_of(library: str, packages: dict[str, dict]) -> PackageSource | None:
         (
             (len(prefix), name)
             for name, package in packages.items()
-            if (prefix := package.get("install_path", "").rstrip("/") + "/") != "/"
+            for key in ("install_path", "install_realpath")
+            if (prefix := package.get(key, "").rstrip("/") + "/") != "/"
             and library.startswith(prefix)
         ),
         default=None,

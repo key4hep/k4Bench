@@ -107,5 +107,21 @@ def test_a_runs_packages_combine_its_manifests_and_recorded_commits(tmp_path):
     assert source.label == "k4fwcore @ 767ff81"
 
 
+def test_a_library_under_a_symlinked_install_matches_its_recorded_real_path(tmp_path):
+    """The auditor resolves symlinks; the manifest names the linked path."""
+    real = f"/cvmfs/sft-nightlies.cern.ch/lcg/releases/k4fwcore/HEAD-98b4e/{PLATFORM}"
+    (tmp_path / "run_info.json").write_text(json.dumps({"k4h_loaded_packages": {
+        "k4fwcore": {"version": "HEAD", "commit": "767ff81", "install_realpath": real,
+                     "repo_url": "https://github.com/key4hep/k4FWCore.git"},
+    }}))
+    (tmp_path / STACK_MANIFESTS[0]).write_bytes(gzip.compress(
+        f"k4fwcore; 98b4e; HEAD; {NIGHTLY}/k4fwcore/HEAD/{PLATFORM}; Gaudi-242b8\n".encode()
+    ))
+    packages = sources.load_run_packages(tmp_path)
+    source = sources.package_of(f"{real}/lib/libk4FWCorePlugins.so", packages)
+    assert source.label == "k4fwcore @ 767ff81"
+    assert sources.package_of(f"{real}2/lib/libX.so", packages) is None
+
+
 def test_a_run_without_run_info_has_no_packages(tmp_path):
     assert sources.load_run_packages(tmp_path) == {}

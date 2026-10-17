@@ -228,6 +228,9 @@ Executed staged options files are mapped through their recorded source paths,
 and a ddsim run's resolved steering file is matched the same way.
 Paths match resolved manifest install directories by longest prefix, including
 stable releases and the contrib compiler. Unmatched CVMFS paths are logged.
+A loaded package whose install path resolves elsewhere also records that
+directory as `install_realpath`, so the libraries the auditor names by their
+resolved paths are attributed to it after the symlink has moved on.
 Private `.LABEL.loaded` handoffs are consumed and deleted before writing
 `run_info.json`, and hidden files are excluded by the upload glob even if cleanup
 fails. Event and component JSON retain schema version 1; their format is unchanged.
