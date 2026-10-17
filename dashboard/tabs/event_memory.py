@@ -4,6 +4,7 @@ import pandas as pd
 import streamlit as st
 
 from k4bench.analysis.plots import plot_event_memory
+from k4bench.analysis.plots._utils import _drop_failed_reads
 from sections import TREND_WINDOW_SCOPE, SectionScope
 from stats import build_event_stats_table, style_stats_table
 from tabs._historical_trends import render_historical_trends, render_stability_expander
@@ -32,8 +33,8 @@ _MEMORY_KINDS = {
 #: evict mid-run. Runs without the split fall back to the first kind offered.
 _DEFAULT_KIND = "Anonymous RSS"
 
-#: Kinds whose samples are negative when a /proc read failed.
-_SENTINEL_COLUMNS = {"rss_anon_end_mb", "rss_file_end_mb"}
+#: Warmup events the current-run view leaves out of plot and bins.
+_EXCLUDE_EVENTS = (0,)
 
 #: Historical statistics of each kind: (trend column, panel title).
 _HIST_STATS = {
@@ -98,13 +99,15 @@ def _memory_kind_control(available: list[str], key: str) -> str:
 
 
 def _column_data(event_data: dict, column: str) -> dict:
-    """Return the runs that record *column*, without failed-read samples."""
-    if column not in _SENTINEL_COLUMNS:
-        return {label: df for label, df in event_data.items() if column in df.columns}
-    return {
-        label: df[df[column] >= 0]
-        for label, df in event_data.items() if column in df.columns
-    }
+    """Return the runs with a valid post-warmup *column* sample, without failed reads."""
+    out = {}
+    for label, df in event_data.items():
+        if column not in df.columns:
+            continue
+        df = _drop_failed_reads(df, column)
+        if (~df["event_number"].isin(_EXCLUDE_EVENTS)).any():
+            out[label] = df
+    return out
 
 
 def _render_current_run(
@@ -116,10 +119,10 @@ def _render_current_run(
         st.info("No event memory data available in this run.")
         return
 
-    available = [
-        kind for kind, column in _MEMORY_KINDS.items()
-        if any(column in df.columns for df in event_data.values())
-    ]
+    data_by_kind = {
+        kind: _column_data(event_data, column) for kind, column in _MEMORY_KINDS.items()
+    }
+    available = [kind for kind, data in data_by_kind.items() if data]
     if not available:
         st.info("No event memory data available in this run.")
         return
@@ -128,8 +131,9 @@ def _render_current_run(
         [1, 3, 1], gap="medium", vertical_alignment="bottom",
     )
     with col_kind:
-        column = _MEMORY_KINDS[_memory_kind_control(available, "evt_memory_kind")]
-    memory_data = _column_data(event_data, column)
+        kind = _memory_kind_control(available, "evt_memory_kind")
+    column = _MEMORY_KINDS[kind]
+    memory_data = data_by_kind[kind]
     current_labels = sorted(memory_data)
 
     with col_baseline:
@@ -140,7 +144,7 @@ def _render_current_run(
         )
 
     bin_options = cached_event_bin_options(
-        memory_data, column, tuple(display_labels)
+        memory_data, column, tuple(display_labels), _EXCLUDE_EVENTS
     )
     bins, palette_name, alpha, show_errors, show_mean_lines = (
         histogram_display_controls(
@@ -154,7 +158,7 @@ def _render_current_run(
         labels=display_labels,
         baseline_label=baseline_label,
         show="both",
-        exclude_events=[0],
+        exclude_events=list(_EXCLUDE_EVENTS),
         palette=PALETTES[palette_name],
         bins=bins,
         alpha=alpha,

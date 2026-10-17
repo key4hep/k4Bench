@@ -580,7 +580,8 @@ def plot_event_memory(
     column : str
         Which RSS to draw, one of :data:`EVENT_MEMORY_COLUMNS`: total RSS
         (``"rss_end_mb"``, the default), anonymous RSS (``"rss_anon_end_mb"``)
-        or file-backed RSS (``"rss_file_end_mb"``).
+        or file-backed RSS (``"rss_file_end_mb"``). Negative samples of the
+        latter two, written where a /proc read failed, are dropped.
     labels : list[str] or None
         Restrict to these run labels.
     baseline_label : str or None

@@ -161,6 +161,60 @@ def test_memory_component_drops_failed_reads():
     assert at.dataframe[0].value.loc["baseline", "Mean (MB)"] == 80.0
 
 
+def _unusable_anon_app(dashboard_dir, anon_by_label):
+    import sys as _sys
+    if dashboard_dir not in _sys.path:
+        _sys.path.insert(0, dashboard_dir)
+    import pandas as pd
+    import plotly.graph_objects as go
+    import streamlit as st
+    from tabs import event_memory
+
+    data = {
+        label: pd.DataFrame({
+            "event_number": range(4),
+            "event_time_s": 1.0,
+            "rss_end_mb": [110.0, 111.0, 112.0, 113.0],
+            "rss_anon_end_mb": anon,
+        })
+        for label, anon in anon_by_label.items()
+    }
+
+    def _stub(data, **kwargs):
+        st.session_state["_plotted_labels"] = sorted(data)
+        st.session_state["_plotted_column"] = kwargs["column"]
+        return go.Figure()
+
+    event_memory.plot_event_memory = _stub
+    event_memory.render(data, None)
+
+
+@pytest.mark.parametrize(
+    "anon",
+    [[-1.0, -1.0, -1.0, -1.0], [80.0, -1.0, -1.0, -1.0]],
+    ids=["all_failed", "warmup_only"],
+)
+def test_memory_kind_without_valid_samples_falls_back_to_total(anon):
+    at = AppTest.from_function(
+        _unusable_anon_app, args=(str(_DASHBOARD_DIR), {"baseline": anon}),
+        default_timeout=30,
+    ).run()
+    assert not at.exception, at.exception
+    kind = at.selectbox(key="evt_memory_kind")
+    assert list(kind.options) == ["Total RSS"]
+    assert at.session_state["_plotted_column"] == "rss_end_mb"
+
+
+def test_memory_kind_leaves_out_configs_without_valid_samples():
+    anon = {"cfg_a": [80.0, 80.0, 81.0, 82.0], "cfg_b": [-1.0, -1.0, -1.0, -1.0]}
+    at = AppTest.from_function(
+        _unusable_anon_app, args=(str(_DASHBOARD_DIR), anon), default_timeout=30,
+    ).run()
+    assert not at.exception, at.exception
+    assert at.selectbox(key="evt_memory_kind").value == "Anonymous RSS"
+    assert at.session_state["_plotted_labels"] == ["cfg_a"]
+
+
 @pytest.mark.parametrize(("view", "prefix"), [("timing", "evt_timing"), ("memory", "evt_memory")])
 def test_baseline_is_auto_selected_from_current_run_configs_only(view, prefix):
     """The tab's roster is this run's event data, so the baseline is chosen

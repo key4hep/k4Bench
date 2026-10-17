@@ -12,6 +12,9 @@ from ..loader import load_event_timing, load_region_timing, load_results
 
 _DEFAULT_EXCLUDE_EVENTS = [0]
 
+#: Per-event RSS components whose samples are negative where a /proc read failed.
+_FAILED_READ_COLUMNS = frozenset({"rss_anon_end_mb", "rss_file_end_mb"})
+
 
 def _path_name(p: str | Path) -> str:
     """Return the final path component, stripping trailing slashes first."""
@@ -122,6 +125,14 @@ def _detector_title(source: object) -> str | None:
     return None
 
 
+def _drop_failed_reads(df: pd.DataFrame, column: str) -> pd.DataFrame:
+    """Return *df* without the events whose *column* sample is a failed read."""
+    if column not in _FAILED_READ_COLUMNS or column not in df.columns:
+        return df
+    values = df[column]
+    return df[np.isfinite(values) & (values >= 0)]
+
+
 def _default_baseline(labels: list[str]) -> str:
     return sorted(labels)[0]
 
@@ -194,13 +205,14 @@ def _prepare_event_arrays(
     label_list = list(event_data.keys())
 
     filtered = {
-        lbl: df[~df["event_number"].isin(exclude_events)]
+        lbl: _drop_failed_reads(df[~df["event_number"].isin(exclude_events)], column)
         for lbl, df in event_data.items()
     }
     empty_labels = [lbl for lbl, df in filtered.items() if df.empty]
     if empty_labels:
         raise ValueError(
-            "No events left after applying exclude_events for: "
+            "No events left after applying exclude_events and dropping failed "
+            "/proc reads for: "
             + ", ".join(empty_labels)
         )
 

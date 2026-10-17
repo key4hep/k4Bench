@@ -517,6 +517,31 @@ class TestHistogramDisplay:
         with pytest.raises(ValueError, match="column must be one of"):
             plot_event_memory(data, column="event_time_s")
 
+    def test_memory_component_drops_failed_reads(self):
+        """Negative (failed /proc read) and non-finite samples are left out."""
+        frame = pd.DataFrame({
+            "event_number": range(5),
+            "rss_end_mb": 110.0,
+            "rss_anon_end_mb": [80.0, -1.0, 80.0, np.nan, 80.0],
+        })
+        data = {"cfg0": frame}
+        fig = plot_event_memory(
+            data, column="rss_anon_end_mb", show="distribution", exclude_events=[],
+        )
+        outlines = [tr for tr in _panel(fig, "x") if _is_outline(tr)]
+        assert np.sum(_step_content(outlines[0])) == 3
+        fig = plot_event_memory(
+            data, column="rss_anon_end_mb", show="sequence", exclude_events=[],
+        )
+        plotted = np.concatenate([np.asarray(tr.y, dtype=float) for tr in fig.data if tr.y is not None])
+        assert np.nanmin(plotted) == 80.0
+        options = event_bin_options(data, column="rss_anon_end_mb", exclude_events=[])
+        assert options.maximum <= 3
+
+        frame["rss_anon_end_mb"] = -1.0
+        with pytest.raises(ValueError, match="No events left"):
+            plot_event_memory(data, column="rss_anon_end_mb", exclude_events=[])
+
     def test_bins_and_bin_width_together_rejected(self):
         with pytest.raises(ValueError, match="not both"):
             plot_event_timing(
