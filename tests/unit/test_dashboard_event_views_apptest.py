@@ -736,6 +736,24 @@ def test_historical_memory_offers_only_recorded_kinds():
     assert kind.value == "Total RSS"
 
 
+def test_historical_memory_skips_kinds_whose_columns_are_all_nan():
+    """Legacy runs leave the split's columns NaN once newer runs are filtered out."""
+    df = _historical_memory_df()
+    split = [
+        "mean_rss_anon_mb", "median_rss_anon_mb", "std_rss_anon_mb",
+        "n_events_rss_anon", "rss_anon_slope_mb_per_event",
+        "mean_rss_file_mb", "std_rss_file_mb", "n_events_rss_file",
+    ]
+    df[split] = float("nan")
+    at = AppTest.from_function(
+        _historical_memory_app, args=(str(_DASHBOARD_DIR), df), default_timeout=30,
+    ).run()
+    assert not at.exception, at.exception
+    kind = at.selectbox(key="evt_memory_hist_kind")
+    assert list(kind.options) == ["Total RSS"]
+    assert at.session_state["_hist_stats"] == ["median_rss_mb", "mean_rss_mb", "std_rss_mb"]
+
+
 @pytest.mark.parametrize("kind", ["Total RSS", "Anonymous RSS", "File-backed RSS"])
 def test_historical_memory_uses_component_error_bars(monkeypatch, kind):
     import sys

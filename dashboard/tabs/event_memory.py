@@ -211,19 +211,23 @@ def _render_historical(
     if trend_event_df.empty:
         return
 
-    available = [
-        kind for kind, stats in _HIST_STATS.items()
-        if any(col in trend_event_df.columns for col, _ in stats)
-    ]
+    # Runs without the RSS split leave its columns all-NaN once newer runs are
+    # filtered out, so a kind needs recorded values, not just its columns.
+    present_by_kind = {
+        kind: [
+            (col, lbl) for col, lbl in stats
+            if col in trend_event_df.columns and trend_event_df[col].notna().any()
+        ]
+        for kind, stats in _HIST_STATS.items()
+    }
+    available = [kind for kind, stats in present_by_kind.items() if stats]
     if not available:
         st.info("No historical event memory statistics available.")
         return
     col_kind, _ = st.columns([1, 4], vertical_alignment="bottom")
     with col_kind:
         kind = _memory_kind_control(available, "evt_memory_hist_kind")
-    present_stats = [
-        (col, lbl) for col, lbl in _HIST_STATS[kind] if col in trend_event_df.columns
-    ]
+    present_stats = present_by_kind[kind]
 
     render_historical_trends(
         trend_event_df,
