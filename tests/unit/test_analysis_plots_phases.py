@@ -13,7 +13,11 @@ from k4bench.analysis.plots import (  # noqa: E402
     plot_phase_history,
 )
 from k4bench.analysis.plots import PALETTE  # noqa: E402
-from k4bench.analysis.plots.phases import phase_component_series, top_components  # noqa: E402
+from k4bench.analysis.plots.phases import (  # noqa: E402
+    UNATTRIBUTED,
+    phase_component_series,
+    top_components,
+)
 
 INIT = pd.Series({
     "GeoSvc": 1.474, "MyConformalTracking": 0.853, "MyAIDAProcessor": 0.586,
@@ -35,6 +39,21 @@ def test_the_donut_keeps_a_components_given_colour_and_greys_other():
     assert pie.marker.colors[1] == "#123456"
     assert pie.marker.colors[-1] != pie.marker.colors[0]
     assert top_components(INIT, 2) == ["GeoSvc", "MyConformalTracking"]
+
+
+def test_the_donut_gives_the_phase_time_no_component_was_charged_for():
+    pie = plot_phase_component_pie(INIT, top_n=3, duration=5.0)
+    assert pie.data[0].labels[-1] == UNATTRIBUTED
+    assert pie.data[0].values[-1] == pytest.approx(5.0 - 3.506)
+    # The middle is the phase's duration, as its card writes it.
+    assert pie.layout.annotations[0].text == "<b>5.00 s</b>"
+
+
+def test_the_donut_marks_component_time_beyond_the_phase():
+    # Components that ran in parallel are charged more than the phase lasted.
+    pie = plot_phase_component_pie(INIT, top_n=3, duration=2.0)
+    assert UNATTRIBUTED not in pie.data[0].labels
+    assert pie.layout.annotations[0].text == "<b>3.51 s</b><br>component time"
 
 
 def test_small_slices_carry_no_percentage():
@@ -102,6 +121,42 @@ def test_phase_history_as_shares_fills_every_column():
     assert [sum(col) for col in zip(*(b.y for b in bars))] == pytest.approx([100, 100])
     # No totals over columns that are all the same height.
     assert all(t.type == "bar" for t in plot_phase_history(series, relative=True).data)
+
+
+def test_series_carry_the_phase_time_no_component_was_charged_for():
+    durations = _history({"2026-10-11": 30.0, "2026-10-12": 2.6}, None)
+    series = phase_component_series(INIT_HISTORY, top_n=2, durations=durations)
+    assert list(dict.fromkeys(series["label"])) == [
+        "MyAIDAProcessor", "GeoSvc", "Other (2)", UNATTRIBUTED,
+    ]
+    # Only the run whose phase outlasted its components has an unattributed part.
+    gap = series[series["label"] == UNATTRIBUTED].set_index("run_id")["seconds"]
+    assert gap.to_dict() == pytest.approx({"2026-10-11": 30.0 - 24.61})
+    # Shares are of the phase's duration.
+    aida = series[series["label"] == "MyAIDAProcessor"].set_index("run_id")["share_pct"]
+    assert aida["2026-10-11"] == pytest.approx(22.6 / 30.0 * 100)
+    totals = next(t for t in plot_phase_history(series).data if t.type == "scatter")
+    assert list(totals.text) == ["30 s", "2.61 s"]
+
+
+def test_a_tag_run_twice_shows_only_its_latest_run():
+    def run(run_date, seconds):
+        return pd.DataFrame({
+            "run_id": run_date, "x_date": pd.Timestamp("2026-10-11"),
+            "run_date": pd.Timestamp(run_date), "k4h_release": "key4hep-2026-10-11",
+            "phase": "execute", "component": list(seconds), "seconds": list(seconds.values()),
+        })
+
+    # The rerun no longer has A, which the first run spent 8 s in.
+    rows = pd.concat([
+        run("2026-10-11", {"A": 8.0, "B": 1.0}), run("2026-10-12", {"B": 3.0}),
+    ], ignore_index=True)
+    series = phase_component_series(rows, top_n=6)
+    assert series[["run_id", "label", "seconds"]].to_dict("records") == [
+        {"run_id": "2026-10-12", "label": "B", "seconds": 3.0},
+    ]
+    totals = next(t for t in plot_phase_history(series).data if t.type == "scatter")
+    assert list(totals.y) == [3.0]
 
 
 def test_a_phase_timed_as_a_whole_is_one_series():

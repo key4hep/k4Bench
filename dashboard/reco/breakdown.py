@@ -92,7 +92,9 @@ def _render_current_run(ctx: PageContext) -> None:
     phases = timing.phase_seconds()
     total = sum(phases.values())
     shown = [p for p in PHASE_NAMES if phases.get(p, 0) >= MIN_PHASE_S]
-    for column, phase in zip(st.columns(len(shown)), shown):
+    if not shown:
+        st.info(f"No phase of **{config}** lasted {MIN_PHASE_S * 1000:.0f} ms or more.")
+    for column, phase in zip(st.columns(len(shown)) if shown else (), shown):
         with column, st.container(border=True, height="stretch"):
             st.metric(PHASE_NAMES[phase], _seconds(phases[phase]))
             st.caption(f"{phases[phase] / total:.1%} of the job")
@@ -117,6 +119,7 @@ def _render_current_run(ctx: PageContext) -> None:
             st.plotly_chart(
                 plot_phase_component_pie(
                     seconds, top_n=_PIE_TOP_N, colors=colors, title=title,
+                    duration=phases.get(phase),
                 ),
                 width="stretch", key=f"reco_breakdown_{phase}_chart",
                 config={"displayModeBar": False},
@@ -179,6 +182,9 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
         ) or phases[0]
     components = rows[rows["phase"].eq(phase) & rows["component"].notna()]
     by_component = not components.empty
+    # The phase's duration, whose part no component was charged for is a
+    # series of its own.
+    durations = totals[totals["phase"] == phase] if by_component else None
     lines, relative = True, False
     if by_component:
         with chart_col:
@@ -196,7 +202,7 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
     # The Top N chooses the series before either chart draws its popover, in
     # which it then sits; Streamlit has already restored the slider's value.
     top_n = int(st.session_state.get(_TOP_N_KEY, _TOP_N))
-    series = phase_component_series(components, top_n)
+    series = phase_component_series(components, top_n, durations)
     top_n_control_ = top_n_control(_TOP_N_KEY, "components", "components", default=_TOP_N)
     stat, title, unit = (
         ("share_pct", "Share of the phase (%)", "%") if relative else ("seconds", "Time (s)", "s")

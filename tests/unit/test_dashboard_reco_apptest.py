@@ -108,6 +108,19 @@ def test_the_breakdown_gives_each_phase_and_its_components(monkeypatch, tmp_path
     assert not at.radio
 
 
+def test_a_run_without_a_phase_to_show_still_gives_its_components(monkeypatch, tmp_path):
+    run = tmp_path / "run"
+    shutil.copytree(RECO_RUN, run)
+    for path in run.glob("*_components.json"):
+        raw = json.loads(path.read_text())
+        path.write_text(json.dumps({**raw, "phases": {}}))
+    at = _page(monkeypatch, tmp_path, run, "Breakdown")
+    assert "No phase of **baseline** lasted 50 ms or more" in at.info[0].value
+    assert not at.metric
+    (init,), (loop,), _ = _charts(at)
+    assert init["labels"][0] == "GeoSvc"
+
+
 def test_the_event_chart_can_put_the_longest_events_first(monkeypatch, tmp_path):
     at = _page(monkeypatch, tmp_path, RECO_RUN, "Breakdown")
     at.button_group(key="reco_breakdown_event_order").set_value("Longest first").run()
@@ -160,7 +173,9 @@ def test_the_phase_history_is_one_chart_for_the_chosen_phase():
     assert len(at.get("plotly_chart")) == 1
     bars = [t for t in _traces(at) if t["type"] == "bar"]
     assert bars[0]["name"] == "GeoSvc"
-    assert bars[-1]["name"].startswith("Other (")
+    assert bars[-2]["name"].startswith("Other (")
+    # The phase's time no component was charged for tops each column.
+    assert bars[-1]["name"] == "Unattributed"
     # The same components as lines.
     at.button_group(key="reco_breakdown_hist_chart_type").set_value("Lines").run()
     lines = [t for t in _traces(at) if t["type"] == "scatter"]

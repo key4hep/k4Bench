@@ -22,6 +22,11 @@ PHASE_NAMES = {
     "finalize": "Finalize",
 }
 
+#: The share of a phase that no component was charged for: the framework's own
+#: time, between the event loop's events and around the components' calls.
+UNATTRIBUTED = "Unattributed"
+_UNATTRIBUTED_COLOR = "#e8e8e8"
+
 def _seconds(value: float) -> str:
     return f"{value:.3g} s" if value < 100 else f"{value:,.0f} s"
 
@@ -49,19 +54,25 @@ def plot_phase_component_pie(
     top_n: int = 5,
     colors: Mapping[str, str] | None = None,
     title: str | None = None,
+    duration: float | None = None,
 ) -> go.Figure:
     """A donut of one phase's time by component: the :func:`top_components`
-    and the rest as one "Other (k)" slice, the phase's total in the middle.
+    and the rest as one "Other (k)" slice, the total in the middle.
 
     *seconds* is component → self seconds in the phase
-    (:meth:`~k4bench.analysis.components.ComponentTiming.phase_component_seconds`),
-    which add up to the phase. *colors* maps a component to its colour, so a
-    component that several donuts show keeps one; the others take the
-    palette in order.
+    (:meth:`~k4bench.analysis.components.ComponentTiming.phase_component_seconds`).
+    *duration* is the phase's elapsed seconds
+    (:meth:`~k4bench.analysis.components.ComponentTiming.phase_seconds`):
+    the part of it no component was charged for is one more slice,
+    :data:`UNATTRIBUTED`, and the middle is the phase's duration. Without
+    it, the middle is the components' summed time; when that exceeds
+    *duration* (components run in parallel), too, marked as component time.
+    *colors* maps a component to its colour, so a component that several
+    donuts show keeps one; the others take the palette in order.
     """
     seconds = seconds.dropna()
     seconds = seconds[seconds > 0].sort_values(ascending=False)
-    total = float(seconds.sum())
+    measured = float(seconds.sum())
     top = top_components(seconds, top_n)
     rest = seconds.drop(index=top)
     names = list(top)
@@ -72,7 +83,15 @@ def plot_phase_component_pie(
         names.append(f"Other ({len(rest)})")
         values.append(float(rest.sum()))
         slice_colors.append(_OTHER_COLOR)
+    if duration is not None and duration > measured:
+        names.append(UNATTRIBUTED)
+        values.append(duration - measured)
+        slice_colors.append(_UNATTRIBUTED_COLOR)
+    total = float(sum(values))
     shares = [v / total if total else 0.0 for v in values]
+    centre = f"<b>{_total(total)}</b>"
+    if duration is not None and measured > duration:
+        centre += "<br>component time"
 
     fig = go.Figure(go.Pie(
         labels=names, values=values, hole=0.58, sort=False, direction="clockwise",
@@ -83,7 +102,7 @@ def plot_phase_component_pie(
         hovertemplate="<b>%{label}</b><br>%{customdata} · %{percent}<extra></extra>",
     ))
     fig.add_annotation(
-        text=f"<b>{_total(total)}</b>", x=0.5, y=0.5, xref="paper", yref="paper",
+        text=centre, x=0.5, y=0.5, xref="paper", yref="paper",
         showarrow=False, font=dict(size=18),
     )
     fig.update_layout(
@@ -166,21 +185,43 @@ _MAX_TOTAL_LABELS = 20
 SERIES_COLUMNS = ["run_id", "run_date", "x_date", "k4h_release", "label", "seconds", "share_pct"]
 
 
-def phase_component_series(rows: pd.DataFrame, top_n: int) -> pd.DataFrame:
-    """One phase's time per run as series to draw: the *top_n* components
-    that took longest over the window (ranked by their median), and the rest
-    summed as "Other (k)", in that order.
+def latest_run_per_tag(rows: pd.DataFrame) -> pd.DataFrame:
+    """The *rows* of each nightly tag's (``x_date``'s) latest run: a tag is
+    re-run nightly until the next one, and a column mixing its runs would
+    show none of them."""
+    runs = (
+        rows[["x_date", "run_date", "run_id"]].drop_duplicates()
+        .sort_values(["run_date", "run_id"], na_position="first", kind="stable")
+        .drop_duplicates("x_date", keep="last")
+    )
+    keep = pd.MultiIndex.from_frame(runs[["x_date", "run_id"]])
+    return rows[pd.MultiIndex.from_frame(rows[["x_date", "run_id"]]).isin(keep)]
+
+
+def phase_component_series(
+    rows: pd.DataFrame, top_n: int, durations: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """One phase's time per nightly tag as series to draw: the *top_n*
+    components that took longest over the window (ranked by their median),
+    the rest summed as "Other (k)", and, given the phase's *durations*, the
+    part of it no component was charged for as :data:`UNATTRIBUTED`, in
+    that order.
 
     *rows* are one config's and one phase's
     :func:`~k4bench.analysis.trend.build_phase_trend` rows: its components,
     or, for a phase timed only as a whole, its total with ``component`` set
-    to the phase's name. One row per run and series, the series named in
-    ``label``, with its ``seconds`` and its ``share_pct`` of the run's phase,
-    the run's ``run_id``, ``run_date``, ``x_date`` and ``k4h_release`` kept.
+    to the phase's name. *durations* are its rows of the phase's total
+    (``component`` ``NaN``). Each tag's latest run only
+    (:func:`latest_run_per_tag`). One row per run and series, the series
+    named in ``label``, with its ``seconds`` and its ``share_pct`` of the
+    run's series together (the phase's duration when *durations* are given
+    and the components ran one at a time), the run's ``run_id``,
+    ``run_date``, ``x_date`` and ``k4h_release`` kept.
     """
     if rows.empty:
         return pd.DataFrame(columns=SERIES_COLUMNS)
     run_keys = ["run_id", "run_date", "x_date", "k4h_release"]
+    rows = latest_run_per_tag(rows)
     ranked = rows.groupby("component")["seconds"].median().sort_values(ascending=False)
     top = ranked.index[:top_n].tolist()
     rest = ranked.index[top_n:]
@@ -188,9 +229,22 @@ def phase_component_series(rows: pd.DataFrame, top_n: int) -> pd.DataFrame:
         rows["component"].isin(top), f"Other ({len(rest)})",
     ))
     series = labelled.groupby([*run_keys, "label"], dropna=False, as_index=False)["seconds"].sum()
-    totals = series.groupby("run_id")["seconds"].transform("sum")
+    if durations is not None and not durations.empty:
+        runs = series.drop_duplicates(["x_date", "run_id"]).set_index(["x_date", "run_id"])
+        measured = series.groupby(["x_date", "run_id"], dropna=False)["seconds"].sum()
+        elapsed = durations.drop_duplicates(["x_date", "run_id"]).set_index(
+            ["x_date", "run_id"],
+        )["seconds"]
+        gap = (elapsed.reindex(measured.index) - measured).dropna()
+        gap = gap[gap > 0]
+        if len(gap):
+            unattributed = runs.loc[gap.index, ["run_date", "k4h_release"]].reset_index()
+            series = pd.concat([series, unattributed.assign(
+                label=UNATTRIBUTED, seconds=gap.to_numpy(),
+            )], ignore_index=True)
+    totals = series.groupby(["x_date", "run_id"], dropna=False)["seconds"].transform("sum")
     series["share_pct"] = series["seconds"] / totals.where(totals > 0) * 100
-    order = {name: i for i, name in enumerate([*top, f"Other ({len(rest)})"])}
+    order = {name: i for i, name in enumerate([*top, f"Other ({len(rest)})", UNATTRIBUTED])}
     series = series.sort_values(
         ["x_date", "run_date"], kind="stable",
     ).sort_values("label", key=lambda names: names.map(order), kind="stable")
@@ -204,20 +258,19 @@ def plot_phase_history(
     relative: bool = False,
 ) -> go.Figure | None:
     """One phase's time per nightly tag, a column per tag stacking
-    :func:`phase_component_series`' series in their order, the last of them
-    ("Other") grey: a column's height is the phase's duration, written above
-    it. *relative* draws each series as its share of the column. A tag run
-    more than once shows its latest run. ``None`` when there is nothing to
-    draw.
+    :func:`phase_component_series`' series in their order, "Other" grey and
+    :data:`UNATTRIBUTED` paler: a column's height is the series' total,
+    written above it, the phase's duration when the series carry its
+    unattributed part. *relative* draws each series as its share of the
+    column. A tag run more than once shows its latest run
+    (:func:`latest_run_per_tag`). ``None`` when there is nothing to draw.
     """
     if series.empty:
         return None
-    # The series' order is the input's: longest first, "Other" last.
+    # The series' order is the input's: longest first, "Other" and
+    # "Unattributed" last.
     names = list(dict.fromkeys(series["label"]))
-    series = (
-        series.dropna(subset=["run_date"]).sort_values("run_date")
-        .drop_duplicates(["label", "x_date"], keep="last")
-    )
+    series = latest_run_per_tag(series.dropna(subset=["run_date"]))
     dates = sorted(pd.to_datetime(series["x_date"]).unique())
     table = series.pivot_table(
         index="x_date", columns="label", values="seconds", aggfunc="sum", fill_value=0.0,
@@ -228,11 +281,15 @@ def plot_phase_history(
     for i, name in enumerate(names):
         seconds = table[name]
         share = (seconds / totals.where(totals > 0)).fillna(0.0)
-        other = name.startswith("Other (")
+        color = (
+            _OTHER_COLOR if name.startswith("Other (")
+            else _UNATTRIBUTED_COLOR if name == UNATTRIBUTED
+            else palette[i % len(palette)]
+        )
         fig.add_trace(go.Bar(
             x=dates, y=share * 100 if relative else seconds, name=name,
             marker=dict(
-                color=_OTHER_COLOR if other else palette[i % len(palette)],
+                color=color,
                 line=dict(color="white", width=1),
             ),
             customdata=list(zip(seconds, share)),
