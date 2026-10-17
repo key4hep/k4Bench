@@ -279,6 +279,21 @@ def test_a_work_change_too_small_to_explain_the_time_is_the_host():
     assert verdict.loc["Track", "cause"] == "host"
 
 
+def test_an_uncertain_work_change_large_enough_to_explain_the_time_is_unknown():
+    # All the extra work in one event: as large as the time's change on
+    # average, but resamples without that event see none.
+    instructions = _instructions(COSTS)
+    track = instructions["Track"].copy()
+    track[5] += 0.2 * track[1:].sum()
+    a = job(COSTS, instructions=instructions)
+    b = job(_scaled(COSTS, {"Track": 1.2}), instructions={**instructions, "Track": track})
+    verdict = _classify(a, b, instructions="instructions")
+    assert verdict.loc["Track", "significant"] == True  # noqa: E712
+    assert verdict.loc["Track", "work_fraction"] == pytest.approx(1.0)
+    assert verdict.loc["Track", "work_changed"] == False  # noqa: E712
+    assert verdict.loc["Track", "cause"] == "unknown"
+
+
 def test_without_instructions_only_changed_allocations_say_anything():
     allocations = {c: np.where(np.isnan(v), np.nan, 1e5) for c, v in COSTS.items()}
     a = job(COSTS, allocations=allocations)

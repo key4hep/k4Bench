@@ -363,9 +363,11 @@ def classify_changes(
     - ``cause`` — for a significant change: ``added`` or ``removed`` for a
       component one side lacks; ``work`` when the instructions changed and
       account for at least :data:`WORK_EXPLAINS` of it, or, without them, the
-      allocation counts changed; ``host`` when the instructions account for
-      less; ``unknown`` when only allocation counts were recorded and they did
-      not change, which does not show that the work stayed the same.
+      allocation counts changed; ``host`` when the instructions stayed within
+      their floors and noise, or account for less; ``unknown`` when only
+      allocation counts were recorded and they did not change, which does not
+      show that the work stayed the same, or when the instructions' change is
+      uncertain yet large enough to account for it.
     """
     out = significant_changes(time, TIME_FLOORS, time_noise)
     out["direction"] = pd.Series(np.where(time["delta"] > 0, "slower", "faster"),
@@ -374,6 +376,7 @@ def classify_changes(
     work_changed = pd.Series(np.nan, index=time.index, dtype=object)
     work_fraction = pd.Series(np.nan, index=time.index)
     counted = pd.Series(False, index=time.index)
+    unchanged = pd.Series(False, index=time.index)
     if allocations is not None:
         judged = significant_changes(allocations.reindex(time.index), ALLOCATION_FLOORS)
         known = judged["reason"] != "unknown"
@@ -382,6 +385,9 @@ def classify_changes(
         instructions = instructions.reindex(time.index)
         judged = significant_changes(instructions, INSTRUCTION_FLOORS, instruction_noise)
         counted = judged["reason"] != "unknown"
+        # An uncertain change shows neither that the work changed nor that
+        # it stayed the same.
+        unchanged = judged["reason"].isin(["below_floor", "within_noise"])
         work_changed[counted] = judged["significant"][counted]
         work_fraction = instructions["rel"] / time["rel"].where(time["rel"] != 0)
     out["work_changed"] = work_changed
@@ -389,7 +395,7 @@ def classify_changes(
 
     cause = pd.Series("unknown", index=time.index)
     cause[work_changed.eq(True)] = "work"
-    cause[counted & (work_changed.eq(False) | work_fraction.lt(WORK_EXPLAINS))] = "host"
+    cause[counted & (unchanged | work_fraction.lt(WORK_EXPLAINS))] = "host"
     cause[time["status"] != "common"] = time["status"]
     out["cause"] = cause.where(out["significant"])
     return out
