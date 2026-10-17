@@ -121,6 +121,14 @@ def _render_selected(flow: DataFlow, graph: Graph, view: FlowView) -> None:
                 st.session_state[_EXPANDED_KEY].discard(algorithm.impl)
                 st.session_state[_SELECTED_KEY] = None
                 st.rerun()
+    if algorithm.output_commands is not None:
+        # The Writer declares no data handles: its reads follow from its
+        # keep/drop rules, as the graph links them into it.
+        kept = sorted({link.name for (_, c), links in graph.edges.items()
+                       if c == name for link in links})
+        st.markdown("**Reads** (kept by `IOSvc.outputCommands`)")
+        st.caption(", ".join(kept) if kept else "Nothing kept by the output commands.")
+        return
     if algorithm.inputs is None and algorithm.outputs is None:
         st.info("Not recorded for this run.")
         return
@@ -165,7 +173,9 @@ def _render_limits(flow: DataFlow, graph: Graph) -> None:
         if not flow.marlin_recorded and any(a.framework == "marlin" for a in flow.algorithms):
             st.markdown("- **Not recorded:** all Marlin processors (no `Marlin -x` for this run)")
         if silent:
-            st.markdown("- **Not drawn**, no collections declared to Marlin: " + ", ".join(silent))
+            st.markdown("- **Not drawn**, no collection linking them to another algorithm "
+                        "(none declared, or none with a recorded writer or reader): "
+                        + ", ".join(silent))
         if graph.unresolved:
             items = ", ".join(
                 f"{read.name} ({consumer}{'' if read.explicit is not False else ', default'})"

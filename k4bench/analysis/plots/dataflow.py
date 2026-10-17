@@ -79,15 +79,22 @@ def dataflow_view(
     isolated: bool = True,
 ) -> FlowView:
     """Nodes and edges of *flow*: algorithms sharing a class collapsed into
-    one node unless the class is in *expanded*, each node carrying the
-    event-loop seconds per event of its algorithms (from *seconds*), the
-    Writer's reads dropped unless *writer_edges*, and the nodes no edge
-    touches (but the Writer) dropped unless *isolated*."""
+    one node unless the class is in *expanded* or collapsing it would make a
+    cycle, each node carrying the event-loop seconds per event of its
+    algorithms (from *seconds*), the Writer's reads dropped unless
+    *writer_edges*, and the nodes no edge touches (but the Writer) dropped
+    unless *isolated*."""
     seconds = seconds or {}
+    graph_edges = flow.graph().edges
     by_impl: dict[str, list[str]] = {}
     for algorithm in flow.algorithms:
         by_impl.setdefault(algorithm.impl, []).append(algorithm.name)
-    groups = {impl: tuple(names) for impl, names in by_impl.items() if len(names) > 1}
+    # A class whose instances another algorithm sits between, fed by one and
+    # feeding another, would loop back into itself as one node: drawn apart.
+    groups = {
+        impl: tuple(names) for impl, names in by_impl.items()
+        if len(names) > 1 and not _between(set(names), graph_edges)
+    }
 
     node_of: dict[str, str] = {}
     nodes: list[Node] = []
@@ -110,7 +117,7 @@ def dataflow_view(
         ))
 
     edges: dict[tuple[str, str], list[Link]] = {}
-    for (producer, consumer), links in flow.graph().edges.items():
+    for (producer, consumer), links in graph_edges.items():
         pair = (node_of[producer], node_of[consumer])
         if pair[0] == pair[1] or (not writer_edges and pair[1] == sink):
             continue
@@ -119,6 +126,24 @@ def dataflow_view(
         linked = {node for pair in edges for node in pair} | {sink}
         nodes = [node for node in nodes if node.id in linked]
     return FlowView(tuple(nodes), {p: tuple(ls) for p, ls in edges.items()}, sink, groups)
+
+
+def _between(members: set[str], edges: Container[tuple[str, str]]) -> bool:
+    """Whether an algorithm outside *members* reads, directly or not, from one
+    of them and is read from by another: collapsing them would make a cycle."""
+
+    def reach(starts: set[str], forward: bool) -> set[str]:
+        seen, todo = set(), list(starts)
+        while todo:
+            node = todo.pop()
+            for a, b in edges:
+                step = b if forward and a == node else a if not forward and b == node else None
+                if step is not None and step not in seen:
+                    seen.add(step)
+                    todo.append(step)
+        return seen
+
+    return bool((reach(members, True) & reach(members, False)) - members)
 
 
 def layered_positions(view: FlowView) -> dict[str, tuple[float, float]]:

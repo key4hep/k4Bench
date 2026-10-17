@@ -75,6 +75,22 @@ class TestView:
         ids = [n.id for n in dataflow_view(flow, writer_edges=False, isolated=False).nodes]
         assert "Status" not in ids and "Writer" in ids
 
+    def test_a_class_another_algorithm_sits_between_is_not_collapsed(self):
+        # MergeA feeds Refit, which feeds MergeB: as one node they would loop.
+        flow = DataFlow.from_json({
+            "schema_version": 1, "handles_recorded": True, "marlin_recorded": True,
+            "algorithms": [
+                _algorithm("MergeA", "Merge", writes=["Hits"]),
+                _algorithm("Refit", "Refit", reads=["Hits"], writes=["Tracks"]),
+                _algorithm("MergeB", "Merge", reads=["Tracks"], writes=["AllTracks"]),
+            ],
+        })
+        view = dataflow_view(flow)
+        assert [n.id for n in view.nodes] == ["MergeA", "Refit", "MergeB"]
+        assert view.groups == {}
+        x = {node: p[0] for node, p in layered_positions(view).items()}
+        assert x["MergeA"] < x["Refit"] < x["MergeB"]
+
     def test_unknown_times_stay_unknown(self, flow):
         assert dataflow_view(flow).nodes[1].seconds is None
 

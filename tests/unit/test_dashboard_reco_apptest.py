@@ -441,7 +441,8 @@ def test_the_data_flow_groups_the_instances_of_a_class(monkeypatch, tmp_path):
     # The Reader's outputs were backfilled and the Writer reads by its rules,
     # so no Gaudi algorithm's collections are unknown.
     assert "Not recorded" not in text
-    assert ("Not drawn**, no collections declared to Marlin: MyAIDAProcessor, OverlayFalse, "
+    assert ("Not drawn**, no collection linking them to another algorithm (none declared, or "
+            "none with a recorded writer or reader): MyAIDAProcessor, OverlayFalse, "
             "RenameCollection, EventNumber, CollPatcherREC") in text
     assert "PFOsFromJets (VertexFinder)" in text
 
@@ -477,6 +478,18 @@ def test_a_selected_algorithm_lists_what_it_reads_and_writes(monkeypatch, tmp_pa
     assert reads.set_index("Collection").loc["SiTrackRelations", "Written by"] == "unknown"
     refitted = writes.set_index("Collection").loc["SiTracks_Refitted", "Read by"]
     assert "MyDDMarlinPandora_10ns" in refitted
+
+
+def test_the_selected_writer_lists_what_its_rules_keep(monkeypatch, tmp_path):
+    _local_env(monkeypatch, RECO_RUN, tmp_path / "cache")
+    at = AppTest.from_function(_page_app, args=(str(_DASHBOARD_DIR),), default_timeout=60)
+    at.query_params["tab"] = "Data Flow"
+    at.session_state["reco_dataflow_selected"] = "k4FWCore__Writer"
+    at.run()
+    assert not at.exception, at.exception
+    assert not any("Not recorded for this run" in i.value for i in at.info)
+    # Its rule is ``keep *``: what the Reader read is saved again.
+    assert any("MCParticles" in c.value.split(", ") for c in at.caption)
 
 
 def test_a_run_without_a_data_flow_says_so(monkeypatch, tmp_path):
