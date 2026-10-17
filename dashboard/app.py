@@ -14,9 +14,12 @@ from ui_chrome import configure_page
 
 #: The top bar, in display order.
 PAGES = [
-    st.Page(sim_page.main, title="Simulation", icon=":material/blur_on:", default=True),
     st.Page(
-        reco_page.main, title="Reconstruction", icon=":material/account_tree:",
+        sim_page.main, title=sim_page.SIM_PAGE.title, icon=":material/blur_on:",
+        default=True,
+    ),
+    st.Page(
+        reco_page.main, title=reco_page.RECO_PAGE.title, icon=":material/account_tree:",
         url_path="reconstruction",
     ),
 ]

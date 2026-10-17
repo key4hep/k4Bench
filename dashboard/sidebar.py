@@ -62,7 +62,8 @@ class TrendWindow:
     """The history the trend views read: every run of the releases in the window."""
 
     #: Inclusive ``(start, end)`` of the report nights that judged the
-    #: window's releases; ``None`` when nothing has run yet.
+    #: window's releases (for a suite without reports, of the nights its runs
+    #: ran); ``None`` when nothing has run yet.
     dates: tuple[date, date] | None = None
     #: The windowed runs' cached directories, across all releases.
     run_dirs: tuple[str, ...] = ()
@@ -76,11 +77,13 @@ def _url_synced_selectbox(
     A remembered value no longer among *options* is dropped first (see
     :func:`ui_chrome.drop_stale_selection`), a first visit opens on the URL's
     value, and the selection is written back so the address bar stays a deep
-    link to what is on screen.
+    link to what is on screen. The value is kept for the whole session, so
+    switching to another page and back returns to it: a page switch clears
+    the URL, which therefore cannot carry it.
     """
     dropped = drop_stale_selection(key, options)
     seed_query_param(key, param, options)
-    value = st.selectbox(label, options, key=key)
+    value = st.selectbox(label, options, key=key, persist_state="session")
     if value:
         st.query_params[param] = value
     return value, dropped
@@ -185,7 +188,7 @@ def pick_run(
     stack, _ = _url_synced_selectbox("Stack", stacks, f"{key_prefix}sb_stack", "stack")
     st.caption(
         f"Available in {len(stacks)} release(s); defaults to the newest. "
-        "Single-run tabs use it; Trends shows all releases."
+        "Single-run views use it; historical views read the Trend window."
     )
     if not stack:
         return None
@@ -288,5 +291,11 @@ def pick_trend_window(
     except Exception as err:
         st.warning(f"Could not load trend data: {err}")
         run_dirs = ()
-    last_night = max([release_day(releases[-1]), *report_days])
+    # The newest night the store knows of: its newest report, or, for a suite
+    # no report judges, its newest run — a release keeps being re-run nightly
+    # until the next one is tagged.
+    nights = report_days if reports else to_dates(
+        day for days in stacks_dates.values() for day in days
+    )
+    last_night = max([release_day(releases[-1]), *nights])
     return TrendWindow(report_span(selected, releases, last_night), run_dirs)

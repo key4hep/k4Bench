@@ -24,6 +24,8 @@ from data import (
     load_run,
     run_metadata,
 )
+from k4bench.analysis.loader import run_suite
+from k4bench.layout import RECO, SIM
 from k4bench.results.reliability_evidence import run_reliability_map
 from section_dispatch import Renderer, PageContext, current_section, pick_section
 from sections import SCOPED, SectionScope
@@ -41,6 +43,10 @@ from ui_chrome import (
     render_scope_note,
     render_sidebar_footer,
 )
+
+
+#: Each suite's page title, as the top bar names it.
+SUITE_TITLES = {SIM: "Simulation", RECO: "Reconstruction"}
 
 
 @dataclass(frozen=True)
@@ -61,6 +67,11 @@ class SuitePage:
     key_prefix: str = ""
     #: Whether the suite has nightly reports, which bound the trend window.
     reports: bool = True
+
+    @property
+    def title(self) -> str:
+        """The page's name in the top bar."""
+        return SUITE_TITLES[self.suite]
 
     def visible_sections(self, trends_enabled: bool) -> list[str]:
         """The sections to offer, in display order.
@@ -84,6 +95,8 @@ def render_page(page: SuitePage) -> None:
     run_meta: dict | None = None
     window = TrendWindow()
     run: RunData | None = None
+    # The suite of a local directory that holds another suite's run.
+    foreign_suite: str | None = None
     # Trends-capable sections are gated on *remote mode*, not on whether the
     # current trend window happens to have data. This keeps the section set and
     # each one's view selector stable across trend-window changes, so the active
@@ -132,6 +145,10 @@ def render_page(page: SuitePage) -> None:
                 f"Data directory not found: '{data_dir}'. "
                 "Check for typos or a missing directory."
             )
+        # A remote page only ever walks its own suite's tree; a local directory
+        # can hold any suite's run, which this page must not present as its own.
+        elif not config.data_url and (suite := run_suite(Path(data_dir))) != page.suite:
+            foreign_suite = suite
         else:
             run = load_run(data_dir, window.run_dirs)
             # Remote mode shows the run-quality card under the Stack selector.
@@ -141,6 +158,14 @@ def render_page(page: SuitePage) -> None:
                 st.warning("No benchmark data found in the specified directory.")
 
         render_sidebar_footer()
+
+    if foreign_suite is not None:
+        st.warning(
+            f"**{data_dir}** holds a {SUITE_TITLES[foreign_suite].lower()} run. "
+            f"Open it on the {SUITE_TITLES[foreign_suite]} page; this page shows "
+            f"{page.title.lower()} runs only."
+        )
+        return
 
     if run is None or not run.labels:
         path_hint = f" in **{data_dir}**" if data_dir else ""

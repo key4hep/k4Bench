@@ -66,6 +66,11 @@ def _pick_run_app(dashboard_dir, store, plat, fail, pick_kwargs) -> None:
     sidebar.cached_list_platforms = _list_platforms
     sidebar.cached_scan_stack_samples = _scan_stack_samples
     sidebar.cached_fetch_latest_run = _fetch_latest_run
+    # "away" stands for the reader being on another page: nothing is picked,
+    # and the page switch cleared the URL the pickers mirror themselves in.
+    if st.session_state.get("away"):
+        st.query_params.clear()
+        return
     st.session_state["picked"] = sidebar.pick_run(
         "https://store.invalid", "/cache", **pick_kwargs
     )
@@ -136,6 +141,22 @@ def test_pick_run_walks_the_requested_suite_under_its_own_keys():
         "detector": "CLD_o2_v09", "platform": PLAT,
         "sample": "single_e-_10GeV", "stack": NEW,
     }
+
+
+def test_pick_run_returns_to_the_run_a_reader_left_on_another_page():
+    # Neither is a default: ALLEGRO_o1_v04 is listed first, NEW is the newest.
+    at = _run_pick({"detector": "CLD_o2_v09"})
+    at.selectbox(key="sb_stack").set_value(OLD).run()
+    at.session_state["away"] = True
+    at.run()
+    assert _query(at) == {}
+    at.session_state["away"] = False
+    at.run()
+    picked = at.session_state["picked"]
+    assert (picked.detector, picked.stack) == ("CLD_o2_v09", OLD)
+    # The address bar is a deep link to it again.
+    assert _query(at)["detector"] == "CLD_o2_v09"
+    assert _query(at)["stack"] == OLD
 
 
 def test_pick_run_stops_where_the_store_cannot_be_read():
@@ -290,6 +311,14 @@ def test_a_suite_without_reports_bounds_the_window_by_its_runs():
     window = at.session_state["window"]
     assert window.dates == (date(2026, 10, 8), date(2026, 10, 12))
     assert len(window.run_dirs) == 4
+
+
+def test_without_reports_the_window_runs_to_the_newest_rerun_of_its_release():
+    # 10-10 was the newest release and kept being re-run until 10-16.
+    runs = {_rel("10-08"): ["2026-10-08"], _rel("10-10"): ["2026-10-10", "2026-10-16"]}
+    at = _run_window(runs, report_nights=None, platform_stacks=None, across=False,
+                     suite="reco", reports=False)
+    assert at.session_state["window"].dates == (date(2026, 10, 8), date(2026, 10, 16))
 
 
 def test_trend_window_is_absent_until_something_has_run():

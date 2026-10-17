@@ -100,12 +100,15 @@ def current_section(section_names: list[str], key: str = "active_section") -> st
 def pick_section(section_names: list[str], key: str = "active_section") -> str:
     """The section bar, returning the active section (see :func:`current_section`).
 
-    *key* holds the selection; each page passes its own.
+    *key* holds the selection; each page passes its own, and it is kept for
+    the whole session, so returning from another page reopens the section it
+    left.
     """
     current_section(section_names, key)
     active = st.segmented_control(
         "Section", section_names,
         key=key, label_visibility="collapsed", width="stretch",
+        persist_state="session",
     ) or section_names[0]
     st.query_params["tab"] = active
     return active

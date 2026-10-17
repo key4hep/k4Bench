@@ -1,0 +1,2 @@
+label,returncode,n_events,wall_time_raw,wall_time_s,user_cpu_s,sys_cpu_s,peak_rss_mb,peak_vmem_mb,major_page_faults,voluntary_ctx_switches,involuntary_ctx_switches,output_size_mb,events_per_sec
+variant_truth_tracking,0,100,9:10.47,550.47,545.75,2.29,1602.01953125,3442.859,0,13709,1260,75.69337177276611,0.1817
