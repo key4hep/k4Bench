@@ -14,6 +14,7 @@ from __future__ import annotations
 import gzip
 import json
 import re
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -71,7 +72,7 @@ def load_run_packages(run_dir: str | Path) -> dict[str, dict]:
     for name in STACK_MANIFESTS:
         try:
             manifests.append(gzip.decompress((run_dir / name).read_bytes()).decode())
-        except (OSError, EOFError, UnicodeDecodeError):
+        except (OSError, EOFError, UnicodeDecodeError, zlib.error):
             continue
     return stack_snapshot(info, {}, manifests).packages
 

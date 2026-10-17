@@ -123,5 +123,17 @@ def test_a_library_under_a_symlinked_install_matches_its_recorded_real_path(tmp_
     assert sources.package_of(f"{real}2/lib/libX.so", packages) is None
 
 
+def test_a_corrupt_manifest_is_skipped(tmp_path):
+    """A manifest whose gzip header is intact but whose deflate body is not."""
+    (tmp_path / "run_info.json").write_text(json.dumps({"k4h_packages": {
+        "k4fwcore": {"commit": "767ff81", "version": "HEAD"},
+    }}))
+    data = gzip.compress(b"k4fwcore; 98b4e; HEAD; /install; Gaudi-242b8\n")
+    (tmp_path / STACK_MANIFESTS[0]).write_bytes(data[:10] + b"\xff" * (len(data) - 10))
+    assert sources.load_run_packages(tmp_path) == {
+        "k4fwcore": {"commit": "767ff81", "version": "HEAD"},
+    }
+
+
 def test_a_run_without_run_info_has_no_packages(tmp_path):
     assert sources.load_run_packages(tmp_path) == {}

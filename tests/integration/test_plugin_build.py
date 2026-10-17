@@ -452,12 +452,16 @@ def test_auditor_measures_a_real_gaudi_job(built_plugin, tmp_path):
 @pytest.mark.integration
 @requires_gaudi
 @pytest.mark.skipif(
-    "libMarlinUtil" not in __import__("os").environ.get("MARLIN_DLL", ""),
-    reason="needs k4MarlinWrapper and MarlinUtil's processors on MARLIN_DLL",
+    not any(
+        (__import__("pathlib").Path(d) / "libk4MarlinWrapperPlugins.so").exists()
+        for d in __import__("os").environ.get("LD_LIBRARY_PATH", "").split(":")
+        if d
+    ),
+    reason="needs k4MarlinWrapper",
 )
 def test_auditor_finds_the_library_of_a_wrapped_marlin_processor(built_plugin, tmp_path):
-    """A MarlinProcessorWrapper running MarlinUtil's Statusmonitor: the class
-    doing the work is the processor, defined in MarlinUtil's library, which the
+    """A MarlinProcessorWrapper running Marlin's own Statusmonitor: the class
+    doing the work is the processor, defined in Marlin's library, which the
     auditor finds through Marlin's ProcessorMgr rather than naming the
     wrapper's own library."""
     from pathlib import Path
@@ -475,7 +479,7 @@ def test_auditor_finds_the_library_of_a_wrapped_marlin_processor(built_plugin, t
     status = timing.components.loc["Status"]
     assert status["type"] == "MarlinProcessorWrapper"
     assert status["impl"] == "Statusmonitor"
-    assert Path(status["impl_library"]).name.startswith("libMarlinUtil.so")
+    assert Path(status["impl_library"]).name.startswith("libMarlin.so")
     assert status["impl_library"] != status["library"]
 
 
