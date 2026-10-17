@@ -155,8 +155,8 @@ dashboard.
   (`{name: k4run_args}`); its `configured_labels` are `baseline` and
   `variant_<name>`. `suite` names the benchmark suite the run belongs to
   (`sim` or `reco`) and so its run tree (see [EOS layout](#eos-layout));
-  reco runs land in `runs/reco/`, which the dashboard, the regression report
-  and blame do not read yet.
+  reco runs land in `runs/reco/`, which the dashboard's Reconstruction page
+  reads; the regression report and blame read only `runs/sim/`.
 - **`machine_info.json`** — the benchmark host and its state *around* the run:
   CPU model/cores, RAM/swap totals, and `_start`/`_end` snapshots of load,
   available memory, CPU frequency, and thermal throttling. The pairs let the
@@ -468,8 +468,10 @@ to the first underscore (`ALLEGRO_o1_v04` → `ALLEGRO`, `ILD_FCCee_v01` →
 
 This is the integration contract between CI and the dashboard
 ([data flow](../architecture/data-flow.md#nightly-eos-dashboard)). The
-dashboard, the regression report and blame read the `sim` suite; nothing reads
-`runs/reco/` yet. `reports/sim/` holds the nightly regression report (written
+regression report and blame read the `sim` suite; the dashboard reads both, one
+page per suite. No report judges the `reco` suite yet, so there is no
+`reports/reco/` and the Reconstruction page reads its runs directly.
+`reports/sim/` holds the nightly regression report (written
 by the `regression-report` CI job, rendered by the dashboard's Regressions tab),
 and `reproducers/sim/` holds the runnable recipes the blame pull-request
 comments link to (written by the same job's comment step, read directly by

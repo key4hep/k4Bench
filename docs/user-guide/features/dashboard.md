@@ -18,12 +18,20 @@ that need *history* and *comparison*:
 - Has a Key4hep release made simulation slower or hungrier?
 - How does per-event time/memory drift across releases?
 
+The bar at the top switches between two pages, one per benchmark suite:
+**Simulation** (ddsim, the default page at `/`) and **Reconstruction** (k4run,
+at `/reconstruction`). Each page has its own sidebar, sections and selections,
+and reads only its own suite's runs. Most of this guide describes the
+Simulation page; the
+[Reconstruction page](#reconstruction-page) section covers the other one.
+
 ## Where the data comes from
 
 Every night, CI runs a curated set of benchmarks (defined in
 `.github/benchmarks/{suite}/{concept}/{detector}.yml`), uploads each result to
-CERN EOS, and the dashboard reads the sim suite's over HTTPS from a WebEOS
-endpoint. The EOS layout is hierarchical (see
+CERN EOS, and the dashboard reads them over HTTPS from a WebEOS endpoint: the
+`sim` suite's on the Simulation page, the `reco` suite's on the Reconstruction
+page. The EOS layout is hierarchical (see
 [File formats → EOS layout](../../reference/file-formats.md#eos-layout)):
 
 ```text
@@ -69,6 +77,8 @@ names the run directory instead.
     [`dashboard/ui_chrome.py`](../../architecture/data-flow.md)).
 
 ## The tabs
+
+The Simulation page's sections:
 
 | Tab | What it shows | Backed by |
 | --- | --- | --- |
@@ -656,6 +666,65 @@ selected sample/platform is listed as excluded instead of silently plotted
 against a different workload. The values shown are the raw nightly
 measurements the regression engine judged — baselines and Δ-verdicts stay in
 the Regressions tab.
+
+## Reconstruction page
+
+The Reconstruction page reads `runs/reco/`: k4run reconstruction jobs run on a
+frozen simulated input under the k4Bench Gaudi auditor, which records each
+event's time and memory and, per component (algorithm or service), its time in
+every phase of the job (`{config}_components.json`, see
+[File formats](../../reference/file-formats.md#eos-layout)). Its sidebar works
+as on the Simulation page but offers only the reco tree's detectors, platforms
+and samples. A configuration is `baseline` or a `variant_<name>` of the job.
+
+No nightly report judges the reco suite yet, so this page has no Regressions or
+Stack Changes section and its views carry no verdicts: every value is the
+measurement as uploaded.
+
+| Section | What it shows | Backed by |
+| --- | --- | --- |
+| **Overview** | every reco detector's baseline time and memory side by side, over the trend window | `*_results.csv`, `*_events.json` of every detector's runs |
+| **Breakdown** | where the job's time goes, phase by phase and component by component | `*_components.json` |
+| **Event timing** | per-event wall time distributions, as on the Simulation page | `*_events.json` |
+| **Event memory** | per-event RSS and growth, as on the Simulation page | `*_events.json` |
+| **Machine info** | the host the benchmark ran on | `machine_info.json` |
+| **Logs** | the k4run log, read as a Gaudi log, and the job options | `*.log`, `*_joboptions.opts` |
+
+**Overview** draws the Simulation Overview's Performance Trends and Performance
+Landscape views from the runs themselves, with the same like-for-like rules: one
+platform and sample, the baseline configuration. It is available only against
+the remote store. If a detector's runs could not be listed, a warning names it
+instead of it silently dropping out of the charts.
+
+**Breakdown** has two views:
+
+- **Current Run** shows each phase of the selected run that lasted 50 ms or
+  more (in practice configure, initialize, event loop and finalize) as a card
+  with its share of the job, then a donut each
+  for initialization, the event loop and finalization: the five components
+  that took longest, the rest as one *Other* slice, and in grey the part of the
+  phase no component was charged for (*Unattributed*). The middle of each donut
+  is the phase's measured duration. A component keeps one colour across the
+  donuts and the chart below them, which stacks the event loop's components
+  event by event, in event order or longest first; the first event, which warms
+  the job up, is drawn paler.
+- **Historical Trends** draws one phase at a time across the trend window: its
+  top components (six by default, set in Display options), the rest as
+  *Other*, and *Unattributed*, as stacked columns or as lines, in seconds or as
+  a share of the phase. When a nightly tag was run more than once, only its
+  latest run is drawn. Configure is timed only as a whole, so it is one line.
+
+Component times are *self* times: what the auditor charged to that component
+alone. They add up within a phase, which is why the donuts and columns can be
+stacked, and the part of a phase's duration that no component accounts for
+shows up as *Unattributed* rather than being spread over the others.
+
+**Logs** reads the log's Gaudi and Marlin severities rather than the word
+"error": the **Errors** filter keeps ERROR and FATAL messages, ROOT errors,
+Python tracebacks, crashes and the job's non-zero exit lines. A failed job is
+explained by its first FATAL message, crash or k4run error, and the component
+that printed it. Below the log, **Job options** shows the configuration's resolved
+properties, filterable and downloadable.
 
 ## Running the dashboard locally
 
