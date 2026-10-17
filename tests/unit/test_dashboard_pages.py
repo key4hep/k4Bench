@@ -9,6 +9,7 @@ and no page may present another suite's run as its own.
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -109,9 +110,16 @@ def _reco_app(dashboard_dir) -> None:
     import sys as _sys
     if dashboard_dir not in _sys.path:
         _sys.path.insert(0, dashboard_dir)
+    import streamlit as st
+
     from reco import page
 
-    page.main()
+    # "away" stands for the reader being on another page: nothing of this one
+    # is drawn, and the page switch cleared the URL.
+    if st.session_state.get("away"):
+        st.query_params.clear()
+    else:
+        page.main()
 
 
 def _reco(tab: str) -> AppTest:
@@ -143,6 +151,21 @@ def test_reco_page_draws_its_run_wide_sections_under_its_own_keys(monkeypatch, t
     assert at.button_group[0].options == list(reco_page.RECO_PAGE.sections)
     assert at.text_input(key="reco_data_dir").value == str(RECO_RUN)
     assert not [w for w in at.warning if "holds a" in w.value]
+
+
+def test_reco_page_returns_to_the_local_directory_a_reader_left(monkeypatch, tmp_path):
+    # Not the default directory, so a reset cannot pass for a restore.
+    other = tmp_path / "other_reco_run"
+    shutil.copytree(RECO_RUN, other)
+    _local_env(monkeypatch, RECO_RUN, tmp_path / "cache")
+    at = _reco("Logs")
+    at.text_input(key="reco_data_dir").set_value(str(other)).run()
+    at.session_state["away"] = True
+    at.run()
+    at.session_state["away"] = False
+    at.run()
+    assert not at.exception, at.exception
+    assert at.text_input(key="reco_data_dir").value == str(other)
 
 
 def test_reconstruction_refuses_a_local_sim_run(monkeypatch, sim_run, tmp_path):
