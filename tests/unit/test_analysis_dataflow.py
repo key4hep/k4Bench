@@ -212,6 +212,18 @@ def test_load_reads_every_label(tmp_path):
     assert flows["baseline"].algorithms[0].name == "Reader"
 
 
+def test_keys_a_newer_writer_adds_are_ignored():
+    doc = build_dataflow(_components(), JOBOPTIONS, MARLIN_XML)
+    expected = DataFlow.from_json(doc)
+    for entry in doc["algorithms"]:
+        for collection in (entry["inputs"] or []) + (entry["outputs"] or []):
+            collection["added"] = 1
+        for converter in entry.get("converters", []):
+            converter["added"] = 1
+    assert any(entry.get("converters") for entry in doc["algorithms"])
+    assert DataFlow.from_json(doc) == expected
+
+
 def test_a_newer_schema_is_refused(tmp_path):
     doc = build_dataflow(_components(), JOBOPTIONS, MARLIN_XML)
     doc["schema_version"] = DATAFLOW_SCHEMA_VERSION + 1

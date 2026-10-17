@@ -47,7 +47,7 @@ import json
 import re
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 
 from k4bench.artifacts import DATAFLOW_SUFFIX, MARLIN_PROCESSORS, labelled_files
@@ -148,14 +148,14 @@ class DataFlow:
         validate_dataflow_schema(raw, source=source)
 
         def collections(entries: list | None) -> tuple[Collection, ...] | None:
-            return None if entries is None else tuple(Collection(**entry) for entry in entries)
+            return None if entries is None else tuple(_known(Collection, entry) for entry in entries)
 
         algorithms = tuple(
             Algorithm(
                 name=entry["name"], type=entry["type"], impl=entry["impl"],
                 framework=entry["framework"],
                 inputs=collections(entry["inputs"]), outputs=collections(entry["outputs"]),
-                converters=tuple(Converter(**c) for c in entry.get("converters", [])),
+                converters=tuple(_known(Converter, c) for c in entry.get("converters", [])),
                 output_commands=(None if entry.get("output_commands") is None
                                  else tuple(entry["output_commands"])),
             )
@@ -199,6 +199,13 @@ class DataFlow:
                 if converter.direction == "lcio_to_edm4hep":
                     _convert(stores[LCIO], stores[GAUDI], converter)
         return Graph({pair: tuple(links) for pair, links in edges.items()}, tuple(unresolved))
+
+
+def _known(cls: type, entry: Mapping):
+    """A *cls* from *entry*, leaving out the keys *cls* does not know: an
+    additive, optional key does not change the schema version."""
+    names = {f.name for f in fields(cls)}
+    return cls(**{key: value for key, value in entry.items() if key in names})
 
 
 def _convert(source: dict, target: dict, converter: Converter) -> None:

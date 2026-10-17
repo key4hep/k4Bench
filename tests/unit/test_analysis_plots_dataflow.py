@@ -91,6 +91,32 @@ class TestView:
         x = {node: p[0] for node, p in layered_positions(view).items()}
         assert x["MergeA"] < x["Refit"] < x["MergeB"]
 
+    def test_a_class_one_instance_of_which_reads_another_is_not_collapsed(self):
+        # As one node, RecoA's hits read by RecoB would vanish with the pair.
+        flow = DataFlow.from_json({
+            "schema_version": 1, "handles_recorded": True, "marlin_recorded": True,
+            "algorithms": [
+                _algorithm("RecoA", "Reco", writes=["Hits"]),
+                _algorithm("RecoB", "Reco", reads=["Hits"], writes=["Tracks"]),
+            ],
+        })
+        view = dataflow_view(flow, isolated=False)
+        assert [n.id for n in view.nodes] == ["RecoA", "RecoB"]
+        assert view.groups == {} and ("RecoA", "RecoB") in view.edges
+
+    def test_a_node_only_the_writer_reads_from_is_kept_without_the_writers_reads(self):
+        flow = DataFlow.from_json({
+            "schema_version": 1, "handles_recorded": True, "marlin_recorded": True,
+            "algorithms": [
+                _algorithm("Producer", "Producer", writes=["Summary"], framework="gaudi", type_="Producer"),
+                {**_algorithm("Writer", "Writer", framework="gaudi", type_="Writer"),
+                 "output_commands": ["keep Summary"]},
+            ],
+        })
+        view = dataflow_view(flow, writer_edges=False, isolated=False)
+        assert [n.id for n in view.nodes] == ["Producer", "Writer"]
+        assert view.edges == {}
+
     def test_unknown_times_stay_unknown(self, flow):
         assert dataflow_view(flow).nodes[1].seconds is None
 
