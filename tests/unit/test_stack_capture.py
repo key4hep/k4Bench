@@ -75,6 +75,16 @@ def test_mapping_symlinks_longest_prefix_external_install_and_unknown(tmp_path):
     assert unknown == sorted(paths[2:])
 
 
+def test_capture_records_where_a_symlinked_install_resolves(tmp_path):
+    release = tmp_path.resolve() / "releases/Geant4-hash"
+    release.mkdir(parents=True)
+    view = tmp_path.resolve() / "Geant4"
+    view.symlink_to(release, target_is_directory=True)
+    assert stack.resolved_install(str(view)) == {"install_realpath": str(release)}
+    assert stack.resolved_install(str(release)) == {}
+    assert stack.resolved_install(f"{release}/") == {}
+
+
 def test_full_diff_keeps_head_compare_and_filters_pin_history():
     base, head = snapshots()
     changes = {c.name: c for c in diff_stacks(base, head)}

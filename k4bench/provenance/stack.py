@@ -93,6 +93,7 @@ def capture_stack(run_dir: Path, info: dict, env: dict[str, str]) -> None:
             _log.warning("Mapped CVMFS paths absent from manifests: %s", unmatched)
         info["k4h_loaded_packages"] = {
             name: {"version": packages[name]["version"], **build_info(packages[name]["install_path"]),
+                   **resolved_install(packages[name]["install_path"]),
                    **info.get("k4h_packages", {}).get(name, {})}
             for name in sorted(loaded)
         }
@@ -142,6 +143,16 @@ def build_info(install: str) -> dict[str, str]:
         for key, pattern in (("commit", _REVISION_RE), ("githash", _GITHASH_RE))
         if (match := pattern.search(source))
     }
+
+
+def resolved_install(install: str) -> dict[str, str]:
+    """The directory *install* resolves to now, where symlinks lead elsewhere.
+
+    Recorded at capture: the auditor names libraries by their resolved paths,
+    and LCG's rotating names may point elsewhere when the run is read.
+    """
+    real = str(Path(install).resolve())
+    return {"install_realpath": real} if real != install.rstrip("/") else {}
 
 
 def mapped_packages(paths: list[str], packages: dict[str, dict]) -> tuple[set[str], list[str]]:
@@ -222,6 +233,18 @@ class RepoRef:
 
     def compare_url(self, base: str, head: str) -> str:
         return f"{self.url}{_FORGE_INFIX[self.forge]}/compare/{base}...{head}"
+
+    def tree_url(self, ref: str) -> str:
+        return f"{self.url}{_FORGE_INFIX[self.forge]}/tree/{quote(ref, safe='')}"
+
+    def code_search_url(self, symbol: str, ref: str) -> str:
+        """Where *symbol* is defined in the repository. GitHub searches only
+        the default branch, and only for a signed-in user; GitLab at *ref*."""
+        if self.forge == "github":
+            query = quote(f"repo:{self.slug} symbol:{symbol}", safe="")
+            return f"https://github.com/search?q={query}&type=code"
+        return (f"{self.url}/-/search?scope=blobs&search={quote(symbol, safe='')}"
+                f"&repository_ref={quote(ref, safe='')}")
 
 
 def parse_repo(url: str | None) -> RepoRef | None:

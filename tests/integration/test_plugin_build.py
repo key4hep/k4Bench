@@ -425,6 +425,7 @@ def test_auditor_measures_a_real_gaudi_job(built_plugin, tmp_path):
     assert timing.components.loc["Nap", "parent"] == "Top"
     assert timing.components.loc["Nap", "category"] == "algorithm"
     assert timing.components.loc["Nap", "library"].endswith(".so")
+    assert timing.components.loc["Nap", "impl_library"] == timing.components.loc["Nap", "library"]
     assert timing.components.loc["Nap", "execute_calls"] == 2
     wall, cpu = timing.execute["wall_s"], timing.execute["cpu_s"]
     assert wall.index.tolist() == [0, 1]
@@ -446,6 +447,40 @@ def test_auditor_measures_a_real_gaudi_job(built_plugin, tmp_path):
     assert (events["rss_anon_end_mb"] > 0).all()
 
     assert "Nap.SleepTime" in (tmp_path / "nap_joboptions.opts").read_text()
+
+
+@pytest.mark.integration
+@requires_gaudi
+@pytest.mark.skipif(
+    not any(
+        (__import__("pathlib").Path(d) / "libk4MarlinWrapperPlugins.so").exists()
+        for d in __import__("os").environ.get("LD_LIBRARY_PATH", "").split(":")
+        if d
+    ),
+    reason="needs k4MarlinWrapper",
+)
+def test_auditor_finds_the_library_of_a_wrapped_marlin_processor(built_plugin, tmp_path):
+    """A MarlinProcessorWrapper running Marlin's own Statusmonitor: the class
+    doing the work is the processor, defined in Marlin's library, which the
+    auditor finds through Marlin's ProcessorMgr rather than naming the
+    wrapper's own library."""
+    from pathlib import Path
+
+    assert built_plugin.returncode == 0, "Skipped: build already failed"
+    timing, _ = _run_audited_job(
+        tmp_path,
+        "wrapped",
+        "from Configurables import ApplicationMgr, MarlinProcessorWrapper\n"
+        "status = MarlinProcessorWrapper('Status', ProcessorType='Statusmonitor',\n"
+        "                                Parameters={'HowOften': ['1']})\n"
+        "ApplicationMgr(EvtSel='NONE', EvtMax=1, TopAlg=[status])\n",
+    )
+
+    status = timing.components.loc["Status"]
+    assert status["type"] == "MarlinProcessorWrapper"
+    assert status["impl"] == "Statusmonitor"
+    assert Path(status["impl_library"]).name.startswith("libMarlin.so")
+    assert status["impl_library"] != status["library"]
 
 
 @pytest.mark.integration

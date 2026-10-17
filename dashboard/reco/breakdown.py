@@ -3,16 +3,20 @@ component by component.
 
 Current Run gives each phase of the selected run as a card, then a donut each
 of its initialization, event loop and finalization by component, and the event
-loop event by event in the donuts' colours. Historical Trends draws one phase
+loop event by event in the donuts' colours. Components lists the selected run's
+algorithms and services with their time per phase and links to their code at
+the revision the run's stack built. Historical Trends draws one phase
 at a time across the trend window, its components as stacked columns or, with
 the trend views' shared renderer, as lines; configure, timed only as a whole,
 as one line.
 """
 from __future__ import annotations
 
+import pandas as pd
 import streamlit as st
 
-from data import cached_load_trend_phases
+from data import cached_load_run_packages, cached_load_trend_phases
+from k4bench.analysis.components import ComponentTiming
 from k4bench.analysis.plots import (
     plot_event_composition,
     plot_phase_component_pie,
@@ -24,6 +28,7 @@ from k4bench.analysis.plots.phases import (
     phase_component_series,
     top_components,
 )
+from k4bench.provenance.sources import package_of
 from section_dispatch import PageContext, judgeable_trend
 from sections import TREND_WINDOW_SCOPE, SectionScope
 from tabs._historical_trends import render_historical_trends
@@ -79,16 +84,24 @@ def _legend_below(fig, n_entries: int) -> None:
     )
 
 
-def _render_current_run(ctx: PageContext) -> None:
+def _select_config(ctx: PageContext) -> tuple[str, ComponentTiming] | None:
+    """The configuration chosen for the run views, shared between them, and
+    its component costs; ``None``, said so, when the run has none."""
     labels = sorted(ctx.run.components)
     if not labels:
         st.info(
             "No phase timing in this run: no configuration that succeeded "
             "left a `_components.json`."
         )
-        return
+        return None
     config = st.selectbox("Configuration", labels, key="reco_breakdown_config")
-    timing = ctx.run.components[config]
+    return config, ctx.run.components[config]
+
+
+def _render_current_run(ctx: PageContext) -> None:
+    if (selected := _select_config(ctx)) is None:
+        return
+    config, timing = selected
     phases = timing.phase_seconds()
     total = sum(phases.values())
     shown = [p for p in PHASE_NAMES if phases.get(p, 0) >= MIN_PHASE_S]
@@ -139,6 +152,79 @@ def _render_current_run(ctx: PageContext) -> None:
     )
     _legend_below(fig, len(fig.data))
     st.plotly_chart(fig, width="stretch", key="reco_breakdown_events_chart")
+
+
+def _render_components(ctx: PageContext) -> None:
+    """Every algorithm and service, most expensive first, with its own time in
+    each phase and links to its code."""
+    if (selected := _select_config(ctx)) is None:
+        return
+    _, timing = selected
+    per_phase = {phase: timing.phase_component_seconds(phase) for phase in _PHASE_TITLES}
+    components = timing.components[timing.components["category"].isin(("algorithm", "service"))]
+    if components.empty:
+        return
+    packages = cached_load_run_packages(ctx.data_dir)
+    rows = []
+    for name, component in components.iterrows():
+        source = package_of(component["impl_library"], packages)
+        rows.append({
+            "Component": name,
+            "Class": component["impl"],
+            "Kind": component["category"].capitalize(),
+            **{title: float(per_phase[phase].get(name, 0.0) or 0.0)
+               for phase, title in _PHASE_TITLES.items()},
+            "Package": source.label if source else "—",
+            "Code": source.search_url(component["impl"]) if source else None,
+            "Repository": source.tree_url if source else None,
+        })
+    df = pd.DataFrame(rows)
+    df = df.iloc[(-df[list(_PHASE_TITLES.values())].sum(axis=1)).argsort(kind="stable")]
+
+    st.caption(
+        "Each algorithm's and service's own wall time per phase, the event loop's "
+        "summed over events, and the package its code comes from at the revision "
+        "this run's stack built."
+    )
+    st.dataframe(
+        df,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Component": st.column_config.TextColumn("Component", width="medium"),
+            "Class": st.column_config.TextColumn(
+                "Class", help="The class doing the work: the component's type, or the "
+                              "Marlin processor a MarlinProcessorWrapper runs.",
+            ),
+            "Kind": st.column_config.TextColumn("Kind", width="small"),
+            **{title: st.column_config.NumberColumn(title, format="%.2f s")
+               for title in _PHASE_TITLES.values()},
+            "Package": st.column_config.TextColumn(
+                "Package", help="The stack package whose install holds the class's "
+                                "library, at its built commit or release version.",
+            ),
+            "Code": st.column_config.LinkColumn(
+                "Code", display_text="↗ find class", width="small",
+                help="Where the class is defined: a GitHub code search on the default "
+                     "branch (needs a signed-in GitHub user), or a GitLab search at the "
+                     "built commit.",
+            ),
+            "Repository": st.column_config.LinkColumn(
+                "Repository", display_text="↗ at revision", width="small",
+                help="The package's repository at the commit this run's stack built. "
+                     "Absent for a package built from a release whose repository is "
+                     "unknown (Gaudi's is known).",
+            ),
+        },
+    )
+    unresolved = components[(components["impl"] != components["type"])
+                            & (components["impl_library"] == "")]
+    if not unresolved.empty:
+        st.caption(
+            f"{len(unresolved)} Marlin processor(s) have no package: the run did not "
+            "record the library defining them (k4bench 0.0.49 and earlier recorded "
+            "only the wrapper's)."
+        )
 
 
 #: What each component of a phase's history is drawn as.
@@ -227,7 +313,7 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
 
 
 def render(ctx: PageContext) -> SectionScope | None:
-    views = ["Current Run"] + (["Historical Trends"] if ctx.trends_enabled else [])
+    views = ["Current Run", "Components"] + (["Historical Trends"] if ctx.trends_enabled else [])
     drop_stale_selection("reco_breakdown_view", views)
     view, reliability_slot, display_options_slot = view_control_row(
         views, key="reco_breakdown_view",
@@ -235,5 +321,8 @@ def render(ctx: PageContext) -> SectionScope | None:
     if view == "Historical Trends":
         _render_historical(ctx, reliability_slot, display_options_slot)
         return TREND_WINDOW_SCOPE
-    _render_current_run(ctx)
+    if view == "Components":
+        _render_components(ctx)
+    else:
+        _render_current_run(ctx)
     return None

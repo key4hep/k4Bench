@@ -13,6 +13,7 @@ from k4bench.analysis.loader import load_component_timing, load_event_timing, lo
 from k4bench.analysis import trend as _trend
 from k4bench.analysis.trend import EXPECTED_LOAD_ERRORS as _EXPECTED_ERRORS
 from k4bench.analysis.trend import parse_run_dir as _parse_run_dir  # noqa: F401 (re-exported)
+from k4bench.provenance.sources import load_run_packages
 
 _log = logging.getLogger(__name__)
 
@@ -69,6 +70,12 @@ def cached_load_component_timing(data_dir: str) -> dict[str, ComponentTiming]:
         _log.exception("cached_load_component_timing: unexpected error loading '%s'", data_dir)
         st.warning(f"Unexpected error loading component costs from '{data_dir}'. Check logs for details.")
         return {}
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def cached_load_run_packages(data_dir: str) -> dict[str, dict]:
+    """The stack packages of the run in *data_dir*; empty when it recorded none."""
+    return load_run_packages(data_dir)
 
 
 def run_metadata(run_dir: str) -> dict:
