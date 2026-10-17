@@ -109,6 +109,12 @@ ALLOCATION_METRICS = (
 #: Metrics that already include nested calls, and do not add up.
 INCLUSIVE_METRICS = ("peak_heap_bytes", "largest_allocation_bytes")
 
+#: Metrics whose values do not add up across components or events: the
+#: inclusive ones, and the peak RSS increase, which a call is charged only for
+#: pushing the process's high-water mark past where earlier calls left it, so
+#: what it shows depends on the order the calls ran in.
+NON_ADDITIVE_METRICS = (*INCLUSIVE_METRICS, "peak_rss_increase_mb")
+
 
 @dataclass(frozen=True)
 class ComponentTiming:
@@ -242,6 +248,13 @@ class ComponentTiming:
     def children(self, component: str) -> list[str]:
         """Components whose enclosing sequencer is *component*."""
         return self.components.index[self.components["parent"] == component].tolist()
+
+    def sequencers(self) -> list[str]:
+        """Components that enclose others: their own cost is the bookkeeping of
+        running their members, and the auditor's measurement overhead for
+        those calls."""
+        enclosing = set(self.components["parent"].dropna())
+        return [name for name in self.components.index if name in enclosing]
 
     def descendants(self, component: str) -> list[str]:
         """Every component nested under *component*, at any depth."""

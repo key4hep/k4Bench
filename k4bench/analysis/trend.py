@@ -18,7 +18,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from k4bench.analysis.loader import load_event_timing, load_region_timing, load_results
+from k4bench.analysis.component_stats import component_summary
+from k4bench.analysis.loader import (
+    load_component_timing,
+    load_event_timing,
+    load_region_timing,
+    load_results,
+)
 from k4bench.artifacts import MACHINE_INFO, RUN_INFO
 
 _log = logging.getLogger(__name__)
@@ -333,6 +339,64 @@ def build_region_timing_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
     if not rows:
         return None
     return _finalize_dates(pd.DataFrame(rows))
+
+
+#: The :func:`~k4bench.analysis.component_stats.component_summary` columns a
+#: component trend keeps.
+_COMPONENT_TREND_STATS = ("n_events", "per_event", "mean", "median", "p90", "std")
+
+
+def build_component_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
+    """Load each k4run component's per-event costs across *run_dirs*.
+
+    One row per run, config, component and recorded metric, with the
+    :func:`~k4bench.analysis.component_stats.component_summary` statistics
+    ``n_events``, ``per_event``, ``mean``, ``median``, ``p90`` and ``std``
+    (event 0 excluded), and ``run_dir``, ``run_id``, ``run_date``,
+    ``k4h_release``, ``k4h_release_date``, ``label``, ``component``, ``metric``
+    and ``x_date``. ``None`` when no run has component files (ddsim runs have
+    none).
+    """
+    if not run_dirs:
+        return None
+
+    frames: list[pd.DataFrame] = []
+    for d in run_dirs:
+        run_dir = Path(d)
+        if not run_dir.is_dir():
+            continue
+        meta = parse_run_dir(run_dir)
+        try:
+            timings = load_component_timing(run_dir)
+        except EXPECTED_LOAD_ERRORS as exc:
+            _log.debug("build_component_trend: skipping '%s': %s", run_dir, exc)
+            continue
+        except Exception:
+            _log.exception("build_component_trend: error loading '%s'", run_dir)
+            continue
+        if not timings:
+            continue
+        stats = pd.concat(
+            {
+                (label, metric): component_summary(timing, metric).loc[
+                    :, list(_COMPONENT_TREND_STATS)
+                ]
+                for label, timing in timings.items()
+                for metric in timing.execute
+            },
+            names=["label", "metric"],
+        )
+        frames.append(stats.reset_index().assign(
+            run_dir=str(run_dir),
+            run_id=run_dir.name,
+            run_date=meta["run_date"],
+            k4h_release_date=meta["k4h_release_date"],
+            k4h_release=meta["k4h_release"],
+        ))
+
+    if not frames:
+        return None
+    return _finalize_dates(pd.concat(frames, ignore_index=True))
 
 
 def build_event_timing_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:

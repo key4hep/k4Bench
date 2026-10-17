@@ -1,0 +1,5 @@
+{
+  "hostname": "fcc-ironic-01.cern.ch",
+  "cpu_model": "AMD EPYC 7302 16-Core Processor",
+  "cpu_logical_cores": 64
+}
