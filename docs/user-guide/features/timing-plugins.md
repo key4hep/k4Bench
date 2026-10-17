@@ -98,8 +98,9 @@ processed — which can reveal a leak or other accumulating state, but does not
 prove one. It is computed offline in Python, so the plugin does no extra work,
 and it is reported-only until its history shows how stable it is.
 
-The Run Trends tab exposes the virtual peak and the Event Memory tab shows
-anonymous and file-backed RSS and the growth rate. Use the collected history to
+The Run Trends tab exposes the virtual peak. The Event Memory tab's **Memory**
+selector switches both its views between anonymous RSS (the default, with the
+growth rate), total RSS and file-backed RSS. Use the collected history to
 check virtual-peak repeatability on the same stack and sensitivity to geometry
 changes; baseline warmup alone does not establish either property. Both views
 have a **Run-to-run variability** table that reports the spread between runs
