@@ -105,7 +105,9 @@ def test_the_breakdown_gives_each_phase_and_its_components(monkeypatch, tmp_path
     assert by_event["Refit"]["x"][0] == "0"
     assert len(by_event["Refit"]["x"]) == 12
     # Local mode has no trend window to draw history from.
-    assert not at.radio
+    assert at.radio(key="reco_breakdown_view").options == ["Current Run", "Components"]
+    # The component table is a view of its own.
+    assert not at.dataframe
 
 
 def test_a_run_without_a_phase_to_show_still_gives_its_components(monkeypatch, tmp_path):
@@ -119,6 +121,49 @@ def test_a_run_without_a_phase_to_show_still_gives_its_components(monkeypatch, t
     assert not at.metric
     (init,), (loop,), _ = _charts(at)
     assert init["labels"][0] == "GeoSvc"
+
+
+def test_the_component_table_links_each_class_to_its_package(monkeypatch, tmp_path):
+    import gzip
+
+    run = tmp_path / "run"
+    shutil.copytree(RECO_RUN, run)
+    install = ("/cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Sat/"
+               "conformaltracking/HEAD/x86_64-el9-gcc16-opt")
+    path = run / "baseline_components.json"
+    raw = json.loads(path.read_text())
+    for component in raw["components"]:
+        if component["name"] == "MyConformalTracking":
+            component["impl_library"] = f"{install}/lib/libConformalTracking.so"
+    path.write_text(json.dumps(raw))
+    info = json.loads((run / "run_info.json").read_text())
+    info["k4h_packages"] = {"conformaltracking": {
+        "commit": "38735aa", "version": "HEAD",
+        "repo_url": "https://github.com/iLCSoft/ConformalTracking.git",
+    }}
+    (run / "run_info.json").write_text(json.dumps(info))
+    (run / "LCG_externals.txt.gz").write_bytes(
+        gzip.compress(f"conformaltracking; 38735; HEAD; {install}; ROOT-5be27\n".encode())
+    )
+
+    at = _page(monkeypatch, tmp_path, run, "Breakdown")
+    at.radio(key="reco_breakdown_view").set_value("Components").run()
+    assert not at.exception, at.exception
+    assert not at.get("plotly_chart")
+    (table,) = at.dataframe
+    df = table.value.set_index("Component")
+    row = df.loc["MyConformalTracking"]
+    assert row["Class"] == "ConformalTrackingV2"
+    assert row["Package"] == "conformaltracking @ 38735aa"
+    assert row["Repository"] == "https://github.com/iLCSoft/ConformalTracking/tree/38735aa"
+    assert "symbol%3AConformalTrackingV2" in row["Code"]
+    # Algorithms and services, most expensive first.
+    assert set(df["Kind"]) == {"Algorithm", "Service"}
+    totals = df[["Initialization", "Event loop", "Finalization"]].sum(axis=1)
+    assert list(totals) == sorted(totals, reverse=True)
+    # The other processors' libraries were not recorded.
+    assert not df.loc["Refit", "Package"].startswith("marlintrk")
+    assert any("Marlin processor(s) have no package" in c.value for c in at.caption)
 
 
 def test_the_event_chart_can_put_the_longest_events_first(monkeypatch, tmp_path):
@@ -136,6 +181,12 @@ def test_the_breakdown_follows_the_configuration(monkeypatch, tmp_path):
     (loop,) = _charts(at)[1]
     assert "MyTruthTrackFinder" in loop["labels"]
     assert "MyConformalTracking" not in loop["labels"]
+    # The Components view keeps the chosen configuration.
+    at.radio(key="reco_breakdown_view").set_value("Components").run()
+    assert at.selectbox(key="reco_breakdown_config").value == "variant_truth_tracking"
+    components = at.dataframe[0].value["Component"].tolist()
+    assert "MyTruthTrackFinder" in components
+    assert "MyConformalTracking" not in components
 
 
 def _phase_history_app(dashboard_dir, run_dir) -> None:

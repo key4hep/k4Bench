@@ -124,9 +124,12 @@ class ComponentTiming:
     saw each component, with columns ``category`` (``algorithm``, ``service`` or
     ``other``), ``type`` (the Gaudi type), ``impl`` (the class doing the work: the
     type, or the class a wrapper delegates to), ``library`` (the shared object
-    defining the type, symlinks resolved), ``parent`` (the enclosing sequencer's
-    name, or ``None``, also for an algorithm several sequencers share, which no
-    sequencer's inclusive cost then claims) and ``execute_calls``.
+    defining the type, symlinks resolved), ``impl_library`` (the one defining
+    ``impl``; empty where it could not be found, and for a wrapped component in
+    files the auditor of k4bench 0.0.49 or earlier wrote), ``parent`` (the
+    enclosing sequencer's name, or ``None``, also for an algorithm several
+    sequencers share, which no sequencer's inclusive cost then claims) and
+    ``execute_calls``.
 
     ``execute`` maps each metric to an events × components frame indexed by
     event number. ``lifecycle`` maps each non-event phase (``initialize``,
@@ -196,12 +199,21 @@ class ComponentTiming:
                 "type": [entry.get("type", "") for entry in entries],
                 "impl": [entry.get("impl", "") for entry in entries],
                 "library": [entry.get("library", "") for entry in entries],
+                # Files the auditor of k4bench 0.0.49 or earlier wrote name only
+                # the type's library, which is impl's unless a wrapper delegates.
+                "impl_library": [
+                    entry.get(
+                        "impl_library",
+                        entry.get("library", "") if entry.get("impl") == entry.get("type") else "",
+                    )
+                    for entry in entries
+                ],
                 "execute_calls": [entry.get("execute_calls", 0) for entry in entries],
             },
             index=pd.Index(names, name="component"),
         )
         # Object dtype keeps None as None; an inferred string dtype would make it NaN.
-        components.insert(4, "parent", pd.Series(parents, index=components.index, dtype=object))
+        components.insert(5, "parent", pd.Series(parents, index=components.index, dtype=object))
 
         events = pd.Index(raw["event_numbers"], name="event_number")
         if events.has_duplicates:

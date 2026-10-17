@@ -83,6 +83,7 @@
 #include <nlohmann/json.hpp>
 
 #include <dlfcn.h>
+#include <link.h>
 #include <linux/perf_event.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
@@ -449,21 +450,84 @@ namespace
     return text;
   }
 
-  // Shared object the dynamic type of *object* is defined in, resolved through
-  // symlinks so a path into an LCG view names the package install it points to.
-  std::string library_of(const void *object)
+  // Shared object holding *address*, resolved through symlinks so a path into
+  // an LCG view names the package install it points to.
+  std::string library_at(const void *address)
   {
-    // Under the Itanium C++ ABI a polymorphic object starts with its vtable
-    // pointer, and the vtable lives in the library that defines the class.
-    const void *vtable = *static_cast<const void *const *>(object);
     Dl_info info{};
-    if (::dladdr(vtable, &info) == 0 || info.dli_fname == nullptr)
+    if (address == nullptr || ::dladdr(address, &info) == 0 || info.dli_fname == nullptr)
     {
       return {};
     }
     std::error_code error;
     const auto path = std::filesystem::canonical(info.dli_fname, error);
     return error ? std::string(info.dli_fname) : path.string();
+  }
+
+  // Shared object the dynamic type of *object* is defined in.
+  std::string library_of(const void *object)
+  {
+    // Under the Itanium C++ ABI a polymorphic object starts with its vtable
+    // pointer, and the vtable lives in the library that defines the class.
+    return library_at(*static_cast<const void *const *>(object));
+  }
+
+  // Address of *symbol* in any loaded object, or null.
+  void *loaded_symbol(const char *symbol)
+  {
+    if (void *address = ::dlsym(RTLD_DEFAULT, symbol))
+    {
+      return address;
+    }
+    // A library opened with RTLD_LOCAL is out of the global scope; ask each
+    // loaded object in turn.
+    struct Search
+    {
+      const char *symbol;
+      void *address{nullptr};
+    } search{symbol};
+    ::dl_iterate_phdr(
+        [](dl_phdr_info *object, std::size_t, void *data)
+        {
+          auto &search = *static_cast<Search *>(data);
+          if (object->dlpi_name == nullptr || *object->dlpi_name == '\0')
+          {
+            return 0;
+          }
+          void *handle = ::dlopen(object->dlpi_name, RTLD_LAZY | RTLD_NOLOAD);
+          if (handle == nullptr)
+          {
+            return 0;
+          }
+          search.address = ::dlsym(handle, search.symbol);
+          ::dlclose(handle);
+          return search.address != nullptr ? 1 : 0;
+        },
+        &search);
+    return search.address;
+  }
+
+  // Shared object defining the Marlin processor registered as *type*: that of
+  // the prototype Marlin's ProcessorMgr keeps for it. A processor's type is the
+  // name it registers under, not its class ("AIDAProcessor" is
+  // marlin::AIDAProcessor), and only the prototype knows the class. Marlin is
+  // reached through its exported symbols, so the auditor does not depend on it;
+  // the member function is called as a function taking the object first, as the
+  // Itanium C++ ABI passes it. Empty when the job loaded no Marlin or no
+  // processor registered as *type*.
+  std::string library_of_marlin_processor(const std::string &type)
+  {
+    using Instance = void *(*)();
+    using GetProcessor = void *(*)(void *, const std::string &);
+    const auto instance = reinterpret_cast<Instance>(loaded_symbol("_ZN6marlin12ProcessorMgr8instanceEv"));
+    const auto get_processor = reinterpret_cast<GetProcessor>(loaded_symbol(
+        "_ZN6marlin12ProcessorMgr12getProcessorERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE"));
+    if (instance == nullptr || get_processor == nullptr)
+    {
+      return {};
+    }
+    const void *prototype = get_processor(instance(), type);
+    return prototype != nullptr ? library_of(prototype) : std::string{};
   }
 
   // The class doing the work: the component's own type, unless a wrapper names
@@ -489,7 +553,8 @@ namespace
     std::string category{"other"}; // algorithm | service | other
     std::string type;
     std::string impl;
-    std::string library;
+    std::string library;               // defines type
+    std::string impl_library;          // defines impl; empty when it cannot be found
     std::optional<std::string> parent; // enclosing sequencer
     bool shared{false};                // member of several sequencers
     long execute_calls{0};
@@ -864,7 +929,15 @@ private:
     component.parent = sequence;
   }
 
-  // Fill in category, type, implementation, library and parent for every
+  // Shared object defining the class *component* delegates to: its own type's,
+  // unless it wraps a Marlin processor (implementation()).
+  static std::string implementation_library(const Component &component)
+  {
+    return component.impl == component.type ? component.library
+                                            : library_of_marlin_processor(component.impl);
+  }
+
+  // Fill in category, type, implementation, libraries and parent for every
   // component the managers know. Algorithms are walked in full, so a
   // sequencer's children are registered even before their first call.
   void describeComponents()
@@ -893,6 +966,7 @@ private:
         component.type = ialg->type();
         component.impl = implementation(ialg, component.type);
         component.library = library_of(dynamic_cast<const void *>(ialg));
+        component.impl_library = implementation_library(component);
         component.described = true;
       }
     }
@@ -912,6 +986,7 @@ private:
       component.type = System::typeinfoName(typeid(*service.get()));
       component.impl = implementation(service.get(), component.type);
       component.library = library_of(dynamic_cast<const void *>(service.get()));
+      component.impl_library = implementation_library(component);
       component.described = true;
     }
   }
@@ -967,6 +1042,7 @@ private:
                             {"type", c.type},
                             {"impl", c.impl},
                             {"library", c.library},
+                            {"impl_library", c.impl_library},
                             {"parent", c.parent ? Json(m_index.at(*c.parent)) : Json(nullptr)},
                             {"execute_calls", c.execute_calls}});
     }

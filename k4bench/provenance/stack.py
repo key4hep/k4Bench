@@ -223,6 +223,18 @@ class RepoRef:
     def compare_url(self, base: str, head: str) -> str:
         return f"{self.url}{_FORGE_INFIX[self.forge]}/compare/{base}...{head}"
 
+    def tree_url(self, ref: str) -> str:
+        return f"{self.url}{_FORGE_INFIX[self.forge]}/tree/{quote(ref, safe='')}"
+
+    def code_search_url(self, symbol: str, ref: str) -> str:
+        """Where *symbol* is defined in the repository. GitHub searches only
+        the default branch, and only for a signed-in user; GitLab at *ref*."""
+        if self.forge == "github":
+            query = quote(f"repo:{self.slug} symbol:{symbol}", safe="")
+            return f"https://github.com/search?q={query}&type=code"
+        return (f"{self.url}/-/search?scope=blobs&search={quote(symbol, safe='')}"
+                f"&repository_ref={quote(ref, safe='')}")
+
 
 def parse_repo(url: str | None) -> RepoRef | None:
     """Parse a GitHub/GitLab repository URL used by attribution links."""

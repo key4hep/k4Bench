@@ -425,6 +425,7 @@ def test_auditor_measures_a_real_gaudi_job(built_plugin, tmp_path):
     assert timing.components.loc["Nap", "parent"] == "Top"
     assert timing.components.loc["Nap", "category"] == "algorithm"
     assert timing.components.loc["Nap", "library"].endswith(".so")
+    assert timing.components.loc["Nap", "impl_library"] == timing.components.loc["Nap", "library"]
     assert timing.components.loc["Nap", "execute_calls"] == 2
     wall, cpu = timing.execute["wall_s"], timing.execute["cpu_s"]
     assert wall.index.tolist() == [0, 1]

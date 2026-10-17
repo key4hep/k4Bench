@@ -696,7 +696,7 @@ platform and sample, the baseline configuration. It is available only against
 the remote store. If a detector's runs could not be listed, a warning names it
 instead of it silently dropping out of the charts.
 
-**Breakdown** has two views:
+**Breakdown** has three views:
 
 - **Current Run** shows each phase of the selected run that lasted 50 ms or
   more (in practice configure, initialize, event loop and finalize) as a card
@@ -708,6 +708,13 @@ instead of it silently dropping out of the charts.
   donuts and the chart below them, which stacks the event loop's components
   event by event, in event order or longest first; the first event, which warms
   the job up, is drawn paler.
+- **Components** lists every algorithm and service of the selected run's
+  configuration, most expensive first, with its time per phase, its class (for
+  a wrapped Marlin processor, the processor's) and the stack package its
+  library comes from, linking to that package's repository at the commit the
+  run's stack built and to a search for the class's definition. A package
+  built from a release is named with its version, and linked only where its
+  repository is known (Gaudi's is).
 - **Historical Trends** draws one phase at a time across the trend window: its
   top components (six by default, set in Display options), the rest as
   *Other*, and *Unattributed*, as stacked columns or as lines, in seconds or as

@@ -106,6 +106,19 @@ class TestFromJson:
         assert timing.components["parent"].tolist() == [None, None, "Top", "Top"]
         assert timing.components.loc["Fast", "impl"] == "FastImpl"
 
+    def test_a_file_without_impl_libraries_names_only_unwrapped_ones(self, timing):
+        assert timing.components["impl_library"].tolist() == [
+            "/cvmfs/x/k4geo/lib/libGeo.so", "/cvmfs/x/Gaudi/lib/libGaudiKernel.so",
+            "", "/cvmfs/x/slow/lib/libSlow.so",
+        ]
+
+    def test_the_recorded_impl_library_is_kept(self):
+        raw = _raw()
+        raw["components"][2]["impl_library"] = "/cvmfs/x/fast/lib/libFast.so"
+        components = ComponentTiming.from_json(raw).components
+        assert components.loc["Fast", "impl_library"] == "/cvmfs/x/fast/lib/libFast.so"
+        assert components.loc["Fast", "library"] == "/cvmfs/x/wrap/lib/libWrap.so"
+
     def test_execute_frames_are_events_by_components_per_metric(self, timing):
         assert set(timing.execute) == set(COMPONENT_METRICS)
         wall = timing.execute["wall_s"]
