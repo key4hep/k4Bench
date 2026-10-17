@@ -74,7 +74,9 @@
 #include <Gaudi/Algorithm.h>
 #include <Gaudi/Auditor.h>
 #include <Gaudi/Sequence.h>
+#include <GaudiKernel/DataObjID.h>
 #include <GaudiKernel/IAlgManager.h>
+#include <GaudiKernel/IDataHandleHolder.h>
 #include <GaudiKernel/IProperty.h>
 #include <GaudiKernel/IService.h>
 #include <GaudiKernel/ISvcLocator.h>
@@ -556,6 +558,10 @@ namespace
     std::string library;               // defines type
     std::string impl_library;          // defines impl; empty when it cannot be found
     std::optional<std::string> parent; // enclosing sequencer
+    // Event data keys an algorithm declared through its data handles; unset
+    // for a component that holds none.
+    std::optional<std::vector<std::string>> inputs;
+    std::optional<std::vector<std::string>> outputs;
     bool shared{false};                // member of several sequencers
     long execute_calls{0};
     bool described{false};
@@ -937,7 +943,20 @@ private:
                                             : library_of_marlin_processor(component.impl);
   }
 
-  // Fill in category, type, implementation, libraries and parent for every
+  // The keys of *ids*, sorted, so a file does not depend on hashing order.
+  static std::vector<std::string> data_keys(const DataObjIDColl &ids)
+  {
+    std::vector<std::string> keys;
+    keys.reserve(ids.size());
+    for (const DataObjID &id : ids)
+    {
+      keys.push_back(id.key());
+    }
+    std::sort(keys.begin(), keys.end());
+    return keys;
+  }
+
+  // Fill in category, type, implementation, libraries, data and parent for every
   // component the managers know. Algorithms are walked in full, so a
   // sequencer's children are registered even before their first call.
   void describeComponents()
@@ -967,6 +986,14 @@ private:
         component.impl = implementation(ialg, component.type);
         component.library = library_of(dynamic_cast<const void *>(ialg));
         component.impl_library = implementation_library(component);
+        // Handles are declared by initialize at the latest (the k4FWCore
+        // Reader declares one per collection of its input file then), and
+        // components are described once the first event starts.
+        if (const auto *holder = dynamic_cast<const IDataHandleHolder *>(ialg))
+        {
+          component.inputs = data_keys(holder->inputDataObjs());
+          component.outputs = data_keys(holder->outputDataObjs());
+        }
         component.described = true;
       }
     }
@@ -1043,6 +1070,8 @@ private:
                             {"impl", c.impl},
                             {"library", c.library},
                             {"impl_library", c.impl_library},
+                            {"inputs", c.inputs ? Json(*c.inputs) : Json(nullptr)},
+                            {"outputs", c.outputs ? Json(*c.outputs) : Json(nullptr)},
                             {"parent", c.parent ? Json(m_index.at(*c.parent)) : Json(nullptr)},
                             {"execute_calls", c.execute_calls}});
     }

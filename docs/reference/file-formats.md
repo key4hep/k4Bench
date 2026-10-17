@@ -28,7 +28,9 @@ format, and instead of the regions JSON:
 ```text
 ├── <label>_components.json  # per-event, per-component (algorithm/service) time, instructions, memory and allocations (auditor only)
 ├── <label>_joboptions.opts  # the fully resolved job options, as JobOptionsSvc dumps them
-└── <label>_warm-up.log      # the log of the unmeasured warm-up, only when it failed
+├── <label>_dataflow.json    # what each algorithm read and wrote (built after the last run)
+├── <label>_warm-up.log      # the log of the unmeasured warm-up, only when it failed
+└── marlin_processors.xml.gz # `Marlin -x` of the stack, only when a job ran Marlin processors
 ```
 
 Its labels are `baseline` and `variant_<name>` for each variant. A
@@ -130,6 +132,51 @@ plus per-event totals, step counts, and metadata (timer used, the list of
 attributed detectors, measured timer overhead). [`load_region_timing`](api/analysis/loader.md)
 parses it into per-run DataFrames keyed by detector. The special bucket
 `unattributed` collects steps outside any detector (vacuum/world).
+
+## dataflow JSON
+
+Written by the k4run benchmark after its last run (`schema_version: 1`, same
+version rules as the events JSON), one per configuration, from three records:
+
+- **Gaudi algorithms**, k4FWCore's included: the keys of the data handles each
+  declared. The k4BenchAuditor records them in `_components.json` as each
+  algorithm's `inputs` and `outputs` (`null` for a component that holds no
+  handles, such as a service). The k4FWCore Reader declares one output per
+  collection of its input file.
+- **Marlin processors** in a `MarlinProcessorWrapper`: the parameters Marlin
+  marks as LCIO input or output collections, with their LCIO type, from
+  `marlin_processors.xml.gz` (`Marlin -x` of the stack). The collection names
+  are the parameter's value in the job options, or its default where the job
+  leaves it unset (`explicit: false`). The wrapper's EDM4hep→LCIO and
+  LCIO→EDM4hep converters (`convertAll`, `collNameMapping`) come from the job
+  options.
+- **The k4FWCore Writer**: its keep/drop rules, `IOSvc.outputCommands`.
+
+Each algorithm (sequencers and services left out, in the order the auditor
+first saw them) lists its `inputs` and `outputs` as collections with a `name`,
+a `store` (`gaudi` for Gaudi's event store, `lcio` for the LCIO event Marlin
+processors share) and, for Marlin, `type`, `parameter` and `explicit`.
+`handles_recorded` and `marlin_recorded` say whether each source was
+available. [`DataFlow.graph`](api/analysis/dataflow.md) replays the job to
+link each read to the algorithm that wrote it, carrying collections across the
+converters, and the Reconstruction page's Data Flow draws the result.
+
+What it cannot know:
+
+- A Marlin processor that takes a collection name as a plain string parameter,
+  rather than registering it as an input or output collection, declares
+  nothing. In CLD reconstruction that is AIDAProcessor, OverlayTimingGeneric,
+  MergeCollections, Statusmonitor and PatchCollections, so a collection only
+  one of them writes (CLD's `MCPhysicsParticles`) has no recorded writer.
+- A declared input need not be read: a Marlin input left at its default is
+  listed all the same.
+- The converters are modelled, not observed: one converting everything is
+  taken to convert every collection the other store holds at that point,
+  under its mapped name, unless the target already holds one of that name.
+- Gaudi handles carry a key, not a type.
+- Runs before the auditor recorded data handles have no Gaudi reads and
+  writes (`null`); the October 2026 CLD runs were backfilled with the Reader's
+  outputs taken from their input file.
 
 ## run_info.json & machine_info.json
 
@@ -454,9 +501,10 @@ first (`k4bench/layout.py` spells every path):
 runs/{suite}/{concept}/{detector}/{platform}/key4hep-{release}/{sample}/{YYYY-MM-DD}/
     sim:   run_info.json  machine_info.json
            {config}_results.csv  {config}_events.json  {config}_regions.json  {config}.log
-    reco:  run_info.json  machine_info.json
+    reco:  run_info.json  machine_info.json  [marlin_processors.xml.gz]
            {config}_results.csv  {config}_events.json  {config}_components.json
-           {config}_joboptions.opts  {config}.log  [{config}_warm-up.log]
+           {config}_joboptions.opts  {config}_dataflow.json  {config}.log
+           [{config}_warm-up.log]
 reports/{suite}/{YYYY-MM-DD}/
     report.json
     blame.json   (only on nights with an attributable confirmed regression)

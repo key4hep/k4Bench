@@ -8,6 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from k4bench.analysis.components import ComponentTiming
+from k4bench.analysis.dataflow import DataFlow, load_dataflow
 from k4bench.analysis.loader import judgeable_config_data
 from k4bench.analysis.loader import load_component_timing, load_event_timing, load_region_timing, load_results  # noqa: F401 (re-exported)
 from k4bench.analysis import trend as _trend
@@ -76,6 +77,19 @@ def cached_load_component_timing(data_dir: str) -> dict[str, ComponentTiming]:
 def cached_load_run_packages(data_dir: str) -> dict[str, dict]:
     """The stack packages of the run in *data_dir*; empty when it recorded none."""
     return load_run_packages(data_dir)
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def cached_load_dataflow(data_dir: str) -> dict[str, DataFlow]:
+    """Every label's ``_dataflow.json`` in *data_dir*; empty when it has none."""
+    try:
+        return load_dataflow(data_dir)
+    except _EXPECTED_ERRORS:
+        return {}
+    except Exception:
+        _log.exception("cached_load_dataflow: unexpected error loading '%s'", data_dir)
+        st.warning(f"Unexpected error loading the data flow from '{data_dir}'. Check logs for details.")
+        return {}
 
 
 def run_metadata(run_dir: str) -> dict:

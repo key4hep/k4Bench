@@ -685,6 +685,7 @@ measurement as uploaded.
 | --- | --- | --- |
 | **Overview** | every reco detector's baseline time and memory side by side, over the trend window | `*_results.csv`, `*_events.json` of every detector's runs |
 | **Breakdown** | where the job's time goes, phase by phase and component by component | `*_components.json` |
+| **Data Flow** | which algorithm feeds which, through the collections it writes and a later one reads | `*_dataflow.json`, `*_components.json` |
 | **Event timing** | per-event wall time distributions, as on the Simulation page | `*_events.json` |
 | **Event memory** | per-event RSS and growth, as on the Simulation page | `*_events.json` |
 | **Machine info** | the host the benchmark ran on | `machine_info.json` |
@@ -725,6 +726,23 @@ Component times are *self* times: what the auditor charged to that component
 alone. They add up within a phase, which is why the donuts and columns can be
 stacked, and the part of a phase's duration that no component accounts for
 shows up as *Unattributed* rather than being spread over the others.
+
+**Data Flow** draws one configuration's algorithms left to right in data-flow
+order, joined by the collections one writes and a later one reads
+(`{config}_dataflow.json`, see
+[File formats](../../reference/file-formats.md#dataflow-json)). A dot's area is
+the algorithm's event-loop time per event, and hovering an edge's middle lists
+the collections it carries, with the name a converter gave one on the way
+(`MCParticles → MCParticle`). Algorithms sharing a class are one square node
+(`DDPlanarDigiProcessor ×6`): clicking it shows each instance, and **Expand
+all**/**Collapse all** do so for every class. Clicking an algorithm lists what
+it reads, with who wrote each collection, and what it writes, with who reads
+it. What the Writer saves is drawn on request, as it reads nearly everything.
+Algorithms that no recorded collection links to another, such as Marlin
+processors that declare no collections, are not drawn; a caption under the
+graph counts them, and the **Limitations** expander names them along with
+everything else the run could not record: reads with no recorded writer, and
+sources the run predates. Drag to pan, scroll to zoom, double-click to reset.
 
 **Logs** reads the log's Gaudi and Marlin severities rather than the word
 "error": the **Errors** filter keeps ERROR and FATAL messages, ROOT errors,

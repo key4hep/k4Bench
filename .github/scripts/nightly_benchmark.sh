@@ -22,11 +22,13 @@
 #   {EOS_ROOT}/runs/{suite}/{concept}/{detector}/{platform}/key4hep-{release}/{sample}/{YYYY-MM-DD}/
 #     run_info.json
 #     machine_info.json
+#     marlin_processors.xml.gz    k4run only, when a job ran Marlin processors
 #     {config}_results.csv
 #     {config}_events.json
 #     {config}_regions.json       ddsim only
 #     {config}_components.json    k4run only
 #     {config}_joboptions.opts    k4run only
+#     {config}_dataflow.json      k4run only
 #     {config}.log
 
 set -euo pipefail

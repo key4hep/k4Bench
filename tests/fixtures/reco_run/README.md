@@ -16,3 +16,9 @@ Each `_components.json` keeps the first 12 events (0–11), the metrics
 phases, and each component's library file name only. Each `_joboptions.opts`
 keeps a few lines of the dump, among them k4Bench's own settings and a Marlin
 `Parameters` mapping.
+
+Each `_dataflow.json` was built with `k4bench.analysis.dataflow.build_dataflow`
+from the run's full `_components.json` and `_joboptions.opts` and `Marlin -x` of
+its stack (the run predates both, which were backfilled). That auditor did not
+record data handles yet, so the Reader's outputs are the input file's
+collections, passed as `reader_collections`.

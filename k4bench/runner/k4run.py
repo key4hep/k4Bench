@@ -21,6 +21,9 @@ directory. The run-level virtual-memory peak is copied into
 from __future__ import annotations
 
 import os
+import shlex
+import subprocess
+import tempfile
 from pathlib import Path
 
 from k4bench.artifacts import (
@@ -150,6 +153,30 @@ def run_k4run(
         output_size_mb=sum(path.stat().st_size for path in created) / 1024**2,
         instrumentation="auditor" if auditor_available else None,
     )
+
+
+def marlin_processor_dump(setup_script: Path | None = None) -> str | None:
+    """``Marlin -x`` in the jobs' environment: every Marlin processor type the
+    stack's ``MARLIN_DLL`` libraries register, with its parameters, as steering
+    XML. ``None`` when Marlin cannot be run there.
+    """
+    # A setup script that fails must not leave another Marlin on PATH to run.
+    source = f"source {shlex.quote(str(setup_script))} >/dev/null 2>&1 && " if setup_script else ""
+    # Marlin leaves files (cdb.log) in the directory it runs in.
+    with tempfile.TemporaryDirectory(prefix="k4bench-marlin-") as cwd:
+        try:
+            proc = subprocess.run(
+                ["bash", "-c", f"{source}exec Marlin -x"],
+                cwd=cwd, capture_output=True, timeout=600,
+                # Processor descriptions are free text, in no promised encoding.
+                encoding="utf-8", errors="replace",
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+    start = proc.stdout.find("<?xml")
+    if proc.returncode != 0 or start < 0 or "<marlin" not in proc.stdout:
+        return None
+    return proc.stdout[start:]
 
 
 # ---------------------------------------------------------------------------

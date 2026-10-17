@@ -3,6 +3,8 @@ working directory every run gets. The k4run process itself is mocked out."""
 
 from __future__ import annotations
 
+import gzip
+import json
 import os
 import stat
 from pathlib import Path
@@ -254,3 +256,83 @@ class TestWarmUp:
     def test_warm_up_is_on_by_default(self, tmp_path, stage_dir):
         config = K4runConfig(options=["Reco.py"], n_events=3, log_dir=tmp_path, stage_dir=stage_dir)
         assert config.warm_up
+
+
+class TestDataFlow:
+    """After the last run, each run's data flow is built from its auditor file
+    and job options, with Marlin asked once for its processors."""
+
+    MARLIN_XML = (
+        '<?xml version="1.0"?>\n<marlin><processor name="P" type="Digi">'
+        '<parameter name="Hits" type="string" lcioOutType="TrackerHit">Hits</parameter>'
+        "</processor></marlin>\n"
+    )
+
+    @staticmethod
+    def _auditing_run_k4run(wrapped: bool = True):
+        """A run_k4run stand-in whose job leaves an auditor file and job options."""
+
+        def fake(**kwargs):
+            log_dir, label = kwargs["log_dir"], kwargs["label"]
+            component = {"name": "Digi", "category": "algorithm", "parent": None,
+                         "type": "MarlinProcessorWrapper" if wrapped else "Digi",
+                         "impl": "Digi", "inputs": [], "outputs": []}
+            (log_dir / f"{label}_components.json").write_text(json.dumps({"components": [component]}))
+            (log_dir / f"{label}_joboptions.opts").write_text("Digi.ProcessorType = 'Digi';\n")
+            return RunResult(label=label, returncode=0, n_events=kwargs["n_events"])
+
+        return fake
+
+    def test_each_run_gets_its_data_flow_and_marlin_is_asked_once(self, tmp_path, stage_dir):
+        config = _config(tmp_path, stage_dir, variants={"x": ["--x"]})
+        dumps = []
+        with patch.object(k4run_module, "run_k4run", self._auditing_run_k4run()), \
+             patch.object(k4run_module, "marlin_processor_dump",
+                          lambda setup: dumps.append(setup) or self.MARLIN_XML):
+            run_k4run_benchmark(config)
+        assert len(dumps) == 1
+        assert gzip.decompress((config.log_dir / "marlin_processors.xml.gz").read_bytes()).decode() \
+            == self.MARLIN_XML
+        for label in ("baseline", "variant_x"):
+            flow = json.loads((config.log_dir / f"{label}_dataflow.json").read_text())
+            assert flow["marlin_recorded"]
+            assert flow["algorithms"][0]["outputs"][0]["name"] == "Hits"
+
+    def test_a_job_without_marlin_processors_never_runs_marlin(self, tmp_path, stage_dir):
+        config = _config(tmp_path, stage_dir)
+        with patch.object(k4run_module, "run_k4run", self._auditing_run_k4run(wrapped=False)), \
+             patch.object(k4run_module, "marlin_processor_dump", pytest.fail):
+            run_k4run_benchmark(config)
+        assert (config.log_dir / "baseline_dataflow.json").exists()
+        assert not (config.log_dir / "marlin_processors.xml.gz").exists()
+
+    def test_without_marlin_the_processors_are_left_unknown(self, tmp_path, stage_dir, capsys):
+        config = _config(tmp_path, stage_dir)
+        with patch.object(k4run_module, "run_k4run", self._auditing_run_k4run()), \
+             patch.object(k4run_module, "marlin_processor_dump", lambda setup: None):
+            run_k4run_benchmark(config)
+        flow = json.loads((config.log_dir / "baseline_dataflow.json").read_text())
+        assert not flow["marlin_recorded"] and flow["algorithms"][0]["inputs"] is None
+        assert "Marlin -x failed" in capsys.readouterr().out
+
+    def test_a_failure_recording_it_never_fails_the_benchmark(self, tmp_path, stage_dir, capsys):
+        config = _config(tmp_path, stage_dir)
+
+        def broken(setup):
+            raise RuntimeError("disk full")
+
+        with patch.object(k4run_module, "run_k4run", self._auditing_run_k4run()), \
+             patch.object(k4run_module, "marlin_processor_dump", broken):
+            results = run_k4run_benchmark(config)
+        assert [r.label for r in results] == ["baseline"]
+        assert "no data flow recorded" in capsys.readouterr().out
+
+    def test_a_run_without_auditor_files_gets_none_and_old_ones_go(self, tmp_path, stage_dir):
+        config = _config(tmp_path, stage_dir)
+        config.log_dir.mkdir()
+        (config.log_dir / "baseline_dataflow.json").write_text("{}")
+        (config.log_dir / "marlin_processors.xml.gz").write_bytes(b"")
+        with patch.object(k4run_module, "run_k4run", _recording_run_k4run([])):
+            run_k4run_benchmark(config)
+        assert not (config.log_dir / "baseline_dataflow.json").exists()
+        assert not (config.log_dir / "marlin_processors.xml.gz").exists()
