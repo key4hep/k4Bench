@@ -6,8 +6,9 @@
 # itself; everything experiment-specific is in this file. The nightly runs each
 # sample below as one job and uploads it to EOS under
 # runs/reco/{concept}/{detector}/, the run tree this file's path names
-# (.github/benchmarks/reco/{concept}/{detector}.yml). Nothing reads that tree
-# yet. Keys: docs/reference/configuration-reference.md#nightly-benchmark-yaml-keys
+# (.github/benchmarks/reco/{concept}/{detector}.yml). The dashboard's
+# Reconstruction page reads that tree; no nightly report judges it yet.
+# Keys: docs/reference/configuration-reference.md#nightly-benchmark-yaml-keys
 #
 # The input is a frozen CLD_o2_v09 simulation (100 p8_ee_Zbb_ecm91 events,
 # ddsim --random.seed 42 --random.enableEventSeed, steered by cld_steer.py,
