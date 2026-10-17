@@ -233,7 +233,14 @@ directory as `install_realpath`, so the libraries the auditor names by their
 resolved paths are attributed to it after the symlink has moved on.
 Private `.LABEL.loaded` handoffs are consumed and deleted before writing
 `run_info.json`, and hidden files are excluded by the upload glob even if cleanup
-fails. Event and component JSON retain schema version 1; their format is unchanged.
+fails. Event and component JSON retain schema version 1.
+
+Each component entry also names `impl_library`, the shared object defining its
+`impl` class, symlinks resolved: the type's `library`, or for a
+`MarlinProcessorWrapper` the library of the Marlin processor it runs. It is
+empty where that library could not be found. Files written by k4bench 0.0.49
+and earlier lack the key; readers then take `library` where `impl` is the type
+itself, and leave it empty for a wrapped processor.
 
 `g4_datasets` records directory names for the job's `G4*DATA` environment. With
 instrumentation these come from the actual child process, including any sourced
