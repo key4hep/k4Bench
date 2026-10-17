@@ -62,7 +62,7 @@ def test_a_local_run_opens_on_the_breakdown(monkeypatch, tmp_path):
     at = _page(monkeypatch, tmp_path, RECO_RUN)
     assert at.session_state["reco_active_section"] == "Breakdown"
     assert at.button_group[0].options == [
-        "Breakdown", "Event Timing", "Event Memory", "Machine Info", "Logs",
+        "Breakdown", "Data Flow", "Event Timing", "Event Memory", "Machine Info", "Logs",
     ]
 
 
@@ -419,3 +419,104 @@ def test_the_overview_draws_the_simulation_figures_without_regression_flags():
     at.radio(key="reco_det_ov_view_mode").set_value("Performance Landscape").run()
     assert not at.exception, at.exception
     assert at.get("plotly_chart")
+
+
+def _node_ids(at: AppTest) -> list[str]:
+    return [row[0] for row in _charts(at)[0][-1]["customdata"]]
+
+
+def test_the_data_flow_groups_the_instances_of_a_class(monkeypatch, tmp_path):
+    at = _page(monkeypatch, tmp_path, RECO_RUN, "Data Flow")
+    assert at.selectbox(key="reco_dataflow_config").options == ["baseline", "variant_truth_tracking"]
+    ids = _node_ids(at)
+    assert "group:DDPlanarDigiProcessor" in ids and "group:CLICPfoSelector" in ids
+    assert "VXDBarrelDigitiser" not in ids
+    assert ids[0] == "k4FWCore__Reader" and ids[-1] == "k4FWCore__Writer"
+    # What the run could not record is said, not drawn.
+    assert "MyAIDAProcessor" not in ids and "EventNumber" not in ids
+    assert any(c.value.startswith("5 algorithms without recorded links not drawn")
+               for c in at.caption)
+    (limits,) = at.expander
+    text = " ".join(m.value for m in limits.markdown)
+    # The Reader's outputs were backfilled and the Writer reads by its rules,
+    # so no Gaudi algorithm's collections are unknown.
+    assert "Not recorded" not in text
+    assert ("Not drawn**, no collections declared to Marlin: MyAIDAProcessor, OverlayFalse, "
+            "RenameCollection, EventNumber, CollPatcherREC") in text
+    assert "PFOsFromJets (VertexFinder)" in text
+
+
+def test_expanding_shows_every_instance_and_collapsing_regroups(monkeypatch, tmp_path):
+    at = _page(monkeypatch, tmp_path, RECO_RUN, "Data Flow")
+    at.button[0].click().run()  # Expand all
+    ids = _node_ids(at)
+    assert "VXDBarrelDigitiser" in ids and "MyCLICPfoSelectorTight" in ids
+    assert not any(i.startswith("group:") for i in ids)
+    at.button[1].click().run()  # Collapse all
+    assert "group:DDPlanarDigiProcessor" in _node_ids(at)
+
+
+def test_the_writers_reads_are_drawn_on_request(monkeypatch, tmp_path):
+    at = _page(monkeypatch, tmp_path, RECO_RUN, "Data Flow")
+    without = len(_charts(at)[0])
+    at.toggle(key="reco_dataflow_writer").set_value(True).run()
+    assert len(_charts(at)[0]) > without
+
+
+def test_a_selected_algorithm_lists_what_it_reads_and_writes(monkeypatch, tmp_path):
+    _local_env(monkeypatch, RECO_RUN, tmp_path / "cache")
+    at = AppTest.from_function(_page_app, args=(str(_DASHBOARD_DIR),), default_timeout=60)
+    at.query_params["tab"] = "Data Flow"
+    at.session_state["reco_dataflow_selected"] = "Refit"
+    at.run()
+    assert not at.exception, at.exception
+    reads, writes = (frame.value for frame in at.dataframe)
+    tracks = reads.set_index("Collection").loc["SiTracks"]
+    assert tracks["Written by"] == "ClonesAndSplitTracksFinder"
+    assert tracks["Type"] == "Track" and tracks["Parameter"] == "InputTrackCollectionName (set)"
+    assert reads.set_index("Collection").loc["SiTrackRelations", "Written by"] == "unknown"
+    refitted = writes.set_index("Collection").loc["SiTracks_Refitted", "Read by"]
+    assert "MyDDMarlinPandora_10ns" in refitted
+
+
+def test_a_run_without_a_data_flow_says_so(monkeypatch, tmp_path):
+    run = tmp_path / "run"
+    shutil.copytree(RECO_RUN, run)
+    for path in run.glob("*_dataflow.json"):
+        path.unlink()
+    at = _page(monkeypatch, tmp_path, run, "Data Flow")
+    assert "No data flow recorded for this run" in at.info[0].value
+
+
+def test_a_click_on_a_node_names_it_and_other_clicks_are_ignored():
+    """The point Streamlit reports for a click on the graph (its documented
+    ``curve_number`` and ``point_index``) is mapped back to the node."""
+    from types import SimpleNamespace
+
+    from k4bench.analysis.dataflow import load_dataflow
+    from k4bench.analysis.plots.dataflow import dataflow_view, plot_dataflow
+    from reco.dataflow import _clicked_node
+
+    fig = plot_dataflow(dataflow_view(load_dataflow(RECO_RUN)["baseline"]))
+    nodes = len(fig.data) - 1
+
+    def click(curve, index):
+        return SimpleNamespace(selection={"points": [{"curve_number": curve, "point_index": index}]})
+
+    assert _clicked_node(click(nodes, 0), fig) == "k4FWCore__Reader"
+    assert _clicked_node(click(nodes - 1, 0), fig) is None, "a point on an edge is not a node"
+    assert _clicked_node(SimpleNamespace(selection={"points": []}), fig) is None
+    assert _clicked_node(None, fig) is None
+
+
+def test_gaudi_algorithms_without_recorded_handles_are_named(monkeypatch, tmp_path):
+    run = tmp_path / "run"
+    shutil.copytree(RECO_RUN, run)
+    path = run / "baseline_dataflow.json"
+    raw = json.loads(path.read_text())
+    reader = next(a for a in raw["algorithms"] if a["type"] == "Reader")
+    reader["inputs"] = reader["outputs"] = None
+    path.write_text(json.dumps(raw))
+    at = _page(monkeypatch, tmp_path, run, "Data Flow")
+    text = " ".join(m.value for m in at.expander[0].markdown)
+    assert "Not recorded** (auditor too old): k4FWCore__Reader" in text

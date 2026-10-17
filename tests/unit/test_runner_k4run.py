@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from k4bench.plugin.runtime import ALLOC_COUNTER_PRELOAD
-from k4bench.runner.k4run import _k4run_args, run_k4run
+from k4bench.runner.k4run import _k4run_args, marlin_processor_dump, run_k4run
 
 AUDITOR = Path("/k4bench/plugin/auditor/k4BenchAuditorOptions.py")
 
@@ -159,3 +159,36 @@ def test_output_size_counts_only_files_the_job_created(tmp_path):
 
     result, _ = _run(tmp_path, _finished_process(finish))
     assert result.output_size_mb == pytest.approx(4.0)
+
+
+class TestMarlinProcessorDump:
+    """``Marlin -x`` in the jobs' environment, from a stand-in Marlin."""
+
+    @staticmethod
+    def _setup(tmp_path: Path, script: str) -> Path:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        marlin = bin_dir / "Marlin"
+        marlin.write_text("#!/bin/bash\n" + script)
+        marlin.chmod(0o755)
+        setup = tmp_path / "setup.sh"
+        setup.write_text(f"export PATH={shlex.quote(str(bin_dir))}:$PATH\necho sourced\n")
+        return setup
+
+    def test_the_dump_is_the_xml_marlin_prints(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        setup = self._setup(tmp_path, '[ "$1" = -x ] || exit 2\necho banner\n'
+                                      'echo \'<?xml version="1.0"?>\'\necho "<marlin/>"\n'
+                                      "touch cdb.log\n")
+        assert marlin_processor_dump(setup) == '<?xml version="1.0"?>\n<marlin/>\n'
+        assert not (tmp_path / "cdb.log").exists(), "Marlin runs in a directory of its own"
+
+    def test_a_description_in_another_encoding_does_not_break_the_dump(self, tmp_path):
+        setup = self._setup(tmp_path, "printf '<?xml version=\"1.0\"?>\\n<marlin>caf\\xe9</marlin>\\n'\n")
+        assert marlin_processor_dump(setup) == '<?xml version="1.0"?>\n<marlin>caf\ufffd</marlin>\n'
+
+    def test_a_failing_marlin_gives_none(self, tmp_path):
+        assert marlin_processor_dump(self._setup(tmp_path, "exit 1\n")) is None
+
+    def test_output_without_steering_xml_gives_none(self, tmp_path):
+        assert marlin_processor_dump(self._setup(tmp_path, "echo usage\n")) is None

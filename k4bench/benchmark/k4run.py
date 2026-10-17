@@ -23,10 +23,16 @@ on a host whose CVMFS cache does not hold them yet, fetching them dominates its
 initialization (tens of seconds for CLD reconstruction, against a few seconds
 from a warm cache), which would measure the host's cache rather than the job.
 The warm-up event also reads in the code the first measured event runs.
+
+After the last run, each run's data flow (:mod:`k4bench.analysis.dataflow`) is
+built from what its job recorded, with ``Marlin -x`` of the stack saved beside
+it when a job ran Marlin processors.
 """
 
 from __future__ import annotations
 
+import gzip
+import json
 import re
 import shutil
 import stat
@@ -35,11 +41,20 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from k4bench.artifacts import LOG_SUFFIX, WARM_UP_LOG_SUFFIX, label_path
+from k4bench.analysis.dataflow import build_dataflow
+from k4bench.artifacts import (
+    COMPONENTS_SUFFIX,
+    DATAFLOW_SUFFIX,
+    JOBOPTIONS_SUFFIX,
+    LOG_SUFFIX,
+    MARLIN_PROCESSORS,
+    WARM_UP_LOG_SUFFIX,
+    label_path,
+)
 from k4bench.labels import BASELINE_LABEL, VARIANT_PREFIX
 from k4bench.results.model import RunResult
 from k4bench.results.reporter import print_run_result
-from k4bench.runner.k4run import run_k4run
+from k4bench.runner.k4run import marlin_processor_dump, run_k4run
 
 #: A variant name becomes part of the run's file names.
 _VARIANT_NAME_RE = re.compile(r"^[A-Za-z0-9_.+-]+$")
@@ -128,6 +143,11 @@ def run_k4run_benchmark(config: K4runConfig) -> list[RunResult]:
     job_args = [config.extra_args, *([*config.extra_args, *v] for v in config.variants.values())]
     runs = list(zip(labels, job_args, strict=True))
 
+    # Removed first, so a run is never credited with a previous benchmark's.
+    (config.log_dir / MARLIN_PROCESSORS).unlink(missing_ok=True)
+    for label in labels:
+        label_path(config.log_dir, label, DATAFLOW_SUFFIX).unlink(missing_ok=True)
+
     results: list[RunResult] = []
     for index, (label, args) in enumerate(runs, start=1):
         print(f"[{index}/{len(runs)}] {label}")
@@ -157,7 +177,46 @@ def run_k4run_benchmark(config: K4runConfig) -> list[RunResult]:
                 _remove(work_dir)
         print_run_result(result)
         results.append(result)
+    try:
+        _record_dataflow(config, labels)
+    except Exception:  # noqa: BLE001 - the data flow is an extra, never the benchmark's failure
+        print(f"  WARNING: no data flow recorded:\n{traceback.format_exc()}")
     return results
+
+
+def _record_dataflow(config: K4runConfig, labels: list[str]) -> None:
+    """Write each run's ``_dataflow.json`` from its auditor file and job
+    options, and the stack's ``Marlin -x`` once when any job ran Marlin
+    processors. A run whose job left neither file gets none, and a failure
+    costs only these files, never the benchmark."""
+    jobs = {}
+    for label in labels:
+        try:
+            jobs[label] = (
+                json.loads(label_path(config.log_dir, label, COMPONENTS_SUFFIX).read_text()),
+                label_path(config.log_dir, label, JOBOPTIONS_SUFFIX).read_text(),
+            )
+        except (OSError, ValueError):
+            continue
+    marlin_xml = None
+    if any(entry.get("type") == "MarlinProcessorWrapper"
+           for components, _ in jobs.values() for entry in components.get("components", [])):
+        marlin_xml = marlin_processor_dump(config.setup_script)
+        if marlin_xml is None:
+            print("         Data flow: Marlin -x failed, Marlin processors' collections unknown")
+        else:
+            (config.log_dir / MARLIN_PROCESSORS).write_bytes(
+                gzip.compress(marlin_xml.encode(), mtime=0)
+            )
+    for label, (components, joboptions) in jobs.items():
+        try:
+            flow = build_dataflow(components, joboptions, marlin_xml)
+        except Exception:  # noqa: BLE001 - the data flow is an extra, never the benchmark's failure
+            print(f"  WARNING: no data flow for {label}:\n{traceback.format_exc()}")
+            continue
+        label_path(config.log_dir, label, DATAFLOW_SUFFIX).write_text(
+            json.dumps(flow, separators=(",", ":"))
+        )
 
 
 def _warm_up(config: K4runConfig, label: str, args: list[str]) -> None:

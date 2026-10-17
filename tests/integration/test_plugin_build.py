@@ -485,6 +485,38 @@ def test_auditor_finds_the_library_of_a_wrapped_marlin_processor(built_plugin, t
 
 @pytest.mark.integration
 @requires_gaudi
+def test_auditor_records_each_algorithms_data_handles(built_plugin, tmp_path):
+    """A producer, a transformer and a consumer of Gaudi's functional test
+    suite: each algorithm's declared reads and writes are its data handles'
+    keys, and a component holding none (a service) has none."""
+    import json
+
+    assert built_plugin.returncode == 0, "Skipped: build already failed"
+    _run_audited_job(
+        tmp_path,
+        "handles",
+        "from Configurables import ApplicationMgr\n"
+        "from Configurables import Gaudi__TestSuite__IntDataProducer as Producer\n"
+        "from Configurables import Gaudi__TestSuite__IntToFloatData as Converter\n"
+        "from Configurables import Gaudi__TestSuite__IntDataConsumer as Consumer\n"
+        "ApplicationMgr(EvtSel='NONE', EvtMax=1, TopAlg=[\n"
+        "    Producer('Producer', OutputLocation='/Event/MyInt'),\n"
+        "    Converter('Converter', InputLocation='/Event/MyInt', OutputLocation='/Event/MyFloat'),\n"
+        "    Consumer('Consumer', InputLocation='/Event/MyInt'),\n"
+        "])\n",
+    )
+    components = {
+        c["name"]: c for c in json.loads((tmp_path / "handles_components.json").read_text())["components"]
+    }
+    assert (components["Producer"]["inputs"], components["Producer"]["outputs"]) == ([], ["/Event/MyInt"])
+    assert components["Converter"]["inputs"] == ["/Event/MyInt"]
+    assert components["Converter"]["outputs"] == ["/Event/MyFloat"]
+    assert components["Consumer"]["inputs"] == ["/Event/MyInt"]
+    assert components["EventLoopMgr"]["inputs"] is None
+
+
+@pytest.mark.integration
+@requires_gaudi
 def test_auditor_counts_each_components_heap_allocations(built_plugin, tmp_path):
     """An algorithm putting three objects into the event store per event: it
     allocates them and keeps them past its call, since the store is cleared

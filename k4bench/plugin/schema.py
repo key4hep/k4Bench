@@ -3,9 +3,10 @@
 Each plugin stamps its output with a ``schema_version``: the event timing
 plugin's ``<label>_events.json``, the region timing plugin's
 ``<label>_regions.json`` and the Gaudi auditor's ``<label>_components.json``
-(the auditor also writes ``<label>_events.json``, in the event format). Every
-reader validates through this module, so a new version of any format is
-accepted or refused in one place.
+(the auditor also writes ``<label>_events.json``, in the event format), and so
+does the k4run benchmark's ``<label>_dataflow.json``, built from the auditor's
+file. Every reader validates through this module, so a new version of any
+format is accepted or refused in one place.
 
 A file without ``schema_version`` is the legacy unversioned format of its kind
 and is read as before.
@@ -24,6 +25,9 @@ REGION_SCHEMA_VERSION = 1
 
 #: Matches ``kComponentSchemaVersion`` in ``plugin/k4BenchAuditor.cpp``.
 COMPONENT_SCHEMA_VERSION = 1
+
+#: Written by :func:`k4bench.analysis.dataflow.build_dataflow`.
+DATAFLOW_SCHEMA_VERSION = 1
 
 
 def validate_event_schema(raw: object, *, source: str | Path | None = None) -> None:
@@ -48,6 +52,14 @@ def validate_component_schema(raw: object, *, source: str | Path | None = None) 
     See :func:`_validate_schema` for the rules.
     """
     _validate_schema(raw, kind="component", current=COMPONENT_SCHEMA_VERSION, source=source)
+
+
+def validate_dataflow_schema(raw: object, *, source: str | Path | None = None) -> None:
+    """Raise ``ValueError`` unless *raw* is a data-flow file this k4bench can read.
+
+    See :func:`_validate_schema` for the rules.
+    """
+    _validate_schema(raw, kind="dataflow", current=DATAFLOW_SCHEMA_VERSION, source=source)
 
 
 def _validate_schema(
