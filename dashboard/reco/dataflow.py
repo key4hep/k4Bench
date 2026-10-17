@@ -148,22 +148,23 @@ def _render_selected(flow: DataFlow, graph: Graph, view: FlowView) -> None:
             st.dataframe(writes, hide_index=True, width="stretch")
 
 
-def _unlinked(flow: DataFlow, graph: Graph) -> list[str]:
-    """The algorithms no recorded collection links to another, but the Writer."""
-    linked = {node for edge in graph.edges for node in edge}
-    return [a.name for a in flow.algorithms if a.name not in linked and a.output_commands is None]
+def _unlinked(flow: DataFlow, view: FlowView) -> list[str]:
+    """The algorithms not drawn, as no recorded collection links them to
+    another, but the Writer; one in a drawn group node is drawn."""
+    drawn = {member for node in view.nodes for member in node.members}
+    return [a.name for a in flow.algorithms if a.name not in drawn and a.output_commands is None]
 
 
-def _render_hidden(flow: DataFlow, graph: Graph) -> None:
-    hidden = _unlinked(flow, graph)
+def _render_hidden(flow: DataFlow, view: FlowView) -> None:
+    hidden = _unlinked(flow, view)
     if not hidden:
         return
     plural = "s" if len(hidden) != 1 else ""
     st.caption(f"{len(hidden)} algorithm{plural} without recorded links not drawn (see Limitations).")
 
 
-def _render_limits(flow: DataFlow, graph: Graph) -> None:
-    silent = _unlinked(flow, graph)
+def _render_limits(flow: DataFlow, graph: Graph, view: FlowView) -> None:
+    silent = _unlinked(flow, view)
     with st.expander("Limitations"):
         # The Writer's reads follow from its rules, handles or not.
         unknown = [a.name for a in flow.algorithms if a.framework == "gaudi"
@@ -226,6 +227,6 @@ def render(ctx: PageContext) -> None:
         _handle_click(node, view)
         st.session_state[_CHART_KEY] += 1
         st.rerun()
-    _render_hidden(flow, graph)
+    _render_hidden(flow, view)
     _render_selected(flow, graph, view)
-    _render_limits(flow, graph)
+    _render_limits(flow, graph, view)

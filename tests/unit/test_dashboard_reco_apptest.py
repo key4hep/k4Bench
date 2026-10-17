@@ -522,6 +522,25 @@ def test_a_click_on_a_node_names_it_and_other_clicks_are_ignored():
     assert _clicked_node(None, fig) is None
 
 
+def test_an_unlinked_instance_in_a_drawn_group_is_not_called_hidden():
+    from k4bench.analysis.dataflow import DataFlow
+    from k4bench.analysis.plots.dataflow import dataflow_view
+    from reco.dataflow import _unlinked
+
+    def algorithm(name, impl, reads=(), writes=()):
+        return {"name": name, "type": "MarlinProcessorWrapper", "impl": impl, "framework": "marlin",
+                "inputs": [{"name": c, "store": "lcio"} for c in reads],
+                "outputs": [{"name": c, "store": "lcio"} for c in writes]}
+
+    flow = DataFlow.from_json({
+        "schema_version": 1, "handles_recorded": True, "marlin_recorded": True,
+        "algorithms": [algorithm("DigiA", "Digi", writes=["Hits"]), algorithm("DigiB", "Digi"),
+                       algorithm("Tracking", "Tracking", reads=["Hits"]), algorithm("Status", "Status")],
+    })
+    view = dataflow_view(flow, writer_edges=False, isolated=False)
+    assert _unlinked(flow, view) == ["Status"]
+
+
 def test_gaudi_algorithms_without_recorded_handles_are_named(monkeypatch, tmp_path):
     run = tmp_path / "run"
     shutil.copytree(RECO_RUN, run)

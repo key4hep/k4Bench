@@ -124,6 +124,16 @@ class TestBuild:
         assert [c.direction for c in digi.converters] == ["edm4hep_to_lcio"]
         assert digi.converters[0].mapping == {"MCParticles": "MCParticle"}
 
+    def test_a_marlin_value_naming_several_collections_is_split(self):
+        options = JOBOPTIONS.replace("[ 'VertexCollection' ]", "[ 'HitsA HitsB' ]")
+        digi = DataFlow.from_json(build_dataflow(_components(), options, MARLIN_XML)).algorithms[1]
+        assert [c.name for c in digi.inputs] == ["HitsA", "HitsB"]
+
+    def test_a_converter_converts_everything_unless_told_otherwise(self):
+        options = JOBOPTIONS.replace("Digi.InputConversion.convertAll = True;\n", "")
+        digi = DataFlow.from_json(build_dataflow(_components(), options, MARLIN_XML)).algorithms[1]
+        assert digi.converters[0].convert_all is True
+
     def test_a_processor_without_collection_parameters_declares_nothing(self, flow):
         assert flow.algorithms[3].inputs == () and flow.algorithms[3].outputs == ()
 
@@ -182,6 +192,12 @@ class TestGraph:
         graph = flow.graph()
         written = {link.name for (p, c), links in graph.edges.items() if c == "Writer" for link in links}
         assert written == {"MCParticles", "DigiHits", "Tracks", "NTracks"}
+
+    def test_the_writer_keeps_what_no_rule_matches(self):
+        options = JOBOPTIONS.replace("[ 'keep *' , 'drop Vertex*' ]", "[ 'drop Tracks' ]")
+        graph = DataFlow.from_json(build_dataflow(_components(), options, MARLIN_XML)).graph()
+        written = {link.name for (p, c), links in graph.edges.items() if c == "Writer" for link in links}
+        assert written == {"MCParticles", "VertexCollection", "DigiHits", "NTracks"}
 
     def test_a_read_nobody_writes_is_unresolved(self):
         components = _components()

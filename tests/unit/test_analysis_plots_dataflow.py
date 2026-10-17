@@ -116,6 +116,12 @@ class TestView:
         view = dataflow_view(flow, writer_edges=False, isolated=False)
         assert [n.id for n in view.nodes] == ["Producer", "Writer"]
         assert view.edges == {}
+        # Drawn as a node with collections, in the graph rather than below it.
+        positions = layered_positions(view)
+        assert positions["Producer"][1] == positions["Writer"][1]
+        fig = plot_dataflow(view, positions)
+        assert "rgba(0,0,0,0)" not in fig.data[-1].marker.color
+        assert not fig.layout.annotations
 
     def test_unknown_times_stay_unknown(self, flow):
         assert dataflow_view(flow).nodes[1].seconds is None

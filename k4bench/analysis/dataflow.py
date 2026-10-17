@@ -217,8 +217,8 @@ def _convert(source: dict, target: dict, converter: Converter) -> None:
 
 def _kept(name: str, commands: Iterable[str]) -> bool:
     """Whether k4FWCore keep/drop *commands* keep collection *name*: the last
-    rule whose pattern matches decides, and nothing is kept unmatched."""
-    kept = False
+    rule whose pattern matches decides, and a collection none matches is kept."""
+    kept = True
     for command in commands:
         action, _, pattern = command.strip().partition(" ")
         if fnmatch.fnmatchcase(name, pattern.strip()):
@@ -290,7 +290,9 @@ def _marlin_algorithm(name: str, processor_type: str, options: dict,
         entry["inputs"], entry["outputs"] = [], []
         for parameter, spec in sorted(marlin[processor_type].items()):
             explicit = parameter in values
-            for collection in (values[parameter] if explicit else spec["default"]):
+            # The wrapper hands Marlin each value split on whitespace.
+            names = [n for v in values[parameter] for n in str(v).split()] if explicit else spec["default"]
+            for collection in names:
                 if collection:
                     entry[f"{spec['direction']}s"].append({
                         "name": collection, "store": LCIO, "type": spec["type"],
@@ -304,7 +306,8 @@ def _marlin_algorithm(name: str, processor_type: str, options: dict,
             mapping = settings.get("collNameMapping") or {}
             converters.append({
                 "direction": direction,
-                "convert_all": bool(settings.get("convertAll", False)),
+                # Both converters convert everything unless told otherwise.
+                "convert_all": bool(settings.get("convertAll", True)),
                 "mapping": dict(mapping) if isinstance(mapping, dict) else {},
             })
     entry["converters"] = converters

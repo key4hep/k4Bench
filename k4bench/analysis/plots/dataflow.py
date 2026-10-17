@@ -60,10 +60,13 @@ class FlowView:
     sink: str | None
     #: The classes with several instances, expandable or collapsible.
     groups: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    #: The nodes linked to another, through the Writer's reads left out too.
+    linked: frozenset[str] = frozenset()
 
     @property
     def connected(self) -> set[str]:
-        return {node for edge in self.edges for node in edge}
+        """The nodes an edge touches, drawn or among the Writer's left-out reads."""
+        return {node for edge in self.edges for node in edge} | self.linked
 
 
 def group_id(impl: str) -> str:
@@ -128,7 +131,8 @@ def dataflow_view(
         edges.setdefault(pair, []).extend(links)
     if not isolated:
         nodes = [node for node in nodes if node.id in linked]
-    return FlowView(tuple(nodes), {p: tuple(ls) for p, ls in edges.items()}, sink, groups)
+    return FlowView(tuple(nodes), {p: tuple(ls) for p, ls in edges.items()}, sink, groups,
+                    frozenset(linked - {None}))
 
 
 def _chained(members: set[str], edges: Iterable[tuple[str, str]]) -> bool:
