@@ -250,6 +250,20 @@ def test_run_history_rows_carry_no_verdict_but_mark_failures():
     assert wall.loc["2026-10-14", "night"] == "2026-10-14"
 
 
+def test_run_history_rows_drop_events_no_result_backs():
+    # The 10-14 baseline crashed before writing its results, but left a
+    # partial events file; a failed run that did write them is kept.
+    results = pd.concat([
+        _results(["2026-10-13"], [480.0]),
+        _results(["2026-10-15"], [12.0], returncode=1),
+    ], ignore_index=True)
+    events = _events(["2026-10-13", "2026-10-14", "2026-10-15"], [4.8, 0.1, 0.2])
+    rows = _overview_data.run_history_rows("CLD_o2_v09", results, events, {})
+    mean = rows[rows["metric"] == "mean_time_s"].set_index("run_night")
+    assert sorted(mean.index) == ["2026-10-13", "2026-10-15"]
+    assert mean.loc["2026-10-15", "severity"] == Severity.FAILURE.value
+
+
 def test_run_overview_inputs_cover_every_detector_with_runs():
     days = ["2026-10-16", "2026-10-17"]
     hist = pd.concat([

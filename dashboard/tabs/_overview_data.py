@@ -19,7 +19,7 @@ from urllib.parse import urlencode
 
 import pandas as pd
 
-from k4bench.analysis.loader import failed_config_mask
+from k4bench.analysis.loader import failed_config_mask, recorded_config_rows
 from k4bench.labels import BASELINE_LABEL
 from k4bench.regression.models import NightlyReport, RunGroupReport, Severity
 from k4bench.regression.render import detector_badge
@@ -780,11 +780,14 @@ def run_history_rows(
     ``{run_id: reliable}``. No report judged these values, so a healthy run's
     severity is ``UNKNOWN`` (never a flag); a failed run's is ``FAILURE``, so
     the views keep its partial values apart as they do for the reports.
+    Event values whose config wrote no result row (a partial file left by a
+    crash) are dropped.
     """
     if results is None or results.empty:
         return pd.DataFrame(columns=["night", "run_night", *_HIST_COLS])
     results = results[results["label"] == _BASELINE_LABEL]
     failed = set(results.loc[failed_config_mask(results), "run_id"])
+    events = recorded_config_rows(events, results)
     parts = []
     for frame, metrics in ((results, _RESULT_METRICS), (events, _EVENT_METRICS)):
         if frame is None or frame.empty:
