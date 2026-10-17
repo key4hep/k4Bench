@@ -1,10 +1,11 @@
 """Page chrome and small sidebar utilities for the dashboard entry point.
 
 The page configuration, footers, the stale-selection helper — presentation and
-plumbing that would otherwise clutter ``app.main()``.
+plumbing that would otherwise clutter :func:`suite_page.render_page`.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import date
 
 import pandas as pd
@@ -81,6 +82,7 @@ def render_scope_note(
     data_dir: str | None = None,
     override: "SectionScope | None" = None,
     slot: "st.delta_generator.DeltaGenerator | None" = None,
+    scopes: Mapping[str, SectionScope] = SECTION_SCOPE,
 ) -> None:
     """One muted line under the section bar naming what *section* is showing.
 
@@ -89,8 +91,9 @@ def render_scope_note(
     an ``st.caption``, so it takes the theme's small muted text colour, on one
     line, with no box, background or icon.
 
-    What it may claim comes entirely from :data:`sections.SECTION_SCOPE`, never
-    from the arguments: the sections honour genuinely different slices of the
+    What it may claim comes entirely from the page's *scopes* registry
+    (:data:`sections.SECTION_SCOPE` for the Simulation page), never from the
+    arguments: the sections honour genuinely different slices of the
     sidebar, so a uniform breadcrumb would misdescribe several of them. A
     section the registry does not know renders nothing rather than a guess.
     *override* replaces that declaration for the one section whose scope a
@@ -119,7 +122,7 @@ def render_scope_note(
     just one run directory), so every dimension arrives as ``None`` and the
     note names *data_dir* instead.
     """
-    scope = override or SECTION_SCOPE.get(section)
+    scope = override or scopes.get(section)
     if scope is None:
         return
     target = slot if slot is not None else st
@@ -164,21 +167,10 @@ DOCS_URL = "https://key4hep.github.io/k4Bench/"
 #: sticky footer.
 _GLOBAL_CSS = """
 <style>
-/* Make the top toolbar transparent so it doesn't obscure tabs */
-[data-testid="stToolbar"],
-header[data-testid="stHeader"] {
-    background: transparent !important;
-    backdrop-filter: none !important;
-}
-/* The whitespace above the tabs is the (mostly empty) header band, not the
-   block padding — so shrink the header itself while keeping the toolbar
-   (menu / Deploy / Running) usable, and pull the content up under it. */
-header[data-testid="stHeader"] {
-    height: 2.5rem !important;
-    min-height: 2.5rem !important;
-}
+/* Start the content just below the header (3.75rem, where the page links
+   sit) instead of below Streamlit's much taller default top margin. */
 .block-container, .stMainBlockContainer {
-    padding-top: 0.75rem !important;
+    padding-top: 3.75rem !important;
     padding-bottom: 1rem !important;
 }
 /* Collapse the blank gap Streamlit inserts below plotly iframes */

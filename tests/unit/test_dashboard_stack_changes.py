@@ -741,9 +741,20 @@ def test_every_remote_only_section_is_a_real_section():
     assert sections.REMOTE_ONLY <= set(sections.SECTION_NAMES)
 
 
-def test_local_mode_keeps_exactly_the_sections_that_work_without_a_data_url():
+def _sim_page(section_names):
+    """The Simulation page's spec over *section_names*, drawing nothing."""
+    from suite_page import SuitePage
+
     sections = _sections()
-    assert sections.visible_sections(trends_enabled=False) == [
+    return SuitePage(
+        suite="sim", sections=tuple(section_names), remote_only=sections.REMOTE_ONLY,
+        scopes=sections.SECTION_SCOPE, renderers={},
+    )
+
+
+def test_local_mode_keeps_exactly_the_sections_that_work_without_a_data_url():
+    page = _sim_page(_sections().SECTION_NAMES)
+    assert page.visible_sections(trends_enabled=False) == [
         "Config Impact", "Region Timing", "Event Timing", "Event Memory",
         "Machine Info", "Logs",
     ]
@@ -751,19 +762,19 @@ def test_local_mode_keeps_exactly_the_sections_that_work_without_a_data_url():
 
 def test_remote_mode_keeps_every_section_in_display_order():
     sections = _sections()
-    assert sections.visible_sections(trends_enabled=True) == sections.SECTION_NAMES
+    page = _sim_page(sections.SECTION_NAMES)
+    assert page.visible_sections(trends_enabled=True) == sections.SECTION_NAMES
 
 
-def test_section_order_is_independent_of_data_requirements(monkeypatch):
+def test_section_order_is_independent_of_data_requirements():
     """Reordering the bar must not change which sections are hidden.
 
     Order is a presentation choice and remote-only is a fact about data
     sources; deriving one from the other would let a reorder strand a tab with
     nothing behind it.
     """
-    sections = _sections()
-    monkeypatch.setattr(sections, "SECTION_NAMES", list(reversed(sections.SECTION_NAMES)))
-    assert set(sections.visible_sections(trends_enabled=False)) == {
+    page = _sim_page(reversed(_sections().SECTION_NAMES))
+    assert set(page.visible_sections(trends_enabled=False)) == {
         "Config Impact", "Region Timing", "Event Timing", "Event Memory",
         "Machine Info", "Logs",
     }

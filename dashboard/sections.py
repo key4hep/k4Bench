@@ -193,13 +193,3 @@ STACK_CHANGES_PLATFORM_WIDE = SectionScope(
     release=SECTION_SCOPE["Stack Changes"].release,
 )
 
-
-def visible_sections(trends_enabled: bool) -> list[str]:
-    """The sections to offer, in display order.
-
-    Gated on *remote mode* rather than on whether the current trend window
-    happens to have data: that keeps the section set stable as the window
-    changes, so the active section survives a window tweak, and an empty window
-    shows an in-view "widen the window" message instead of a vanishing tab.
-    """
-    return [s for s in SECTION_NAMES if trends_enabled or s not in REMOTE_ONLY]

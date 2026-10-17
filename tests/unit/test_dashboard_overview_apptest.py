@@ -136,6 +136,12 @@ def _run(window: tuple[date, date] | None = _WINDOW) -> AppTest:
     return at
 
 
+def _query_param(at: AppTest, name: str) -> str:
+    """A query param's value, normalising AppTest's list-or-scalar return."""
+    v = at.query_params[name]
+    return v[0] if isinstance(v, list) else v
+
+
 def test_default_view_renders_the_trends_figure_and_controls():
     at = _run()
     # The tab opens on Performance Trends: one figure, the shaping controls,
@@ -163,8 +169,8 @@ def test_default_view_renders_the_trends_figure_and_controls():
     assert "Data range: **2026-07-09** → **2026-07-11** (2 nightly tags)." in captions
     # The selected comparison is deep-linkable (AppTest stores param values
     # as lists).
-    assert at.query_params["tmetric"] == ["mean_time_s"]
-    assert at.query_params["mmetric"] == ["mean_rss_mb"]
+    assert _query_param(at, "tmetric") == "mean_time_s"
+    assert _query_param(at, "mmetric") == "mean_rss_mb"
 
 
 def test_landscape_view_renders_its_own_figure():
@@ -449,14 +455,14 @@ def test_status_night_picker_redefaults_when_the_sample_changes():
     ).run()
     at = _status_view(at)
     at.selectbox(key="det_ov_report_night").set_value("2026-07-09").run()
-    assert at.query_params["report"] == ["2026-07-09"]
+    assert _query_param(at, "report") == "2026-07-09"
 
     at.session_state["_sample"] = "single_mu_10GeV"
     at.run()
 
     assert not at.exception, at.exception
     assert at.selectbox(key="det_ov_report_night").value == "2026-07-11"
-    assert at.query_params["report"] == ["2026-07-11"]
+    assert _query_param(at, "report") == "2026-07-11"
 
 
 #: A trend window ending before the latest report — which is fetched anyway, so
@@ -529,7 +535,7 @@ def test_status_night_picker_offers_every_loaded_night_newest_first():
     # Newest first, each labelled with that night's worst cross-detector state.
     assert picker.options == ["✅ 2026-07-11", "✅ 2026-07-10", "🔴 2026-07-09"]
     assert picker.value == "2026-07-11"          # defaults to the newest
-    assert at.query_params["report"] == ["2026-07-11"]
+    assert _query_param(at, "report") == "2026-07-11"
     assert {m.label: m.value for m in at.metric}["🔴 Regressed"] == "0"
 
 
@@ -547,7 +553,7 @@ def test_status_night_picker_switches_the_verdicts():
     assert roster.iloc[0]["Detector"] == "CLD_o2_v08"
     # The roster's deep links and the URL both pin the night on screen.
     assert "report=2026-07-09" in roster.iloc[0]["Inspect"]
-    assert at.query_params["report"] == ["2026-07-09"]
+    assert _query_param(at, "report") == "2026-07-09"
     captions = "\n".join(str(c.value) for c in at.caption)
     assert "Historical view · report night **2026-07-09**" in captions
 
@@ -881,7 +887,7 @@ def test_email_view_night_picker_offers_every_loaded_night_newest_first():
     assert picker.label == "Report night"
     assert picker.options == ["✅ 2026-07-11", "✅ 2026-07-10", "✅ 2026-07-09"]
     assert picker.value == "2026-07-11"
-    assert at.query_params["report"] == ["2026-07-11"]
+    assert _query_param(at, "report") == "2026-07-11"
 
 
 def test_email_view_night_picker_switches_the_mail():
@@ -891,7 +897,7 @@ def test_email_view_night_picker_switches_the_mail():
     doc = _srcdoc(at)
     assert "Report night <strong>9 Jul 2026</strong>" in doc
     assert "Key4hep release: 2026-07-09" in doc
-    assert at.query_params["report"] == ["2026-07-09"]
+    assert _query_param(at, "report") == "2026-07-09"
     captions = "\n".join(str(c.value) for c in at.caption)
     assert "Historical view · report night **2026-07-09**" in captions
 
@@ -965,7 +971,7 @@ def test_a_copied_url_restores_both_the_view_and_the_night():
     at = _email_view(_run())
     at.selectbox(key="det_ov_email_night").set_value("2026-07-10").run()
     assert not at.exception, at.exception
-    copied = {name: values[0] for name, values in at.query_params.items()}
+    copied = {name: _query_param(at, name) for name in at.query_params.keys()}
     assert copied["view"] == "Nightly Report"
     assert copied["report"] == "2026-07-10"
 
@@ -990,7 +996,7 @@ def test_an_unknown_view_falls_back_to_the_default():
     at = _deep_linked(view="Nightly Reports")
 
     assert at.radio(key="det_ov_view_mode").value == "Performance Trends"
-    assert at.query_params["view"] == ["Performance Trends"]
+    assert _query_param(at, "view") == "Performance Trends"
 
 
 def test_email_view_renders_when_the_scope_has_no_benchmarks():

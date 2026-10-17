@@ -86,12 +86,32 @@ def _url_synced_selectbox(
     return value, dropped
 
 
-def pick_run(base_url: str, cache_dir: str) -> RunSelection | None:
-    """Detector → Platform → Sample → Stack, then the stack's latest run.
+def render_refresh_button() -> None:
+    """The sidebar's "Refresh Data" button: drop every cached listing and run."""
+    if st.button("Refresh Data", width="content"):
+        # Deliberately NO st.rerun() here. This button renders *before* the
+        # Detector/Platform/Sample/Stack selectboxes below, so rerunning now
+        # would abort the run before those widgets are registered — Streamlit
+        # then garbage-collects their session_state as "stale" and the
+        # dropdowns snap back to their defaults (the bug where Refresh showed
+        # the wrong sample). Instead we just clear the caches and let the run
+        # continue: the selectboxes re-render (keeping the current selection)
+        # and the now-empty caches are repopulated with fresh data below.
+        st.cache_data.clear()
+        st.cache_resource.clear()
+
+
+def pick_run(
+    base_url: str, cache_dir: str, *, suite: str = SIM, key_prefix: str = "",
+) -> RunSelection | None:
+    """Detector → Platform → Sample → Stack in *suite*'s run tree, then the
+    stack's latest run.
 
     Each list is read from the store below the level above it. ``None`` when a
     level cannot be listed or is empty, or the run cannot be downloaded — the
     reason is already on screen, and nothing below it can be drawn.
+    *key_prefix* prefixes the selectboxes' keys, so each page keeps its own
+    selection; the URL parameters they mirror are the same on every page.
     """
     st.markdown(
         resource_link_card(base_url, "🗄️", "WebEOS data", base_url.rstrip("/")),
@@ -99,7 +119,7 @@ def pick_run(base_url: str, cache_dir: str) -> RunSelection | None:
     )
 
     try:
-        detectors = cached_list_detectors(base_url, SIM)
+        detectors = cached_list_detectors(base_url, suite)
     except Exception as err:
         st.error(f"Failed to list detectors: {err}")
         return None
@@ -107,14 +127,14 @@ def pick_run(base_url: str, cache_dir: str) -> RunSelection | None:
         st.error("No detectors found at the configured WebEOS URL.")
         return None
     detector, _ = _url_synced_selectbox(
-        "Detector", order_detectors(detectors), "sb_detector", "detector"
+        "Detector", order_detectors(detectors), f"{key_prefix}sb_detector", "detector"
     )
     if not detector:
         return None
     render_example_detector_badge(detector)
 
     try:
-        platforms = cached_list_platforms(base_url, SIM, detector)
+        platforms = cached_list_platforms(base_url, suite, detector)
     except Exception as err:
         st.error(f"Failed to list platforms: {err}")
         return None
@@ -122,7 +142,7 @@ def pick_run(base_url: str, cache_dir: str) -> RunSelection | None:
         st.warning(f"No platforms found for detector '{detector}'.")
         return None
     platform, dropped = _url_synced_selectbox(
-        "Platform", order_platforms(platforms), "sb_platform", "platform"
+        "Platform", order_platforms(platforms), f"{key_prefix}sb_platform", "platform"
     )
     if not platform:
         return None
@@ -131,7 +151,7 @@ def pick_run(base_url: str, cache_dir: str) -> RunSelection | None:
     # Scan the release tree once; derive both the sample union and the
     # per-sample stack list from the same {stack: [samples]} map.
     try:
-        stack_samples = cached_scan_stack_samples(base_url, SIM, detector, platform)
+        stack_samples = cached_scan_stack_samples(base_url, suite, detector, platform)
     except Exception as err:
         st.error(f"Failed to scan releases: {err}")
         return None
@@ -142,7 +162,9 @@ def pick_run(base_url: str, cache_dir: str) -> RunSelection | None:
     if not samples:
         st.warning(f"No samples found for '{detector} / {platform}'.")
         return None
-    sample, dropped = _url_synced_selectbox("Sample", samples, "sb_sample", "sample")
+    sample, dropped = _url_synced_selectbox(
+        "Sample", samples, f"{key_prefix}sb_sample", "sample"
+    )
     if not sample:
         return None
     # The Overview tab is scoped by sample across all detectors, so this
@@ -160,7 +182,7 @@ def pick_run(base_url: str, cache_dir: str) -> RunSelection | None:
     if not stacks:
         st.warning(f"No releases contain sample '{sample}' for '{detector} / {platform}'.")
         return None
-    stack, _ = _url_synced_selectbox("Stack", stacks, "sb_stack", "stack")
+    stack, _ = _url_synced_selectbox("Stack", stacks, f"{key_prefix}sb_stack", "stack")
     st.caption(
         f"Available in {len(stacks)} release(s); defaults to the newest. "
         "Single-run tabs use it; Trends shows all releases."
@@ -172,7 +194,7 @@ def pick_run(base_url: str, cache_dir: str) -> RunSelection | None:
     # stack — fetch just that one (cached), not the whole date history.
     try:
         data_dir = cached_fetch_latest_run(
-            base_url, SIM, detector, platform, stack, sample, cache_dir
+            base_url, suite, detector, platform, stack, sample, cache_dir
         )
     except Exception as err:
         st.error(f"Failed to download latest run: {err}")
@@ -185,20 +207,22 @@ def pick_run(base_url: str, cache_dir: str) -> RunSelection | None:
 
 def pick_trend_window(
     base_url: str, run: RunSelection, cache_dir: str, across_detectors: bool,
+    *, suite: str = SIM, reports: bool = True,
 ) -> TrendWindow:
     """The Trend window section, and the runs it covers for *run*'s
-    detector, platform and sample.
+    detector, platform and sample in *suite*'s run tree.
 
     The slider ranges over the releases *run*'s detector was benchmarked with,
     or, *across_detectors*, over every release benchmarked on the platform by
     any detector — what a section that compares the detectors draws, which
     must not shrink to the history of whichever one the sidebar has selected.
     The releases and run dates come from directory listings only; just the
-    windowed runs are downloaded.
+    windowed runs are downloaded. A suite without nightly *reports* bounds the
+    window by its runs alone.
     """
     try:
         stacks_dates = cached_list_run_dates(
-            base_url, SIM, run.detector, run.platform, run.sample
+            base_url, suite, run.detector, run.platform, run.sample
         )
     except Exception as err:
         st.warning(f"Could not scan trend run dates: {err}")
@@ -207,7 +231,7 @@ def pick_trend_window(
     platform_stacks: list[str] = []
     if across_detectors:
         try:
-            platform_stacks = list_platform_stacks(base_url, SIM, run.platform)
+            platform_stacks = list_platform_stacks(base_url, suite, run.platform)
         except Exception as err:
             st.warning(f"Could not list the platform's releases: {err}")
     # The selected detector's own releases are folded into the platform's so
@@ -216,11 +240,12 @@ def pick_trend_window(
 
     # The nightly report nights — one cached directory listing, the same one
     # the Overview tab reads. They bound the nights the Overview draws.
-    try:
-        report_nights = cached_list_report_dates(base_url, SIM)
-    except Exception as err:
-        st.warning(f"Could not list nightly reports: {err}")
-        report_nights = []
+    report_nights: list[str] = []
+    if reports:
+        try:
+            report_nights = cached_list_report_dates(base_url, suite)
+        except Exception as err:
+            st.warning(f"Could not list nightly reports: {err}")
     report_days = to_dates(report_nights)
     if across_detectors and report_days:
         # The Overview draws the reports, so a release tonight's batch is still
@@ -258,7 +283,7 @@ def pick_trend_window(
     st.caption(caption)
     try:
         run_dirs = cached_fetch_runs_windowed(
-            base_url, SIM, run.detector, run.platform, run.sample, cache_dir, windowed,
+            base_url, suite, run.detector, run.platform, run.sample, cache_dir, windowed,
         )
     except Exception as err:
         st.warning(f"Could not load trend data: {err}")
