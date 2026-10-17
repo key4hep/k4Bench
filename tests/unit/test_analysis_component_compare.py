@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 from k4bench.analysis.component_compare import (
+    ALLOCATION_FLOORS,
     EVENT_TOTAL,
     MIN_PAIRED_EVENTS,
     Measurement,
@@ -185,6 +186,13 @@ def test_an_input_moved_in_the_store_is_the_same_input():
     assert check.ok and "another location" in check.detail
 
 
+def test_an_input_of_the_same_name_for_another_detector_is_another_input():
+    other = URL.replace("CLD_o2_v09", "CLD_o3_v01")
+    checks = comparability(measurement(), measurement(input_files=[other]))
+    assert not _check(checks, "input").ok
+    assert not comparable(checks)
+
+
 def test_caveats_do_not_block_a_comparison():
     other = measurement(machine={"hostname": "host-2", "cpu_model": "EPYC"}, input_files=None)
     checks = comparability(measurement(), other)
@@ -280,6 +288,28 @@ def test_without_instructions_only_changed_allocations_say_anything():
     assert verdict.loc["Vertex", "cause"] == "work"
     # Unchanged allocations do not show the work stayed the same.
     assert verdict.loc["Track", "cause"] == "unknown"
+
+
+def test_a_change_from_or_to_nothing_is_judged_by_its_size():
+    allocations = {c: np.where(np.isnan(v), np.nan, 1e4) for c, v in COSTS.items()}
+    none = {"Tiny": allocations["Tiny"] * 0}
+    before = {**allocations, **none, "Track": allocations["Track"] * 0}
+    after = {**allocations, **none, "Track": allocations["Track"] / 2,
+             "Vertex": allocations["Vertex"] * 0}
+    deltas = paired_deltas(job(COSTS, allocations=before), job(COSTS, allocations=after),
+                           "allocations")
+    reasons = significant_changes(deltas, ALLOCATION_FLOORS)["reason"]
+    assert reasons["Track"] == "significant"  # nothing to 5000 per event
+    assert reasons["Vertex"] == "significant"  # 10000 per event to nothing
+    assert reasons["Tiny"] == "below_floor"  # nothing to nothing
+
+
+def test_more_allocations_from_none_are_the_work():
+    allocations = {c: np.where(np.isnan(v), np.nan, 0.0) for c, v in COSTS.items()}
+    a = job(COSTS, allocations=allocations)
+    b = job(_scaled(COSTS, {"Vertex": 1.2}),
+            allocations={**allocations, "Vertex": allocations["Vertex"] + 5000})
+    assert _classify(a, b, allocations="allocations").loc["Vertex", "cause"] == "work"
 
 
 def test_added_and_removed_components_are_their_own_cause():

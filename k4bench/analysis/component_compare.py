@@ -52,6 +52,10 @@ NOISE_SIGMAS = 3.0
 #: the host does, instructions stay within ~0.1% of a ~40% time change.
 WORK_EXPLAINS = 0.5
 
+#: Where the input store kept frozen inputs before it moved them, and where
+#: they are now.
+INPUT_RELOCATIONS = {"/_inputs/CLD_": "/inputs/reco/CLD/CLD_"}
+
 #: Bootstrap resamples behind each interval, and its coverage.
 RESAMPLES = 2000
 CONFIDENCE = 0.95
@@ -121,8 +125,7 @@ def comparability(a: Measurement, b: Measurement) -> list[Check]:
         checks.append(Check("input", False, False, "input files not recorded"))
     elif inputs_a == inputs_b:
         checks.append(Check("input", True, True, "same input"))
-    elif [_file_name(f) for f in inputs_a] == [_file_name(f) for f in inputs_b]:
-        # A frozen input is named for what it holds; the store moved them once.
+    elif [_canonical_input(f) for f in inputs_a] == [_canonical_input(f) for f in inputs_b]:
         checks.append(Check("input", True, True, "same input, read from another location"))
     else:
         checks.append(Check("input", False, True, "the two reconstructed different inputs"))
@@ -161,8 +164,13 @@ def comparability(a: Measurement, b: Measurement) -> list[Check]:
     return sorted(checks, key=lambda check: not check.blocking)
 
 
-def _file_name(location: str) -> str:
-    return location.rstrip("/").rsplit("/", 1)[-1]
+def _canonical_input(location: str) -> str:
+    """*location* as the store names it now. A file name alone does not tell
+    inputs apart (the detector they were simulated in is a directory), so only
+    the store's known moves are undone."""
+    for old, new in INPUT_RELOCATIONS.items():
+        location = location.replace(old, new)
+    return location
 
 
 def comparable(checks: list[Check]) -> bool:
@@ -302,7 +310,9 @@ def significant_changes(
 
     A change is significant when its interval excludes zero and it exceeds
     *floors* and :data:`NOISE_SIGMAS` × the component's *noise*; a component
-    without a noise estimate is held to the floors alone. Columns:
+    without a noise estimate is held to the floors alone, and one that is
+    added, removed or cost nothing in the earlier run to the absolute floor
+    alone. Columns:
     ``significant``, ``threshold`` (the relative change it had to exceed),
     ``noise_known`` and ``reason``: ``significant``, ``below_floor`` (smaller
     than the absolute floor), ``within_noise`` (smaller than the threshold),
@@ -311,15 +321,15 @@ def significant_changes(
     """
     noise = (noise if noise is not None else pd.Series(dtype=float)).reindex(deltas.index)
     threshold = np.maximum(floors.relative, NOISE_SIGMAS * noise.fillna(0.0))
-    # A component one side lacks has no earlier value to be relative to: it
-    # is judged by its size.
-    one_sided = deltas["status"] != "common"
+    # A component one side lacks, or one that cost nothing before, has no
+    # earlier value to be relative to: it is judged by its size.
+    by_size = (deltas["status"] != "common") | deltas["a_per_event"].eq(0)
     reason = pd.Series("significant", index=deltas.index)
     reason[deltas["ci_low"].le(0) & deltas["ci_high"].ge(0)] = "uncertain"
-    reason[~one_sided & deltas["rel"].abs().lt(threshold)] = "within_noise"
+    reason[~by_size & deltas["rel"].abs().lt(threshold)] = "within_noise"
     reason[deltas["delta"].abs().lt(floors.absolute)] = "below_floor"
     reason[deltas["n_events"].lt(MIN_PAIRED_EVENTS)] = "too_few_events"
-    reason[deltas["delta"].isna() | (~one_sided & deltas["rel"].isna())] = "unknown"
+    reason[deltas["delta"].isna() | (~by_size & deltas["rel"].isna())] = "unknown"
     return pd.DataFrame({
         "significant": reason == "significant",
         "threshold": threshold,

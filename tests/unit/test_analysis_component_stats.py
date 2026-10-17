@@ -115,6 +115,9 @@ def test_a_call_without_a_value_leaves_the_total_unknown():
     summary = component_summary(timing, "instructions")
     assert math.isnan(summary.loc["Track", "per_event"])
     assert summary.loc["Track", "mean"] == pytest.approx(250)
+    assert summary.loc["Track", "n_events"] == 3
+    assert summary.loc["Track", "n_values"] == 2
+    assert summary.loc["Track", "sem"] == pytest.approx(summary.loc["Track", "std"] / math.sqrt(2))
     assert summary["share"].isna().all()
     totals = event_totals(timing, "instructions")
     assert math.isnan(totals[2])

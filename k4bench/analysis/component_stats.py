@@ -46,12 +46,14 @@ def component_summary(timing: ComponentTiming, metric: str = "wall_s") -> pd.Dat
     Columns:
 
     - ``n_events`` — measured events the component ran in;
+    - ``n_values`` — those of them with a *metric* value: fewer than
+      ``n_events`` where hardware counters could not be read for a call;
     - ``per_event`` — what it adds to an average measured event: its total over
       the job's measured events divided by their number, a filtered component's
       events without it counting as zero. ``NaN`` when one of its calls has no
       value, since the total is then unknown;
     - ``mean``, ``median``, ``p90``, ``max``, ``std``, ``sem``, ``cv`` — over
-      the events it ran in. ``std`` and ``sem`` need two events, ``cv``
+      the events with a value. ``std`` and ``sem`` need two, ``cv``
       (``std / mean``) a nonzero mean;
     - ``share`` — ``per_event`` as a fraction of the components' summed
       ``per_event``: of the event's total. ``NaN`` for a metric that does not
@@ -71,7 +73,8 @@ def component_summary(timing: ComponentTiming, metric: str = "wall_s") -> pd.Dat
     std = frame.std()
     mean = frame.mean()
     out = pd.DataFrame({
-        "n_events": n.astype(int),
+        "n_events": ran.loc[:, present].sum().astype(int),
+        "n_values": n.astype(int),
         "per_event": per_event,
         "mean": mean,
         "median": frame.median(),
