@@ -181,6 +181,8 @@ def build_run_info(
             # With $VARs expanded: the arguments the job actually read.
             "k4run_args":         job.k4run_args,
             "variants":           job.variants,
+            # As configured: the local copies are gone with the job.
+            "data_files":         rec["data_files"].split(),
         }
     return record
 

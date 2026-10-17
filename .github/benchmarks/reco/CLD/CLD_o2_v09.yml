@@ -10,13 +10,15 @@
 # Reconstruction page reads that tree; no nightly report judges it yet.
 # Keys: docs/reference/configuration-reference.md#nightly-benchmark-yaml-keys
 #
-# The input is a frozen CLD_o2_v09 simulation (100 p8_ee_Zbb_ecm91 events,
-# ddsim --random.seed 42 --random.enableEventSeed, steered by cld_steer.py,
-# LCG devkey-head 2026-10-10). Its provenance and the script that produced it
-# sit next to it in inputs/reco/CLD/CLD_o2_v09/. Reconstructing a fixed input
-# keeps simulation changes out of the reconstruction numbers. xml: stays pinned
-# to the geometry the input was simulated with; detector bumps cover the sim
-# suite only.
+# The inputs are frozen CLD_o2_v09 simulations, one per sample: 100
+# p8_ee_Zbb_ecm91 events, and 1300 uniform 10 GeV electrons from ddsim's gun
+# without a crossing-angle boost, as FCC-config's ctests simulate them. Both
+# are ddsim --random.seed 42 --random.enableEventSeed, steered by cld_steer.py,
+# LCG devkey-head 2026-10-10 for Zbb and 2026-10-17 for the electrons. Their
+# provenance and the scripts that produced them sit next to them in
+# inputs/reco/CLD/CLD_o2_v09/. Reconstructing a fixed input keeps simulation
+# changes out of the reconstruction numbers. xml: stays pinned to the geometry
+# the inputs were simulated with; detector bumps cover the sim suite only.
 #
 # CLDReconstruction.py must run from a copy of its CLDConfig directory, and
 # defaults --compactFile to an older CLD, so both are given explicitly.
@@ -43,4 +45,9 @@ samples:
   - name: p8_ee_Zbb_ecm91
     n_events: 100
     input_files: https://k4bench-data.web.cern.ch/inputs/reco/CLD/CLD_o2_v09/p8_ee_Zbb_ecm91_100ev_seed42.edm4hep.root
+    k4run_args: --cms 91
+
+  - name: single_e-_10GeV
+    n_events: 1300
+    input_files: https://k4bench-data.web.cern.ch/inputs/reco/CLD/CLD_o2_v09/single_e-_10GeV_1300ev_seed42.edm4hep.root
     k4run_args: --cms 91

@@ -1,0 +1,58 @@
+# k4Bench nightly benchmark config — CLD o3 v01 reconstruction (k4run)
+#
+# A reco-suite benchmark: k4Bench runs the job's options files with k4run under
+# the k4Bench Gaudi auditor, which records per-event and per-component
+# (algorithm and service) time and memory. k4Bench knows nothing about the job
+# itself; everything experiment-specific is in this file. The nightly runs each
+# sample below as one job and uploads it to EOS under
+# runs/reco/{concept}/{detector}/, the run tree this file's path names
+# (.github/benchmarks/reco/{concept}/{detector}.yml). The dashboard's
+# Reconstruction page reads that tree; no nightly report judges it yet.
+# Keys: docs/reference/configuration-reference.md#nightly-benchmark-yaml-keys
+#
+# The inputs are frozen CLD_o3_v01 simulations, one per sample: 100
+# p8_ee_Zbb_ecm91 events, and 1100 uniform 10 GeV electrons from ddsim's gun
+# without a crossing-angle boost, as FCC-config's ctests simulate them. Both
+# are ddsim --random.seed 42 --random.enableEventSeed, steered by
+# cld_arc_steer.py, LCG devkey-head 2026-10-17. Their provenance and the
+# scripts that produced them sit next to them in inputs/reco/CLD/CLD_o3_v01/.
+# Reconstructing a fixed input keeps simulation changes out of the
+# reconstruction numbers. xml: stays pinned to the geometry the inputs were
+# simulated with; detector bumps cover the sim suite only.
+#
+# The CLD_o2_v09 job (reco/CLD/CLD_o2_v09.yml) on CLD option 3, which adds the
+# ARC RICH: CLDReconstruction.py has no ARC reconstruction, so ARC's hits are
+# read and left unused. CLDConfig's CI tests only CLD_o2_v07 reconstruction
+# and simulates CLD_o3_v01 without reconstructing it.
+#
+# CLDReconstruction.py must run from a copy of its CLDConfig directory, and
+# defaults --compactFile to an older CLD, so both are given explicitly.
+
+# options: https://github.com/key4hep/CLDConfig/blob/main/CLDConfig/CLDReconstruction.py
+xml: FCCee/CLD/compact/CLD_o3_v01/CLD_o3_v01.xml
+stage_dir: $CLDCONFIG/share/CLDConfig
+options: CLDReconstruction.py
+
+verbose: false
+
+timeout: 120
+
+k4run_args: >-
+  --compactFile $DETECTOR_XML
+  --inputFiles $LOCAL_INPUT_FILES
+  --outputBasename reco
+
+variants:
+  - name: truth_tracking
+    k4run_args: --truthTracking
+
+samples:
+  - name: p8_ee_Zbb_ecm91
+    n_events: 100
+    input_files: https://k4bench-data.web.cern.ch/inputs/reco/CLD/CLD_o3_v01/p8_ee_Zbb_ecm91_100ev_seed42.edm4hep.root
+    k4run_args: --cms 91
+
+  - name: single_e-_10GeV
+    n_events: 1100
+    input_files: https://k4bench-data.web.cern.ch/inputs/reco/CLD/CLD_o3_v01/single_e-_10GeV_1100ev_seed42.edm4hep.root
+    k4run_args: --cms 91

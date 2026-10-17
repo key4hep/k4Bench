@@ -1,0 +1,60 @@
+# k4Bench nightly benchmark config — ILD_FCCee v02 reconstruction (k4run)
+#
+# A reco-suite benchmark: k4Bench runs the job's options files with k4run under
+# the k4Bench Gaudi auditor, which records per-event and per-component
+# (algorithm and service) time and memory. k4Bench knows nothing about the job
+# itself; everything experiment-specific is in this file. The nightly runs each
+# sample below as one job and uploads it to EOS under
+# runs/reco/{concept}/{detector}/, the run tree this file's path names
+# (.github/benchmarks/reco/{concept}/{detector}.yml). The dashboard's
+# Reconstruction page reads that tree; no nightly report judges it yet.
+# Keys: docs/reference/configuration-reference.md#nightly-benchmark-yaml-keys
+#
+# The inputs are frozen ILD_FCCee_v02 simulations, one per sample: 100
+# p8_ee_Zbb_ecm91 events, and 1000 uniform 10 GeV electrons from ddsim's gun
+# without a crossing-angle boost, as FCC-config's ctests simulate them. Both
+# are ddsim --random.seed 42 --random.enableEventSeed, steered by ILDConfig's
+# ddsim_steer.py at the commit below, LCG devkey-head 2026-10-17. Their
+# provenance and the scripts that produced them sit next to them in
+# inputs/reco/ILD/ILD_FCCee_v02/. Reconstructing a fixed input keeps simulation
+# changes out of the reconstruction numbers. xml: stays pinned to the geometry
+# the inputs were simulated with; detector bumps cover the sim suite only.
+#
+# ILDConfig is not in the LCG view, so its StandardConfig/production directory
+# comes from a GitHub archive of a pinned commit, unpacked into
+# $LOCAL_DATA_DIR. ILDReconstruction.py derives the detector model from
+# --compactFile. ILDConfig's CI reconstructs ILD_FCCee_v02 with --trackingOnly
+# --noBeamCalReco, the tracking_only variant here; the baseline is the full
+# reconstruction, which nothing upstream tests on ILD_FCCee. BeamCal
+# reconstruction is off in both, as in ILDConfig's CI.
+
+# options: https://github.com/iLCSoft/ILDConfig/blob/582efec42467362c389da073e7e21fb53a110315/StandardConfig/production/ILDReconstruction.py
+xml: FCCee/ILD_FCCee/compact/ILD_FCCee_v02/ILD_FCCee_v02.xml
+data_files: https://github.com/iLCSoft/ILDConfig/archive/582efec42467362c389da073e7e21fb53a110315.tar.gz
+stage_dir: $LOCAL_DATA_DIR/ILDConfig-582efec42467362c389da073e7e21fb53a110315/StandardConfig/production
+options: ILDReconstruction.py
+
+verbose: false
+
+timeout: 180
+
+k4run_args: >-
+  --compactFile $DETECTOR_XML
+  --inputFiles $LOCAL_INPUT_FILES
+  --outputFileBase reco
+  --noBeamCalReco
+
+variants:
+  - name: tracking_only
+    k4run_args: --trackingOnly
+
+samples:
+  - name: p8_ee_Zbb_ecm91
+    n_events: 100
+    input_files: https://k4bench-data.web.cern.ch/inputs/reco/ILD/ILD_FCCee_v02/p8_ee_Zbb_ecm91_100ev_seed42.edm4hep.root
+    k4run_args: --cmsEnergy 91
+
+  - name: single_e-_10GeV
+    n_events: 1000
+    input_files: https://k4bench-data.web.cern.ch/inputs/reco/ILD/ILD_FCCee_v02/single_e-_10GeV_1000ev_seed42.edm4hep.root
+    k4run_args: --cmsEnergy 91 --usingParticleGun

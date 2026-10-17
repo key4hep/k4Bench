@@ -1,0 +1,85 @@
+# k4Bench nightly benchmark config — ALLEGRO o1 v04 reconstruction (k4run)
+#
+# A reco-suite benchmark: k4Bench runs the job's options files with k4run under
+# the k4Bench Gaudi auditor, which records per-event and per-component
+# (algorithm and service) time and memory. k4Bench knows nothing about the job
+# itself; everything experiment-specific is in this file. The nightly runs each
+# sample below as one job and uploads it to EOS under
+# runs/reco/{concept}/{detector}/, the run tree this file's path names
+# (.github/benchmarks/reco/{concept}/{detector}.yml). The dashboard's
+# Reconstruction page reads that tree; no nightly report judges it yet.
+# Keys: docs/reference/configuration-reference.md#nightly-benchmark-yaml-keys
+#
+# The inputs are frozen ALLEGRO_o1_v04 simulations, one per sample: 100
+# p8_ee_Zbb_ecm91 events, and 800 uniform 10 GeV electrons from ddsim's gun
+# without a crossing-angle boost, as FCC-config's ctests simulate them. Both
+# are ddsim --random.seed 42 --random.enableEventSeed, steered by
+# SteeringFile_ALLEGRO_o1_v03.py, LCG devkey-head 2026-10-17. Their provenance
+# and the scripts that produced them sit next to them in
+# inputs/reco/ALLEGRO/ALLEGRO_o1_v04/. Reconstructing a fixed input keeps
+# simulation changes out of the reconstruction numbers. xml: stays pinned to
+# the geometry the inputs were simulated with; detector bumps cover the sim
+# suite only.
+#
+# FCC-config has no ALLEGRO_o1_v04 reconstruction, and nothing upstream tests
+# one. This runs the ALLEGRO_o1_v03 job, which FCC-config's ctests run, on
+# ALLEGRO_o1_v04 through --GeoSvc.detectors: o1_v04 includes o1_v03's
+# subdetectors except the HCal, whose v04 keeps the v03 readouts and
+# segmentation, and the subdetector IDs the job reads from o1_v03's
+# DectDimensions.xml are the same in both. The stages, calibration maps and
+# ONNX models are those of o1_v03's ctest_sim_digi_reco.sh. run_digi_reco.py
+# imports ../ALLEGRO_common, so the whole ALLEGRO directory is staged.
+
+# options: https://github.com/HEP-FCC/FCC-config/blob/main/FCCee/FullSim/ALLEGRO/ALLEGRO_o1_v03/run_digi_reco.py
+xml: FCCee/ALLEGRO/compact/ALLEGRO_o1_v04/ALLEGRO_o1_v04.xml
+stage_dir: $FCCCONFIG/FullSim/ALLEGRO
+options: ALLEGRO_o1_v03/run_digi_reco.py
+
+verbose: false
+
+timeout: 240
+
+data_files:
+  - https://fccsw.web.cern.ch/fccsw/filesForSimDigiReco/ALLEGRO/ALLEGRO_o1_v03/capacitances_ecalBarrelFCCee_theta.root
+  - https://fccsw.web.cern.ch/fccsw/filesForSimDigiReco/ALLEGRO/ALLEGRO_o1_v03/cellNoise_map_electronicsNoiseLevel_ecalB_thetamodulemerged.root
+  - https://fccsw.web.cern.ch/fccsw/filesForSimDigiReco/ALLEGRO/ALLEGRO_o1_v03/cellNoise_map_electronicsNoiseLevel_ecalB_thetamodulemerged_hcalB_thetaphi.root
+  - https://fccsw.web.cern.ch/fccsw/filesForSimDigiReco/ALLEGRO/ALLEGRO_o1_v03/cellNoise_map_endcapTurbine_electronicsNoiseLevel.root
+  - https://fccsw.web.cern.ch/fccsw/filesForSimDigiReco/ALLEGRO/ALLEGRO_o1_v03/cellNoise_map_electronicsNoiseLevel_ecalB_ECalBarrelModuleThetaMerged_ecalE_ECalEndcapTurbine_hcalB_HCalBarrelReadout_hcalE_HCalEndcapReadout.root
+  - https://fccsw.web.cern.ch/fccsw/filesForSimDigiReco/ALLEGRO/ALLEGRO_o1_v03/elecNoise_ecalBarrelFCCee_theta.root
+  - https://fccsw.web.cern.ch/fccsw/filesForSimDigiReco/ALLEGRO/ALLEGRO_o1_v03/lgbm_calibration-CaloClusters.onnx
+  - https://fccsw.web.cern.ch/fccsw/filesForSimDigiReco/ALLEGRO/ALLEGRO_o1_v03/lgbm_calibration-CaloTopoClusters.onnx
+  - https://fccsw.web.cern.ch/fccsw/filesForSimDigiReco/ALLEGRO/ALLEGRO_o1_v03/neighbours_map_ecalB_thetamodulemerged.root
+  - https://fccsw.web.cern.ch/fccsw/filesForSimDigiReco/ALLEGRO/ALLEGRO_o1_v03/neighbours_map_ecalE_turbine.root
+  - https://fccsw.web.cern.ch/fccsw/filesForSimDigiReco/ALLEGRO/ALLEGRO_o1_v03/neighbours_map_ecalB_thetamodulemerged_hcalB_hcalEndcap_phitheta.root
+  - https://fccsw.web.cern.ch/fccsw/filesForSimDigiReco/ALLEGRO/ALLEGRO_o1_v03/neighbours_map_ecalB_thetamodulemerged_ecalE_turbine_hcalB_hcalEndcap_phitheta.root
+  - https://fccsw.web.cern.ch/fccsw/filesForSimDigiReco/ALLEGRO/ALLEGRO_o1_v03/xtalk_neighbours_map_ecalB_thetamodulemerged.root
+  - https://fccsw.web.cern.ch/fccsw/filesForSimDigiReco/ALLEGRO/ALLEGRO_o1_v03/TRAPPIST_topoclustering.onnx
+  - https://fccsw.web.cern.ch/fccsw/filesForSimDigiReco/ALLEGRO/ALLEGRO_o1_v03/TRAPPIST_SWclustering.onnx
+  - https://fccsw.web.cern.ch/fccsw/filesForSimDigiReco/IDEA/IDEA_o1_v03/SimpleGatrIDEAv3o1.onnx
+  - https://fccsw.web.cern.ch/fccsw/filesForSimDigiReco/IDEA/DataAlgFORGEANT.root
+
+k4run_args: >-
+  --GeoSvc.detectors=$DETECTOR_XML
+  --IOSvc.Input $LOCAL_INPUT_FILES
+  --IOSvc.Output reco.root
+  --dataFolder $LOCAL_DATA_DIR/
+  --includeHCal
+  --includeMuon
+  --runTrkHitDigitization
+  --addTruthTracks
+  --calibrateClusters
+  --saveCells
+  --reconstructPi0s
+  --runTRAPPIST
+  --runTrkFinder
+  --runTrkFitter
+  --runConformalTracking
+
+samples:
+  - name: p8_ee_Zbb_ecm91
+    n_events: 100
+    input_files: https://k4bench-data.web.cern.ch/inputs/reco/ALLEGRO/ALLEGRO_o1_v04/p8_ee_Zbb_ecm91_100ev_seed42.edm4hep.root
+
+  - name: single_e-_10GeV
+    n_events: 800
+    input_files: https://k4bench-data.web.cern.ch/inputs/reco/ALLEGRO/ALLEGRO_o1_v04/single_e-_10GeV_800ev_seed42.edm4hep.root

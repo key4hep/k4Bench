@@ -93,8 +93,9 @@ ddsim's except where marked; a key of the other tool is an error.
 | `smoke_timeout` | int > 0 | — | Minutes the bump-PR smoke test allows per geometry/steering pair (default `5`); for geometries that are slow to build, e.g. IDEA_o2's DR tube. Ignored by the nightly. |
 | `tool` | str | — | `ddsim` or `k4run` (default: the suite's — ddsim for `sim`, k4run for `reco`). |
 | `options` | list | k4run ✅ | Gaudi options file(s), relative to `stage_dir`. |
-| `stage_dir` | str | — | k4run: directory each run starts from a writable copy of; `$VAR` (e.g. `$CLDCONFIG`) expanded in the runner. |
-| `k4run_args` | str | — | k4run: job arguments (concatenated with sample-level). `$VAR`s are expanded in the runner, including `$DETECTOR_XML` (the resolved `xml`) and `$LOCAL_INPUT_FILES` (the local copies of `input_files`). |
+| `stage_dir` | str | — | k4run: directory each run starts from a writable copy of; `$VAR` (e.g. `$CLDCONFIG`) expanded in the runner, including `$LOCAL_DATA_DIR`, for a configuration fetched as an archive in `data_files` rather than taken from the stack. |
+| `data_files` | list | — | k4run: files the job reads besides its input (calibration maps, ML models, a configuration archive), fetched like `input_files` into one directory, `$LOCAL_DATA_DIR`, before the run. A `.tar.gz`/`.tgz` is unpacked there instead of kept. Two files must not share a name. |
+| `k4run_args` | str | — | k4run: job arguments (concatenated with sample-level). `$VAR`s are expanded in the runner, including `$DETECTOR_XML` (the resolved `xml`), `$LOCAL_INPUT_FILES` (the local copies of `input_files`) and `$LOCAL_DATA_DIR` (the directory of `data_files`). |
 | `variants` | list | — | k4run: `{name, k4run_args}` entries; each is one more run, labelled `variant_<name>`, with its `k4run_args` appended. |
 | `samples` | list | ✅ | List of sample entries (below). |
 
@@ -123,7 +124,7 @@ ddsim's except where marked; a key of the other tool is an error.
   which names the EOS detector directory), and refuses `ddsim_args`,
   `steering_file`, `sweep`, `sweep_detectors`, `include_only` and
   `exclude_only`; a ddsim benchmark refuses `options`, `stage_dir`,
-  `k4run_args` and `variants`.
+  `k4run_args`, `variants` and `data_files`.
 - Variant names follow the sample-name rule, must be unique, and each needs
   `k4run_args`.
 - A config must sit at `{suite}/{concept}/{detector}.yml` and be named after

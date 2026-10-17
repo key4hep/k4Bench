@@ -213,11 +213,22 @@ def test_k4run_record_carries_the_job(list_benchmarks, tmp_path, monkeypatch, ca
     assert rec["ddsim_args"] == "" and rec["sweep"] == "false"
 
 
+def test_k4run_data_files_are_joined_like_input_files(list_benchmarks, tmp_path, monkeypatch, capsys):
+    text = _K4RUN.replace(
+        "options: CLDReconstruction.py\n",
+        "options: CLDReconstruction.py\n"
+        "data_files:\n  - https://example.org/a.root\n  - https://example.org/config.tar.gz\n",
+    )
+    (rec,) = _k4run(list_benchmarks, tmp_path, monkeypatch, capsys, text)
+    assert rec["data_files"] == "https://example.org/a.root https://example.org/config.tar.gz"
+
+
 def test_a_config_without_tool_runs_its_suites_tool(list_benchmarks, tmp_path, monkeypatch, capsys):
     _write(tmp_path, "SiD", "SiD.xml", "single_e-_10GeV")
     (sim,) = _main(list_benchmarks, tmp_path, monkeypatch, capsys)
     assert sim["tool"] == "ddsim"
     assert sim["options"] == "" and sim["k4run_args"] == "" and sim["variants"] == {}
+    assert sim["data_files"] == ""
 
     (reco,) = _k4run(list_benchmarks, tmp_path / "reco_only", monkeypatch, capsys,
                      _K4RUN.replace("tool: k4run\n", ""))
