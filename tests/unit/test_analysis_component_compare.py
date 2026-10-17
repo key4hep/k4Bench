@@ -144,6 +144,19 @@ def test_only_the_events_both_processed_are_paired():
     assert paired_deltas(a, b)["n_events"].iloc[0] == EVENTS // 2 - 1
 
 
+def test_a_component_that_ran_only_outside_the_paired_events_is_missing_there():
+    warm_up_only = np.full(EVENTS, np.nan)
+    warm_up_only[0] = 1.0
+    unpaired_only = np.full(EVENTS, np.nan)
+    unpaired_only[EVENTS // 2:] = 1.0
+    a = job({**COSTS, "Truth": warm_up_only, "Extra": unpaired_only})
+    b = job({**COSTS, "Truth": VERTEX}, events=range(EVENTS // 2))
+    status = paired_deltas(a, b)["status"]
+    assert status["Truth"] == "added"
+    assert "Extra" not in status.index
+    assert paired_deltas(b, a)["status"]["Truth"] == "removed"
+
+
 def test_a_metric_one_side_did_not_record_is_refused():
     with pytest.raises(ValueError, match="b has no instructions"):
         paired_deltas(job(COSTS, instructions=_instructions(COSTS)), job(COSTS), "instructions")

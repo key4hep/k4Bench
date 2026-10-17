@@ -236,8 +236,10 @@ def paired_deltas(
         if metric not in timing.execute:
             raise ValueError(f"{side} has no {metric} recorded")
     events = paired_events(a, b)
-    ran_a = a.execute["wall_s"].columns[a.execute["wall_s"].notna().any()]
-    ran_b = b.execute["wall_s"].columns[b.execute["wall_s"].notna().any()]
+    # Whether a component ran is judged over the events compared, so one that
+    # ran only in the warm-up or an unpaired event counts as missing there.
+    ran_a = a.execute["wall_s"].columns[a.execute["wall_s"].loc[events].notna().any()]
+    ran_b = b.execute["wall_s"].columns[b.execute["wall_s"].loc[events].notna().any()]
     columns = ran_a.append(ran_b.difference(ran_a, sort=False))
     status = pd.Series("common", index=columns)
     status[columns.difference(ran_b)] = "removed"
