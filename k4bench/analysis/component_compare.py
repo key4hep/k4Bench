@@ -161,6 +161,8 @@ def comparability(a: Measurement, b: Measurement) -> list[Check]:
             checks.append(Check(name, False, False, f"{value_a} → {value_b}"))
         elif value_a and value_b:
             checks.append(Check(name, True, False, str(value_a)))
+        else:
+            checks.append(Check(name, False, False, f"{key} not recorded in both runs"))
     return sorted(checks, key=lambda check: not check.blocking)
 
 

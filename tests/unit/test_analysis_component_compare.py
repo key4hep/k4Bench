@@ -214,6 +214,14 @@ def test_caveats_do_not_block_a_comparison():
     assert failed == {"input", "host", "hardware counters"}
 
 
+def test_an_unrecorded_host_is_a_caveat():
+    checks = comparability(measurement(), measurement(machine={"cpu_model": "EPYC"}))
+    assert comparable(checks)
+    host = _check(checks, "host")
+    assert not host.ok and not host.blocking and "hostname" in host.detail
+    assert _check(checks, "CPU").ok
+
+
 def test_runs_without_a_common_event_do_not_compare():
     disjoint = job(COSTS, events=range(EVENTS, 2 * EVENTS))
     checks = comparability(measurement(), measurement(disjoint))
