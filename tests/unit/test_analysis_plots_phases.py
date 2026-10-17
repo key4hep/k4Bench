@@ -139,6 +139,29 @@ def test_series_carry_the_phase_time_no_component_was_charged_for():
     assert list(totals.text) == ["30 s", "2.61 s"]
 
 
+def test_a_run_no_component_was_charged_in_is_all_unattributed():
+    rows = _history({"2026-10-11": 2.0}, "GeoSvc")
+    durations = _history({"2026-10-11": 3.0, "2026-10-12": 5.0}, None)
+    series = phase_component_series(rows, top_n=6, durations=durations)
+    by_run = series.set_index(["run_id", "label"])["seconds"].to_dict()
+    assert by_run == pytest.approx({
+        ("2026-10-11", "GeoSvc"): 2.0, ("2026-10-11", UNATTRIBUTED): 1.0,
+        ("2026-10-12", UNATTRIBUTED): 5.0,
+    })
+    totals = next(t for t in plot_phase_history(series).data if t.type == "scatter")
+    assert list(totals.text) == ["3 s", "5 s"]
+
+
+def test_a_rerun_no_component_was_charged_in_is_still_the_tags_latest():
+    tag = pd.Timestamp("2026-10-11")
+    rows = _history({"2026-10-11": 2.0}, "GeoSvc").assign(x_date=tag)
+    durations = _history({"2026-10-11": 3.0, "2026-10-12": 5.0}, None).assign(x_date=tag)
+    series = phase_component_series(rows, top_n=6, durations=durations)
+    assert series[["run_id", "label", "seconds"]].to_dict("records") == [
+        {"run_id": "2026-10-12", "label": UNATTRIBUTED, "seconds": 5.0},
+    ]
+
+
 def test_a_tag_run_twice_shows_only_its_latest_run():
     def run(run_date, seconds):
         return pd.DataFrame({

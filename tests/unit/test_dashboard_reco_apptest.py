@@ -299,6 +299,46 @@ def _figures_app(dashboard_dir) -> None:
     )
 
 
+def _overview_app(dashboard_dir) -> None:
+    import sys as _sys
+    if dashboard_dir not in _sys.path:
+        _sys.path.insert(0, dashboard_dir)
+    from datetime import date
+    from types import SimpleNamespace
+
+    from reco import overview
+
+    overview.render(SimpleNamespace(
+        config=SimpleNamespace(data_url="https://store.example", cache_dir="/tmp"),
+        remote=SimpleNamespace(platform="x86_64-el9-gcc16-opt", sample="p8_ee_Zbb_ecm91"),
+        window=SimpleNamespace(dates=(date(2026, 10, 1), date(2026, 10, 17))),
+    ))
+
+
+def test_the_overview_names_a_detector_whose_runs_could_not_be_listed(monkeypatch):
+    import requests
+    from reco import overview
+
+    def list_run_dates(base_url, suite, detector, platform, sample):
+        if detector == "ILD_l5_v11":
+            raise requests.ConnectionError("timed out")
+        # Never run on this platform: an answer, not a failure.
+        response = requests.Response()
+        response.status_code = 404
+        raise requests.HTTPError("404", response=response)
+
+    monkeypatch.setattr(
+        overview, "cached_list_detectors", lambda base_url, suite: ["CLD_o2_v09", "ILD_l5_v11"],
+    )
+    monkeypatch.setattr(overview, "cached_list_run_dates", list_run_dates)
+    at = AppTest.from_function(_overview_app, args=(str(_DASHBOARD_DIR),), default_timeout=60)
+    at.run()
+    assert not at.exception, at.exception
+    (warning,) = at.warning
+    assert "**ILD_l5_v11**" in warning.value
+    assert "CLD_o2_v09" not in warning.value
+
+
 def test_the_overview_draws_the_simulation_figures_without_regression_flags():
     at = AppTest.from_function(_figures_app, args=(str(_DASHBOARD_DIR),), default_timeout=60)
     at.run()

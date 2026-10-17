@@ -185,17 +185,26 @@ _MAX_TOTAL_LABELS = 20
 SERIES_COLUMNS = ["run_id", "run_date", "x_date", "k4h_release", "label", "seconds", "share_pct"]
 
 
+def _latest_runs(*frames: pd.DataFrame) -> pd.MultiIndex:
+    """Each nightly tag's (``x_date``'s) latest run among *frames*' runs, as
+    ``(x_date, run_id)``."""
+    runs = (
+        pd.concat([f[["x_date", "run_date", "run_id"]] for f in frames]).drop_duplicates()
+        .sort_values(["run_date", "run_id"], na_position="first", kind="stable")
+        .drop_duplicates("x_date", keep="last")
+    )
+    return pd.MultiIndex.from_frame(runs[["x_date", "run_id"]])
+
+
+def _of_runs(rows: pd.DataFrame, runs: pd.MultiIndex) -> pd.DataFrame:
+    return rows[pd.MultiIndex.from_frame(rows[["x_date", "run_id"]]).isin(runs)]
+
+
 def latest_run_per_tag(rows: pd.DataFrame) -> pd.DataFrame:
     """The *rows* of each nightly tag's (``x_date``'s) latest run: a tag is
     re-run nightly until the next one, and a column mixing its runs would
     show none of them."""
-    runs = (
-        rows[["x_date", "run_date", "run_id"]].drop_duplicates()
-        .sort_values(["run_date", "run_id"], na_position="first", kind="stable")
-        .drop_duplicates("x_date", keep="last")
-    )
-    keep = pd.MultiIndex.from_frame(runs[["x_date", "run_id"]])
-    return rows[pd.MultiIndex.from_frame(rows[["x_date", "run_id"]]).isin(keep)]
+    return _of_runs(rows, _latest_runs(rows))
 
 
 def phase_component_series(
@@ -212,16 +221,21 @@ def phase_component_series(
     or, for a phase timed only as a whole, its total with ``component`` set
     to the phase's name. *durations* are its rows of the phase's total
     (``component`` ``NaN``). Each tag's latest run only
-    (:func:`latest_run_per_tag`). One row per run and series, the series
+    (:func:`latest_run_per_tag`), of *rows*' and *durations*' runs: a run
+    no component was charged in is all :data:`UNATTRIBUTED`. One row per
+    run and series, the series
     named in ``label``, with its ``seconds`` and its ``share_pct`` of the
     run's series together (the phase's duration when *durations* are given
     and the components ran one at a time), the run's ``run_id``,
     ``run_date``, ``x_date`` and ``k4h_release`` kept.
     """
-    if rows.empty:
+    if durations is not None and durations.empty:
+        durations = None
+    if rows.empty and durations is None:
         return pd.DataFrame(columns=SERIES_COLUMNS)
     run_keys = ["run_id", "run_date", "x_date", "k4h_release"]
-    rows = latest_run_per_tag(rows)
+    runs = _latest_runs(rows, *([durations] if durations is not None else []))
+    rows = _of_runs(rows, runs)
     ranked = rows.groupby("component")["seconds"].median().sort_values(ascending=False)
     top = ranked.index[:top_n].tolist()
     rest = ranked.index[top_n:]
@@ -229,16 +243,17 @@ def phase_component_series(
         rows["component"].isin(top), f"Other ({len(rest)})",
     ))
     series = labelled.groupby([*run_keys, "label"], dropna=False, as_index=False)["seconds"].sum()
-    if durations is not None and not durations.empty:
-        runs = series.drop_duplicates(["x_date", "run_id"]).set_index(["x_date", "run_id"])
-        measured = series.groupby(["x_date", "run_id"], dropna=False)["seconds"].sum()
-        elapsed = durations.drop_duplicates(["x_date", "run_id"]).set_index(
+    if durations is not None:
+        # Every run the phase was timed in, those without a component's
+        # time too: what it was charged for is then nothing.
+        elapsed = _of_runs(durations, runs).drop_duplicates(["x_date", "run_id"]).set_index(
             ["x_date", "run_id"],
-        )["seconds"]
-        gap = (elapsed.reindex(measured.index) - measured).dropna()
+        )
+        measured = series.groupby(["x_date", "run_id"], dropna=False)["seconds"].sum()
+        gap = elapsed["seconds"] - measured.reindex(elapsed.index, fill_value=0.0)
         gap = gap[gap > 0]
         if len(gap):
-            unattributed = runs.loc[gap.index, ["run_date", "k4h_release"]].reset_index()
+            unattributed = elapsed.loc[gap.index, ["run_date", "k4h_release"]].reset_index()
             series = pd.concat([series, unattributed.assign(
                 label=UNATTRIBUTED, seconds=gap.to_numpy(),
             )], ignore_index=True)

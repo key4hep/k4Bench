@@ -10,6 +10,7 @@ same trend builders Run Trends uses, and their values carry no verdict.
 from __future__ import annotations
 
 import pandas as pd
+import requests
 import streamlit as st
 
 from data import (
@@ -34,14 +35,20 @@ def _detector_rows(
     ctx: PageContext, detector: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame] | None:
     """*detector*'s history and reliability rows in the window, or ``None``
-    when it has no run of the sidebar's platform and sample there."""
+    when it has no run of the sidebar's platform and sample there. Raises
+    :class:`requests.RequestException` when its runs could not be listed:
+    that says nothing about whether it has any."""
     sel, (start, end) = ctx.remote, ctx.window.dates
     try:
         stacks_dates = cached_list_run_dates(
             ctx.config.data_url, RECO, detector, sel.platform, sel.sample,
         )
-    except Exception:
-        return None
+    except requests.RequestException as exc:
+        # A 404 is an answer: the detector was never run on this platform.
+        response = getattr(exc, "response", None)
+        if response is not None and response.status_code == 404:
+            return None
+        raise
     releases = [
         stack for stack in stacks_dates
         if (day := release_day(stack)) is not None and start <= day <= end
@@ -74,7 +81,20 @@ def render(ctx: PageContext) -> None:
     except Exception as err:
         st.warning(f"Could not list the reconstruction detectors: {err}")
         return
-    rows = [r for d in detectors if (r := _detector_rows(ctx, d)) is not None]
+    rows, unread = [], []
+    for detector in detectors:
+        try:
+            r = _detector_rows(ctx, detector)
+        except requests.RequestException:
+            unread.append(detector)
+            continue
+        if r is not None:
+            rows.append(r)
+    if unread:
+        st.warning(
+            "Could not list the runs of " + ", ".join(f"**{d}**" for d in unread)
+            + ": the comparison leaves them out. Reload the page to try again."
+        )
     sel = ctx.remote
     detectors_overview.render_figures(
         run_overview_inputs(
