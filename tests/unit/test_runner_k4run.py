@@ -192,3 +192,8 @@ class TestMarlinProcessorDump:
 
     def test_output_without_steering_xml_gives_none(self, tmp_path):
         assert marlin_processor_dump(self._setup(tmp_path, "echo usage\n")) is None
+
+    def test_a_failing_setup_script_runs_no_marlin(self, tmp_path):
+        setup = self._setup(tmp_path, 'echo \'<?xml version="1.0"?>\'\necho "<marlin/>"\n')
+        setup.write_text(setup.read_text() + "return 1\n")
+        assert marlin_processor_dump(setup) is None

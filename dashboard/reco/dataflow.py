@@ -47,7 +47,10 @@ def _seconds_per_event(ctx: PageContext, config: str) -> dict[str, float]:
     if timing is None:
         return {}
     wall = timing.execute["wall_s"]
-    return {name: float(wall[name].sum()) / len(wall) for name in wall.columns} if len(wall) else {}
+    # A component timed in no event is unknown, not free.
+    return {
+        name: float(wall[name].sum()) / len(wall) for name in wall.columns if wall[name].notna().any()
+    } if len(wall) else {}
 
 
 def _clicked_node(event, fig) -> str | None:

@@ -160,7 +160,8 @@ def marlin_processor_dump(setup_script: Path | None = None) -> str | None:
     stack's ``MARLIN_DLL`` libraries register, with its parameters, as steering
     XML. ``None`` when Marlin cannot be run there.
     """
-    source = f"source {shlex.quote(str(setup_script))} >/dev/null 2>&1\n" if setup_script else ""
+    # A setup script that fails must not leave another Marlin on PATH to run.
+    source = f"source {shlex.quote(str(setup_script))} >/dev/null 2>&1 && " if setup_script else ""
     # Marlin leaves files (cdb.log) in the directory it runs in.
     with tempfile.TemporaryDirectory(prefix="k4bench-marlin-") as cwd:
         try:

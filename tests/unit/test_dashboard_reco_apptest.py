@@ -541,6 +541,17 @@ def test_an_unlinked_instance_in_a_drawn_group_is_not_called_hidden():
     assert _unlinked(flow, view) == ["Status"]
 
 
+def test_a_component_timed_in_no_event_has_no_time():
+    from types import SimpleNamespace
+
+    from reco.dataflow import _seconds_per_event
+
+    wall = pd.DataFrame({"Timed": [1.0, np.nan], "Untimed": [np.nan, np.nan]})
+    timing = SimpleNamespace(execute={"wall_s": wall})
+    ctx = SimpleNamespace(run=SimpleNamespace(components={"baseline": timing}))
+    assert _seconds_per_event(ctx, "baseline") == {"Timed": 0.5}
+
+
 def test_gaudi_algorithms_without_recorded_handles_are_named(monkeypatch, tmp_path):
     run = tmp_path / "run"
     shutil.copytree(RECO_RUN, run)

@@ -126,6 +126,9 @@ class TestView:
     def test_unknown_times_stay_unknown(self, flow):
         assert dataflow_view(flow).nodes[1].seconds is None
 
+    def test_a_group_with_an_untimed_member_has_no_total(self, flow):
+        assert dataflow_view(flow, {"DigiA": 0.1}).nodes[0].seconds is None
+
 
 class TestLayout:
     def test_each_node_is_right_of_what_it_reads_and_the_writer_is_last(self, flow):

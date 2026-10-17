@@ -42,7 +42,8 @@ class Node:
     members: tuple[str, ...]
     impl: str
     framework: str
-    #: Event-loop seconds per event, summed over the members; ``None`` unknown.
+    #: Event-loop seconds per event, summed over the members; ``None`` when
+    #: any member is untimed.
     seconds: float | None
 
     @property
@@ -116,7 +117,7 @@ def dataflow_view(
             id=node_id,
             label=f"{algorithm.impl} ×{len(members)}" if collapsed else algorithm.name,
             members=members, impl=algorithm.impl, framework=algorithm.framework,
-            seconds=sum(known) if known else None,
+            seconds=sum(known) if len(known) == len(members) else None,
         ))
 
     edges: dict[tuple[str, str], list[Link]] = {}
