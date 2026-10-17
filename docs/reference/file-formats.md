@@ -198,8 +198,9 @@ dashboard.
   `tool` says what the run benchmarked: `ddsim`, or `k4run` (absent on runs
   older than k4run benchmarks, which were all ddsim). A k4run record also
   carries `options`, `stage_dir` and `resolved_stage_dir`, `k4run_args` (with
-  `$VAR`s expanded, i.e. the local input paths the job read) and `variants`
-  (`{name: k4run_args}`); its `configured_labels` are `baseline` and
+  `$VAR`s expanded, i.e. the local input paths the job read), `variants`
+  (`{name: k4run_args}`) and `data_files` (as configured; absent on runs older
+  than the key); its `configured_labels` are `baseline` and
   `variant_<name>`. `suite` names the benchmark suite the run belongs to
   (`sim` or `reco`) and so its run tree (see [EOS layout](#eos-layout));
   reco runs land in `runs/reco/`, which the dashboard's Reconstruction page

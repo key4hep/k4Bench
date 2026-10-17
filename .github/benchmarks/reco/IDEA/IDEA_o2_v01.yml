@@ -1,0 +1,53 @@
+# k4Bench nightly benchmark config — IDEA o2 v01 reconstruction (k4run)
+#
+# A reco-suite benchmark: k4Bench runs the job's options files with k4run under
+# the k4Bench Gaudi auditor, which records per-event and per-component
+# (algorithm and service) time and memory. k4Bench knows nothing about the job
+# itself; everything experiment-specific is in this file. The nightly runs each
+# sample below as one job and uploads it to EOS under
+# runs/reco/{concept}/{detector}/, the run tree this file's path names
+# (.github/benchmarks/reco/{concept}/{detector}.yml). The dashboard's
+# Reconstruction page reads that tree; no nightly report judges it yet.
+# Keys: docs/reference/configuration-reference.md#nightly-benchmark-yaml-keys
+#
+# The inputs are frozen IDEA_o2_v01 simulations, one per sample: 100
+# p8_ee_Zbb_ecm91 events, and 600 uniform 10 GeV electrons from ddsim's gun
+# without a crossing-angle boost, as FCC-config's ctests simulate them. Both
+# are ddsim --random.seed 42 --random.enableEventSeed, steered by
+# SteeringFile_IDEA_o2_v01.py, LCG devkey-head 2026-10-17. Their provenance and
+# the scripts that produced them sit next to them in
+# inputs/reco/IDEA/IDEA_o2_v01/. Reconstructing a fixed input keeps simulation
+# changes out of the reconstruction numbers. xml: stays pinned to the geometry
+# the inputs were simulated with; detector bumps cover the sim suite only.
+#
+# The job is FCC-config's digitisation and reconstruction (tracker
+# digitisation, truth tracking, optical calorimeter digitisation and
+# seed/merge/grow clustering) on the full detector, as the sim suite simulates
+# it. FCC-config's ctest runs it only with --ci, on a reduced barrel wedge.
+# run_digi_reco.py reads its geometry from $K4GEO rather than an argument, so
+# --GeoSvc.detectors pins it to xml:.
+
+# options: https://github.com/HEP-FCC/FCC-config/blob/main/FCCee/FullSim/IDEA/IDEA_o2_v01/run_digi_reco.py
+xml: FCCee/IDEA/compact/IDEA_o2_v01/IDEA_o2_v01.xml
+stage_dir: $FCCCONFIG/FullSim/IDEA/IDEA_o2_v01
+options: run_digi_reco.py
+
+verbose: false
+
+# The dual-readout tube geometry takes minutes to construct, once per run and
+# once per warm-up.
+timeout: 240
+
+k4run_args: >-
+  --GeoSvc.detectors=$DETECTOR_XML
+  --IOSvc.Input $LOCAL_INPUT_FILES
+  --IOSvc.Output reco.root
+
+samples:
+  - name: p8_ee_Zbb_ecm91
+    n_events: 100
+    input_files: https://k4bench-data.web.cern.ch/inputs/reco/IDEA/IDEA_o2_v01/p8_ee_Zbb_ecm91_100ev_seed42.edm4hep.root
+
+  - name: single_e-_10GeV
+    n_events: 600
+    input_files: https://k4bench-data.web.cern.ch/inputs/reco/IDEA/IDEA_o2_v01/single_e-_10GeV_600ev_seed42.edm4hep.root

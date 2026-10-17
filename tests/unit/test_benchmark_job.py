@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -281,6 +282,7 @@ def _k4run_record(**overrides) -> dict:
     return _record(**{
         "config": "reco/minimal/minimal", "suite": "reco",
         "tool": "k4run", "ddsim_args": "", "options": "CLDReconstruction.py", "stage_dir": "",
+        "data_files": "",
         "k4run_args": "--compactFile $DETECTOR_XML --inputFiles $LOCAL_INPUT_FILES",
         "variants": {"truth_tracking": "--truthTracking", "pinned": "--compactFile ${DETECTOR_XML}"},
         **overrides,
@@ -353,6 +355,65 @@ def test_relative_local_k4run_input_is_made_absolute(job_module, k4geo, tmp_path
 def test_missing_local_k4run_input_is_a_job_error(job_module, k4geo):
     with pytest.raises(job_module.JobError, match="input not found"):
         job_module.resolve(_k4run_record(input_files="/no/sim.root"), dict(os.environ))
+
+
+@pytest.fixture
+def data_dir(job_module, tmp_path, monkeypatch):
+    directory = tmp_path / "data"
+    monkeypatch.setattr(job_module, "LOCAL_DATA_DIR", directory)
+    return directory
+
+
+def test_k4run_data_files_share_one_directory(job_module, k4geo, data_dir, monkeypatch):
+    processes = Processes()
+    monkeypatch.setattr(job_module.subprocess, "run", processes)
+    record = _k4run_record(
+        data_files="https://a.cern.ch/noise.root root://eosuser.cern.ch//eos/model.onnx",
+        k4run_args="--dataFolder $LOCAL_DATA_DIR/",
+    )
+    job = job_module.resolve(record, dict(os.environ))
+    (curl, _), (xrdcp, _) = processes.calls
+    folder = Path(job.k4run_args.removeprefix("--dataFolder ").rstrip("/"))
+    assert folder.parent == data_dir
+    assert (curl[0], xrdcp[0]) == ("curl", "xrdcp")
+    assert str(folder / "noise.root") in curl and str(folder / "model.onnx") in xrdcp
+
+
+def test_k4run_data_archive_is_unpacked_and_can_be_the_stage_dir(job_module, k4geo, data_dir, tmp_path):
+    # A configuration that is not in the stack is fetched as an archive and
+    # run from where it unpacks.
+    tree = tmp_path / "src" / "Config-abc" / "production"
+    tree.mkdir(parents=True)
+    (tree / "Reco.py").write_text("")
+    archive = tmp_path / "Config.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(tmp_path / "src" / "Config-abc", arcname="Config-abc")
+    record = _k4run_record(data_files=str(archive), stage_dir="$LOCAL_DATA_DIR/Config-abc/production")
+    job = job_module.resolve(record, dict(os.environ))
+    assert Path(job.stage_path, "Reco.py").is_file()
+    assert not (Path(job.stage_path).parents[1] / "Config.tar.gz").exists()
+
+
+def test_k4run_data_dir_holds_only_this_jobs_files(job_module, k4geo, data_dir, tmp_path):
+    first = tmp_path / "noise.root"
+    first.write_text("noise")
+    job = job_module.resolve(_k4run_record(data_files=str(first), k4run_args="$LOCAL_DATA_DIR"), dict(os.environ))
+    (Path(job.k4run_args) / "stale.root").write_text("left over")
+    job = job_module.resolve(_k4run_record(data_files=str(first), k4run_args="$LOCAL_DATA_DIR"), dict(os.environ))
+    assert sorted(p.name for p in Path(job.k4run_args).iterdir()) == ["noise.root"]
+
+
+@pytest.mark.parametrize(
+    "data_files, error",
+    [
+        ("/no/noise.root", "data file not found"),
+        ("https://a.cern.ch/A/noise.root https://b.cern.ch/B/noise.root", "share a file name"),
+    ],
+)
+def test_unusable_k4run_data_files_are_a_job_error(job_module, k4geo, data_dir, monkeypatch, data_files, error):
+    monkeypatch.setattr(job_module.subprocess, "run", Processes())
+    with pytest.raises(job_module.JobError, match=error):
+        job_module.resolve(_k4run_record(data_files=data_files), dict(os.environ))
 
 
 def test_k4bench_k4run_command(job_module, k4geo, tmp_path, monkeypatch):

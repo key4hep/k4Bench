@@ -197,7 +197,7 @@ def test_unreadable_stack_provenance_does_not_fail_the_job(run_info, job_type, t
 
 @pytest.mark.parametrize("suite, record", [
     ("sim", {"tool": "ddsim"}),
-    ("reco", {"tool": "k4run", "options": "CLDReconstruction.py", "stage_dir": ""}),
+    ("reco", {"tool": "k4run", "options": "CLDReconstruction.py", "stage_dir": "", "data_files": ""}),
 ])
 def test_a_record_names_the_run_directory_its_suite_reads(run_info, job_type, tmp_path, monkeypatch, suite, record):
     # nightly_benchmark.sh uploads to run_dir_of(run_info.json): the record
@@ -233,6 +233,7 @@ def test_k4run_record_carries_the_job_and_its_roster(run_info, job_type, tmp_pat
             job_type, suite="reco", tool="k4run", options="CLDReconstruction.py",
             stage_dir="$CLDCONFIG/share/CLDConfig",
             input_files="https://example.org/sim.root",
+            data_files="https://example.org/noise.root https://example.org/model.onnx",
         ),
         stage_path="/cvmfs/cldconfig/share/CLDConfig",
         k4run_args="--inputFiles /tmp/k4bench-inputs/sim.root --cms 91",
@@ -248,6 +249,7 @@ def test_k4run_record_carries_the_job_and_its_roster(run_info, job_type, tmp_pat
     assert info["k4run_args"] == "--inputFiles /tmp/k4bench-inputs/sim.root --cms 91"
     assert info["variants"] == {"truth_tracking": "--truthTracking"}
     assert info["input_files"] == ["https://example.org/sim.root"]
+    assert info["data_files"] == ["https://example.org/noise.root", "https://example.org/model.onnx"]
     assert info["random_seed"] is None
     assert info["configs"] == ["baseline"]
     # A killed job's missing variant is then a missing config, as for a sweep.

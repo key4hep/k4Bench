@@ -1,0 +1,56 @@
+# k4Bench nightly benchmark config — IDEA o1 v04 reconstruction (k4run)
+#
+# A reco-suite benchmark: k4Bench runs the job's options files with k4run under
+# the k4Bench Gaudi auditor, which records per-event and per-component
+# (algorithm and service) time and memory. k4Bench knows nothing about the job
+# itself; everything experiment-specific is in this file. The nightly runs each
+# sample below as one job and uploads it to EOS under
+# runs/reco/{concept}/{detector}/, the run tree this file's path names
+# (.github/benchmarks/reco/{concept}/{detector}.yml). The dashboard's
+# Reconstruction page reads that tree; no nightly report judges it yet.
+# Keys: docs/reference/configuration-reference.md#nightly-benchmark-yaml-keys
+#
+# The inputs are frozen IDEA_o1_v04 simulations, one per sample: 100
+# p8_ee_Zbb_ecm91 events, and 1200 uniform 10 GeV electrons from ddsim's gun
+# without a crossing-angle boost, as FCC-config's ctests simulate them. Both
+# are ddsim --random.seed 42 --random.enableEventSeed, steered by
+# SteeringFile_IDEA_o1_v03.py, LCG devkey-head 2026-10-17. Their provenance and
+# the scripts that produced them sit next to them in
+# inputs/reco/IDEA/IDEA_o1_v04/. Reconstructing a fixed input keeps simulation
+# changes out of the reconstruction numbers. xml: stays pinned to the geometry
+# the inputs were simulated with; detector bumps cover the sim suite only.
+#
+# FCC-config has no IDEA_o1_v04 reconstruction, and nothing upstream tests
+# one. This runs the IDEA_o1_v03 job, which FCC-config's ctests run, on
+# IDEA_o1_v04 through --GeoSvc.detectors, with the stages its
+# ctest_sim_digi_reco.sh switches on. o1_v04 differs from o1_v03 in the vertex
+# detector and the silicon wrapper only, which the o1_v03 digitisers and GGTF
+# tracking model were not made for.
+#
+# The job always runs GGTF track finding, and downloads its ONNX model with
+# wget while it configures, so that download is part of each run's
+# configuration time.
+
+# options: https://github.com/HEP-FCC/FCC-config/blob/main/FCCee/FullSim/IDEA/IDEA_o1_v03/run_digi_reco.py
+xml: FCCee/IDEA/compact/IDEA_o1_v04/IDEA_o1_v04.xml
+stage_dir: $FCCCONFIG/FullSim/IDEA/IDEA_o1_v03
+options: run_digi_reco.py
+
+verbose: false
+
+timeout: 240
+
+k4run_args: >-
+  --GeoSvc.detectors=$DETECTOR_XML
+  --IOSvc.Input $LOCAL_INPUT_FILES
+  --IOSvc.Output reco.root
+  --addTruthTracks
+
+samples:
+  - name: p8_ee_Zbb_ecm91
+    n_events: 100
+    input_files: https://k4bench-data.web.cern.ch/inputs/reco/IDEA/IDEA_o1_v04/p8_ee_Zbb_ecm91_100ev_seed42.edm4hep.root
+
+  - name: single_e-_10GeV
+    n_events: 1200
+    input_files: https://k4bench-data.web.cern.ch/inputs/reco/IDEA/IDEA_o1_v04/single_e-_10GeV_1200ev_seed42.edm4hep.root

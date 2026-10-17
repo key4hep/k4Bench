@@ -71,14 +71,16 @@ SCALAR_KEYS = (
     "stage_dir", "k4run_args",
 )
 BOOL_KEYS   = ("verbose", "sweep")
-LIST_KEYS   = ("input_files", "sweep_detectors", "include_only", "exclude_only", "options")
+LIST_KEYS   = (
+    "input_files", "sweep_detectors", "include_only", "exclude_only", "options", "data_files",
+)
 #: Keys that concatenate (top + sample) instead of overriding.
 CONCAT_KEYS = ("ddsim_args", "k4run_args")
 #: Keys only one tool reads; the record carries them empty for the other.
 TOOL_KEYS = {
     "ddsim": ("ddsim_args", "steering_file", "sweep", "sweep_detectors",
               "include_only", "exclude_only"),
-    "k4run": ("options", "stage_dir", "k4run_args", "variants"),
+    "k4run": ("options", "stage_dir", "k4run_args", "variants", "data_files"),
 }
 
 

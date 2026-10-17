@@ -16,8 +16,8 @@ A job runs ddsim (``k4bench``) or, for a ``tool: k4run`` record, a k4run job
 The exit code is k4bench's: a sweep with one failed configuration still
 records its run, so the script that uploads the results can turn the job red
 afterwards. A job that cannot start (its geometry, steering file, stage
-directory or input is missing) fails before anything is measured and records
-no run_info.json.
+directory, input or a data file is missing) fails before anything is measured
+and records no run_info.json.
 """
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -38,6 +39,10 @@ import run_info
 
 #: Where a k4run job's inputs are copied, so the job never times a network read.
 LOCAL_INPUT_DIR = Path("/tmp/k4bench-inputs")
+#: Where a k4run job's data files are gathered, all in one directory.
+LOCAL_DATA_DIR = Path("/tmp/k4bench-data")
+#: Data files with these suffixes are archives, unpacked where they land.
+_ARCHIVE_SUFFIXES = (".tar.gz", ".tgz")
 
 _VARIABLE = re.compile(r"\$(\w+)|\$\{(\w+)\}")
 
@@ -173,17 +178,21 @@ def resolve(record: dict[str, str], env: dict[str, str]) -> Job:
 def _resolve_k4run(
     record: dict, env: dict[str, str], xml_path: str, detector_xml: Path,
 ) -> Job:
-    """A k4run record resolved: its stage directory, its inputs copied locally,
-    and its arguments with ``$VAR``s expanded, including the two through which
-    the job names its geometry and inputs, ``$DETECTOR_XML`` and
-    ``$LOCAL_INPUT_FILES``."""
-    stage_path = _expand(record["stage_dir"], env)
+    """A k4run record resolved: its inputs and data files copied locally, its
+    stage directory, and its arguments with ``$VAR``s expanded, including the
+    three through which the job names its geometry, inputs and data files,
+    ``$DETECTOR_XML``, ``$LOCAL_INPUT_FILES`` and ``$LOCAL_DATA_DIR``. The
+    stage directory may itself lie in ``$LOCAL_DATA_DIR``, for a job whose
+    configuration is fetched as an archive rather than taken from the stack."""
+    data_dir = _fetch_data(record["data_files"].split())
+    stage_path = _expand(record["stage_dir"], {**env, "LOCAL_DATA_DIR": data_dir})
     if stage_path and not Path(stage_path).is_dir():
         raise JobError(f"stage directory not found: {stage_path}")
     names = {
         **env,
         "DETECTOR_XML": str(detector_xml),
         "LOCAL_INPUT_FILES": " ".join(_fetch(source) for source in record["input_files"].split()),
+        "LOCAL_DATA_DIR": data_dir,
     }
     return Job(
         record,
@@ -209,6 +218,42 @@ def _fetch(source: str) -> str:
     directory = LOCAL_INPUT_DIR / hashlib.sha256(source.encode()).hexdigest()[:16]
     directory.mkdir(parents=True, exist_ok=True)
     local = str(directory / os.path.basename(source))
+    _download(source, local)
+    return local
+
+
+def _fetch_data(sources: list[str]) -> str:
+    """The local directory holding a k4run job's data files, or ``""`` when it
+    has none: each of *sources* fetched into it like an input (a local path is
+    copied), and an archive (:data:`_ARCHIVE_SUFFIXES`) unpacked there instead
+    of kept. All files share the one directory, for jobs that read their data
+    from a single folder, so two sources must not share a file name.
+
+    The directory is named by a hash of the sources and emptied first, so it
+    holds exactly what this job configures."""
+    if not sources:
+        return ""
+    if len(names := [os.path.basename(s) for s in sources]) != len(set(names)):
+        raise JobError(f"data files share a file name: {' '.join(sources)}")
+    directory = LOCAL_DATA_DIR / hashlib.sha256(" ".join(sources).encode()).hexdigest()[:16]
+    shutil.rmtree(directory, ignore_errors=True)
+    directory.mkdir(parents=True)
+    for source in sources:
+        local = directory / os.path.basename(source)
+        if source.startswith(("root://", "http://", "https://")):
+            _download(source, str(local))
+        elif Path(source).is_file():
+            shutil.copy(source, local)
+        else:
+            raise JobError(f"data file not found: {source}")
+        if local.name.endswith(_ARCHIVE_SUFFIXES):
+            subprocess.run(["tar", "-xzf", str(local), "-C", str(directory)], check=True)
+            local.unlink()
+    return str(directory)
+
+
+def _download(source: str, local: str) -> None:
+    """Copy the ``root://`` (xrdcp) or ``http(s)://`` (curl) *source* to *local*."""
     if source.startswith("root://"):
         subprocess.run(["xrdcp", "--force", source, local], check=True)
     else:
@@ -216,7 +261,6 @@ def _fetch(source: str) -> str:
             ["curl", "-fsSL", "--retry", "3", "--retry-delay", "10", "-o", local, source],
             check=True,
         )
-    return local
 
 
 def _expand(value: str, names: Mapping[str, str]) -> str:
