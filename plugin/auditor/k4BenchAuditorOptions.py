@@ -1,9 +1,10 @@
 """k4Bench instrumentation for a k4run job.
 
 Appended after the job's own options files (``k4run <job options> <this file>``),
-so it changes nothing the job configured. It enables the k4BenchAuditor on every
-algorithm and service, and dumps the fully resolved job options. Output paths come
-from the environment the k4Bench runner sets:
+so it changes nothing the job configured beyond dropping a ChronoAuditor (see
+below). It enables the k4BenchAuditor on every algorithm and service, and dumps
+the fully resolved job options. Output paths come from the environment the
+k4Bench runner sets:
 
 - ``K4BENCH_COMPONENTS_JSON`` and ``K4BENCH_EVENT_JSON``, read by the auditor;
 - ``K4BENCH_JOBOPTIONS``, the resolved options dump.
@@ -21,6 +22,20 @@ app.AuditServices = True
 # First among the external services, so the services created after it, such as
 # the geometry, have their initialization audited too.
 app.ExtSvc = [AuditorSvc(), *app.ExtSvc]
+
+
+def _auditor_type(auditor):
+    name = auditor if isinstance(auditor, str) else auditor.getFullName()
+    return name.split("/")[0]
+
+
+# A ChronoAuditor cannot run with AuditServices: initializing it creates the
+# ChronoStatSvc, whose own audited initialize asks for the AuditorSvc that is
+# still initializing, and Gaudi aborts on the loop. Its timing table is all it
+# adds, and the k4BenchAuditor measures the same components.
+AuditorSvc().Auditors = [
+    auditor for auditor in AuditorSvc().Auditors if _auditor_type(auditor) != "ChronoAuditor"
+]
 AuditorSvc().Auditors += ["k4BenchAuditor/k4BenchAuditor"]
 
 if dump := os.environ.get("K4BENCH_JOBOPTIONS"):
