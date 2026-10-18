@@ -611,6 +611,34 @@ class TestSetupAuditorEnvironment:
             self._setup(tmp_path, env)
         assert "K4BENCH_ALLOC_COUNTER" not in env
 
+    def test_a_heap_file_has_the_job_record_heap_owners(self, tmp_path):
+        env: dict[str, str] = {}
+        with (
+            patch.object(plugin_runtime, "ensure_auditor_built"),
+            patch.object(plugin_runtime, "find_auditor_dir", return_value=tmp_path),
+        ):
+            assert setup_auditor_environment(
+                env=env,
+                components_json_path=tmp_path / "x_components.json",
+                event_json_path=tmp_path / "x_events.json",
+                joboptions_path=tmp_path / "x_joboptions.opts",
+                heap_json_path=tmp_path / "x_heap.json",
+            )
+        assert env["K4BENCH_ALLOC_OWNERS"] == "1"
+        assert env["K4BENCH_HEAP_JSON"] == str((tmp_path / "x_heap.json").resolve())
+
+    def test_without_a_heap_file_the_job_never_records_heap_owners(self, tmp_path):
+        # Recording owners slows every allocation, so a timed run never does,
+        # whatever the caller's environment asks.
+        env = {"K4BENCH_ALLOC_OWNERS": "1", "K4BENCH_HEAP_JSON": "/stale/x_heap.json"}
+        with (
+            patch.object(plugin_runtime, "ensure_auditor_built"),
+            patch.object(plugin_runtime, "find_auditor_dir", return_value=tmp_path),
+        ):
+            assert self._setup(tmp_path, env) is True
+        assert "K4BENCH_ALLOC_OWNERS" not in env
+        assert "K4BENCH_HEAP_JSON" not in env
+
     def test_without_the_allocation_counter_the_auditor_still_runs(self, tmp_path, capsys):
         plugin_dir = tmp_path / "gaudi-plugins"
         plugin_dir.mkdir()

@@ -248,7 +248,9 @@ def test_auditor_is_found_after_build(built_plugin):
     assert (plugin_dir / "libk4BenchAllocCounter.so").is_file()
 
 
-_ALLOC_PROBE = """\
+# Drives the preloaded counter from Python. The structures mirror
+# k4BenchAllocCounter.h field by field.
+_PROBE_PRELUDE = """\
 import ctypes, json
 
 class Counters(ctypes.Structure):
@@ -256,16 +258,31 @@ class Counters(ctypes.Structure):
                 ("freed_bytes", ctypes.c_uint64), ("peak_live_bytes", ctypes.c_int64),
                 ("largest_allocation_bytes", ctypes.c_uint64), ("paused", ctypes.c_bool)]
 
+class OwnerTable(ctypes.Structure):
+    _fields_ = [("entries", ctypes.c_uint64), ("peak_entries", ctypes.c_uint64),
+                ("mapped_bytes", ctypes.c_uint64), ("owners", ctypes.c_uint32),
+                ("failed", ctypes.c_bool)]
+
 process = ctypes.CDLL(None)  # the preloaded malloc and free, not libc's own
 process.k4bench_thread_alloc_counters.restype = ctypes.POINTER(Counters)
-process.malloc.restype = ctypes.c_void_p
-process.malloc.argtypes = [ctypes.c_size_t]
+for name in ("malloc", "__libc_malloc"):
+    getattr(process, name).restype = ctypes.c_void_p
+    getattr(process, name).argtypes = [ctypes.c_size_t]
 process.free.argtypes = [ctypes.c_void_p]
 process.realloc.restype = ctypes.c_void_p
 process.realloc.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
 process.malloc_usable_size.restype = ctypes.c_size_t
 process.malloc_usable_size.argtypes = [ctypes.c_void_p]
+process.k4bench_exchange_alloc_owner.restype = ctypes.c_uint32
+process.k4bench_exchange_alloc_owner.argtypes = [ctypes.c_uint32]
+process.k4bench_read_owners.restype = ctypes.c_size_t
+process.k4bench_read_owners.argtypes = [ctypes.POINTER(ctypes.c_int64)] * 2 + [ctypes.c_size_t]
+process.k4bench_owner_table.restype = ctypes.c_bool
+process.k4bench_owner_table.argtypes = [ctypes.POINTER(OwnerTable)]
 counters = process.k4bench_thread_alloc_counters().contents
+"""
+
+_ALLOC_PROBE = _PROBE_PRELUDE + """\
 
 def counted(action):
     before = (counters.allocations, counters.allocated_bytes, counters.freed_bytes)
@@ -335,28 +352,37 @@ print(json.dumps({"allocated": allocated, "freed": freed, "headers": headers,
 """
 
 
-@pytest.mark.integration
-@requires_gaudi
-def test_alloc_counter_counts_the_calling_threads_heap_blocks(built_plugin):
-    """Preloaded, the counter adds every block malloc hands out and free takes
-    back to the calling thread's counters, as the heap memory glibc's own
-    header says the block takes, keeps the most the thread held at once and
-    its largest block since they were last reset, and counts nothing while
-    paused."""
+def _probe(script: str, owners: bool) -> dict:
+    """What *script* prints, run under the preloaded counter, which records
+    heap owners when *owners* is set."""
     import json
     import os
     import sys
 
-    assert built_plugin.returncode == 0, "Skipped: build already failed"
-    counter = find_auditor_dir() / "libk4BenchAllocCounter.so"
+    env = {**os.environ, "LD_PRELOAD": str(find_auditor_dir() / "libk4BenchAllocCounter.so")}
+    env.pop("K4BENCH_ALLOC_OWNERS", None)
+    if owners:
+        env["K4BENCH_ALLOC_OWNERS"] = "1"
+    # A call back into malloc from inside the counter's table would deadlock
+    # on its lock, so a hang fails the test instead of stalling it.
     result = subprocess.run(
-        [sys.executable, "-c", _ALLOC_PROBE],
-        env={**os.environ, "LD_PRELOAD": str(counter)},
-        capture_output=True,
-        text=True,
+        [sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=300
     )
     assert result.returncode == 0, result.stderr[-3000:]
-    deltas = json.loads(result.stdout)
+    return json.loads(result.stdout)
+
+
+@pytest.mark.integration
+@requires_gaudi
+@pytest.mark.parametrize("owners", [False, True], ids=["counting", "with-owners"])
+def test_alloc_counter_counts_the_calling_threads_heap_blocks(built_plugin, owners):
+    """Preloaded, the counter adds every block malloc hands out and free takes
+    back to the calling thread's counters, as the heap memory glibc's own
+    header says the block takes, keeps the most the thread held at once and
+    its largest block since they were last reset, and counts nothing while
+    paused, whether it records heap owners or not."""
+    assert built_plugin.returncode == 0, "Skipped: build already failed"
+    deltas = _probe(_ALLOC_PROBE, owners)
 
     allocations, allocated_bytes, freed_bytes = deltas["allocated"]
     assert allocations >= 1
@@ -374,9 +400,259 @@ def test_alloc_counter_counts_the_calling_threads_heap_blocks(built_plugin):
     assert deltas["paused"] == [0, 0, 0]
 
 
-def _run_audited_job(tmp_path, label, options):
+_OWNER_PROBE = _PROBE_PRELUDE + """\
+import os, threading
+
+A, B, C = 5, 6, 7
+held = (ctypes.c_int64 * 8)()
+peak = (ctypes.c_int64 * 8)()
+table = OwnerTable()
+malloc, free, realloc = process.malloc, process.free, process.realloc
+
+def owners():
+    process.k4bench_read_owners(held, peak, len(held))
+    return list(held)
+
+def charged(owner, action):
+    \"\"\"*action*'s result, with what it allocates charged to *owner*.\"\"\"
+    previous = process.k4bench_exchange_alloc_owner(owner)
+    try:
+        return action()
+    finally:
+        process.k4bench_exchange_alloc_owner(previous)
+
+def change(action):
+    \"\"\"*action*'s result, and what it changes in each owner's held bytes.\"\"\"
+    before = owners()
+    result = action()
+    return result, [b - a for a, b in zip(before, owners())]
+
+out = {"enabled": process.k4bench_owner_table(ctypes.byref(table)), "owners": table.owners}
+
+# A's block is A's until freed, whoever frees it.
+block, out["a_allocates"] = change(lambda: charged(A, lambda: malloc(1 << 20)))
+_, out["b_frees"] = change(lambda: charged(B, lambda: free(block)))
+
+# Resized by B, A's block stays A's: grown in the heap, moved to a block glibc
+# maps on its own, then freed.
+block, out["a_allocates_small"] = change(lambda: charged(A, lambda: malloc(100)))
+block, out["b_grows"] = change(lambda: charged(B, lambda: realloc(block, 5000)))
+block, out["b_moves"] = change(lambda: charged(B, lambda: realloc(block, 64 << 20)))
+_, out["b_frees_resized"] = change(lambda: charged(B, lambda: free(block)))
+
+# Shrunk in place, a block never held both sizes, so the peak never sees them.
+def shrink_in_place():
+    block = charged(A, lambda: malloc(64 << 10))
+    start = owners()[A]
+    process.k4bench_reset_owner_peaks()
+    resized = charged(B, lambda: realloc(block, 32 << 10))
+    owners()
+    result = resized == block, peak[A] - start, held[A] - start
+    free(resized)
+    return result
+
+out["in_place"], out["in_place_peak"], out["in_place_change"] = shrink_in_place()
+
+# Moved, it held both while realloc copied.
+def move():
+    block = charged(A, lambda: malloc(1000))
+    old_bytes = owners()[A]
+    process.k4bench_reset_owner_peaks()
+    moved = charged(A, lambda: realloc(block, 64 << 20))
+    owners()
+    result = peak[A] - held[A]
+    free(moved)
+    return result, old_bytes - owners()[A]
+
+out["moved_extra_peak"], out["moved_old_bytes"] = move()
+
+# Blocks it never recorded are nobody's: freeing them changes nothing.
+counters.paused = True
+paused, out["paused_allocates"] = change(lambda: charged(A, lambda: malloc(1 << 20)))
+counters.paused = False
+foreign = process.__libc_malloc(1 << 20)  # glibc's own, as before ownership started
+_, out["unrecorded_frees"] = change(lambda: charged(B, lambda: (free(paused), free(foreign))))
+
+# A block allocated on one thread and freed on another goes back to its owner,
+# and each thread has an owner of its own.
+def on_thread(action):
+    result = []
+    thread = threading.Thread(target=lambda: result.append(action()))
+    thread.start()
+    thread.join()
+    return result[0]
+
+block, out["a_allocates_on_main"] = change(lambda: charged(A, lambda: malloc(1 << 16)))
+_, out["thread_frees"] = change(lambda: on_thread(lambda: free(block)))
+block, out["c_allocates_on_thread"] = change(lambda: on_thread(lambda: charged(C, lambda: malloc(1 << 16))))
+_, out["main_frees"] = change(lambda: charged(B, lambda: free(block)))
+
+# A forked child has a table of its own: freeing the parent's block there
+# changes nothing in the parent.
+block = charged(A, lambda: malloc(1 << 16))
+before = owners()[A]
+child = os.fork()
+if child == 0:
+    _, freed = change(lambda: free(block))
+    os._exit(0 if freed[A] < 0 else 1)
+out["child_status"] = os.waitstatus_to_exitcode(os.waitpid(child, 0)[1])
+out["parent_after_fork"] = owners()[A] - before
+free(block)
+
+# A million blocks grow the table from its first 65536 slots.
+blocks = (ctypes.c_void_p * 1_000_000)()
+def allocate():
+    for i in range(len(blocks)):
+        blocks[i] = malloc(32)
+def free_all():
+    for b in blocks:
+        free(b)
+_, out["million_allocated"] = change(lambda: charged(A, allocate))
+process.k4bench_owner_table(ctypes.byref(table))
+out["million_table"] = [table.entries, table.peak_entries, table.mapped_bytes, table.failed]
+_, out["million_freed"] = change(free_all)
+print(json.dumps(out))
+"""
+
+
+@pytest.mark.integration
+@requires_gaudi
+def test_alloc_counter_charges_each_block_to_its_owner_until_it_is_freed(built_plugin):
+    """With K4BENCH_ALLOC_OWNERS=1, every block is held by the owner of the
+    thread that allocated it until it is freed, whoever frees it and on
+    whichever thread; resizing keeps its owner, and a block the counter never
+    recorded changes nothing when freed."""
+    assert built_plugin.returncode == 0, "Skipped: build already failed"
+    out = _probe(_OWNER_PROBE, owners=True)
+    A, B, C = 5, 6, 7
+
+    def only(owner, change):
+        return [value for index, value in enumerate(change) if index != owner]
+
+    assert out["enabled"] and out["owners"] >= 1024
+    allocated = out["a_allocates"][A]
+    assert allocated >= 1 << 20
+    assert out["b_frees"][A] == -allocated
+    assert out["b_frees"][B] == 0, "the freeing owner gives back nothing of its own"
+    assert set(only(A, out["a_allocates"]) + only(A, out["b_frees"])) == {0}
+
+    small = out["a_allocates_small"][A]
+    grown, moved = out["b_grows"][A], out["b_moves"][A]
+    assert grown > 4800 and moved > 63 << 20
+    assert out["b_frees_resized"][A] == -(small + grown + moved)
+    assert set(only(A, out["b_grows"]) + only(A, out["b_moves"]) + only(A, out["b_frees_resized"])) == {0}
+
+    assert out["in_place"]
+    assert out["in_place_peak"] == 0, "shrunk in place, a block never held both sizes"
+    assert -(33 << 10) < out["in_place_change"] < -(31 << 10)
+    assert out["moved_extra_peak"] == out["moved_old_bytes"] > 1000, "moved, it held both while copied"
+
+    assert set(out["paused_allocates"]) == {0}
+    assert set(out["unrecorded_frees"]) == {0}
+
+    on_main = out["a_allocates_on_main"][A]
+    assert on_main >= 1 << 16
+    assert out["thread_frees"][A] == -on_main
+    assert out["c_allocates_on_thread"][C] >= 1 << 16
+    assert out["main_frees"][C] == -out["c_allocates_on_thread"][C]
+    assert out["main_frees"][B] == 0
+
+    assert out["child_status"] == 0, "the child gave the block back in its own table"
+    assert out["parent_after_fork"] == 0
+
+    # malloc(32) takes a 48-byte chunk; Python's loop allocates a little of its own.
+    blocks = 1_000_000 * 48
+    assert blocks <= out["million_allocated"][A] < blocks + 4096
+    entries, peak_entries, mapped_bytes, failed = out["million_table"]
+    assert not failed
+    assert entries >= 1_000_000 and peak_entries >= entries
+    assert mapped_bytes >= 2 * peak_entries * 16, "the table doubles before it is half full"
+    assert -blocks - 4096 < out["million_freed"][A] <= -blocks
+
+
+_FORK_PROBE = _PROBE_PRELUDE + """\
+import os, threading
+
+A, C = 5, 7
+held = (ctypes.c_int64 * 8)()
+malloc, free = process.malloc, process.free
+
+def held_by(owner):
+    process.k4bench_read_owners(held, None, len(held))
+    return held[owner]
+
+blocks = (ctypes.c_void_p * 10_000)()
+process.k4bench_exchange_alloc_owner(A)
+for i in range(len(blocks)):
+    blocks[i] = malloc(32)
+process.k4bench_exchange_alloc_owner(0)
+
+# Another thread keeps the table growing all the while, so forks also land
+# while it moves the entries into a larger one (3 or 4 children in 100 lost
+# blocks when the lock was only released in the child).
+stop = threading.Event()
+def churn():
+    process.k4bench_exchange_alloc_owner(C)
+    kept = (ctypes.c_void_p * 4_000_000)()
+    for i in range(len(kept)):
+        if stop.is_set():
+            break
+        kept[i] = malloc(16)
+thread = threading.Thread(target=churn)
+thread.start()
+
+failures = 0
+for _ in range(100):
+    child = os.fork()
+    if child == 0:
+        before = held_by(A)
+        for block in blocks:
+            free(block)
+        # A block the child's table lost would stay A's: malloc(32) takes 48 bytes.
+        os._exit(0 if before - held_by(A) >= len(blocks) * 48 else 1)
+    failures += os.waitstatus_to_exitcode(os.waitpid(child, 0)[1]) != 0
+stop.set()
+thread.join()
+print(json.dumps({"failures": failures}))
+"""
+
+
+@pytest.mark.integration
+@requires_gaudi
+def test_alloc_counter_copies_its_table_whole_into_a_forked_child(built_plugin):
+    """A process forked while another thread changes the table gets the table
+    whole: every block allocated before the fork is still its owner's in the
+    child, and freeing them all gives back exactly their memory."""
+    import warnings
+
+    assert built_plugin.returncode == 0, "Skipped: build already failed"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)  # fork with threads running
+        assert _probe(_FORK_PROBE, owners=True) == {"failures": 0}
+
+
+@pytest.mark.integration
+@requires_gaudi
+def test_alloc_counter_records_no_owners_by_default(built_plugin):
+    """Without K4BENCH_ALLOC_OWNERS=1, the counter keeps no table and reports
+    no owners."""
+    assert built_plugin.returncode == 0, "Skipped: build already failed"
+    out = _probe(
+        _PROBE_PRELUDE
+        + "held = (ctypes.c_int64 * 8)()\n"
+        + "process.k4bench_exchange_alloc_owner(5)\n"
+        + "process.free(process.malloc(1 << 20))\n"
+        + "print(json.dumps({'enabled': process.k4bench_owner_table(ctypes.byref(OwnerTable())),\n"
+        + "                  'owners': process.k4bench_read_owners(held, held, 8)}))\n",
+        owners=False,
+    )
+    assert out == {"enabled": False, "owners": 0}
+
+
+def _run_audited_job(tmp_path, label, options, *, owners=False):
     """Run the job *options* under the auditor with gaudirun.py and return its
-    component timing and event table."""
+    component timing and event table. With *owners*, the job records which
+    component allocated each heap block, and the auditor writes its heap file."""
     import os
 
     from k4bench.analysis.loader import load_component_timing, load_event_timing
@@ -389,6 +665,7 @@ def _run_audited_job(tmp_path, label, options):
         components_json_path=tmp_path / f"{label}_components.json",
         event_json_path=tmp_path / f"{label}_events.json",
         joboptions_path=tmp_path / f"{label}_joboptions.opts",
+        heap_json_path=tmp_path / f"{label}_heap.json" if owners else None,
     )
     result = subprocess.run(
         ["gaudirun.py", str(job), str(auditor_options_file())],
@@ -515,6 +792,15 @@ def test_auditor_records_each_algorithms_data_handles(built_plugin, tmp_path):
     assert components["EventLoopMgr"]["inputs"] is None
 
 
+# An algorithm putting three objects into the event store per event, which
+# the store frees outside any audited call, in a sequencer.
+_PUT_IN_A_SEQUENCER = (
+    "from Configurables import ApplicationMgr, Gaudi__Sequencer, GaudiTesting__PutDataObjectAlg\n"
+    "put = GaudiTesting__PutDataObjectAlg('Put', Paths=['A', 'B', 'C'])\n"
+    "ApplicationMgr(EvtSel='NONE', EvtMax=3, TopAlg=[Gaudi__Sequencer('Top', Members=[put])])\n"
+)
+
+
 @pytest.mark.integration
 @requires_gaudi
 def test_auditor_counts_each_components_heap_allocations(built_plugin, tmp_path):
@@ -527,13 +813,7 @@ def test_auditor_counts_each_components_heap_allocations(built_plugin, tmp_path)
     from k4bench.analysis.components import ALLOCATION_METRICS
 
     assert built_plugin.returncode == 0, "Skipped: build already failed"
-    timing, _ = _run_audited_job(
-        tmp_path,
-        "put",
-        "from Configurables import ApplicationMgr, Gaudi__Sequencer, GaudiTesting__PutDataObjectAlg\n"
-        "put = GaudiTesting__PutDataObjectAlg('Put', Paths=['A', 'B', 'C'])\n"
-        "ApplicationMgr(EvtSel='NONE', EvtMax=3, TopAlg=[Gaudi__Sequencer('Top', Members=[put])])\n",
-    )
+    timing, _ = _run_audited_job(tmp_path, "put", _PUT_IN_A_SEQUENCER)
 
     assert set(ALLOCATION_METRICS) <= set(timing.execute)
     assert set(ALLOCATION_METRICS) <= set(timing.lifecycle["initialize"])
@@ -548,6 +828,129 @@ def test_auditor_counts_each_components_heap_allocations(built_plugin, tmp_path)
     assert (peak["Top"] >= peak["Put"]).all()
     assert ((largest["Put"] > 0) & (largest["Put"] <= peak["Put"])).all()
     assert (largest["Top"] >= largest["Put"]).all()
+
+
+@pytest.mark.integration
+@requires_gaudi
+def test_auditor_charges_each_component_the_heap_it_holds(built_plugin, tmp_path):
+    """Recording heap owners, the algorithm holds its three objects at each
+    event's end. The store frees them between events, outside any audited
+    call, and they go back to the algorithm, so they are no longer its own at
+    the next event's start, never pile up, and are gone once the job ends. The sequencer holds nothing during events
+    beyond what it kept from initialize: what its member allocates is the
+    member's. The components' heap adds up to what malloc counts as in use."""
+    from k4bench.analysis.heap import NO_COMPONENT
+    from k4bench.analysis.loader import load_component_heap
+
+    assert built_plugin.returncode == 0, "Skipped: build already failed"
+    timing, _ = _run_audited_job(tmp_path, "put", _PUT_IN_A_SEQUENCER, owners=True)
+    heap = load_component_heap(tmp_path)["put"]
+
+    start, held, peak = (heap.execute[m] for m in ("start_held_bytes", "held_bytes", "peak_held_bytes"))
+    assert held.columns.tolist() == [NO_COMPONENT, *timing.components.index]
+    assert held.index.tolist() == [0, 1, 2]
+    added = held["Put"] - start["Put"]
+    assert (added >= 3 * 64).all(), "three objects of at least 64 bytes each"
+    # Freed by the store between events, they are no longer Put's when the
+    # next event starts: it holds only what it keeps across events, as at the
+    # job's end, and each event adds the same three objects again.
+    kept = heap.at_end.loc["Put", "held_bytes"]
+    assert start.loc[0, "Put"] == 0
+    assert (start["Put"].iloc[1:] == kept).all()
+    assert (added.iloc[1:] == added.iloc[1]).all()
+    assert (held["Put"] == held["Put"].iloc[0]).all()
+    assert (heap.working_set()["Put"] >= added).all()
+    assert (peak["Put"] >= held["Put"]).all()
+    # The sequencer keeps a block from its first call, as its own counts say,
+    # and nothing more.
+    first_call = timing.execute["net_allocated_bytes"].loc[0, "Top"]
+    assert (held["Top"] - heap.before_first_event.loc["Top", "held_bytes"] == first_call).all()
+    assert (peak["Top"] == held["Top"]).all()
+
+    # malloc also counts the blocks allocated while the process was loading,
+    # before the counter started, the auditor's own and the free ones it
+    # caches per thread: 0.3% of the heap in this job, so 1% leaves room.
+    moments = [
+        (heap.before_first_event["held_bytes"].sum(), heap.process_before_first_event["malloc_in_use_bytes"]),
+        *zip(held.sum(axis=1), heap.process["malloc_in_use_bytes"]),
+        (heap.at_end["held_bytes"].sum(), heap.process_at_end["malloc_in_use_bytes"]),
+    ]
+    for components, in_use in moments:
+        assert 0 <= in_use - components <= 0.01 * in_use
+    assert (heap.process["rss_anon_mb"] > 0).all()
+    assert heap.table_peak_entries > 0
+    assert heap.table_mapped_bytes >= 2 * 16 * heap.table_peak_entries
+
+
+@pytest.mark.integration
+@requires_gaudi
+def test_auditor_reports_heap_peaks_only_for_events_run_one_at_a_time(built_plugin, tmp_path):
+    """Events run one at a time, even through several top-level algorithms,
+    each have their heap peaks. With two events in flight at once, the
+    owners' peaks are the process's, so no event has a peak of its own: they
+    are missing, rather than one event's peak erased by the next opening."""
+    from k4bench.analysis.loader import load_component_heap
+
+    assert built_plugin.returncode == 0, "Skipped: build already failed"
+    serial, concurrent = tmp_path / "serial", tmp_path / "concurrent"
+    serial.mkdir()
+    concurrent.mkdir()
+    _run_audited_job(
+        serial,
+        "pair",
+        "from Configurables import ApplicationMgr, GaudiTesting__SleepyAlg\n"
+        "pair = [GaudiTesting__SleepyAlg(name, SleepTime=0) for name in ('First', 'Second')]\n"
+        "ApplicationMgr(EvtSel='NONE', EvtMax=3, TopAlg=pair)\n",
+        owners=True,
+    )
+    timing, _ = _run_audited_job(
+        concurrent,
+        "slots",
+        "from Configurables import ApplicationMgr, AvalancheSchedulerSvc, HiveSlimEventLoopMgr\n"
+        "from Configurables import HiveWhiteBoard, GaudiTesting__SleepyAlg\n"
+        "slots = HiveWhiteBoard('EventDataSvc', EventSlots=2)\n"
+        "AvalancheSchedulerSvc(ThreadPoolSize=2)\n"
+        "loop = HiveSlimEventLoopMgr(SchedulerName='AvalancheSchedulerSvc')\n"
+        "nap = GaudiTesting__SleepyAlg('Nap', SleepTime=1, Cardinality=2)\n"
+        "ApplicationMgr(EvtSel='NONE', EvtMax=4, ExtSvc=[slots], EventLoop=loop, TopAlg=[nap])\n",
+        owners=True,
+    )
+
+    assert load_component_heap(serial)["pair"].execute["peak_held_bytes"].notna().all().all()
+    assert timing.threads == 2
+    heap = load_component_heap(concurrent)["slots"]
+    assert heap.execute["peak_held_bytes"].isna().all().all()
+    assert heap.execute["held_bytes"].notna().all().all()
+    assert heap.before_first_event["peak_held_bytes"].notna().all()
+
+
+@pytest.mark.integration
+@requires_gaudi
+def test_without_heap_owners_the_auditor_writes_no_heap_file_and_counts_the_same(built_plugin, tmp_path):
+    """Only a job recording heap owners writes a heap file, and recording them
+    leaves the per-event allocation counts as they were: the counter's table
+    never allocates through malloc."""
+    import json
+
+    from k4bench.analysis.components import ALLOCATION_METRICS
+
+    assert built_plugin.returncode == 0, "Skipped: build already failed"
+    runs = {}
+    for owners in (False, True):
+        run_dir = tmp_path / ("owners" if owners else "counting")
+        run_dir.mkdir()
+        _run_audited_job(run_dir, "put", _PUT_IN_A_SEQUENCER, owners=owners)
+        runs[owners] = {
+            kind: json.loads((run_dir / f"put_{kind}.json").read_text()) for kind in ("components", "events")
+        }
+        assert (run_dir / "put_heap.json").exists() == owners
+
+    counting, owners = runs[False], runs[True]
+    assert list(counting["components"]) == list(owners["components"])
+    assert counting["components"]["components"] == owners["components"]["components"]
+    for metric in ALLOCATION_METRICS:
+        assert counting["components"]["execute"][metric] == owners["components"]["execute"][metric], metric
+    assert list(counting["events"]) == list(owners["events"])
 
 
 @pytest.mark.integration

@@ -13,8 +13,10 @@ configuration label, one file per artifact kind::
     {label}_components.json     k4run only
     {label}_joboptions.opts     k4run only
     {label}_dataflow.json       k4run only
+    {label}_heap.json           k4run only, from the memory pass
     {label}.log
     {label}_warm-up.log         k4run only, when the warm-up failed
+    {label}_heap.log            k4run only, when the memory pass failed
 
 These names are part of the on-disk data contract: the benchmark writes them,
 and the loaders, the regression report, the dashboard and the blame tooling
@@ -46,10 +48,15 @@ COMPONENTS_SUFFIX = "_components.json"
 JOBOPTIONS_SUFFIX = "_joboptions.opts"
 #: What each algorithm read and wrote (:mod:`k4bench.analysis.dataflow`).
 DATAFLOW_SUFFIX = "_dataflow.json"
+#: The heap each component held, from the untimed memory pass
+#: (:mod:`k4bench.analysis.heap`).
+HEAP_SUFFIX = "_heap.json"
 LOG_SUFFIX = ".log"
 #: The log of a k4run warm-up that failed, so the measured run may have found
 #: a cold cache.
 WARM_UP_LOG_SUFFIX = "_warm-up.log"
+#: The log of a memory pass that failed, which then left no heap file.
+HEAP_LOG_SUFFIX = "_heap.log"
 
 
 def label_path(run_dir: Path, label: str, suffix: str) -> Path:

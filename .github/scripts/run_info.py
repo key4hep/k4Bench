@@ -19,8 +19,8 @@ Besides the job parameters, the record holds:
   random_seed        the ddsim seed the run simulated with
   k4h_packages       upstream commit of every git-built package in the stack
 
-A k4run job also records its options files, stage directory, k4run arguments
-and variants.
+A k4run job also records its options files, stage directory, k4run arguments,
+variants and the events of its memory pass.
 
 Resolving the roster or the stack provenance never fails the job: the
 measurements are the deliverable, so either is recorded as unknown instead.
@@ -183,6 +183,8 @@ def build_run_info(
             "variants":           job.variants,
             # As configured: the local copies are gone with the job.
             "data_files":         rec["data_files"].split(),
+            # Events of the untimed memory pass behind each _heap.json.
+            "memory_events":      int(rec["memory_events"]) if rec["memory_events"] else None,
         }
     return record
 

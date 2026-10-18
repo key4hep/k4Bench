@@ -249,6 +249,7 @@ def setup_auditor_environment(
     event_json_path: Path,
     joboptions_path: Path,
     setup_script: Path | None = None,
+    heap_json_path: Path | None = None,
 ) -> bool:
     """Prepare environment variables for a k4run job audited by k4Bench.
 
@@ -272,6 +273,12 @@ def setup_auditor_environment(
         Output path for the resolved job options dump.
     setup_script
         Shell script the job's command sources before running it, if any.
+    heap_json_path
+        Output path for the heap each component held. Given one, the job
+        records which component allocated every heap block
+        (``K4BENCH_ALLOC_OWNERS=1``), which makes each allocation several
+        times dearer, so never in a timed run; without one, it does not, even
+        if the caller's environment asked it to.
 
     Returns
     -------
@@ -300,6 +307,12 @@ def setup_auditor_environment(
     env["K4BENCH_COMPONENTS_JSON"] = str(components_json_path.resolve())
     env["K4BENCH_EVENT_JSON"] = str(event_json_path.resolve())
     env["K4BENCH_JOBOPTIONS"] = str(joboptions_path.resolve())
+    if heap_json_path is not None:
+        env["K4BENCH_ALLOC_OWNERS"] = "1"
+        env["K4BENCH_HEAP_JSON"] = str(heap_json_path.resolve())
+    else:
+        env.pop("K4BENCH_ALLOC_OWNERS", None)
+        env.pop("K4BENCH_HEAP_JSON", None)
 
     counter = Path(plugin_dir) / _ALLOC_COUNTER_LIBRARY
     env.pop("K4BENCH_ALLOC_COUNTER", None)

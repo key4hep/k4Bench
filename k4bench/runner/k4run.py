@@ -15,7 +15,8 @@ When available, the k4BenchAuditor is enabled on every algorithm and service.
 It writes the per-event JSON in the same format as the DDG4 timing plugin, the
 per-component JSON, and the resolved job options, all inside the log
 directory. The run-level virtual-memory peak is copied into
-:class:`RunResult`.
+:class:`RunResult`. Given a heap path, the job also records which component
+allocated each heap block, and the auditor writes what each held there.
 """
 
 from __future__ import annotations
@@ -57,6 +58,7 @@ def run_k4run(
     setup_script: Path | None = None,
     extra_args: list[str] | None = None,
     verbose: bool = False,
+    heap_json_path: Path | None = None,
 ) -> RunResult:
     """Run one k4run job in *work_dir* and return collected metrics.
 
@@ -95,6 +97,11 @@ def run_k4run(
     verbose:
         Stream k4run output live to stdout.
 
+    heap_json_path:
+        Where the auditor writes the heap each component held. Given one, the
+        job records which component allocated every heap block, which makes
+        it slower: a run with one is never a timed run.
+
     Returns
     -------
     RunResult
@@ -107,8 +114,9 @@ def run_k4run(
     event_json_path = label_path(log_dir, label, EVENTS_SUFFIX)
     components_json_path = label_path(log_dir, label, COMPONENTS_SUFFIX)
     joboptions_path = label_path(log_dir, label, JOBOPTIONS_SUFFIX)
-    for path in (event_json_path, components_json_path, joboptions_path):
-        path.unlink(missing_ok=True)
+    for path in (event_json_path, components_json_path, joboptions_path, heap_json_path):
+        if path is not None:
+            path.unlink(missing_ok=True)
 
     env = os.environ.copy()
 
@@ -118,6 +126,7 @@ def run_k4run(
         event_json_path=event_json_path,
         joboptions_path=joboptions_path,
         setup_script=setup_script,
+        heap_json_path=heap_json_path,
     )
 
     cmd = timed_shell_command(

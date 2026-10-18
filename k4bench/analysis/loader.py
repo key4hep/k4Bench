@@ -10,9 +10,11 @@ from typing import TypeVar
 import pandas as pd
 
 from k4bench.analysis.components import ComponentTiming
+from k4bench.analysis.heap import ComponentHeap
 from k4bench.artifacts import (
     COMPONENTS_SUFFIX,
     EVENTS_SUFFIX,
+    HEAP_SUFFIX,
     REGIONS_SUFFIX,
     RESULTS_SUFFIX,
     RUN_INFO,
@@ -23,6 +25,7 @@ from k4bench.layout import RECO, SIM, SUITES
 from k4bench.plugin.schema import (
     validate_component_schema,
     validate_event_schema,
+    validate_heap_schema,
     validate_region_schema,
 )
 
@@ -483,6 +486,42 @@ def load_component_timing(
             raw = json.load(f)
         validate_component_schema(raw, source=path)
         out[label] = ComponentTiming.from_json(raw, source=path)
+    return out
+
+
+def load_component_heap(
+    log_dir: str | Path,
+    labels: list[str] | None = None,
+) -> dict[str, ComponentHeap]:
+    """Load the heap files the k4run benchmark's memory pass writes.
+
+    Parameters
+    ----------
+    log_dir : str or Path
+        Directory containing ``*_heap.json`` files.
+    labels : list[str] or None
+        Load only these run labels. If ``None``, every ``*_heap.json`` file in
+        *log_dir* is loaded.
+
+    Returns
+    -------
+    dict[str, ComponentHeap]
+        Maps label → its :class:`~k4bench.analysis.heap.ComponentHeap`.
+        Empty when *log_dir* holds no heap files (no memory pass ran).
+
+    Raises
+    ------
+    ValueError
+        For a requested label without a file, an unsupported
+        ``schema_version`` (:func:`~k4bench.plugin.schema.validate_heap_schema`),
+        or a file whose tables do not match its component and event lists.
+    """
+    out: dict[str, ComponentHeap] = {}
+    for path, label in _label_files(Path(log_dir), HEAP_SUFFIX, labels, "heap"):
+        with path.open() as f:
+            raw = json.load(f)
+        validate_heap_schema(raw, source=path)
+        out[label] = ComponentHeap.from_json(raw, source=path)
     return out
 
 

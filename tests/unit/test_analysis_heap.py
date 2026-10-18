@@ -1,0 +1,188 @@
+"""Unit tests for the memory pass's heap files
+(:mod:`k4bench.analysis.heap` and ``load_component_heap``)."""
+
+from __future__ import annotations
+
+import json
+import math
+from pathlib import Path
+
+import pytest
+
+from k4bench.analysis.heap import (
+    EVENT_HEAP_METRICS,
+    HEAP_METRICS,
+    NO_COMPONENT,
+    PROCESS_METRICS,
+    ComponentHeap,
+)
+from k4bench.analysis.loader import load_component_heap
+
+MB = 1_000_000
+
+
+def _raw(**overrides) -> dict:
+    """A job whose geometry service keeps 300 MB from initialize, whose reader
+    holds each event's data until the writer frees it, and whose sequencer
+    holds nothing. The anonymous RSS could not be read after event 1."""
+    raw = {
+        "schema_version": 1,
+        "producer": "k4BenchAuditor",
+        "components": [NO_COMPONENT, "Geo", "Top", "Reader"],
+        "before_first_event": {
+            "held_bytes": [50 * MB, 300 * MB, 0, 1 * MB],
+            "peak_held_bytes": [60 * MB, 310 * MB, 0, 1 * MB],
+            "malloc_in_use_bytes": 352 * MB,
+            "rss_anon_mb": 420.0,
+        },
+        "event_numbers": [0, 1],
+        "execute": {
+            "start_held_bytes": [[50 * MB, 300 * MB, 0, 1 * MB], [50 * MB, 300 * MB, 0, 2 * MB]],
+            "held_bytes": [[50 * MB, 300 * MB, 0, 5 * MB], [50 * MB, 300 * MB, 0, 6 * MB]],
+            "peak_held_bytes": [[50 * MB, 300 * MB, 0, 8 * MB], [51 * MB, 300 * MB, 0, 9 * MB]],
+            "malloc_in_use_bytes": [356 * MB, 357 * MB],
+            "rss_anon_mb": [430.0, -1.0],
+        },
+        "at_end": {"held_bytes": [40 * MB, 0, 0, 1 * MB], "malloc_in_use_bytes": 42 * MB, "rss_anon_mb": 400.0},
+        "table": {"peak_entries": 2_000_000, "mapped_bytes": 64 << 20},
+    }
+    raw.update(overrides)
+    return raw
+
+
+@pytest.fixture
+def heap() -> ComponentHeap:
+    return ComponentHeap.from_json(_raw())
+
+
+def test_each_event_is_a_row_and_each_component_a_column(heap):
+    assert set(heap.execute) == set(EVENT_HEAP_METRICS)
+    held = heap.execute["held_bytes"]
+    assert held.index.tolist() == [0, 1] and held.index.name == "event_number"
+    assert held.columns.tolist() == [NO_COMPONENT, "Geo", "Top", "Reader"]
+    assert held.loc[1, "Reader"] == 6 * MB
+    assert heap.execute["peak_held_bytes"].loc[1, NO_COMPONENT] == 51 * MB
+
+
+def test_the_working_set_is_the_peak_beyond_what_the_event_started_with(heap):
+    working = heap.working_set()
+    assert working.loc[0].tolist() == [0, 0, 0, 7 * MB]
+    assert working.loc[1, "Reader"] == 7 * MB
+    assert working.loc[1, NO_COMPONENT] == 1 * MB
+
+
+def test_a_job_that_ran_events_at_once_has_no_peaks_per_event():
+    execute = {**_raw()["execute"], "peak_held_bytes": [[None] * 4, [None] * 4]}
+    heap = ComponentHeap.from_json(_raw(execute=execute))
+    assert heap.execute["peak_held_bytes"].isna().all().all()
+    assert heap.working_set().isna().all().all()
+    assert heap.execute["held_bytes"].loc[1, "Reader"] == 6 * MB
+
+
+def test_before_the_first_event_and_at_the_end_are_components_by_metric(heap):
+    assert heap.before_first_event.columns.tolist() == list(HEAP_METRICS)
+    assert heap.before_first_event.loc["Geo"].tolist() == [300 * MB, 310 * MB]
+    assert heap.at_end.columns.tolist() == ["held_bytes"]
+    assert heap.at_end["held_bytes"].tolist() == [40 * MB, 0, 0, 1 * MB]
+
+
+def test_the_process_heap_is_read_at_the_same_moments(heap):
+    assert heap.process.columns.tolist() == list(PROCESS_METRICS)
+    assert heap.process["malloc_in_use_bytes"].tolist() == [356 * MB, 357 * MB]
+    assert heap.process_before_first_event.to_dict() == {"malloc_in_use_bytes": 352 * MB, "rss_anon_mb": 420.0}
+    assert heap.process_at_end["malloc_in_use_bytes"] == 42 * MB
+    assert (heap.table_peak_entries, heap.table_mapped_bytes) == (2_000_000, 64 << 20)
+
+
+def test_an_rss_that_could_not_be_read_is_missing(heap):
+    assert heap.process.loc[0, "rss_anon_mb"] == 430.0
+    assert math.isnan(heap.process.loc[1, "rss_anon_mb"])
+    failed = ComponentHeap.from_json(_raw(at_end={**_raw()["at_end"], "rss_anon_mb": -1.0}))
+    assert math.isnan(failed.process_at_end["rss_anon_mb"])
+    assert failed.process_at_end["malloc_in_use_bytes"] == 42 * MB
+
+
+def test_a_job_that_ran_no_event_has_nothing_before_it():
+    heap = ComponentHeap.from_json(_raw(
+        before_first_event=None,
+        event_numbers=[],
+        execute={key: [] for key in (*EVENT_HEAP_METRICS, *PROCESS_METRICS)},
+    ))
+    assert heap.execute["held_bytes"].empty
+    assert heap.before_first_event.index.tolist() == [NO_COMPONENT, "Geo", "Top", "Reader"]
+    assert heap.before_first_event.isna().all().all()
+    assert heap.process_before_first_event.isna().all()
+    assert heap.at_end.loc[NO_COMPONENT, "held_bytes"] == 40 * MB
+
+
+class TestInconsistentFilesAreRefused:
+    def test_missing_keys(self):
+        raw = _raw()
+        del raw["table"]
+        with pytest.raises(ValueError, match="missing keys: \\['table'\\]"):
+            ComponentHeap.from_json(raw)
+
+    def test_components_not_led_by_what_no_component_holds(self):
+        with pytest.raises(ValueError, match="must start with"):
+            ComponentHeap.from_json(_raw(components=["Geo", NO_COMPONENT, "Top", "Reader"]))
+
+    def test_component_names_that_are_not_unique(self):
+        with pytest.raises(ValueError, match="not unique"):
+            ComponentHeap.from_json(_raw(components=[NO_COMPONENT, "Geo", "Geo", "Reader"]))
+
+    def test_duplicate_events(self):
+        execute = _raw()["execute"]
+        with pytest.raises(ValueError, match="duplicates"):
+            ComponentHeap.from_json(_raw(event_numbers=[0, 0], execute=execute))
+
+    def test_a_table_that_is_not_events_by_components(self):
+        execute = {**_raw()["execute"], "held_bytes": [[1, 2, 3, 4], [1, 2, 3]]}
+        with pytest.raises(ValueError, match="execute.held_bytes is not 2 events × 4 components"):
+            ComponentHeap.from_json(_raw(execute=execute))
+
+    @pytest.mark.parametrize("metric", [*EVENT_HEAP_METRICS, *PROCESS_METRICS])
+    def test_a_missing_metric(self, metric):
+        execute = {key: value for key, value in _raw()["execute"].items() if key != metric}
+        with pytest.raises(ValueError, match=f"execute is missing \\['{metric}'\\]"):
+            ComponentHeap.from_json(_raw(execute=execute))
+
+    def test_a_process_series_without_one_value_per_event(self):
+        execute = {**_raw()["execute"], "malloc_in_use_bytes": [1]}
+        with pytest.raises(ValueError, match="execute.malloc_in_use_bytes does not have one value per event"):
+            ComponentHeap.from_json(_raw(execute=execute))
+
+    def test_a_moment_missing_a_metric(self):
+        before = {key: value for key, value in _raw()["before_first_event"].items() if key != "peak_held_bytes"}
+        with pytest.raises(ValueError, match="before_first_event is missing \\['peak_held_bytes'\\]"):
+            ComponentHeap.from_json(_raw(before_first_event=before))
+
+    def test_a_moment_without_one_value_per_component(self):
+        at_end = {**_raw()["at_end"], "held_bytes": [1, 2]}
+        with pytest.raises(ValueError, match="at_end does not have one value per component"):
+            ComponentHeap.from_json(_raw(at_end=at_end))
+
+
+class TestLoadComponentHeap:
+    def _write(self, directory: Path, label: str, raw: dict) -> None:
+        (directory / f"{label}_heap.json").write_text(json.dumps(raw))
+
+    def test_loads_every_label(self, tmp_path):
+        self._write(tmp_path, "baseline", _raw())
+        self._write(tmp_path, "variant_truth_tracking", _raw())
+        loaded = load_component_heap(tmp_path)
+        assert sorted(loaded) == ["baseline", "variant_truth_tracking"]
+        assert isinstance(loaded["baseline"], ComponentHeap)
+
+    def test_directory_without_heap_files_is_empty(self, tmp_path):
+        (tmp_path / "baseline_components.json").write_text("{}")
+        assert load_component_heap(tmp_path) == {}
+
+    def test_requested_label_without_a_file_is_refused(self, tmp_path):
+        self._write(tmp_path, "baseline", _raw())
+        with pytest.raises(ValueError, match="Missing heap files for labels: \\['variant_native'\\]"):
+            load_component_heap(tmp_path, labels=["baseline", "variant_native"])
+
+    def test_future_schema_is_refused_with_the_file_named(self, tmp_path):
+        self._write(tmp_path, "baseline", _raw(schema_version=2))
+        with pytest.raises(ValueError, match="baseline_heap.json: unsupported future"):
+            load_component_heap(tmp_path)

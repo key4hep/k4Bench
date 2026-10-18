@@ -29,13 +29,16 @@ format, and instead of the regions JSON:
 ├── <label>_components.json  # per-event, per-component (algorithm/service) time, instructions, memory and allocations (auditor only)
 ├── <label>_joboptions.opts  # the fully resolved job options, as JobOptionsSvc dumps them
 ├── <label>_dataflow.json    # what each algorithm read and wrote (built after the last run)
+├── <label>_heap.json        # the heap each component held, from the untimed memory pass (--memory-events only)
 ├── <label>_warm-up.log      # the log of the unmeasured warm-up, only when it failed
+├── <label>_heap.log         # the log of the memory pass, only when it failed
 └── marlin_processors.xml.gz # `Marlin -x` of the stack, only when a job ran Marlin processors
 ```
 
 Its labels are `baseline` and `variant_<name>` for each variant. A
 `<label>_warm-up.log` marks a run whose warm-up failed, so its measurement may
-include fetching the software from CVMFS. A k4run
+include fetching the software from CVMFS. A `<label>_heap.log` marks a memory
+pass that failed or wrote no heap file, and says why. A k4run
 `output_size_mb` is the size of every file the job created in its working
 directory.
 
@@ -491,6 +494,85 @@ branch does nothing. To test PR creation and CI, use a disposable fork whose
 default branch has one config deliberately behind: dispatch there, mark the
 resulting draft ready for review, and check the `run` result.
 
+## heap JSON
+
+Written by the k4BenchAuditor in the k4run benchmark's memory pass
+(`--memory-events`, or `memory_events` in a nightly config;
+`schema_version: 1`, same version rules as the events JSON): after each timed
+run, the same job runs again for that many events with
+`K4BENCH_ALLOC_OWNERS=1`, and the preloaded allocation counter records which
+component allocated every heap block. While an audited call runs, its
+component is its thread's owner, so whatever the call allocates, at any depth,
+is charged to the innermost running component, and stays charged to it until
+it is freed, wherever and whenever that happens. A service initialized from
+within an algorithm's call is a call of its own and keeps its own memory, so
+the geometry lands on the geometry service. What no component allocated (the
+Python configuration, ROOT's start-up, the framework between calls) belongs to
+`(no component)`. [`load_component_heap`](api/analysis/loader.md) reads the
+file into a [`ComponentHeap`](api/analysis/heap.md), whose frames join the
+timed run's `_components.json` by component name.
+
+| Key | Shape | Meaning |
+| --- | --- | --- |
+| `components` | array | `"(no component)"`, then the auditor's components in its order |
+| `before_first_event` | object, or `null` without events | at the first event's start: what initialize and start left |
+| `event_numbers` | array | the events of the pass |
+| `execute` | object | at each event's end, a row per event |
+| `at_end` | object | at the auditor's finalize: what survived the job's own finalize |
+| `table` | object | `peak_entries`, the most blocks the counter's table held at once, and `mapped_bytes`, the memory it mapped for them |
+
+Each moment holds, per component (an array with one value per entry of
+`components`; in `execute`, one such array per event):
+
+- `held_bytes` — the heap it allocated and has not freed yet;
+- `peak_held_bytes` — the most it held at once: since the auditor started for
+  `before_first_event`, and from the event's first top-level call to its last
+  in `execute`. Not at `at_end`. A job that had several events in flight at
+  once writes the per-event peaks as `null`: the owners' peaks are the
+  process's, so no event has one of its own;
+- `start_held_bytes` — in `execute` only, what it held as the event opened.
+  The peak beyond it is the component's working set, the memory the event
+  needed of it ([`ComponentHeap.working_set`](api/analysis/heap.md)).
+
+and for the process (in `execute`, one value per event):
+
+- `malloc_in_use_bytes` — the heap as glibc's `mallinfo2` counts it: chunks
+  in use, those it mapped on their own included, and the free ones it caches
+  per thread. The components' `held_bytes` add up to nearly that; the rest is
+  the blocks allocated while the process was still loading, before the counter
+  started, and the auditor's own memory (0.02–0.06% in CLD reconstruction);
+- `rss_anon_mb` — anonymous RSS, `-1` when it could not be read. It also holds
+  what libraries map themselves, the free heap malloc has not returned, and the
+  counter's own table (`table.mapped_bytes`, all of it resident), but not heap
+  that was allocated and never touched. In CLD reconstruction that is about a
+  sixth of the heap: held bytes are memory allocated, not memory resident.
+
+Heap bytes count as `_components.json`'s allocation metrics do: chunk sizes,
+malloc's 8-byte header and the rounding to 16 bytes included.
+
+What the numbers do not say:
+
+- **Who uses memory.** A block is charged to the component that created it.
+  The event data the input reader creates stays the reader's until the output
+  writer frees it, and the memory a library takes as it loads (static
+  constructors, ROOT dictionaries) is the component's whose call loaded it.
+- **What lies outside malloc's heap.** Memory a library maps itself (pool
+  allocators, CPython's arenas, large buffers outside malloc) and file-backed
+  memory (code, CVMFS), which the events JSON's `event_rss_file_end_mb` shows.
+- **The timed run's values.** The pass is another, shorter run of the same job:
+  it reads the same input, so its events are the timed run's first ones, but
+  recording owners slows every allocation (a lookup in a table that outgrows
+  the caches), so its numbers are comparable in kind, not identical in value.
+  Its timing, components, events and job options are discarded.
+- **What a service first used during an event keeps before the first event.**
+  Such a service is initialized then, and what it keeps is held from that
+  event on.
+
+In a job running calls concurrently (`threads` > 1 in `_components.json`),
+attribution still follows each thread's running component, but a snapshot
+taken while other threads run catches them mid-call. The reconstruction jobs
+benchmarked so far run on one thread, one event at a time.
+
 ## EOS layout
 
 Nightly results live under `EOS_ROOT = /eos/user/j/jbeirer/k4bench`, encoding
@@ -505,7 +587,7 @@ runs/{suite}/{concept}/{detector}/{platform}/key4hep-{release}/{sample}/{YYYY-MM
     reco:  run_info.json  machine_info.json  [marlin_processors.xml.gz]
            {config}_results.csv  {config}_events.json  {config}_components.json
            {config}_joboptions.opts  {config}_dataflow.json  {config}.log
-           [{config}_warm-up.log]
+           [{config}_heap.json]  [{config}_warm-up.log]  [{config}_heap.log]
 reports/{suite}/{YYYY-MM-DD}/
     report.json
     blame.json   (only on nights with an attributable confirmed regression)

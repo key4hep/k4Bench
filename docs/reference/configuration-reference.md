@@ -53,6 +53,7 @@ absolute paths.
 | `--k4run-args` | str | `""` | — | Args passed verbatim to `k4run` after the options files, as one quoted string. Use the `=` form. |
 | `--variant` | `NAME=ARGS` | — | — | One more run, labelled `variant_NAME`, with `ARGS` appended to `--k4run-args`. Repeatable. |
 | `--no-warm-up` | bool | `false` | — | Skip the unmeasured one-event run of the job before each run, which keeps fetching the software from CVMFS out of the measurement. |
+| `--memory-events` | int > 0 | *(off)* | — | After each run, run its job again for this many events, untimed, recording which component allocated each heap block, into `<label>_heap.json` ([heap JSON](file-formats.md#heap-json)). Recording owners slows every allocation, several times over in allocation-heavy algorithms, so the pass is never the measured run. |
 | `--output-dir` | path | `logs/<options-stem>/` | — | Directory for logs and results; created if absent. |
 | `--pickle` | str | *(none)* | — | As for ddsim. |
 | `--verbose`, `-v` | bool | `false` | — | Stream `k4run` output live. |
@@ -97,6 +98,7 @@ ddsim's except where marked; a key of the other tool is an error.
 | `data_files` | list | — | k4run: files the job reads besides its input (calibration maps, ML models, a configuration archive), fetched like `input_files` into one directory, `$LOCAL_DATA_DIR`, before the run. A `.tar.gz`/`.tgz` is unpacked there instead of kept. Two files must not share a name. |
 | `k4run_args` | str | — | k4run: job arguments (concatenated with sample-level). `$VAR`s are expanded in the runner, including `$DETECTOR_XML` (the resolved `xml`), `$LOCAL_INPUT_FILES` (the local copies of `input_files`) and `$LOCAL_DATA_DIR` (the directory of `data_files`). |
 | `variants` | list | — | k4run: `{name, k4run_args}` entries; each is one more run, labelled `variant_<name>`, with its `k4run_args` appended. |
+| `memory_events` | int > 0 | — | k4run: events of the untimed memory pass after each run (`--memory-events`), which writes `<label>_heap.json`; absent, no pass runs. Mind `timeout`: the pass runs the job again, slower. |
 | `samples` | list | ✅ | List of sample entries (below). |
 
 ### Per-sample keys (under `samples:`)
@@ -109,11 +111,12 @@ ddsim's except where marked; a key of the other tool is an error.
 | `input_files` | list | — | HepMC path(s); mutually exclusive with `--enableGun`. k4run: frozen input file(s), copied locally before the run from an HTTPS URL (curl), an XRootD `root://` URL (xrdcp) or a local path. |
 | `k4run_args` | str | — | k4run: **appended** to top-level `k4run_args`. |
 | `variants` | list | — | k4run: replaces the top-level variants for this sample. |
+| `memory_events` | int > 0 | — | k4run: overrides the top-level `memory_events` for this sample. |
 | `steering_file` | str | — | Overrides the top-level steering file for this sample. |
 
 ### YAML validation rules
 
-- `n_events` must be a positive integer.
+- `n_events` must be a positive integer, and so must `memory_events` when given.
 - `input_files` and `--enableGun` (in `ddsim_args`) are mutually exclusive.
 - `sweep` / `sweep_detectors` / `include_only` / `exclude_only` are mutually exclusive (at most one).
 - Lists are joined to space-separated strings so they round-trip through GitHub
@@ -124,7 +127,7 @@ ddsim's except where marked; a key of the other tool is an error.
   which names the EOS detector directory), and refuses `ddsim_args`,
   `steering_file`, `sweep`, `sweep_detectors`, `include_only` and
   `exclude_only`; a ddsim benchmark refuses `options`, `stage_dir`,
-  `k4run_args`, `variants` and `data_files`.
+  `k4run_args`, `variants`, `data_files` and `memory_events`.
 - Variant names follow the sample-name rule, must be unique, and each needs
   `k4run_args`.
 - A config must sit at `{suite}/{concept}/{detector}.yml` and be named after
