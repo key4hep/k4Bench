@@ -345,6 +345,246 @@ def test_efficiency_tells_counted_runs_without_events_from_runs_without_counts(
     assert not at.get("plotly_chart")
 
 
+def _axis_titles(at: AppTest) -> set[str]:
+    layout = json.loads(at.get("plotly_chart")[0].proto.spec)["layout"]
+    return {
+        axis["title"]["text"] for name, axis in layout.items()
+        if name.startswith(("xaxis", "yaxis")) and "text" in axis.get("title", {})
+    }
+
+
+def test_event_timing_sets_algorithms_beside_the_whole_event(monkeypatch, tmp_path):
+    at = _page(monkeypatch, tmp_path, RECO_RUN, "Event Timing")
+    timing_of = at.multiselect(key="evt_timing_timings")
+    # At first: the whole event beside the baseline's slowest algorithm, for
+    # the baseline alone.
+    assert timing_of.value == ["Whole event", "MyConformalTracking"]
+    assert at.multiselect(key="evt_timing_configs").value == []
+    assert {t["name"] for t in _traces(at) if t.get("name")} == {
+        "Whole event", "MyConformalTracking",
+    }
+    assert "Time per event (s)" in _axis_titles(at)
+    # Algorithms are offered slowest first, with their time; services are not.
+    assert timing_of.options[0] == "Whole event"
+    assert any(o.startswith("MyConformalTracking  ·  ") for o in timing_of.options)
+    assert not any(o.startswith("GeoSvc") for o in timing_of.options)
+
+    # Several timings of several configurations: each pair is one series.
+    at.multiselect(key="evt_timing_configs").set_value(["variant_truth_tracking"]).run()
+    at.multiselect(key="evt_timing_timings").set_value(["Whole event", "VertexFinder"]).run()
+    assert not at.exception, at.exception
+    assert {t["name"] for t in _traces(at) if t.get("name")} == {
+        "Whole event · baseline", "VertexFinder · baseline",
+        "Whole event · variant_truth_tracking", "VertexFinder · variant_truth_tracking",
+    }
+    assert len(at.dataframe[0].value) == 4
+
+    # The whole event alone, as on the Simulation page.
+    at.multiselect(key="evt_timing_timings").set_value(["Whole event"]).run()
+    assert "Event time (s)" in _axis_titles(at)
+
+    # One algorithm: the configurations that run it, named as they are.
+    at.multiselect(key="evt_timing_timings").set_value(["MyConformalTracking"]).run()
+    assert not at.exception, at.exception
+    assert "MyConformalTracking time (s)" in _axis_titles(at)
+    assert at.selectbox(key="evt_timing_baseline").options == ["baseline"]
+    assert at.dataframe[0].value.index.tolist() == ["baseline"]
+
+
+def _event_timing_history_app(dashboard_dir, run_dir) -> None:
+    import sys as _sys
+    if dashboard_dir not in _sys.path:
+        _sys.path.insert(0, dashboard_dir)
+    from config import Config
+    from data import RunData, cached_load_component_timing
+    from k4bench.analysis.trend import build_results_trend
+    from reco import page
+    from section_dispatch import PageContext
+    from sidebar import TrendWindow
+
+    results = build_results_trend((run_dir,))
+    ctx = PageContext(
+        config=Config(run_dir, "https://store.example", "/tmp", "https://dash.example"),
+        selection=None, data_dir=run_dir, run_meta=None,
+        run=RunData(None, None, None, results, sorted(results["label"].unique()),
+                    components=cached_load_component_timing(run_dir)),
+        window=TrendWindow(None, (run_dir,)), trend_machine=None, reliability={},
+    )
+    page._event_timing(ctx)
+
+
+def test_event_timing_history_draws_the_slowest_algorithms_beside_the_event():
+    at = AppTest.from_function(
+        _event_timing_history_app, args=(str(_DASHBOARD_DIR), str(RECO_RUN)),
+        default_timeout=60,
+    )
+    at.run()
+    assert not at.exception, at.exception
+    at.radio(key="evt_timing_view_mode").set_value("Historical Trends").run()
+    assert not at.exception, at.exception
+    # The baseline's whole event, then its five slowest algorithms.
+    assert at.selectbox(key="evt_timing_hist_config").value == "baseline"
+    names = list(dict.fromkeys(t["name"] for t in _traces(at)))
+    assert names[:2] == ["Whole event", "MyConformalTracking"]
+    assert len(names) == 6
+    medians = [t for t in _traces(at) if t["yaxis"] == "y"]
+    assert all(0 < y < 10 for t in medians for y in _values(t["y"]))
+    # On log y axes at first, and linear ones on request.
+    def y_types():
+        layout = json.loads(at.get("plotly_chart")[0].proto.spec)["layout"]
+        return {a.get("type", "linear") for n, a in layout.items() if n.startswith("yaxis")}
+    assert y_types() == {"log"}
+    at.toggle(key="evt_timing_hist_log_y").set_value(False).run()
+    assert y_types() == {"linear"}
+    # As many as asked, up to all of them.
+    slider = at.slider(key="evt_timing_hist_slowest")
+    slider.set_value(1).run()
+    assert list(dict.fromkeys(t["name"] for t in _traces(at))) == [
+        "Whole event", "MyConformalTracking",
+    ]
+    # Another configuration, its own slowest: the truth tracker.
+    at.selectbox(key="evt_timing_hist_config").set_value("variant_truth_tracking").run()
+    assert not at.exception, at.exception
+    assert list(dict.fromkeys(t["name"] for t in _traces(at)))[1] == "MyTruthTrackFinder"
+
+
+def test_event_timing_ratios_set_each_timing_against_its_own(monkeypatch, tmp_path):
+    at = _page(monkeypatch, tmp_path, RECO_RUN, "Event Timing")
+    # The baseline alone: its timings are not compared with one another.
+    assert not any(t.get("xaxis") in ("x3", "x4") for t in _traces(at))
+    assert at.dataframe[0].value["Ratio to baseline"].tolist() == [1.0, 1.0]
+
+    at.multiselect(key="evt_timing_configs").set_value(["variant_truth_tracking"]).run()
+    at.multiselect(key="evt_timing_timings").set_value(["Whole event", "VertexFinder"]).run()
+    assert not at.exception, at.exception
+    ratios = {t["name"] for t in _traces(at) if t.get("xaxis") in ("x3", "x4")}
+    assert ratios == {
+        "Whole event · variant_truth_tracking", "VertexFinder · variant_truth_tracking",
+    }
+    # Each timing's baseline is its own reference.
+    ratio = at.dataframe[0].value["Ratio to baseline"]
+    assert ratio["Whole event · baseline"] == pytest.approx(1.0)
+    assert ratio["VertexFinder · baseline"] == pytest.approx(1.0)
+
+
+def _history_frames() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Three runs of one configuration: two of the 10-16 tag, the later one
+    kept, and an unreliable one of 10-17. Over every run B is the slower,
+    over the reliable latest-of-tag one A."""
+    runs = pd.DataFrame({
+        "run_id": ["r0", "r1", "r2"],
+        "run_date": pd.to_datetime(["2026-10-16 01:00", "2026-10-16 05:00", "2026-10-17 01:00"]),
+        "x_date": pd.to_datetime(["2026-10-16", "2026-10-16", "2026-10-17"]),
+        "k4h_release": ["key4hep-10-16", "key4hep-10-16", "key4hep-10-17"],
+        "label": "baseline",
+        "n_events": 10,
+    })
+    event = runs.assign(mean_time_s=60.0, median_time_s=60.0, std_time_s=1.0)
+    times = {"A": [3.0, 3.0, 3.0], "B": [50.0, 0.2, 20.0]}
+    algorithms = pd.concat(
+        runs.assign(component=name, mean_time_s=t, median_time_s=t, std_time_s=0.1)
+        for name, t in times.items()
+    )
+    return event, algorithms
+
+
+def _synthetic_history_app(dashboard_dir, event, algorithms) -> None:
+    import sys as _sys
+    if dashboard_dir not in _sys.path:
+        _sys.path.insert(0, dashboard_dir)
+    from tabs import event_timing
+
+    # The selected run has no algorithm timing; the window has.
+    event_timing.render(
+        None, event, True, {"r0": True, "r1": True, "r2": False},
+        components=None, load_algorithm_trend=lambda: algorithms,
+    )
+
+
+def test_event_timing_history_ranks_the_runs_it_draws():
+    at = AppTest.from_function(
+        _synthetic_history_app, args=(str(_DASHBOARD_DIR), *_history_frames()),
+        default_timeout=60,
+    )
+    at.run()
+    at.radio(key="evt_timing_view_mode").set_value("Historical Trends").run()
+    assert not at.exception, at.exception
+    at.slider(key="evt_timing_hist_slowest").set_value(1).run()
+    # Reliable runs, each tag's latest: A is the slower.
+    assert at.segmented_control(key="evt_timing_hist_exclude_unreliable").value == "Reliable only"
+    assert list(dict.fromkeys(t["name"] for t in _traces(at))) == ["Whole event", "A"]
+    # Every run, each tag's latest: B, at 0.2 s and 20 s.
+    at.segmented_control(key="evt_timing_hist_exclude_unreliable").set_value("All runs").run()
+    assert not at.exception, at.exception
+    assert list(dict.fromkeys(t["name"] for t in _traces(at))) == ["Whole event", "B"]
+
+
+def _components_only_app(dashboard_dir, run_dir, trends_enabled) -> None:
+    import sys as _sys
+    if dashboard_dir not in _sys.path:
+        _sys.path.insert(0, dashboard_dir)
+    from data import cached_load_component_timing
+    from tabs import event_timing
+
+    # The run's algorithms were timed, its events were not read.
+    event_timing.render(
+        None, None, trends_enabled, {},
+        components=cached_load_component_timing(run_dir),
+    )
+
+
+@pytest.mark.parametrize("trends_enabled", [False, True], ids=["local", "remote"])
+def test_event_timing_draws_algorithms_of_a_run_without_events(trends_enabled):
+    at = AppTest.from_function(
+        _components_only_app, args=(str(_DASHBOARD_DIR), str(RECO_RUN), trends_enabled),
+        default_timeout=60,
+    )
+    at.run()
+    assert not at.exception, at.exception
+    assert at.multiselect(key="evt_timing_timings").value == ["Whole event", "MyConformalTracking"]
+    # The whole event, unmeasured, leaves the algorithm drawn on its own.
+    assert not at.info
+    assert {t["name"] for t in _traces(at) if t.get("name")} == {"baseline"}
+    assert "MyConformalTracking time (s)" in _axis_titles(at)
+    # The whole event alone: nothing to draw, and the view says so.
+    at.multiselect(key="evt_timing_timings").set_value(["Whole event"]).run()
+    assert not at.exception, at.exception
+    assert "No event timing data" in at.info[0].value
+
+
+def _warm_up_only_app(dashboard_dir, run_dir) -> None:
+    import sys as _sys
+    if dashboard_dir not in _sys.path:
+        _sys.path.insert(0, dashboard_dir)
+    from data import cached_load_component_timing, cached_load_event_timing
+    from tabs import event_timing
+
+    components = cached_load_component_timing(run_dir)
+    # The variant's VertexFinder ran in the warm-up event alone.
+    wall = components["variant_truth_tracking"].execute["wall_s"]
+    wall.loc[wall.index != 0, "VertexFinder"] = float("nan")
+    event_timing.render(cached_load_event_timing(run_dir), None, False, {}, components=components)
+
+
+def test_event_timing_leaves_out_a_configuration_timed_in_the_warm_up_alone():
+    at = AppTest.from_function(
+        _warm_up_only_app, args=(str(_DASHBOARD_DIR), str(RECO_RUN)), default_timeout=60,
+    )
+    at.run()
+    assert not at.exception, at.exception
+    at.multiselect(key="evt_timing_configs").set_value(["variant_truth_tracking"]).run()
+    at.multiselect(key="evt_timing_timings").set_value(["Whole event", "VertexFinder"]).run()
+    assert not at.exception, at.exception
+    assert {t["name"] for t in _traces(at) if t.get("name")} == {
+        "Whole event · baseline", "VertexFinder · baseline",
+        "Whole event · variant_truth_tracking",
+    }
+    # Alone, VertexFinder offers the configuration it ran in after the warm-up.
+    at.multiselect(key="evt_timing_timings").set_value(["VertexFinder"]).run()
+    assert not at.exception, at.exception
+    assert at.selectbox(key="evt_timing_baseline").options == ["baseline"]
+
+
 def test_a_run_without_algorithm_timing_says_so(monkeypatch, tmp_path):
     run = tmp_path / "run"
     shutil.copytree(RECO_RUN, run)

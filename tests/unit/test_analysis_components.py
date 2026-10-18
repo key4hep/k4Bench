@@ -363,6 +363,11 @@ def test_sequencers_are_the_components_others_are_nested_in(timing):
     assert timing.sequencers() == ["Top"]
 
 
+def test_algorithms_are_those_doing_work_of_their_own(timing):
+    # Geo is a service and Top a sequencer.
+    assert timing.algorithms() == ["Fast", "Slow"]
+
+
 def test_phase_component_seconds_sums_the_event_loop_over_its_events(timing):
     loop = timing.phase_component_seconds("execute")
     # Slow did not run in event 2, which costs it nothing.

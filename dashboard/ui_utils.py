@@ -184,12 +184,14 @@ def config_selector_control(
     baseline_label: str,
     column: str,
     unit: str,
+    compare_by_default: bool = True,
 ) -> list[str]:
     """Render the "Configurations" multiselect and return the labels to plot.
 
     Pre-checks the baseline plus the ``_DEFAULT_N_CONFIGS - 1`` runs with the
-    largest ratio deviation from it (:func:`~stats.select_top_n_by_ratio`), but
-    any of *current_labels* can be added or removed freely. The primary plot and
+    largest ratio deviation from it (:func:`~stats.select_top_n_by_ratio`), or
+    the baseline alone unless *compare_by_default*, but any of
+    *current_labels* can be added or removed freely. The primary plot and
     Statistics table follow this selection so their colours and rows stay
     aligned; a table of every configuration in the run remains available in a
     collapsed expander below it.
@@ -211,7 +213,7 @@ def config_selector_control(
         key, baseline_label, reset_unscoped=True,
     )
 
-    default_n = min(_DEFAULT_N_CONFIGS, len(current_labels))
+    default_n = min(_DEFAULT_N_CONFIGS, len(current_labels)) if compare_by_default else 1
     default_all = select_top_n_by_ratio(
         event_data, current_labels, column, unit, baseline_label, True, default_n,
     )
@@ -219,6 +221,10 @@ def config_selector_control(
 
     n_extra = max(default_n - 1, 0)
     noun = "configuration" if n_extra == 1 else "configurations"
+    default_help = (
+        f"defaults to the {n_extra} {noun} with the largest deviation from it"
+        if compare_by_default else "none is added by default"
+    )
     selected_extra = st.multiselect(
         "Configurations",
         options=selectable,
@@ -226,8 +232,8 @@ def config_selector_control(
         key=key,
         help=(
             f"`{baseline_label}` (the baseline) is always plotted. Pick which "
-            "other configurations to compare it against — defaults to the "
-            f"{n_extra} {noun} with the largest deviation from it. The "
+            "other configurations to compare it against — "
+            f"{default_help}. The "
             "primary Statistics table follows this selection; every "
             "configuration in this run remains available below it."
         ),

@@ -447,6 +447,76 @@ def build_efficiency_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
     return _finalize_dates(pd.DataFrame(rows))
 
 
+def _time_stats(times: pd.Series) -> dict:
+    """The :func:`build_event_timing_trend` statistics of per-event *times*
+    (seconds, warm-up already left out); empty when none was measured."""
+    t = times.dropna()
+    nt = len(t)
+    if not nt:
+        return {}
+    stats = {
+        "n_events":      nt,
+        "mean_time_s":   float(t.mean()),
+        "median_time_s": float(t.median()),
+        "p95_time_s":    float(t.quantile(0.95)),
+        "std_time_s":    float(t.std()) if nt > 1 else 0.0,
+    }
+    trimmed = upper_trimmed_mean(t.to_numpy(dtype=float))
+    if trimmed is not None:
+        stats["trimmed_mean_time_s"] = trimmed
+    return stats
+
+
+def build_algorithm_timing_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
+    """Load each k4run job's algorithms' per-event time across *run_dirs*.
+
+    One row per run, config and algorithm
+    (:meth:`~k4bench.analysis.components.ComponentTiming.algorithms`) that
+    ran in an event, with the :func:`build_event_timing_trend` statistics of
+    its own time in each event it ran in, the warm-up event 0 left out:
+    columns ``run_id``, ``run_date``, ``k4h_release_date``, ``k4h_release``,
+    ``label``, ``component``, ``n_events``, ``mean_time_s``,
+    ``median_time_s``, ``p95_time_s``, ``std_time_s``,
+    ``trimmed_mean_time_s`` (absent below enough events) and ``x_date``.
+    ``None`` when no run has component files (ddsim runs have none).
+    """
+    if not run_dirs:
+        return None
+
+    rows: list[dict] = []
+    for d in run_dirs:
+        run_dir = Path(d)
+        if not run_dir.is_dir():
+            continue
+        meta = parse_run_dir(run_dir)
+        try:
+            timings = load_component_timing(run_dir)
+        except EXPECTED_LOAD_ERRORS as exc:
+            _log.debug("build_algorithm_timing_trend: skipping '%s': %s", run_dir, exc)
+            continue
+        except Exception:
+            _log.exception("build_algorithm_timing_trend: error loading '%s'", run_dir)
+            continue
+
+        run = {
+            "run_id":           run_dir.name,
+            "run_date":         meta["run_date"],
+            "k4h_release_date": meta["k4h_release_date"],
+            "k4h_release":      meta["k4h_release"],
+        }
+        for label, timing in timings.items():
+            wall = timing.execute["wall_s"]
+            wall = wall[wall.index != 0]
+            for component in timing.algorithms():
+                stats = _time_stats(wall[component])
+                if stats:
+                    rows.append({**run, "label": label, "component": component, **stats})
+
+    if not rows:
+        return None
+    return _finalize_dates(pd.DataFrame(rows))
+
+
 def build_event_timing_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
     """Load per-event timing and memory summary across *run_dirs*.
 
@@ -502,18 +572,7 @@ def build_event_timing_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
                 "label":            label,
             }
             if "event_time_s" in df_ev.columns:
-                t = df_ev["event_time_s"].dropna()
-                nt = len(t)
-                if nt:
-                    times = t.to_numpy(dtype=float)
-                    row["n_events"]      = nt
-                    row["mean_time_s"]   = float(t.mean())
-                    row["median_time_s"] = float(t.median())
-                    row["p95_time_s"]    = float(t.quantile(0.95))
-                    row["std_time_s"]    = float(t.std()) if nt > 1 else 0.0
-                    trimmed = upper_trimmed_mean(times)
-                    if trimmed is not None:
-                        row["trimmed_mean_time_s"] = trimmed
+                row |= _time_stats(df_ev["event_time_s"])
             if "rss_end_mb" in df_ev.columns:
                 r = df_ev["rss_end_mb"].dropna()
                 nr = len(r)

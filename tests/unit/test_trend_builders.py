@@ -169,9 +169,28 @@ def test_build_efficiency_trend_gives_each_algorithm_per_event():
     assert df["x_date"].notna().all()
 
 
+def test_build_algorithm_timing_trend_gives_each_algorithms_event_time_statistics():
+    df = trend.build_algorithm_timing_trend((str(_RECO_RUN),))
+    baseline = df[df["label"] == "baseline"].set_index("component")
+    tracking = baseline.loc["MyConformalTracking"]
+    # The fixture keeps 12 events; the warm-up is left out.
+    assert tracking["n_events"] == 11
+    assert tracking["median_time_s"] <= tracking["p95_time_s"]
+    assert tracking["mean_time_s"] > 1.0
+    assert "GeoSvc" not in baseline.index
+    # The truth-tracking variant runs no pattern recognition.
+    variant = df[df["label"] == "variant_truth_tracking"]
+    assert "MyConformalTracking" not in set(variant["component"])
+
+
 def test_build_efficiency_trend_skips_runs_without_component_files(tmp_path):
     sim = _make_run(tmp_path, "2026-10-01", "key4hep-2026-10-01", 50.0)
     assert trend.build_efficiency_trend((str(sim),)) is None
+
+
+def test_build_algorithm_timing_trend_skips_runs_without_component_files(tmp_path):
+    sim = _make_run(tmp_path, "2026-10-01", "key4hep-2026-10-01", 50.0)
+    assert trend.build_algorithm_timing_trend((str(sim),)) is None
 
 
 def test_build_phase_trend_skips_runs_without_component_files(tmp_path):

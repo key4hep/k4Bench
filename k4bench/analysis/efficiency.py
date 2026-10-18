@@ -77,8 +77,4 @@ def algorithm_efficiency(timing: ComponentTiming, *, warm_up: int | None = 0) ->
     their own: services and sequencers, whose own time is bookkeeping, are
     left out."""
     table = component_efficiency(timing.execute, warm_up=warm_up)
-    components = timing.components
-    algorithms = components.index[
-        (components["category"] == "algorithm") & ~components.index.isin(timing.sequencers())
-    ]
-    return table[table.index.isin(algorithms)]
+    return table[table.index.isin(timing.algorithms())]
