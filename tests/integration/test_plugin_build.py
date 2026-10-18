@@ -929,7 +929,13 @@ def test_auditor_reports_heap_peaks_only_for_events_run_one_at_a_time(built_plug
 def test_without_heap_owners_the_auditor_writes_no_heap_file_and_counts_the_same(built_plugin, tmp_path):
     """Only a job recording heap owners writes a heap file, and recording them
     leaves the per-event allocation counts as they were: the counter's table
-    never allocates through malloc."""
+    never allocates through malloc.
+
+    The bytes may differ by 16 per block: a block's heap memory is its glibc
+    chunk, and glibc hands out a free chunk whole when splitting it would leave
+    less than its smallest chunk, so the bytes depend on what was freed before.
+    The heap snapshots the owners' job takes, even the length of its paths,
+    change that."""
     import json
 
     from k4bench.analysis.components import ALLOCATION_METRICS
@@ -948,8 +954,17 @@ def test_without_heap_owners_the_auditor_writes_no_heap_file_and_counts_the_same
     counting, owners = runs[False], runs[True]
     assert list(counting["components"]) == list(owners["components"])
     assert counting["components"]["components"] == owners["components"]["components"]
+    allocations = counting["components"]["execute"]["allocations"]
+    assert allocations == owners["components"]["execute"]["allocations"]
     for metric in ALLOCATION_METRICS:
-        assert counting["components"]["execute"][metric] == owners["components"]["execute"][metric], metric
+        for event, (blocks, without, with_owners) in enumerate(zip(
+            allocations, counting["components"]["execute"][metric], owners["components"]["execute"][metric], strict=True
+        )):
+            # Inclusive metrics span nested calls: bound by the event's blocks.
+            slack = 16 * sum(n for n in blocks if n is not None)
+            for a, b in zip(without, with_owners, strict=True):
+                assert (a is None) == (b is None), (metric, event)
+                assert a is None or abs(a - b) <= slack, (metric, event, a, b)
     assert list(counting["events"]) == list(owners["events"])
 
 
