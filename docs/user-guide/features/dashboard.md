@@ -685,6 +685,7 @@ measurement as uploaded.
 | --- | --- | --- |
 | **Overview** | every reco detector's baseline time and memory side by side, over the trend window | `*_results.csv`, `*_events.json` of every detector's runs |
 | **Breakdown** | where the job's time goes, phase by phase and component by component | `*_components.json` |
+| **Efficiency** | which algorithms run inefficiently: time per event against instructions per cycle and heap allocations, and how time, instructions and instructions per cycle move night to night | `*_components.json` |
 | **Data Flow** | which algorithm feeds which, through the collections it writes and a later one reads | `*_dataflow.json`, `*_components.json` |
 | **Event timing** | per-event wall time distributions, as on the Simulation page | `*_events.json` |
 | **Event memory** | per-event RSS and growth, as on the Simulation page | `*_events.json` |
@@ -726,6 +727,26 @@ Component times are *self* times: what the auditor charged to that component
 alone. They add up within a phase, which is why the donuts and columns can be
 stacked, and the part of a phase's duration that no component accounts for
 shows up as *Unattributed* rather than being spread over the others.
+
+**Efficiency** has two views:
+
+- **Current Run** draws one point per algorithm of a configuration's event
+  loop, coloured by the stack package its code comes from: its self time per
+  event across (log scale) and its instructions per cycle up, the warm-up event
+  left out. **Point size** chooses what a point's area shows: heap allocations
+  per event (the default), the allocation rate (allocations per second of the
+  algorithm's own time, how hard it leans on the allocator however long it
+  runs), allocated memory per event, or nothing. **Named algorithms** sets how many of
+  the slowest carry their name, up to all of them. An algorithm runs
+  efficiently at around 2 or more instructions per cycle; below 1, the shaded
+  band, it mostly waits, usually on memory. Hovering gives the numbers. For a
+  run whose hardware counters could not be read, the view says why instead.
+- **Historical Trends** draws the slowest algorithms (Top N in Display
+  options) across the trend window in three panels: time, instructions and
+  instructions per cycle per event. Instructions follow the work an algorithm
+  does, not the machine it ran on, so time that moved while the instructions
+  held is the machine, and instructions that moved are the software, its
+  configuration or its input.
 
 **Data Flow** draws one configuration's algorithms left to right in data-flow
 order, joined by the collections one writes and a later one reads

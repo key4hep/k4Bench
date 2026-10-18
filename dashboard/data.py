@@ -124,6 +124,12 @@ def cached_load_trend_phases(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
     return _trend.build_phase_trend(run_dirs)
 
 
+@st.cache_data(show_spinner="Loading efficiency trends...", ttl=3600)
+def cached_load_trend_efficiency(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
+    """Cached :func:`k4bench.analysis.trend.build_efficiency_trend`."""
+    return _trend.build_efficiency_trend(run_dirs)
+
+
 @st.cache_data(show_spinner="Loading event timing trends...", ttl=3600)
 def cached_load_trend_event_timing(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
     """Cached :func:`k4bench.analysis.trend.build_event_timing_trend`."""

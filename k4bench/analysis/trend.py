@@ -24,6 +24,7 @@ from k4bench.analysis.loader import (
     load_region_timing,
     load_results,
 )
+from k4bench.analysis.efficiency import EFFICIENCY_COLUMNS, algorithm_efficiency
 from k4bench.artifacts import MACHINE_INFO, RUN_INFO
 
 _log = logging.getLogger(__name__)
@@ -393,6 +394,53 @@ def build_phase_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
                      "component": component, "seconds": float(seconds)}
                     for component, seconds in spent.items()
                 )
+
+    if not rows:
+        return None
+    return _finalize_dates(pd.DataFrame(rows))
+
+
+def build_efficiency_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
+    """Load how efficiently each k4run job's algorithms ran across *run_dirs*.
+
+    One row per run, config and algorithm with hardware counts, with its
+    :func:`~k4bench.analysis.efficiency.algorithm_efficiency` per event (the
+    warm-up event, event 0, left out): columns ``run_id``, ``run_date``,
+    ``k4h_release_date``, ``k4h_release``, ``label``, ``component``, the
+    :data:`~k4bench.analysis.efficiency.EFFICIENCY_COLUMNS` and ``x_date``.
+    ``None`` when no run has component files with hardware counts.
+    """
+    if not run_dirs:
+        return None
+
+    rows: list[dict] = []
+    for d in run_dirs:
+        run_dir = Path(d)
+        if not run_dir.is_dir():
+            continue
+        meta = parse_run_dir(run_dir)
+        try:
+            timings = load_component_timing(run_dir)
+        except EXPECTED_LOAD_ERRORS as exc:
+            _log.debug("build_efficiency_trend: skipping '%s': %s", run_dir, exc)
+            continue
+        except Exception:
+            _log.exception("build_efficiency_trend: error loading '%s'", run_dir)
+            continue
+
+        run = {
+            "run_id":           run_dir.name,
+            "run_date":         meta["run_date"],
+            "k4h_release_date": meta["k4h_release_date"],
+            "k4h_release":      meta["k4h_release"],
+        }
+        for label, timing in timings.items():
+            table = algorithm_efficiency(timing)
+            rows.extend(
+                {**run, "label": label, "component": component,
+                 **{column: float(values[column]) for column in EFFICIENCY_COLUMNS}}
+                for component, values in table.iterrows()
+            )
 
     if not rows:
         return None
