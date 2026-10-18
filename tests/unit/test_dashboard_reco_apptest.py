@@ -328,6 +328,23 @@ def test_efficiency_says_why_a_run_has_no_instruction_counts(monkeypatch, tmp_pa
     assert not at.get("plotly_chart")
 
 
+def test_efficiency_tells_counted_runs_without_events_from_runs_without_counts(
+    monkeypatch, tmp_path,
+):
+    run = tmp_path / "run"
+    shutil.copytree(RECO_RUN, run)
+    for path in run.glob("*_components.json"):
+        raw = json.loads(path.read_text())
+        # Only the warm-up event, which the tab leaves out.
+        raw["event_numbers"] = raw["event_numbers"][:1]
+        raw["execute"] = {metric: rows[:1] for metric, rows in raw["execute"].items()}
+        path.write_text(json.dumps(raw))
+    at = _page(monkeypatch, tmp_path, run, "Efficiency")
+    assert "after the warm-up event" in at.info[0].value
+    assert "did not count" not in at.info[0].value
+    assert not at.get("plotly_chart")
+
+
 def test_a_run_without_algorithm_timing_says_so(monkeypatch, tmp_path):
     run = tmp_path / "run"
     shutil.copytree(RECO_RUN, run)

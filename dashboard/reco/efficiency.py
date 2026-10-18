@@ -19,7 +19,7 @@ import pandas as pd
 import streamlit as st
 
 from data import cached_load_run_packages, cached_load_trend_efficiency
-from k4bench.analysis.components import ComponentTiming
+from k4bench.analysis.components import HARDWARE_METRICS, ComponentTiming
 from k4bench.analysis.efficiency import algorithm_efficiency
 from k4bench.analysis.plots.efficiency import (
     LABELLED,
@@ -130,6 +130,12 @@ def _render_current_run(ctx: PageContext) -> None:
         )]
     timing = ctx.run.components[config]
     table = algorithm_efficiency(timing, warm_up=_WARM_UP_EVENT)
+    if table.empty and set(HARDWARE_METRICS) <= timing.execute.keys():
+        st.info(
+            f"No algorithm of **{config}**'s event loop has instruction counts "
+            "after the warm-up event."
+        )
+        return
     if table.empty:
         reason = timing.hardware_counters_error
         st.info(
