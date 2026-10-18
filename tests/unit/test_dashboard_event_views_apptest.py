@@ -547,9 +547,10 @@ def test_both_tabs_expose_identical_histogram_controls():
     assert not timing.exception, timing.exception
     assert not memory.exception, memory.exception
     assert _widget_keys(timing, "evt_timing") == _widget_keys(memory, "evt_memory")
-    # Memory additionally names which RSS column it draws, timing which time.
+    # Memory additionally names which RSS column it draws, timing which time
+    # and, for several timings, each one's own reference.
     assert (
-        timing.session_state["_captured_plot_kwargs"].keys() - {"quantity"}
+        timing.session_state["_captured_plot_kwargs"].keys() - {"quantity", "references"}
         == memory.session_state["_captured_plot_kwargs"].keys() - {"column"}
     )
 

@@ -7,6 +7,7 @@ which differs only in which DataFrame column and axis labels are used.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Mapping
 from pathlib import Path
 from typing import NamedTuple
 
@@ -38,9 +39,10 @@ def _build_event_layout(
     show: str,
     n: int,
     px_h: int,
+    ratio: bool = True,
 ) -> tuple[go.Figure, tuple | None, tuple | None, tuple | None, tuple | None, int]:
     """Build the subplot grid and return (fig, dist_rc, seq_rc, ratio_dist_rc, ratio_seq_rc, total_h)."""
-    show_ratio = (n >= 2) and (show == "both")
+    show_ratio = ratio and (n >= 2) and (show == "both")
 
     if show == "both" and n == 1:
         fig = make_subplots(rows=1, cols=2, horizontal_spacing=0.1)
@@ -73,7 +75,7 @@ def _build_event_layout(
         fig.update_xaxes(title_standoff=15, row=2, col=2)
         return fig, (1, 1), (1, 2), (2, 1), (2, 2), total_h
 
-    # show != "both" fallthrough (unreachable given checks above, kept for safety)
+    # Several runs side by side with no ratio to draw.
     fig = make_subplots(rows=1, cols=2, horizontal_spacing=0.1)
     return fig, (1, 1), (1, 2), None, None, px_h
 
@@ -105,6 +107,7 @@ def _plot_event_metric(
     outlier_threshold: float = 3.5,
     exclude_events: list[int] | None = None,
     palette: list[str] | None = None,
+    references: Mapping[str, str] | None = None,
 ) -> go.Figure:
     if show not in ("both", "distribution", "sequence"):
         raise ValueError(f"show must be 'both', 'distribution', or 'sequence', got {show!r}")
@@ -143,8 +146,6 @@ def _plot_event_metric(
         bin_origin=bin_origin,
     )
 
-    show_ratio = (n >= 2) and (show == "both")
-
     total_clipped = 0
     pending_warnings: list[str] = []
     for lbl, arr in arrays.items():
@@ -162,17 +163,28 @@ def _plot_event_metric(
     for msg in pending_warnings:
         warnings.warn(msg, stacklevel=3)
 
-    ref_label = baseline_label if baseline_label is not None else _default_baseline(label_list)
-    if n > 1 and ref_label not in arrays:
-        raise ValueError(
-            f"baseline_label '{ref_label}' not found in loaded runs.\n"
-            f"Available: {label_list}"
-        )
+    if references is None:
+        ref_label = baseline_label if baseline_label is not None else _default_baseline(label_list)
+        if n > 1 and ref_label not in arrays:
+            raise ValueError(
+                f"baseline_label '{ref_label}' not found in loaded runs.\n"
+                f"Available: {label_list}"
+            )
+        references = {lbl: ref_label for lbl in label_list}
+    # Each run against its own reference; one that is its own reference, or
+    # whose reference is not loaded, has no ratio.
+    ratio_refs = {
+        lbl: references[lbl] for lbl in label_list
+        if references.get(lbl, lbl) != lbl and references[lbl] in arrays
+    }
+    show_ratio = bool(ratio_refs) and (n >= 2) and (show == "both")
 
     px_w = int((figsize[0] if figsize else (12 if show == "both" else 6)) * 96)
     px_h = int((figsize[1] if figsize else 4.5) * 96)
 
-    fig, dist_rc, seq_rc, ratio_dist_rc, ratio_seq_rc, total_h = _build_event_layout(show, n, px_h)
+    fig, dist_rc, seq_rc, ratio_dist_rc, ratio_seq_rc, total_h = _build_event_layout(
+        show, n, px_h, ratio=show_ratio,
+    )
 
     # ------------------------------------------------------------------
     # Distribution panel
@@ -243,13 +255,11 @@ def _plot_event_metric(
     # Ratio panels (n >= 2, show == "both") — one trace per non-baseline run
     # ------------------------------------------------------------------
     if show_ratio:
-        ref_counts, _ = bin_contents(hist_arrays[ref_label], common_edges)
         bin_centers = 0.5 * (common_edges[:-1] + common_edges[1:])
-        df_ref = filtered_data[ref_label].set_index("event_number")
 
-        for other_label in label_list:
-            if other_label == ref_label:
-                continue
+        for other_label, ref_label in ratio_refs.items():
+            ref_counts, _ = bin_contents(hist_arrays[ref_label], common_edges)
+            df_ref = filtered_data[ref_label].set_index("event_number")
             other_idx = label_list.index(other_label)
             ratio_color = _pal[other_idx % len(_pal)]
 
@@ -455,6 +465,7 @@ def plot_event_timing(
     exclude_events: list[int] | None = None,
     palette: list[str] | None = None,
     quantity: str = "Event time",
+    references: Mapping[str, str] | None = None,
 ) -> go.Figure:
     """Plot per-event timing distributions for one or more runs.
 
@@ -501,6 +512,11 @@ def plot_event_timing(
     quantity : str
         What the times are, as the axes name them: an algorithm's own time
         in each event (``"MyConformalTracking time"``), say.
+    references : mapping or None
+        Each run's own reference for the ratio panels, in place of
+        ``baseline_label``: runs that time different things are each set
+        against their own kind. A run that is its own reference, or has none,
+        has no ratio; with no ratio at all the panels are left out.
 
     Returns
     -------
@@ -528,6 +544,7 @@ def plot_event_timing(
         outlier_threshold=outlier_threshold,
         exclude_events=exclude_events,
         palette=palette,
+        references=references,
     )
 
 

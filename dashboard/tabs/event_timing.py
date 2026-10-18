@@ -8,6 +8,7 @@ import streamlit as st
 from k4bench.analysis.components import ComponentTiming
 from k4bench.analysis.plots import plot_event_timing
 from k4bench.analysis.plots._utils import _default_baseline
+from k4bench.analysis.plots.phases import latest_run_per_tag
 from sections import TREND_WINDOW_SCOPE, SectionScope
 from stats import build_event_stats_table, style_stats_table
 from tabs._historical_trends import render_historical_trends
@@ -144,6 +145,41 @@ def _series(
     }
 
 
+def _references(
+    timings: Mapping[str, Mapping[str, pd.DataFrame]], configs: list[str], baseline: str,
+) -> dict[str, str]:
+    """Each series' reference: the same timing of the *baseline*
+    configuration, so a ratio never sets one timing against another."""
+    names = list(timings)
+    return {
+        _series_name(timing, config, names, configs):
+            _series_name(timing, baseline, names, configs)
+        for timing, data in timings.items() for config in configs
+        if config in data and baseline in data
+    }
+
+
+def _stats_table(
+    timings: Mapping[str, Mapping[str, pd.DataFrame]], configs: list[str], baseline: str,
+) -> pd.DataFrame:
+    """The Statistics table of *configs*, each timing's rows set against
+    the same timing of the *baseline* configuration."""
+    names = list(timings)
+    tables = [
+        build_event_stats_table(
+            series, list(series), "event_time_s", "s",
+            _series_name(timing, baseline, names, configs), True,
+        )
+        for timing, data in timings.items()
+        if (series := {
+            _series_name(timing, config, names, configs): data[config]
+            for config in configs if config in data
+        })
+    ]
+    tables = [table for table in tables if not table.empty]
+    return pd.concat(tables) if tables else pd.DataFrame()
+
+
 def _quantity(timings: list[str]) -> str:
     """What the chart's time axes call the times."""
     if timings == [_WHOLE_EVENT]:
@@ -158,7 +194,8 @@ def _render_current_run(
 ) -> None:
     """Render the current-run per-event timing view of each of *timings*
     (timing → configuration → per-event times), the first choosing the
-    configurations on offer and its baseline being the reference. *controls*
+    configurations on offer; each timing is set against the same timing of
+    the baseline, and timings of one configuration have no ratio. *controls*
     are the Baseline and Configurations selectors' places on a row the
     caller laid out, with the baseline alone compared at first; without
     them the selectors take a row of their own and compare the most
@@ -187,7 +224,6 @@ def _render_current_run(
 
     series = _series(timings, display_labels)
     labels = list(series)
-    baseline = _series_name(names[0], baseline_label, names, display_labels)
     bin_options = cached_event_bin_options(series, "event_time_s", tuple(labels))
     bins, palette_name, alpha, show_errors, show_mean_lines = (
         histogram_display_controls(
@@ -198,7 +234,7 @@ def _render_current_run(
     fig = plot_event_timing(
         series,
         labels=labels,
-        baseline_label=baseline,
+        baseline_label=_series_name(names[0], baseline_label, names, display_labels),
         show="both",
         exclude_events=[0],
         palette=PALETTES[palette_name],
@@ -207,11 +243,12 @@ def _render_current_run(
         show_errors=show_errors,
         show_mean_lines=show_mean_lines,
         quantity=_quantity(names),
+        references=_references(timings, display_labels, baseline_label),
     )
     st.plotly_chart(fig, width="stretch", key="evt_timing_current_chart")
 
     st.subheader("Statistics")
-    stats = build_event_stats_table(series, labels, "event_time_s", "s", baseline, True)
+    stats = _stats_table(timings, display_labels, baseline_label)
     if not stats.empty:
         st.dataframe(style_stats_table(stats), width="stretch")
     else:
@@ -219,11 +256,7 @@ def _render_current_run(
 
     if set(display_labels) != set(current_labels):
         with st.expander(f"All configurations ({len(current_labels)})"):
-            every = _series(timings, current_labels)
-            all_stats = build_event_stats_table(
-                every, list(every), "event_time_s", "s",
-                _series_name(names[0], baseline_label, names, current_labels), True,
-            )
+            all_stats = _stats_table(timings, current_labels, baseline_label)
             if not all_stats.empty:
                 st.dataframe(style_stats_table(all_stats), width="stretch")
 
@@ -236,17 +269,31 @@ _SLOWEST_KEY = "evt_timing_hist_slowest"
 
 def _slowest_history(
     event_trend: pd.DataFrame | None,
-    load_algorithm_trend: Callable[[], pd.DataFrame | None] | None,
+    algorithm_trend: pd.DataFrame,
+    reliability: dict[str, bool | None] | None = None,
+    reliability_slot=None,
 ) -> tuple[pd.DataFrame | None, bool]:
     """One configuration's whole-event history beside its slowest
     algorithms', chosen with a Configuration selector and a Slowest
     algorithms slider on one row, the whole event first and the algorithms
     slowest first, each a series named after it; and whether the row's Log
-    y axis toggle is on. ``None`` when the window has no history at all."""
-    algorithm_trend = load_algorithm_trend() if load_algorithm_trend else None
+    y axis toggle is on. The runs the reliability choice keeps, and of
+    those each nightly tag's latest, rank the algorithms, as they are the
+    ones drawn. ``None`` when the window has no history at all, an empty
+    frame when the reliability choice left none."""
+    # One reliability choice for both frames: the event rows have no component.
+    both = render_reliability_filter(
+        pd.concat(
+            [df for df in (event_trend, algorithm_trend) if is_valid_df(df)],
+            ignore_index=True,
+        ),
+        reliability, key="evt_timing_hist_exclude_unreliable", slot=reliability_slot,
+    )
+    if both.empty:
+        return both, False
+    event_trend = both[both["component"].isna()].drop(columns="component")
+    algorithm_trend = both[both["component"].notna()]
     frames = [df for df in (event_trend, algorithm_trend) if is_valid_df(df)]
-    if not frames:
-        return None, False
     configs = sorted(set().union(*(df["label"].unique() for df in frames)))
     config_col, slowest_col, log_col = st.columns(
         [2, 3, 1], gap="medium", vertical_alignment="bottom",
@@ -256,10 +303,9 @@ def _slowest_history(
             "Configuration", configs, index=configs.index(_baseline_config(configs)),
             key=f"{_KEY_PREFIX}_hist_config",
         )
-    algorithms = (
-        algorithm_trend[algorithm_trend["label"] == config]
-        if is_valid_df(algorithm_trend) else pd.DataFrame(columns=["component", "mean_time_s"])
-    )
+    algorithms = algorithm_trend[algorithm_trend["label"] == config]
+    if not algorithms.empty:
+        algorithms = latest_run_per_tag(algorithms)
     ranked = (
         algorithms.groupby("component")["mean_time_s"].median().sort_values(ascending=False)
     )
@@ -357,9 +403,9 @@ def render(
 ) -> SectionScope | None:
     """The per-event timing views. Given a k4run job's *components*, the
     current run's "Timing of" selector sets any algorithms' own time in each
-    event beside the whole event's, and the history draws one
-    configuration's slowest algorithms beside its whole event, from
-    *load_algorithm_trend*
+    event beside the whole event's. Whenever the window holds any, the
+    history draws one configuration's slowest algorithms beside its whole
+    event, from *load_algorithm_trend*
     (:func:`~k4bench.analysis.trend.build_algorithm_timing_trend`), loaded
     only for the history."""
     if event_data is None and not trends_enabled:
@@ -395,14 +441,22 @@ def render(
                 controls=tuple(controls) if controls else None,
             )
         return None
-    log_y = False
-    if components:
-        trend_event_df, log_y = _slowest_history(trend_event_df, load_algorithm_trend)
+    # Whatever the selected run holds, the window's algorithm history.
+    algorithm_trend = load_algorithm_trend() if load_algorithm_trend else None
+    log_y = ordered = False
+    if is_valid_df(algorithm_trend):
+        trend_event_df, log_y = _slowest_history(
+            trend_event_df, algorithm_trend, reliability, reliability_slot,
+        )
+        if trend_event_df is not None and trend_event_df.empty:
+            return TREND_WINDOW_SCOPE
+        # The reliability choice is made; the series are in drawing order.
+        reliability, ordered = None, True
     _render_historical(
         trend_event_df, reliability,
         reliability_slot=reliability_slot,
         display_options_slot=display_options_slot,
-        ordered=bool(components),
+        ordered=ordered,
         log_y=log_y,
     )
     # The trends span the window's releases, not the sidebar's one — reported

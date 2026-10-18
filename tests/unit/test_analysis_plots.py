@@ -525,6 +525,21 @@ class TestHistogramDisplay:
         assert titles == {"VertexFinder time (s)"}
         assert plot_event_timing(_event_frames(n_cfg=1)).layout.xaxis.title.text == "Event time (s)"
 
+    def test_timing_ratios_against_each_runs_own_reference(self):
+        data = _event_frames(n_cfg=4)
+        ratio_axes = ("x3", "x4")
+        fig = plot_event_timing(
+            data, exclude_events=[],
+            references={"cfg1": "cfg0", "cfg3": "cfg2"},
+        )
+        assert {tr.name for tr in fig.data if tr.xaxis in ratio_axes} == {"cfg1", "cfg3"}
+        expected = data["cfg3"]["event_time_s"] / data["cfg2"]["event_time_s"]
+        per_event = next(tr for tr in fig.data if tr.xaxis == "x4" and tr.name == "cfg3")
+        np.testing.assert_allclose(per_event.y, expected)
+        # No run with a reference other than itself: no ratio panels.
+        fig = plot_event_timing(data, exclude_events=[], references={"cfg0": "cfg0"})
+        assert not any(tr.xaxis in ratio_axes for tr in fig.data)
+
     def test_memory_component_drops_failed_reads(self):
         """Negative (failed /proc read) and non-finite samples are left out."""
         frame = pd.DataFrame({

@@ -448,6 +448,77 @@ def test_event_timing_history_draws_the_slowest_algorithms_beside_the_event():
     assert list(dict.fromkeys(t["name"] for t in _traces(at)))[1] == "MyTruthTrackFinder"
 
 
+def test_event_timing_ratios_set_each_timing_against_its_own(monkeypatch, tmp_path):
+    at = _page(monkeypatch, tmp_path, RECO_RUN, "Event Timing")
+    # The baseline alone: its timings are not compared with one another.
+    assert not any(t.get("xaxis") in ("x3", "x4") for t in _traces(at))
+    assert at.dataframe[0].value["Ratio to baseline"].tolist() == [1.0, 1.0]
+
+    at.multiselect(key="evt_timing_configs").set_value(["variant_truth_tracking"]).run()
+    at.multiselect(key="evt_timing_timings").set_value(["Whole event", "VertexFinder"]).run()
+    assert not at.exception, at.exception
+    ratios = {t["name"] for t in _traces(at) if t.get("xaxis") in ("x3", "x4")}
+    assert ratios == {
+        "Whole event · variant_truth_tracking", "VertexFinder · variant_truth_tracking",
+    }
+    # Each timing's baseline is its own reference.
+    ratio = at.dataframe[0].value["Ratio to baseline"]
+    assert ratio["Whole event · baseline"] == pytest.approx(1.0)
+    assert ratio["VertexFinder · baseline"] == pytest.approx(1.0)
+
+
+def _history_frames() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Three runs of one configuration: two of the 10-16 tag, the later one
+    kept, and an unreliable one of 10-17. Over every run B is the slower,
+    over the reliable latest-of-tag one A."""
+    runs = pd.DataFrame({
+        "run_id": ["r0", "r1", "r2"],
+        "run_date": pd.to_datetime(["2026-10-16 01:00", "2026-10-16 05:00", "2026-10-17 01:00"]),
+        "x_date": pd.to_datetime(["2026-10-16", "2026-10-16", "2026-10-17"]),
+        "k4h_release": ["key4hep-10-16", "key4hep-10-16", "key4hep-10-17"],
+        "label": "baseline",
+        "n_events": 10,
+    })
+    event = runs.assign(mean_time_s=60.0, median_time_s=60.0, std_time_s=1.0)
+    times = {"A": [3.0, 3.0, 3.0], "B": [50.0, 0.2, 20.0]}
+    algorithms = pd.concat(
+        runs.assign(component=name, mean_time_s=t, median_time_s=t, std_time_s=0.1)
+        for name, t in times.items()
+    )
+    return event, algorithms
+
+
+def _synthetic_history_app(dashboard_dir, event, algorithms) -> None:
+    import sys as _sys
+    if dashboard_dir not in _sys.path:
+        _sys.path.insert(0, dashboard_dir)
+    from tabs import event_timing
+
+    # The selected run has no algorithm timing; the window has.
+    event_timing.render(
+        None, event, True, {"r0": True, "r1": True, "r2": False},
+        components=None, load_algorithm_trend=lambda: algorithms,
+    )
+
+
+def test_event_timing_history_ranks_the_runs_it_draws():
+    at = AppTest.from_function(
+        _synthetic_history_app, args=(str(_DASHBOARD_DIR), *_history_frames()),
+        default_timeout=60,
+    )
+    at.run()
+    at.radio(key="evt_timing_view_mode").set_value("Historical Trends").run()
+    assert not at.exception, at.exception
+    at.slider(key="evt_timing_hist_slowest").set_value(1).run()
+    # Reliable runs, each tag's latest: A is the slower.
+    assert at.segmented_control(key="evt_timing_hist_exclude_unreliable").value == "Reliable only"
+    assert list(dict.fromkeys(t["name"] for t in _traces(at))) == ["Whole event", "A"]
+    # Every run, each tag's latest: B, at 0.2 s and 20 s.
+    at.segmented_control(key="evt_timing_hist_exclude_unreliable").set_value("All runs").run()
+    assert not at.exception, at.exception
+    assert list(dict.fromkeys(t["name"] for t in _traces(at))) == ["Whole event", "B"]
+
+
 def test_a_run_without_algorithm_timing_says_so(monkeypatch, tmp_path):
     run = tmp_path / "run"
     shutil.copytree(RECO_RUN, run)

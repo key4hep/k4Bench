@@ -775,11 +775,14 @@ time per event. Every timing of every chosen configuration is one series in the
 histogram, the ratio panels and the Statistics table, named by the
 configuration while one timing is chosen, by the timing while one configuration
 is, and by both otherwise (`VertexFinder · baseline`). The first timing chosen
-sets which configurations are offered, and its baseline is the reference. The
-historical trends draw one **Configuration**'s whole event beside its
-**Slowest algorithms** (five at first, ranked by their mean time per event over
-the window, up to all of them), on a log y axis unless **Log y axis** is
-switched off.
+sets which configurations are offered. Each timing is compared with the same
+timing of the baseline configuration, never with another timing, so timings of
+the baseline alone have no ratio panels. The historical trends draw one
+**Configuration**'s whole event beside its **Slowest algorithms** (five at
+first, ranked by their mean time per event over the runs drawn: those the
+**Runs** choice keeps, each nightly tag's latest; up to all of them), on a log
+y axis unless **Log y axis** is switched off. They draw the algorithms whenever
+the window has their timing, even if the selected run has none.
 
 **Logs** reads the log's Gaudi and Marlin severities rather than the word
 "error": the **Errors** filter keeps ERROR and FATAL messages, ROOT errors,
