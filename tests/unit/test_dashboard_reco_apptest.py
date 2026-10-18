@@ -345,6 +345,109 @@ def test_efficiency_tells_counted_runs_without_events_from_runs_without_counts(
     assert not at.get("plotly_chart")
 
 
+def _axis_titles(at: AppTest) -> set[str]:
+    layout = json.loads(at.get("plotly_chart")[0].proto.spec)["layout"]
+    return {
+        axis["title"]["text"] for name, axis in layout.items()
+        if name.startswith(("xaxis", "yaxis")) and "text" in axis.get("title", {})
+    }
+
+
+def test_event_timing_sets_algorithms_beside_the_whole_event(monkeypatch, tmp_path):
+    at = _page(monkeypatch, tmp_path, RECO_RUN, "Event Timing")
+    timing_of = at.multiselect(key="evt_timing_timings")
+    # At first: the whole event beside the baseline's slowest algorithm, for
+    # the baseline alone.
+    assert timing_of.value == ["Whole event", "MyConformalTracking"]
+    assert at.multiselect(key="evt_timing_configs").value == []
+    assert {t["name"] for t in _traces(at) if t.get("name")} == {
+        "Whole event", "MyConformalTracking",
+    }
+    assert "Time per event (s)" in _axis_titles(at)
+    # Algorithms are offered slowest first, with their time; services are not.
+    assert timing_of.options[0] == "Whole event"
+    assert any(o.startswith("MyConformalTracking  ·  ") for o in timing_of.options)
+    assert not any(o.startswith("GeoSvc") for o in timing_of.options)
+
+    # Several timings of several configurations: each pair is one series.
+    at.multiselect(key="evt_timing_configs").set_value(["variant_truth_tracking"]).run()
+    at.multiselect(key="evt_timing_timings").set_value(["Whole event", "VertexFinder"]).run()
+    assert not at.exception, at.exception
+    assert {t["name"] for t in _traces(at) if t.get("name")} == {
+        "Whole event · baseline", "VertexFinder · baseline",
+        "Whole event · variant_truth_tracking", "VertexFinder · variant_truth_tracking",
+    }
+    assert len(at.dataframe[0].value) == 4
+
+    # The whole event alone, as on the Simulation page.
+    at.multiselect(key="evt_timing_timings").set_value(["Whole event"]).run()
+    assert "Event time (s)" in _axis_titles(at)
+
+    # One algorithm: the configurations that run it, named as they are.
+    at.multiselect(key="evt_timing_timings").set_value(["MyConformalTracking"]).run()
+    assert not at.exception, at.exception
+    assert "MyConformalTracking time (s)" in _axis_titles(at)
+    assert at.selectbox(key="evt_timing_baseline").options == ["baseline"]
+    assert at.dataframe[0].value.index.tolist() == ["baseline"]
+
+
+def _event_timing_history_app(dashboard_dir, run_dir) -> None:
+    import sys as _sys
+    if dashboard_dir not in _sys.path:
+        _sys.path.insert(0, dashboard_dir)
+    from config import Config
+    from data import RunData, cached_load_component_timing
+    from k4bench.analysis.trend import build_results_trend
+    from reco import page
+    from section_dispatch import PageContext
+    from sidebar import TrendWindow
+
+    results = build_results_trend((run_dir,))
+    ctx = PageContext(
+        config=Config(run_dir, "https://store.example", "/tmp", "https://dash.example"),
+        selection=None, data_dir=run_dir, run_meta=None,
+        run=RunData(None, None, None, results, sorted(results["label"].unique()),
+                    components=cached_load_component_timing(run_dir)),
+        window=TrendWindow(None, (run_dir,)), trend_machine=None, reliability={},
+    )
+    page._event_timing(ctx)
+
+
+def test_event_timing_history_draws_the_slowest_algorithms_beside_the_event():
+    at = AppTest.from_function(
+        _event_timing_history_app, args=(str(_DASHBOARD_DIR), str(RECO_RUN)),
+        default_timeout=60,
+    )
+    at.run()
+    assert not at.exception, at.exception
+    at.radio(key="evt_timing_view_mode").set_value("Historical Trends").run()
+    assert not at.exception, at.exception
+    # The baseline's whole event, then its five slowest algorithms.
+    assert at.selectbox(key="evt_timing_hist_config").value == "baseline"
+    names = list(dict.fromkeys(t["name"] for t in _traces(at)))
+    assert names[:2] == ["Whole event", "MyConformalTracking"]
+    assert len(names) == 6
+    medians = [t for t in _traces(at) if t["yaxis"] == "y"]
+    assert all(0 < y < 10 for t in medians for y in _values(t["y"]))
+    # On log y axes at first, and linear ones on request.
+    def y_types():
+        layout = json.loads(at.get("plotly_chart")[0].proto.spec)["layout"]
+        return {a.get("type", "linear") for n, a in layout.items() if n.startswith("yaxis")}
+    assert y_types() == {"log"}
+    at.toggle(key="evt_timing_hist_log_y").set_value(False).run()
+    assert y_types() == {"linear"}
+    # As many as asked, up to all of them.
+    slider = at.slider(key="evt_timing_hist_slowest")
+    slider.set_value(1).run()
+    assert list(dict.fromkeys(t["name"] for t in _traces(at))) == [
+        "Whole event", "MyConformalTracking",
+    ]
+    # Another configuration, its own slowest: the truth tracker.
+    at.selectbox(key="evt_timing_hist_config").set_value("variant_truth_tracking").run()
+    assert not at.exception, at.exception
+    assert list(dict.fromkeys(t["name"] for t in _traces(at)))[1] == "MyTruthTrackFinder"
+
+
 def test_a_run_without_algorithm_timing_says_so(monkeypatch, tmp_path):
     run = tmp_path / "run"
     shutil.copytree(RECO_RUN, run)

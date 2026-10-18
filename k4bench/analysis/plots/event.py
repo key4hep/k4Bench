@@ -454,6 +454,7 @@ def plot_event_timing(
     outlier_threshold: float = 3.5,
     exclude_events: list[int] | None = None,
     palette: list[str] | None = None,
+    quantity: str = "Event time",
 ) -> go.Figure:
     """Plot per-event timing distributions for one or more runs.
 
@@ -497,6 +498,9 @@ def plot_event_timing(
         MAD-based modified Z-score threshold for x-range clipping.
     exclude_events : list[int] or None
         Event numbers to exclude.  Defaults to ``[0]``.
+    quantity : str
+        What the times are, as the axes name them: an algorithm's own time
+        in each event (``"MyConformalTracking time"``), say.
 
     Returns
     -------
@@ -505,8 +509,8 @@ def plot_event_timing(
     return _plot_event_metric(
         source,
         column="event_time_s",
-        xlabel="Event time (s)",
-        yseq_label="Event time (s)",
+        xlabel=f"{quantity} (s)",
+        yseq_label=f"{quantity} (s)",
         stat_prefix="μ",
         stat_unit="s",
         warn_name="plot_event_timing",

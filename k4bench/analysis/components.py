@@ -268,6 +268,15 @@ class ComponentTiming:
         enclosing = set(self.components["parent"].dropna())
         return [name for name in self.components.index if name in enclosing]
 
+    def algorithms(self) -> list[str]:
+        """Algorithms that do work of their own: neither services nor
+        :meth:`sequencers`, whose own time is bookkeeping."""
+        enclosing = set(self.sequencers())
+        return [
+            name for name, category in self.components["category"].items()
+            if category == "algorithm" and name not in enclosing
+        ]
+
     def descendants(self, component: str) -> list[str]:
         """Every component nested under *component*, at any depth."""
         out = []

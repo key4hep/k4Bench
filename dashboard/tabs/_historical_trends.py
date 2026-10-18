@@ -88,6 +88,7 @@ def render_historical_trends(
     error_sources: dict[str, tuple[str, str]] | None = None,
     units: dict[str, str] | None = None,
     extra_controls: tuple = (),
+    log_y: bool = False,
 ) -> None:
     """Render historical statistics in a grid of up to three columns.
 
@@ -128,6 +129,9 @@ def render_historical_trends(
         :class:`~ui_utils.DisplayControl` declarations of the caller's own,
         drawn first in the same Display options popover (a Top N that chose
         ``filtered_labels``, say).
+    log_y :
+        Draw every panel's y axis on a log scale, for series that differ by
+        orders of magnitude.
     """
     # ── Display options ───────────────────────────────────────────────────────
     # The opacity slider is keyed ``…_line_alpha`` rather than ``…_alpha``: the
@@ -252,6 +256,9 @@ def render_historical_trends(
         tickangle=-30,
         title_text="Key4hep Nightly Tag",
     )
+    if log_y:
+        # Ticks at 1, 2 and 5 of each decade, not every digit.
+        fig.update_yaxes(type="log", dtick="D2")
 
     # ── Legend & margins ──────────────────────────────────────────────────────
     # tick_clearance=75: rotated (-30°) date ticks + "Key4hep Nightly Tag" title.

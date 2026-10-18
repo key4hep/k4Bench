@@ -135,16 +135,20 @@ def _reco(tab: str) -> AppTest:
     return at
 
 
-@pytest.mark.parametrize("tab", ["Event Timing", "Event Memory"])
-def test_reco_page_draws_the_runs_per_event_views(monkeypatch, tmp_path, tab):
+@pytest.mark.parametrize(("tab", "series"), [
+    # The baseline's whole event beside its slowest algorithm.
+    ("Event Timing", {"Whole event", "MyConformalTracking"}),
+    # The baseline against the variant, from their own event files.
+    ("Event Memory", set(RECO_LABELS)),
+])
+def test_reco_page_draws_the_runs_per_event_views(monkeypatch, tmp_path, tab, series):
     _local_env(monkeypatch, RECO_RUN, tmp_path / "cache")
     at = _reco(tab)
     assert at.session_state["reco_active_section"] == tab
     charts = at.get("plotly_chart")
     assert charts
     traces = json.loads(charts[0].proto.spec)["data"]
-    # The baseline is drawn against the variant, from their own event files.
-    assert {t.get("name") for t in traces} >= set(RECO_LABELS)
+    assert {t.get("name") for t in traces} >= series
 
 
 @pytest.mark.parametrize("tab", ["Machine Info", "Logs"])

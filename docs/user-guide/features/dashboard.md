@@ -687,7 +687,7 @@ measurement as uploaded.
 | **Breakdown** | where the job's time goes, phase by phase and component by component | `*_components.json` |
 | **Efficiency** | which algorithms run inefficiently: time per event against instructions per cycle and heap allocations, and how time, instructions and instructions per cycle move night to night | `*_components.json` |
 | **Data Flow** | which algorithm feeds which, through the collections it writes and a later one reads | `*_dataflow.json`, `*_components.json` |
-| **Event timing** | per-event wall time distributions, as on the Simulation page | `*_events.json` |
+| **Event timing** | per-event wall time distributions, as on the Simulation page, and any algorithms' own time per event beside them | `*_events.json`, `*_components.json` |
 | **Event memory** | per-event RSS and growth, as on the Simulation page | `*_events.json` |
 | **Machine info** | the host the benchmark ran on | `machine_info.json` |
 | **Logs** | the k4run log, read as a Gaudi log, and the job options | `*.log`, `*_joboptions.opts` |
@@ -764,6 +764,22 @@ processors that declare no collections, are not drawn; a caption under the
 graph counts them, and the **Limitations** expander names them along with
 everything else the run could not record: reads with no recorded writer, and
 sources the run predates. Drag to pan, scroll to zoom, double-click to reset.
+
+**Event timing** draws the per-event time as the Simulation page does, and its
+**Timing of** selector, on one row with the Baseline and Configurations, sets
+any algorithms beside the whole event: each one's own time in each event, what
+it spent outside the algorithms it ran itself, the warm-up event left out. It
+opens on the whole event beside the baseline configuration's slowest algorithm,
+for the baseline alone. Algorithms are offered slowest first, with their mean
+time per event. Every timing of every chosen configuration is one series in the
+histogram, the ratio panels and the Statistics table, named by the
+configuration while one timing is chosen, by the timing while one configuration
+is, and by both otherwise (`VertexFinder · baseline`). The first timing chosen
+sets which configurations are offered, and its baseline is the reference. The
+historical trends draw one **Configuration**'s whole event beside its
+**Slowest algorithms** (five at first, ranked by their mean time per event over
+the window, up to all of them), on a log y axis unless **Log y axis** is
+switched off.
 
 **Logs** reads the log's Gaudi and Marlin severities rather than the word
 "error": the **Errors** filter keeps ERROR and FATAL messages, ROOT errors,

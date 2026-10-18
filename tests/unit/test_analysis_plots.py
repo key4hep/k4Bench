@@ -517,6 +517,14 @@ class TestHistogramDisplay:
         with pytest.raises(ValueError, match="column must be one of"):
             plot_event_memory(data, column="event_time_s")
 
+    def test_timing_names_the_time_it_plots(self):
+        fig = plot_event_timing(
+            _event_frames(n_cfg=1), quantity="VertexFinder time", show="both", exclude_events=[],
+        )
+        titles = {axis.title.text for axis in (fig.layout.xaxis, fig.layout.yaxis2)}
+        assert titles == {"VertexFinder time (s)"}
+        assert plot_event_timing(_event_frames(n_cfg=1)).layout.xaxis.title.text == "Event time (s)"
+
     def test_memory_component_drops_failed_reads(self):
         """Negative (failed /proc read) and non-finite samples are left out."""
         frame = pd.DataFrame({
