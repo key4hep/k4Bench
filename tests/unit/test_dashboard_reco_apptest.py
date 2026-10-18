@@ -62,7 +62,8 @@ def test_a_local_run_opens_on_the_breakdown(monkeypatch, tmp_path):
     at = _page(monkeypatch, tmp_path, RECO_RUN)
     assert at.session_state["reco_active_section"] == "Breakdown"
     assert at.button_group[0].options == [
-        "Breakdown", "Data Flow", "Event Timing", "Event Memory", "Machine Info", "Logs",
+        "Breakdown", "Efficiency", "Data Flow", "Event Timing", "Event Memory", "Machine Info",
+        "Logs",
     ]
 
 
@@ -123,7 +124,9 @@ def test_a_run_without_a_phase_to_show_still_gives_its_components(monkeypatch, t
     assert init["labels"][0] == "GeoSvc"
 
 
-def test_the_component_table_links_each_class_to_its_package(monkeypatch, tmp_path):
+def _run_with_tracking_package(tmp_path) -> Path:
+    """The fixture run with ConformalTracking's library in the stack's
+    conformaltracking package, which the run's manifest names."""
     import gzip
 
     run = tmp_path / "run"
@@ -145,7 +148,11 @@ def test_the_component_table_links_each_class_to_its_package(monkeypatch, tmp_pa
     (run / "LCG_externals.txt.gz").write_bytes(
         gzip.compress(f"conformaltracking; 38735; HEAD; {install}; ROOT-5be27\n".encode())
     )
+    return run
 
+
+def test_the_component_table_links_each_class_to_its_package(monkeypatch, tmp_path):
+    run = _run_with_tracking_package(tmp_path)
     at = _page(monkeypatch, tmp_path, run, "Breakdown")
     at.radio(key="reco_breakdown_view").set_value("Components").run()
     assert not at.exception, at.exception
@@ -243,6 +250,99 @@ def test_the_phase_history_is_one_chart_for_the_chosen_phase():
             at.button_group(key=key)
     # No explanatory text under the chart.
     assert not at.caption
+
+
+def test_efficiency_draws_each_algorithm_of_the_event_loop(monkeypatch, tmp_path):
+    run = _run_with_tracking_package(tmp_path)
+    at = _page(monkeypatch, tmp_path, run, "Efficiency")
+    # Coloured by package: one trace each, the most time first. The fixture's
+    # manifest names only the tracking's package.
+    traces = _traces(at)
+    assert [t["name"] for t in traces] == ["Unknown", "conformaltracking @ 38735aa"]
+    names = [name for t in traces for name, _ in t["customdata"]]
+    assert traces[1]["customdata"][0][0] == "MyConformalTracking"
+    # Algorithms only: no services, no sequencers.
+    assert "GeoSvc" not in names
+    assert all(0 < ipc < 8 for t in traces for ipc in _values(t["y"]))
+    # The points can be one size.
+    at.selectbox(key="reco_efficiency_size").set_value("Same size").run()
+    assert not at.exception, at.exception
+    assert len({s for t in _traces(at) for s in _values(t["marker"]["size"])}) == 1
+    # And carry no names, or all of them.
+    slider = at.slider(key="reco_efficiency_labelled")
+    assert slider.max == len(names)
+    slider.set_value(0).run()
+    assert not any(name for t in _traces(at) for name in t["text"])
+    at.slider(key="reco_efficiency_labelled").set_value(len(names)).run()
+    assert all(name for t in _traces(at) for name in t["text"])
+
+
+def _efficiency_history_app(dashboard_dir, run_dir) -> None:
+    import sys as _sys
+    if dashboard_dir not in _sys.path:
+        _sys.path.insert(0, dashboard_dir)
+    from config import Config
+    from data import RunData
+    from k4bench.analysis.trend import build_results_trend
+    from reco import efficiency
+    from section_dispatch import PageContext
+    from sidebar import TrendWindow
+
+    results = build_results_trend((run_dir,))
+    ctx = PageContext(
+        config=Config(run_dir, "https://store.example", "/tmp", "https://dash.example"),
+        selection=None, data_dir=run_dir, run_meta=None,
+        run=RunData(None, None, None, results, sorted(results["label"].unique())),
+        window=TrendWindow(None, (run_dir,)), trend_machine=None, reliability={},
+    )
+    efficiency.render(ctx)
+
+
+def test_efficiency_history_draws_time_instructions_and_ipc_of_the_slowest():
+    at = AppTest.from_function(
+        _efficiency_history_app, args=(str(_DASHBOARD_DIR), str(RECO_RUN)), default_timeout=60,
+    )
+    at.run()
+    at.radio(key="reco_efficiency_view").set_value("Historical Trends").run()
+    assert not at.exception, at.exception
+    lines = _traces(at)
+    # Five algorithms, slowest first, in each of three panels.
+    names = list(dict.fromkeys(t["name"] for t in lines))
+    assert len(names) == 5 and names[0] == "MyConformalTracking"
+    assert len(lines) == 15
+    ipc = [t for t in lines if t["yaxis"] == "y3"]
+    assert all(0 < y < 8 for t in ipc for y in _values(t["y"]))
+
+
+def test_efficiency_says_why_a_run_has_no_instruction_counts(monkeypatch, tmp_path):
+    run = tmp_path / "run"
+    shutil.copytree(RECO_RUN, run)
+    for path in run.glob("*_components.json"):
+        raw = json.loads(path.read_text())
+        for table in (raw["execute"], *raw["lifecycle"].values()):
+            table.pop("instructions"), table.pop("cycles")
+        raw["hardware_counters_error"] = "perf_event_open: Function not implemented"
+        path.write_text(json.dumps(raw))
+    at = _page(monkeypatch, tmp_path, run, "Efficiency")
+    assert "perf_event_open: Function not implemented" in at.info[0].value
+    assert not at.get("plotly_chart")
+
+
+def test_efficiency_tells_counted_runs_without_events_from_runs_without_counts(
+    monkeypatch, tmp_path,
+):
+    run = tmp_path / "run"
+    shutil.copytree(RECO_RUN, run)
+    for path in run.glob("*_components.json"):
+        raw = json.loads(path.read_text())
+        # Only the warm-up event, which the tab leaves out.
+        raw["event_numbers"] = raw["event_numbers"][:1]
+        raw["execute"] = {metric: rows[:1] for metric, rows in raw["execute"].items()}
+        path.write_text(json.dumps(raw))
+    at = _page(monkeypatch, tmp_path, run, "Efficiency")
+    assert "after the warm-up event" in at.info[0].value
+    assert "did not count" not in at.info[0].value
+    assert not at.get("plotly_chart")
 
 
 def test_a_run_without_algorithm_timing_says_so(monkeypatch, tmp_path):

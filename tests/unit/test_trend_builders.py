@@ -157,6 +157,23 @@ def test_build_phase_trend_gives_phases_and_their_components():
     assert loop.sort_values("seconds")["component"].iloc[-1] == "MyConformalTracking"
 
 
+def test_build_efficiency_trend_gives_each_algorithm_per_event():
+    df = trend.build_efficiency_trend((str(_RECO_RUN),))
+    baseline = df[df["label"] == "baseline"].set_index("component")
+    tracking = baseline.loc["MyConformalTracking"]
+    assert tracking["ms_per_event"] > 1000
+    assert tracking["instructions_per_event"] > 1e9
+    assert 0 < tracking["ipc"] < 8
+    # Algorithms only: no services.
+    assert "GeoSvc" not in baseline.index
+    assert df["x_date"].notna().all()
+
+
+def test_build_efficiency_trend_skips_runs_without_component_files(tmp_path):
+    sim = _make_run(tmp_path, "2026-10-01", "key4hep-2026-10-01", 50.0)
+    assert trend.build_efficiency_trend((str(sim),)) is None
+
+
 def test_build_phase_trend_skips_runs_without_component_files(tmp_path):
     sim = _make_run(tmp_path, "2026-10-01", "key4hep-2026-10-01", 50.0)
     assert trend.build_phase_trend((str(sim),)) is None
