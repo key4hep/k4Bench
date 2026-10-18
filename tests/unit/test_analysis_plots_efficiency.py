@@ -50,6 +50,14 @@ def test_efficiency_is_per_event_over_the_events_each_algorithm_ran_in():
     assert vertex["ipc"] == pytest.approx(0.5)
 
 
+def test_allocated_memory_is_in_binary_megabytes():
+    allocated = _frame({"Track": [0.0, 1024**2, 3 * 1024**2], "Vertex": [0.0, 0.0, None],
+                        "Idle": [None] * 3, "Blind": [0.0] * 3})
+    table = component_efficiency({**EXECUTE, "allocated_bytes": allocated})
+    # 4 MiB over two events, as everywhere else an MB is 1024 kB.
+    assert table.loc["Track", "allocated_mb_per_event"] == pytest.approx(2.0)
+
+
 def test_the_warm_up_event_counts_when_asked_to():
     table = component_efficiency(EXECUTE, warm_up=None)
     assert table.loc["Track", "ms_per_event"] == pytest.approx(14000.0 / 3)

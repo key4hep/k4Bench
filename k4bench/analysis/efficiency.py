@@ -66,7 +66,7 @@ def component_efficiency(
         "ipc": instructions / cycles.where(cycles > 0),
         "allocations_per_event": allocations / per_event,
         "allocations_per_s": allocations / seconds.where(seconds > 0),
-        "allocated_mb_per_event": per_component("allocated_bytes") / per_event / 1e6,
+        "allocated_mb_per_event": per_component("allocated_bytes") / per_event / 1024**2,
     })
     table = table[(table["ms_per_event"] > 0) & table["ipc"].notna()]
     return table.sort_values("ms_per_event", ascending=False)
