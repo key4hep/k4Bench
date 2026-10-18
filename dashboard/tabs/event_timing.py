@@ -408,7 +408,7 @@ def render(
     event, from *load_algorithm_trend*
     (:func:`~k4bench.analysis.trend.build_algorithm_timing_trend`), loaded
     only for the history."""
-    if event_data is None and not trends_enabled:
+    if event_data is None and not components and not trends_enabled:
         st.info("No event timing data available in the selected directory.")
         return None
 
@@ -431,12 +431,16 @@ def render(
         if event_data is None and timings == [_WHOLE_EVENT]:
             st.info("No event timing data available in the selected directory.")
         else:
+            data = {
+                timing: (event_data or {}) if timing == _WHOLE_EVENT
+                else _algorithm_event_data(components, timing)
+                for timing in timings
+            }
+            # A timing nothing measured (the whole event of a run without an
+            # events file, say) must not hide those that were; when none
+            # was, the first still says so.
             _render_current_run(
-                {
-                    timing: (event_data or {}) if timing == _WHOLE_EVENT
-                    else _algorithm_event_data(components, timing)
-                    for timing in timings
-                },
+                {timing: frames for timing, frames in data.items() if frames} or data,
                 display_options_slot,
                 controls=tuple(controls) if controls else None,
             )

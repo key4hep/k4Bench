@@ -519,6 +519,39 @@ def test_event_timing_history_ranks_the_runs_it_draws():
     assert list(dict.fromkeys(t["name"] for t in _traces(at))) == ["Whole event", "B"]
 
 
+def _components_only_app(dashboard_dir, run_dir, trends_enabled) -> None:
+    import sys as _sys
+    if dashboard_dir not in _sys.path:
+        _sys.path.insert(0, dashboard_dir)
+    from data import cached_load_component_timing
+    from tabs import event_timing
+
+    # The run's algorithms were timed, its events were not read.
+    event_timing.render(
+        None, None, trends_enabled, {},
+        components=cached_load_component_timing(run_dir),
+    )
+
+
+@pytest.mark.parametrize("trends_enabled", [False, True], ids=["local", "remote"])
+def test_event_timing_draws_algorithms_of_a_run_without_events(trends_enabled):
+    at = AppTest.from_function(
+        _components_only_app, args=(str(_DASHBOARD_DIR), str(RECO_RUN), trends_enabled),
+        default_timeout=60,
+    )
+    at.run()
+    assert not at.exception, at.exception
+    assert at.multiselect(key="evt_timing_timings").value == ["Whole event", "MyConformalTracking"]
+    # The whole event, unmeasured, leaves the algorithm drawn on its own.
+    assert not at.info
+    assert {t["name"] for t in _traces(at) if t.get("name")} == {"baseline"}
+    assert "MyConformalTracking time (s)" in _axis_titles(at)
+    # The whole event alone: nothing to draw, and the view says so.
+    at.multiselect(key="evt_timing_timings").set_value(["Whole event"]).run()
+    assert not at.exception, at.exception
+    assert "No event timing data" in at.info[0].value
+
+
 def test_a_run_without_algorithm_timing_says_so(monkeypatch, tmp_path):
     run = tmp_path / "run"
     shutil.copytree(RECO_RUN, run)
