@@ -128,7 +128,9 @@ namespace
       {
         while (m_flag.test(std::memory_order_relaxed))
         {
+#if defined(__x86_64__)
           __builtin_ia32_pause();
+#endif
         }
       }
     }
