@@ -98,7 +98,7 @@ ddsim's except where marked; a key of the other tool is an error.
 | `data_files` | list | — | k4run: files the job reads besides its input (calibration maps, ML models, a configuration archive), fetched like `input_files` into one directory, `$LOCAL_DATA_DIR`, before the run. A `.tar.gz`/`.tgz` is unpacked there instead of kept. Two files must not share a name. |
 | `k4run_args` | str | — | k4run: job arguments (concatenated with sample-level). `$VAR`s are expanded in the runner, including `$DETECTOR_XML` (the resolved `xml`), `$LOCAL_INPUT_FILES` (the local copies of `input_files`) and `$LOCAL_DATA_DIR` (the directory of `data_files`). |
 | `variants` | list | — | k4run: `{name, k4run_args}` entries; each is one more run, labelled `variant_<name>`, with its `k4run_args` appended. |
-| `memory_events` | int > 0 | — | k4run: events of the untimed memory pass after each run (`--memory-events`), which writes `<label>_heap.json`; absent, no pass runs. Mind `timeout`: the pass runs the job again, slower. |
+| `memory_events` | int > 0 | — | k4run: events of the untimed memory pass after each run that succeeds (`--memory-events`), which writes `<label>_heap.json`; absent, no pass runs. Mind `timeout`: the pass runs the job again, slower. |
 | `samples` | list | ✅ | List of sample entries (below). |
 
 ### Per-sample keys (under `samples:`)

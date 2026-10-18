@@ -24,12 +24,13 @@ initialization (tens of seconds for CLD reconstruction, against a few seconds
 from a warm cache), which would measure the host's cache rather than the job.
 The warm-up event also reads in the code the first measured event runs.
 
-With *memory_events* set, each run is followed by a memory pass: the same job
-again for that many events, recording which component allocated each heap
-block, into ``<label>_heap.json`` (:mod:`k4bench.analysis.heap`). Recording
-owners makes every allocation several times dearer, so the pass is never
-timed; it runs from a fresh working directory, and everything it writes but
-the heap file is discarded.
+With *memory_events* set, each run that succeeds is followed by a memory pass:
+the same job again for that many events, recording which component allocated
+each heap block, into ``<label>_heap.json`` (:mod:`k4bench.analysis.heap`).
+Recording owners makes every allocation several times dearer, so the pass is
+never timed; it runs from a fresh working directory, and everything it writes
+but the heap file is discarded. A run that failed gets none, as its job would
+most likely fail again, slower.
 
 After the last run, each run's data flow (:mod:`k4bench.analysis.dataflow`) is
 built from what its job recorded, with ``Marlin -x`` of the stack saved beside
@@ -103,8 +104,8 @@ class K4runConfig:
         :data:`WARM_UP_EVENTS` events, unmeasured, so the measured run finds
         what the job reads from CVMFS already cached.
     memory_events:
-        Events of the untimed memory pass after each run, which records the
-        heap each component held; ``None`` skips it.
+        Events of the untimed memory pass after each run that succeeds,
+        which records the heap each component held; ``None`` skips it.
     """
 
     options: list[str]
@@ -194,7 +195,7 @@ def run_k4run_benchmark(config: K4runConfig) -> list[RunResult]:
                 _remove(work_dir)
         print_run_result(result)
         results.append(result)
-        if config.memory_events is not None:
+        if config.memory_events is not None and result.succeeded:
             try:
                 _memory_pass(config, label, args)
             except Exception:  # noqa: BLE001 - the heap file is an extra, never the benchmark's failure

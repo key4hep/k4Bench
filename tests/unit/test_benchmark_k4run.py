@@ -330,6 +330,28 @@ class TestMemoryPass:
         # No heap file, and its log stays with the run's results to say why.
         assert sorted(p.name for p in config.log_dir.iterdir()) == ["baseline.log", "baseline_heap.log"]
 
+    def test_a_failed_run_gets_no_memory_pass(self, tmp_path, stage_dir):
+        calls: list[dict] = []
+        recording = _recording_run_k4run(calls)
+
+        def baseline_fails(**kwargs):
+            result = recording(**kwargs)
+            if kwargs["label"] == "baseline":
+                result.returncode = 1
+            return result
+
+        config = _config(tmp_path, stage_dir, memory_events=2, variants={"native": ["--native"]})
+        with patch.object(k4run_module, "run_k4run", baseline_fails):
+            results = run_k4run_benchmark(config)
+
+        assert [r.succeeded for r in results] == [False, True]
+        assert [(c["label"], c["n_events"]) for c in calls] == [
+            ("baseline", 3), ("variant_native", 3), ("variant_native", 2),
+        ]
+        assert sorted(p.name for p in config.log_dir.iterdir()) == [
+            "baseline.log", "variant_native.log", "variant_native_heap.json",
+        ]
+
     def test_a_memory_pass_that_raises_never_fails_the_benchmark(self, tmp_path, stage_dir, capsys):
         recording = _recording_run_k4run([])
 
