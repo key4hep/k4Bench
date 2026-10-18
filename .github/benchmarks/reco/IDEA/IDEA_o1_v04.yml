@@ -46,11 +46,15 @@ k4run_args: >-
   --IOSvc.Output reco.root
   --addTruthTracks
 
+# Each run is followed by an untimed memory pass over the same events, which
+# records the heap each algorithm holds into <label>_heap.json.
 samples:
   - name: p8_ee_Zbb_ecm91
     n_events: 100
+    memory_events: 100
     input_files: https://k4bench-data.web.cern.ch/inputs/reco/IDEA/IDEA_o1_v04/p8_ee_Zbb_ecm91_100ev_seed42.edm4hep.root
 
   - name: single_e-_10GeV
     n_events: 1200
+    memory_events: 1200
     input_files: https://k4bench-data.web.cern.ch/inputs/reco/IDEA/IDEA_o1_v04/single_e-_10GeV_1200ev_seed42.edm4hep.root

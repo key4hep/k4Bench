@@ -46,13 +46,17 @@ variants:
   - name: truth_tracking
     k4run_args: --truthTracking
 
+# Each run is followed by an untimed memory pass over the same events, which
+# records the heap each algorithm holds into <label>_heap.json.
 samples:
   - name: p8_ee_Zbb_ecm91
     n_events: 100
+    memory_events: 100
     input_files: https://k4bench-data.web.cern.ch/inputs/reco/CLD/CLD_o3_v01/p8_ee_Zbb_ecm91_100ev_seed42.edm4hep.root
     k4run_args: --cms 91
 
   - name: single_e-_10GeV
     n_events: 1100
+    memory_events: 1100
     input_files: https://k4bench-data.web.cern.ch/inputs/reco/CLD/CLD_o3_v01/single_e-_10GeV_1100ev_seed42.edm4hep.root
     k4run_args: --cms 91

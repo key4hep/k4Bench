@@ -7,6 +7,8 @@ the fully resolved job options. Output paths come from the environment the
 k4Bench runner sets:
 
 - ``K4BENCH_COMPONENTS_JSON`` and ``K4BENCH_EVENT_JSON``, read by the auditor;
+- ``K4BENCH_HEAP_JSON``, read by the auditor of a job that records heap owners
+  (``K4BENCH_ALLOC_OWNERS=1``);
 - ``K4BENCH_JOBOPTIONS``, the resolved options dump.
 """
 

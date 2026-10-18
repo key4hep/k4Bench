@@ -58,7 +58,7 @@ def _record(**overrides) -> dict[str, str]:
         "sample": "single_e-_10GeV", "xml": "FCCee/minimal.xml",
         "n_events": "10", "ddsim_args": "--enableGun", "steering_file": "", "timeout": "",
         "verbose": "false", "sweep": "false", "input_files": "", "sweep_detectors": "",
-        "include_only": "", "exclude_only": "", **overrides,
+        "include_only": "", "exclude_only": "", "memory_events": "", **overrides,
     }
 
 
@@ -433,6 +433,13 @@ def test_k4bench_k4run_command(job_module, k4geo, tmp_path, monkeypatch):
         "--variant", f"pinned=--compactFile {geometry}",
         "--verbose",
     ]
+
+
+def test_k4bench_k4run_command_adds_the_memory_pass(job_module, k4geo, tmp_path, monkeypatch):
+    job = job_module.resolve(_k4run_record(memory_events="20"), dict(os.environ))
+    argv = job.k4bench_argv(Path("logs/benchmark"))
+    assert argv[argv.index("--memory-events") + 1] == "20"
+    assert "--memory-events" not in job_module.resolve(_k4run_record(), dict(os.environ)).k4bench_argv(Path("x"))
 
 
 def test_k4run_job_records_its_run(job_module, k4geo, tmp_path, monkeypatch):

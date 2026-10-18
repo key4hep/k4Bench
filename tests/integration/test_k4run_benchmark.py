@@ -10,7 +10,13 @@ import shutil
 
 import pytest
 
-from k4bench.analysis.loader import load_component_timing, load_event_timing, load_results
+from k4bench.analysis.heap import NO_COMPONENT
+from k4bench.analysis.loader import (
+    load_component_heap,
+    load_component_timing,
+    load_event_timing,
+    load_results,
+)
 from k4bench.benchmark.k4run import K4runConfig, run_k4run_benchmark
 from k4bench.results.reporter import save_csv
 
@@ -72,6 +78,31 @@ def test_k4run_benchmark_measures_the_job_and_its_variant(tmp_path):
 
     save_csv(results, log_dir)
     assert sorted(load_results(log_dir)["label"]) == ["baseline", "variant_nap"]
+
+
+@pytest.mark.integration
+@requires_k4run
+def test_memory_pass_writes_the_heap_each_component_held(tmp_path):
+    stage = tmp_path / "Config"
+    stage.mkdir()
+    (stage / "job.py").write_text(JOB)
+    (stage / "settings.txt").write_text("from the stage directory\n")
+    log_dir = tmp_path / "logs"
+
+    (result,) = run_k4run_benchmark(K4runConfig(
+        options=["job.py"], n_events=3, log_dir=log_dir, stage_dir=stage, memory_events=2,
+    ))
+
+    assert result.succeeded and result.n_events == 3
+    heap = load_component_heap(log_dir)["baseline"]
+    assert heap.execute["held_bytes"].index.tolist() == [0, 1]
+    assert heap.execute["held_bytes"].columns.tolist() == [
+        NO_COMPONENT, *load_component_timing(log_dir)["baseline"].components.index,
+    ]
+    assert heap.before_first_event["held_bytes"].sum() > 0
+    # The timed run's files are the timed run's: three events, not two.
+    assert load_event_timing(log_dir)["baseline"]["event_number"].tolist() == [0, 1, 2]
+    assert not (log_dir / "baseline_heap.log").exists()
 
 
 @pytest.mark.integration

@@ -68,7 +68,7 @@ TOOLS = ("ddsim", "k4run")
 DEFAULT_TOOL = {"sim": "ddsim", "reco": "k4run"}
 SCALAR_KEYS = (
     "tool", "xml", "n_events", "ddsim_args", "steering_file", "timeout",
-    "stage_dir", "k4run_args",
+    "stage_dir", "k4run_args", "memory_events",
 )
 BOOL_KEYS   = ("verbose", "sweep")
 LIST_KEYS   = (
@@ -80,7 +80,7 @@ CONCAT_KEYS = ("ddsim_args", "k4run_args")
 TOOL_KEYS = {
     "ddsim": ("ddsim_args", "steering_file", "sweep", "sweep_detectors",
               "include_only", "exclude_only"),
-    "k4run": ("options", "stage_dir", "k4run_args", "variants", "data_files"),
+    "k4run": ("options", "stage_dir", "k4run_args", "variants", "data_files", "memory_events"),
 }
 
 
@@ -217,6 +217,10 @@ def expand(path: Path) -> list[dict]:
             _die(f"n_events must be a positive integer ({loc})")
         if rec["timeout"] and (not rec["timeout"].isdigit() or int(rec["timeout"]) <= 0):
             _die(f"timeout must be a positive integer of minutes ({loc})")
+        if rec["memory_events"] and (
+            not rec["memory_events"].isdigit() or int(rec["memory_events"]) <= 0
+        ):
+            _die(f"memory_events must be a positive integer ({loc})")
         if rec["input_files"] and "--enableGun" in shlex.split(rec["ddsim_args"]):
             _die(f"input_files and '--enableGun' in ddsim_args are mutually exclusive ({loc})")
         modes = (

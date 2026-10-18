@@ -130,6 +130,25 @@ def test_previous_auditor_output_is_never_credited(tmp_path):
     assert result.peak_vmem_mb is None
 
 
+def test_a_heap_file_is_asked_of_the_auditor_and_never_a_previous_one(tmp_path):
+    heap = tmp_path / "logs" / "baseline_heap.json"
+    heap.parent.mkdir()
+    heap.write_text("{}")
+    setup_env = MagicMock(return_value=True)
+
+    def finish():
+        assert not heap.exists()
+
+    _run(tmp_path, _finished_process(finish), setup_env=setup_env, heap_json_path=heap)
+    assert setup_env.call_args.kwargs["heap_json_path"] == heap
+
+
+def test_a_run_asks_for_no_heap_file_by_default(tmp_path):
+    setup_env = MagicMock(return_value=True)
+    _run(tmp_path, _finished_process(), setup_env=setup_env)
+    assert setup_env.call_args.kwargs["heap_json_path"] is None
+
+
 def test_peak_vmem_is_read_from_the_auditor_event_file(tmp_path):
     def finish():
         (tmp_path / "logs" / "baseline_events.json").write_text(

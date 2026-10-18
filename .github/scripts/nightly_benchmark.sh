@@ -29,6 +29,7 @@
 #     {config}_components.json    k4run only
 #     {config}_joboptions.opts    k4run only
 #     {config}_dataflow.json      k4run only
+#     {config}_heap.json          k4run only, with memory_events
 #     {config}.log
 
 set -euo pipefail

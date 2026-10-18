@@ -7,9 +7,11 @@ import pytest
 from k4bench.plugin.schema import (
     COMPONENT_SCHEMA_VERSION,
     EVENT_SCHEMA_VERSION,
+    HEAP_SCHEMA_VERSION,
     REGION_SCHEMA_VERSION,
     validate_component_schema,
     validate_event_schema,
+    validate_heap_schema,
     validate_region_schema,
 )
 
@@ -84,3 +86,21 @@ def test_component_future_version_is_refused_rather_than_misread():
 def test_component_non_object_root_names_the_component_kind():
     with pytest.raises(ValueError, match="component JSON root must be an object"):
         validate_component_schema([])
+
+
+def test_heap_current_version_is_one():
+    assert HEAP_SCHEMA_VERSION == 1
+
+
+def test_heap_current_file_is_accepted():
+    validate_heap_schema({"schema_version": HEAP_SCHEMA_VERSION})
+
+
+def test_heap_future_version_is_refused_rather_than_misread():
+    with pytest.raises(ValueError, match="unsupported future schema_version 2"):
+        validate_heap_schema({"schema_version": HEAP_SCHEMA_VERSION + 1})
+
+
+def test_heap_non_object_root_names_the_heap_kind():
+    with pytest.raises(ValueError, match="heap JSON root must be an object"):
+        validate_heap_schema([])

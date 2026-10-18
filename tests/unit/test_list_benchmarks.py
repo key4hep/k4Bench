@@ -223,6 +223,16 @@ def test_k4run_data_files_are_joined_like_input_files(list_benchmarks, tmp_path,
     assert rec["data_files"] == "https://example.org/a.root https://example.org/config.tar.gz"
 
 
+def test_k4run_memory_events_default_to_none_and_samples_override(list_benchmarks, tmp_path, monkeypatch, capsys):
+    (rec,) = _k4run(list_benchmarks, tmp_path, monkeypatch, capsys)
+    assert rec["memory_events"] == ""
+    text = _K4RUN.replace("options: CLDReconstruction.py\n", "options: CLDReconstruction.py\nmemory_events: 20\n")
+    (rec,) = _k4run(list_benchmarks, tmp_path, monkeypatch, capsys, text)
+    assert rec["memory_events"] == "20"
+    (rec,) = _k4run(list_benchmarks, tmp_path, monkeypatch, capsys, text + "    memory_events: 5\n")
+    assert rec["memory_events"] == "5"
+
+
 def test_a_config_without_tool_runs_its_suites_tool(list_benchmarks, tmp_path, monkeypatch, capsys):
     _write(tmp_path, "SiD", "SiD.xml", "single_e-_10GeV")
     (sim,) = _main(list_benchmarks, tmp_path, monkeypatch, capsys)
@@ -257,10 +267,13 @@ def test_sample_level_variants_replace_the_top_level_ones(list_benchmarks, tmp_p
                             "    k4run_args: --truthTracking\n"
                             "  - name: truth_tracking\n    k4run_args: --x\n"),
         lambda t: t.replace("variants:\n", "variants: --truthTracking\nunused:\n"),
+        lambda t: t.replace("tool: k4run", "tool: k4run\nmemory_events: 0"),
+        lambda t: t.replace("tool: k4run", "tool: k4run\nmemory_events: ten"),
     ],
     ids=[
         "unknown-tool", "sweep", "ddsim_args", "steering_file", "no-options", "no-xml",
         "variant-without-args", "variant-name", "duplicate-variant", "variants-not-a-list",
+        "no-memory-events", "memory-events-not-a-number",
     ],
 )
 def test_malformed_k4run_config_is_refused(list_benchmarks, tmp_path, monkeypatch, capsys, edit):
@@ -268,9 +281,10 @@ def test_malformed_k4run_config_is_refused(list_benchmarks, tmp_path, monkeypatc
         _k4run(list_benchmarks, tmp_path, monkeypatch, capsys, edit(_K4RUN))
 
 
-def test_k4run_keys_are_refused_in_a_ddsim_config(list_benchmarks, tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("key", ["options: Reco.py", "memory_events: 10"])
+def test_k4run_keys_are_refused_in_a_ddsim_config(list_benchmarks, tmp_path, monkeypatch, capsys, key):
     path = _write(tmp_path, "SiD", "SiD.xml", "s")
-    path.write_text("options: Reco.py\n" + path.read_text())
+    path.write_text(f"{key}\n" + path.read_text())
     with pytest.raises(SystemExit):
         _main(list_benchmarks, tmp_path, monkeypatch, capsys)
 

@@ -200,7 +200,11 @@ reads from CVMFS already cached; on a cold cache, fetching the software can take
 longer than initializing the job (`--no-warm-up` skips it). A warm-up that fails
 leaves its log as `<label>_warm-up.log`. Next to the usual log and
 results CSV, every label gets `<label>_events.json`,
-`<label>_components.json` and `<label>_joboptions.opts`; see
+`<label>_components.json` and `<label>_joboptions.opts`. With
+`--memory-events N`, each run is followed by its job again for `N` events,
+untimed, which records the heap each component holds into
+`<label>_heap.json`; a pass that fails leaves its log as `<label>_heap.log`
+instead. See
 [File formats](../reference/file-formats.md#output-directory-layout) and the
 [configuration reference](../reference/configuration-reference.md#k4bench-k4run).
 

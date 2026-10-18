@@ -347,6 +347,18 @@ def _build_k4run_parser() -> argparse.ArgumentParser:
             "measurement."
         ),
     )
+    parser.add_argument(
+        "--memory-events",
+        type=int,
+        default=None,
+        metavar="N",
+        dest="memory_events",
+        help=(
+            "After each run, run its job again for N events, untimed, "
+            "recording which component allocated each heap block, into "
+            "<label>_heap.json (default: off)."
+        ),
+    )
     _add_output_args(parser, program="k4run", default_dir="logs/<options stem>/")
     return parser
 
@@ -419,4 +431,5 @@ def _build_k4run_config(args: argparse.Namespace) -> K4runConfig:
         variants=variants,
         verbose=args.verbose,
         warm_up=args.warm_up,
+        memory_events=args.memory_events,
     )

@@ -67,6 +67,11 @@ class TestConfig:
         config = _config(tmp_path, None, options=["job.py"])
         assert config.options == [str(tmp_path / "job.py")]
 
+    @pytest.mark.parametrize("events", [0, -1])
+    def test_refuses_a_memory_pass_without_events(self, tmp_path, stage_dir, events):
+        with pytest.raises(ValueError, match="memory_events must be a positive number"):
+            _config(tmp_path, stage_dir, memory_events=events)
+
     def test_setup_script_is_made_absolute(self, tmp_path, stage_dir, monkeypatch):
         monkeypatch.chdir(tmp_path)
         config = _config(tmp_path, stage_dir, setup_script=Path("setup.sh"))
@@ -92,6 +97,8 @@ def _recording_run_k4run(calls: list[dict], returncode: int = 0):
         })
         (work_dir / "output.root").write_text("job output")
         (kwargs["log_dir"] / f"{kwargs['label']}.log").write_text("job log")
+        if heap := kwargs.get("heap_json_path"):
+            heap.write_text("{}")
         return RunResult(label=kwargs["label"], returncode=returncode, n_events=kwargs["n_events"])
 
     return fake
@@ -256,6 +263,156 @@ class TestWarmUp:
     def test_warm_up_is_on_by_default(self, tmp_path, stage_dir):
         config = K4runConfig(options=["Reco.py"], n_events=3, log_dir=tmp_path, stage_dir=stage_dir)
         assert config.warm_up
+
+
+class TestMemoryPass:
+    """With memory_events, each run is followed by its job again, untimed,
+    recording the heap each component holds."""
+
+    def test_each_run_is_followed_by_a_memory_pass_of_its_own_job(self, tmp_path, stage_dir):
+        calls: list[dict] = []
+        config = _config(
+            tmp_path, stage_dir, memory_events=2,
+            extra_args=["--cms", "91"], variants={"truth_tracking": ["--truthTracking"]},
+        )
+        with patch.object(k4run_module, "run_k4run", _recording_run_k4run(calls)):
+            results = run_k4run_benchmark(config)
+
+        assert [(c["label"], c["n_events"], c["extra_args"]) for c in calls] == [
+            ("baseline", 3, ["--cms", "91"]),
+            ("baseline", 2, ["--cms", "91"]),
+            ("variant_truth_tracking", 3, ["--cms", "91", "--truthTracking"]),
+            ("variant_truth_tracking", 2, ["--cms", "91", "--truthTracking"]),
+        ]
+        # Only the memory pass records owners, into its own log directory.
+        heaps = [c.get("heap_json_path") for c in calls]
+        assert heaps[0] is None and heaps[2] is None
+        assert heaps[1] == calls[1]["log_dir"] / "baseline_heap.json"
+        assert heaps[3] == calls[3]["log_dir"] / "variant_truth_tracking_heap.json"
+        assert [(r.label, r.n_events) for r in results] == [("baseline", 3), ("variant_truth_tracking", 3)]
+        assert (config.log_dir / "variant_truth_tracking_heap.json").is_file()
+
+    def test_the_memory_pass_leaves_only_its_heap_file(self, tmp_path, stage_dir):
+        calls: list[dict] = []
+        config = _config(tmp_path, stage_dir, memory_events=2)
+        with patch.object(k4run_module, "run_k4run", _recording_run_k4run(calls)):
+            run_k4run_benchmark(config)
+
+        measured, memory = calls
+        # A fresh copy of the stage directory, without the timed run's output.
+        assert memory["files"] == ["Reco.py", "Tracking", "Tracking/settings.xml"]
+        assert memory["work_dir"] != measured["work_dir"] and not memory["work_dir"].exists()
+        assert memory["log_dir"] != config.log_dir and not memory["log_dir"].exists()
+        assert sorted(p.name for p in config.log_dir.iterdir()) == ["baseline.log", "baseline_heap.json"]
+
+    @pytest.mark.parametrize(
+        "returncode, writes_heap, warning",
+        [(1, True, "memory pass failed (return code 1)"), (0, False, "memory pass wrote no heap file")],
+    )
+    def test_a_failed_memory_pass_never_fails_the_benchmark(
+        self, tmp_path, stage_dir, capsys, returncode, writes_heap, warning
+    ):
+        recording = _recording_run_k4run([])
+
+        def memory_pass_fails(**kwargs):
+            heap = kwargs.get("heap_json_path")
+            result = recording(**{**kwargs, "heap_json_path": heap if writes_heap else None})
+            if heap is not None:
+                result.returncode = returncode
+            return result
+
+        config = _config(tmp_path, stage_dir, memory_events=2)
+        with patch.object(k4run_module, "run_k4run", memory_pass_fails):
+            (result,) = run_k4run_benchmark(config)
+
+        assert result.succeeded
+        assert warning in capsys.readouterr().out
+        # No heap file, and its log stays with the run's results to say why.
+        assert sorted(p.name for p in config.log_dir.iterdir()) == ["baseline.log", "baseline_heap.log"]
+
+    def test_a_failed_run_gets_no_memory_pass(self, tmp_path, stage_dir):
+        calls: list[dict] = []
+        recording = _recording_run_k4run(calls)
+
+        def baseline_fails(**kwargs):
+            result = recording(**kwargs)
+            if kwargs["label"] == "baseline":
+                result.returncode = 1
+            return result
+
+        config = _config(tmp_path, stage_dir, memory_events=2, variants={"native": ["--native"]})
+        with patch.object(k4run_module, "run_k4run", baseline_fails):
+            results = run_k4run_benchmark(config)
+
+        assert [r.succeeded for r in results] == [False, True]
+        assert [(c["label"], c["n_events"]) for c in calls] == [
+            ("baseline", 3), ("variant_native", 3), ("variant_native", 2),
+        ]
+        assert sorted(p.name for p in config.log_dir.iterdir()) == [
+            "baseline.log", "variant_native.log", "variant_native_heap.json",
+        ]
+
+    def test_a_memory_pass_that_raises_never_fails_the_benchmark(self, tmp_path, stage_dir, capsys):
+        recording = _recording_run_k4run([])
+
+        def memory_pass_raises(**kwargs):
+            if kwargs.get("heap_json_path") is not None:
+                raise OSError("no space left")
+            return recording(**kwargs)
+
+        config = _config(tmp_path, stage_dir, memory_events=2, variants={"native": ["--native"]})
+        with patch.object(k4run_module, "run_k4run", memory_pass_raises):
+            results = run_k4run_benchmark(config)
+
+        assert [r.succeeded for r in results] == [True, True]
+        assert "WARNING: no heap file for baseline" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("failing_copy", ["the heap file", "the failure log"])
+    def test_a_copy_cut_short_leaves_no_heap_file(self, tmp_path, stage_dir, capsys, failing_copy):
+        recording = _recording_run_k4run([])
+
+        def memory_pass(**kwargs):
+            result = recording(**kwargs)
+            if kwargs.get("heap_json_path") is not None and failing_copy == "the failure log":
+                result.returncode = 1
+            return result
+
+        real_copy = k4run_module.shutil.copyfile
+
+        def copy_cut_short(source, target, **kwargs):
+            if Path(source).name.endswith(("_heap.json", ".log")) and Path(target).parent == config.log_dir:
+                Path(target).write_text('{"schema_versi')
+                raise OSError("No space left on device")
+            return real_copy(source, target, **kwargs)
+
+        config = _config(tmp_path, stage_dir, memory_events=2)
+        with (
+            patch.object(k4run_module, "run_k4run", memory_pass),
+            patch.object(k4run_module.shutil, "copyfile", copy_cut_short),
+        ):
+            (result,) = run_k4run_benchmark(config)
+
+        assert result.succeeded
+        assert "WARNING: no heap file for baseline" in capsys.readouterr().out
+        assert not (config.log_dir / "baseline_heap.json").exists()
+
+    def test_a_previous_memory_pass_is_never_credited(self, tmp_path, stage_dir):
+        config = _config(tmp_path, stage_dir)
+        config.log_dir.mkdir()
+        for name in ("baseline_heap.json", "baseline_heap.log"):
+            (config.log_dir / name).write_text("an earlier benchmark's memory pass")
+        with patch.object(k4run_module, "run_k4run", _recording_run_k4run([])):
+            run_k4run_benchmark(config)
+
+        assert sorted(p.name for p in config.log_dir.iterdir()) == ["baseline.log"]
+
+    def test_memory_pass_is_off_by_default(self, tmp_path, stage_dir):
+        calls: list[dict] = []
+        config = K4runConfig(options=["Reco.py"], n_events=3, log_dir=tmp_path / "logs", stage_dir=stage_dir)
+        assert config.memory_events is None
+        with patch.object(k4run_module, "run_k4run", _recording_run_k4run(calls)):
+            run_k4run_benchmark(_config(tmp_path, stage_dir))
+        assert [c.get("heap_json_path") for c in calls] == [None]
 
 
 class TestDataFlow:

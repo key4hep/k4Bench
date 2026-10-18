@@ -310,11 +310,21 @@ class TestK4runCommand:
             "native": ["--native", "--trackingOnly"],
         }
         assert config.warm_up
+        assert config.memory_events is None
         assert (tmp_path / "out" / "baseline_results.csv").is_file()
 
     def test_no_warm_up_flag_skips_the_warm_up(self, monkeypatch, stage):
         _, (config,) = self._main(monkeypatch, "Reco.py", "--stage-dir", str(stage), "--no-warm-up")
         assert not config.warm_up
+
+    def test_memory_events_flag_adds_the_memory_pass(self, monkeypatch, stage):
+        _, (config,) = self._main(monkeypatch, "Reco.py", "--stage-dir", str(stage), "--memory-events", "10")
+        assert config.memory_events == 10
+
+    def test_memory_pass_without_events_is_an_error(self, monkeypatch, stage, capsys):
+        rc, seen = self._main(monkeypatch, "Reco.py", "--stage-dir", str(stage), "--memory-events", "0")
+        assert rc == 1 and not seen
+        assert "memory_events must be a positive number" in capsys.readouterr().err
 
     def test_default_output_dir_is_named_after_the_options_file(self, monkeypatch, stage):
         monkeypatch.chdir(stage)

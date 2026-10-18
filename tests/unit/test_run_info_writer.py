@@ -51,7 +51,7 @@ def _job(job_type, **record):
         "sample": "single_e-_10GeV", "xml": "minimal.xml",
         "n_events": "10", "ddsim_args": "", "steering_file": "", "timeout": "",
         "verbose": "false", "sweep": "false", "input_files": "", "sweep_detectors": "",
-        "include_only": "", "exclude_only": "", **record,
+        "include_only": "", "exclude_only": "", "memory_events": "", **record,
     }
     return job_type(
         record=rec,
@@ -217,6 +217,13 @@ def test_a_record_names_the_run_directory_its_suite_reads(run_info, job_type, tm
     )
 
 
+def test_k4run_record_carries_the_events_of_its_memory_pass(run_info, job_type, tmp_path, monkeypatch):
+    monkeypatch.setattr(run_info, "add_stack_provenance", lambda *_: None)
+    job = _job(job_type, suite="reco", tool="k4run", options="Reco.py", stage_dir="", data_files="",
+               memory_events="20")
+    assert _write(run_info, job, tmp_path)["memory_events"] == 20
+
+
 def test_ddsim_record_names_its_suite_and_tool(run_info, job_type, tmp_path, monkeypatch):
     monkeypatch.setattr(run_info, "add_stack_provenance", lambda *_: None)
     info = _write(run_info, _job(job_type, tool="ddsim"), tmp_path)
@@ -251,6 +258,7 @@ def test_k4run_record_carries_the_job_and_its_roster(run_info, job_type, tmp_pat
     assert info["input_files"] == ["https://example.org/sim.root"]
     assert info["data_files"] == ["https://example.org/noise.root", "https://example.org/model.onnx"]
     assert info["random_seed"] is None
+    assert info["memory_events"] is None
     assert info["configs"] == ["baseline"]
     # A killed job's missing variant is then a missing config, as for a sweep.
     assert info["configured_labels"] == ["baseline", "variant_truth_tracking"]

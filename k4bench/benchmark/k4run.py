@@ -24,6 +24,14 @@ initialization (tens of seconds for CLD reconstruction, against a few seconds
 from a warm cache), which would measure the host's cache rather than the job.
 The warm-up event also reads in the code the first measured event runs.
 
+With *memory_events* set, each run that succeeds is followed by a memory pass:
+the same job again for that many events, recording which component allocated
+each heap block, into ``<label>_heap.json`` (:mod:`k4bench.analysis.heap`).
+Recording owners makes every allocation several times dearer, so the pass is
+never timed; it runs from a fresh working directory, and everything it writes
+but the heap file is discarded. A run that failed gets none, as its job would
+most likely fail again, slower.
+
 After the last run, each run's data flow (:mod:`k4bench.analysis.dataflow`) is
 built from what its job recorded, with ``Marlin -x`` of the stack saved beside
 it when a job ran Marlin processors.
@@ -45,6 +53,8 @@ from k4bench.analysis.dataflow import build_dataflow
 from k4bench.artifacts import (
     COMPONENTS_SUFFIX,
     DATAFLOW_SUFFIX,
+    HEAP_LOG_SUFFIX,
+    HEAP_SUFFIX,
     JOBOPTIONS_SUFFIX,
     LOG_SUFFIX,
     MARLIN_PROCESSORS,
@@ -93,6 +103,9 @@ class K4runConfig:
         If True, precede each run with the same job for
         :data:`WARM_UP_EVENTS` events, unmeasured, so the measured run finds
         what the job reads from CVMFS already cached.
+    memory_events:
+        Events of the untimed memory pass after each run that succeeds,
+        which records the heap each component held; ``None`` skips it.
     """
 
     options: list[str]
@@ -104,10 +117,13 @@ class K4runConfig:
     setup_script: Path | None = None
     verbose: bool = False
     warm_up: bool = True
+    memory_events: int | None = None
 
     def __post_init__(self) -> None:
         if not self.options:
             raise ValueError("A k4run benchmark needs at least one options file.")
+        if self.memory_events is not None and self.memory_events < 1:
+            raise ValueError(f"memory_events must be a positive number, got {self.memory_events}.")
         if invalid := sorted(n for n in self.variants if not _VARIANT_NAME_RE.match(n)):
             raise ValueError(
                 f"Invalid variant names {invalid}: use only letters, digits and '_.+-'."
@@ -152,8 +168,10 @@ def run_k4run_benchmark(config: K4runConfig) -> list[RunResult]:
     for index, (label, args) in enumerate(runs, start=1):
         print(f"[{index}/{len(runs)}] {label}")
         print(f"         Options: {' '.join(config.options)}")
-        # Removed first, so a run is never marked by a previous run's warm-up.
-        label_path(config.log_dir, label, WARM_UP_LOG_SUFFIX).unlink(missing_ok=True)
+        # Removed first, so a run is never marked by a previous run's warm-up
+        # or credited with a previous memory pass.
+        for suffix in (WARM_UP_LOG_SUFFIX, HEAP_SUFFIX, HEAP_LOG_SUFFIX):
+            label_path(config.log_dir, label, suffix).unlink(missing_ok=True)
         if config.warm_up:
             _warm_up(config, label, args)
         try:
@@ -177,6 +195,11 @@ def run_k4run_benchmark(config: K4runConfig) -> list[RunResult]:
                 _remove(work_dir)
         print_run_result(result)
         results.append(result)
+        if config.memory_events is not None and result.succeeded:
+            try:
+                _memory_pass(config, label, args)
+            except Exception:  # noqa: BLE001 - the heap file is an extra, never the benchmark's failure
+                print(f"  WARNING: no heap file for {label}:\n{traceback.format_exc()}")
     try:
         _record_dataflow(config, labels)
     except Exception:  # noqa: BLE001 - the data flow is an extra, never the benchmark's failure
@@ -255,6 +278,54 @@ def _warm_up(config: K4runConfig, label: str, args: list[str]) -> None:
         )
     elif result.wall_time_s is not None:
         print(f"         Warm-up: {result.wall_time_s:.1f} s, not measured")
+
+
+def _memory_pass(config: K4runConfig, label: str, args: list[str]) -> None:
+    """Run *label*'s job for :attr:`K4runConfig.memory_events` events,
+    recording which component allocated each heap block, with a working and a
+    log directory of its own, both discarded.
+
+    The job writes its heap file into its own log directory, and only a pass
+    that succeeds copies it out as ``<label>_heap.json``; whatever goes wrong
+    otherwise, there is none. A pass that fails, or whose job wrote no heap
+    file (an allocator of its own kept the counter out), keeps its log as
+    ``<label>_heap.log``.
+    """
+    heap_path = label_path(config.log_dir, label, HEAP_SUFFIX)
+    try:
+        work_dir = _stage(config.stage_dir, f"memory-{label}")
+    except OSError as exc:
+        print(f"         Memory pass skipped: staging failed ({exc})")
+        return
+    try:
+        with tempfile.TemporaryDirectory(prefix=f"k4bench-memory-{label}-logs-") as log_dir:
+            written = label_path(Path(log_dir), label, HEAP_SUFFIX)
+            result = run_k4run(
+                options=config.options,
+                label=label,
+                n_events=config.memory_events,
+                work_dir=work_dir,
+                log_dir=Path(log_dir),
+                setup_script=config.setup_script,
+                extra_args=args,
+                heap_json_path=written,
+            )
+            succeeded = result.succeeded and written.is_file()
+            if succeeded:
+                shutil.copyfile(written, heap_path)
+            else:
+                kept = label_path(config.log_dir, label, HEAP_LOG_SUFFIX)
+                shutil.copyfile(label_path(Path(log_dir), label, LOG_SUFFIX), kept)
+    except BaseException:
+        heap_path.unlink(missing_ok=True)  # a copy cut short
+        raise
+    finally:
+        _remove(work_dir)
+    if not succeeded:
+        why = "wrote no heap file" if result.succeeded else f"failed (return code {result.returncode})"
+        print(f"         WARNING: memory pass {why}; log kept as {kept.name}")
+    elif result.wall_time_s is not None:
+        print(f"         Memory pass: {result.wall_time_s:.1f} s for {config.memory_events} events, not timed")
 
 
 def _stage(stage_dir: Path | None, label: str) -> Path:

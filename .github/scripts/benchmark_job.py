@@ -100,6 +100,8 @@ class Job:
                 argv.append(f"--k4run-args={self.k4run_args}")
             for name, args in self.variants.items():
                 argv += ["--variant", f"{name}={args}"]
+            if rec["memory_events"]:
+                argv += ["--memory-events", rec["memory_events"]]
             if rec["verbose"] == "true":
                 argv.append("--verbose")
             return argv
