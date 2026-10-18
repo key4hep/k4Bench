@@ -552,6 +552,39 @@ def test_event_timing_draws_algorithms_of_a_run_without_events(trends_enabled):
     assert "No event timing data" in at.info[0].value
 
 
+def _warm_up_only_app(dashboard_dir, run_dir) -> None:
+    import sys as _sys
+    if dashboard_dir not in _sys.path:
+        _sys.path.insert(0, dashboard_dir)
+    from data import cached_load_component_timing, cached_load_event_timing
+    from tabs import event_timing
+
+    components = cached_load_component_timing(run_dir)
+    # The variant's VertexFinder ran in the warm-up event alone.
+    wall = components["variant_truth_tracking"].execute["wall_s"]
+    wall.loc[wall.index != 0, "VertexFinder"] = float("nan")
+    event_timing.render(cached_load_event_timing(run_dir), None, False, {}, components=components)
+
+
+def test_event_timing_leaves_out_a_configuration_timed_in_the_warm_up_alone():
+    at = AppTest.from_function(
+        _warm_up_only_app, args=(str(_DASHBOARD_DIR), str(RECO_RUN)), default_timeout=60,
+    )
+    at.run()
+    assert not at.exception, at.exception
+    at.multiselect(key="evt_timing_configs").set_value(["variant_truth_tracking"]).run()
+    at.multiselect(key="evt_timing_timings").set_value(["Whole event", "VertexFinder"]).run()
+    assert not at.exception, at.exception
+    assert {t["name"] for t in _traces(at) if t.get("name")} == {
+        "Whole event · baseline", "VertexFinder · baseline",
+        "Whole event · variant_truth_tracking",
+    }
+    # Alone, VertexFinder offers the configuration it ran in after the warm-up.
+    at.multiselect(key="evt_timing_timings").set_value(["VertexFinder"]).run()
+    assert not at.exception, at.exception
+    assert at.selectbox(key="evt_timing_baseline").options == ["baseline"]
+
+
 def test_a_run_without_algorithm_timing_says_so(monkeypatch, tmp_path):
     run = tmp_path / "run"
     shutil.copytree(RECO_RUN, run)

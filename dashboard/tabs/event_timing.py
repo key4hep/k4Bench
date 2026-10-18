@@ -108,12 +108,13 @@ def _algorithm_event_data(
 ) -> dict[str, pd.DataFrame]:
     """*algorithm*'s own time in each event it ran in, per configuration, as
     the per-event views read an event's time; configurations it did not run
-    in are left out."""
+    in after the warm-up are left out."""
     data = {}
     for label, timing in components.items():
         wall = timing.execute["wall_s"]
         if algorithm not in wall.columns:
             continue
+        wall = wall[wall.index != _WARM_UP_EVENT]
         ran = wall[algorithm].dropna()
         if len(ran):
             data[label] = pd.DataFrame({
