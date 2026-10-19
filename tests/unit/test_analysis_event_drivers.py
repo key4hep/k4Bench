@@ -125,15 +125,18 @@ class TestEventTable:
 
     def test_files_that_disagree_on_their_events_cannot_be_tabulated(self):
         with pytest.raises(ValueError, match="disagree"):
-            event_table(_source([[PION]] * 2), outputs=[_output("rec.root", {"T": [1, 2, 3]})])
+            event_table(_source([[PION]] * 2), content=[_output("sim.root", {"T": [1, 2, 3]})])
 
-    def test_files_whose_headers_name_other_events_cannot_be_tabulated(self):
+    def test_an_output_of_other_events_is_left_out_and_the_rest_kept(self):
         source = _source([[PION]] * 3)
         output = _output("rec.root", {"T": [1, 2, 3]})
-        reordered = replace(output, event_numbers=(0, 2, 1))
-        with pytest.raises(ValueError, match="different events at entry 1"):
-            event_table(source, outputs=[reordered])
-        assert event_table(source, outputs=[output]).events == 3
+        filtered = _output("skim.root", {"S": [1]}, events=1)
+        reordered = replace(output, name="mt.root", event_numbers=(0, 2, 1))
+        table = event_table(source, outputs=[output, filtered, reordered])
+        assert table.frame["out_n_T"].tolist() == [1, 2, 3]
+        assert set(table.left_out) == {"skim.root", "mt.root"}
+        assert "holds 1 events, the job read 3" in table.left_out["skim.root"]
+        assert "different events at entry 1" in table.left_out["mt.root"]
 
     @pytest.mark.parametrize(("output_numbers", "source_numbers"), [
         (None, (0, 1, 2)), ((0, None, 2), (0, 1, 2)), ((0, 1, 2), None), ((0, 1, 2), (0, None, 2)),
@@ -145,7 +148,7 @@ class TestEventTable:
                          event_numbers=source_numbers)
         output = replace(_output("rec.root", {"Tracks": [3, 1, 2]}), event_numbers=output_numbers)
         table = event_table(source, outputs=[output])
-        assert table.unordered == ("rec.root",)
+        assert "order unchecked" in table.left_out["rec.root"]
         assert "out_n_Tracks" not in table.frame
         # What went into the events stays.
         assert table.frame["n_VXDHits"].tolist() == [5, 6, 7]

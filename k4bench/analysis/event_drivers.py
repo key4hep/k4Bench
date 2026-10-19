@@ -146,10 +146,9 @@ class EventTable:
     columns: Mapping[str, Column]
     #: The generator particles, for expressions; ``None`` without a source.
     source: EventSource | None = None
-    #: The output files left out: an entry of theirs or of the input has no
-    #: EventHeader, so nothing shows they hold the events in the order the
-    #: job read them.
-    unordered: tuple[str, ...] = ()
+    #: The output files left out, each with why: they hold other events
+    #: than the job read, or nothing shows they hold them in its order.
+    left_out: Mapping[str, str] = field(default_factory=dict)
     _particles: dict = field(default_factory=dict, compare=False, repr=False)
 
     @property
@@ -190,23 +189,25 @@ def event_table(
     (reconstruction's files), each measured file for as many events as the
     others; ``None`` when there is nothing to tabulate.
 
-    Raises ``ValueError`` when the files disagree on the number of events,
-    or their EventHeaders on which event an entry is, and for *outputs*
-    without *source*: only the input's EventHeaders show that the outputs
-    hold the events in the order the job read them. An output whose
-    EventHeaders, or the input's, miss an entry is left out
-    (:attr:`EventTable.unordered`).
+    Each output is checked against *source* on its own and left out, with
+    why (:attr:`EventTable.left_out`), when it holds other events: another
+    number of them, other EventHeaders, or an entry without one, its or the
+    input's, which leaves its order unchecked.
+
+    Raises ``ValueError`` for *outputs* without *source*, since only the
+    input's EventHeaders show that the outputs hold the events in the order
+    the job read them, and when the source and *content* disagree on the
+    number of events or their EventHeaders on which event an entry is.
     """
     if source is None and any(_measured(f) for f in outputs):
         raise ValueError(
             "the job's input was not recorded, so nothing shows that its outputs "
             "hold the events in the order it read them"
         )
-    unordered = tuple(
-        f.name for f in outputs
-        if _measured(f) and not (_numbered(source.event_numbers) and _numbered(f.event_numbers))
-    )
-    outputs = [f for f in outputs if f.name not in unordered]
+    left_out = {
+        f.name: why for f in outputs if _measured(f) and (why := _unmatched(f, source))
+    }
+    outputs = [f for f in outputs if f.name not in left_out]
     measured = [f for f in (*content, *outputs) if _measured(f)]
     sizes = {
         n for n in (
@@ -244,7 +245,7 @@ def event_table(
             _add_content(add, taken, "out_", output.event_counts(), output.event_energies(),
                          output.name, "output")
 
-    table = EventTable(frame, columns, source, unordered)
+    table = EventTable(frame, columns, source, left_out)
     if source is not None:
         features = list(FEATURES)
         if _one_primary(table):
@@ -256,12 +257,29 @@ def event_table(
             **{f.name: Column(f.label, "truth", f.ranked, expression=f.expression) for f in features},
             **columns,
         }
-        table = EventTable(frame, columns, source, unordered)
+        table = EventTable(frame, columns, source, left_out)
     return table
 
 
 def _numbered(event_numbers: Sequence[int | None] | None) -> bool:
     return event_numbers is not None and None not in event_numbers
+
+
+def _unmatched(output: OutputFile, source: EventSource) -> str | None:
+    """Why *output* cannot be matched to *source* entry by entry, or
+    ``None`` when it can."""
+    if output.events != source.events:
+        return f"it holds {output.events} events, the job read {source.events}"
+    if not (_numbered(source.event_numbers) and _numbered(output.event_numbers)):
+        return "an event without an EventHeader, its or the input's, leaves its order unchecked"
+    try:
+        _check_same_events([
+            (source.file, source.event_numbers, source.run_numbers),
+            (output.name, output.event_numbers, output.run_numbers),
+        ])
+    except ValueError as exc:
+        return str(exc)
+    return None
 
 
 def _measured(output: OutputFile) -> bool:

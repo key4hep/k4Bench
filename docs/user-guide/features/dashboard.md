@@ -227,9 +227,10 @@ The warm-up event is left out. The events are matched to what they hold by
 their position in the job's files; a run whose profiling counted other events,
 or whose files' EventHeaders name other events, says so rather than matching
 them. A reconstruction run without its input recorded shows no correlations,
-since nothing shows its outputs kept the order the job read its events in, and
-an output without an EventHeader in every event, or whose input lacks one, is
-left out, which the page notes. See
+since nothing shows its outputs kept the order the job read its events in. An
+output that holds other events than the job read (another number of them,
+other EventHeaders, or an event without one, its or the input's) is left out,
+which the page notes, and the rest are matched as usual. See
 [File formats](../../reference/file-formats.md#event-source-json).
 
 ### Event Size tab
