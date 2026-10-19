@@ -104,6 +104,19 @@ def test_held_marks_each_step_on_the_top_of_the_stack():
     assert list(marks.text) == ["Cache +20 MB"]
 
 
+def test_held_marks_the_steps_of_one_event_once_naming_each():
+    colors = {"Tracker": "#123456", "Geo": "#654321", "Cache": "#abcdef"}
+    steps = pd.DataFrame({
+        "series": ["Cache", "Tracker"], "event_number": [2, 2], "step_mb": [20.0, 30.0],
+    })
+    fig = plot_heap_timeline(HELD, BEFORE, AFTER, NAMED, colors=colors, steps=steps)
+    (marks,) = [t for t in fig.data if t.name == "Step"]
+    assert list(marks.x) == ["2"] and np.asarray(marks.y).tolist() == [408.0]
+    # In the largest step's colour, every step in the hover.
+    assert list(marks.marker.color) == ["#123456"]
+    assert list(marks.text) == ["Tracker +30 MB, Cache +20 MB"]
+
+
 def test_change_marks_each_step_on_its_series_line_and_not_one_not_named():
     fig = plot_heap_timeline(HELD, BEFORE, AFTER, NAMED, change=True, steps=STEPS)
     (marks,) = [t for t in fig.data if t.name == "Step"]

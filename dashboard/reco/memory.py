@@ -286,6 +286,7 @@ def _render_steps(summary: pd.DataFrame, heap: ComponentHeap) -> None:
     if stepped.empty:
         return
     steps = heap.steps(warm_up=_WARM_UP_EVENT)
+    steps = steps[steps["kept"]]
     last = heap.execute["held_bytes"].sort_index().iloc[-1] / MB
     lines = [
         f"**{_name(name)}** stepped up by {_step_list(steps[steps['component'] == name])}; "
@@ -388,7 +389,7 @@ def _render_current_run(ctx: PageContext, display_options_slot) -> None:
     stepped = summary[summary["stepped"]].sort_values("stepped_mb", ascending=False)
     leaks: list[str] = list(dict.fromkeys([*suspects.index, *stepped.index]))
     steps = heap.steps(warm_up=_WARM_UP_EVENT)
-    steps = steps[steps["component"].isin(stepped.index)].rename(columns={"component": "series"})
+    steps = steps[steps["kept"]].rename(columns={"component": "series"})
     if group == "Package":
         groups = _groups(ctx, label, held.columns)
         held = held.T.groupby(groups).sum().T
@@ -511,8 +512,8 @@ def _render_components(ctx: PageContext) -> None:
             "steadily rather than in one step, and after finalize still holds "
             "10 MB or more of it, at least half of what it gained. **⚠ steps** "
             f"marks one whose heap rose by {format_mb(STEP_MIN_MB)} or more from one "
-            "event's end to the next's, and at the last event still held at least "
-            "half of what it rose by.\n\n"
+            "event's end to the next's, and at every event's end from then to the "
+            "last still held at least half of what it rose by.\n\n"
             "Select a row to draw its events."
         ),
     )

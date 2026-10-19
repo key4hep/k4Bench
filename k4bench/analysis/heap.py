@@ -120,9 +120,10 @@ LEAK_MIN_EVENTS = 2 * MIN_SLOPE_EVENTS
 #: in far less.
 STEP_MIN_MB = 100.0
 
-#: The share of its steps a component must still hold at the last event's
-#: end, beyond what it held before its first step, for them to be kept: a
-#: large event's memory released by the next is not a step.
+#: The share of a step a component must still hold at every event's end from
+#: it to the last, beyond what it held before it, for it to be kept: a large
+#: event's memory released by the next is not a step, however much is
+#: allocated again later.
 STEP_KEPT_SHARE = 0.5
 
 
@@ -284,21 +285,34 @@ class ComponentHeap:
     def steps(self, *, warm_up: int | None = 0) -> pd.DataFrame:
         """Every rise of :data:`STEP_MIN_MB` or more in what a component held
         from one event's end to the next's, with columns ``component``,
-        ``event_number`` (the event it rose in) and ``step_mb``, components in
-        the file's order and each one's events in order. The first event has
-        no event before it, and the *warm_up* event's rise is not one, but its
-        end is what the next event's rise is measured from."""
+        ``event_number`` (the event it rose in), ``step_mb`` and ``kept``
+        (whether at every event's end from it to the last the component still
+        held at least :data:`STEP_KEPT_SHARE` of it beyond what it held before
+        it), components in the file's order and each one's events in order.
+        The first event has no event before it, and the *warm_up* event's rise
+        is not one, but its end is what the next event's rise is measured
+        from."""
         held = self.execute["held_bytes"].sort_index() / MB
         rise = held.diff()
+        # The least each component holds from each event's end to the last's.
+        lowest = held[::-1].cummin()[::-1]
         if warm_up is not None:
             rise = rise[rise.index != warm_up]
         # Components × events, stacked: component order first, then events.
         long = rise.T.stack()
         long = long[long >= STEP_MIN_MB]
+        names = long.index.get_level_values(0)
+        events = long.index.get_level_values(1)
+        step = long.to_numpy(dtype=float)
+        kept = [
+            lowest.at[e, name] - (held.at[e, name] - mb) >= STEP_KEPT_SHARE * mb
+            for name, e, mb in zip(names, events, step)
+        ]
         return pd.DataFrame({
-            "component": long.index.get_level_values(0),
-            "event_number": long.index.get_level_values(1).astype(int),
-            "step_mb": long.to_numpy(dtype=float),
+            "component": names,
+            "event_number": events.astype(int),
+            "step_mb": step,
+            "kept": np.asarray(kept, dtype=bool),
         })
 
     def summary(self, *, warm_up: int | None = 0) -> pd.DataFrame:
@@ -324,11 +338,9 @@ class ComponentHeap:
           it held at the first event, and at least :data:`LEAK_KEPT_SHARE` of
           what it gained from the first event to the last. With fewer than
           :data:`LEAK_MIN_EVENTS` events none is;
-        - ``stepped_mb``: what its :meth:`steps` added up to, ``0`` without
-          any;
-        - ``stepped``: whether it kept them: at the last event's end it still
-          held at least :data:`STEP_KEPT_SHARE` of them beyond what it held
-          before its first.
+        - ``stepped_mb``: what its kept :meth:`steps` added up to, ``0``
+          without any;
+        - ``stepped``: whether it kept any of its steps.
 
         The *warm_up* event is left out of every statistic over events.
         """
@@ -341,6 +353,7 @@ class ComponentHeap:
         after = self.at_end["held_bytes"] / MB
         gained, retained = last - first, after - first
         steps = self.steps(warm_up=warm_up)
+        steps = steps[steps["kept"]]
         stepped = steps.groupby("component")["step_mb"].sum().reindex(held.columns, fill_value=0.0)
         kept = (
             (growth * span >= LEAK_MIN_MB) & (gained > 0) & (retained >= LEAK_MIN_MB)
@@ -362,7 +375,7 @@ class ComponentHeap:
             "retained_mb": retained,
             "leak": kept & _steady(held[kept.index[kept]], growth),
             "stepped_mb": stepped,
-            "stepped": _kept_steps(self.execute["held_bytes"].sort_index() / MB, steps, stepped),
+            "stepped": stepped > 0,
         }, index=held.columns)
 
     def totals(self, *, warm_up: int | None = 0) -> HeapTotals:
@@ -391,18 +404,6 @@ def _steady(held: pd.DataFrame, growth: pd.Series) -> pd.Series:
         name: all(_growth(half[name]) >= LEAK_STEADY_SHARE * growth[name] for half in halves)
         for name in held.columns
     }, dtype=bool).reindex(growth.index, fill_value=False)
-
-
-def _kept_steps(held: pd.DataFrame, steps: pd.DataFrame, stepped: pd.Series) -> pd.Series:
-    """Whether each component of *stepped* (its :meth:`ComponentHeap.steps`
-    summed) still held, at the last of *held*'s events (all of them, in
-    order), at least :data:`STEP_KEPT_SHARE` of it beyond what it held at the
-    end of the event before its first step."""
-    kept = pd.Series(False, index=stepped.index)
-    for name, first in steps.groupby("component")["event_number"].min().items():
-        before = held[name].iloc[held.index.get_loc(first) - 1]
-        kept[name] = held[name].iloc[-1] - before >= STEP_KEPT_SHARE * stepped[name]
-    return kept
 
 
 def _without(frame, warm_up: int | None):

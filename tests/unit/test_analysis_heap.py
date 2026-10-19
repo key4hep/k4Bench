@@ -298,8 +298,10 @@ def test_the_working_set_max_names_its_event():
 def test_a_rise_of_a_hundred_megabytes_or_more_in_one_event_is_a_step():
     heap = _job()
     steps = heap.steps()
-    assert steps.columns.tolist() == ["component", "event_number", "step_mb"]
-    assert steps.to_dict("records") == [{"component": "Arena", "event_number": 3, "step_mb": 500.0}]
+    assert steps.columns.tolist() == ["component", "event_number", "step_mb", "kept"]
+    assert steps.to_dict("records") == [
+        {"component": "Arena", "event_number": 3, "step_mb": 500.0, "kept": True},
+    ]
     summary = heap.summary()
     assert summary["stepped_mb"].to_dict() == {
         NO_COMPONENT: 0, "Geo": 0, "Leaky": 0, "Writer": 0, "Arena": 500, "Busy": 0,
@@ -321,7 +323,9 @@ def test_a_pool_doubling_to_fit_larger_events_steps_but_does_not_leak():
 def test_a_rise_in_the_warm_up_event_is_no_step_but_the_next_is_measured_from_it():
     assert _one([500.0] * 21, after_mb=500).steps().empty
     steps = _one([0.0] + [300.0] * 20, after_mb=300).steps()
-    assert steps.to_dict("records") == [{"component": "Algo", "event_number": 1, "step_mb": 300.0}]
+    assert steps.to_dict("records") == [
+        {"component": "Algo", "event_number": 1, "step_mb": 300.0, "kept": True},
+    ]
     assert _one([0.0] + [300.0] * 20, after_mb=300).summary().loc["Algo", "stepped"]
 
 
@@ -330,6 +334,28 @@ def test_a_large_event_released_by_the_next_is_not_a_step_kept():
     heap = _one(held, after_mb=10)
     assert heap.steps()["event_number"].tolist() == [5]
     assert not heap.summary().loc["Algo", "stepped"]
+
+
+def test_a_step_released_at_once_is_not_kept_though_the_heap_regrows_later():
+    # 200 MB at event 2, freed by the next; then 90 MB more per event, each no step.
+    held = [0.0] * 2 + [200.0, 0.0, 90.0, 180.0, 270.0]
+    heap = _one(held, after_mb=270)
+    assert heap.steps()[["event_number", "kept"]].to_dict("records") == [
+        {"event_number": 2, "kept": False},
+    ]
+    algo = heap.summary().loc["Algo"]
+    assert not algo.stepped and algo.stepped_mb == 0
+
+
+def test_a_step_kept_counts_though_a_later_spike_is_released():
+    # 200 MB kept from event 2; 500 MB more at event 4, freed by the next.
+    held = [0.0] * 2 + [200.0, 200.0, 700.0] + [200.0] * 5
+    heap = _one(held, after_mb=200)
+    assert heap.steps()[["event_number", "kept"]].to_dict("records") == [
+        {"event_number": 2, "kept": True}, {"event_number": 4, "kept": False},
+    ]
+    algo = heap.summary().loc["Algo"]
+    assert algo.stepped and algo.stepped_mb == 200
 
 
 def test_a_step_kept_to_the_last_event_counts_though_finalize_frees_it():

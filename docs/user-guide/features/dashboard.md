@@ -807,8 +807,9 @@ failed, have none, and the section says so. It has three views:
   or a buffer released at the end does not. A run with fewer than 10 events
   after the warm-up is too short to tell, and the view says so instead. A
   second warning names each component whose heap stepped up: rose by 100 MB
-  or more from one event's end to the next's, and at the last event still held
-  at least half of what it rose by. It gives the largest steps with their
+  or more from one event's end to the next's, and at every event's end from
+  then to the last still held at least half of what it rose by. It gives the
+  largest of those steps with their
   events, and what the component held at the last event and after finalize.
   That is how a memory pool that grows to fit the largest event so far looks
   (GGTFTrackFinder, which runs ONNX Runtime, rises by +4.13, +8.25 and
