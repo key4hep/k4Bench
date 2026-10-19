@@ -22,10 +22,12 @@ Matching events
 A table's rows are the entries of the files it was read from; a measure's
 values are keyed by the event number the job's profiling counted. The two
 match when the profiling counted exactly the entries ``0 .. n-1``, which is
-what :func:`align` checks; when they do not (a filtered or reordered output,
-an event range not from the start), it says so and nothing is matched. The
-warm-up event 0 is left out of every measure, as in the other per-event
-views.
+what :func:`align` checks; when they do not (a filtered output, an event range
+not from the start), it says so and nothing is matched. The files' rows are
+matched entry by entry: :func:`event_table` refuses files whose EventHeaders
+name different events at the same entry (a reordered output), as far as they
+have EventHeaders. The warm-up event 0 is left out of every measure, as in the
+other per-event views.
 
 What the numbers do and do not say
 ----------------------------------
@@ -181,18 +183,24 @@ def event_table(
     (reconstruction's files), each measured file for as many events as the
     others; ``None`` when there is nothing to tabulate.
 
-    Raises ``ValueError`` when the files disagree on the number of events.
+    Raises ``ValueError`` when the files disagree on the number of events,
+    or their EventHeaders on which event an entry is.
     """
+    measured = [f for f in (*content, *outputs) if _measured(f)]
     sizes = {
         n for n in (
             source.events if source is not None else None,
-            *(f.events for f in (*content, *outputs) if _measured(f)),
+            *(f.events for f in measured),
         ) if n is not None
     }
     if not sizes:
         return None
     if len(sizes) > 1:
         raise ValueError(f"the event files disagree on the number of events: {sorted(sizes)}")
+    _check_same_events([
+        *([(source.file, source.event_numbers, source.run_numbers)] if source is not None else []),
+        *((f.name, f.event_numbers, f.run_numbers) for f in measured),
+    ])
     n = sizes.pop()
     frame = pd.DataFrame(index=pd.RangeIndex(n, name="entry"))
     columns: dict[str, Column] = {}
@@ -235,6 +243,25 @@ def _measured(output: OutputFile) -> bool:
     return output.events is not None and any(
         c.entries is not None or c.energy_gev is not None for c in output.collections
     )
+
+
+def _check_same_events(headers: Sequence[tuple[str, Sequence | None, Sequence | None]]) -> None:
+    """Raises ``ValueError`` when two of *headers* (each file's name and its
+    entries' EventHeader event and run numbers) name different events at the
+    same entry; an entry or a number a file lacks is not compared."""
+    keyed = [
+        (name, events, runs if runs is not None else [None] * len(events))
+        for name, events, runs in headers if events is not None
+    ]
+    for (name, events, runs), (other, other_events, other_runs) in zip(keyed, keyed[1:]):
+        for entry, (a, b, run_a, run_b) in enumerate(zip(events, other_events, runs, other_runs)):
+            if a is None or b is None:
+                continue
+            if a != b or (run_a is not None and run_b is not None and run_a != run_b):
+                raise ValueError(
+                    f"{name} and {other} hold different events at entry {entry}: "
+                    f"event {a} of run {run_a} and event {b} of run {run_b}"
+                )
 
 
 def _one_primary(table: EventTable) -> bool:
@@ -326,7 +353,10 @@ def simulation_measures(event_data: pd.DataFrame | None, regions: Mapping | None
         steps = regions.get("steps")
         if at_location is not None and not at_location.empty:
             profiled = tuple(int(e) for e in at_location.index)
-            order = at_location.mean().sort_values(ascending=False).index
+            order = (
+                at_location.loc[at_location.index != WARM_UP_EVENT]
+                .mean().sort_values(ascending=False).index
+            )
             for detector in order:
                 measures.append(Measure(str(detector), "time", "s",
                                         _without_warm_up(at_location[detector]), profiled))

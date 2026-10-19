@@ -247,7 +247,17 @@ _RESULTS_HEADER = (
 )
 
 
-def test_the_simulation_page_draws_a_detectors_steps_against_its_hits(monkeypatch, tmp_path):
+_ECAL = {
+    "name": "ECalBarrelCollection", "type": "edm4hep::SimCalorimeterHitCollection",
+    "subset": False, "compressed_bytes": 5, "uncompressed_bytes": 9,
+    "entries": [900, 100, 200, 300, 400, 500],
+    "energy_gev": [9.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+}
+
+
+def _sim_page(monkeypatch, tmp_path, collection: dict) -> AppTest:
+    """The Simulation page of a ddsim run of 6 events, its output holding
+    *collection*, without an event source."""
     run = tmp_path / "sim"
     run.mkdir()
     (run / "baseline_results.csv").write_text(
@@ -270,12 +280,7 @@ def test_the_simulation_page_draws_a_detectors_steps_against_its_hits(monkeypatc
     }))
     (run / "baseline_event_size.json").write_text(json.dumps({"schema_version": 2, "files": [{
         "name": "out.edm4hep.root", "bytes": 10, "events": 6, "compression": 505,
-        "collections": [{
-            "name": "ECalBarrelCollection", "type": "edm4hep::SimCalorimeterHitCollection",
-            "subset": False, "compressed_bytes": 5, "uncompressed_bytes": 9,
-            "entries": [900, 100, 200, 300, 400, 500],
-            "energy_gev": [9.0, 1.0, 2.0, 3.0, 4.0, 5.0],
-        }],
+        "collections": [collection],
         "parameters": {"compressed_bytes": 1, "uncompressed_bytes": 1},
     }]}))
     _local_env(monkeypatch, run, tmp_path / "cache")
@@ -283,6 +288,11 @@ def test_the_simulation_page_draws_a_detectors_steps_against_its_hits(monkeypatc
     at.query_params["tab"] = "Correlations"
     at.run()
     assert not at.exception, at.exception
+    return at
+
+
+def test_the_simulation_page_draws_a_detectors_steps_against_its_hits(monkeypatch, tmp_path):
+    at = _sim_page(monkeypatch, tmp_path, _ECAL)
     assert at.selectbox(key="corr_metric").options == ["time", "steps"]
     at.selectbox(key="corr_metric").set_value("steps").run()
     assert at.selectbox(key="corr_of").value == "ECal"
@@ -290,3 +300,12 @@ def test_the_simulation_page_draws_a_detectors_steps_against_its_hits(monkeypatc
     points = _scatter(at)["data"][0]
     assert _values(points["x"]) == [100, 200, 300, 400, 500]
     assert _values(points["y"]) == [10, 20, 30, 40, 50]
+
+
+def test_a_collections_energy_alone_is_what_its_events_hold(monkeypatch, tmp_path):
+    energy_only = {k: v for k, v in _ECAL.items() if k != "entries"}
+    at = _sim_page(monkeypatch, tmp_path, energy_only)
+    assert not any("recorded nothing" in i.value for i in at.info)
+    at.text_input(key="corr_x").set_value("E_ECalBarrelCollection").run()
+    assert not at.exception, at.exception
+    assert _values(_scatter(at)["data"][0]["x"]) == [1.0, 2.0, 3.0, 4.0, 5.0]

@@ -205,7 +205,9 @@ def render(
 
 
 def _has_content(outputs) -> bool:
-    return any(c.entries is not None for f in outputs for c in f.collections)
+    return any(
+        c.entries is not None or c.energy_gev is not None for f in outputs for c in f.collections
+    )
 
 
 def _scale(measure: Measure) -> tuple[float, str]:

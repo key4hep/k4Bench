@@ -4,6 +4,7 @@ and fitted."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -125,6 +126,17 @@ class TestEventTable:
         with pytest.raises(ValueError, match="disagree"):
             event_table(_source([[PION]] * 2), outputs=[_output("rec.root", {"T": [1, 2, 3]})])
 
+    def test_files_whose_headers_name_other_events_cannot_be_tabulated(self):
+        source = _source([[PION]] * 3)
+        output = _output("rec.root", {"T": [1, 2, 3]})
+        reordered = replace(output, event_numbers=(0, 2, 1))
+        with pytest.raises(ValueError, match="different events at entry 1"):
+            event_table(source, outputs=[reordered])
+        # Entries without a header, and files without any, are not compared.
+        partial = replace(output, event_numbers=(0, None, 2))
+        assert event_table(source, outputs=[partial]).events == 3
+        assert event_table(source, outputs=[output]).events == 3
+
     def test_an_expression_reads_the_particles_and_the_columns(self):
         table = event_table(_source([[PION], [PION, PION]]), )
         assert table.evaluate("count(final) * n_charged").tolist() == [1.0, 4.0]
@@ -170,6 +182,12 @@ class TestMeasures:
         # The warm-up is left out of every cost, but was counted.
         assert measures[0].values.tolist() == [1.0, 2.0, 3.0]
         assert measures[0].profiled == (0, 1, 2, 3)
+
+    def test_the_detectors_are_ordered_without_the_warm_up(self):
+        measures = simulation_measures(None, _regions(
+            {"Tracker": [100.0, 0.1, 0.1, 0.1], "ECal": [1.0, 1.0, 1.0, 1.0]},
+        ))
+        assert [m.name for m in measures] == ["ECal", "Tracker"]
 
     def test_a_reconstruction_run_costs_each_algorithms_metrics(self):
         index = pd.Index([0, 1, 2], name="event")
