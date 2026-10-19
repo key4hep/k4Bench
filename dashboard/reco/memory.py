@@ -5,9 +5,10 @@ grows without being released.
 It reads the run's memory pass (``_heap.json``), a second run of the job after
 the timed one that charges every heap block to the component that allocated
 it. Current Run gives the job's heap in four tiles, names each component that
-grows and still holds what it gained after finalize, and draws every
-component's heap event by event, as held or as its change since the first
-event, with the timed run's anonymous RSS beside it; each component the
+grows and still holds what it gained after finalize, and each whose heap
+stepped up at once in an event and stayed up, and draws every component's
+heap event by event, as held or as its change since the first event, its
+steps marked, with the timed run's anonymous RSS beside it; each component a
 warning names opens in Components from a button below it. Components lists every
 component that held heap with its numbers and its heap across the events, and
 draws the selected one event by event: what it held as each event started,
@@ -28,7 +29,14 @@ import streamlit as st
 
 from data import cached_load_component_heap, cached_load_trend_heap
 from k4bench.analysis.components import ComponentTiming
-from k4bench.analysis.heap import LEAK_MIN_EVENTS, MB, NO_COMPONENT, ComponentHeap, HeapTotals
+from k4bench.analysis.heap import (
+    LEAK_MIN_EVENTS,
+    MB,
+    NO_COMPONENT,
+    STEP_MIN_MB,
+    ComponentHeap,
+    HeapTotals,
+)
 from k4bench.analysis.loader import judgeable_config_data
 from k4bench.analysis.plots._theme import _vivid
 from k4bench.analysis.plots.heap import (
@@ -256,6 +264,49 @@ def _render_leaks(summary: pd.DataFrame, heap: ComponentHeap) -> None:
             )
 
 
+#: Steps a warning line names at most, the largest; the rest are counted.
+_STEPS_NAMED = 4
+
+
+def _step_list(steps: pd.DataFrame) -> str:
+    """One component's *steps* (its rows of
+    :meth:`~k4bench.analysis.heap.ComponentHeap.steps`) in words, the
+    largest :data:`_STEPS_NAMED` in event order."""
+    named = steps.nlargest(_STEPS_NAMED, "step_mb").sort_values("event_number")
+    parts = [f"{format_mb(row.step_mb)} at event {row.event_number}" for row in named.itertuples()]
+    text = parts[0] if len(parts) == 1 else f"{', '.join(parts[:-1])} and {parts[-1]}"
+    if (rest := len(steps) - len(named)) > 0:
+        text += f", and {rest} smaller step{'s' if rest > 1 else ''}"
+    return text
+
+
+def _render_steps(summary: pd.DataFrame, heap: ComponentHeap) -> None:
+    """One line per component whose heap rose at once and stayed up."""
+    stepped = summary[summary["stepped"]].sort_values("stepped_mb", ascending=False)
+    if stepped.empty:
+        return
+    steps = heap.steps(warm_up=_WARM_UP_EVENT)
+    steps = steps[steps["kept"]]
+    last = heap.execute["held_bytes"].sort_index().iloc[-1] / MB
+    lines = [
+        f"**{_name(name)}** stepped up by {_step_list(steps[steps['component'] == name])}; "
+        f"it held {format_mb(last[name])} at the last event's end and "
+        f"{format_mb(row.after_finalize_mb)} after finalize."
+        for name, row in stepped.iterrows()
+    ]
+    st.warning(
+        lines[0] if len(lines) == 1 else "\n".join(f"- {line}" for line in lines),
+        icon="⚠️",
+    )
+    with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+        st.caption("Inspect in Components:")
+        for name in stepped.index:
+            st.button(
+                _name(name), key=f"{_KEY}_inspect_step_{name}", type="tertiary",
+                icon=":material/arrow_forward:", on_click=_inspect, args=(name,),
+            )
+
+
 def _inspect(name: str) -> None:
     """Open *name* in the Components view, its row selected and drawn."""
     st.session_state[_VIEW_KEY] = "Components"
@@ -294,6 +345,7 @@ def _render_current_run(ctx: PageContext, display_options_slot) -> None:
     summary, totals = _summarise(ctx.data_dir, label)
     _render_tiles(summary, totals)
     _render_leaks(summary, heap)
+    _render_steps(summary, heap)
 
     st.markdown(
         "##### Heap by component, event by event",
@@ -306,7 +358,8 @@ def _render_current_run(ctx: PageContext, display_options_slot) -> None:
             "themselves is not heap.\n\n"
             "**Change since the first event** draws what each component holds "
             "beyond what it held at the first event's end: growth rises, a "
-            "step jumps."
+            f"step jumps.\n\nA triangle marks a step: {format_mb(STEP_MIN_MB)} or more "
+            "a component took on in one event and kept."
         ),
     )
     group_col, mode_col, shown_col = st.columns([1.6, 2.6, 2], vertical_alignment="bottom")
@@ -325,21 +378,28 @@ def _render_current_run(ctx: PageContext, display_options_slot) -> None:
             "Largest shown", min_value=1, max_value=_MAX_SHOWN, value=_TOP_N, key=_TOP_N_KEY,
             bind="query-params",
             help="How many of the largest components (or packages) get a band of "
-                 "their own; the rest are one Other band. One that grows and keeps "
-                 "it always gets a band besides.",
+                 "their own; the rest are one Other band. One that grows or steps up "
+                 "and keeps it always gets a band besides.",
         )
 
     held = heap.execute["held_bytes"].sort_index() / MB
     before = heap.before_first_event["held_bytes"] / MB
     after = heap.at_end["held_bytes"] / MB
     suspects = summary[summary["leak"]].sort_values("growth_mb_per_event", ascending=False)
-    leaks: list[str] = suspects.index.tolist()
+    stepped = summary[summary["stepped"]].sort_values("stepped_mb", ascending=False)
+    leaks: list[str] = list(dict.fromkeys([*suspects.index, *stepped.index]))
+    steps = heap.steps(warm_up=_WARM_UP_EVENT)
+    steps = steps[steps["kept"]].rename(columns={"component": "series"})
     if group == "Package":
         groups = _groups(ctx, label, held.columns)
         held = held.T.groupby(groups).sum().T
         before = before.groupby(groups).sum()
         after = after.groupby(groups).sum()
         leaks = list(dict.fromkeys(groups[leaks]))
+        steps = (
+            steps.assign(series=groups[steps["series"]].to_numpy())
+            .groupby(["series", "event_number"], as_index=False)["step_mb"].sum()
+        )
 
     by_size = held.drop(columns=NO_COMPONENT, errors="ignore").max().sort_values(ascending=False)
     by_size = by_size[by_size > 0]
@@ -357,7 +417,7 @@ def _render_current_run(ctx: PageContext, display_options_slot) -> None:
 
     fig = plot_heap_timeline(
         held, before, after, named, colors=colors,
-        rss=_rss(ctx, label), change=change, warm_up=_WARM_UP_EVENT,
+        rss=_rss(ctx, label), change=change, warm_up=_WARM_UP_EVENT, steps=steps,
     )
     if fig is None:
         st.info(f"No event of **{label}** has heap recorded.")
@@ -385,13 +445,19 @@ def _component_table(
         else pd.DataFrame({"Package": "—", "Code": None, "Repository": None}, index=shown.index)
     )
     return pd.DataFrame({
-        "Flag": np.where(shown["leak"], "⚠ grows", ""),
+        "Flag": [
+            "⚠ " + ", ".join(flag for flag, on in (("grows", leak), ("steps", step)) if on)
+            if leak or step else ""
+            for leak, step in zip(shown["leak"], shown["stepped"])
+        ],
         "Component": [_name(name) for name in shown.index],
         "Initialized": shown["before_first_mb"].to_numpy(),
         "Typical": shown["typical_mb"].to_numpy(),
         "Held per event": [_spark(held[name]) for name in shown.index],
         "Working set": shown["working_set_median_mb"].to_numpy(),
         "Working set p95": shown["working_set_p95_mb"].to_numpy(),
+        "Working set max": shown["working_set_max_mb"].to_numpy(),
+        "Max in event": shown["working_set_max_event"].astype("Int64").to_numpy(),
         "Growth": shown["growth_mb_per_event"].to_numpy(),
         "Finalized": shown["after_finalize_mb"].to_numpy(),
         **{column: sources[column].to_numpy() for column in SOURCE_COLUMN_CONFIG},
@@ -409,12 +475,16 @@ def _default_component(shown: pd.DataFrame) -> str | None:
     """What the Components view draws with no row selected, of the components
     *shown* (their :meth:`~k4bench.analysis.heap.ComponentHeap.summary` rows):
     the one that grows fastest and keeps it, as the warning names it first,
-    else the one whose events need the most, else the largest holder.
+    else the one that stepped up the most and kept it, else the one whose
+    events need the most, else the largest holder.
     Statistics a run lacks (no events but the warm-up, no peaks per event) are
     passed over; ``None`` when nothing is shown."""
     suspects = shown.loc[shown["leak"], "growth_mb_per_event"].dropna()
     if len(suspects):
         return suspects.idxmax()
+    stepped = shown.loc[shown["stepped"], "stepped_mb"]
+    if len(stepped):
+        return stepped.idxmax()
     for column in ("working_set_median_mb", "typical_mb", "largest_mb",
                    "before_first_mb", "after_finalize_mb"):
         values = shown[column].dropna()
@@ -440,7 +510,10 @@ def _render_components(ctx: PageContext) -> None:
             "what it holds grows from one event to the next. **⚠ grows** "
             "marks a component that grew by 10 MB or more over the events, "
             "steadily rather than in one step, and after finalize still holds "
-            "10 MB or more of it, at least half of what it gained.\n\n"
+            "10 MB or more of it, at least half of what it gained. **⚠ steps** "
+            f"marks one whose heap rose by {format_mb(STEP_MIN_MB)} or more from one "
+            "event's end to the next's, and at every event's end from then to the "
+            "last still held at least half of what it rose by.\n\n"
             "Select a row to draw its events."
         ),
     )
@@ -471,6 +544,13 @@ def _render_components(ctx: PageContext) -> None:
                 "Working set", format="%.2f MB", help="The median over the events.",
             ),
             "Working set p95": st.column_config.NumberColumn("Working set p95", format="%.2f MB"),
+            "Working set max": st.column_config.NumberColumn(
+                "Working set max", format="%.2f MB",
+                help="The most any one event needed of it.",
+            ),
+            "Max in event": st.column_config.NumberColumn(
+                "Max in event", format="%d", help="The event that needed the most of it.",
+            ),
             "Growth": st.column_config.NumberColumn(
                 "Growth", format="%+.3f MB", help="Per event.",
             ),
@@ -568,7 +648,8 @@ _HIST_HEADINGS = {
 #: Which series the history draws, behind the same help.
 _HIST_SERIES = (
     "\n\nThe largest components over the window are named (**Largest shown**), and "
-    "besides them every component that grows and keeps it on any night of the window. "
+    "besides them every component that grows or steps up and keeps it on any night of "
+    "the window. "
     "When a nightly tag was run more than once, only its latest run is drawn."
 )
 _HIST_REST = (
@@ -630,8 +711,8 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
             "Largest shown", min_value=1, max_value=_MAX_SHOWN, value=_TOP_N,
             key=f"{_HIST_KEY}_topn", bind="query-params",
             help="How many of the largest components over the window get a line "
-                 "of their own. One that grows and keeps it on any night always gets "
-                 "one besides.",
+                 "of their own. One that grows or steps up and keeps it on any night "
+                 "always gets one besides.",
         )
 
     rows = latest_run_per_tag(trend[trend["label"] == config])
@@ -641,10 +722,12 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
         return
     # The suspects first, the fastest-growing first, as Current Run names
     # them, then the largest: a component's colour is its place here.
-    suspects = (
-        components[components["leak"].eq(True)].groupby("component")["growth_mb_per_event"]
-        .median().sort_values(ascending=False).index.tolist()
-    )
+    suspects = list(dict.fromkeys([
+        *components[components["leak"].eq(True)].groupby("component")["growth_mb_per_event"]
+        .median().sort_values(ascending=False).index,
+        *components[components["stepped"].eq(True)].groupby("component")["stepped_mb"]
+        .median().sort_values(ascending=False).index,
+    ]))
     title, about = _HIST_HEADINGS[metric]
     st.markdown(f"##### {title}", help=about + (_HIST_REST if additive else "") + _HIST_SERIES)
 

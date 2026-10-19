@@ -132,6 +132,7 @@ def plot_heap_timeline(
     rss: pd.Series | None = None,
     change: bool = False,
     warm_up: int | None = 0,
+    steps: pd.DataFrame | None = None,
 ) -> go.Figure | None:
     """The heap each series held, from initialization through each event to
     finalization.
@@ -156,7 +157,14 @@ def plot_heap_timeline(
     series not named still shows. *colors* maps a series to its colour; the others take the
     default palette's colours but its grey, in order, which a caller drawing
     more series than it has colours must not rely on. The
-    *warm_up* event is shaded. ``None`` when there is nothing to draw.
+    *warm_up* event is shaded. *steps* marks the events where a series
+    rose at once, one row each with its ``series``, ``event_number`` and
+    ``step_mb`` (:meth:`~k4bench.analysis.heap.ComponentHeap.steps`): a
+    marker in the series' colour on the top of the stack, one for all of an
+    event's steps (in the largest's colour, every one in the hover), or on
+    the series' line with *change* (a step of a series not named is not
+    marked there).
+    ``None`` when there is nothing to draw.
     """
     if held.empty:
         return None
@@ -233,6 +241,38 @@ def plot_heap_timeline(
         for x in (0.5, len(moments) - 1.5):
             fig.add_vline(x=x, line=dict(color=_RULE, width=1))
         y_title = f"Heap held ({unit})"
+
+    if steps is not None and len(steps):
+        marks = steps[steps["event_number"].isin(events)]
+        if change:
+            marks = marks[marks["series"].isin(lines)]
+        marks = marks.assign(text=[
+            f"{NO_COMPONENT_LABEL if name == NO_COMPONENT else name} {format_mb(mb, signed=True)}"
+            for name, mb in zip(marks["series"], marks["step_mb"])
+        ])
+        if change:
+            heights = [grown.at[e, name] for name, e in zip(marks["series"], marks["event_number"])]
+        elif len(marks):
+            # The steps of one event share the top of the stack: one marker
+            # names them all, in the colour of the largest.
+            marks = (
+                marks.sort_values("step_mb", ascending=False, kind="stable")
+                .groupby("event_number", sort=True, as_index=False)
+                .agg(series=("series", "first"), text=("text", ", ".join))
+            )
+            heights = [total[str(e)] for e in marks["event_number"]]
+        if len(marks):
+            fig.add_trace(go.Scatter(
+                x=[str(e) for e in marks["event_number"]], y=np.asarray(heights, dtype=float) / divisor,
+                name="Step",
+                mode="markers",
+                marker=dict(
+                    symbol="triangle-down", size=11, line=dict(color=_SURFACE, width=1),
+                    color=[color_of.get(name, _OTHER_LINE) for name in marks["series"]],
+                ),
+                text=marks["text"].tolist(),
+                hovertemplate="Step: %{text}<extra></extra>",
+            ))
 
     if warm_up is not None and warm_up in events:
         at = moments.index(str(warm_up))

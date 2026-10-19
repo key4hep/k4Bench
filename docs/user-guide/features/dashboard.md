@@ -724,7 +724,7 @@ measurement as uploaded.
 | **Overview** | every reco detector's baseline time and memory side by side, over the trend window | `*_results.csv`, `*_events.json` of every detector's runs |
 | **Breakdown** | where the job's time goes, phase by phase and component by component | `*_components.json` |
 | **Efficiency** | which algorithms run inefficiently: time per event against instructions per cycle and heap allocations, and how time, instructions and instructions per cycle move night to night | `*_components.json` |
-| **Memory** | where the job's heap goes component by component, from initialization through every event to finalization, and what grows without being released | `*_heap.json`, `*_components.json`, `*_events.json` |
+| **Memory** | where the job's heap goes component by component, from initialization through every event to finalization, and what grows or steps up without being released | `*_heap.json`, `*_components.json`, `*_events.json` |
 | **Data Flow** | which algorithm feeds which, through the collections it writes and a later one reads | `*_dataflow.json`, `*_components.json` |
 | **Event timing** | per-event wall time distributions, as on the Simulation page, and any algorithms' own time per event beside them | `*_events.json`, `*_components.json` |
 | **Event memory** | per-event RSS and growth, as on the Simulation page | `*_events.json` |
@@ -806,17 +806,26 @@ failed, have none, and the section says so. It has three views:
   cells are seen looks the same, while a table filled once, in a single step,
   or a buffer released at the end does not. A run with fewer than 10 events
   after the warm-up is too short to tell, and the view says so instead. A
-  button under the warning opens each of them in **Components**, its row
-  selected. Below, every component's heap from
+  second warning names each component whose heap stepped up: rose by 100 MB
+  or more from one event's end to the next's, and at every event's end from
+  then to the last still held at least half of what it rose by. It gives the
+  largest of those steps with their
+  events, and what the component held at the last event and after finalize.
+  That is how a memory pool that grows to fit the largest event so far looks
+  (GGTFTrackFinder, which runs ONNX Runtime, rises by +4.13, +8.25 and
+  +16.5 GB on ALLEGRO_o1_v04 Zbb), and the leak warning cannot see it, since
+  the heap then holds still. A button under each warning opens each component it names
+  in **Components**, its row selected. Below, every component's heap from
   initialization through each event to finalization is stacked, the most
-  stable at the bottom: every suspect and the largest components (six by
+  stable at the bottom: every component either warning names and the largest components (six by
   default, set by **Largest shown**), the rest as *Other*, and what no component
   allocated (the Python configuration, ROOT's start-up) as *No component*,
   both in grey. A band wide enough carries its name at its right end. The
   default palette has a colour for each series, and a component keeps its
   colour when more or fewer are shown; a smaller palette chosen in Display
   options repeats colours rather than hide a suspect. The dashed line is the
-  timed run's anonymous RSS. **Group by** stacks the stack packages the
+  timed run's anonymous RSS, and a triangle marks each step, in its
+  component's colour, with its size in the hover. **Group by** stacks the stack packages the
   components come from instead, and **Change since the first event** draws
   what each one holds beyond what it held at the first event's end, so growth
   rises and a one-off step jumps, with *Other* and *No component* as grey
@@ -827,20 +836,23 @@ failed, have none, and the section says so. It has three views:
   event's end (*Typical*, the median) and after finalize (*Finalized*), its
   heap across the events as a sparkline, its *working set* (the most it held
   during an event beyond what it held as the event started: what the event
-  needed of it, median and 95th percentile), its growth per event, and the
-  package links of Breakdown's Components. *⚠ grows* marks the suspects.
+  needed of it: median, 95th percentile, and the most any event needed with
+  that event's number), its growth per event, and the package links of
+  Breakdown's Components. *⚠ grows* and *⚠ steps* mark what the two
+  warnings name.
   Selecting a row draws that component event by event: a bar from what it
   held as each event started up to the most it held during it, and a mark at
   what it held at the event's end. With nothing selected, it draws the
-  fastest-growing suspect, or the component whose events need the most.
+  fastest-growing suspect, else the component that stepped up the most, else
+  the one whose events need the most.
 - **Historical Trends** draws one of a configuration's numbers across the
   trend window, chosen by **Metric**: what each component held before the
   first event, at a typical event's end (the median), its working set (the
   median and the 95th percentile, as two panels) or its growth per event. It
   names the largest components over the window (six by default, set by
   **Largest shown**; for the working set, the largest of each panel) and
-  every component that grows and keeps it on any night of the window
-  besides, a line each, in one colour whatever is shown.
+  every component that grows or steps up and keeps it on any night of the
+  window besides, a line each, in one colour whatever is shown.
   The first two add up to the job's heap, so the rest of it is one more line,
   *Other*, and what no component allocated another, *No component*, both in
   grey. When a nightly tag was run more than once, only its latest run is

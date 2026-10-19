@@ -723,6 +723,42 @@ def test_memory_lists_the_components_and_draws_the_suspect_event_by_event(
     assert "##### LumiCalReco, event by event" in [m.value for m in at.markdown]
 
 
+def _pool(raw: dict) -> None:
+    """The first Marlin processor takes on 300 MB in event 4 and keeps it,
+    after finalize too."""
+    i = next(i for i, name in enumerate(raw["components"]) if name.startswith("My"))
+    for e, (start, end, peak) in enumerate(zip(*(raw["execute"][key] for key in (
+        "start_held_bytes", "held_bytes", "peak_held_bytes",
+    )))):
+        end[i] = peak[i] = 300 * _MIB if e >= 4 else 0
+        start[i] = 300 * _MIB if e >= 5 else 0
+    raw["at_end"]["held_bytes"][i] = 300 * _MIB
+
+
+def test_memory_names_what_stepped_up_and_marks_its_step(monkeypatch, tmp_path, reco_run_with_heap):
+    run = reco_run_with_heap()
+    _rewrite_heap(run, _pool)
+    name = next(n for n in json.loads((run / "baseline_heap.json").read_text())["components"]
+                if n.startswith("My"))
+    at = _page(monkeypatch, tmp_path, run, "Memory")
+    assert at.warning[-1].value == (
+        f"**{name}** stepped up by 300 MB at event 4; it held 300 MB at the last "
+        "event's end and 300 MB after finalize."
+    )
+    (marks,) = [t for t in _traces(at) if t.get("name") == "Step"]
+    assert marks["x"] == ["4"] and marks["text"] == [f"{name} +300 MB"]
+    assert name in {t["name"] for t in _traces(at) if t.get("stackgroup") == "heap"}
+
+    at.button(key=f"reco_memory_inspect_step_{name}").click().run()
+    assert not at.exception
+    assert at.radio(key="reco_memory_view").value == "Components"
+    table = at.dataframe[0].value
+    row = table[table["Component"] == name].iloc[0]
+    assert row["Flag"] == "⚠ steps"
+    assert (row["Working set max"], row["Max in event"]) == (pytest.approx(300.0), 4)
+    assert f"##### {name}, event by event" in [m.value for m in at.markdown]
+
+
 def _rewrite_heap(run: Path, change) -> None:
     path = run / "baseline_heap.json"
     raw = json.loads(path.read_text())

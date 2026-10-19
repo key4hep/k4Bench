@@ -91,6 +91,41 @@ def test_change_shows_growth_in_a_series_not_named():
     assert np.sum([lines[name] for name in lines], axis=0).tolist() == total.tolist()
 
 
+#: The cache's 20 MB step at event 2.
+STEPS = pd.DataFrame({"series": ["Cache"], "event_number": [2], "step_mb": [20.0]})
+
+
+def test_held_marks_each_step_on_the_top_of_the_stack():
+    colors = {"Tracker": "#123456", "Geo": "#654321", "Cache": "#abcdef"}
+    fig = plot_heap_timeline(HELD, BEFORE, AFTER, NAMED, colors=colors, steps=STEPS)
+    (marks,) = [t for t in fig.data if t.name == "Step"]
+    assert list(marks.x) == ["2"] and np.asarray(marks.y).tolist() == [408.0]
+    assert list(marks.marker.color) == ["#abcdef"]
+    assert list(marks.text) == ["Cache +20 MB"]
+
+
+def test_held_marks_the_steps_of_one_event_once_naming_each():
+    colors = {"Tracker": "#123456", "Geo": "#654321", "Cache": "#abcdef"}
+    steps = pd.DataFrame({
+        "series": ["Cache", "Tracker"], "event_number": [2, 2], "step_mb": [20.0, 30.0],
+    })
+    fig = plot_heap_timeline(HELD, BEFORE, AFTER, NAMED, colors=colors, steps=steps)
+    (marks,) = [t for t in fig.data if t.name == "Step"]
+    assert list(marks.x) == ["2"] and np.asarray(marks.y).tolist() == [408.0]
+    # In the largest step's colour, every step in the hover.
+    assert list(marks.marker.color) == ["#123456"]
+    assert list(marks.text) == ["Tracker +30 MB, Cache +20 MB"]
+
+
+def test_change_marks_each_step_on_its_series_line_and_not_one_not_named():
+    fig = plot_heap_timeline(HELD, BEFORE, AFTER, NAMED, change=True, steps=STEPS)
+    (marks,) = [t for t in fig.data if t.name == "Step"]
+    assert np.asarray(marks.y).tolist() == [20.0]
+    unnamed = plot_heap_timeline(HELD, BEFORE, AFTER, ["Geo"], change=True, steps=STEPS)
+    assert "Step" not in _named(unnamed)
+    assert "Step" not in _named(plot_heap_timeline(HELD, BEFORE, AFTER, NAMED, steps=STEPS.iloc[:0]))
+
+
 def test_colours_follow_the_mapping_given():
     colors = {"Tracker": "#123456", "Geo": "#654321", "Cache": "#abcdef"}
     held = plot_heap_timeline(HELD, BEFORE, AFTER, NAMED, colors=colors)
