@@ -58,7 +58,8 @@ def _source(per_event: list[list[dict]], counts: dict | None = None) -> EventSou
 def _output(name: str, entries: dict[str, list], energies: dict[str, list] | None = None,
             events: int = 3) -> OutputFile:
     energies = energies or {}
-    return OutputFile(name=name, bytes=1, events=events, collections=tuple(
+    return OutputFile(name=name, bytes=1, events=events,
+                      event_numbers=tuple(range(events)), collections=tuple(
         CollectionSize(c, "edm4hep::SimCalorimeterHitCollection", False, 1, 1,
                        entries=tuple(v), energy_gev=tuple(energies[c]) if c in energies else None)
         for c, v in entries.items()
@@ -132,10 +133,22 @@ class TestEventTable:
         reordered = replace(output, event_numbers=(0, 2, 1))
         with pytest.raises(ValueError, match="different events at entry 1"):
             event_table(source, outputs=[reordered])
-        # Entries without a header, and files without any, are not compared.
-        partial = replace(output, event_numbers=(0, None, 2))
-        assert event_table(source, outputs=[partial]).events == 3
         assert event_table(source, outputs=[output]).events == 3
+
+    @pytest.mark.parametrize(("output_numbers", "source_numbers"), [
+        (None, (0, 1, 2)), ((0, None, 2), (0, 1, 2)), ((0, 1, 2), None), ((0, 1, 2), (0, None, 2)),
+    ])
+    def test_an_output_whose_order_cannot_be_checked_is_left_out(
+        self, output_numbers, source_numbers,
+    ):
+        source = replace(_source([[PION]] * 3, counts={"VXDHits": [5, 6, 7]}),
+                         event_numbers=source_numbers)
+        output = replace(_output("rec.root", {"Tracks": [3, 1, 2]}), event_numbers=output_numbers)
+        table = event_table(source, outputs=[output])
+        assert table.unordered == ("rec.root",)
+        assert "out_n_Tracks" not in table.frame
+        # What went into the events stays.
+        assert table.frame["n_VXDHits"].tolist() == [5, 6, 7]
 
     def test_outputs_without_the_input_cannot_be_tabulated(self):
         # Their order could be the job's or not: nothing to check it against.
@@ -148,7 +161,7 @@ class TestEventTable:
         unnumbered = replace(output, name="mid.root", event_numbers=(None, None, None))
         other = replace(output, name="last.root", event_numbers=(0, 1, 5))
         with pytest.raises(ValueError, match="sim.root and last.root .* entry 2"):
-            event_table(source, outputs=[unnumbered, other])
+            event_table(source, content=[unnumbered, other])
 
     def test_an_expression_reads_the_particles_and_the_columns(self):
         table = event_table(_source([[PION], [PION, PION]]), )

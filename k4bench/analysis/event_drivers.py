@@ -146,6 +146,10 @@ class EventTable:
     columns: Mapping[str, Column]
     #: The generator particles, for expressions; ``None`` without a source.
     source: EventSource | None = None
+    #: The output files left out: an entry of theirs or of the input has no
+    #: EventHeader, so nothing shows they hold the events in the order the
+    #: job read them.
+    unordered: tuple[str, ...] = ()
     _particles: dict = field(default_factory=dict, compare=False, repr=False)
 
     @property
@@ -189,13 +193,20 @@ def event_table(
     Raises ``ValueError`` when the files disagree on the number of events,
     or their EventHeaders on which event an entry is, and for *outputs*
     without *source*: only the input's EventHeaders show that the outputs
-    hold the events in the order the job read them.
+    hold the events in the order the job read them. An output whose
+    EventHeaders, or the input's, miss an entry is left out
+    (:attr:`EventTable.unordered`).
     """
     if source is None and any(_measured(f) for f in outputs):
         raise ValueError(
             "the job's input was not recorded, so nothing shows that its outputs "
             "hold the events in the order it read them"
         )
+    unordered = tuple(
+        f.name for f in outputs
+        if _measured(f) and not (_numbered(source.event_numbers) and _numbered(f.event_numbers))
+    )
+    outputs = [f for f in outputs if f.name not in unordered]
     measured = [f for f in (*content, *outputs) if _measured(f)]
     sizes = {
         n for n in (
@@ -233,7 +244,7 @@ def event_table(
             _add_content(add, taken, "out_", output.event_counts(), output.event_energies(),
                          output.name, "output")
 
-    table = EventTable(frame, columns, source)
+    table = EventTable(frame, columns, source, unordered)
     if source is not None:
         features = list(FEATURES)
         if _one_primary(table):
@@ -245,8 +256,12 @@ def event_table(
             **{f.name: Column(f.label, "truth", f.ranked, expression=f.expression) for f in features},
             **columns,
         }
-        table = EventTable(frame, columns, source)
+        table = EventTable(frame, columns, source, unordered)
     return table
+
+
+def _numbered(event_numbers: Sequence[int | None] | None) -> bool:
+    return event_numbers is not None and None not in event_numbers
 
 
 def _measured(output: OutputFile) -> bool:

@@ -185,6 +185,11 @@ def render(
         notes = [] if config == BASELINE_LABEL else [f"Configuration **{config}**."]
         if source is not None and source.origin in _ORIGINS:
             notes.append(_ORIGINS[source.origin])
+        if table.unordered:
+            notes.append(
+                f"Left out: {', '.join(f'`{name}`' for name in table.unordered)}, without an "
+                "EventHeader in every event to show it kept the order the job read them in."
+            )
         if notes:
             st.caption(" ".join(notes))
 
