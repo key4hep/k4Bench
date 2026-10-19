@@ -220,3 +220,17 @@ def test_event_trend_anon_slope_is_absent_with_too_few_samples(tmp_path):
 def test_event_trend_without_anon_rss_has_no_slope(tmp_path):
     df = build_event_timing_trend((_run_dir(tmp_path, "2026-01-05", [1.0] * 10),))
     assert "rss_anon_slope_mb_per_event" not in df.columns
+
+
+def test_theil_sen_slope_thins_to_fewer_points_on_request(monkeypatch):
+    calls = []
+    real = np.triu_indices
+
+    def spy(n, *args, **kwargs):
+        calls.append(n)
+        return real(n, *args, **kwargs)
+
+    monkeypatch.setattr(trend.np, "triu_indices", spy)
+    x = np.arange(1000)
+    assert theil_sen_slope(x, 3.0 * x, max_points=50) == pytest.approx(3.0)
+    assert calls == [50]

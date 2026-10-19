@@ -66,10 +66,71 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+
+from k4bench.analysis.robust import MIN_SLOPE_EVENTS, theil_sen_slope
 
 #: The column of what no component allocated.
 NO_COMPONENT = "(no component)"
+
+#: Bytes in a MB, as the event files count them (kB / 1024).
+MB = 1024**2
+
+#: The columns of :meth:`ComponentHeap.summary`.
+SUMMARY_COLUMNS = (
+    "before_first_mb",
+    "typical_mb",
+    "largest_mb",
+    "working_set_median_mb",
+    "working_set_p95_mb",
+    "working_set_max_mb",
+    "growth_mb_per_event",
+    "after_finalize_mb",
+    "retained_mb",
+    "leak",
+)
+
+#: What a component must gain over the pass's events, in MB, to be suspected
+#: of leaking, and still hold after finalize beyond what it held at the first
+#: event: smaller growth is lost among the heap's ordinary movement.
+LEAK_MIN_MB = 10.0
+
+#: The share of what it gained over the events that a suspect still holds
+#: after finalize. Buffers a component releases when the job ends (the input
+#: reader's, the output writer's) grow too, but are not kept; what it held from
+#: the start does not count.
+LEAK_KEPT_SHARE = 0.5
+
+#: How fast a suspect grows in each half of the events, at least, as a share
+#: of how fast over all of them: a leak grows throughout, a table filled once
+#: steps up in one half and holds still in both.
+LEAK_STEADY_SHARE = 0.25
+
+#: The events, the warm-up left out, a job needs for any component to be
+#: suspected: each half of them needs a slope of its own.
+LEAK_MIN_EVENTS = 2 * MIN_SLOPE_EVENTS
+
+
+@dataclass(frozen=True)
+class HeapTotals:
+    """The heap of the whole job, every component's and no component's
+    together (:meth:`ComponentHeap.totals`), in MB."""
+
+    #: What initialize and start left; ``NaN`` without events.
+    before_first_mb: float
+    #: At each event's end, indexed by event number, the warm-up included.
+    per_event_mb: pd.Series
+    #: The median of the events' ends, the warm-up left out.
+    typical_mb: float
+    #: The largest of the events' ends, the warm-up left out, and its event.
+    largest_mb: float
+    largest_event: int | None
+    #: How much it grows per event: the Theil–Sen slope of the events' ends,
+    #: the warm-up left out; ``NaN`` with too few events.
+    growth_mb_per_event: float
+    #: What survived the job's own finalize.
+    after_finalize_mb: float
 
 #: Per-component metrics before the first event, and at each event's end.
 HEAP_METRICS = ("held_bytes", "peak_held_bytes")
@@ -195,3 +256,110 @@ class ComponentHeap:
         it. Its persistent state is left out, and so is the data others created
         that it read."""
         return self.execute["peak_held_bytes"] - self.execute["start_held_bytes"]
+
+    def holders(self) -> pd.Index:
+        """The components that held heap at some recorded moment: before the
+        first event, at any event's start, peak or end (the warm-up event's
+        included) or after finalize, in the file's order."""
+        moments = [self.before_first_event[metric] for metric in HEAP_METRICS]
+        moments += [frame.max() for frame in self.execute.values()]
+        moments.append(self.at_end["held_bytes"])
+        held = pd.concat(moments, axis=1).fillna(0.0).gt(0).any(axis=1)
+        return held.index[held]
+
+    def summary(self, *, warm_up: int | None = 0) -> pd.DataFrame:
+        """Each component's heap over the job in MB, indexed by component in
+        the file's order, with the :data:`SUMMARY_COLUMNS`:
+
+        - ``before_first_mb``: what it held before the first event;
+        - ``typical_mb``, ``largest_mb``: the median and the largest of what it
+          held at the events' ends;
+        - ``working_set_median_mb``, ``working_set_p95_mb``,
+          ``working_set_max_mb``: of its :meth:`working_set`;
+        - ``growth_mb_per_event``: the Theil–Sen slope of what it held at the
+          events' ends against their numbers, ``NaN`` with too few events;
+        - ``after_finalize_mb``: what it held after the job's own finalize;
+        - ``retained_mb``: how much more than at the first event's end that
+          is, ``NaN`` without events;
+        - ``leak``: whether it is suspected of leaking: it grew by
+          :data:`LEAK_MIN_MB` or more over the events, in both halves of them
+          (each at :data:`LEAK_STEADY_SHARE` of the whole's rate or more), and
+          after finalize still holds :data:`LEAK_MIN_MB` or more beyond what
+          it held at the first event, and at least :data:`LEAK_KEPT_SHARE` of
+          what it gained from the first event to the last. With fewer than
+          :data:`LEAK_MIN_EVENTS` events none is.
+
+        The *warm_up* event is left out of every statistic over events.
+        """
+        held = _without(self.execute["held_bytes"], warm_up) / MB
+        working = _without(self.working_set(), warm_up) / MB
+        growth = pd.Series({name: _growth(held[name]) for name in held.columns}, dtype=float)
+        span = float(held.index.max() - held.index.min()) if len(held) else 0.0
+        nothing = pd.Series(np.nan, index=held.columns)
+        first, last = (held.iloc[0], held.iloc[-1]) if len(held) else (nothing, nothing)
+        after = self.at_end["held_bytes"] / MB
+        gained, retained = last - first, after - first
+        kept = (
+            (growth * span >= LEAK_MIN_MB) & (gained > 0) & (retained >= LEAK_MIN_MB)
+            & (retained >= LEAK_KEPT_SHARE * gained)
+        )
+        return pd.DataFrame({
+            "before_first_mb": self.before_first_event["held_bytes"] / MB,
+            "typical_mb": held.median(),
+            "largest_mb": held.max(),
+            "working_set_median_mb": working.median(),
+            "working_set_p95_mb": working.quantile(0.95),
+            "working_set_max_mb": working.max(),
+            "growth_mb_per_event": growth,
+            "after_finalize_mb": after,
+            "retained_mb": retained,
+            "leak": kept & _steady(held[kept.index[kept]], growth),
+        }, index=held.columns)
+
+    def totals(self, *, warm_up: int | None = 0) -> HeapTotals:
+        """The whole job's heap (:class:`HeapTotals`): what every component and
+        no component held together, the *warm_up* event left out of the
+        statistics over events."""
+        per_event = self.execute["held_bytes"].sum(axis=1).sort_index() / MB
+        events = _without(per_event, warm_up)
+        return HeapTotals(
+            before_first_mb=float(self.before_first_event["held_bytes"].sum(min_count=1) / MB),
+            per_event_mb=per_event,
+            typical_mb=float(events.median()) if len(events) else float("nan"),
+            largest_mb=float(events.max()) if len(events) else float("nan"),
+            largest_event=int(events.idxmax()) if len(events) else None,
+            growth_mb_per_event=_growth(events),
+            after_finalize_mb=float(self.at_end["held_bytes"].sum(min_count=1) / MB),
+        )
+
+
+def _steady(held: pd.DataFrame, growth: pd.Series) -> pd.Series:
+    """Whether each of *held*'s components grew in both halves of its events
+    at :data:`LEAK_STEADY_SHARE` of its *growth* or more; a half too short
+    for a slope says no."""
+    halves = (held.iloc[: len(held) // 2], held.iloc[len(held) // 2:])
+    return pd.Series({
+        name: all(_growth(half[name]) >= LEAK_STEADY_SHARE * growth[name] for half in halves)
+        for name in held.columns
+    }, dtype=bool).reindex(growth.index, fill_value=False)
+
+
+def _without(frame, warm_up: int | None):
+    """*frame*'s rows, events in order, but the *warm_up* event's."""
+    frame = frame.sort_index()
+    return frame if warm_up is None else frame[frame.index != warm_up]
+
+
+#: Events a growth is estimated from at most, evenly spaced: a summary takes
+#: one slope per component, and the pairwise slopes of a thousand events, for
+#: each of eighty components, take a second.
+_GROWTH_POINTS = 300
+
+
+def _growth(held: pd.Series) -> float:
+    """MB per event that *held* (indexed by event number) grows by: its
+    Theil–Sen slope, ``NaN`` with too few events."""
+    if len(held) and held.min() == held.max():
+        return 0.0
+    slope = theil_sen_slope(held.index, held.to_numpy(), max_points=_GROWTH_POINTS)
+    return float("nan") if slope is None else slope

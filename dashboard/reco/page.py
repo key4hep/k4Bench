@@ -7,13 +7,15 @@ for one algorithm's own time in each event besides the whole event's. Logs is
 reused too, reading the log as Gaudi's. The Overview compares the reco detectors as
 the Simulation Overview does, the Breakdown splits the job's time by phase
 and by component, Efficiency sets each algorithm's time against how well it
-uses the CPU, and the Data Flow draws which algorithm feeds which.
+uses the CPU, Memory shows where the heap goes component by component and
+what grows without being released, and the Data Flow draws which algorithm
+feeds which.
 """
 from __future__ import annotations
 
 from data import cached_load_trend_algorithm_timing, cached_load_trend_event_timing
 from k4bench.layout import RECO
-from reco import breakdown, dataflow, efficiency, overview
+from reco import breakdown, dataflow, efficiency, memory, overview
 from section_dispatch import RENDERERS, PageContext, judgeable_trend
 from sections import SECTION_SCOPE, SectionScope
 from suite_page import SuitePage, render_page
@@ -42,7 +44,8 @@ def _logs(ctx: PageContext) -> None:
 RECO_PAGE = SuitePage(
     suite=RECO,
     sections=(
-        "Overview", "Breakdown", "Efficiency", "Data Flow", "Event Timing", *_SHARED, "Logs",
+        "Overview", "Breakdown", "Efficiency", "Memory", "Data Flow", "Event Timing", *_SHARED,
+        "Logs",
     ),
     # Like the Simulation Overview, it compares detectors across the window.
     remote_only=frozenset({"Overview"}),
@@ -50,6 +53,7 @@ RECO_PAGE = SuitePage(
         "Overview": SECTION_SCOPE["Overview"],
         "Breakdown": SECTION_SCOPE["Region Timing"],
         "Efficiency": SECTION_SCOPE["Region Timing"],
+        "Memory": SECTION_SCOPE["Region Timing"],
         "Data Flow": SECTION_SCOPE["Region Timing"],
         **{name: SECTION_SCOPE[name] for name in ("Event Timing", *_SHARED, "Logs")},
     },
@@ -57,6 +61,7 @@ RECO_PAGE = SuitePage(
         "Overview": overview.render,
         "Breakdown": breakdown.render,
         "Efficiency": efficiency.render,
+        "Memory": memory.render,
         "Data Flow": dataflow.render,
         "Event Timing": _event_timing,
         **{name: RENDERERS[name] for name in _SHARED},

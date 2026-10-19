@@ -20,6 +20,7 @@ from .event import (
     plot_event_memory,
     plot_event_timing,
 )
+from .heap import plot_component_heap_events, plot_heap_timeline
 from .overview import plot_run_overview
 from .phases import plot_event_composition, plot_phase_component_pie, plot_phase_history
 from .region import plot_region_timing
@@ -34,6 +35,8 @@ __all__ = [
     "plot_phase_component_pie",
     "plot_event_composition",
     "plot_phase_history",
+    "plot_heap_timeline",
+    "plot_component_heap_events",
     "auto_bin_count",
     "event_bin_options",
     "BinSpec",

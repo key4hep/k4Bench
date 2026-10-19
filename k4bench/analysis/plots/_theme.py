@@ -35,3 +35,15 @@ def _hex_to_rgba(color: str, alpha: float) -> str:
         h = h[0]*2 + h[1]*2 + h[2]*2
     r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     return f"rgba({r},{g},{b},{alpha})"
+
+
+def _vivid(palette: list[str]) -> list[str]:
+    """*palette* without its greys, which the "Other" and unattributed series
+    of a chart are drawn in."""
+    def grey(color: str) -> bool:
+        h = color.lstrip("#")
+        if len(h) != 6:
+            return False
+        rgb = [int(h[i:i + 2], 16) for i in (0, 2, 4)]
+        return max(rgb) - min(rgb) < 16
+    return [c for c in palette if not grey(c)] or palette

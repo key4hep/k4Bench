@@ -62,8 +62,8 @@ def test_a_local_run_opens_on_the_breakdown(monkeypatch, tmp_path):
     at = _page(monkeypatch, tmp_path, RECO_RUN)
     assert at.session_state["reco_active_section"] == "Breakdown"
     assert at.button_group[0].options == [
-        "Breakdown", "Efficiency", "Data Flow", "Event Timing", "Event Memory", "Machine Info",
-        "Logs",
+        "Breakdown", "Efficiency", "Memory", "Data Flow", "Event Timing", "Event Memory",
+        "Machine Info", "Logs",
     ]
 
 
@@ -596,6 +596,336 @@ def test_a_run_without_algorithm_timing_says_so(monkeypatch, tmp_path):
     at = _page(monkeypatch, tmp_path, run, "Breakdown")
     assert "No phase timing in this run" in at.info[0].value
 
+
+
+# ── Memory, from the memory pass ─────────────────────────────────────────────
+
+_MIB = 1024**2
+
+
+def _run_with_heap(tmp_path: Path, name: str = "run") -> Path:
+    """The fixture run with a heap file for its baseline, in MB: no component
+    keeps 49, the geometry 397 and the reader 150; LumiCalReco gains 2 per
+    event and VertexFinder 1.2, and both keep it after finalize; the writer
+    gains 1.5 per event and frees it at the end; the reader needs 5 in each
+    event."""
+    run = tmp_path / name
+    shutil.copytree(RECO_RUN, run)
+    (run / "run_info.json").write_text(json.dumps(
+        {**json.loads((RECO_RUN / "run_info.json").read_text()), "suite": "reco"}
+    ))
+    timing = json.loads((RECO_RUN / "baseline_components.json").read_text())
+    names = ["(no component)", *(c["name"] for c in timing["components"])]
+    events = timing["event_numbers"]
+
+    def held(event: int | None) -> list[int]:
+        values = dict.fromkeys(names, 0.0)
+        values.update({"(no component)": 49, "GeoSvc": 397, "k4FWCore__Reader": 150})
+        if event is not None:
+            values.update({
+                "LumiCalReco": 2.0 * (event + 1), "VertexFinder": 1.2 * (event + 1),
+                "k4FWCore__Writer": 1.5 * (event + 1),
+            })
+        return [int(values[n] * _MIB) for n in names]
+
+    def peak(event: int) -> list[int]:
+        values = held(event)
+        values[names.index("k4FWCore__Reader")] += 5 * _MIB
+        return values
+
+    final = dict(zip(names, held(events[-1])))
+    final.update({"GeoSvc": 0, "k4FWCore__Reader": 0, "k4FWCore__Writer": 0})
+    (run / "baseline_heap.json").write_text(json.dumps({
+        "schema_version": 1,
+        "producer": "k4BenchAuditor",
+        "components": names,
+        "before_first_event": {
+            "held_bytes": held(None), "peak_held_bytes": held(None),
+            "malloc_in_use_bytes": sum(held(None)), "rss_anon_mb": 700.0,
+        },
+        "event_numbers": events,
+        "execute": {
+            "start_held_bytes": [held(e - 1) if e else held(None) for e in events],
+            "held_bytes": [held(e) for e in events],
+            "peak_held_bytes": [peak(e) for e in events],
+            "malloc_in_use_bytes": [sum(held(e)) for e in events],
+            "rss_anon_mb": [700.0] * len(events),
+        },
+        "at_end": {
+            "held_bytes": [final[n] for n in names],
+            "malloc_in_use_bytes": sum(final.values()), "rss_anon_mb": 500.0,
+        },
+        "table": {"peak_entries": 1000, "mapped_bytes": 1 << 20},
+    }))
+    return run
+
+
+def test_memory_gives_the_jobs_heap_and_names_what_grows_and_is_kept(monkeypatch, tmp_path):
+    at = _page(monkeypatch, tmp_path, _run_with_heap(tmp_path), "Memory")
+    # Only the baseline ran its memory pass.
+    assert at.selectbox(key="reco_memory_config").options == ["baseline"]
+    tiles = {m.label: m.value for m in at.metric}
+    assert tiles["Before the first event"] == "596 MB"
+    assert tiles["Growth per event"] == "+4.7 MB"
+    assert [w.value for w in at.warning] == [
+        "- **LumiCalReco** grows 2 MB per event (20 MB over the run); after finalize it "
+        "still holds 20 MB more than after event 1.\n"
+        "- **VertexFinder** grows 1.2 MB per event (12 MB over the run); after finalize it "
+        "still holds 12 MB more than after event 1."
+    ]
+    traces = _traces(at)
+    named = [t["name"] for t in traces if t.get("stackgroup") == "heap"]
+    assert named[0] == "No component" and named[1].startswith("Other (")
+    assert {"GeoSvc", "LumiCalReco", "VertexFinder", "k4FWCore__Writer"} <= set(named)
+    assert traces[-1]["name"] == "Anonymous RSS (timed run)"
+
+
+def test_the_suspects_take_the_first_colours_and_keep_them_as_fewer_are_shown(
+    monkeypatch, tmp_path,
+):
+    from k4bench.analysis.plots import PALETTE
+
+    at = _page(monkeypatch, tmp_path, _run_with_heap(tmp_path), "Memory")
+
+    def fills():
+        return {t["name"]: t["fillcolor"] for t in _traces(at) if t.get("stackgroup") == "heap"}
+
+    first = fills()
+    assert (first["LumiCalReco"], first["VertexFinder"], first["GeoSvc"]) == tuple(PALETTE[:3])
+    at.slider(key="reco_memory_topn").set_value(3).run()
+    narrowed = fills()
+    kept = {name: color for name, color in narrowed.items() if name in first}
+    assert kept == {name: first[name] for name in kept}
+    assert set(kept) >= {"LumiCalReco", "VertexFinder", "GeoSvc"}
+    assert "k4FWCore__Writer" not in narrowed
+
+
+def test_a_warned_component_opens_in_the_components_view(monkeypatch, tmp_path):
+    at = _page(monkeypatch, tmp_path, _run_with_heap(tmp_path), "Memory")
+    assert [b.label for b in at.button if (b.key or "").startswith("reco_memory_inspect_")] == [
+        "LumiCalReco", "VertexFinder",
+    ]
+    # Not the one Components opens on by itself: the fastest-growing one.
+    at.button(key="reco_memory_inspect_VertexFinder").click().run()
+    assert not at.exception
+    assert at.radio(key="reco_memory_view").value == "Components"
+    assert "##### VertexFinder, event by event" in [m.value for m in at.markdown]
+    table = at.dataframe[0]
+    assert table.value.iloc[json.loads(table.proto.selection_default)["selection"]["rows"][0]][
+        "Component"
+    ] == "VertexFinder"
+
+
+def test_memory_draws_each_series_change_since_the_first_event(monkeypatch, tmp_path):
+    at = _page(monkeypatch, tmp_path, _run_with_heap(tmp_path), "Memory")
+    at.segmented_control(key="reco_memory_mode").set_value("Change since the first event").run()
+    assert not at.exception
+    lines = {t["name"]: _values(t["y"]) for t in _traces(at)}
+    assert lines["LumiCalReco"][-1] == pytest.approx(22.0)
+    assert lines["k4FWCore__Writer"][-1] == pytest.approx(16.5)
+    assert "No component" in lines and any(name.startswith("Other (") for name in lines)
+
+
+def test_a_smaller_palette_repeats_colours_rather_than_hide_a_suspect(monkeypatch, tmp_path):
+    def twelve_leaks(raw: dict) -> None:
+        # Twelve algorithms, each growing steadily and keeping it after finalize.
+        growing = [n for n in raw["components"] if n.startswith("My")][:12]
+        for j, name in enumerate(growing):
+            i = raw["components"].index(name)
+            for e, row in enumerate(raw["execute"]["held_bytes"]):
+                row[i] = round((j + 1) * 1.5 * (e + 1) * _MIB)
+            raw["at_end"]["held_bytes"][i] = raw["execute"]["held_bytes"][-1][i]
+
+    run = _run_with_heap(tmp_path)
+    _rewrite_heap(run, twelve_leaks)
+    at = _page(monkeypatch, tmp_path, run, "Memory")
+    flagged = [b.label for b in at.button if (b.key or "").startswith("reco_memory_inspect_")]
+    assert len(flagged) >= 12
+    at.selectbox(key="reco_memory_palette").set_value("Matplotlib").run()
+    assert not at.exception
+    bands = {t["name"] for t in _traces(at) if t.get("stackgroup") == "heap"}
+    assert set(flagged) <= bands
+
+
+def test_memory_lists_the_components_and_draws_the_suspect_event_by_event(monkeypatch, tmp_path):
+    at = _page(monkeypatch, tmp_path, _run_with_heap(tmp_path), "Memory")
+    at.radio(key="reco_memory_view").set_value("Components").run()
+    assert not at.exception
+    table = at.dataframe[0].value
+    assert table["Component"].tolist()[:2] == ["GeoSvc", "k4FWCore__Reader"]
+    flagged = table[table["Flag"] != ""]["Component"].tolist()
+    assert flagged == ["LumiCalReco", "VertexFinder"]
+    reader = table[table["Component"] == "k4FWCore__Reader"].iloc[0]
+    assert reader["Working set"] == pytest.approx(5.0)
+    assert len(reader["Held per event"]) == 12
+    assert "##### LumiCalReco, event by event" in [m.value for m in at.markdown]
+
+
+def _rewrite_heap(run: Path, change) -> None:
+    path = run / "baseline_heap.json"
+    raw = json.loads(path.read_text())
+    change(raw)
+    path.write_text(json.dumps(raw))
+
+
+def _no_events(raw: dict) -> None:
+    raw["before_first_event"] = None
+    raw["event_numbers"] = []
+    raw["execute"] = {key: [] for key in raw["execute"]}
+
+
+def _warm_up_only(raw: dict) -> None:
+    raw["event_numbers"] = raw["event_numbers"][:1]
+    raw["execute"] = {key: values[:1] for key, values in raw["execute"].items()}
+
+
+def _events_at_once(raw: dict) -> None:
+    # No peaks per event, and nothing kept after finalize, so nothing is suspected.
+    n = len(raw["components"])
+    raw["execute"]["peak_held_bytes"] = [[None] * n for _ in raw["event_numbers"]]
+    raw["at_end"]["held_bytes"] = [0] * n
+
+
+def test_every_suspect_gets_a_band_however_many_there_are(monkeypatch, tmp_path):
+    # Ten suspects and nothing else holding heap: ten series, which the
+    # default palette must colour besides its grey.
+    run = _run_with_heap(tmp_path)
+    suspects = ["LumiCalReco", "VertexFinder"]
+    emptied = ["GeoSvc", "k4FWCore__Reader", "k4FWCore__Writer"]
+
+    def eight_more(raw: dict) -> None:
+        names = raw["components"]
+        idle = [n for n in names[1:] if n not in {*suspects, *emptied}]
+        suspects.extend(idle[:8])
+        for name in emptied:
+            i = names.index(name)
+            for key in ("start_held_bytes", "held_bytes", "peak_held_bytes"):
+                for row in raw["execute"][key]:
+                    row[i] = 0
+            for key in ("held_bytes", "peak_held_bytes"):
+                raw["before_first_event"][key][i] = 0
+        for name in idle[:8]:
+            i = names.index(name)
+            for row, event in zip(raw["execute"]["held_bytes"], raw["event_numbers"]):
+                row[i] = 2 * (event + 1) * _MIB
+            raw["at_end"]["held_bytes"][i] = raw["execute"]["held_bytes"][-1][i]
+
+    _rewrite_heap(run, eight_more)
+    assert len(suspects) == 10
+    at = _page(monkeypatch, tmp_path, run, "Memory")
+    assert {b.label for b in at.button if (b.key or "").startswith("reco_memory_inspect_")} == set(suspects)
+    for mode in ("Held", "Change since the first event"):
+        at.segmented_control(key="reco_memory_mode").set_value(mode).run()
+        assert not at.exception
+        assert set(suspects) <= {t.get("name") for t in _traces(at)}
+
+
+@pytest.mark.parametrize(
+    "change", [_no_events, _warm_up_only, _events_at_once],
+    ids=["no events", "the warm-up alone", "events at once"],
+)
+def test_memory_draws_a_run_whatever_statistics_it_lacks(monkeypatch, tmp_path, change):
+    run = _run_with_heap(tmp_path)
+    _rewrite_heap(run, change)
+    at = _page(monkeypatch, tmp_path, run, "Memory")
+    at.radio(key="reco_memory_view").set_value("Components").run()
+    assert not at.exception
+    assert len(at.dataframe[0].value)
+
+
+def test_a_component_that_needed_memory_in_the_warm_up_alone_is_listed(monkeypatch, tmp_path):
+    def spike(raw: dict) -> None:
+        # MyTrackChecker allocates and frees 500 MB in event 0 and holds nothing else.
+        raw["execute"]["peak_held_bytes"][0][raw["components"].index("MyTrackChecker")] = 500 * _MIB
+
+    run = _run_with_heap(tmp_path)
+    _rewrite_heap(run, spike)
+    at = _page(monkeypatch, tmp_path, run, "Memory")
+    at.radio(key="reco_memory_view").set_value("Components").run()
+    assert not at.exception
+    components = at.dataframe[0].value["Component"].tolist()
+    assert "MyTrackChecker" in components
+    # Components that never held anything stay out.
+    assert "MyCLICPfoSelectorTight" not in components
+
+
+def test_a_selection_past_the_tables_end_draws_the_default(monkeypatch, tmp_path):
+    from reco.memory import _table_key
+
+    run = _run_with_heap(tmp_path)
+    at = _page(monkeypatch, tmp_path, run, "Memory")
+    at.radio(key="reco_memory_view").set_value("Components").run()
+    at.session_state[_table_key(str(run), "baseline")] = {
+        "selection": {"rows": [99], "columns": [], "cells": []},
+    }
+    at.run()
+    assert not at.exception
+    assert "##### LumiCalReco, event by event" in [m.value for m in at.markdown]
+
+
+def test_a_selection_stays_with_its_run(monkeypatch, tmp_path):
+    from reco.memory import _table_key
+
+    first, second = _run_with_heap(tmp_path, "first"), _run_with_heap(tmp_path, "second")
+    at = _page(monkeypatch, tmp_path, first, "Memory")
+    at.radio(key="reco_memory_view").set_value("Components").run()
+    writer = at.dataframe[0].value["Component"].tolist().index("k4FWCore__Writer")
+    at.session_state[_table_key(str(first), "baseline")] = {
+        "selection": {"rows": [writer], "columns": [], "cells": []},
+    }
+    at.run()
+    assert "##### k4FWCore__Writer, event by event" in [m.value for m in at.markdown]
+    # The same configuration of another run opens on its own default.
+    at.text_input(key="reco_data_dir").set_value(str(second)).run()
+    assert not at.exception
+    assert "##### LumiCalReco, event by event" in [m.value for m in at.markdown]
+
+
+def test_too_few_events_to_tell_steady_growth_is_said_so(monkeypatch, tmp_path):
+    def nine_events(raw: dict) -> None:
+        raw["event_numbers"] = raw["event_numbers"][:9]
+        raw["execute"] = {key: values[:9] for key, values in raw["execute"].items()}
+
+    run = _run_with_heap(tmp_path)
+    _rewrite_heap(run, nine_events)
+    at = _page(monkeypatch, tmp_path, run, "Memory")
+    assert not at.warning
+    assert at.info[0].value.startswith("Only 8 events after the warm-up: too few to tell")
+
+
+def test_a_sparkline_keeps_a_spike_of_one_event():
+    from reco.memory import _SPARK_POINTS, _spark
+
+    held = pd.Series(100.0, index=range(1200))
+    held[501] = 600.0
+    spark = _spark(held)
+    assert len(spark) <= _SPARK_POINTS and max(spark) == 600.0
+    # A rise stays a rise: each run's least comes before its most.
+    rising = _spark(pd.Series(np.arange(1200, dtype=float)))
+    assert rising == sorted(rising) and rising[0] == 0 and rising[-1] == 1199
+    short = pd.Series([1.0, 2.0, 3.0])
+    assert _spark(short) == [1.0, 2.0, 3.0]
+
+
+def test_a_malformed_heap_file_hides_no_other_configuration(monkeypatch, tmp_path):
+    run = _run_with_heap(tmp_path)
+    (run / "variant_truth_tracking_heap.json").write_text("{")
+    at = _page(monkeypatch, tmp_path, run, "Memory")
+    assert at.selectbox(key="reco_memory_config").options == ["baseline"]
+    assert [w.value for w in at.warning][0].startswith(
+        "The heap file of **variant_truth_tracking** could not be read, so it is not offered:"
+    )
+    assert any(m.label == "Before the first event" for m in at.metric)
+
+
+def test_a_run_without_a_memory_pass_says_so(monkeypatch, tmp_path):
+    run = tmp_path / "run"
+    shutil.copytree(RECO_RUN, run)
+    (run / "run_info.json").write_text(json.dumps(
+        {**json.loads((RECO_RUN / "run_info.json").read_text()), "suite": "reco"}
+    ))
+    at = _page(monkeypatch, tmp_path, run, "Memory")
+    assert "No heap breakdown in this run" in at.info[0].value
 
 # ── The Overview, from runs ──────────────────────────────────────────────────
 

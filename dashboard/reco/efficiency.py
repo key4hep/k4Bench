@@ -15,11 +15,10 @@ behind its help.
 """
 from __future__ import annotations
 
-import pandas as pd
 import streamlit as st
 
-from data import cached_load_run_packages, cached_load_trend_efficiency
-from k4bench.analysis.components import HARDWARE_METRICS, ComponentTiming
+from data import cached_load_trend_efficiency
+from k4bench.analysis.components import HARDWARE_METRICS
 from k4bench.analysis.efficiency import algorithm_efficiency
 from k4bench.analysis.plots.efficiency import (
     LABELLED,
@@ -27,7 +26,7 @@ from k4bench.analysis.plots.efficiency import (
     plot_component_efficiency,
 )
 from k4bench.analysis.plots.phases import latest_run_per_tag
-from k4bench.provenance.sources import package_of
+from reco._sources import package_labels
 from section_dispatch import PageContext, judgeable_trend
 from sections import TREND_WINDOW_SCOPE, SectionScope
 from tabs._historical_trends import render_historical_trends
@@ -67,16 +66,6 @@ _HIST_PANELS = [
     ("ipc", "Instructions per cycle"),
 ]
 _HIST_UNITS = {"ms_per_event": "ms", "instructions_g": "G", "ipc": ""}
-
-
-def _packages(ctx: PageContext, timing: ComponentTiming, names: pd.Index) -> pd.Series:
-    """The stack package each of *names* comes from, by its class's library."""
-    packages = cached_load_run_packages(ctx.data_dir)
-    libraries = timing.components["impl_library"]
-    return pd.Series(
-        [getattr(package_of(libraries[name], packages), "label", "Unknown") for name in names],
-        index=names,
-    )
 
 
 def _intro() -> None:
@@ -146,7 +135,7 @@ def _render_current_run(ctx: PageContext) -> None:
         return
     with named_col:
         labelled = _labelled_slider(len(table))
-    packages = _packages(ctx, timing, table.index)
+    packages = package_labels(ctx.data_dir, timing, table.index)
     n_packages = packages.nunique()
     fig = plot_component_efficiency(
         table, size=size, groups=packages,
