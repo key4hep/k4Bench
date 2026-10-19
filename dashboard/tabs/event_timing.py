@@ -83,13 +83,16 @@ def _timing_selector(components: Mapping[str, ComponentTiming], baseline: str) -
     """The "Timing of" multiselect: the whole event and any algorithms, each
     algorithm named with its mean time per event; the whole event and the
     *baseline* configuration's slowest algorithm at first. Never empty:
-    cleared, it is the whole event."""
+    cleared, it is the whole event.
+
+    Unlike the other controls on the page it is not bound to the URL: a bound
+    widget is stored by its labels, which carry this run's times, so a link
+    would lose its algorithms once the release is run again."""
     times = _algorithm_times(components)
     slowest = _slowest_algorithm(components[baseline]) if baseline in components else None
     chosen = st.multiselect(
         "Timing of", [_WHOLE_EVENT, *times],
         default=[_WHOLE_EVENT, *([slowest] if slowest else [])], key=_TIMINGS_KEY,
-        bind="query-params",
         format_func=lambda name: (
             name if name == _WHOLE_EVENT else f"{name}  ·  {_per_event(times[name].mean())}"
         ),

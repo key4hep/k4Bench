@@ -116,7 +116,8 @@ The controls that stay on the page are also in the page URL, so a copied link
 reopens what was on screen: the section, its view, the configuration and the
 other choices next to them. Display options are not in it, so a link draws the
 figures the default way; neither is the trend window (see below), nor a row
-selected in a table or a node clicked in a graph.
+selected in a table or a node clicked in a graph, nor Event Timing's **Timing
+of** algorithms, whose names carry the run's times.
 
 Tabs with multiple views use the same lightweight selector: horizontal radio
 buttons under a bold **View** label. The segmented bar is reserved for the
