@@ -124,6 +124,7 @@ class OutputFile:
     @classmethod
     def from_json(cls, raw: Mapping) -> OutputFile:
         parameters = raw.get("parameters")
+        events, compression = raw.get("events"), raw.get("compression")
         collections = [
             CollectionSize(
                 c["name"], c["type"], bool(c["subset"]),
@@ -137,8 +138,10 @@ class OutputFile:
                 int(parameters["compressed_bytes"]), int(parameters["uncompressed_bytes"]),
             ))
         return cls(
-            name=raw["name"], bytes=int(raw["bytes"]), events=raw.get("events"),
-            compression=raw.get("compression"), collections=tuple(collections),
+            name=raw["name"], bytes=int(raw["bytes"]),
+            events=None if events is None else int(events),
+            compression=None if compression is None else int(compression),
+            collections=tuple(collections),
         )
 
 

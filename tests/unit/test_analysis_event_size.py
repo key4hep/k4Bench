@@ -253,6 +253,13 @@ def test_one_unreadable_record_hides_no_other_configuration(tmp_path, opener):
     assert "malformed" in unreadable["variant_b"]
 
 
+def test_a_record_with_a_count_that_is_no_number_is_malformed(tmp_path, opener):
+    measured = _measured(tmp_path, opener)
+    path = _write(tmp_path / "baseline_event_size.json", [{**measured, "events": "invalid"}])
+    with pytest.raises(ValueError, match="malformed"):
+        read_event_size(path)
+
+
 def test_a_run_without_records_has_none(tmp_path):
     assert load_event_size(tmp_path) == ({}, {})
 

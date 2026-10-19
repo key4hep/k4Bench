@@ -305,6 +305,7 @@ def test_build_event_size_trend_skips_what_it_cannot_read(tmp_path, event_sizes)
     run = _make_run(tmp_path / "a", "2026-10-20", "key4hep-2026-10-20", 5.0)
     event_sizes.write(run, "variant_a")
     (run / "baseline_event_size.json").write_text("{")
+    event_sizes.write(run, "variant_b", files=[{**event_sizes.file("out.root"), "events": "invalid"}])
     df = trend.build_event_size_trend((str(run),))
     assert set(df["label"]) == {"variant_a"}
     # A run from before event sizes were recorded has none.

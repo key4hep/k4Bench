@@ -351,3 +351,10 @@ def test_a_run_that_failed_or_wrote_nothing_records_no_event_size(
     record, _ = _ddsim(tmp_path, returncode, writes_output)
     record.assert_not_called()
     assert not stale.exists()
+
+
+def test_a_previous_runs_output_file_is_never_measured(tmp_path):
+    (tmp_path / "out.edm4hep.root").write_bytes(b"previous run")
+    record, output = _ddsim(tmp_path, returncode=0, writes_output=False)
+    record.assert_not_called()
+    assert not output.exists()

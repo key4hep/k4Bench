@@ -116,6 +116,9 @@ def run_ddsim(
     region_json_path.unlink(missing_ok=True)
     event_size_path = label_path(log_dir, label, EVENT_SIZE_SUFFIX)
     event_size_path.unlink(missing_ok=True)
+    # The output file is reused across runs: removed too, so a run that writes
+    # none is never measured with a previous run's.
+    output_file.unlink(missing_ok=True)
 
     env = os.environ.copy()
 
