@@ -187,8 +187,15 @@ def event_table(
     others; ``None`` when there is nothing to tabulate.
 
     Raises ``ValueError`` when the files disagree on the number of events,
-    or their EventHeaders on which event an entry is.
+    or their EventHeaders on which event an entry is, and for *outputs*
+    without *source*: only the input's EventHeaders show that the outputs
+    hold the events in the order the job read them.
     """
+    if source is None and any(_measured(f) for f in outputs):
+        raise ValueError(
+            "the job's input was not recorded, so nothing shows that its outputs "
+            "hold the events in the order it read them"
+        )
     measured = [f for f in (*content, *outputs) if _measured(f)]
     sizes = {
         n for n in (

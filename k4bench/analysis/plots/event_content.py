@@ -9,6 +9,9 @@ import plotly.graph_objects as go
 
 from ._theme import _BLUE, _RED, _TEMPLATE
 
+#: Points the trend line is drawn through.
+_LINE_POINTS = 200
+
 
 def plot_event_content(
     pairs: pd.DataFrame,
@@ -36,9 +39,13 @@ def plot_event_content(
         hovertemplate=hover + "<extra></extra>", name="Events", showlegend=False,
     ))
     if line is not None:
-        x = np.linspace(float(pairs["x"].min()), float(pairs["x"].max()), 2)
+        # Sampled, not two end points: on a log axis a straight line is a curve.
+        x = np.linspace(float(pairs["x"].min()), float(pairs["x"].max()), _LINE_POINTS)
+        y = line.at(x)
+        if log_y:
+            y = np.where(y > 0, y, np.nan)
         fig.add_trace(go.Scatter(
-            x=x, y=line.at(x), mode="lines", line=dict(color="#555555", width=2, dash="dash"),
+            x=x, y=y, mode="lines", line=dict(color="#555555", width=2, dash="dash"),
             name="Trend", hoverinfo="skip", showlegend=False,
         ))
         if above is not None and not above.empty:

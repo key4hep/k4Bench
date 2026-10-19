@@ -137,6 +137,11 @@ class TestEventTable:
         assert event_table(source, outputs=[partial]).events == 3
         assert event_table(source, outputs=[output]).events == 3
 
+    def test_outputs_without_the_input_cannot_be_tabulated(self):
+        # Their order could be the job's or not: nothing to check it against.
+        with pytest.raises(ValueError, match="input was not recorded"):
+            event_table(None, outputs=[_output("rec.root", {"T": [1, 2, 3]})])
+
     def test_a_file_without_headers_between_two_hides_no_disagreement(self):
         source = _source([[PION]] * 3)
         output = _output("rec.root", {"T": [1, 2, 3]})

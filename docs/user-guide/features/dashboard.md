@@ -224,8 +224,10 @@ Top to bottom:
   line, which is not to say expensive for everything they hold.
 
 The warm-up event is left out. The events are matched to what they hold by
-their position in the job's files; a run whose profiling counted other events
-says so rather than matching them. See
+their position in the job's files; a run whose profiling counted other events,
+or whose files' EventHeaders name other events, says so rather than matching
+them. A reconstruction run without its input recorded shows no correlations,
+since nothing shows its outputs kept the order the job read its events in. See
 [File formats](../../reference/file-formats.md#event-source-json).
 
 ### Event Size tab
