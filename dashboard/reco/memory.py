@@ -36,7 +36,9 @@ from section_dispatch import PageContext
 from sections import SectionScope
 from ui_chrome import drop_stale_selection
 from ui_utils import (
+    PALETTE_NAMES,
     PALETTES,
+    auto_palette_index,
     display_options,
     legend_below,
     palette_control,
@@ -83,6 +85,18 @@ _T_MARGIN = 30
 def _name(component: str) -> str:
     """How a heap column is written on screen."""
     return NO_COMPONENT_LABEL if component == NO_COMPONENT else component
+
+
+def _palette_size(wanted: int) -> int:
+    """How many series to size the default palette for so that, its greys
+    left out for Other, it still has *wanted* colours."""
+    n = wanted
+    for _ in PALETTE_NAMES:
+        palette = PALETTES[PALETTE_NAMES[auto_palette_index(n)]]
+        if len(_vivid(palette)) >= wanted:
+            break
+        n = len(palette) + 1
+    return n
 
 
 def _heaps(ctx: PageContext) -> dict[str, ComponentHeap]:
@@ -296,7 +310,7 @@ def _render_current_run(ctx: PageContext, display_options_slot) -> None:
     order = list(dict.fromkeys([*leaks, *by_size.index]))
     wanted = len(set(leaks) | set(by_size.index[:top_n]))
     display = display_options(
-        palette_control(f"{_KEY}_palette", wanted),
+        palette_control(f"{_KEY}_palette", _palette_size(wanted)),
         key_prefix=f"{_KEY}_display",
         slot=display_options_slot,
     )

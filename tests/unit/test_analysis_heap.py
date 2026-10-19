@@ -251,6 +251,15 @@ def test_growth_freed_at_finalize_is_not_suspected_however_much_was_kept_from_th
     assert _one([1000 + 2 * e for e in range(21)], after_mb=1040, before_mb=1000).summary().loc["Algo", "leak"]
 
 
+def test_growth_freed_in_the_last_event_is_not_suspected():
+    # 1 MB more per event, all but 1 MB of it freed in the last event and
+    # nothing more at finalize: the slope still reads 1 MB per event.
+    held = [10.0 + e for e in range(100)] + [12.0]
+    algo = _one(held, after_mb=12).summary().loc["Algo"]
+    assert algo.growth_mb_per_event == pytest.approx(1.0, rel=0.05)
+    assert not algo.leak
+
+
 def test_one_step_halfway_through_is_not_growth():
     # 50 MB more from event 10 on, kept after finalize: a table filled once.
     algo = _one([100.0] * 10 + [150.0] * 11, after_mb=150).summary().loc["Algo"]

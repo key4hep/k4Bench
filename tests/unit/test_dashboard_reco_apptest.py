@@ -764,6 +764,40 @@ def _events_at_once(raw: dict) -> None:
     raw["at_end"]["held_bytes"] = [0] * n
 
 
+def test_every_suspect_gets_a_band_however_many_there_are(monkeypatch, tmp_path):
+    # Ten suspects and nothing else holding heap: ten series, which the
+    # default palette must colour besides its grey.
+    run = _run_with_heap(tmp_path)
+    suspects = ["LumiCalReco", "VertexFinder"]
+    emptied = ["GeoSvc", "k4FWCore__Reader", "k4FWCore__Writer"]
+
+    def eight_more(raw: dict) -> None:
+        names = raw["components"]
+        idle = [n for n in names[1:] if n not in {*suspects, *emptied}]
+        suspects.extend(idle[:8])
+        for name in emptied:
+            i = names.index(name)
+            for key in ("start_held_bytes", "held_bytes", "peak_held_bytes"):
+                for row in raw["execute"][key]:
+                    row[i] = 0
+            for key in ("held_bytes", "peak_held_bytes"):
+                raw["before_first_event"][key][i] = 0
+        for name in idle[:8]:
+            i = names.index(name)
+            for row, event in zip(raw["execute"]["held_bytes"], raw["event_numbers"]):
+                row[i] = 2 * (event + 1) * _MIB
+            raw["at_end"]["held_bytes"][i] = raw["execute"]["held_bytes"][-1][i]
+
+    _rewrite_heap(run, eight_more)
+    assert len(suspects) == 10
+    at = _page(monkeypatch, tmp_path, run, "Memory")
+    assert {b.label for b in at.button if (b.key or "").startswith("reco_memory_inspect_")} == set(suspects)
+    for mode in ("Held", "Change since the first event"):
+        at.segmented_control(key="reco_memory_mode").set_value(mode).run()
+        assert not at.exception
+        assert set(suspects) <= {t.get("name") for t in _traces(at)}
+
+
 @pytest.mark.parametrize(
     "change", [_no_events, _warm_up_only, _events_at_once],
     ids=["no events", "the warm-up alone", "events at once"],

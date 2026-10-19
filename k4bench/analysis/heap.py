@@ -91,7 +91,8 @@ SUMMARY_COLUMNS = (
 )
 
 #: What a component must gain over the pass's events, in MB, to be suspected
-#: of leaking: smaller growth is lost among the heap's ordinary movement.
+#: of leaking, and still hold after finalize beyond what it held at the first
+#: event: smaller growth is lost among the heap's ordinary movement.
 LEAK_MIN_MB = 10.0
 
 #: The share of what it gained over the events that a suspect still holds
@@ -276,8 +277,9 @@ class ComponentHeap:
         - ``leak``: whether it is suspected of leaking: it grew by
           :data:`LEAK_MIN_MB` or more over the events, in both halves of them
           (each at :data:`LEAK_STEADY_SHARE` of the whole's rate or more), and
-          after finalize still holds at least :data:`LEAK_KEPT_SHARE` of what
-          it gained from the first event to the last.
+          after finalize still holds :data:`LEAK_MIN_MB` or more beyond what
+          it held at the first event, and at least :data:`LEAK_KEPT_SHARE` of
+          what it gained from the first event to the last.
 
         The *warm_up* event is left out of every statistic over events.
         """
@@ -288,8 +290,11 @@ class ComponentHeap:
         nothing = pd.Series(np.nan, index=held.columns)
         first, last = (held.iloc[0], held.iloc[-1]) if len(held) else (nothing, nothing)
         after = self.at_end["held_bytes"] / MB
-        gained = last - first
-        kept = (growth * span >= LEAK_MIN_MB) & (gained > 0) & (after - first >= LEAK_KEPT_SHARE * gained)
+        gained, retained = last - first, after - first
+        kept = (
+            (growth * span >= LEAK_MIN_MB) & (gained > 0) & (retained >= LEAK_MIN_MB)
+            & (retained >= LEAK_KEPT_SHARE * gained)
+        )
         return pd.DataFrame({
             "before_first_mb": self.before_first_event["held_bytes"] / MB,
             "typical_mb": held.median(),
