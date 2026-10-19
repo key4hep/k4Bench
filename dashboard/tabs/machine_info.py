@@ -781,6 +781,7 @@ def render(
             options=_VIEWS,
             horizontal=True,
             key="machine_info_view_mode",
+            bind="query-params",
         )
     else:
         view = _VIEWS[0]

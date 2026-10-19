@@ -34,7 +34,7 @@ def _render_step_analysis(region_data: dict, display_options_slot=None) -> None:
 
     # ── Controls — config first, then data, then the popover (palette needs n) ─
     config = st.selectbox(
-        "Configuration", labels, key="sa_config", width=420,
+        "Configuration", labels, key="sa_config", width=420, bind="query-params",
     )
 
     def _display_controls(n_detectors: int | None) -> dict:

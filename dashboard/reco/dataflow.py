@@ -203,10 +203,12 @@ def render(ctx: PageContext) -> None:
         [3, 2, 1, 1], gap="small", vertical_alignment="bottom",
     )
     with config_col:
-        config = st.selectbox("Configuration", sorted(flows), key=_CONFIG_KEY)
+        config = st.selectbox(
+            "Configuration", sorted(flows), key=_CONFIG_KEY, bind="query-params",
+        )
     flow = flows[config]
     with writer_col:
-        writer = st.toggle("Show Writer inputs", key=_WRITER_KEY)
+        writer = st.toggle("Show Writer inputs", key=_WRITER_KEY, bind="query-params")
     view = dataflow_view(flow, _seconds_per_event(ctx, config),
                          st.session_state[_EXPANDED_KEY], writer_edges=writer, isolated=False)
     with expand_col:

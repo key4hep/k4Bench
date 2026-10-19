@@ -92,7 +92,7 @@ def _labelled_slider(n_algorithms: int) -> int:
         st.session_state[key] = n_algorithms
     return st.slider(
         "Named algorithms", min_value=0, max_value=n_algorithms,
-        value=min(LABELLED, n_algorithms), key=key,
+        value=min(LABELLED, n_algorithms), key=key, bind="query-params",
         help="How many of the slowest algorithms carry their name; hovering "
              "names any of them.",
     )
@@ -108,11 +108,13 @@ def _render_current_run(ctx: PageContext) -> None:
         return
     config_col, size_col, named_col = st.columns([4, 2, 2], vertical_alignment="bottom")
     with config_col:
-        config = st.selectbox("Configuration", labels, key=f"{_KEY}_config")
+        config = st.selectbox(
+            "Configuration", labels, key=f"{_KEY}_config", bind="query-params",
+        )
     drop_stale_selection(f"{_KEY}_size", list(_SIZES))
     with size_col:
         size = _SIZES[st.selectbox(
-            "Point size", list(_SIZES), key=f"{_KEY}_size",
+            "Point size", list(_SIZES), key=f"{_KEY}_size", bind="query-params",
             help="What a point's area shows, the largest point being the most. "
                  "Allocation rate is allocations per second of the algorithm's "
                  "own time: how hard it leans on the allocator, however long it runs.",
@@ -165,6 +167,7 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
         return
     config = st.selectbox(
         "Configuration", sorted(trend["label"].unique()), key=f"{_KEY}_hist_config",
+        bind="query-params",
     )
     rows = latest_run_per_tag(trend[trend["label"] == config])
     # The Top N chooses the algorithms before the renderer draws its popover,

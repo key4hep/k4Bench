@@ -661,6 +661,17 @@ def test_a_warned_component_opens_in_the_components_view(monkeypatch, tmp_path, 
     ] == "VertexFinder"
 
 
+def test_a_link_opens_the_view_it_names(monkeypatch, tmp_path, reco_run_with_heap):
+    _local_env(monkeypatch, reco_run_with_heap(), tmp_path / "cache")
+    at = AppTest.from_function(_page_app, args=(str(_DASHBOARD_DIR),), default_timeout=60)
+    at.query_params["tab"] = "Memory"
+    at.query_params["reco_memory_view"] = "Components"
+    at.run()
+    assert not at.exception, at.exception
+    assert at.radio(key="reco_memory_view").value == "Components"
+    assert "##### Components" in [m.value for m in at.markdown]
+
+
 def test_memory_draws_each_series_change_since_the_first_event(
     monkeypatch, tmp_path, reco_run_with_heap,
 ):

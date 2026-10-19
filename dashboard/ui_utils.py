@@ -28,9 +28,13 @@ def is_valid_df(df: "pd.DataFrame | None") -> bool:
     return df is not None and not df.empty
 
 
+#: :func:`reset_widget_on_scope`'s default: reset a widget by dropping its value.
+_DROP = object()
+
+
 def reset_widget_on_scope(
     key: str, scope: object, *, reset_unscoped: bool = False,
-    query_param: str | None = None,
+    query_param: str | None = None, default: object = _DROP,
 ) -> None:
     """Drop a keyed widget's value when its context-dependent default changes.
 
@@ -48,6 +52,10 @@ def reset_widget_on_scope(
     — so the reset would silently do nothing whenever the stale value is also
     valid in the new scope. The incoming deep link survives, since a first
     render (no scope recorded yet) never resets.
+
+    A widget bound to the URL (``bind="query-params"``) is reset by setting it
+    to its *default* instead: its dropped value would be seeded straight back
+    from its parameter, which only its value can change.
     """
     scope_key = f"_{key}_scope"
     previous = st.session_state.get(scope_key)
@@ -56,7 +64,10 @@ def reset_widget_on_scope(
         (previous is not None and previous != scope)
         or (previous is None and reset_unscoped and key in st.session_state)
     ):
-        st.session_state.pop(key, None)
+        if default is _DROP:
+            st.session_state.pop(key, None)
+        else:
+            st.session_state[key] = default
         if query_param is not None:
             st.query_params.pop(query_param, None)
 
@@ -169,6 +180,7 @@ def baseline_selector_control(key_prefix: str, current_labels: list[str]) -> str
         options=current_labels,
         index=current_labels.index(default_label),
         key=key,
+        bind="query-params",
         help=(
             "The configuration used as the reference. The ratio panel and the "
             "Statistics table's ratio column measure every other configuration "
@@ -205,19 +217,18 @@ def config_selector_control(
     """
     selectable = [lbl for lbl in current_labels if lbl != baseline_label]
     key = f"{key_prefix}_configs"
-    # A baseline change deliberately refreshes the comparison default: the new
-    # baseline moves out of the options and the old one moves in. A change in
-    # which configurations the run offers does not reset a still-valid manual
-    # pick; Streamlit drops values that disappear from ``options`` itself.
-    reset_widget_on_scope(
-        key, baseline_label, reset_unscoped=True,
-    )
-
     default_n = min(_DEFAULT_N_CONFIGS, len(current_labels)) if compare_by_default else 1
     default_all = select_top_n_by_ratio(
         event_data, current_labels, column, unit, baseline_label, True, default_n,
     )
     default_extra = [lbl for lbl in default_all if lbl != baseline_label]
+    # A baseline change deliberately refreshes the comparison default: the new
+    # baseline moves out of the options and the old one moves in. A change in
+    # which configurations the run offers does not reset a still-valid manual
+    # pick; Streamlit drops values that disappear from ``options`` itself.
+    reset_widget_on_scope(
+        key, baseline_label, reset_unscoped=True, default=default_extra,
+    )
 
     n_extra = max(default_n - 1, 0)
     noun = "configuration" if n_extra == 1 else "configurations"
@@ -230,6 +241,7 @@ def config_selector_control(
         options=selectable,
         default=default_extra,
         key=key,
+        bind="query-params",
         help=(
             f"`{baseline_label}` (the baseline) is always plotted. Pick which "
             "other configurations to compare it against — "
@@ -304,14 +316,16 @@ def view_control_row(
     The view radio occupies the left; two deferred right-hand slots hold the
     run-quality scope and Display options respectively. Returning placeholders
     lets callers compute their data before deciding whether either control is
-    needed without changing the row where it appears.
+    needed without changing the row where it appears. The view is bound to
+    ``?{key}=``, so a copied link reopens it.
     """
     view_col, options_col = st.columns(
         [5, 3], gap="medium", vertical_alignment="bottom",
     )
     with view_col:
         view = (
-            st.radio("**View**", options=options, horizontal=True, key=key)
+            st.radio("**View**", options=options, horizontal=True, key=key,
+                     bind="query-params")
             if len(options) > 1
             else options[0]
         )
@@ -334,7 +348,10 @@ def view_control_row(
 # "Display options" popover. The page flow then carries only the controls that
 # change *what* you are looking at — baseline, configuration, attribution,
 # metric, view, report night — and the controls that change *how it is drawn*
-# read identically everywhere instead of teaching a new layout per tab.
+# read identically everywhere instead of teaching a new layout per tab. The
+# page-flow controls are bound to the URL (``bind="query-params"``), so a copied
+# link reopens what was being looked at; the popover's are not, and a link
+# draws it the default way.
 #
 # A control is declared once, as a :class:`DisplayControl` that carries its own
 # default, and :func:`display_options` derives the "Reset to defaults" button

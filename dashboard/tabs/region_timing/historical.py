@@ -58,7 +58,9 @@ def _render_historical(
         display_options_slot = actions.container(width="content").empty()
 
     with config_host:
-        config = st.selectbox("Configuration", avail_labels, key="region_hist_config")
+        config = st.selectbox(
+            "Configuration", avail_labels, key="region_hist_config", bind="query-params",
+        )
     with attribution_host:
         attribution = st.radio(
             "Attribution",
@@ -66,6 +68,7 @@ def _render_historical(
             format_func=lambda x: "At location" if x == "at_location" else "By birth",
             horizontal=True,
             key="region_hist_attr",
+            bind="query-params",
             help=_ATTRIBUTION_HELP,
         )
 

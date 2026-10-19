@@ -826,7 +826,7 @@ def _figure_toolbar(
             if trends:
                 scale = st.segmented_control(
                     "Scale", ["Log", "Linear", "Relative %"],
-                    default="Log", key=f"{key_prefix}det_ov_scale",
+                    default="Log", key=f"{key_prefix}det_ov_scale", bind="query-params",
                     help="Log keeps the detectors' >1-decade spread readable; "
                          "Linear shows absolute values; Relative % rescales "
                          "each line to its first plotted night = 100%, so "
@@ -837,6 +837,7 @@ def _figure_toolbar(
                 scale = st.segmented_control(
                     "Scale", ["Log", "Linear"],
                     default="Log", key=f"{key_prefix}det_ov_scale_land",
+                    bind="query-params",
                     help="Log keeps the detectors' >1-decade spread "
                          "readable; Linear shows absolute values.",
                 ) or "Log"

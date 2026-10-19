@@ -475,6 +475,7 @@ def render(results_df: pd.DataFrame | None) -> None:
             options=snap_labels,
             index=baseline_index,
             key="impact_baseline",
+            bind="query-params",
             help=(
                 "The reference configuration. Its value becomes the zero line; "
                 "every alternative is shown as a signed percentage gain from it."
@@ -494,6 +495,7 @@ def render(results_df: pd.DataFrame | None) -> None:
             options=metric_labels,
             default=wall_default,
             key="impact_sort",
+            bind="query-params",
             format_func=lambda label: selector_labels.get(label, label),
             width="stretch",
             required=True,

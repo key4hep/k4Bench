@@ -128,6 +128,7 @@ def render_flag_pills(key: str, *, label: str = "Regressions") -> tuple[bool, bo
     flags = st.pills(
         label, ["🔴 Confirmed", "⚠️ Watch"], selection_mode="multi",
         default=["🔴 Confirmed", "⚠️ Watch"], key=key, help=_FLAG_HELP,
+        bind="query-params",
     ) or []
     return "🔴 Confirmed" in flags, "⚠️ Watch" in flags
 

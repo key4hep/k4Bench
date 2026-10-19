@@ -59,6 +59,17 @@ def test_scope_change_also_clears_the_widgets_query_param(monkeypatch):
     assert params == {}
 
 
+def test_scope_change_sets_a_bound_widget_to_its_default(monkeypatch):
+    # A widget bound to the URL is reset by its value: dropped, it would be
+    # seeded straight back from its parameter, which st.query_params cannot drop.
+    state = {"picker": ["old pick"], "_picker_scope": ("old",)}
+    monkeypatch.setattr(ui_utils.st, "session_state", state)
+
+    ui_utils.reset_widget_on_scope("picker", ("new",), default=["new default"])
+
+    assert state == {"picker": ["new default"], "_picker_scope": ("new",)}
+
+
 def test_first_scope_keeps_the_deep_linked_query_param(monkeypatch):
     state = {}
     params = {"report": "2026-07-09"}

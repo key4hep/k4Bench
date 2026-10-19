@@ -24,13 +24,16 @@ def _render_current_run(region_data: dict, display_options_slot=None) -> None:
 
     col_cfg, col_attr = st.columns([1, 1], vertical_alignment="bottom")
     with col_cfg:
-        config = st.selectbox("Configuration", labels, key="region_config")
+        config = st.selectbox(
+            "Configuration", labels, key="region_config", bind="query-params",
+        )
     with col_attr:
         attribution = st.selectbox(
             "Attribution",
             options=["at_location", "by_birth"],
             format_func=lambda x: "At location" if x == "at_location" else "By birth",
             key="region_attr",
+            bind="query-params",
             help=_ATTRIBUTION_HELP,
         )
 

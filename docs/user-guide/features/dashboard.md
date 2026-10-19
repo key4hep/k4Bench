@@ -112,6 +112,12 @@ shared **Runs · ⚠ N unreliable** selector occupies the right-hand end of that
 view's existing controls line (beside Display options where present); it never
 inserts a separate warning or controls row.
 
+The controls that stay on the page are also in the page URL, so a copied link
+reopens what was on screen: the section, its view, the configuration and the
+other choices next to them. Display options are not in it, so a link draws the
+figures the default way; neither is the trend window (see below), nor a row
+selected in a table or a node clicked in a graph.
+
 Tabs with multiple views use the same lightweight selector: horizontal radio
 buttons under a bold **View** label. The segmented bar is reserved for the
 dashboard's top-level section navigation and for compact value choices such as
