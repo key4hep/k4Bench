@@ -69,7 +69,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from k4bench.analysis.robust import theil_sen_slope
+from k4bench.analysis.robust import MIN_SLOPE_EVENTS, theil_sen_slope
 
 #: The column of what no component allocated.
 NO_COMPONENT = "(no component)"
@@ -106,6 +106,10 @@ LEAK_KEPT_SHARE = 0.5
 #: of how fast over all of them: a leak grows throughout, a table filled once
 #: steps up in one half and holds still in both.
 LEAK_STEADY_SHARE = 0.25
+
+#: The events, the warm-up left out, a job needs for any component to be
+#: suspected: each half of them needs a slope of its own.
+LEAK_MIN_EVENTS = 2 * MIN_SLOPE_EVENTS
 
 
 @dataclass(frozen=True)
@@ -282,7 +286,8 @@ class ComponentHeap:
           (each at :data:`LEAK_STEADY_SHARE` of the whole's rate or more), and
           after finalize still holds :data:`LEAK_MIN_MB` or more beyond what
           it held at the first event, and at least :data:`LEAK_KEPT_SHARE` of
-          what it gained from the first event to the last.
+          what it gained from the first event to the last. With fewer than
+          :data:`LEAK_MIN_EVENTS` events none is.
 
         The *warm_up* event is left out of every statistic over events.
         """

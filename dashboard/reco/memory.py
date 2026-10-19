@@ -22,7 +22,7 @@ import streamlit as st
 
 from data import cached_load_component_heap
 from k4bench.analysis.components import ComponentTiming
-from k4bench.analysis.heap import MB, NO_COMPONENT, ComponentHeap, HeapTotals
+from k4bench.analysis.heap import LEAK_MIN_EVENTS, MB, NO_COMPONENT, ComponentHeap, HeapTotals
 from k4bench.analysis.loader import judgeable_config_data
 from k4bench.analysis.plots._theme import _vivid
 from k4bench.analysis.plots.heap import (
@@ -131,11 +131,18 @@ def _select_config(ctx: PageContext) -> tuple[str, ComponentHeap] | None:
 
 
 def _spark(values: pd.Series) -> list[float]:
-    """At most :data:`_SPARK_POINTS` of *values*, evenly spaced, the last kept."""
+    """At most :data:`_SPARK_POINTS` of *values*: the least and the most of
+    each of half as many runs of them, in the order they came, so a spike in
+    a single event survives the thinning."""
     if len(values) <= _SPARK_POINTS:
         return values.tolist()
-    keep = np.unique(np.linspace(0, len(values) - 1, _SPARK_POINTS).round().astype(int))
-    return values.iloc[keep].tolist()
+    out: list[float] = []
+    for run in np.array_split(values.to_numpy(dtype=float), _SPARK_POINTS // 2):
+        finite = np.flatnonzero(np.isfinite(run))
+        if len(finite):
+            extremes = {finite[np.argmin(run[finite])], finite[np.argmax(run[finite])]}
+            out += [float(run[i]) for i in sorted(extremes)]
+    return out
 
 
 def _measured_events(heap: ComponentHeap) -> pd.Index:
@@ -193,11 +200,19 @@ def _render_tiles(summary: pd.DataFrame, totals: HeapTotals) -> None:
 
 
 def _render_leaks(summary: pd.DataFrame, heap: ComponentHeap) -> None:
-    """One line per component that grows and keeps what it gained."""
+    """One line per component that grows and keeps what it gained, or why
+    none could be checked."""
+    events = _measured_events(heap)
+    if 0 < len(events) < LEAK_MIN_EVENTS:
+        st.info(
+            f"Only {len(events)} events after the warm-up: too few to tell steady growth "
+            f"from a single step ({LEAK_MIN_EVENTS} are needed), so no component is "
+            "checked for growth it keeps."
+        )
+        return
     suspects = summary[summary["leak"]].sort_values("growth_mb_per_event", ascending=False)
     if suspects.empty:
         return
-    events = _measured_events(heap)
     span = float(events[-1] - events[0])
     lines = [
         f"**{_name(name)}** grows {format_mb(row.growth_mb_per_event)} per event "

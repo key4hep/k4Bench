@@ -765,8 +765,10 @@ failed, have none, and the section says so. It has two views:
   and after finalize still holds 10 MB or more of it, at least half of what it
   gained. That is what a leak looks like; a cache that fills as new detector
   cells are seen looks the same, while a table filled once, in a single step,
-  or a buffer released at the end does not. A button under the warning opens
-  each of them in **Components**, its row selected. Below, every component's heap from
+  or a buffer released at the end does not. A run with fewer than 10 events
+  after the warm-up is too short to tell, and the view says so instead. A
+  button under the warning opens each of them in **Components**, its row
+  selected. Below, every component's heap from
   initialization through each event to finalization is stacked, the most
   stable at the bottom: every suspect and the largest components (six by
   default, set by **Largest shown**), the rest as *Other*, and what no component

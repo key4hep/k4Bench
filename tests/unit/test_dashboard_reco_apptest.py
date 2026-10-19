@@ -881,6 +881,32 @@ def test_a_selection_stays_with_its_run(monkeypatch, tmp_path):
     assert "##### LumiCalReco, event by event" in [m.value for m in at.markdown]
 
 
+def test_too_few_events_to_tell_steady_growth_is_said_so(monkeypatch, tmp_path):
+    def nine_events(raw: dict) -> None:
+        raw["event_numbers"] = raw["event_numbers"][:9]
+        raw["execute"] = {key: values[:9] for key, values in raw["execute"].items()}
+
+    run = _run_with_heap(tmp_path)
+    _rewrite_heap(run, nine_events)
+    at = _page(monkeypatch, tmp_path, run, "Memory")
+    assert not at.warning
+    assert at.info[0].value.startswith("Only 8 events after the warm-up: too few to tell")
+
+
+def test_a_sparkline_keeps_a_spike_of_one_event():
+    from reco.memory import _SPARK_POINTS, _spark
+
+    held = pd.Series(100.0, index=range(1200))
+    held[501] = 600.0
+    spark = _spark(held)
+    assert len(spark) <= _SPARK_POINTS and max(spark) == 600.0
+    # A rise stays a rise: each run's least comes before its most.
+    rising = _spark(pd.Series(np.arange(1200, dtype=float)))
+    assert rising == sorted(rising) and rising[0] == 0 and rising[-1] == 1199
+    short = pd.Series([1.0, 2.0, 3.0])
+    assert _spark(short) == [1.0, 2.0, 3.0]
+
+
 def test_a_malformed_heap_file_hides_no_other_configuration(monkeypatch, tmp_path):
     run = _run_with_heap(tmp_path)
     (run / "variant_truth_tracking_heap.json").write_text("{")
