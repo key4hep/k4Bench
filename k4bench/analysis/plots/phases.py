@@ -27,8 +27,8 @@ PHASE_NAMES = {
 UNATTRIBUTED = "Unattributed"
 _UNATTRIBUTED_COLOR = "#e8e8e8"
 
-def _seconds(value: float) -> str:
-    return f"{value:.3g} s" if value < 100 else f"{value:,.0f} s"
+def _amount(value: float, unit: str) -> str:
+    return f"{value:.3g} {unit}" if value < 100 else f"{value:,.0f} {unit}"
 
 
 #: Slices smaller than this share carry no percentage on the slice itself:
@@ -36,9 +36,9 @@ def _seconds(value: float) -> str:
 _MIN_LABEL_SHARE = 0.04
 
 
-def _total(value: float) -> str:
+def _total(value: float, unit: str = "s") -> str:
     """A phase's total, as the dashboard's phase cards write it."""
-    return f"{value:.2f} s" if value < 100 else f"{value:,.0f} s"
+    return f"{value:.2f} {unit}" if value < 100 else f"{value:,.0f} {unit}"
 
 
 def top_components(seconds: pd.Series, top_n: int) -> list[str]:
@@ -55,6 +55,7 @@ def plot_phase_component_pie(
     colors: Mapping[str, str] | None = None,
     title: str | None = None,
     duration: float | None = None,
+    unit: str = "s",
 ) -> go.Figure:
     """A donut of one phase's time by component: the :func:`top_components`
     and the rest as one "Other (k)" slice, the total in the middle.
@@ -68,7 +69,8 @@ def plot_phase_component_pie(
     it, the middle is the components' summed time; when that exceeds
     *duration* (components run in parallel), too, marked as component time.
     *colors* maps a component to its colour, so a component that several
-    donuts show keeps one; the others take the palette in order.
+    donuts show keeps one; the others take the palette in order. Parts of
+    another quantity than time give its *unit*.
     """
     seconds = seconds.dropna()
     seconds = seconds[seconds > 0].sort_values(ascending=False)
@@ -89,7 +91,7 @@ def plot_phase_component_pie(
         slice_colors.append(_UNATTRIBUTED_COLOR)
     total = float(sum(values))
     shares = [v / total if total else 0.0 for v in values]
-    centre = f"<b>{_total(total)}</b>"
+    centre = f"<b>{_total(total, unit)}</b>"
     if duration is not None and measured > duration:
         centre += "<br>component time"
 
@@ -98,7 +100,7 @@ def plot_phase_component_pie(
         marker=dict(colors=slice_colors, line=dict(color="white", width=2)),
         text=[f"{share:.0%}" if share >= _MIN_LABEL_SHARE else "" for share in shares],
         textinfo="text", textposition="inside", insidetextorientation="horizontal",
-        customdata=[_seconds(v) for v in values],
+        customdata=[_amount(v, unit) for v in values],
         hovertemplate="<b>%{label}</b><br>%{customdata} · %{percent}<extra></extra>",
     ))
     fig.add_annotation(
@@ -296,6 +298,10 @@ def plot_phase_history(
     *,
     palette: list[str] = _PALETTE,
     relative: bool = False,
+    value: str = "seconds",
+    unit: str = "s",
+    y_title: str = "Time (s)",
+    whole: str = "phase",
 ) -> go.Figure | None:
     """One phase's time per nightly tag, a column per tag stacking
     :func:`phase_component_series`' series in their order, "Other" grey and
@@ -304,6 +310,10 @@ def plot_phase_history(
     unattributed part. *relative* draws each series as its share of the
     column. A tag run more than once shows its latest run
     (:func:`latest_run_per_tag`). ``None`` when there is nothing to draw.
+
+    Series of another quantity than time (their :func:`phase_component_series`
+    *value*) give its column as *value*, its *unit*, the *y_title* of the
+    axis and what a column is the *whole* of.
     """
     if series.empty:
         return None
@@ -313,7 +323,7 @@ def plot_phase_history(
     series = latest_run_per_tag(series.dropna(subset=["run_date"]))
     dates = sorted(pd.to_datetime(series["x_date"]).unique())
     table = series.pivot_table(
-        index="x_date", columns="label", values="seconds", aggfunc="sum", fill_value=0.0,
+        index="x_date", columns="label", values=value, aggfunc="sum", fill_value=0.0,
     ).reindex(index=dates, columns=names, fill_value=0.0)
     totals = table.sum(axis=1)
 
@@ -333,11 +343,13 @@ def plot_phase_history(
                 line=dict(color="white", width=1),
             ),
             customdata=list(zip(seconds, share)),
-            hovertemplate=f"{name}: %{{customdata[0]:.3g}} s · %{{customdata[1]:.0%}}<extra></extra>",
+            hovertemplate=(
+                f"{name}: %{{customdata[0]:.3g}} {unit} · %{{customdata[1]:.0%}}<extra></extra>"
+            ),
         ))
     if not relative and len(dates) <= _MAX_TOTAL_LABELS:
         fig.add_trace(go.Scatter(
-            x=dates, y=totals, mode="text", text=[_seconds(t) for t in totals],
+            x=dates, y=totals, mode="text", text=[_amount(t, unit) for t in totals],
             textposition="top center", showlegend=False, hoverinfo="skip",
         ))
     fig.update_layout(
@@ -354,7 +366,7 @@ def plot_phase_history(
     )
     top_y = 100 if relative else float(totals.max()) * 1.12
     fig.update_yaxes(
-        title_text="Share of the phase (%)" if relative else "Time (s)",
+        title_text=f"Share of the {whole} (%)" if relative else y_title,
         range=[0, top_y or 1],
     )
     return fig

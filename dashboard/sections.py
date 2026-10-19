@@ -32,6 +32,7 @@ SECTION_NAMES = [
     "Region Timing",
     "Event Timing",
     "Event Memory",
+    "Event Size",
     "Machine Info",
     "Logs",
 ]
@@ -139,7 +140,7 @@ SECTION_SCOPE: dict[str, SectionScope] = {
     ),
     # The sections built on the sidebar's own selection: all four dimensions
     # come straight from it. Config Impact and Logs read that one run and
-    # nothing else; the four below them open on it too, and their historical
+    # nothing else; the five below them open on it too, and their historical
     # sub-views widen across the trend window's releases, which they report by
     # returning :data:`TREND_WINDOW_SCOPE`.
     "Config Impact": SectionScope(
@@ -154,6 +155,9 @@ SECTION_SCOPE: dict[str, SectionScope] = {
     "Event Memory": SectionScope(
         detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
     ),
+    "Event Size": SectionScope(
+        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
+    ),
     "Machine Info": SectionScope(
         detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
     ),
@@ -163,7 +167,7 @@ SECTION_SCOPE: dict[str, SectionScope] = {
 }
 
 #: What a historical sub-view shows: the same sidebar triple, but every release
-#: the trend window covers rather than the selected one. Returned by the four
+#: the trend window covers rather than the selected one. Returned by the
 #: sections that offer such a view, so the note stops naming a release the plot
 #: below it does not single out.
 TREND_WINDOW_SCOPE = SectionScope(

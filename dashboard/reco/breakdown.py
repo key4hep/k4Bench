@@ -39,7 +39,7 @@ from ui_utils import (
     PALETTES,
     auto_palette_index,
     display_options,
-    legend_below,
+    fit_legend_below,
     palette_control,
     top_n_control,
     view_control_row,
@@ -48,11 +48,6 @@ from ui_utils import (
 #: Components a phase's history names; the rest are one "Other" series.
 _TOP_N = 6
 _TOP_N_KEY = "reco_breakdown_hist_topn"
-
-#: The data-area height and top margin of the charts with a legend below, as
-#: the sim trend views size theirs for :func:`ui_utils.legend_below`.
-_PLOT_H = 380
-_T_MARGIN = 40
 
 #: Components each current-run donut names; the rest are one "Other" slice.
 _PIE_TOP_N = 5
@@ -69,19 +64,6 @@ _WARM_UP_EVENT = 0
 
 def _seconds(value: float) -> str:
     return f"{value:.2f} s" if value < 100 else f"{value:,.0f} s"
-
-
-def _legend_below(fig, n_entries: int) -> None:
-    """Size *fig* for its legend below the plot, as the trend views do, its
-    entries in the order the series are drawn: Plotly lists a stack's
-    top-down otherwise."""
-    legend, bottom = legend_below(n_entries, tick_clearance=75)
-    legend["traceorder"] = "normal"
-    fig.update_layout(
-        height=_PLOT_H + _T_MARGIN + bottom,
-        margin=dict(l=20, r=20, t=_T_MARGIN, b=bottom),
-        legend=legend,
-    )
 
 
 def _select_config(ctx: PageContext) -> tuple[str, ComponentTiming] | None:
@@ -153,7 +135,7 @@ def _render_current_run(ctx: PageContext) -> None:
         timing.execute["wall_s"], top_components(per_phase["execute"], _PIE_TOP_N),
         colors=colors, sort=order == "Longest first", warm_up=_WARM_UP_EVENT,
     )
-    _legend_below(fig, len(fig.data))
+    fit_legend_below(fig, len(fig.data))
     st.plotly_chart(fig, width="stretch", key="reco_breakdown_events_chart")
 
 
@@ -296,7 +278,7 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
         slot=display_options_slot,
     )
     fig = plot_phase_history(series, palette=PALETTES[display["palette"]], relative=relative)
-    _legend_below(fig, series["label"].nunique())
+    fit_legend_below(fig, series["label"].nunique())
     st.plotly_chart(fig, width="stretch", key="reco_breakdown_hist_chart")
 
 

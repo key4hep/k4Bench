@@ -310,3 +310,44 @@ def test_peak_vmem_from_plugin_reaches_results_csv(tmp_path, payload, expected):
         assert df["peak_vmem_mb"].isna().all()
     else:
         assert df["peak_vmem_mb"].iloc[0] == expected
+
+
+def _ddsim(tmp_path: Path, returncode: int, writes_output: bool = True):
+    output = tmp_path / "out.edm4hep.root"
+    proc = MagicMock(stdout=iter([]), returncode=None)
+
+    def finish():
+        if writes_output:
+            output.write_bytes(b"x")
+        proc.returncode = returncode
+
+    proc.wait.side_effect = finish
+    with (
+        patch("k4bench.runner.process.subprocess.Popen", return_value=proc),
+        patch("k4bench.runner.ddsim.setup_plugin_environment", return_value=False),
+        patch("k4bench.runner.ddsim.record_event_size") as record,
+    ):
+        run_ddsim(
+            xml_path=XML, label="baseline", n_events=2, output_file=output,
+            log_dir=tmp_path / "logs",
+        )
+    return record, output
+
+
+def test_the_output_file_of_a_successful_run_is_measured(tmp_path):
+    record, output = _ddsim(tmp_path, returncode=0)
+    record.assert_called_once_with(
+        tmp_path / "logs" / "baseline_event_size.json", {"out.edm4hep.root": output},
+    )
+
+
+@pytest.mark.parametrize(("returncode", "writes_output"), [(1, True), (0, False)])
+def test_a_run_that_failed_or_wrote_nothing_records_no_event_size(
+    tmp_path, returncode, writes_output,
+):
+    stale = tmp_path / "logs" / "baseline_event_size.json"
+    stale.parent.mkdir()
+    stale.write_text("{}")
+    record, _ = _ddsim(tmp_path, returncode, writes_output)
+    record.assert_not_called()
+    assert not stale.exists()

@@ -85,6 +85,7 @@ The Simulation page's sections:
 | **Config Impact** | baseline-relative configuration impact in the selected run | `*_results.csv` |
 | **Event timing** | per-event wall time distributions | `*_events.json` |
 | **Event memory** | per-event RSS and growth | `*_events.json` |
+| **Event size** | what each event of the output file takes on disk after ROOT's compression, collection by collection | `*_event_size.json` |
 | **Region timing** | per-subdetector stepping time, `at_location` vs `by_birth`, step counts, attribution analysis | `*_regions.json` |
 | **Trends** | metrics over time across releases | many runs, windowed |
 | **Regressions** | the nightly regression report for the selected detector/platform/sample | `reports/sim/{date}/report.json` |
@@ -164,6 +165,36 @@ two attribution views (`at_location` and `by_birth`) and adds:
   imported cost).
 - **Step analysis** — timer-interval counts per detector.
 - **Historical** — the same detector's time across runs.
+
+### Event Size tab
+
+What each event of a configuration's output takes on disk after ROOT's
+compression, for planning production storage: on the Simulation page ddsim's
+output file, on the Reconstruction page each EDM4hep file the k4run job wrote
+(an **Output file** selector appears when there are several, the largest
+first; files without EDM4hep events, such as AIDA histograms, are listed under
+the table with their size).
+
+- **Current Run** shows the file's **event size** (its events tree's compressed
+  bytes over its events), its **file size** on disk, its **compression** (the
+  events' uncompressed over compressed bytes, with the ROOT setting the job
+  wrote it with, e.g. ZLIB level 1) and its **largest collection**'s share.
+  Two donuts split the event by collection and by EDM4hep type, the six
+  largest each and the rest as *Other*. The table below gives every collection, largest first, with its type, compressed and
+  uncompressed kB per event, its share of the event and its compression ratio;
+  a collection's bytes are those of all its branches, its relations and vector
+  members included. *Frame parameters* are podio's per-event parameters.
+- **Historical Trends** (remote mode) stacks the event size night by night, the
+  largest collections over the window each a series of their own (**Top N
+  collections** in Display options) and the rest as *Other*, or draws a line per
+  collection; **Show** switches between kB per event and each collection's share
+  of the event. Sizes do not depend on how loaded the host was, so this view has
+  no run-quality filter.
+
+The numbers are the benchmark's own files: tens to a few thousand events,
+written with the job's compression setting. A production file of many more
+events fills ROOT's baskets further, which can compress a little differently.
+See [File formats](../../reference/file-formats.md#event-size-json).
 
 ### Trends tab
 
@@ -697,6 +728,7 @@ measurement as uploaded.
 | **Data Flow** | which algorithm feeds which, through the collections it writes and a later one reads | `*_dataflow.json`, `*_components.json` |
 | **Event timing** | per-event wall time distributions, as on the Simulation page, and any algorithms' own time per event beside them | `*_events.json`, `*_components.json` |
 | **Event memory** | per-event RSS and growth, as on the Simulation page | `*_events.json` |
+| **Event size** | what each event of the EDM4hep files the job wrote takes on disk, as on the Simulation page | `*_event_size.json` |
 | **Machine info** | the host the benchmark ran on | `machine_info.json` |
 | **Logs** | the k4run log, read as a Gaudi log, and the job options | `*.log`, `*_joboptions.opts` |
 

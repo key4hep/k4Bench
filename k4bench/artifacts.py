@@ -14,6 +14,7 @@ configuration label, one file per artifact kind::
     {label}_joboptions.opts     k4run only
     {label}_dataflow.json       k4run only
     {label}_heap.json           k4run only, from the memory pass
+    {label}_event_size.json     when the job wrote output files
     {label}.log
     {label}_warm-up.log         k4run only, when the warm-up failed
     {label}_heap.log            k4run only, when the memory pass failed
@@ -51,6 +52,9 @@ DATAFLOW_SUFFIX = "_dataflow.json"
 #: The heap each component held, from the untimed memory pass
 #: (:mod:`k4bench.analysis.heap`).
 HEAP_SUFFIX = "_heap.json"
+#: What each output file the job wrote holds on disk, collection by collection
+#: (:mod:`k4bench.analysis.event_size`).
+EVENT_SIZE_SUFFIX = "_event_size.json"
 LOG_SUFFIX = ".log"
 #: The log of a k4run warm-up that failed, so the measured run may have found
 #: a cold cache.

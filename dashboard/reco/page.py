@@ -9,7 +9,7 @@ the Simulation Overview does, the Breakdown splits the job's time by phase
 and by component, Efficiency sets each algorithm's time against how well it
 uses the CPU, Memory shows where the heap goes component by component and
 what grows without being released, and the Data Flow draws which algorithm
-feeds which.
+feeds which. Event Size, shared too, reads the EDM4hep files the job wrote.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from suite_page import SuitePage, render_page
 from tabs import event_timing, logs
 
 #: The sim sections this page shares as they are, which read nothing sim-specific.
-_SHARED = ("Event Memory", "Machine Info")
+_SHARED = ("Event Memory", "Event Size", "Machine Info")
 
 
 def _event_timing(ctx: PageContext) -> SectionScope | None:

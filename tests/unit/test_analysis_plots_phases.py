@@ -101,6 +101,24 @@ def test_phase_history_stacks_the_series_per_tag_on_a_date_axis():
     assert list(totals.text) == ["24.6 s", "2.61 s"]
 
 
+def test_phase_history_draws_another_quantity_in_its_own_unit():
+    rows = _history({"2026-10-11": 120.0, "2026-10-12": 4.0}, "ECALBarrel").rename(
+        columns={"seconds": "compressed_kb"},
+    )
+    series = phase_component_series(rows, top_n=2, value="compressed_kb")
+    fig = plot_phase_history(
+        series, value="compressed_kb", unit="kB", y_title="Event size (kB)", whole="event",
+    )
+    (bar,) = (t for t in fig.data if t.type == "bar")
+    assert list(bar.y) == pytest.approx([120.0, 4.0])
+    assert " kB · " in bar.hovertemplate
+    totals = next(t for t in fig.data if t.type == "scatter")
+    assert list(totals.text) == ["120 kB", "4 kB"]
+    assert fig.layout.yaxis.title.text == "Event size (kB)"
+    relative = plot_phase_history(series, value="compressed_kb", relative=True, whole="event")
+    assert relative.layout.yaxis.title.text == "Share of the event (%)"
+
+
 def test_phase_history_keeps_the_series_order_whatever_the_runs_dates():
     # The longest component only ran in the later run: ordered by date it would
     # come last, and take another series' colour.

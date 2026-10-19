@@ -9,6 +9,7 @@ import streamlit as st
 
 from k4bench.analysis.components import ComponentTiming
 from k4bench.analysis.dataflow import DataFlow, load_dataflow
+from k4bench.analysis.event_size import OutputFile, load_event_size
 from k4bench.analysis.heap import ComponentHeap
 from k4bench.analysis.loader import judgeable_config_data
 from k4bench.analysis.loader import load_component_heap, load_component_timing, load_event_timing, load_region_timing, load_results  # noqa: F401 (re-exported)
@@ -114,6 +115,20 @@ def cached_load_dataflow(data_dir: str) -> dict[str, DataFlow]:
         return {}
 
 
+@st.cache_data(show_spinner=False, max_entries=16)
+def cached_load_event_size(
+    data_dir: str,
+) -> tuple[dict[str, tuple[OutputFile, ...]], dict[str, str]]:
+    """Every label's output files in *data_dir* that could be read, and why
+    each other could not (:func:`k4bench.analysis.event_size.load_event_size`)."""
+    try:
+        return load_event_size(data_dir)
+    except Exception:
+        _log.exception("cached_load_event_size: unexpected error loading '%s'", data_dir)
+        st.warning(f"Unexpected error loading event sizes from '{data_dir}'. Check logs for details.")
+        return {}, {}
+
+
 def run_metadata(run_dir: str) -> dict:
     """Return metadata for a single run (date) directory.
 
@@ -162,6 +177,12 @@ def cached_load_trend_algorithm_timing(run_dirs: tuple[str, ...]) -> pd.DataFram
 def cached_load_trend_heap(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
     """Cached :func:`k4bench.analysis.trend.build_heap_trend`."""
     return _trend.build_heap_trend(run_dirs)
+
+
+@st.cache_data(show_spinner="Loading event size trends...", ttl=3600)
+def cached_load_trend_event_size(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
+    """Cached :func:`k4bench.analysis.trend.build_event_size_trend`."""
+    return _trend.build_event_size_trend(run_dirs)
 
 
 @st.cache_data(show_spinner="Loading event timing trends...", ttl=3600)
