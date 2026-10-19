@@ -189,10 +189,9 @@ def record_event_size(json_path: Path, files: Mapping[str, Path]) -> None:
     never the run."""
     try:
         record = measure_outputs(files)
+        json_path.write_text(json.dumps(record, separators=(",", ":")))
     except Exception:  # noqa: BLE001 - the event size is an extra, never the run's failure
         print(f"  WARNING: no event size recorded:\n{traceback.format_exc()}")
-        return
-    json_path.write_text(json.dumps(record, separators=(",", ":")))
 
 
 def measure_outputs(files: Mapping[str, Path]) -> dict:

@@ -197,6 +197,14 @@ def test_a_failed_measurement_costs_only_the_record(tmp_path, monkeypatch, capsy
     assert "no event size recorded" in capsys.readouterr().out
 
 
+def test_a_record_that_cannot_be_written_costs_only_the_record(tmp_path, capsys):
+    # Its directory is missing, so writing it fails as a full or read-only disk would.
+    path = tmp_path / "missing" / "baseline_event_size.json"
+    record_event_size(path, {})
+    assert not path.exists()
+    assert "no event size recorded" in capsys.readouterr().out
+
+
 def _write(path: Path, files: list[dict], version: int = 1) -> Path:
     path.write_text(json.dumps({"schema_version": version, "files": files}))
     return path
