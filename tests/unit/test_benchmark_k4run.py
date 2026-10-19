@@ -546,6 +546,42 @@ class TestEventContent:
         recorded.assert_not_called()
         assert not stale.exists()
 
+    @staticmethod
+    def _run_with_options(options: dict[str, str]):
+        """A run_k4run stand-in whose job leaves *options* as its job options."""
+        recording = _recording_run_k4run([])
+
+        def fake(**kwargs):
+            if (text := options.get(kwargs["label"])) is not None:
+                (kwargs["log_dir"] / f"{kwargs['label']}_joboptions.opts").write_text(text)
+            return recording(**kwargs)
+
+        return fake
+
+    @pytest.mark.parametrize(("variant_options", "kept"), [
+        ("IOSvc.FirstEventEntry = 0;\n", True),
+        ("IOSvc.FirstEventEntry = 7;\n", False),
+    ])
+    def test_a_run_started_past_the_first_entry_drops_the_event_source(
+        self, tmp_path, stage_dir, capsys, variant_options, kept,
+    ):
+        source = tmp_path / "sim.edm4hep.root"
+        source.write_bytes(b"x")
+        config = _config(tmp_path, stage_dir, source_input=source, variants={"a": ["--a"]})
+        written = config.log_dir / "event_source.json.gz"
+        run = self._run_with_options({
+            "baseline": "IOSvc.FirstEventEntry = 0;\n", "variant_a": variant_options,
+        })
+        with (
+            patch.object(k4run_module, "run_k4run", run),
+            patch.object(k4run_module, "record_event_source",
+                         lambda path, *a, **k: path.write_bytes(b"source") or True),
+        ):
+            run_k4run_benchmark(config)
+        assert written.exists() == kept
+        out = capsys.readouterr().out
+        assert ("variant_a sets IOSvc.FirstEventEntry = 7" in out) != kept
+
     def test_a_missing_input_is_refused(self, tmp_path, stage_dir):
         with pytest.raises(ValueError, match="Source input not found"):
             _config(tmp_path, stage_dir, source_input=tmp_path / "missing.root")

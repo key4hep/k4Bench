@@ -68,6 +68,9 @@ MIN_PAIRS = MIN_SLOPE_EVENTS
 OUTLIER_SIGMAS = 3.0
 #: The median absolute deviation of a normal distribution, in standard deviations.
 _MAD_SIGMA = 1.4826
+#: Relative to the measure's typical size, the residual below which an event
+#: lies on the trend line when most events lie exactly on it.
+_ON_LINE = 1e-9
 #: The rank correlation above which two quantities count as moving together
 #: from event to event, so the association matrix shows one for both.
 SIMILAR_RHO = 0.9
@@ -344,12 +347,17 @@ def _without_warm_up(values: pd.Series) -> pd.Series:
     return values[values.index != WARM_UP_EVENT].dropna()
 
 
+def _costliest_first(table: pd.DataFrame) -> list:
+    """*table*'s columns, the largest mean past the warm-up first."""
+    return list(table.loc[table.index != WARM_UP_EVENT].mean().sort_values(ascending=False).index)
+
+
 def simulation_measures(event_data: pd.DataFrame | None, regions: Mapping | None) -> list[Measure]:
     """The per-event costs of one simulation configuration: its event time
     (*event_data*, :func:`~k4bench.analysis.loader.load_event_timing`'s frame)
     and the time and steps spent in each detector (*regions*, its
-    :func:`~k4bench.analysis.loader.load_region_timing` entry), each
-    detector's slowest first."""
+    :func:`~k4bench.analysis.loader.load_region_timing` entry), the
+    costliest detectors of each first."""
     measures: list[Measure] = []
     if event_data is not None and not event_data.empty:
         times = event_data.set_index("event_number")["event_time_s"]
@@ -360,17 +368,11 @@ def simulation_measures(event_data: pd.DataFrame | None, regions: Mapping | None
         steps = regions.get("steps")
         if at_location is not None and not at_location.empty:
             profiled = tuple(int(e) for e in at_location.index)
-            order = (
-                at_location.loc[at_location.index != WARM_UP_EVENT]
-                .mean().sort_values(ascending=False).index
-            )
-            for detector in order:
+            for detector in _costliest_first(at_location):
                 measures.append(Measure(str(detector), "time", "s",
                                         _without_warm_up(at_location[detector]), profiled))
             if steps is not None:
-                for detector in [d for d in order if d in steps] + [
-                    d for d in steps.columns if d not in order
-                ]:
+                for detector in _costliest_first(steps):
                     measures.append(Measure(str(detector), "steps", "",
                                             _without_warm_up(steps[detector]),
                                             tuple(int(e) for e in steps.index)))
@@ -383,7 +385,7 @@ def reconstruction_measures(
     """The per-event costs of one reconstruction configuration: its event
     time (*event_data*) and, per algorithm, each of
     :data:`MEASURE_METRICS` its auditor file (*timing*) recorded, the
-    algorithms slowest first."""
+    costliest algorithms of each first."""
     measures: list[Measure] = []
     if event_data is not None and not event_data.empty:
         times = event_data.set_index("event_number")["event_time_s"]
@@ -393,17 +395,15 @@ def reconstruction_measures(
         return measures
     wall = timing.execute["wall_s"]
     algorithms = [a for a in timing.algorithms() if a in wall.columns]
-    order = wall.loc[wall.index != WARM_UP_EVENT, algorithms].mean().sort_values(ascending=False)
     profiled = tuple(int(e) for e in wall.index)
     for metric, (what, unit) in MEASURE_METRICS.items():
         table = timing.execute.get(metric)
         if table is None:
             continue
-        for algorithm in order.index:
-            if algorithm in table.columns:
-                values = _without_warm_up(table[algorithm])
-                if len(values):
-                    measures.append(Measure(str(algorithm), what, unit, values, profiled))
+        for algorithm in _costliest_first(table[[a for a in algorithms if a in table.columns]]):
+            values = _without_warm_up(table[algorithm])
+            if len(values):
+                measures.append(Measure(str(algorithm), what, unit, values, profiled))
     return measures
 
 
@@ -512,18 +512,18 @@ def above_trend(pairs: pd.DataFrame, line: Trend) -> pd.DataFrame:
     """The events of *pairs* (:func:`paired`) more than
     :data:`OUTLIER_SIGMAS` robust standard deviations above *line*, furthest
     first: ``x``, ``y``, ``expected``, ``residual`` and ``ratio`` (NaN where
-    the line is too near zero, :data:`MIN_RATIO_SHARE`). None when the
-    residuals do not spread at all."""
+    the line is too near zero, :data:`MIN_RATIO_SHARE`). When most events lie
+    exactly on the line, as a count that rarely changes does, every event
+    above it beyond rounding (:data:`_ON_LINE`)."""
     expected = line.at(pairs["x"])
     residual = pairs["y"].to_numpy() - expected
     spread = _MAD_SIGMA * float(np.median(np.abs(residual - np.median(residual))))
-    out = pairs.assign(expected=expected, residual=residual)
     if not spread > 0:
-        return out.iloc[0:0].assign(ratio=[])
+        spread = _ON_LINE * max(float(np.median(np.abs(pairs["y"]))), 1.0) / OUTLIER_SIGMAS
     floor = MIN_RATIO_SHARE * abs(float(np.median(pairs["y"])))
     with np.errstate(divide="ignore", invalid="ignore"):
         ratio = np.where(expected > floor, pairs["y"].to_numpy() / expected, np.nan)
-    out = out.assign(ratio=ratio)
+    out = pairs.assign(expected=expected, residual=residual, ratio=ratio)
     return out[out["residual"] > OUTLIER_SIGMAS * spread].sort_values("residual", ascending=False)
 
 

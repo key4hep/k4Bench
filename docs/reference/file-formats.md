@@ -631,8 +631,10 @@ data, and a reader that predates them ignores them.
 shared by its configurations: what went into the events. A ddsim benchmark
 writes it from its first run's output file; a k4run benchmark given
 `--source-input` (the nightly passes the job's input when it reads exactly
-one) writes it from that file before the first run. A failure to write it
-never fails the run.
+one) writes it from that file before the first run, and removes it after the
+runs when any run's job options set `FirstEventEntry` to other than 0, since
+it describes the file's first entries. A failure to write it never fails the
+run.
 
 | Field | Meaning |
 |---|---|

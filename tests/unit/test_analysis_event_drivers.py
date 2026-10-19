@@ -183,9 +183,10 @@ class TestMeasures:
             {"Tracker": [5.0, 0.1, 0.1, 0.1], "ECal": [1.0, 1.0, 2.0, 3.0]},
             {"Tracker": [10, 20, 30, 40], "ECal": [1, 2, 3, 4]},
         ))
+        # Each cost's detectors are ordered by that cost.
         assert [(m.name, m.metric) for m in measures] == [
             (WHOLE_EVENT, "time"), ("ECal", "time"), ("Tracker", "time"),
-            ("ECal", "steps"), ("Tracker", "steps"),
+            ("Tracker", "steps"), ("ECal", "steps"),
         ]
         # The warm-up is left out of every cost, but was counted.
         assert measures[0].values.tolist() == [1.0, 2.0, 3.0]
@@ -213,6 +214,22 @@ class TestMeasures:
         ]
         assert measures[0].values.tolist() == [5.0, 5.0]
         assert reconstruction_measures(None, None) == []
+
+    def test_each_metrics_algorithms_are_ordered_by_that_metric(self):
+        index = pd.Index([0, 1, 2], name="event")
+        timing = SimpleNamespace(
+            algorithms=lambda: ["Fast", "Slow"],
+            execute={
+                "wall_s": pd.DataFrame({"Fast": [9, 1, 1], "Slow": [9, 5, 5]},
+                                       index=index, dtype=float),
+                "allocations": pd.DataFrame({"Fast": [1, 1000, 1000], "Slow": [1000, 1, 1]},
+                                            index=index, dtype=float),
+            },
+        )
+        measures = reconstruction_measures(None, timing)
+        assert [(m.name, m.metric) for m in measures] == [
+            ("Slow", "time"), ("Fast", "time"), ("Fast", "allocations"), ("Slow", "allocations"),
+        ]
 
 
 def _measure(values: list[float], events=None) -> Measure:
@@ -317,6 +334,21 @@ class TestTrend:
     def test_none_is_above_a_line_nothing_spreads_around(self):
         pairs = pd.DataFrame({"x": np.arange(10.0), "y": np.arange(10.0)})
         assert above_trend(pairs, Trend(1.0, 0.0)).empty
+
+    def test_an_event_above_a_line_most_lie_exactly_on_is_listed(self):
+        x = np.arange(20.0)
+        y = 2 * x + 1
+        y[-1] = 1000.0
+        pairs = pd.DataFrame({"x": x, "y": y})
+        above = above_trend(pairs, trend(pairs["x"], pairs["y"]))
+        assert above.index.tolist() == [19]
+        assert above.loc[19, "residual"] == pytest.approx(961.0)
+
+    def test_an_event_above_a_count_that_never_changes_is_listed(self):
+        pairs = pd.DataFrame({"x": np.arange(10.0, 60.0), "y": np.full(50, 120.0)})
+        pairs.loc[7, "y"] = 9000.0
+        above = above_trend(pairs, trend(pairs["x"], pairs["y"]))
+        assert above.index.tolist() == [7]
 
     def test_no_ratio_where_the_line_is_near_zero(self):
         x = np.arange(10.0)

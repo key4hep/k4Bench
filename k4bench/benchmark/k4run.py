@@ -55,7 +55,7 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from k4bench.analysis.dataflow import build_dataflow
+from k4bench.analysis.dataflow import build_dataflow, parse_joboptions
 from k4bench.analysis.event_source import record_event_source
 from k4bench.artifacts import (
     COMPONENTS_SUFFIX,
@@ -79,6 +79,9 @@ _VARIANT_NAME_RE = re.compile(r"^[A-Za-z0-9_.+-]+$")
 
 #: Events of the unmeasured run before each measured one.
 WARM_UP_EVENTS = 1
+
+#: The job option that starts a k4FWCore job past its input's first entry.
+_FIRST_ENTRY_OPTION = "FirstEventEntry"
 
 
 @dataclass
@@ -116,8 +119,9 @@ class K4runConfig:
         which records the heap each component held; ``None`` skips it.
     source_input:
         The job's input file, from whose first *n_events* entries what went
-        into the events is recorded; ``None`` records none. A relative path
-        is relative to the current directory.
+        into the events is recorded; ``None`` records none. Dropped when a
+        run's job starts past the first entry. A relative path is relative
+        to the current directory.
     """
 
     options: list[str]
@@ -225,11 +229,36 @@ def run_k4run_benchmark(config: K4runConfig) -> list[RunResult]:
                 _memory_pass(config, label, args)
             except Exception:  # noqa: BLE001 - the heap file is an extra, never the benchmark's failure
                 print(f"  WARNING: no heap file for {label}:\n{traceback.format_exc()}")
+    _drop_offset_event_source(config, labels)
     try:
         _record_dataflow(config, labels)
     except Exception:  # noqa: BLE001 - the data flow is an extra, never the benchmark's failure
         print(f"  WARNING: no data flow recorded:\n{traceback.format_exc()}")
     return results
+
+
+def _drop_offset_event_source(config: K4runConfig, labels: list[str]) -> None:
+    """Remove the event source when a run's job options start reading the
+    input past its first entry: the source describes the entries
+    ``0 .. n_events - 1``, which that run's events are not."""
+    path = config.log_dir / EVENT_SOURCE
+    if not path.is_file():
+        return
+    for label in labels:
+        try:
+            options = parse_joboptions(label_path(config.log_dir, label, JOBOPTIONS_SUFFIX).read_text())
+        except OSError:
+            continue
+        offsets = [
+            f"{owner}.{_FIRST_ENTRY_OPTION} = {values[_FIRST_ENTRY_OPTION]}"
+            for owner, values in options.items()
+            if values.get(_FIRST_ENTRY_OPTION, 0) != 0
+        ]
+        if offsets:
+            path.unlink()
+            print(f"  WARNING: no event source: {label} sets {', '.join(offsets)}, "
+                  f"the source describes the input's first {config.n_events} entries")
+            return
 
 
 def _record_dataflow(config: K4runConfig, labels: list[str]) -> None:

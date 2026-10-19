@@ -217,8 +217,10 @@ Top to bottom:
   reductions and operators. An expression is parsed and computed piece by
   piece, never run as Python, and is limited in length and size.
 - The plot, with its robust trend line (Theil–Sen), and, folded under it, the
-  events more than three robust standard deviations above the line: their
-  event number, the line's value and how far above it they lie. Above that
+  events more than three robust standard deviations above the line (when most
+  events lie exactly on it, as a count that rarely changes does, every event
+  above it): their event number, the line's value and how far above it they
+  lie. Above that
   line, which is not to say expensive for everything they hold.
 
 The warm-up event is left out. The events are matched to what they hold by
