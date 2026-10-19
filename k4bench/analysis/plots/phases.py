@@ -238,7 +238,8 @@ def phase_component_series(
     ``run_date``, ``x_date`` and ``k4h_release`` kept.
 
     *value* is the column of *rows* the series sum, ``seconds`` by default,
-    and is the series' column of it. The components of *always* each have a
+    and is the series' column of it; a series none of whose components has
+    one in a run is ``NaN`` there. The components of *always* each have a
     series whatever their rank, ahead of the *top_n*, in their order. Those
     of *apart* are not ranked: each is a series of its own after "Other",
     under the name it maps to.
@@ -260,7 +261,11 @@ def phase_component_series(
     labelled = rows.assign(label=rows["component"].map(apart).where(
         by_itself, rows["component"].where(rows["component"].isin(top), f"Other ({len(rest)})"),
     ))
-    series = labelled.groupby([*run_keys, "label"], dropna=False, as_index=False)[value].sum()
+    # A series none of whose components has a value that run is unknown,
+    # not nothing: left NaN, it is a gap in its line.
+    series = labelled.groupby([*run_keys, "label"], dropna=False, as_index=False)[value].sum(
+        min_count=1,
+    )
     if durations is not None:
         # Every run the phase was timed in, those without a component's
         # time too: what it was charged for is then nothing.

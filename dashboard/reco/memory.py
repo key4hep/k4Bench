@@ -656,11 +656,17 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
         named = [label for label in labels if label not in (other, NO_COMPONENT_LABEL)]
         colors = partial(_hist_colors, named, other=other)
     else:
-        ranked = (
-            components[components["component"] != NO_COMPONENT].groupby("component")[metric]
-            .median().dropna().sort_values(ascending=False)
+        # Each panel names its own largest: a component whose heavier events
+        # need much but its typical one little is not left out of the 95th
+        # percentile's.
+        medians = (
+            components[components["component"] != NO_COMPONENT]
+            .groupby("component")[[column for column, _ in _HIST_PANELS[metric]]].median()
         )
-        labels = list(dict.fromkeys([*suspects, *ranked.index[:top_n]]))
+        labels = list(dict.fromkeys([*suspects, *(
+            name for column in medians.columns
+            for name in medians[column].dropna().sort_values(ascending=False).index[:top_n]
+        )]))
         series = components[components["component"].isin(labels)].assign(
             label=lambda df: df["component"],
         )

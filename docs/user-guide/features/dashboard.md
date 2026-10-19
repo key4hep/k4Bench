@@ -799,8 +799,9 @@ failed, have none, and the section says so. It has three views:
   first event, at a typical event's end (the median), its working set (the
   median and the 95th percentile, as two panels) or its growth per event. It
   names the largest components over the window (six by default, set by
-  **Largest shown**) and every component that grows and keeps it on any
-  night of the window besides, a line each, in one colour whatever is shown.
+  **Largest shown**; for the working set, the largest of each panel) and
+  every component that grows and keeps it on any night of the window
+  besides, a line each, in one colour whatever is shown.
   The first two add up to the job's heap, so the rest of it is one more line,
   *Other*, and what no component allocated another, *No component*, both in
   grey. When a nightly tag was run more than once, only its latest run is

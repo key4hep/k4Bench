@@ -217,6 +217,20 @@ def test_series_sum_any_value_column():
     assert other.to_dict() == pytest.approx({"2026-10-11": 0.51, "2026-10-12": 0.55})
 
 
+def test_a_series_without_a_value_in_a_run_is_unknown_there_not_zero():
+    # The second run recorded no value for any component: a gap, not a drop to 0.
+    rows = pd.concat([
+        _history({"2026-10-11": 1.5, "2026-10-12": None}, "GeoSvc"),
+        _history({"2026-10-11": 0.5, "2026-10-12": None}, "IOSvc"),
+        _history({"2026-10-11": 0.01, "2026-10-12": None}, "Tiny"),
+    ], ignore_index=True).rename(columns={"seconds": "held_mb"})
+    series = phase_component_series(rows, top_n=1, value="held_mb")
+    by_run = series.set_index(["label", "run_id"])["held_mb"]
+    assert by_run[("GeoSvc", "2026-10-11")] == pytest.approx(1.5)
+    assert by_run[("Other (2)", "2026-10-11")] == pytest.approx(0.51)
+    assert by_run.xs("2026-10-12", level="run_id").isna().all()
+
+
 EVENTS = pd.DataFrame(
     {"Track": [9.0, 2.0, 4.0], "Vertex": [1.0, 3.0, None], "Tiny": [0.1, 0.1, 0.1]},
     index=pd.Index([0, 1, 2], name="event_number"),

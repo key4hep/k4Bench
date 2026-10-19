@@ -983,6 +983,35 @@ def test_the_memory_history_draws_working_set_and_growth_as_lines(reco_run_with_
     assert not at.caption
 
 
+def test_the_memory_history_leaves_a_night_without_a_typical_event_out(reco_run_with_heap):
+    # The middle night ran only its warm-up event: no typical heap, not 0 MB.
+    runs = _nights(reco_run_with_heap)
+    _rewrite_heap(runs[1], _warm_up_only)
+    at = _memory_history(runs)
+    for trace in _traces(at):
+        values = _values(trace["y"])
+        assert np.isnan(values[1]), trace["name"]
+        assert not np.isnan(values[0]), trace["name"]
+
+
+def test_the_memory_history_names_the_heaviest_events_needs(reco_run_with_heap):
+    def spiky(raw: dict) -> None:
+        # IOSvc needs nothing in a typical event, and 400 MB in one of them.
+        i = raw["components"].index("IOSvc")
+        raw["execute"]["peak_held_bytes"][6][i] += 400 * _MIB
+
+    runs = _nights(reco_run_with_heap)
+    for run in runs:
+        _rewrite_heap(run, spiky)
+    at = _memory_history(runs)
+    at.slider(key="reco_memory_hist_topn").set_value(1).run()
+    at.segmented_control(key="reco_memory_hist_metric").set_value("Working set").run()
+    assert not at.exception, at.exception
+    names = {t["name"] for t in _traces(at)}
+    # The largest typical need, and the largest of the heavier events.
+    assert {"k4FWCore__Reader", "IOSvc"} <= names
+
+
 def test_the_memory_history_names_a_component_flagged_on_any_night(reco_run_with_heap):
     def released(raw: dict) -> None:
         # VertexFinder frees what it gained at the end: not suspected that night.
