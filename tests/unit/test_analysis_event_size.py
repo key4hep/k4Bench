@@ -152,7 +152,7 @@ def test_measuring_records_each_files_size_and_a_podio_files_events(tmp_path, op
     record = measure_outputs({
         "reco_REC.edm4hep.root": reco, "reco_aida.root": aida, "cdb.log": tmp_path / "cdb.log",
     })
-    assert record["schema_version"] == 2
+    assert record["schema_version"] == 1
     rec, histograms, log = record["files"]
     assert (rec["name"], rec["bytes"], rec["events"], rec["compression"]) == (
         "reco_REC.edm4hep.root", 5000, 4, 505,
@@ -383,7 +383,7 @@ def test_what_each_event_holds_reads_back_as_frames_by_entry(tmp_path, opener, c
     out.write_bytes(b"x")
     opener[out.name] = _content_file()
     files = measure_outputs({out.name: out}, per_event=True)["files"]
-    (output,) = read_event_size(_write(tmp_path / "baseline_event_size.json", files, version=2))
+    (output,) = read_event_size(_write(tmp_path / "baseline_event_size.json", files))
     counts = output.event_counts()
     assert counts.index.name == "entry" and counts.index.to_list() == [0, 1, 2, 3]
     assert counts["Hits"].to_list() == [2, 0, 1, 3]
@@ -406,7 +406,7 @@ def test_a_per_event_list_of_the_wrong_length_is_malformed(tmp_path, opener, key
     measured = _measured(tmp_path, opener)
     measured["collections"][0][key] = [1, 2, 3]
     with pytest.raises(ValueError, match=f"malformed.*{key} of Hits has 3 values for 4 events"):
-        read_event_size(_write(tmp_path / "baseline_event_size.json", [measured], version=2))
+        read_event_size(_write(tmp_path / "baseline_event_size.json", [measured]))
 
 
 def test_event_content_reads_a_podio_files_first_entries(counting):

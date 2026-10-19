@@ -788,7 +788,7 @@ measurement as uploaded.
 | **Data Flow** | which algorithm feeds which, through the collections it writes and a later one reads | `*_dataflow.json`, `*_components.json` |
 | **Event timing** | per-event wall time distributions, as on the Simulation page, and any algorithms' own time per event beside them | `*_events.json`, `*_components.json` |
 | **Event memory** | per-event RSS and growth, as on the Simulation page | `*_events.json` |
-| **Correlations** | each event's time, and each algorithm's time, instructions and allocations, against what the event holds, as on the Simulation page, with the collections an algorithm reads offered first | `event_source.json.gz`, `*_event_size.json`, `*_components.json`, `*_dataflow.json` |
+| **Correlations** | each event's time, and each algorithm's time, instructions and allocations, against what the event holds, as on the Simulation page | `event_source.json.gz`, `*_event_size.json`, `*_components.json` |
 | **Event size** | what each event of the EDM4hep files the job wrote takes on disk, as on the Simulation page | `*_event_size.json` |
 | **Machine info** | the host the benchmark ran on | `machine_info.json` |
 | **Logs** | the k4run log, read as a Gaudi log, and the job options | `*.log`, `*_joboptions.opts` |

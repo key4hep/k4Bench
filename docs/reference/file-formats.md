@@ -579,7 +579,7 @@ benchmarked so far run on one thread, one event at a time.
 
 ## event size JSON
 
-Written by the runners right after each successful run (`schema_version: 2`,
+Written by the runners right after each successful run (`schema_version: 1`,
 same version rules as the events JSON), one per configuration, while the
 output files still exist: ddsim's `--outputFile`, or every file a k4run job
 created in its working directory. Its `files` list each one with its `name`
@@ -607,7 +607,8 @@ The numbers are this run's: the benchmark writes tens to a few thousand events
 with the job's own compression setting, and a production file of many more
 events fills ROOT's baskets further, which can compress a little differently.
 
-Version 2 adds what each event holds, for the runs that measure it: a ddsim
+What each event holds is recorded, as additive optional keys, for the runs
+that measure it: a ddsim
 benchmark's first run (its baseline, or the single run of an include or
 exclude benchmark) and every measured run of a k4run benchmark, never a
 warm-up or memory pass. Each list has one value per entry of the file:
@@ -619,7 +620,8 @@ warm-up or memory pass. Each list has one value per entry of the file:
 | `event_headers` | `event_number` and `run_number`: each entry's EventHeader numbers, `null` for an entry without one |
 
 A collection whose counts or energies could not be read has none, which never
-means zero; its bytes are kept. A version 1 file reads with no per-event data.
+means zero; its bytes are kept. A file without them reads with no per-event
+data, and a reader that predates them ignores them.
 [`OutputFile.event_counts`](api/analysis/event_size.md) and
 `OutputFile.event_energies` give them as frames indexed by entry.
 

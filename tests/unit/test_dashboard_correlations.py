@@ -278,7 +278,7 @@ def _sim_page(monkeypatch, tmp_path, collection: dict) -> AppTest:
         "by_birth_seconds": [{"ECal": t} for t in [9.0, 1.0, 2.0, 3.0, 4.0, 5.0]],
         "interval_counts": [{"ECal": s} for s in [90, 10, 20, 30, 40, 50]],
     }))
-    (run / "baseline_event_size.json").write_text(json.dumps({"schema_version": 2, "files": [{
+    (run / "baseline_event_size.json").write_text(json.dumps({"schema_version": 1, "files": [{
         "name": "out.edm4hep.root", "bytes": 10, "events": 6, "compression": 505,
         "collections": [collection],
         "parameters": {"compressed_bytes": 1, "uncompressed_bytes": 1},

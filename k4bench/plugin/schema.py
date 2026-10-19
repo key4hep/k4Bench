@@ -33,9 +33,10 @@ HEAP_SCHEMA_VERSION = 1
 #: Written by :func:`k4bench.analysis.dataflow.build_dataflow`.
 DATAFLOW_SCHEMA_VERSION = 1
 
-#: Written by :func:`k4bench.analysis.event_size.measure_outputs`. Version 2
-#: added what each event holds (``entries``, ``energy_gev``, ``event_headers``).
-EVENT_SIZE_SCHEMA_VERSION = 2
+#: Written by :func:`k4bench.analysis.event_size.measure_outputs`. What each
+#: event holds (``entries``, ``energy_gev``, ``event_headers``) is additive and
+#: optional, so it needs no new version and older readers ignore it.
+EVENT_SIZE_SCHEMA_VERSION = 1
 
 #: Written by :func:`k4bench.analysis.event_source.record_event_source`.
 EVENT_SOURCE_SCHEMA_VERSION = 1

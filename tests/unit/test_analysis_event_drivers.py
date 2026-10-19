@@ -137,6 +137,14 @@ class TestEventTable:
         assert event_table(source, outputs=[partial]).events == 3
         assert event_table(source, outputs=[output]).events == 3
 
+    def test_a_file_without_headers_between_two_hides_no_disagreement(self):
+        source = _source([[PION]] * 3)
+        output = _output("rec.root", {"T": [1, 2, 3]})
+        unnumbered = replace(output, name="mid.root", event_numbers=(None, None, None))
+        other = replace(output, name="last.root", event_numbers=(0, 1, 5))
+        with pytest.raises(ValueError, match="sim.root and last.root .* entry 2"):
+            event_table(source, outputs=[unnumbered, other])
+
     def test_an_expression_reads_the_particles_and_the_columns(self):
         table = event_table(_source([[PION], [PION, PION]]), )
         assert table.evaluate("count(final) * n_charged").tolist() == [1.0, 4.0]

@@ -248,20 +248,27 @@ def _measured(output: OutputFile) -> bool:
 def _check_same_events(headers: Sequence[tuple[str, Sequence | None, Sequence | None]]) -> None:
     """Raises ``ValueError`` when two of *headers* (each file's name and its
     entries' EventHeader event and run numbers) name different events at the
-    same entry; an entry or a number a file lacks is not compared."""
+    same entry; an entry or a number a file lacks is not compared. Each
+    entry's numbers are set against the first file to have them, so a file
+    without them between two others hides no disagreement."""
     keyed = [
         (name, events, runs if runs is not None else [None] * len(events))
         for name, events, runs in headers if events is not None
     ]
-    for (name, events, runs), (other, other_events, other_runs) in zip(keyed, keyed[1:]):
-        for entry, (a, b, run_a, run_b) in enumerate(zip(events, other_events, runs, other_runs)):
-            if a is None or b is None:
-                continue
-            if a != b or (run_a is not None and run_b is not None and run_a != run_b):
-                raise ValueError(
-                    f"{name} and {other} hold different events at entry {entry}: "
-                    f"event {a} of run {run_a} and event {b} of run {run_b}"
-                )
+    # Per entry, the first file naming its event, and the first naming its run.
+    event_of: dict[int, tuple[str, int]] = {}
+    run_of: dict[int, tuple[str, int]] = {}
+    for name, events, runs in keyed:
+        for entry, (event, run) in enumerate(zip(events, runs)):
+            for number, first, what in ((event, event_of, "event"), (run, run_of, "run")):
+                if number is None:
+                    continue
+                other, known = first.setdefault(entry, (name, number))
+                if known != number:
+                    raise ValueError(
+                        f"{other} and {name} hold different events at entry {entry}: "
+                        f"{what} {known} and {what} {number}"
+                    )
 
 
 def _one_primary(table: EventTable) -> bool:
