@@ -35,6 +35,12 @@ most likely fail again, slower.
 After the last run, each run's data flow (:mod:`k4bench.analysis.dataflow`) is
 built from what its job recorded, with ``Marlin -x`` of the stack saved beside
 it when a job ran Marlin processors.
+
+Given the job's input file (*source_input*), what went into the events, the
+file's generator particles and collections event by event, is recorded once
+before the first run as ``event_source.json.gz``
+(:mod:`k4bench.analysis.event_source`); each measured run records what each
+event of its own outputs holds.
 """
 
 from __future__ import annotations
@@ -50,9 +56,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from k4bench.analysis.dataflow import build_dataflow
+from k4bench.analysis.event_source import record_event_source
 from k4bench.artifacts import (
     COMPONENTS_SUFFIX,
     DATAFLOW_SUFFIX,
+    EVENT_SOURCE,
     HEAP_LOG_SUFFIX,
     HEAP_SUFFIX,
     JOBOPTIONS_SUFFIX,
@@ -106,6 +114,10 @@ class K4runConfig:
     memory_events:
         Events of the untimed memory pass after each run that succeeds,
         which records the heap each component held; ``None`` skips it.
+    source_input:
+        The job's input file, from whose first *n_events* entries what went
+        into the events is recorded; ``None`` records none. A relative path
+        is relative to the current directory.
     """
 
     options: list[str]
@@ -118,6 +130,7 @@ class K4runConfig:
     verbose: bool = False
     warm_up: bool = True
     memory_events: int | None = None
+    source_input: Path | None = None
 
     def __post_init__(self) -> None:
         if not self.options:
@@ -140,6 +153,10 @@ class K4runConfig:
         if self.setup_script is not None:
             # Sourced from the run's working directory, not the caller's.
             self.setup_script = self.setup_script.resolve()
+        if self.source_input is not None:
+            if not self.source_input.is_file():
+                raise ValueError(f"Source input not found: {self.source_input}")
+            self.source_input = self.source_input.resolve()
 
 
 def planned_k4run_labels(variants: list[str]) -> list[str]:
@@ -161,8 +178,15 @@ def run_k4run_benchmark(config: K4runConfig) -> list[RunResult]:
 
     # Removed first, so a run is never credited with a previous benchmark's.
     (config.log_dir / MARLIN_PROCESSORS).unlink(missing_ok=True)
+    (config.log_dir / EVENT_SOURCE).unlink(missing_ok=True)
     for label in labels:
         label_path(config.log_dir, label, DATAFLOW_SUFFIX).unlink(missing_ok=True)
+
+    if config.source_input is not None and record_event_source(
+        config.log_dir / EVENT_SOURCE, config.source_input,
+        n_events=config.n_events, input_content=True, checksum=True,
+    ):
+        print(f"Event source: {config.n_events} events of {config.source_input.name}")
 
     results: list[RunResult] = []
     for index, (label, args) in enumerate(runs, start=1):
@@ -190,6 +214,7 @@ def run_k4run_benchmark(config: K4runConfig) -> list[RunResult]:
                     setup_script=config.setup_script,
                     extra_args=args,
                     verbose=config.verbose,
+                    per_event_content=True,
                 )
             finally:
                 _remove(work_dir)

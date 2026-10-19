@@ -5,7 +5,8 @@ plugin's ``<label>_events.json``, the region timing plugin's
 ``<label>_regions.json`` and the Gaudi auditor's ``<label>_components.json``
 and ``<label>_heap.json`` (the auditor also writes ``<label>_events.json``, in
 the event format), and so do the k4run benchmark's ``<label>_dataflow.json``,
-built from the auditor's file, and the runners' ``<label>_event_size.json``. Every reader validates through this module, so a new version of any
+built from the auditor's file, the runners' ``<label>_event_size.json`` and
+the benchmarks' ``event_source.json.gz``. Every reader validates through this module, so a new version of any
 format is accepted or refused in one place.
 
 A file without ``schema_version`` is the legacy unversioned format of its kind
@@ -32,8 +33,12 @@ HEAP_SCHEMA_VERSION = 1
 #: Written by :func:`k4bench.analysis.dataflow.build_dataflow`.
 DATAFLOW_SCHEMA_VERSION = 1
 
-#: Written by :func:`k4bench.analysis.event_size.measure_outputs`.
-EVENT_SIZE_SCHEMA_VERSION = 1
+#: Written by :func:`k4bench.analysis.event_size.measure_outputs`. Version 2
+#: added what each event holds (``entries``, ``energy_gev``, ``event_headers``).
+EVENT_SIZE_SCHEMA_VERSION = 2
+
+#: Written by :func:`k4bench.analysis.event_source.record_event_source`.
+EVENT_SOURCE_SCHEMA_VERSION = 1
 
 
 def validate_event_schema(raw: object, *, source: str | Path | None = None) -> None:
@@ -82,6 +87,14 @@ def validate_event_size_schema(raw: object, *, source: str | Path | None = None)
     See :func:`_validate_schema` for the rules.
     """
     _validate_schema(raw, kind="event size", current=EVENT_SIZE_SCHEMA_VERSION, source=source)
+
+
+def validate_event_source_schema(raw: object, *, source: str | Path | None = None) -> None:
+    """Raise ``ValueError`` unless *raw* is an event-source file this k4bench can read.
+
+    See :func:`_validate_schema` for the rules.
+    """
+    _validate_schema(raw, kind="event source", current=EVENT_SOURCE_SCHEMA_VERSION, source=source)
 
 
 def _validate_schema(

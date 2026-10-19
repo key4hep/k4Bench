@@ -7,6 +7,7 @@ configuration label, one file per artifact kind::
     run_info.json
     machine_info.json
     marlin_processors.xml.gz    k4run only, when the job ran Marlin processors
+    event_source.json.gz        what went into the events, when it could be read
     {label}_results.csv
     {label}_events.json
     {label}_regions.json        ddsim only
@@ -39,6 +40,11 @@ MACHINE_INFO = "machine_info.json"
 #: parameters and which of them are LCIO input or output collections. Written
 #: once per k4run benchmark whose jobs ran Marlin processors.
 MARLIN_PROCESSORS = "marlin_processors.xml.gz"
+
+#: What went into the run's events, shared by its configurations: each event's
+#: generator particles and, for a job reading a file, what that file's events
+#: hold (:mod:`k4bench.analysis.event_source`).
+EVENT_SOURCE = "event_source.json.gz"
 
 #: Per-label suffixes. A label's file is ``f"{label}{suffix}"``.
 RESULTS_SUFFIX = "_results.csv"

@@ -25,11 +25,14 @@ per-event timing metrics to JSON files inside the log directory.
 Per-event arrays stay in these profiling artifacts. The plugin's run-level
 virtual-memory peak is copied into :class:`RunResult`.
 
-Event size
-----------
+Event size and source
+---------------------
 After a successful run, what the output file holds on disk, collection by
 collection, is written to ``<label>_event_size.json`` in the log directory
-(:mod:`k4bench.analysis.event_size`).
+(:mod:`k4bench.analysis.event_size`), and what each event holds too when the
+caller asks for it. Given a source path, the events' generator particles are
+written there as well, from the output file before the next run replaces it
+(:mod:`k4bench.analysis.event_source`).
 """
 
 from __future__ import annotations
@@ -38,6 +41,7 @@ import os
 from pathlib import Path
 
 from k4bench.analysis.event_size import record_event_size
+from k4bench.analysis.event_source import record_event_source
 from k4bench.artifacts import (
     EVENT_SIZE_SUFFIX,
     EVENTS_SUFFIX,
@@ -65,6 +69,8 @@ def run_ddsim(
     setup_script: Path | None = None,
     extra_args: list[str] | None = None,
     verbose: bool = False,
+    per_event_content: bool = False,
+    source_path: Path | None = None,
 ) -> RunResult:
     """Run ddsim for one geometry configuration and return collected metrics.
 
@@ -101,6 +107,15 @@ def run_ddsim(
     verbose:
         Stream ddsim output live to stdout.
 
+    per_event_content:
+        Also record what each event of the output file holds, collection by
+        collection, in its event size record.
+
+    source_path:
+        Where to write the events' generator particles, read from the output
+        file of a successful run (``event_source.json.gz``); ``None`` writes
+        none.
+
     Returns
     -------
     RunResult
@@ -119,6 +134,8 @@ def run_ddsim(
     # The output file is reused across runs: removed too, so a run that writes
     # none is never measured with a previous run's.
     output_file.unlink(missing_ok=True)
+    if source_path is not None:
+        source_path.unlink(missing_ok=True)
 
     env = os.environ.copy()
 
@@ -149,7 +166,11 @@ def run_ddsim(
     if output_file.exists():
         output_size_mb = output_file.stat().st_size / 1024**2
         if proc.returncode == 0:
-            record_event_size(event_size_path, {output_file.name: output_file})
+            record_event_size(
+                event_size_path, {output_file.name: output_file}, per_event=per_event_content,
+            )
+            if source_path is not None:
+                record_event_source(source_path, output_file, n_events=n_events, label=label)
 
     return run_result(
         label=label,

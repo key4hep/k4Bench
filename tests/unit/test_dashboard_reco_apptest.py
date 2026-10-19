@@ -63,7 +63,7 @@ def test_a_local_run_opens_on_the_breakdown(monkeypatch, tmp_path):
     assert at.session_state["reco_active_section"] == "Breakdown"
     assert at.button_group[0].options == [
         "Breakdown", "Efficiency", "Memory", "Data Flow", "Event Timing", "Event Memory",
-        "Event Size", "Machine Info", "Logs",
+        "Correlations", "Event Size", "Machine Info", "Logs",
     ]
 
 

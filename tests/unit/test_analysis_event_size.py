@@ -152,7 +152,7 @@ def test_measuring_records_each_files_size_and_a_podio_files_events(tmp_path, op
     record = measure_outputs({
         "reco_REC.edm4hep.root": reco, "reco_aida.root": aida, "cdb.log": tmp_path / "cdb.log",
     })
-    assert record["schema_version"] == 1
+    assert record["schema_version"] == 2
     rec, histograms, log = record["files"]
     assert (rec["name"], rec["bytes"], rec["events"], rec["compression"]) == (
         "reco_REC.edm4hep.root", 5000, 4, 505,
@@ -187,7 +187,7 @@ def test_without_uproot_every_file_keeps_its_size(tmp_path, monkeypatch, capsys)
 
 
 def test_a_failed_measurement_costs_only_the_record(tmp_path, monkeypatch, capsys):
-    def fail(files):
+    def fail(files, **kwargs):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(event_size, "measure_outputs", fail)
@@ -244,12 +244,12 @@ def test_a_file_without_events_has_no_collections(tmp_path):
 
 def test_one_unreadable_record_hides_no_other_configuration(tmp_path, opener):
     _write(tmp_path / "baseline_event_size.json", [_measured(tmp_path, opener)])
-    _write(tmp_path / "variant_a_event_size.json", [], version=2)
+    _write(tmp_path / "variant_a_event_size.json", [], version=3)
     (tmp_path / "variant_b_event_size.json").write_text('{"files": [{"bytes": 3}]}')
     files, unreadable = load_event_size(tmp_path)
     assert list(files) == ["baseline"]
     assert set(unreadable) == {"variant_a", "variant_b"}
-    assert "future schema_version 2" in unreadable["variant_a"]
+    assert "future schema_version 3" in unreadable["variant_a"]
     assert "malformed" in unreadable["variant_b"]
 
 
@@ -275,3 +275,149 @@ def test_a_run_without_records_has_none(tmp_path):
 ])
 def test_compression_settings_are_written_out(setting, words):
     assert describe_compression(setting) == words
+
+
+# ---------------------------------------------------------------------------
+# What each event holds
+# ---------------------------------------------------------------------------
+
+
+class _Leaf:
+    """A branch of a stand-in events tree: read with the count interpretation
+    it gives each entry's element count, otherwise each entry's values."""
+
+    def __init__(self, per_entry: list):
+        self._per_entry = per_entry
+
+    def array(self, *, library, entry_stop=None, interpretation=None):
+        assert library == "np"
+        entries = self._per_entry[:entry_stop]
+        if interpretation is not None:
+            assert interpretation == "count"
+            return np.array([len(e) for e in entries])
+        return np.array([np.array(e) for e in entries] + [None], dtype=object)[:-1]
+
+
+class _Tree:
+    def __init__(self, branches, num_entries: int, leaves: dict[str, list]):
+        self.branches = branches
+        self.num_entries = num_entries
+        self._leaves = leaves
+
+    def __getitem__(self, name):
+        leaf = self._leaves[name]
+        return leaf if isinstance(leaf, _Leaf) else _Leaf(leaf)
+
+
+#: Four events: the hits and their energies, the header, and a subset
+#: collection; MCParticles' branch cannot be read.
+LEAVES = {
+    "Hits": [[0, 0], [], [0], [0, 0, 0]],
+    "Hits/Hits.energy": [[0.5, 0.25], [], [1.0], [0.1, 0.2, 0.3]],
+    "HitsContributions": [[0] * 3, [], [0], [0] * 5],
+    "EventHeader": [[0]] * 4,
+    "EventHeader/EventHeader.eventNumber": [[10], [11], [12], [13]],
+    "EventHeader/EventHeader.runNumber": [[7]] * 4,
+    "Selected_objIdx": [[0], [0, 0], [], [0]],
+}
+
+
+def _content_file(leaves=LEAVES, events=4) -> _File:
+    podio = _podio_file(events=events)
+    podio._objects["events"] = _Tree(BRANCHES, events, leaves)
+    return podio
+
+
+@pytest.fixture
+def counting(monkeypatch):
+    monkeypatch.setattr(event_size, "_count_interpretation", lambda: "count")
+
+
+def test_per_event_measuring_records_each_collections_entries_energies_and_the_headers(
+    tmp_path, opener, counting, capsys,
+):
+    out = tmp_path / "out.edm4hep.root"
+    out.write_bytes(b"x" * 10)
+    opener[out.name] = _content_file()
+    (record,) = measure_outputs({out.name: out}, per_event=True)["files"]
+    collections = {c["name"]: c for c in record["collections"]}
+    assert collections["Hits"]["entries"] == [2, 0, 1, 3]
+    assert collections["Hits"]["energy_gev"] == [0.75, 0.0, 1.0, 0.6]
+    assert collections["HitsContributions"]["entries"] == [3, 0, 1, 5]
+    # Not a calorimeter hit collection: no energies.
+    assert "energy_gev" not in collections["HitsContributions"]
+    # A subset collection is counted from its index branch.
+    assert collections["Selected"]["entries"] == [1, 2, 0, 1]
+    assert record["event_headers"] == {"event_number": [10, 11, 12, 13], "run_number": [7] * 4}
+    # One that cannot be read has no counts, never zero ones, and keeps its bytes.
+    assert "entries" not in collections["MCParticles"]
+    assert collections["MCParticles"]["compressed_bytes"] == 67
+    assert "no per-event counts for MCParticles" in capsys.readouterr().out
+
+
+def test_without_per_event_nothing_per_event_is_read(tmp_path, opener, counting):
+    out = tmp_path / "out.edm4hep.root"
+    out.write_bytes(b"x")
+    opener[out.name] = _content_file()
+    (record,) = measure_outputs({out.name: out})["files"]
+    assert "event_headers" not in record
+    assert not any({"entries", "energy_gev"} & set(c) for c in record["collections"])
+
+
+def test_a_negative_count_is_no_count(tmp_path, opener, counting, capsys):
+    class _Negative(_Leaf):
+        def array(self, **kwargs):
+            return np.array([1, -1, 0, 2])
+
+    out = tmp_path / "out.edm4hep.root"
+    out.write_bytes(b"x")
+    opener[out.name] = _content_file({**LEAVES, "Hits": _Negative([])})
+    (record,) = measure_outputs({out.name: out}, per_event=True)["files"]
+    hits = next(c for c in record["collections"] if c["name"] == "Hits")
+    assert "entries" not in hits and "energy_gev" in hits
+    assert "negative element count" in capsys.readouterr().out
+
+
+def test_what_each_event_holds_reads_back_as_frames_by_entry(tmp_path, opener, counting):
+    out = tmp_path / "out.edm4hep.root"
+    out.write_bytes(b"x")
+    opener[out.name] = _content_file()
+    files = measure_outputs({out.name: out}, per_event=True)["files"]
+    (output,) = read_event_size(_write(tmp_path / "baseline_event_size.json", files, version=2))
+    counts = output.event_counts()
+    assert counts.index.name == "entry" and counts.index.to_list() == [0, 1, 2, 3]
+    assert counts["Hits"].to_list() == [2, 0, 1, 3]
+    assert "MCParticles" not in counts
+    assert output.event_energies().columns.to_list() == ["Hits"]
+    assert output.event_numbers == (10, 11, 12, 13)
+    assert output.run_numbers == (7, 7, 7, 7)
+
+
+def test_a_record_without_per_event_content_has_empty_frames(tmp_path, opener):
+    (output,) = read_event_size(
+        _write(tmp_path / "baseline_event_size.json", [_measured(tmp_path, opener)]),
+    )
+    assert output.event_counts().empty and len(output.event_counts()) == 4
+    assert output.event_numbers is None
+
+
+@pytest.mark.parametrize("key", ["entries", "energy_gev"])
+def test_a_per_event_list_of_the_wrong_length_is_malformed(tmp_path, opener, key):
+    measured = _measured(tmp_path, opener)
+    measured["collections"][0][key] = [1, 2, 3]
+    with pytest.raises(ValueError, match=f"malformed.*{key} of Hits has 3 values for 4 events"):
+        read_event_size(_write(tmp_path / "baseline_event_size.json", [measured], version=2))
+
+
+def test_event_content_reads_a_podio_files_first_entries(counting):
+    content = event_size.event_content(_content_file(), entry_stop=2)
+    assert content["collections"]["Hits"] == {"entries": [2, 0], "energy_gev": [0.75, 0.0]}
+    assert content["event_headers"] == {"event_number": [10, 11], "run_number": [7, 7]}
+    assert event_size.event_content(_File({"MyHistogram": "TH1D"})) == {}
+
+
+def test_an_entry_without_a_header_has_no_numbers(counting):
+    leaves = {**LEAVES, "EventHeader/EventHeader.eventNumber": [[10], [], [12], [13]],
+              "EventHeader/EventHeader.runNumber": [[7], [], [7], [7]]}
+    content = event_size.event_content(_content_file(leaves))
+    assert content["event_headers"]["event_number"] == [10, None, 12, 13]

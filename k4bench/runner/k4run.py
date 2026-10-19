@@ -21,7 +21,8 @@ allocated each heap block, and the auditor writes what each held there.
 After a successful run, what each file the job created holds on disk,
 collection by collection for its EDM4hep files, is written to
 ``<label>_event_size.json`` in the log directory
-(:mod:`k4bench.analysis.event_size`).
+(:mod:`k4bench.analysis.event_size`), and what each event holds too when the
+caller asks for it.
 """
 
 from __future__ import annotations
@@ -66,6 +67,7 @@ def run_k4run(
     extra_args: list[str] | None = None,
     verbose: bool = False,
     heap_json_path: Path | None = None,
+    per_event_content: bool = False,
 ) -> RunResult:
     """Run one k4run job in *work_dir* and return collected metrics.
 
@@ -108,6 +110,10 @@ def run_k4run(
         Where the auditor writes the heap each component held. Given one, the
         job records which component allocated every heap block, which makes
         it slower: a run with one is never a timed run.
+
+    per_event_content:
+        Also record what each event of the job's EDM4hep files holds,
+        collection by collection, in its event size record.
 
     Returns
     -------
@@ -166,6 +172,7 @@ def run_k4run(
     if proc.returncode == 0 and created:
         record_event_size(
             event_size_path, {str(path.relative_to(work_dir)): path for path in sorted(created)},
+            per_event=per_event_content,
         )
 
     return run_result(

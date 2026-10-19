@@ -61,8 +61,10 @@ class Job:
 
     A ddsim job has *ddsim_args*, the arguments as ddsim reads them, with the
     steering file and the local copy of the input in front of the configured
-    ones, and runs with *pythonpath*. A k4run job has its stage directory and
-    its arguments and variants with their ``$VAR``s expanded.
+    ones, and runs with *pythonpath*. A k4run job has its stage directory, its
+    arguments and variants with their ``$VAR``s expanded, and the local copy of
+    its input as *source_input* when it reads exactly one file, which records
+    what went into its events.
     """
 
     record: dict
@@ -74,6 +76,7 @@ class Job:
     stage_path: str = ""
     k4run_args: str = ""
     variants: dict[str, str] = field(default_factory=dict)
+    source_input: str = ""
 
     @property
     def tool(self) -> str:
@@ -102,6 +105,8 @@ class Job:
                 argv += ["--variant", f"{name}={args}"]
             if rec["memory_events"]:
                 argv += ["--memory-events", rec["memory_events"]]
+            if self.source_input:
+                argv += ["--source-input", self.source_input]
             if rec["verbose"] == "true":
                 argv.append("--verbose")
             return argv
@@ -190,10 +195,13 @@ def _resolve_k4run(
     stage_path = _expand(record["stage_dir"], {**env, "LOCAL_DATA_DIR": data_dir})
     if stage_path and not Path(stage_path).is_dir():
         raise JobError(f"stage directory not found: {stage_path}")
+    inputs = [_fetch(source) for source in record["input_files"].split()]
+    if len(inputs) > 1:
+        print("Note     : more than one input file, so no event source is recorded")
     names = {
         **env,
         "DETECTOR_XML": str(detector_xml),
-        "LOCAL_INPUT_FILES": " ".join(_fetch(source) for source in record["input_files"].split()),
+        "LOCAL_INPUT_FILES": " ".join(inputs),
         "LOCAL_DATA_DIR": data_dir,
     }
     return Job(
@@ -203,6 +211,7 @@ def _resolve_k4run(
         stage_path=stage_path,
         k4run_args=_expand(record["k4run_args"], names),
         variants={name: _expand(args, names) for name, args in record["variants"].items()},
+        source_input=inputs[0] if len(inputs) == 1 else "",
     )
 
 

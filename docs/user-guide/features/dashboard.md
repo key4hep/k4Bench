@@ -85,6 +85,7 @@ The Simulation page's sections:
 | **Config Impact** | baseline-relative configuration impact in the selected run | `*_results.csv` |
 | **Event timing** | per-event wall time distributions | `*_events.json` |
 | **Event memory** | per-event RSS and growth | `*_events.json` |
+| **Correlations** | each event's time, and each detector's time and steps, against what the event holds: its generator particles and hits | `event_source.json.gz`, `*_event_size.json`, `*_events.json`, `*_regions.json` |
 | **Event size** | what each event of the output file takes on disk after ROOT's compression, collection by collection | `*_event_size.json` |
 | **Region timing** | per-subdetector stepping time, `at_location` vs `by_birth`, step counts, attribution analysis | `*_regions.json` |
 | **Trends** | metrics over time across releases | many runs, windowed |
@@ -165,6 +166,65 @@ two attribution views (`at_location` and `by_birth`) and adds:
   imported cost).
 - **Step analysis** — timer-interval counts per detector.
 - **Historical** — the same detector's time across runs.
+
+### Correlations tab
+
+What makes an event expensive. The baseline configuration's per-event costs
+(or those of a benchmark's single configuration) are set against what each
+event holds:
+
+- its generator particles, from the run's `event_source.json.gz`: canned
+  quantities such as the charged final-state particles, those born more than
+  0.5 mm off the beam axis, the highest pT or the visible energy, and, for a
+  gun sample of one particle per event, that particle's |cos θ|, θ, φ and
+  energy;
+- what each collection holds in the event (`n_<collection>` elements and, for
+  calorimeter hits, `E_<collection>` energy): simulation's output, or
+  reconstruction's input, and reconstruction's outputs as `out_n_…`,
+  `out_E_…`.
+
+A simulation benchmark records what its events hold for its first run only;
+its other configurations take a detector out and are not offered. A run
+recorded before this existed has nothing to show, unless its source was added
+later; a note then says whether it came from the run's own input or was
+inferred from another detector's simulation of the same sample.
+
+Top to bottom:
+
+- **Metric**: the event's time; in simulation a detector's time or steps; in
+  reconstruction an algorithm's time, CPU time, instructions, allocations,
+  allocated bytes or peak heap.
+- A matrix of the costliest 15 costs of that kind (down) against the
+  quantities most associated with them (across, by the names an expression
+  uses). Each square is coloured by Spearman's rank correlation ρ over the
+  events (red, the cost rises with the quantity; blue, it falls) and sized by
+  its strength; hovering says what the quantity is and over how many events.
+  Click a square to plot it. A cost that depends on a quantity symmetrically or
+  periodically (on θ forward and backward alike, on φ) shows little however
+  strongly it depends on it, which is what the plot is for, and among this many
+  pairs a few strong ones turn up by chance: a square is a lead, not a
+  significance.
+- One row for the plot: **Of**, the cost; **Against**, an expression, always
+  on show: a quantity's name (`n_VertexBarrelCollection`) or any per-event
+  combination of the generator particles and the quantities, e.g.
+  `count(final & charged & (pt > 1))`, filled at first with the quantity most
+  associated with the cost; and **Log y**.
+- **What can I write?** offers examples that work for the run on screen and
+  lists every name an expression can use there: the run's quantities (what each
+  is, its range in this run, how a canned one is written), the particle fields
+  with their units (used inside `count(mask)`, `sum`, `mean`, `max` or
+  `min(x, mask)`, which fold an event's particles into one number), and the
+  reductions and operators. An expression is parsed and computed piece by
+  piece, never run as Python, and is limited in length and size.
+- The plot, with its robust trend line (Theil–Sen), and, folded under it, the
+  events more than three robust standard deviations above the line: their
+  event number, the line's value and how far above it they lie. Above that
+  line, which is not to say expensive for everything they hold.
+
+The warm-up event is left out. The events are matched to what they hold by
+their position in the job's files; a run whose profiling counted other events
+says so rather than matching them. See
+[File formats](../../reference/file-formats.md#event-source-json).
 
 ### Event Size tab
 
@@ -728,6 +788,7 @@ measurement as uploaded.
 | **Data Flow** | which algorithm feeds which, through the collections it writes and a later one reads | `*_dataflow.json`, `*_components.json` |
 | **Event timing** | per-event wall time distributions, as on the Simulation page, and any algorithms' own time per event beside them | `*_events.json`, `*_components.json` |
 | **Event memory** | per-event RSS and growth, as on the Simulation page | `*_events.json` |
+| **Correlations** | each event's time, and each algorithm's time, instructions and allocations, against what the event holds, as on the Simulation page, with the collections an algorithm reads offered first | `event_source.json.gz`, `*_event_size.json`, `*_components.json`, `*_dataflow.json` |
 | **Event size** | what each event of the EDM4hep files the job wrote takes on disk, as on the Simulation page | `*_event_size.json` |
 | **Machine info** | the host the benchmark ran on | `machine_info.json` |
 | **Logs** | the k4run log, read as a Gaudi log, and the job options | `*.log`, `*_joboptions.opts` |

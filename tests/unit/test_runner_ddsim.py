@@ -312,7 +312,7 @@ def test_peak_vmem_from_plugin_reaches_results_csv(tmp_path, payload, expected):
         assert df["peak_vmem_mb"].iloc[0] == expected
 
 
-def _ddsim(tmp_path: Path, returncode: int, writes_output: bool = True):
+def _ddsim(tmp_path: Path, returncode: int, writes_output: bool = True, **kwargs):
     output = tmp_path / "out.edm4hep.root"
     proc = MagicMock(stdout=iter([]), returncode=None)
 
@@ -326,19 +326,43 @@ def _ddsim(tmp_path: Path, returncode: int, writes_output: bool = True):
         patch("k4bench.runner.process.subprocess.Popen", return_value=proc),
         patch("k4bench.runner.ddsim.setup_plugin_environment", return_value=False),
         patch("k4bench.runner.ddsim.record_event_size") as record,
+        patch("k4bench.runner.ddsim.record_event_source") as record_source,
     ):
         run_ddsim(
             xml_path=XML, label="baseline", n_events=2, output_file=output,
-            log_dir=tmp_path / "logs",
+            log_dir=tmp_path / "logs", **kwargs,
         )
-    return record, output
+    return record, output, record_source
 
 
 def test_the_output_file_of_a_successful_run_is_measured(tmp_path):
-    record, output = _ddsim(tmp_path, returncode=0)
+    record, output, record_source = _ddsim(tmp_path, returncode=0)
     record.assert_called_once_with(
         tmp_path / "logs" / "baseline_event_size.json", {"out.edm4hep.root": output},
+        per_event=False,
     )
+    record_source.assert_not_called()
+
+
+def test_a_run_given_a_source_path_records_its_events_and_their_source(tmp_path):
+    source = tmp_path / "logs" / "event_source.json.gz"
+    record, output, record_source = _ddsim(
+        tmp_path, returncode=0, per_event_content=True, source_path=source,
+    )
+    assert record.call_args.kwargs == {"per_event": True}
+    record_source.assert_called_once_with(source, output, n_events=2, label="baseline")
+
+
+@pytest.mark.parametrize(("returncode", "writes_output"), [(1, True), (0, False)])
+def test_a_run_that_failed_or_wrote_nothing_records_no_source_and_drops_a_previous_one(
+    tmp_path, returncode, writes_output,
+):
+    source = tmp_path / "logs" / "event_source.json.gz"
+    source.parent.mkdir()
+    source.write_bytes(b"previous")
+    *_, record_source = _ddsim(tmp_path, returncode, writes_output, source_path=source)
+    record_source.assert_not_called()
+    assert not source.exists()
 
 
 @pytest.mark.parametrize(("returncode", "writes_output"), [(1, True), (0, False)])
@@ -348,13 +372,13 @@ def test_a_run_that_failed_or_wrote_nothing_records_no_event_size(
     stale = tmp_path / "logs" / "baseline_event_size.json"
     stale.parent.mkdir()
     stale.write_text("{}")
-    record, _ = _ddsim(tmp_path, returncode, writes_output)
+    record, *_ = _ddsim(tmp_path, returncode, writes_output)
     record.assert_not_called()
     assert not stale.exists()
 
 
 def test_a_previous_runs_output_file_is_never_measured(tmp_path):
     (tmp_path / "out.edm4hep.root").write_bytes(b"previous run")
-    record, output = _ddsim(tmp_path, returncode=0, writes_output=False)
+    record, output, _ = _ddsim(tmp_path, returncode=0, writes_output=False)
     record.assert_not_called()
     assert not output.exists()

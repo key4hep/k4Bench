@@ -36,6 +36,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Iterable
 
+from k4bench.artifacts import EVENT_SOURCE
 from k4bench.geometry.index import GeometryIndex
 from k4bench.geometry.errors import DetectorNotFoundError, GeometryError
 from k4bench.geometry.patcher import build_patch, patched
@@ -321,7 +322,9 @@ def _resolve_sweep_plan(
 def _run_baseline(config: BenchmarkConfig) -> list[RunResult]:
     """Single baseline run with no detector patching."""
     _print_run_header(1, 1, BASELINE_LABEL, config.xml_path)
-    result = _timed_run(xml_path=config.xml_path, label=BASELINE_LABEL, config=config)
+    result = _timed_run(
+        xml_path=config.xml_path, label=BASELINE_LABEL, config=config, first=True,
+    )
     return [result]
 
 
@@ -338,7 +341,7 @@ def _run_removal_sweep(
     total = len(plan.labels)
     _print_run_header(1, total, BASELINE_LABEL, config.xml_path)
     results.append(
-        _timed_run(xml_path=config.xml_path, label=BASELINE_LABEL, config=config)
+        _timed_run(xml_path=config.xml_path, label=BASELINE_LABEL, config=config, first=True)
     )
 
     try:
@@ -425,6 +428,7 @@ def _run_keep_only(config: BenchmarkConfig, keep: set[str], label: str) -> list[
                 label=label,
                 config=config,
                 present_detectors=set(patch.present_detectors),
+                first=True,
             )
         ]
     finally:
@@ -442,11 +446,17 @@ def _timed_run(
     label: str,
     config: BenchmarkConfig,
     present_detectors: set[str] | None = None,
+    first: bool = False,
 ) -> RunResult:
     """Execute one ddsim run and print a one-line status summary.
 
     *present_detectors* is the detector set of a patched geometry; passing it
     reconciles the steering file with that geometry.  Omit it for unpatched runs.
+
+    The *first* run of a benchmark also records what each of its events holds
+    and the run's ``event_source.json.gz``: every run of a benchmark
+    simulates the same primaries, and the removal runs' contents would cost
+    their share of the run's data for what is rarely asked of them.
     """
     extra_args = config.extra_args
     if present_detectors is not None:
@@ -466,6 +476,8 @@ def _timed_run(
         setup_script=config.setup_script,
         extra_args=extra_args,
         verbose=config.verbose,
+        per_event_content=first,
+        source_path=config.log_dir / EVENT_SOURCE if first else None,
     )
     print_run_result(result)
     return result

@@ -442,6 +442,28 @@ def test_k4bench_k4run_command_adds_the_memory_pass(job_module, k4geo, tmp_path,
     assert "--memory-events" not in job_module.resolve(_k4run_record(), dict(os.environ)).k4bench_argv(Path("x"))
 
 
+def test_a_k4run_job_reading_one_input_records_its_event_source(job_module, k4geo, tmp_path):
+    sim = tmp_path / "sim.edm4hep.root"
+    sim.write_text("events")
+    argv = job_module.resolve(_k4run_record(input_files=str(sim)), dict(os.environ)).k4bench_argv(
+        Path("out"),
+    )
+    assert argv[argv.index("--source-input") + 1] == str(sim)
+
+
+def test_a_k4run_job_reading_several_inputs_records_no_event_source(
+    job_module, k4geo, tmp_path, capsys,
+):
+    for name in ("a.root", "b.root"):
+        (tmp_path / name).write_text("events")
+    job = job_module.resolve(
+        _k4run_record(input_files=f"{tmp_path / 'a.root'} {tmp_path / 'b.root'}"), dict(os.environ),
+    )
+    assert job.source_input == ""
+    assert "--source-input" not in job.k4bench_argv(Path("out"))
+    assert "more than one input file" in capsys.readouterr().out
+
+
 def test_k4run_job_records_its_run(job_module, k4geo, tmp_path, monkeypatch):
     def benchmark(command):
         out = Path(command[command.index("--output-dir") + 1])

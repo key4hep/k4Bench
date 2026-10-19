@@ -493,3 +493,65 @@ class TestDataFlow:
             run_k4run_benchmark(config)
         assert not (config.log_dir / "baseline_dataflow.json").exists()
         assert not (config.log_dir / "marlin_processors.xml.gz").exists()
+
+
+class TestEventContent:
+    """The measured runs record what each event of their outputs holds; the
+    job's input, given, records what went into the events once."""
+
+    def test_only_the_measured_runs_record_what_each_event_holds(self, tmp_path, stage_dir):
+        calls: list[dict] = []
+        config = _config(tmp_path, stage_dir, warm_up=True, memory_events=2)
+        with patch.object(k4run_module, "run_k4run", _recording_run_k4run(calls)):
+            run_k4run_benchmark(config)
+        # Warm-up, measured run, memory pass.
+        assert [c["n_events"] for c in calls] == [1, 3, 2]
+        assert [c.get("per_event_content", False) for c in calls] == [False, True, False]
+
+    def test_the_input_records_the_event_source_once_before_the_runs(self, tmp_path, stage_dir):
+        source = tmp_path / "sim.edm4hep.root"
+        source.write_bytes(b"x")
+        order: list[str] = []
+        calls: list[dict] = []
+        recording = _recording_run_k4run(calls)
+
+        def run(**kwargs):
+            order.append(kwargs["label"])
+            return recording(**kwargs)
+
+        def record(path, input_file, **kwargs):
+            order.append("source")
+            assert (path, input_file) == (config.log_dir / "event_source.json.gz", source)
+            assert kwargs == {"n_events": 3, "input_content": True, "checksum": True}
+            return True
+
+        config = _config(tmp_path, stage_dir, source_input=source, variants={"a": ["--a"]})
+        with (
+            patch.object(k4run_module, "run_k4run", run),
+            patch.object(k4run_module, "record_event_source", side_effect=record) as recorded,
+        ):
+            run_k4run_benchmark(config)
+        assert order == ["source", "baseline", "variant_a"]
+        recorded.assert_called_once()
+
+    def test_without_an_input_a_previous_event_source_is_dropped(self, tmp_path, stage_dir):
+        stale = tmp_path / "logs" / "event_source.json.gz"
+        stale.parent.mkdir()
+        stale.write_bytes(b"previous")
+        with (
+            patch.object(k4run_module, "run_k4run", _recording_run_k4run([])),
+            patch.object(k4run_module, "record_event_source") as recorded,
+        ):
+            run_k4run_benchmark(_config(tmp_path, stage_dir))
+        recorded.assert_not_called()
+        assert not stale.exists()
+
+    def test_a_missing_input_is_refused(self, tmp_path, stage_dir):
+        with pytest.raises(ValueError, match="Source input not found"):
+            _config(tmp_path, stage_dir, source_input=tmp_path / "missing.root")
+
+    def test_the_input_is_made_absolute(self, tmp_path, stage_dir, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "sim.root").write_bytes(b"x")
+        config = _config(tmp_path, stage_dir, source_input=Path("sim.root"))
+        assert config.source_input == tmp_path / "sim.root"

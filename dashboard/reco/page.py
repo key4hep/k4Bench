@@ -9,7 +9,9 @@ the Simulation Overview does, the Breakdown splits the job's time by phase
 and by component, Efficiency sets each algorithm's time against how well it
 uses the CPU, Memory shows where the heap goes component by component and
 what grows without being released, and the Data Flow draws which algorithm
-feeds which. Event Size, shared too, reads the EDM4hep files the job wrote.
+feeds which. Correlations, the sim tab with each algorithm's costs on offer,
+sets them against what each event holds. Event Size, shared too, reads the
+EDM4hep files the job wrote.
 """
 from __future__ import annotations
 
@@ -19,7 +21,7 @@ from reco import breakdown, dataflow, efficiency, memory, overview
 from section_dispatch import RENDERERS, PageContext, judgeable_trend
 from sections import SECTION_SCOPE, SectionScope
 from suite_page import SuitePage, render_page
-from tabs import event_timing, logs
+from tabs import correlations, event_timing, logs
 
 #: The sim sections this page shares as they are, which read nothing sim-specific.
 _SHARED = ("Event Memory", "Event Size", "Machine Info")
@@ -36,6 +38,13 @@ def _event_timing(ctx: PageContext) -> SectionScope | None:
     )
 
 
+def _correlations(ctx: PageContext) -> SectionScope | None:
+    """The sim tab, with each algorithm's costs in each event on offer."""
+    return correlations.render(
+        ctx.data_dir, ctx.run.results, ctx.run.event_data, components=ctx.run.components,
+    )
+
+
 def _logs(ctx: PageContext) -> None:
     """Per-config status and the log explorer, reading Gaudi's messages."""
     logs.render(ctx.run.results, ctx.data_dir, ctx.run_meta, log_format=logs.GAUDI)
@@ -44,8 +53,8 @@ def _logs(ctx: PageContext) -> None:
 RECO_PAGE = SuitePage(
     suite=RECO,
     sections=(
-        "Overview", "Breakdown", "Efficiency", "Memory", "Data Flow", "Event Timing", *_SHARED,
-        "Logs",
+        "Overview", "Breakdown", "Efficiency", "Memory", "Data Flow", "Event Timing",
+        "Event Memory", "Correlations", "Event Size", "Machine Info", "Logs",
     ),
     # Like the Simulation Overview, it compares detectors across the window.
     remote_only=frozenset({"Overview"}),
@@ -55,7 +64,8 @@ RECO_PAGE = SuitePage(
         "Efficiency": SECTION_SCOPE["Region Timing"],
         "Memory": SECTION_SCOPE["Region Timing"],
         "Data Flow": SECTION_SCOPE["Region Timing"],
-        **{name: SECTION_SCOPE[name] for name in ("Event Timing", *_SHARED, "Logs")},
+        **{name: SECTION_SCOPE[name]
+           for name in ("Event Timing", "Correlations", *_SHARED, "Logs")},
     },
     renderers={
         "Overview": overview.render,
@@ -64,6 +74,7 @@ RECO_PAGE = SuitePage(
         "Memory": memory.render,
         "Data Flow": dataflow.render,
         "Event Timing": _event_timing,
+        "Correlations": _correlations,
         **{name: RENDERERS[name] for name in _SHARED},
         "Logs": _logs,
     },

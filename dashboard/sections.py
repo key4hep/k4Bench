@@ -32,6 +32,7 @@ SECTION_NAMES = [
     "Region Timing",
     "Event Timing",
     "Event Memory",
+    "Correlations",
     "Event Size",
     "Machine Info",
     "Logs",
@@ -153,6 +154,9 @@ SECTION_SCOPE: dict[str, SectionScope] = {
         detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
     ),
     "Event Memory": SectionScope(
+        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
+    ),
+    "Correlations": SectionScope(
         detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
     ),
     "Event Size": SectionScope(

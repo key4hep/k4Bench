@@ -200,6 +200,16 @@ def test_every_file_the_job_created_is_measured_by_its_name_in_the_working_direc
     }
 
 
+@pytest.mark.parametrize("per_event", [False, True])
+def test_what_each_event_holds_is_measured_only_when_asked(tmp_path, per_event):
+    def finish():
+        (tmp_path / "work" / "reco_REC.edm4hep.root").write_bytes(b"x")
+
+    with patch("k4bench.runner.k4run.record_event_size") as record:
+        _run(tmp_path, _finished_process(finish), per_event_content=per_event)
+    assert record.call_args.kwargs == {"per_event": per_event}
+
+
 def test_a_failed_job_records_no_event_size_and_drops_a_previous_one(tmp_path):
     stale = tmp_path / "logs" / "baseline_event_size.json"
     stale.parent.mkdir()

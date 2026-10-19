@@ -563,3 +563,39 @@ class TestSteeringReconciliation:
 
         assert all(args == ["--enableGun"] for args in captured.values())
         assert not list(config.log_dir.glob("*_steering.py"))
+
+
+# ---------------------------------------------------------------------------
+# What each event holds
+# ---------------------------------------------------------------------------
+
+
+class TestEventContent:
+    """Only a benchmark's first run records what its events hold and their
+    source: every run simulates the same primaries."""
+
+    @staticmethod
+    def _content_kwargs(config) -> dict[str, tuple]:
+        seen: dict[str, tuple] = {}
+
+        def run(**kw):
+            seen[kw["label"]] = (kw["per_event_content"], kw["source_path"])
+            return _make_result(kw["label"])
+
+        with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=run):
+            run_sweep(config)
+        return seen
+
+    @pytest.mark.parametrize("mode", [SweepMode.FULL, SweepMode.BASELINE])
+    def test_only_the_baseline_records_them(self, tmp_path, mode):
+        config = _make_config(tmp_path, mode=mode)
+        seen = self._content_kwargs(config)
+        assert seen.pop("baseline") == (True, config.log_dir / "event_source.json.gz")
+        assert all(kwargs == (False, None) for kwargs in seen.values())
+        assert len(seen) == (len(ALL_DETECTORS) if mode is SweepMode.FULL else 0)
+
+    @pytest.mark.parametrize("mode", [SweepMode.INCLUDE_ONLY, SweepMode.EXCLUDE_ONLY])
+    def test_the_single_run_of_a_kept_set_records_them(self, tmp_path, mode):
+        config = _make_config(tmp_path, mode=mode, detector_names=["EcalBarrel"])
+        (kwargs,) = self._content_kwargs(config).values()
+        assert kwargs == (True, config.log_dir / "event_source.json.gz")
