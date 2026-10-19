@@ -8,6 +8,7 @@ run-to-run variability table with :func:`render_stability_expander`.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable, Mapping
 
 import numpy as np
 import pandas as pd
@@ -89,6 +90,8 @@ def render_historical_trends(
     units: dict[str, str] | None = None,
     extra_controls: tuple = (),
     log_y: bool = False,
+    colors: Callable[[list[str]], Mapping[str, str]] | None = None,
+    value_format: Callable[[float], str] | None = None,
 ) -> None:
     """Render historical statistics in a grid of up to three columns.
 
@@ -132,6 +135,14 @@ def render_historical_trends(
     log_y :
         Draw every panel's y axis on a log scale, for series that differ by
         orders of magnitude.
+    colors :
+        Given the chosen palette, the colour of each label it names; the
+        others take the palette's colours by their place in
+        ``filtered_labels``. For a caller whose series keep one colour across
+        its views.
+    value_format :
+        Writes a statistic's value in the hover, in place of four significant
+        digits and *unit*.
     """
     # ── Display options ───────────────────────────────────────────────────────
     # The opacity slider is keyed ``…_line_alpha`` rather than ``…_alpha``: the
@@ -149,6 +160,7 @@ def render_historical_trends(
         slot=display_options_slot,
     )
     palette = PALETTES[values["palette"]]
+    fixed_colors = colors(palette) if colors is not None else {}
     alpha = values["alpha"]
     use_dash, use_marker = style_cycling_flags(values["style"])
 
@@ -183,7 +195,7 @@ def render_historical_trends(
             continue
         n_colors     = len(palette)
         cycle        = cfg_idx // n_colors
-        color        = palette[cfg_idx % n_colors]
+        color        = fixed_colors.get(cfg_label) or palette[cfg_idx % n_colors]
         line_color   = to_rgba(color, alpha)
         marker_color = to_rgba(color, marker_alpha)
         dash         = DASHES [cycle % len(DASHES) ] if use_dash   else "solid"
@@ -236,12 +248,19 @@ def render_historical_trends(
                         size=7, color=marker_color, symbol=symbol, line=dict(color=color, width=1.5)
                     ),
                     error_y=err_y,
-                    customdata=custom,
+                    customdata=(
+                        custom if value_format is None
+                        else [(*c, value_format(v)) for c, v in zip(custom, cfg_df[stat_col])]
+                    ),
                     hovertemplate=(
                         f"<b>{cfg_label}</b><br>"
                         "Tag: %{customdata[1]} (%{x|%Y-%m-%d})<br>"
-                        f"{stat_label}: %{{y:.4g}} {(units or {}).get(stat_col, unit)}<br>"
-                        "CI run: %{customdata[0]}<extra></extra>"
+                        + (
+                            f"{stat_label}: %{{y:.4g}} {(units or {}).get(stat_col, unit)}<br>"
+                            if value_format is None
+                            else f"{stat_label}: %{{customdata[2]}}<br>"
+                        )
+                        + "CI run: %{customdata[0]}<extra></extra>"
                     ),
                 ),
                 row=col_idx // n_cols + 1,

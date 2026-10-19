@@ -754,7 +754,7 @@ shows up as *Unattributed* rather than being spread over the others.
 job after the timed one, which charges every heap block to the component that
 allocated it and keeps it charged until it is freed. Runs from before the
 pass existed (nightlies before 2026-10-19), and configurations whose pass
-failed, have none, and the section says so. It has two views:
+failed, have none, and the section says so. It has three views:
 
 - **Current Run** gives the configuration's heap in four tiles: what it held
   before the first event (with its largest holder), in the event loop (the
@@ -794,6 +794,18 @@ failed, have none, and the section says so. It has two views:
   held as each event started up to the most it held during it, and a mark at
   what it held at the event's end. With nothing selected, it draws the
   fastest-growing suspect, or the component whose events need the most.
+- **Historical Trends** draws one of a configuration's numbers across the
+  trend window, chosen by **Metric**: what each component held before the
+  first event, at a typical event's end (the median), its working set (the
+  median and the 95th percentile, as two panels) or its growth per event. It
+  names the largest components over the window (six by default, set by
+  **Largest shown**; for the working set, the largest of each panel) and
+  every component that grows and keeps it on any night of the window
+  besides, a line each, in one colour whatever is shown.
+  The first two add up to the job's heap, so the rest of it is one more line,
+  *Other*, and what no component allocated another, *No component*, both in
+  grey. When a nightly tag was run more than once, only its latest run is
+  drawn.
 
 Heap is memory allocated, not memory resident: the timed run's anonymous RSS
 can sit below the heap when blocks were allocated and never touched, and above

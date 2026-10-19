@@ -11,29 +11,41 @@ event, with the timed run's anonymous RSS beside it; each component the
 warning names opens in Components from a button below it. Components lists every
 component that held heap with its numbers and its heap across the events, and
 draws the selected one event by event: what it held as each event started,
-the most it held during it and what it kept. The warm-up event is left out of
-every statistic over events, as everywhere a run's event loop is summarised.
+the most it held during it and what it kept. Historical Trends draws one of a
+configuration's numbers across the trend window as a line per component:
+what it held before the first event or at a typical event's end, its
+working set or its growth per event. The warm-up event is left out of every
+statistic over events, as everywhere a run's event loop is summarised.
 """
 from __future__ import annotations
+
+from collections.abc import Callable
+from functools import partial
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-from data import cached_load_component_heap
+from data import cached_load_component_heap, cached_load_trend_heap
 from k4bench.analysis.components import ComponentTiming
 from k4bench.analysis.heap import LEAK_MIN_EVENTS, MB, NO_COMPONENT, ComponentHeap, HeapTotals
 from k4bench.analysis.loader import judgeable_config_data
 from k4bench.analysis.plots._theme import _vivid
 from k4bench.analysis.plots.heap import (
+    _NO_COMPONENT_LINE,
+    _OTHER_LINE,
     NO_COMPONENT_LABEL,
+    _scale,
     format_mb,
     plot_component_heap_events,
     plot_heap_timeline,
 )
+from k4bench.analysis.plots.phases import latest_run_per_tag, phase_component_series
 from reco._sources import SOURCE_COLUMN_CONFIG, package_labels, source_columns
-from section_dispatch import PageContext
-from sections import SectionScope
+from section_dispatch import PageContext, judgeable_trend
+from sections import TREND_WINDOW_SCOPE, SectionScope
+from tabs._historical_trends import render_historical_trends
+from tabs._reliability import render_reliability_filter
 from ui_chrome import drop_stale_selection
 from ui_utils import (
     PALETTE_NAMES,
@@ -97,6 +109,15 @@ def _palette_size(wanted: int) -> int:
             break
         n = len(palette) + 1
     return n
+
+
+def _colors(named: list[str], palette: list[str]) -> dict[str, str]:
+    """Each of *named* in the colour of its place, from *palette* but its
+    greys, which Other and no component are drawn in. The default palette
+    has a colour for each; one chosen smaller repeats its colours rather than
+    fold a suspect into Other."""
+    vivid = _vivid(palette)
+    return {name: vivid[i % len(vivid)] for i, name in enumerate(named)}
 
 
 def _heaps(ctx: PageContext) -> dict[str, ComponentHeap]:
@@ -328,11 +349,8 @@ def _render_current_run(ctx: PageContext, display_options_slot) -> None:
         key_prefix=f"{_KEY}_display",
         slot=display_options_slot,
     )
-    # The default palette has a colour for each; one chosen smaller repeats
-    # its colours rather than fold a suspect into Other.
-    palette = _vivid(PALETTES[display["palette"]])
     named = order[:wanted]
-    colors = {name: palette[i % len(palette)] for i, name in enumerate(named)}
+    colors = _colors(named, PALETTES[display["palette"]])
 
     fig = plot_heap_timeline(
         held, before, after, named, colors=colors,
@@ -492,10 +510,192 @@ def _render_component_events(heap: ComponentHeap, summary: pd.DataFrame, name: s
         st.plotly_chart(fig, width="stretch", key=f"{_KEY}_component_events")
 
 
+_HIST_KEY = f"{_KEY}_hist"
+
+#: What the history draws of each component, by its option's name: a
+#: :func:`~k4bench.analysis.trend.build_heap_trend` column.
+_HIST_METRICS = {
+    "Before the first event": "before_first_mb",
+    "Typical event": "typical_mb",
+    "Working set": "working_set_median_mb",
+    "Growth per event": "growth_mb_per_event",
+}
+
+#: The metrics whose components add up to the job's heap: the rest of them
+#: are one Other line, and what no component allocated is a line of its own.
+_ADDITIVE = ("before_first_mb", "typical_mb")
+
+#: Each metric's panels: a trend column and its title, before its unit.
+_HIST_PANELS = {
+    "before_first_mb": [("before_first_mb", "Heap held")],
+    "typical_mb": [("typical_mb", "Heap held")],
+    "working_set_median_mb": [
+        ("working_set_median_mb", "Median over the events"),
+        ("working_set_p95_mb", "95th percentile over the events"),
+    ],
+    "growth_mb_per_event": [("growth_mb_per_event", "Growth per event")],
+}
+
+#: The line above the history's chart, and what is behind its help.
+_HIST_HEADINGS = {
+    "before_first_mb": (
+        "Heap before the first event, night by night",
+        "What each component held when initialize and start were done: geometry, "
+        "conditions, lookup tables, libraries loaded.",
+    ),
+    "typical_mb": (
+        "Heap at an event's end, night by night",
+        "What each component held at the end of an event: its median over the run's "
+        "events, the warm-up event left out.",
+    ),
+    "working_set_median_mb": (
+        "Working set, night by night",
+        "The most each component held during an event beyond what it held as the event "
+        "started: what the event needed of it. Its median over the run's events on the "
+        "left; on the right its 95th percentile, what the heavier events needed.",
+    ),
+    "growth_mb_per_event": (
+        "Growth per event, night by night",
+        "How much what each component holds grows from one event to the next: the "
+        "median of the slopes between every two events (Theil–Sen), so a single large "
+        "event does not move it.",
+    ),
+}
+
+#: Which series the history draws, behind the same help.
+_HIST_SERIES = (
+    "\n\nThe largest components over the window are named (**Largest shown**), and "
+    "besides them every component that grows and keeps it on any night of the window. "
+    "When a nightly tag was run more than once, only its latest run is drawn."
+)
+_HIST_REST = (
+    " The rest are one *Other* line, and what no component allocated is *No "
+    "component*, both in grey."
+)
+
+
+def _hist_colors(named: list[str], palette: list[str], other: str | None) -> dict[str, str]:
+    """:func:`_colors`, with *other* and no component in the grey of the
+    timeline's lines."""
+    colors = _colors(named, palette)
+    colors[NO_COMPONENT_LABEL] = _NO_COMPONENT_LINE
+    if other is not None:
+        colors[other] = _OTHER_LINE
+    return colors
+
+
+def _mb_format(divisor: float) -> Callable[[float], str]:
+    """How a value drawn in units of *divisor* MB is written."""
+    def write(value: float) -> str:
+        return format_mb(value * divisor)
+    return write
+
+
+def _growth_format(value: float) -> str:
+    return f"{format_mb(value, signed=True)} per event"
+
+
+def _render_historical(ctx: PageContext, reliability_slot, display_options_slot) -> None:
+    trend = judgeable_trend(ctx, cached_load_trend_heap)
+    if trend is None or trend.empty:
+        st.info(
+            "No heap data in the selected window. Widen the trend window in the "
+            "sidebar: heap data starts with the 2026-10-19 nightly."
+        )
+        return
+    trend = render_reliability_filter(
+        trend, ctx.reliability, key=f"{_HIST_KEY}_exclude_unreliable", slot=reliability_slot,
+    )
+    if trend.empty:
+        return
+    config_col, metric_col, shown_col = st.columns([2, 4.6, 2], vertical_alignment="bottom")
+    with config_col:
+        config = st.selectbox(
+            "Configuration", sorted(trend["label"].unique()), key=f"{_HIST_KEY}_config",
+        )
+    drop_stale_selection(f"{_HIST_KEY}_metric", list(_HIST_METRICS))
+    with metric_col:
+        name = st.segmented_control(
+            "Metric", list(_HIST_METRICS), default="Typical event", key=f"{_HIST_KEY}_metric",
+        ) or "Typical event"
+    metric = _HIST_METRICS[name]
+    additive = metric in _ADDITIVE
+    with shown_col:
+        top_n = st.slider(
+            "Largest shown", min_value=1, max_value=_MAX_SHOWN, value=_TOP_N,
+            key=f"{_HIST_KEY}_topn",
+            help="How many of the largest components over the window get a line "
+                 "of their own. One that grows and keeps it on any night always gets "
+                 "one besides.",
+        )
+
+    rows = latest_run_per_tag(trend[trend["label"] == config])
+    components = rows[rows["component"].notna()]
+    if not components[metric].notna().any():
+        st.info(f"No {name.lower()} recorded for **{config}** in the selected window.")
+        return
+    # The suspects first, the fastest-growing first, as Current Run names
+    # them, then the largest: a component's colour is its place here.
+    suspects = (
+        components[components["leak"].eq(True)].groupby("component")["growth_mb_per_event"]
+        .median().sort_values(ascending=False).index.tolist()
+    )
+    title, about = _HIST_HEADINGS[metric]
+    st.markdown(f"##### {title}", help=about + (_HIST_REST if additive else "") + _HIST_SERIES)
+
+    if additive:
+        # What no component allocated is not a component, as the part of a
+        # phase no component was charged for is not: it is no rival for a
+        # place among the named and is not folded into Other.
+        series = phase_component_series(
+            components, top_n, value=metric, always=suspects,
+            apart={NO_COMPONENT: NO_COMPONENT_LABEL},
+        )
+        labels = list(dict.fromkeys(series["label"]))
+        other = next((label for label in labels if label.startswith("Other (")), None)
+        named = [label for label in labels if label not in (other, NO_COMPONENT_LABEL)]
+        colors = partial(_hist_colors, named, other=other)
+    else:
+        # Each panel names its own largest: a component whose heavier events
+        # need much but its typical one little is not left out of the 95th
+        # percentile's.
+        medians = (
+            components[components["component"] != NO_COMPONENT]
+            .groupby("component")[[column for column, _ in _HIST_PANELS[metric]]].median()
+        )
+        labels = list(dict.fromkeys([*suspects, *(
+            name for column in medians.columns
+            for name in medians[column].dropna().sort_values(ascending=False).index[:top_n]
+        )]))
+        series = components[components["component"].isin(labels)].assign(
+            label=lambda df: df["component"],
+        )
+        # No line here is grey, so each takes the palette's colour of its
+        # place, the grey among them.
+        colors = None
+    panels = _HIST_PANELS[metric]
+    if metric == "growth_mb_per_event":
+        unit, value_format = "MB", _growth_format
+    else:
+        columns = [column for column, _ in panels]
+        divisor, unit = _scale(series[columns].max().max())
+        series = series.assign(**{column: series[column] / divisor for column in columns})
+        value_format = _mb_format(divisor)
+    render_historical_trends(
+        series, labels, [(column, f"{panel} ({unit})") for column, panel in panels],
+        std_col="", n_col_candidates=[], unit=unit, error_sources={},
+        key_prefix=_HIST_KEY, display_options_slot=display_options_slot,
+        colors=colors, value_format=value_format,
+    )
+
+
 def render(ctx: PageContext) -> SectionScope | None:
-    views = ["Current Run", "Components"]
+    views = ["Current Run", "Components"] + (["Historical Trends"] if ctx.trends_enabled else [])
     drop_stale_selection(_VIEW_KEY, views)
-    view, _, display_options_slot = view_control_row(views, key=_VIEW_KEY)
+    view, reliability_slot, display_options_slot = view_control_row(views, key=_VIEW_KEY)
+    if view == "Historical Trends":
+        _render_historical(ctx, reliability_slot, display_options_slot)
+        return TREND_WINDOW_SCOPE
     if view == "Components":
         _render_components(ctx)
     else:

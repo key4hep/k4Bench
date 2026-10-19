@@ -14,7 +14,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from k4bench.analysis.loader import failed_config_mask
+from k4bench.analysis.heap import SUMMARY_COLUMNS
+from k4bench.analysis.loader import failed_config_mask, load_component_heap
 from k4bench.analysis import trend
 
 
@@ -196,3 +197,74 @@ def test_build_algorithm_timing_trend_skips_runs_without_component_files(tmp_pat
 def test_build_phase_trend_skips_runs_without_component_files(tmp_path):
     sim = _make_run(tmp_path, "2026-10-01", "key4hep-2026-10-01", 50.0)
     assert trend.build_phase_trend((str(sim),)) is None
+
+
+# ── build_heap_trend ──────────────────────────────────────────────────────────
+
+def _heap_rows(df: pd.DataFrame, label: str = "baseline") -> tuple[pd.DataFrame, pd.Series]:
+    """*label*'s component rows, by component, and its whole-job row."""
+    rows = df[df["label"] == label]
+    (job,) = (row for _, row in rows[rows["component"].isna()].iterrows())
+    return rows[rows["component"].notna()].set_index("component"), job
+
+
+def test_build_heap_trend_gives_each_component_and_the_whole_job(reco_run_with_heap):
+    df = trend.build_heap_trend((str(reco_run_with_heap()),))
+    assert list(df.columns) == [
+        "run_id", "run_date", "k4h_release_date", "k4h_release", "label", "component",
+        *SUMMARY_COLUMNS, "x_date",
+    ]
+    components, job = _heap_rows(df)
+    # The components that held heap at some moment, no component among them.
+    assert set(components.index) == {
+        "(no component)", "GeoSvc", "k4FWCore__Reader", "LumiCalReco", "VertexFinder",
+        "k4FWCore__Writer",
+    }
+    assert components.loc["GeoSvc", "before_first_mb"] == pytest.approx(397)
+    assert components.loc["LumiCalReco", "growth_mb_per_event"] == pytest.approx(2.0)
+    assert components.loc["k4FWCore__Reader", "working_set_median_mb"] == pytest.approx(5.0)
+    assert components["leak"].eq(True).to_dict() == {
+        name: name in ("LumiCalReco", "VertexFinder") for name in components.index
+    }
+    # The whole job's before the first event is its components' together.
+    assert job["before_first_mb"] == pytest.approx(components["before_first_mb"].sum())
+    assert pd.isna(job["working_set_median_mb"]) and pd.isna(job["leak"])
+    assert df["x_date"].notna().all()
+
+
+def test_build_heap_trend_gives_the_whole_job_as_its_totals(reco_run_with_heap):
+    run = reco_run_with_heap()
+    totals = load_component_heap(run, ["baseline"])["baseline"].totals(warm_up=0)
+    _, job = _heap_rows(trend.build_heap_trend((str(run),)))
+    for column in trend.HEAP_TOTAL_COLUMNS:
+        assert job[column] == pytest.approx(getattr(totals, column)), column
+
+
+def test_build_heap_trend_gives_each_night_on_its_tag(reco_run_with_heap):
+    runs = [reco_run_with_heap(date, date) for date in ("2026-10-19", "2026-10-20")]
+    df = trend.build_heap_trend(tuple(map(str, runs)))
+    jobs = df[df["component"].isna()]
+    assert jobs["run_id"].tolist() == ["2026-10-19", "2026-10-20"]
+    assert jobs["x_date"].dt.strftime("%Y-%m-%d").tolist() == ["2026-10-19", "2026-10-20"]
+    assert jobs["k4h_release"].tolist() == ["key4hep-2026-10-19", "key4hep-2026-10-20"]
+
+
+def test_build_heap_trend_skips_runs_without_heap_files(reco_run_with_heap, tmp_path):
+    sim = _make_run(tmp_path / "sim", "2026-10-01", "key4hep-2026-10-01", 50.0)
+    df = trend.build_heap_trend((str(_RECO_RUN), str(sim), str(reco_run_with_heap())))
+    assert df["run_id"].unique().tolist() == ["run"]
+
+
+def test_build_heap_trend_keeps_a_runs_other_configs_beside_a_malformed_file(
+    reco_run_with_heap,
+):
+    run = reco_run_with_heap()
+    (run / "variant_truth_tracking_heap.json").write_text("{")
+    df = trend.build_heap_trend((str(run),))
+    assert df["label"].unique().tolist() == ["baseline"]
+
+
+def test_build_heap_trend_is_none_without_heap_files(tmp_path):
+    sim = _make_run(tmp_path, "2026-10-01", "key4hep-2026-10-01", 50.0)
+    assert trend.build_heap_trend((str(_RECO_RUN), str(sim))) is None
+    assert trend.build_heap_trend(()) is None

@@ -188,6 +188,49 @@ def test_a_phase_timed_as_a_whole_is_one_series():
     assert series["seconds"].tolist() == [5.9, 1.1]
 
 
+def test_series_name_the_components_always_named_ahead_of_the_largest():
+    series = phase_component_series(INIT_HISTORY, top_n=1, always=["Tiny", "Absent"])
+    assert list(dict.fromkeys(series["label"])) == ["Tiny", "MyAIDAProcessor", "Other (2)"]
+    # One always named that is among the largest takes no second place.
+    series = phase_component_series(INIT_HISTORY, top_n=2, always=["GeoSvc"])
+    assert list(dict.fromkeys(series["label"])) == ["GeoSvc", "MyAIDAProcessor", "Other (2)"]
+
+
+def test_series_keep_a_component_apart_after_other_whatever_its_size():
+    rows = pd.concat([
+        INIT_HISTORY, _history({"2026-10-11": 99.0, "2026-10-12": 99.0}, "(no component)"),
+    ], ignore_index=True)
+    series = phase_component_series(rows, top_n=1, apart={"(no component)": "No component"})
+    assert list(dict.fromkeys(series["label"])) == ["MyAIDAProcessor", "Other (3)", "No component"]
+    # Its share is of everything the run's series hold.
+    shares = series.groupby("run_id")["share_pct"].sum()
+    assert shares.to_list() == pytest.approx([100, 100])
+
+
+def test_series_sum_any_value_column():
+    rows = INIT_HISTORY.rename(columns={"seconds": "held_mb"})
+    series = phase_component_series(rows, top_n=2, value="held_mb")
+    assert list(series.columns) == [
+        "run_id", "run_date", "x_date", "k4h_release", "label", "held_mb", "share_pct",
+    ]
+    other = series[series["label"] == "Other (2)"].set_index("run_id")["held_mb"]
+    assert other.to_dict() == pytest.approx({"2026-10-11": 0.51, "2026-10-12": 0.55})
+
+
+def test_a_series_without_a_value_in_a_run_is_unknown_there_not_zero():
+    # The second run recorded no value for any component: a gap, not a drop to 0.
+    rows = pd.concat([
+        _history({"2026-10-11": 1.5, "2026-10-12": None}, "GeoSvc"),
+        _history({"2026-10-11": 0.5, "2026-10-12": None}, "IOSvc"),
+        _history({"2026-10-11": 0.01, "2026-10-12": None}, "Tiny"),
+    ], ignore_index=True).rename(columns={"seconds": "held_mb"})
+    series = phase_component_series(rows, top_n=1, value="held_mb")
+    by_run = series.set_index(["label", "run_id"])["held_mb"]
+    assert by_run[("GeoSvc", "2026-10-11")] == pytest.approx(1.5)
+    assert by_run[("Other (2)", "2026-10-11")] == pytest.approx(0.51)
+    assert by_run.xs("2026-10-12", level="run_id").isna().all()
+
+
 EVENTS = pd.DataFrame(
     {"Track": [9.0, 2.0, 4.0], "Vertex": [1.0, 3.0, None], "Tiny": [0.1, 0.1, 0.1]},
     index=pd.Index([0, 1, 2], name="event_number"),
