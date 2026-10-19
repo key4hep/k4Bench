@@ -9,8 +9,9 @@ import streamlit as st
 
 from k4bench.analysis.components import ComponentTiming
 from k4bench.analysis.dataflow import DataFlow, load_dataflow
+from k4bench.analysis.heap import ComponentHeap
 from k4bench.analysis.loader import judgeable_config_data
-from k4bench.analysis.loader import load_component_timing, load_event_timing, load_region_timing, load_results  # noqa: F401 (re-exported)
+from k4bench.analysis.loader import load_component_heap, load_component_timing, load_event_timing, load_region_timing, load_results  # noqa: F401 (re-exported)
 from k4bench.analysis import trend as _trend
 from k4bench.analysis.trend import EXPECTED_LOAD_ERRORS as _EXPECTED_ERRORS
 from k4bench.analysis.trend import parse_run_dir as _parse_run_dir  # noqa: F401 (re-exported)
@@ -70,6 +71,21 @@ def cached_load_component_timing(data_dir: str) -> dict[str, ComponentTiming]:
     except Exception:
         _log.exception("cached_load_component_timing: unexpected error loading '%s'", data_dir)
         st.warning(f"Unexpected error loading component costs from '{data_dir}'. Check logs for details.")
+        return {}
+
+
+# A long single-electron run's heap file is 1.5 MB of JSON; the bound keeps a
+# session's runs from piling up in the pod's memory, as for component costs.
+@st.cache_data(show_spinner="Loading component heap...", max_entries=16)
+def cached_load_component_heap(data_dir: str) -> dict[str, ComponentHeap]:
+    """Every label's ``_heap.json`` in *data_dir*; empty when it has none."""
+    try:
+        return load_component_heap(data_dir)
+    except _EXPECTED_ERRORS:
+        return {}
+    except Exception:
+        _log.exception("cached_load_component_heap: unexpected error loading '%s'", data_dir)
+        st.warning(f"Unexpected error loading component heap from '{data_dir}'. Check logs for details.")
         return {}
 
 

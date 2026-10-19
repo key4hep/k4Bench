@@ -16,7 +16,7 @@ import streamlit as st
 from plotly.colors import qualitative as _ql
 
 from k4bench.analysis.plots import BinCountOptions, event_bin_options
-from k4bench.analysis.plots._theme import PALETTE
+from k4bench.analysis.plots._theme import CATEGORICAL_8, PALETTE
 from k4bench.analysis.plots._utils import _default_baseline, bottom_legend
 from stats import select_top_n_by_ratio
 
@@ -115,6 +115,7 @@ PALETTES: dict[str, list[str]] = {
     "Alphabet":         _ql.Alphabet,
     "Safe":             _ql.Safe,
     "Bold":             _ql.Bold,
+    "Categorical 8":    CATEGORICAL_8,
 }
 PALETTE_NAMES = list(PALETTES.keys())
 

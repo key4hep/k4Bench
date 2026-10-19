@@ -14,6 +14,15 @@ _PALETTE = [
 
 PALETTE = _PALETTE
 
+#: Eight categorical hues in a fixed order, checked for colour-vision
+#: deficiencies against a white surface: neighbours in a stack stay apart for
+#: every common deficiency. Assign them in order and fold a ninth series into
+#: "Other" rather than cycling.
+CATEGORICAL_8 = [
+    "#2a78d6", "#eb6834", "#1baf7a", "#eda100",
+    "#e87ba4", "#008300", "#6250d6", "#e34948",
+]
+
 _UNACCOUNTED_COLOR = "#999999"
 _OTHER_COLOR       = "#d0d0d0"
 
@@ -35,3 +44,15 @@ def _hex_to_rgba(color: str, alpha: float) -> str:
         h = h[0]*2 + h[1]*2 + h[2]*2
     r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     return f"rgba({r},{g},{b},{alpha})"
+
+
+def _vivid(palette: list[str]) -> list[str]:
+    """*palette* without its greys, which the "Other" and unattributed series
+    of a chart are drawn in."""
+    def grey(color: str) -> bool:
+        h = color.lstrip("#")
+        if len(h) != 6:
+            return False
+        rgb = [int(h[i:i + 2], 16) for i in (0, 2, 4)]
+        return max(rgb) - min(rgb) < 16
+    return [c for c in palette if not grey(c)] or palette

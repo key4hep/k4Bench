@@ -15,7 +15,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from data import cached_load_run_packages, cached_load_trend_phases
+from data import cached_load_trend_phases
 from k4bench.analysis.components import ComponentTiming
 from k4bench.analysis.plots import (
     plot_event_composition,
@@ -28,7 +28,7 @@ from k4bench.analysis.plots.phases import (
     phase_component_series,
     top_components,
 )
-from k4bench.provenance.sources import package_of
+from reco._sources import SOURCE_COLUMN_CONFIG, source_columns
 from section_dispatch import PageContext, judgeable_trend
 from sections import TREND_WINDOW_SCOPE, SectionScope
 from tabs._historical_trends import render_historical_trends
@@ -164,19 +164,16 @@ def _render_components(ctx: PageContext) -> None:
     components = timing.components[timing.components["category"].isin(("algorithm", "service"))]
     if components.empty:
         return
-    packages = cached_load_run_packages(ctx.data_dir)
+    sources = source_columns(ctx.data_dir, timing, components.index)
     rows = []
     for name, component in components.iterrows():
-        source = package_of(component["impl_library"], packages)
         rows.append({
             "Component": name,
             "Class": component["impl"],
             "Kind": component["category"].capitalize(),
             **{title: float(per_phase[phase].get(name, 0.0) or 0.0)
                for phase, title in _PHASE_TITLES.items()},
-            "Package": source.label if source else "—",
-            "Code": source.search_url(component["impl"]) if source else None,
-            "Repository": source.tree_url if source else None,
+            **sources.loc[name].to_dict(),
         })
     df = pd.DataFrame(rows)
     df = df.iloc[(-df[list(_PHASE_TITLES.values())].sum(axis=1)).argsort(kind="stable")]
@@ -199,22 +196,7 @@ def _render_components(ctx: PageContext) -> None:
             "Kind": st.column_config.TextColumn("Kind", width="small"),
             **{title: st.column_config.NumberColumn(title, format="%.2f s")
                for title in _PHASE_TITLES.values()},
-            "Package": st.column_config.TextColumn(
-                "Package", help="The stack package whose install holds the class's "
-                                "library, at its built commit or release version.",
-            ),
-            "Code": st.column_config.LinkColumn(
-                "Code", display_text="↗ find class", width="small",
-                help="Where the class is defined: a GitHub code search on the default "
-                     "branch (needs a signed-in GitHub user), or a GitLab search at the "
-                     "built commit.",
-            ),
-            "Repository": st.column_config.LinkColumn(
-                "Repository", display_text="↗ at revision", width="small",
-                help="The package's repository at the commit this run's stack built. "
-                     "Absent for a package built from a release whose repository is "
-                     "unknown (Gaudi's is known).",
-            ),
+            **SOURCE_COLUMN_CONFIG,
         },
     )
     unresolved = components[(components["impl"] != components["type"])

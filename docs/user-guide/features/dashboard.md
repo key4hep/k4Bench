@@ -686,6 +686,7 @@ measurement as uploaded.
 | **Overview** | every reco detector's baseline time and memory side by side, over the trend window | `*_results.csv`, `*_events.json` of every detector's runs |
 | **Breakdown** | where the job's time goes, phase by phase and component by component | `*_components.json` |
 | **Efficiency** | which algorithms run inefficiently: time per event against instructions per cycle and heap allocations, and how time, instructions and instructions per cycle move night to night | `*_components.json` |
+| **Memory** | where the job's heap goes component by component, from initialization through every event to finalization, and what grows without being released | `*_heap.json`, `*_components.json`, `*_events.json` |
 | **Data Flow** | which algorithm feeds which, through the collections it writes and a later one reads | `*_dataflow.json`, `*_components.json` |
 | **Event timing** | per-event wall time distributions, as on the Simulation page, and any algorithms' own time per event beside them | `*_events.json`, `*_components.json` |
 | **Event memory** | per-event RSS and growth, as on the Simulation page | `*_events.json` |
@@ -747,6 +748,51 @@ shows up as *Unattributed* rather than being spread over the others.
   does, not the machine it ran on, so time that moved while the instructions
   held is the machine, and instructions that moved are the software, its
   configuration or its input.
+
+**Memory** reads the run's memory pass (`{config}_heap.json`, see
+[File formats](../../reference/file-formats.md#heap-json)): a second run of the
+job after the timed one, which charges every heap block to the component that
+allocated it and keeps it charged until it is freed. Runs from before the
+pass existed (nightlies before 2026-10-19), and configurations whose pass
+failed, have none, and the section says so. It has two views:
+
+- **Current Run** gives the configuration's heap in four tiles: what it held
+  before the first event (with its largest holder), in the event loop (the
+  median at an event's end, every event in the sparkline), at its largest, and
+  how much it grows per event (the median slope between every two events, so a
+  single large event does not move it). A warning names each component that
+  grew by 10 MB or more over the events and still holds at least half of it
+  after finalize. That is what a leak looks like; a cache that fills as new
+  detector cells are seen looks the same. A button under the warning opens
+  each of them in **Components**, its row selected. Below, every component's heap from
+  initialization through each event to finalization is stacked, the most
+  stable at the bottom: every suspect and the largest components (six by
+  default, set by **Largest shown**), the rest as *Other*, and what no component
+  allocated (the Python configuration, ROOT's start-up) as *No component*,
+  both in grey. A band wide enough carries its name at its right end. The
+  chart names no more series than its palette has colours, so none repeats,
+  and a component keeps its colour when more or fewer are shown. The dashed line is the timed run's anonymous RSS. **Group by** stacks the stack
+  packages the components come from instead, and **Change since the first
+  event** draws what each one holds beyond what it held at the first event's
+  end, so growth rises and a one-off step jumps.
+- **Components** lists every component that held heap, the largest typical
+  holder first: what it held before the first event (*Initialized*), at an
+  event's end (*Typical*, the median) and after finalize (*Finalized*), its
+  heap across the events as a sparkline, its *working set* (the most it held
+  during an event beyond what it held as the event started: what the event
+  needed of it, median and 95th percentile), its growth per event, and the
+  package links of Breakdown's Components. *⚠ grows* marks the suspects.
+  Selecting a row draws that component event by event: a bar from what it
+  held as each event started up to the most it held during it, and a mark at
+  what it held at the event's end. With nothing selected, it draws the
+  fastest-growing suspect, or the component whose events need the most.
+
+Heap is memory allocated, not memory resident: the timed run's anonymous RSS
+can sit below the heap when blocks were allocated and never touched, and above
+it by what libraries map themselves. A block stays charged to the component
+that created it, so the event data the input reader creates is the reader's
+until the output writer frees it. The warm-up event is left out of every
+statistic over events.
 
 **Data Flow** draws one configuration's algorithms left to right in data-flow
 order, joined by the collections one writes and a later one reads

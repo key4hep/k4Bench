@@ -20,10 +20,11 @@ from .event import (
     plot_event_memory,
     plot_event_timing,
 )
+from .heap import plot_component_heap_events, plot_heap_timeline
 from .overview import plot_run_overview
 from .phases import plot_event_composition, plot_phase_component_pie, plot_phase_history
 from .region import plot_region_timing
-from ._theme import PALETTE
+from ._theme import CATEGORICAL_8, PALETTE
 from ._utils import _compute_core_range  # re-exported: used in tests
 
 __all__ = [
@@ -34,10 +35,13 @@ __all__ = [
     "plot_phase_component_pie",
     "plot_event_composition",
     "plot_phase_history",
+    "plot_heap_timeline",
+    "plot_component_heap_events",
     "auto_bin_count",
     "event_bin_options",
     "BinSpec",
     "BinCountOptions",
     "PALETTE",
+    "CATEGORICAL_8",
     "_compute_core_range",
 ]
