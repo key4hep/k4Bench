@@ -668,10 +668,10 @@ def test_memory_gives_the_jobs_heap_and_names_what_grows_and_is_kept(monkeypatch
     assert tiles["Before the first event"] == "596 MB"
     assert tiles["Growth per event"] == "+4.7 MB"
     assert [w.value for w in at.warning] == [
-        "- **LumiCalReco** grows 2 MB per event (20 MB over the run) and keeps it after "
-        "finalize, when it still holds 24 MB.\n"
-        "- **VertexFinder** grows 1.2 MB per event (12 MB over the run) and keeps it after "
-        "finalize, when it still holds 14.4 MB."
+        "- **LumiCalReco** grows 2 MB per event (20 MB over the run); after finalize it "
+        "still holds 20 MB more than after event 1.\n"
+        "- **VertexFinder** grows 1.2 MB per event (12 MB over the run); after finalize it "
+        "still holds 12 MB more than after event 1."
     ]
     traces = _traces(at)
     named = [t["name"] for t in traces if t.get("stackgroup") == "heap"]
@@ -723,6 +723,28 @@ def test_memory_draws_each_series_change_since_the_first_event(monkeypatch, tmp_
     lines = {t["name"]: _values(t["y"]) for t in _traces(at)}
     assert lines["LumiCalReco"][-1] == pytest.approx(22.0)
     assert lines["k4FWCore__Writer"][-1] == pytest.approx(16.5)
+    assert "No component" in lines and any(name.startswith("Other (") for name in lines)
+
+
+def test_a_smaller_palette_repeats_colours_rather_than_hide_a_suspect(monkeypatch, tmp_path):
+    def twelve_leaks(raw: dict) -> None:
+        # Twelve algorithms, each growing steadily and keeping it after finalize.
+        growing = [n for n in raw["components"] if n.startswith("My")][:12]
+        for j, name in enumerate(growing):
+            i = raw["components"].index(name)
+            for e, row in enumerate(raw["execute"]["held_bytes"]):
+                row[i] = round((j + 1) * 1.5 * (e + 1) * _MIB)
+            raw["at_end"]["held_bytes"][i] = raw["execute"]["held_bytes"][-1][i]
+
+    run = _run_with_heap(tmp_path)
+    _rewrite_heap(run, twelve_leaks)
+    at = _page(monkeypatch, tmp_path, run, "Memory")
+    flagged = [b.label for b in at.button if (b.key or "").startswith("reco_memory_inspect_")]
+    assert len(flagged) >= 12
+    at.selectbox(key="reco_memory_palette").set_value("Matplotlib").run()
+    assert not at.exception
+    bands = {t["name"] for t in _traces(at) if t.get("stackgroup") == "heap"}
+    assert set(flagged) <= bands
 
 
 def test_memory_lists_the_components_and_draws_the_suspect_event_by_event(monkeypatch, tmp_path):

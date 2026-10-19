@@ -772,11 +772,15 @@ failed, have none, and the section says so. It has two views:
   default, set by **Largest shown**), the rest as *Other*, and what no component
   allocated (the Python configuration, ROOT's start-up) as *No component*,
   both in grey. A band wide enough carries its name at its right end. The
-  chart names no more series than its palette has colours, so none repeats,
-  and a component keeps its colour when more or fewer are shown. The dashed line is the timed run's anonymous RSS. **Group by** stacks the stack
-  packages the components come from instead, and **Change since the first
-  event** draws what each one holds beyond what it held at the first event's
-  end, so growth rises and a one-off step jumps.
+  default palette has a colour for each series, and a component keeps its
+  colour when more or fewer are shown; a smaller palette chosen in Display
+  options repeats colours rather than hide a suspect. The dashed line is the
+  timed run's anonymous RSS. **Group by** stacks the stack packages the
+  components come from instead, and **Change since the first event** draws
+  what each one holds beyond what it held at the first event's end, so growth
+  rises and a one-off step jumps, with *Other* and *No component* as grey
+  lines: together the lines make the whole heap's change, so growth in a
+  component not named still shows.
 - **Components** lists every component that held heap, the largest typical
   holder first: what it held before the first event (*Initialized*), at an
   event's end (*Typical*, the median) and after finalize (*Finalized*), its

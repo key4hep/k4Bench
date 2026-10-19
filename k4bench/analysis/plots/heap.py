@@ -41,9 +41,11 @@ _MUTED = "#898781"
 _INK = "#0b0b0b"
 _SECONDARY_INK = "#52514e"
 #: The neutral bands: what no component allocated, and the components folded
-#: into "Other".
+#: into "Other"; as lines, a step darker so a line shows on the surface.
 _NO_COMPONENT_FILL = "#e9e8e3"
 _OTHER_FILL = "#cfcdc6"
+_NO_COMPONENT_LINE = "#b5b3aa"
+_OTHER_LINE = "#8f8d85"
 #: The share of the axis a band needs at the last event to carry its name
 #: inside it; a thinner one is named by the legend and the hover alone.
 _LABEL_SHARE = 0.06
@@ -149,7 +151,9 @@ def plot_heap_timeline(
     the stack, the heap of the whole job, is in the hover. With *change*, each
     of the *named* series is instead a line of what it held at each event's
     end beyond what it held at the first event's end, so growth rises and a
-    step jumps. *colors* maps a series to its colour; the others take the
+    step jumps, and the rest and what no component allocated are two grey
+    lines: together the lines make the whole heap's change, so growth in a
+    series not named still shows. *colors* maps a series to its colour; the others take the
     default palette's colours but its grey, in order, which a caller drawing
     more series than it has colours must not rely on. The
     *warm_up* event is shaded. ``None`` when there is nothing to draw.
@@ -166,13 +170,17 @@ def plot_heap_timeline(
 
     if change:
         grown = held - held.iloc[0]
-        lines = [name for name in named if name in grown.columns]
-        divisor, unit = _scale(float(grown[lines].abs().max().max()) if lines else 0.0)
-        for name in lines:
-            label = NO_COMPONENT_LABEL if name == NO_COMPONENT else name
+        lines = [name for name in named if name in grown.columns and name != NO_COMPONENT]
+        rest = [c for c in grown.columns if c not in lines and c != NO_COMPONENT]
+        series = [(name, grown[name], dict(color=color_of[name], width=2)) for name in lines]
+        if rest:
+            series.append((f"Other ({len(rest)})", grown[rest].sum(axis=1), dict(color=_OTHER_LINE, width=2)))
+        if NO_COMPONENT in grown.columns:
+            series.append((NO_COMPONENT_LABEL, grown[NO_COMPONENT], dict(color=_NO_COMPONENT_LINE, width=2, dash="dot")))
+        divisor, unit = _scale(max((float(values.abs().max()) for _, values, _ in series), default=0.0))
+        for label, values, line in series:
             fig.add_trace(go.Scatter(
-                x=[str(e) for e in events], y=grown[name] / divisor, name=label, mode="lines",
-                line=dict(color=color_of[name], width=2),
+                x=[str(e) for e in events], y=values / divisor, name=label, mode="lines", line=line,
                 hovertemplate=f"{label}: %{{y:+.3g}} {unit}<extra></extra>",
             ))
         fig.add_hline(y=0, line=dict(color=_RULE, width=1))

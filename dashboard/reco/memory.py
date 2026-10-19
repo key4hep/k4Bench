@@ -138,11 +138,10 @@ def _spark(values: pd.Series) -> list[float]:
     return values.iloc[keep].tolist()
 
 
-def _measured_span(heap: ComponentHeap) -> float:
-    """Events from the first measured one to the last, the warm-up left out."""
-    events = heap.execute["held_bytes"].index
-    events = events[events != _WARM_UP_EVENT]
-    return float(events.max() - events.min()) if len(events) else 0.0
+def _measured_events(heap: ComponentHeap) -> pd.Index:
+    """The events the statistics are over, in order: the warm-up left out."""
+    events = heap.execute["held_bytes"].index.sort_values()
+    return events[events != _WARM_UP_EVENT]
 
 
 def _render_tiles(summary: pd.DataFrame, totals: HeapTotals) -> None:
@@ -198,11 +197,12 @@ def _render_leaks(summary: pd.DataFrame, heap: ComponentHeap) -> None:
     suspects = summary[summary["leak"]].sort_values("growth_mb_per_event", ascending=False)
     if suspects.empty:
         return
-    span = _measured_span(heap)
+    events = _measured_events(heap)
+    span = float(events[-1] - events[0])
     lines = [
         f"**{_name(name)}** grows {format_mb(row.growth_mb_per_event)} per event "
-        f"({format_mb(row.growth_mb_per_event * span)} over the run) and keeps it after "
-        f"finalize, when it still holds {format_mb(row.after_finalize_mb)}."
+        f"({format_mb(row.growth_mb_per_event * span)} over the run); after finalize it "
+        f"still holds {format_mb(row.retained_mb)} more than after event {events[0]}."
         for name, row in suspects.iterrows()
     ]
     st.warning(
@@ -287,8 +287,7 @@ def _render_current_run(ctx: PageContext, display_options_slot) -> None:
             "Largest shown", min_value=1, max_value=_MAX_SHOWN, value=_TOP_N, key=_TOP_N_KEY,
             help="How many of the largest components (or packages) get a band of "
                  "their own; the rest are one Other band. One that grows and keeps "
-                 "it always gets a band besides. No more are shown than the palette "
-                 "has colours.",
+                 "it always gets a band besides.",
         )
 
     held = heap.execute["held_bytes"].sort_index() / MB
@@ -314,9 +313,11 @@ def _render_current_run(ctx: PageContext, display_options_slot) -> None:
         key_prefix=f"{_KEY}_display",
         slot=display_options_slot,
     )
+    # The default palette has a colour for each; one chosen smaller repeats
+    # its colours rather than fold a suspect into Other.
     palette = _vivid(PALETTES[display["palette"]])
-    named = order[:min(wanted, len(palette))]
-    colors = dict(zip(named, palette))
+    named = order[:wanted]
+    colors = {name: palette[i % len(palette)] for i, name in enumerate(named)}
 
     fig = plot_heap_timeline(
         held, before, after, named, colors=colors,

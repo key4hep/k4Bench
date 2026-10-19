@@ -87,6 +87,7 @@ SUMMARY_COLUMNS = (
     "working_set_max_mb",
     "growth_mb_per_event",
     "after_finalize_mb",
+    "retained_mb",
     "leak",
 )
 
@@ -274,6 +275,8 @@ class ComponentHeap:
         - ``growth_mb_per_event``: the Theil–Sen slope of what it held at the
           events' ends against their numbers, ``NaN`` with too few events;
         - ``after_finalize_mb``: what it held after the job's own finalize;
+        - ``retained_mb``: how much more than at the first event's end that
+          is, ``NaN`` without events;
         - ``leak``: whether it is suspected of leaking: it grew by
           :data:`LEAK_MIN_MB` or more over the events, in both halves of them
           (each at :data:`LEAK_STEADY_SHARE` of the whole's rate or more), and
@@ -304,6 +307,7 @@ class ComponentHeap:
             "working_set_max_mb": working.max(),
             "growth_mb_per_event": growth,
             "after_finalize_mb": after,
+            "retained_mb": retained,
             "leak": kept & _steady(held[kept.index[kept]], growth),
         }, index=held.columns)
 

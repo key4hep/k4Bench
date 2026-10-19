@@ -72,11 +72,23 @@ def test_a_heap_reaching_two_gigabytes_is_drawn_in_gigabytes():
 
 def test_change_draws_each_named_series_beyond_its_first_event():
     fig = plot_heap_timeline(HELD, BEFORE, AFTER, NAMED, change=True)
-    assert _named(fig) == NAMED
+    assert _named(fig) == [*NAMED, "Other (2)", NO_COMPONENT_LABEL]
     tracker = fig.data[0]
     assert list(tracker.x) == ["0", "1", "2", "3"]
     assert np.asarray(tracker.y).tolist() == [0.0, 10.0, 20.0, 30.0]
     assert fig.layout.yaxis.title.text == "Change since the first event (MB)"
+
+
+def test_change_shows_growth_in_a_series_not_named():
+    # Only the geometry is named; the tracker's and the cache's growth is in Other.
+    fig = plot_heap_timeline(HELD, BEFORE, AFTER, ["Geo"], change=True)
+    lines = {t.name: np.asarray(t.y).tolist() for t in fig.data}
+    assert lines["Geo"] == [0.0, 0.0, 0.0, 0.0]
+    assert lines["Other (4)"] == [0.0, 10.0, 40.0, 51.0]
+    assert lines[NO_COMPONENT_LABEL] == [0.0, 0.0, 0.0, 0.0]
+    # Together the lines are the whole heap's change.
+    total = HELD.sum(axis=1) - HELD.sum(axis=1).iloc[0]
+    assert np.sum([lines[name] for name in lines], axis=0).tolist() == total.tolist()
 
 
 def test_colours_follow_the_mapping_given():
