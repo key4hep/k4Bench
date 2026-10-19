@@ -19,14 +19,16 @@ import numpy as np
 import pandas as pd
 
 from k4bench.analysis.loader import (
+    load_component_heap,
     load_component_timing,
     load_event_timing,
     load_region_timing,
     load_results,
 )
 from k4bench.analysis.efficiency import EFFICIENCY_COLUMNS, algorithm_efficiency
+from k4bench.analysis.heap import SUMMARY_COLUMNS
 from k4bench.analysis.robust import MAX_SLOPE_EVENTS, MIN_SLOPE_EVENTS, theil_sen_slope  # noqa: F401 (re-exported)
-from k4bench.artifacts import MACHINE_INFO, RUN_INFO
+from k4bench.artifacts import HEAP_SUFFIX, MACHINE_INFO, RUN_INFO, labelled_files
 
 _log = logging.getLogger(__name__)
 
@@ -401,6 +403,74 @@ def build_efficiency_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
     if not rows:
         return None
     return _finalize_dates(pd.DataFrame(rows))
+
+
+#: The :class:`~k4bench.analysis.heap.HeapTotals` moments
+#: :func:`build_heap_trend` gives for the whole job.
+HEAP_TOTAL_COLUMNS = (
+    "before_first_mb", "typical_mb", "largest_mb", "growth_mb_per_event", "after_finalize_mb",
+)
+
+
+def build_heap_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
+    """Load the heap each k4run job's components held across *run_dirs*,
+    from its memory pass.
+
+    One row per run, config and component that held heap at some moment
+    (:meth:`~k4bench.analysis.heap.ComponentHeap.holders`, what no component
+    allocated among them), with its
+    :meth:`~k4bench.analysis.heap.ComponentHeap.summary`, and one per run and
+    config with ``component`` ``NaN`` for the whole job, with the
+    :data:`HEAP_TOTAL_COLUMNS` of its
+    :meth:`~k4bench.analysis.heap.ComponentHeap.totals`; the warm-up event,
+    event 0, is left out of both. Columns ``run_id``, ``run_date``,
+    ``k4h_release_date``, ``k4h_release``, ``label``, ``component``, the
+    :data:`~k4bench.analysis.heap.SUMMARY_COLUMNS` (in MB) and ``x_date``.
+    Each heap file is read on its own, so one that is malformed drops no
+    other config of its run. ``None`` when no run has heap files (runs from
+    before the memory pass have none).
+    """
+    if not run_dirs:
+        return None
+
+    rows: list[dict] = []
+    for d in run_dirs:
+        run_dir = Path(d)
+        if not run_dir.is_dir() or not (files := labelled_files(run_dir, HEAP_SUFFIX)):
+            continue
+        meta = parse_run_dir(run_dir)
+        run = {
+            "run_id":           run_dir.name,
+            "run_date":         meta["run_date"],
+            "k4h_release_date": meta["k4h_release_date"],
+            "k4h_release":      meta["k4h_release"],
+        }
+        for _, label in files:
+            try:
+                heap = load_component_heap(run_dir, [label])[label]
+            except EXPECTED_LOAD_ERRORS as exc:
+                _log.debug("build_heap_trend: skipping '%s' of '%s': %s", label, run_dir, exc)
+                continue
+            except Exception:
+                _log.exception("build_heap_trend: error loading '%s' of '%s'", label, run_dir)
+                continue
+            summary = heap.summary(warm_up=0).loc[heap.holders()]
+            rows.extend(
+                {**run, "label": label, "component": component, **values}
+                for component, values in summary.to_dict("index").items()
+            )
+            totals = heap.totals(warm_up=0)
+            rows.append({
+                **run, "label": label, "component": None,
+                **{column: getattr(totals, column) for column in HEAP_TOTAL_COLUMNS},
+            })
+
+    if not rows:
+        return None
+    return _finalize_dates(pd.DataFrame(rows, columns=[
+        "run_id", "run_date", "k4h_release_date", "k4h_release", "label", "component",
+        *SUMMARY_COLUMNS,
+    ]))
 
 
 def _time_stats(times: pd.Series) -> dict:

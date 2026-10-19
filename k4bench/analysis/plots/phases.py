@@ -4,7 +4,7 @@ event loop event by event) and across nightly tags (:func:`plot_phase_history`).
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -181,8 +181,12 @@ def plot_event_composition(
 _MAX_TOTAL_LABELS = 20
 
 
-#: The columns of :func:`phase_component_series`.
+#: The columns of :func:`phase_component_series`, its *value* ``seconds``.
 SERIES_COLUMNS = ["run_id", "run_date", "x_date", "k4h_release", "label", "seconds", "share_pct"]
+
+
+def _series_columns(value: str) -> list[str]:
+    return [value if column == "seconds" else column for column in SERIES_COLUMNS]
 
 
 def _latest_runs(*frames: pd.DataFrame) -> pd.MultiIndex:
@@ -209,6 +213,10 @@ def latest_run_per_tag(rows: pd.DataFrame) -> pd.DataFrame:
 
 def phase_component_series(
     rows: pd.DataFrame, top_n: int, durations: pd.DataFrame | None = None,
+    *,
+    value: str = "seconds",
+    always: Sequence[str] = (),
+    apart: Mapping[str, str] | None = None,
 ) -> pd.DataFrame:
     """One phase's time per nightly tag as series to draw: the *top_n*
     components that took longest over the window (ranked by their median),
@@ -228,42 +236,54 @@ def phase_component_series(
     run's series together (the phase's duration when *durations* are given
     and the components ran one at a time), the run's ``run_id``,
     ``run_date``, ``x_date`` and ``k4h_release`` kept.
+
+    *value* is the column of *rows* the series sum, ``seconds`` by default,
+    and is the series' column of it. The components of *always* each have a
+    series whatever their rank, ahead of the *top_n*, in their order. Those
+    of *apart* are not ranked: each is a series of its own after "Other",
+    under the name it maps to.
     """
     if durations is not None and durations.empty:
         durations = None
     if rows.empty and durations is None:
-        return pd.DataFrame(columns=SERIES_COLUMNS)
+        return pd.DataFrame(columns=_series_columns(value))
     run_keys = ["run_id", "run_date", "x_date", "k4h_release"]
     runs = _latest_runs(rows, *([durations] if durations is not None else []))
     rows = _of_runs(rows, runs)
-    ranked = rows.groupby("component")["seconds"].median().sort_values(ascending=False)
-    top = ranked.index[:top_n].tolist()
-    rest = ranked.index[top_n:]
-    labelled = rows.assign(label=rows["component"].where(
-        rows["component"].isin(top), f"Other ({len(rest)})",
+    apart = dict(apart or {})
+    by_itself = rows["component"].isin(list(apart))
+    ranked = rows[~by_itself].groupby("component")[value].median().sort_values(ascending=False)
+    top = list(dict.fromkeys([
+        *(name for name in always if name in ranked.index), *ranked.index[:top_n],
+    ]))
+    rest = ranked.index.difference(top)
+    labelled = rows.assign(label=rows["component"].map(apart).where(
+        by_itself, rows["component"].where(rows["component"].isin(top), f"Other ({len(rest)})"),
     ))
-    series = labelled.groupby([*run_keys, "label"], dropna=False, as_index=False)["seconds"].sum()
+    series = labelled.groupby([*run_keys, "label"], dropna=False, as_index=False)[value].sum()
     if durations is not None:
         # Every run the phase was timed in, those without a component's
         # time too: what it was charged for is then nothing.
         elapsed = _of_runs(durations, runs).drop_duplicates(["x_date", "run_id"]).set_index(
             ["x_date", "run_id"],
         )
-        measured = series.groupby(["x_date", "run_id"], dropna=False)["seconds"].sum()
-        gap = elapsed["seconds"] - measured.reindex(elapsed.index, fill_value=0.0)
+        measured = series.groupby(["x_date", "run_id"], dropna=False)[value].sum()
+        gap = elapsed[value] - measured.reindex(elapsed.index, fill_value=0.0)
         gap = gap[gap > 0]
         if len(gap):
             unattributed = elapsed.loc[gap.index, ["run_date", "k4h_release"]].reset_index()
             series = pd.concat([series, unattributed.assign(
-                label=UNATTRIBUTED, seconds=gap.to_numpy(),
+                label=UNATTRIBUTED, **{value: gap.to_numpy()},
             )], ignore_index=True)
-    totals = series.groupby(["x_date", "run_id"], dropna=False)["seconds"].transform("sum")
-    series["share_pct"] = series["seconds"] / totals.where(totals > 0) * 100
-    order = {name: i for i, name in enumerate([*top, f"Other ({len(rest)})", UNATTRIBUTED])}
+    totals = series.groupby(["x_date", "run_id"], dropna=False)[value].transform("sum")
+    series["share_pct"] = series[value] / totals.where(totals > 0) * 100
+    order = {name: i for i, name in enumerate([
+        *top, f"Other ({len(rest)})", *apart.values(), UNATTRIBUTED,
+    ])}
     series = series.sort_values(
         ["x_date", "run_date"], kind="stable",
     ).sort_values("label", key=lambda names: names.map(order), kind="stable")
-    return series[SERIES_COLUMNS].reset_index(drop=True)
+    return series[_series_columns(value)].reset_index(drop=True)
 
 
 def plot_phase_history(
