@@ -783,3 +783,22 @@ def legend_below(
     offset = tick_clearance + gap
     b_margin = max(_LEGEND_B_MARGIN, offset + legend_h)
     return bottom_legend(entry_width=entry_width, font_size=font_size), b_margin
+
+
+#: The data-area height and top margin of a chart :func:`fit_legend_below`
+#: sizes, as the trend views size theirs.
+_STACK_PLOT_H = 380
+_STACK_T_MARGIN = 40
+
+
+def fit_legend_below(fig, n_entries: int) -> None:
+    """Size *fig* for its legend below the plot, as the trend views do, its
+    entries in the order the series are drawn: Plotly lists a stack's
+    top-down otherwise."""
+    legend, bottom = legend_below(n_entries, tick_clearance=75)
+    legend["traceorder"] = "normal"
+    fig.update_layout(
+        height=_STACK_PLOT_H + _STACK_T_MARGIN + bottom,
+        margin=dict(l=20, r=20, t=_STACK_T_MARGIN, b=bottom),
+        legend=legend,
+    )

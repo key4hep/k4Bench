@@ -180,6 +180,43 @@ def test_output_size_counts_only_files_the_job_created(tmp_path):
     assert result.output_size_mb == pytest.approx(4.0)
 
 
+def test_every_file_the_job_created_is_measured_by_its_name_in_the_working_directory(tmp_path):
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    (work_dir / "staged.xml").write_text("geometry")
+
+    def finish():
+        (work_dir / "out").mkdir()
+        (work_dir / "out" / "reco_REC.edm4hep.root").write_bytes(b"x")
+        (work_dir / "reco_aida.root").write_bytes(b"x")
+
+    with patch("k4bench.runner.k4run.record_event_size") as record:
+        _run(tmp_path, _finished_process(finish))
+    path, files = record.call_args.args
+    assert path == tmp_path / "logs" / "baseline_event_size.json"
+    assert files == {
+        "out/reco_REC.edm4hep.root": work_dir / "out" / "reco_REC.edm4hep.root",
+        "reco_aida.root": work_dir / "reco_aida.root",
+    }
+
+
+def test_a_failed_job_records_no_event_size_and_drops_a_previous_one(tmp_path):
+    stale = tmp_path / "logs" / "baseline_event_size.json"
+    stale.parent.mkdir()
+    stale.write_text("{}")
+    proc = MagicMock(stdout=iter([]), returncode=None)
+
+    def fail():
+        (tmp_path / "work" / "partial.root").write_bytes(b"x")
+        proc.returncode = 1
+
+    proc.wait.side_effect = fail
+    with patch("k4bench.runner.k4run.record_event_size") as record:
+        _run(tmp_path, proc)
+    record.assert_not_called()
+    assert not stale.exists()
+
+
 class TestMarlinProcessorDump:
     """``Marlin -x`` in the jobs' environment, from a stand-in Marlin."""
 

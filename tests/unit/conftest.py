@@ -80,3 +80,49 @@ def reco_run_with_heap(tmp_path) -> Callable[..., Path]:
     def make(name: str = "run", date: str | None = None) -> Path:
         return write_reco_run_with_heap(tmp_path, name, date)
     return make
+
+
+#: The collections of a reconstruction output, as ``_event_size.json``
+#: records them over 100 events: name, type, whether a subset, compressed
+#: and uncompressed bytes. Per event: 24 kB of ECAL hits, 16 of MC particles,
+#: 12 of PFOs, 8 of tracks and 0.4 of the subset.
+RECO_COLLECTIONS = (
+    ("ECALBarrel", "edm4hep::CalorimeterHitCollection", False, 2_457_600, 6_144_000),
+    ("MCParticles", "edm4hep::MCParticleCollection", False, 1_638_400, 3_276_800),
+    ("PandoraPFOs", "edm4hep::ReconstructedParticleCollection", False, 1_228_800, 2_457_600),
+    ("SiTracks", "edm4hep::TrackCollection", False, 819_200, 1_228_800),
+    ("TightSelectedPandoraPFOs", "edm4hep::ReconstructedParticleCollection", True, 40_960, 81_920),
+)
+
+
+def event_file(name: str, *, events: int = 100, scale: float = 1.0, compression: int = 505) -> dict:
+    """One podio file of :data:`RECO_COLLECTIONS`, every collection's bytes
+    times *scale*, with 10 kB of frame parameters."""
+    collections = [
+        {"name": n, "type": t, "subset": s,
+         "compressed_bytes": round(c * scale), "uncompressed_bytes": round(u * scale)}
+        for n, t, s, c, u in RECO_COLLECTIONS
+    ]
+    event_bytes = sum(c["compressed_bytes"] for c in collections) + 10_240
+    return {
+        "name": name, "bytes": event_bytes + 50_000, "events": events, "compression": compression,
+        "collections": collections,
+        "parameters": {"compressed_bytes": 10_240, "uncompressed_bytes": 20_480},
+    }
+
+
+def write_event_size(run_dir: Path, label: str = "baseline", files: list[dict] | None = None) -> Path:
+    """Write *label*'s ``_event_size.json`` in *run_dir*: its *files*, by
+    default one ``reco_REC.edm4hep.root`` (:func:`event_file`)."""
+    path = run_dir / f"{label}_event_size.json"
+    path.write_text(json.dumps({
+        "schema_version": 1, "files": files or [event_file("reco_REC.edm4hep.root")],
+    }))
+    return path
+
+
+@pytest.fixture
+def event_sizes():
+    """:func:`event_file` and :func:`write_event_size`, as ``file`` and ``write``."""
+    from types import SimpleNamespace
+    return SimpleNamespace(file=event_file, write=write_event_size)

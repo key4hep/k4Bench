@@ -21,6 +21,7 @@ import streamlit as st
 from config import Config
 from data import (
     RunData,
+    cached_load_trend_event_size,
     cached_load_trend_event_timing,
     cached_load_trend_region_timing,
     load_machine_info,
@@ -31,6 +32,7 @@ from sidebar import RunSelection, TrendWindow
 from tabs import (
     detectors_overview,
     event_memory,
+    event_size,
     event_timing,
     impact,
     logs,
@@ -194,6 +196,16 @@ def _event_memory(ctx: PageContext) -> SectionScope | None:
     )
 
 
+def _event_size(ctx: PageContext) -> SectionScope | None:
+    """What each event of the run's output files takes on disk, and, in remote
+    mode, its history across the window."""
+    return event_size.render(
+        ctx.data_dir, ctx.run.results,
+        (lambda: judgeable_trend(ctx, cached_load_trend_event_size)) if ctx.trends_enabled
+        else None,
+    )
+
+
 def _machine_info(ctx: PageContext) -> SectionScope | None:
     return machine_info.render(
         load_machine_info(ctx.data_dir),
@@ -221,6 +233,7 @@ RENDERERS: dict[str, Renderer] = {
     "Region Timing": _region_timing,
     "Event Timing": _event_timing,
     "Event Memory": _event_memory,
+    "Event Size": _event_size,
     "Machine Info": _machine_info,
     "Logs": _logs,
 }

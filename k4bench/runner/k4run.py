@@ -17,6 +17,11 @@ per-component JSON, and the resolved job options, all inside the log
 directory. The run-level virtual-memory peak is copied into
 :class:`RunResult`. Given a heap path, the job also records which component
 allocated each heap block, and the auditor writes what each held there.
+
+After a successful run, what each file the job created holds on disk,
+collection by collection for its EDM4hep files, is written to
+``<label>_event_size.json`` in the log directory
+(:mod:`k4bench.analysis.event_size`).
 """
 
 from __future__ import annotations
@@ -27,8 +32,10 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from k4bench.analysis.event_size import record_event_size
 from k4bench.artifacts import (
     COMPONENTS_SUFFIX,
+    EVENT_SIZE_SUFFIX,
     EVENTS_SUFFIX,
     JOBOPTIONS_SUFFIX,
     LOG_SUFFIX,
@@ -114,7 +121,10 @@ def run_k4run(
     event_json_path = label_path(log_dir, label, EVENTS_SUFFIX)
     components_json_path = label_path(log_dir, label, COMPONENTS_SUFFIX)
     joboptions_path = label_path(log_dir, label, JOBOPTIONS_SUFFIX)
-    for path in (event_json_path, components_json_path, joboptions_path, heap_json_path):
+    event_size_path = label_path(log_dir, label, EVENT_SIZE_SUFFIX)
+    for path in (
+        event_json_path, components_json_path, joboptions_path, event_size_path, heap_json_path,
+    ):
         if path is not None:
             path.unlink(missing_ok=True)
 
@@ -153,6 +163,10 @@ def run_k4run(
         cwd=work_dir,
     )
     created = _files_in(work_dir) - existing
+    if proc.returncode == 0 and created:
+        record_event_size(
+            event_size_path, {str(path.relative_to(work_dir)): path for path in sorted(created)},
+        )
 
     return run_result(
         label=label,

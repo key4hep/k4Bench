@@ -30,6 +30,7 @@
 #     {config}_joboptions.opts    k4run only
 #     {config}_dataflow.json      k4run only
 #     {config}_heap.json          k4run only, with memory_events
+#     {config}_event_size.json    when the job wrote output files
 #     {config}.log
 
 set -euo pipefail

@@ -756,7 +756,7 @@ def test_local_mode_keeps_exactly_the_sections_that_work_without_a_data_url():
     page = _sim_page(_sections().SECTION_NAMES)
     assert page.visible_sections(trends_enabled=False) == [
         "Config Impact", "Region Timing", "Event Timing", "Event Memory",
-        "Machine Info", "Logs",
+        "Event Size", "Machine Info", "Logs",
     ]
 
 
@@ -776,7 +776,7 @@ def test_section_order_is_independent_of_data_requirements():
     page = _sim_page(reversed(_sections().SECTION_NAMES))
     assert set(page.visible_sections(trends_enabled=False)) == {
         "Config Impact", "Region Timing", "Event Timing", "Event Memory",
-        "Machine Info", "Logs",
+        "Event Size", "Machine Info", "Logs",
     }
 
 

@@ -12,7 +12,7 @@ The only ddsim arguments that the runner needs to know about are:
 
 * ``--compactFile``      — to allow per-run XML patching (geometry sweep)
 * ``--numberOfEvents``   — to compute events/sec
-* ``--outputFile``       — to measure output file size
+* ``--outputFile``       — to measure the output file and its events
 
 Everything else (``--enableGun``, ``--gun.particle``, ``--runType``,
 steering files, …) is passed through verbatim via ``extra_args``.
@@ -24,6 +24,12 @@ automatically as a DDG4 event action. The plugin writes
 per-event timing metrics to JSON files inside the log directory.
 Per-event arrays stay in these profiling artifacts. The plugin's run-level
 virtual-memory peak is copied into :class:`RunResult`.
+
+Event size
+----------
+After a successful run, what the output file holds on disk, collection by
+collection, is written to ``<label>_event_size.json`` in the log directory
+(:mod:`k4bench.analysis.event_size`).
 """
 
 from __future__ import annotations
@@ -31,7 +37,14 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from k4bench.artifacts import EVENTS_SUFFIX, LOG_SUFFIX, REGIONS_SUFFIX, label_path
+from k4bench.analysis.event_size import record_event_size
+from k4bench.artifacts import (
+    EVENT_SIZE_SUFFIX,
+    EVENTS_SUFFIX,
+    LOG_SUFFIX,
+    REGIONS_SUFFIX,
+    label_path,
+)
 from k4bench.plugin.runtime import setup_plugin_environment
 from k4bench.results.model import RunResult
 from k4bench.runner.process import run_timed, timed_shell_command
@@ -74,7 +87,7 @@ def run_ddsim(
 
     output_file:
         EDM4hep ROOT output path passed to ``--outputFile``.
-        Its size is recorded after the run.
+        Its size, and what its events hold, are recorded after the run.
 
     log_dir:
         Directory where ``<label>.log`` is written.
@@ -101,6 +114,11 @@ def run_ddsim(
     event_json_path.unlink(missing_ok=True)
     region_json_path = label_path(log_dir, label, REGIONS_SUFFIX)
     region_json_path.unlink(missing_ok=True)
+    event_size_path = label_path(log_dir, label, EVENT_SIZE_SUFFIX)
+    event_size_path.unlink(missing_ok=True)
+    # The output file is reused across runs: removed too, so a run that writes
+    # none is never measured with a previous run's.
+    output_file.unlink(missing_ok=True)
 
     env = os.environ.copy()
 
@@ -130,6 +148,8 @@ def run_ddsim(
 
     if output_file.exists():
         output_size_mb = output_file.stat().st_size / 1024**2
+        if proc.returncode == 0:
+            record_event_size(event_size_path, {output_file.name: output_file})
 
     return run_result(
         label=label,

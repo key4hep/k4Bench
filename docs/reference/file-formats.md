@@ -18,7 +18,8 @@ logs/<geometry>/
 ├── <label>.log              # full ddsim stdout/stderr incl. the time -v block
 ├── <label>_results.csv      # one row: run-level metrics
 ├── <label>_events.json      # per-event timing/RSS   (event plugin only)
-└── <label>_regions.json     # per-detector timing    (region plugin only)
+├── <label>_regions.json     # per-detector timing    (region plugin only)
+└── <label>_event_size.json  # what the output file holds on disk, collection by collection
 ```
 
 A `k4bench k4run` run (default `logs/<options-stem>/`) writes the same log,
@@ -30,6 +31,7 @@ format, and instead of the regions JSON:
 ├── <label>_joboptions.opts  # the fully resolved job options, as JobOptionsSvc dumps them
 ├── <label>_dataflow.json    # what each algorithm read and wrote (built after the last run)
 ├── <label>_heap.json        # the heap each component held, from the untimed memory pass (--memory-events only)
+├── <label>_event_size.json  # what each file the job created holds on disk, collection by collection
 ├── <label>_warm-up.log      # the log of the unmeasured warm-up, only when it failed
 ├── <label>_heap.log         # the log of the memory pass, only when it failed
 └── marlin_processors.xml.gz # `Marlin -x` of the stack, only when a job ran Marlin processors
@@ -573,6 +575,36 @@ attribution still follows each thread's running component, but a snapshot
 taken while other threads run catches them mid-call. The reconstruction jobs
 benchmarked so far run on one thread, one event at a time.
 
+## event size JSON
+
+Written by the runners right after each successful run (`schema_version: 1`,
+same version rules as the events JSON), one per configuration, while the
+output files still exist: ddsim's `--outputFile`, or every file a k4run job
+created in its working directory. Its `files` list each one with its `name`
+(relative to that directory) and its `bytes` on disk. A podio file, an EDM4hep
+ROOT file whose `events` tree podio wrote, also has:
+
+| Field | Meaning |
+|---|---|
+| `events` | entries of the `events` tree |
+| `compression` | the file's ROOT compression setting: 100 × algorithm + level, so `101` is ZLIB level 1 and `505` ZSTD level 5 |
+| `collections` | each collection podio's metadata lists for the `events` category: `name`, `type` (e.g. `edm4hep::MCParticleCollection`), `subset`, and the `compressed_bytes` and `uncompressed_bytes` of its branches |
+| `parameters` | the same two for the branches of no collection: podio's frame parameters |
+
+A collection's branches are the one named after it (`<name>_objIdx` for a
+subset collection) and its `_<name>_<member>` relations and vector members,
+each with its sub-branches, counted as uproot counts them (`compressed_bytes`,
+TKey headers included). They match ROOT's `TBranch::GetZipBytes("*")` to the
+byte. The collections and the parameters together are the events tree; the
+metadata and run trees are in the file's `bytes` only. LCIO and RNTuple files,
+and a run without uproot (it ships with the Key4hep stack), have `bytes` only.
+[`OutputFile.per_event`](api/analysis/event_size.md) gives each collection's
+kB per event, and the Event Size section of both dashboard pages draws it.
+
+The numbers are this run's: the benchmark writes tens to a few thousand events
+with the job's own compression setting, and a production file of many more
+events fills ROOT's baskets further, which can compress a little differently.
+
 ## EOS layout
 
 Nightly results live under `EOS_ROOT = /eos/user/j/jbeirer/k4bench`, encoding
@@ -584,10 +616,12 @@ first (`k4bench/layout.py` spells every path):
 runs/{suite}/{concept}/{detector}/{platform}/key4hep-{release}/{sample}/{YYYY-MM-DD}/
     sim:   run_info.json  machine_info.json
            {config}_results.csv  {config}_events.json  {config}_regions.json  {config}.log
+           [{config}_event_size.json]
     reco:  run_info.json  machine_info.json  [marlin_processors.xml.gz]
            {config}_results.csv  {config}_events.json  {config}_components.json
            {config}_joboptions.opts  {config}_dataflow.json  {config}.log
-           [{config}_heap.json]  [{config}_warm-up.log]  [{config}_heap.log]
+           [{config}_heap.json]  [{config}_event_size.json]  [{config}_warm-up.log]
+           [{config}_heap.log]
 reports/{suite}/{YYYY-MM-DD}/
     report.json
     blame.json   (only on nights with an attributable confirmed regression)

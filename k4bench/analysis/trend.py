@@ -26,9 +26,16 @@ from k4bench.analysis.loader import (
     load_results,
 )
 from k4bench.analysis.efficiency import EFFICIENCY_COLUMNS, algorithm_efficiency
+from k4bench.analysis.event_size import KB, read_event_size
 from k4bench.analysis.heap import SUMMARY_COLUMNS
 from k4bench.analysis.robust import MAX_SLOPE_EVENTS, MIN_SLOPE_EVENTS, theil_sen_slope  # noqa: F401 (re-exported)
-from k4bench.artifacts import HEAP_SUFFIX, MACHINE_INFO, RUN_INFO, labelled_files
+from k4bench.artifacts import (
+    EVENT_SIZE_SUFFIX,
+    HEAP_SUFFIX,
+    MACHINE_INFO,
+    RUN_INFO,
+    labelled_files,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -471,6 +478,71 @@ def build_heap_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
         "run_id", "run_date", "k4h_release_date", "k4h_release", "label", "component",
         *SUMMARY_COLUMNS,
     ]))
+
+
+#: The columns of :func:`build_event_size_trend`.
+EVENT_SIZE_TREND_COLUMNS = (
+    "run_id", "run_date", "k4h_release_date", "k4h_release", "label", "file", "collection",
+    "type", "compressed_kb", "uncompressed_kb", "file_mb", "events",
+)
+
+
+def build_event_size_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
+    """Load what each event of every podio output file takes on disk across
+    *run_dirs*, from the runs' ``_event_size.json``.
+
+    One row per run, config, file and collection of its events
+    (:data:`~k4bench.analysis.event_size.FRAME_PARAMETERS` among them), with
+    its ``type`` and its ``compressed_kb`` and ``uncompressed_kb`` per event,
+    and one per run, config and file with ``collection`` ``NaN`` for the
+    whole event, with the file's size on disk (``file_mb``) and ``events``
+    besides; columns :data:`EVENT_SIZE_TREND_COLUMNS` and ``x_date``. Each
+    record is read on its own, so one that is malformed drops no other config
+    of its run. ``None`` when no run has a podio output file (runs from before
+    the runners measured their outputs have none).
+    """
+    if not run_dirs:
+        return None
+
+    rows: list[dict] = []
+    for d in run_dirs:
+        run_dir = Path(d)
+        if not run_dir.is_dir() or not (paths := labelled_files(run_dir, EVENT_SIZE_SUFFIX)):
+            continue
+        meta = parse_run_dir(run_dir)
+        run = {
+            "run_id":           run_dir.name,
+            "run_date":         meta["run_date"],
+            "k4h_release_date": meta["k4h_release_date"],
+            "k4h_release":      meta["k4h_release"],
+        }
+        for path, label in paths:
+            try:
+                files = read_event_size(path)
+            except (OSError, ValueError) as exc:
+                _log.debug("build_event_size_trend: skipping '%s': %s", path, exc)
+                continue
+            for output in files:
+                if not output.has_events:
+                    continue
+                key = {**run, "label": label, "file": output.name}
+                per_event = output.per_event()
+                rows.extend(
+                    {**key, "collection": collection, **values}
+                    for collection, values in per_event[
+                        ["type", "compressed_kb", "uncompressed_kb"]
+                    ].to_dict("index").items()
+                )
+                rows.append({
+                    **key, "collection": None,
+                    "compressed_kb": per_event["compressed_kb"].sum(),
+                    "uncompressed_kb": per_event["uncompressed_kb"].sum(),
+                    "file_mb": output.bytes / KB**2, "events": output.events,
+                })
+
+    if not rows:
+        return None
+    return _finalize_dates(pd.DataFrame(rows, columns=list(EVENT_SIZE_TREND_COLUMNS)))
 
 
 def _time_stats(times: pd.Series) -> dict:

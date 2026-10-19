@@ -268,3 +268,46 @@ def test_build_heap_trend_is_none_without_heap_files(tmp_path):
     sim = _make_run(tmp_path, "2026-10-01", "key4hep-2026-10-01", 50.0)
     assert trend.build_heap_trend((str(_RECO_RUN), str(sim))) is None
     assert trend.build_heap_trend(()) is None
+
+
+# ── build_event_size_trend ────────────────────────────────────────────────────
+
+def test_build_event_size_trend_gives_each_collection_and_the_whole_event(tmp_path, event_sizes):
+    first = _make_run(tmp_path / "a", "2026-10-20", "key4hep-2026-10-20", 5.0)
+    event_sizes.write(first, files=[event_sizes.file("out.root"), {"name": "aida.root", "bytes": 9}])
+    second = _make_run(tmp_path / "b", "2026-10-21", "key4hep-2026-10-21", 5.0)
+    event_sizes.write(second, files=[event_sizes.file("out.root", scale=2.0)])
+
+    df = trend.build_event_size_trend((str(first), str(second)))
+    assert list(df.columns) == [*trend.EVENT_SIZE_TREND_COLUMNS, "x_date"]
+    # A file without events has no rows.
+    assert set(df["file"]) == {"out.root"}
+    rows = df[df["run_id"] == "2026-10-20"].set_index("collection", drop=False)
+    collections = rows[rows["collection"].notna()]
+    assert collections.index.to_list() == [
+        "ECALBarrel", "MCParticles", "PandoraPFOs", "SiTracks", "TightSelectedPandoraPFOs",
+        "(frame parameters)",
+    ]
+    assert collections.loc["ECALBarrel", "compressed_kb"] == pytest.approx(24.0)
+    assert collections.loc["ECALBarrel", "type"] == "edm4hep::CalorimeterHitCollection"
+    (whole,) = (row for _, row in rows[rows["collection"].isna()].iterrows())
+    assert whole["compressed_kb"] == pytest.approx(24 + 16 + 12 + 8 + 0.4 + 0.1)
+    assert whole["uncompressed_kb"] == pytest.approx(collections["uncompressed_kb"].sum())
+    assert whole["events"] == 100
+    # The events' 6,195,200 bytes and 50,000 of metadata.
+    assert whole["file_mb"] == pytest.approx(6_245_200 / 1024**2)
+    later = df[(df["run_id"] == "2026-10-21") & (df["collection"] == "ECALBarrel")]
+    assert later["compressed_kb"].item() == pytest.approx(48.0)
+    assert df["x_date"].notna().all()
+
+
+def test_build_event_size_trend_skips_what_it_cannot_read(tmp_path, event_sizes):
+    run = _make_run(tmp_path / "a", "2026-10-20", "key4hep-2026-10-20", 5.0)
+    event_sizes.write(run, "variant_a")
+    (run / "baseline_event_size.json").write_text("{")
+    event_sizes.write(run, "variant_b", files=[{**event_sizes.file("out.root"), "events": "invalid"}])
+    df = trend.build_event_size_trend((str(run),))
+    assert set(df["label"]) == {"variant_a"}
+    # A run from before event sizes were recorded has none.
+    old = _make_run(tmp_path / "b", "2026-10-01", "key4hep-2026-10-01", 5.0)
+    assert trend.build_event_size_trend((str(old),)) is None
