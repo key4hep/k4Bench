@@ -25,7 +25,11 @@
 # IDEA_o1_v04 through --GeoSvc.detectors, with the stages its
 # ctest_sim_digi_reco.sh switches on. o1_v04 differs from o1_v03 in the vertex
 # detector and the silicon wrapper only, which the o1_v03 digitisers and GGTF
-# tracking model were not made for.
+# tracking model were not made for. Their o1_v04 readouts carry pixel x/y
+# fields above the 32-bit volume ID, which the o1_v03 job's DDPlanarDigi
+# digitisers would keep in the surface lookup, finding no surface; CellIDBits=32
+# drops them, as FCC-config's IDEA_o2_v01 and ALLEGRO jobs do for the same
+# vertex and wrapper.
 #
 # The job always runs GGTF track finding, and downloads its ONNX model with
 # wget while it configures, so that download is part of each run's
@@ -45,6 +49,10 @@ k4run_args: >-
   --IOSvc.Input $LOCAL_INPUT_FILES
   --IOSvc.Output reco.root
   --addTruthTracks
+  --VTXBdigitizer.CellIDBits=32
+  --VTXDdigitizer.CellIDBits=32
+  --SiWrBdigitizer.CellIDBits=32
+  --SiWrDdigitizer.CellIDBits=32
 
 # Each run is followed by an untimed memory pass over the same events, which
 # records the heap each algorithm holds into <label>_heap.json.
