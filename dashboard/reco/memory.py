@@ -147,7 +147,9 @@ def _select_config(ctx: PageContext) -> tuple[str, ComponentHeap] | None:
             "on; one that failed leaves its log in the run as `<configuration>_heap.log`."
         )
         return None
-    label = st.selectbox("Configuration", sorted(heaps), key=f"{_KEY}_config")
+    label = st.selectbox(
+        "Configuration", sorted(heaps), key=f"{_KEY}_config", bind="query-params",
+    )
     return label, heaps[label]
 
 
@@ -311,16 +313,17 @@ def _render_current_run(ctx: PageContext, display_options_slot) -> None:
     drop_stale_selection(f"{_KEY}_group", _GROUPS)
     with group_col:
         group = st.segmented_control(
-            "Group by", _GROUPS, default="Component", key=f"{_KEY}_group",
+            "Group by", _GROUPS, default="Component", key=f"{_KEY}_group", bind="query-params",
         ) or "Component"
     drop_stale_selection(f"{_KEY}_mode", list(_MODES))
     with mode_col:
         change = _MODES[st.segmented_control(
-            "Show", list(_MODES), default="Held", key=f"{_KEY}_mode",
+            "Show", list(_MODES), default="Held", key=f"{_KEY}_mode", bind="query-params",
         ) or "Held"]
     with shown_col:
         top_n = st.slider(
             "Largest shown", min_value=1, max_value=_MAX_SHOWN, value=_TOP_N, key=_TOP_N_KEY,
+            bind="query-params",
             help="How many of the largest components (or packages) get a band of "
                  "their own; the rest are one Other band. One that grows and keeps "
                  "it always gets a band besides.",
@@ -612,18 +615,20 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
     with config_col:
         config = st.selectbox(
             "Configuration", sorted(trend["label"].unique()), key=f"{_HIST_KEY}_config",
+            bind="query-params",
         )
     drop_stale_selection(f"{_HIST_KEY}_metric", list(_HIST_METRICS))
     with metric_col:
         name = st.segmented_control(
             "Metric", list(_HIST_METRICS), default="Typical event", key=f"{_HIST_KEY}_metric",
+            bind="query-params",
         ) or "Typical event"
     metric = _HIST_METRICS[name]
     additive = metric in _ADDITIVE
     with shown_col:
         top_n = st.slider(
             "Largest shown", min_value=1, max_value=_MAX_SHOWN, value=_TOP_N,
-            key=f"{_HIST_KEY}_topn",
+            key=f"{_HIST_KEY}_topn", bind="query-params",
             help="How many of the largest components over the window get a line "
                  "of their own. One that grows and keeps it on any night always gets "
                  "one besides.",

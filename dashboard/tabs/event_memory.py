@@ -89,6 +89,7 @@ def _memory_kind_control(available: list[str], key: str) -> str:
         options=available,
         index=available.index(_DEFAULT_KIND) if _DEFAULT_KIND in available else 0,
         key=key,
+        bind="query-params",
         help=(
             "Which RSS, sampled at the end of each event, to show: anonymous "
             "(heap) RSS, the one regressions are judged on; total RSS; or its "

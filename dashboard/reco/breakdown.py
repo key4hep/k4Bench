@@ -94,7 +94,9 @@ def _select_config(ctx: PageContext) -> tuple[str, ComponentTiming] | None:
             "left a `_components.json`."
         )
         return None
-    config = st.selectbox("Configuration", labels, key="reco_breakdown_config")
+    config = st.selectbox(
+        "Configuration", labels, key="reco_breakdown_config", bind="query-params",
+    )
     return config, ctx.run.components[config]
 
 
@@ -145,6 +147,7 @@ def _render_current_run(ctx: PageContext) -> None:
         order = st.segmented_control(
             "Order", ["Event order", "Longest first"], default="Event order",
             key="reco_breakdown_event_order", label_visibility="collapsed",
+            bind="query-params",
         ) or "Event order"
     fig = plot_event_composition(
         timing.execute["wall_s"], top_components(per_phase["execute"], _PIE_TOP_N),
@@ -234,6 +237,7 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
     with config_col:
         config = st.selectbox(
             "Configuration", sorted(trend["label"].unique()), key="reco_breakdown_hist_config",
+            bind="query-params",
         )
     rows = trend[trend["label"] == config]
     totals = rows[rows["component"].isna()]
@@ -246,7 +250,7 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
     with phase_col:
         phase = st.segmented_control(
             "Phase", phases, default="initialize" if "initialize" in phases else phases[0],
-            format_func=PHASE_NAMES.get, key="reco_breakdown_hist_phase",
+            format_func=PHASE_NAMES.get, key="reco_breakdown_hist_phase", bind="query-params",
         ) or phases[0]
     components = rows[rows["phase"].eq(phase) & rows["component"].notna()]
     by_component = not components.empty
@@ -258,10 +262,12 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
         with chart_col:
             lines = _CHARTS[st.segmented_control(
                 "Chart", list(_CHARTS), default="Bars", key="reco_breakdown_hist_chart_type",
+                bind="query-params",
             ) or "Bars"]
         with scale_col:
             relative = _SCALES[st.segmented_control(
                 "Show", list(_SCALES), default="Seconds", key="reco_breakdown_hist_scale",
+                bind="query-params",
             ) or "Seconds"]
     else:
         # A phase timed only as a whole (configure) is one line: its total.

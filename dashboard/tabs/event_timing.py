@@ -83,7 +83,11 @@ def _timing_selector(components: Mapping[str, ComponentTiming], baseline: str) -
     """The "Timing of" multiselect: the whole event and any algorithms, each
     algorithm named with its mean time per event; the whole event and the
     *baseline* configuration's slowest algorithm at first. Never empty:
-    cleared, it is the whole event."""
+    cleared, it is the whole event.
+
+    Unlike the other controls on the page it is not bound to the URL: a bound
+    widget is stored by its labels, which carry this run's times, so a link
+    would lose its algorithms once the release is run again."""
     times = _algorithm_times(components)
     slowest = _slowest_algorithm(components[baseline]) if baseline in components else None
     chosen = st.multiselect(
@@ -302,7 +306,7 @@ def _slowest_history(
     with config_col:
         config = st.selectbox(
             "Configuration", configs, index=configs.index(_baseline_config(configs)),
-            key=f"{_KEY_PREFIX}_hist_config",
+            key=f"{_KEY_PREFIX}_hist_config", bind="query-params",
         )
     algorithms = algorithm_trend[algorithm_trend["label"] == config]
     if not algorithms.empty:
@@ -314,7 +318,7 @@ def _slowest_history(
         n = _slowest_slider(len(ranked))
     with log_col:
         log_y = st.toggle(
-            "Log y axis", value=True, key=f"{_KEY_PREFIX}_hist_log_y",
+            "Log y axis", value=True, key=f"{_KEY_PREFIX}_hist_log_y", bind="query-params",
             help="The whole event and the algorithms' times differ by orders of "
                  "magnitude; on a log axis each one's changes stay visible.",
         )
@@ -337,7 +341,7 @@ def _slowest_slider(n_algorithms: int) -> int:
         st.session_state[_SLOWEST_KEY] = n_algorithms
     return st.slider(
         "Slowest algorithms", min_value=0, max_value=n_algorithms,
-        value=min(_SLOWEST_DEFAULT, n_algorithms), key=_SLOWEST_KEY,
+        value=min(_SLOWEST_DEFAULT, n_algorithms), key=_SLOWEST_KEY, bind="query-params",
         help="How many of the configuration's slowest algorithms, by their mean "
              "time per event over the window, to draw beside the whole event: "
              "each one's own time in each event.",

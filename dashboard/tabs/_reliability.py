@@ -60,11 +60,10 @@ def render_reliability_scope(
     runs = host.segmented_control(
         f"Runs · ⚠️ {n_unreliable} unreliable",
         _RUN_SCOPE_OPTIONS,
-        default=(
-            _RUN_SCOPE_OPTIONS[0] if key not in st.session_state else None
-        ),
+        default=_RUN_SCOPE_OPTIONS[0],
         required=True,
         key=key,
+        bind="query-params",
         help=f"Affected nightly tags: {affected}. Reliable only excludes "
              "runs that failed the conservative host-condition check; All "
              "runs includes them. See Machine Info for the per-run verdict.",
