@@ -402,8 +402,8 @@ def _render_components(ctx: PageContext) -> None:
             "event started: what the event needed of it. **Growth** is how much "
             "what it holds grows from one event to the next. **⚠ grows** "
             "marks a component that grew by 10 MB or more over the events, "
-            "steadily rather than in one step, and still holds most of what it "
-            "gained after finalize.\n\n"
+            "steadily rather than in one step, and after finalize still holds "
+            "10 MB or more of it, at least half of what it gained.\n\n"
             "Select a row to draw its events."
         ),
     )
