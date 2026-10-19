@@ -94,10 +94,16 @@ SUMMARY_COLUMNS = (
 #: of leaking: smaller growth is lost among the heap's ordinary movement.
 LEAK_MIN_MB = 10.0
 
-#: The share of what it held at the last event that a suspect still holds
+#: The share of what it gained over the events that a suspect still holds
 #: after finalize. Buffers a component releases when the job ends (the input
-#: reader's, the output writer's) grow too, but are not kept.
+#: reader's, the output writer's) grow too, but are not kept; what it held from
+#: the start does not count.
 LEAK_KEPT_SHARE = 0.5
+
+#: How fast a suspect grows in each half of the events, at least, as a share
+#: of how fast over all of them: a leak grows throughout, a table filled once
+#: steps up in one half and holds still in both.
+LEAK_STEADY_SHARE = 0.25
 
 
 @dataclass(frozen=True)
@@ -267,10 +273,11 @@ class ComponentHeap:
         - ``growth_mb_per_event``: the Theil–Sen slope of what it held at the
           events' ends against their numbers, ``NaN`` with too few events;
         - ``after_finalize_mb``: what it held after the job's own finalize;
-        - ``leak``: whether it is suspected of leaking, having grown by
-          :data:`LEAK_MIN_MB` or more over the events and still holding at
-          least :data:`LEAK_KEPT_SHARE` of its last event's heap after
-          finalize.
+        - ``leak``: whether it is suspected of leaking: it grew by
+          :data:`LEAK_MIN_MB` or more over the events, in both halves of them
+          (each at :data:`LEAK_STEADY_SHARE` of the whole's rate or more), and
+          after finalize still holds at least :data:`LEAK_KEPT_SHARE` of what
+          it gained from the first event to the last.
 
         The *warm_up* event is left out of every statistic over events.
         """
@@ -278,8 +285,11 @@ class ComponentHeap:
         working = _without(self.working_set(), warm_up) / MB
         growth = pd.Series({name: _growth(held[name]) for name in held.columns}, dtype=float)
         span = float(held.index.max() - held.index.min()) if len(held) else 0.0
-        last = held.iloc[-1] if len(held) else pd.Series(np.nan, index=held.columns)
+        nothing = pd.Series(np.nan, index=held.columns)
+        first, last = (held.iloc[0], held.iloc[-1]) if len(held) else (nothing, nothing)
         after = self.at_end["held_bytes"] / MB
+        gained = last - first
+        kept = (growth * span >= LEAK_MIN_MB) & (gained > 0) & (after - first >= LEAK_KEPT_SHARE * gained)
         return pd.DataFrame({
             "before_first_mb": self.before_first_event["held_bytes"] / MB,
             "typical_mb": held.median(),
@@ -289,7 +299,7 @@ class ComponentHeap:
             "working_set_max_mb": working.max(),
             "growth_mb_per_event": growth,
             "after_finalize_mb": after,
-            "leak": (growth * span >= LEAK_MIN_MB) & (last > 0) & (after >= LEAK_KEPT_SHARE * last),
+            "leak": kept & _steady(held[kept.index[kept]], growth),
         }, index=held.columns)
 
     def totals(self, *, warm_up: int | None = 0) -> HeapTotals:
@@ -307,6 +317,17 @@ class ComponentHeap:
             growth_mb_per_event=_growth(events),
             after_finalize_mb=float(self.at_end["held_bytes"].sum(min_count=1) / MB),
         )
+
+
+def _steady(held: pd.DataFrame, growth: pd.Series) -> pd.Series:
+    """Whether each of *held*'s components grew in both halves of its events
+    at :data:`LEAK_STEADY_SHARE` of its *growth* or more; a half too short
+    for a slope says no."""
+    halves = (held.iloc[: len(held) // 2], held.iloc[len(held) // 2:])
+    return pd.Series({
+        name: all(_growth(half[name]) >= LEAK_STEADY_SHARE * growth[name] for half in halves)
+        for name in held.columns
+    }, dtype=bool).reindex(growth.index, fill_value=False)
 
 
 def _without(frame, warm_up: int | None):

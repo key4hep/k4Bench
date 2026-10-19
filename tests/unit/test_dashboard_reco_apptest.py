@@ -825,6 +825,17 @@ def test_a_selection_stays_with_its_run(monkeypatch, tmp_path):
     assert "##### LumiCalReco, event by event" in [m.value for m in at.markdown]
 
 
+def test_a_malformed_heap_file_hides_no_other_configuration(monkeypatch, tmp_path):
+    run = _run_with_heap(tmp_path)
+    (run / "variant_truth_tracking_heap.json").write_text("{")
+    at = _page(monkeypatch, tmp_path, run, "Memory")
+    assert at.selectbox(key="reco_memory_config").options == ["baseline"]
+    assert [w.value for w in at.warning][0].startswith(
+        "The heap file of **variant_truth_tracking** could not be read, so it is not offered:"
+    )
+    assert any(m.label == "Before the first event" for m in at.metric)
+
+
 def test_a_run_without_a_memory_pass_says_so(monkeypatch, tmp_path):
     run = tmp_path / "run"
     shutil.copytree(RECO_RUN, run)

@@ -86,14 +86,18 @@ def _name(component: str) -> str:
 
 
 def _heaps(ctx: PageContext) -> dict[str, ComponentHeap]:
-    """The run's heap files of configurations that succeeded."""
-    return judgeable_config_data(cached_load_component_heap(ctx.data_dir), ctx.run.results) or {}
+    """The run's heap files of configurations that succeeded, naming any
+    that could not be read."""
+    heaps, unreadable = cached_load_component_heap(ctx.data_dir)
+    for label, reason in unreadable.items():
+        st.warning(f"The heap file of **{label}** could not be read, so it is not offered: {reason}")
+    return judgeable_config_data(heaps, ctx.run.results) or {}
 
 
 @st.cache_data(show_spinner=False, max_entries=32)
 def _summarise(data_dir: str, label: str) -> tuple[pd.DataFrame, HeapTotals]:
     """*label*'s per-component summary and job totals, the warm-up left out."""
-    heap = cached_load_component_heap(data_dir)[label]
+    heap = cached_load_component_heap(data_dir)[0][label]
     return heap.summary(warm_up=_WARM_UP_EVENT), heap.totals(warm_up=_WARM_UP_EVENT)
 
 
@@ -383,8 +387,9 @@ def _render_components(ctx: PageContext) -> None:
             "set** is the most it held during an event beyond what it held as the "
             "event started: what the event needed of it. **Growth** is how much "
             "what it holds grows from one event to the next. **⚠ grows** "
-            "marks a component that grew by 10 MB or more over the events and "
-            "still holds most of it after finalize.\n\n"
+            "marks a component that grew by 10 MB or more over the events, "
+            "steadily rather than in one step, and still holds most of what it "
+            "gained after finalize.\n\n"
             "Select a row to draw its events."
         ),
     )

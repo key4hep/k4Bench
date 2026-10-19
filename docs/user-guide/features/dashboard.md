@@ -761,9 +761,11 @@ failed, have none, and the section says so. It has two views:
   median at an event's end, every event in the sparkline), at its largest, and
   how much it grows per event (the median slope between every two events, so a
   single large event does not move it). A warning names each component that
-  grew by 10 MB or more over the events and still holds at least half of it
-  after finalize. That is what a leak looks like; a cache that fills as new
-  detector cells are seen looks the same. A button under the warning opens
+  grew by 10 MB or more over the events, steadily (in both halves of them),
+  and after finalize still holds at least half of what it gained. That is what
+  a leak looks like; a cache that fills as new detector cells are seen looks
+  the same, while a table filled once, in a single step, or a buffer released
+  at the end does not. A button under the warning opens
   each of them in **Components**, its row selected. Below, every component's heap from
   initialization through each event to finalization is stacked, the most
   stable at the bottom: every suspect and the largest components (six by

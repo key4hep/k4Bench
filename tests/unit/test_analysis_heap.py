@@ -7,6 +7,7 @@ import json
 import math
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from k4bench.analysis.heap import (
@@ -211,6 +212,55 @@ def test_growth_kept_after_finalize_is_suspected_of_leaking():
         "Arena": False, "Busy": False,
     }
     assert summary.loc["Arena", "growth_mb_per_event"] == 0
+
+
+def _one(held_mb: list[float], after_mb: float, before_mb: float = 0.0) -> ComponentHeap:
+    """A job of one component holding *held_mb* at its events' ends (the
+    first being the warm-up), *before_mb* before them and *after_mb* after
+    finalize."""
+    n = len(held_mb)
+    ends = [[0, round(v * MIB)] for v in held_mb]
+    starts = [[0, round(before_mb * MIB)], *ends[:-1]]
+    return ComponentHeap.from_json({
+        "schema_version": 1,
+        "producer": "k4BenchAuditor",
+        "components": [NO_COMPONENT, "Algo"],
+        "before_first_event": {
+            "held_bytes": [0, round(before_mb * MIB)], "peak_held_bytes": [0, round(before_mb * MIB)],
+            "malloc_in_use_bytes": 0, "rss_anon_mb": 0.0,
+        },
+        "event_numbers": list(range(n)),
+        "execute": {
+            "start_held_bytes": starts,
+            "held_bytes": ends,
+            "peak_held_bytes": [[max(a, b) for a, b in zip(s, e)] for s, e in zip(starts, ends)],
+            "malloc_in_use_bytes": [0] * n,
+            "rss_anon_mb": [0.0] * n,
+        },
+        "at_end": {"held_bytes": [0, round(after_mb * MIB)], "malloc_in_use_bytes": 0, "rss_anon_mb": 0.0},
+        "table": {"peak_entries": 1, "mapped_bytes": 1},
+    })
+
+
+def test_growth_freed_at_finalize_is_not_suspected_however_much_was_kept_from_the_start():
+    # 1 GB from initialize, 2 MB more per event, the gain freed at finalize.
+    algo = _one([1000 + 2 * e for e in range(21)], after_mb=1000, before_mb=1000).summary().loc["Algo"]
+    assert algo.growth_mb_per_event == pytest.approx(2.0)
+    assert not algo.leak
+    # Keeping the gain too is suspected.
+    assert _one([1000 + 2 * e for e in range(21)], after_mb=1040, before_mb=1000).summary().loc["Algo", "leak"]
+
+
+def test_one_step_halfway_through_is_not_growth():
+    # 50 MB more from event 10 on, kept after finalize: a table filled once.
+    algo = _one([100.0] * 10 + [150.0] * 11, after_mb=150).summary().loc["Algo"]
+    assert not algo.leak
+
+
+def test_growth_that_slows_down_is_still_suspected():
+    # A cache filling as new cells are seen: fast at first, then slower.
+    held = [40 * (1 - np.exp(-e / 60)) * 3 for e in range(101)]
+    assert _one(held, after_mb=held[-1]).summary().loc["Algo", "leak"]
 
 
 def test_growth_too_small_to_tell_from_the_heap_moving_is_not_suspected():
