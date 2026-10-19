@@ -10,6 +10,7 @@ import streamlit as st
 from k4bench.analysis.components import ComponentTiming
 from k4bench.analysis.dataflow import DataFlow, load_dataflow
 from k4bench.analysis.event_size import OutputFile, load_event_size
+from k4bench.analysis.event_source import EventSource, load_event_source
 from k4bench.analysis.heap import ComponentHeap
 from k4bench.analysis.loader import judgeable_config_data
 from k4bench.analysis.loader import load_component_heap, load_component_timing, load_event_timing, load_region_timing, load_results  # noqa: F401 (re-exported)
@@ -127,6 +128,22 @@ def cached_load_event_size(
         _log.exception("cached_load_event_size: unexpected error loading '%s'", data_dir)
         st.warning(f"Unexpected error loading event sizes from '{data_dir}'. Check logs for details.")
         return {}, {}
+
+
+# A long single-electron run's source holds ~1300 events of particles; the
+# bound keeps a session's runs from piling up, as for component costs.
+@st.cache_data(show_spinner=False, max_entries=16)
+def cached_load_event_source(data_dir: str) -> tuple[EventSource | None, str | None]:
+    """The run's ``event_source.json.gz`` and why it could not be read:
+    ``(None, None)`` for a run without one
+    (:func:`k4bench.analysis.event_source.load_event_source`)."""
+    try:
+        return load_event_source(data_dir), None
+    except (OSError, ValueError) as exc:
+        return None, str(exc)
+    except Exception:
+        _log.exception("cached_load_event_source: unexpected error loading '%s'", data_dir)
+        return None, "unexpected error, see the logs"
 
 
 def run_metadata(run_dir: str) -> dict:

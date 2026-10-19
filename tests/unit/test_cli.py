@@ -311,6 +311,7 @@ class TestK4runCommand:
         }
         assert config.warm_up
         assert config.memory_events is None
+        assert config.source_input is None
         assert (tmp_path / "out" / "baseline_results.csv").is_file()
 
     def test_no_warm_up_flag_skips_the_warm_up(self, monkeypatch, stage):
@@ -320,6 +321,13 @@ class TestK4runCommand:
     def test_memory_events_flag_adds_the_memory_pass(self, monkeypatch, stage):
         _, (config,) = self._main(monkeypatch, "Reco.py", "--stage-dir", str(stage), "--memory-events", "10")
         assert config.memory_events == 10
+
+    def test_source_input_flag_records_the_event_source(self, monkeypatch, stage):
+        (stage / "sim.root").write_bytes(b"x")
+        _, (config,) = self._main(
+            monkeypatch, "Reco.py", "--stage-dir", str(stage), "--source-input", str(stage / "sim.root"),
+        )
+        assert config.source_input == stage / "sim.root"
 
     def test_memory_pass_without_events_is_an_error(self, monkeypatch, stage, capsys):
         rc, seen = self._main(monkeypatch, "Reco.py", "--stage-dir", str(stage), "--memory-events", "0")

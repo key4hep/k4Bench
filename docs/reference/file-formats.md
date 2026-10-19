@@ -19,7 +19,8 @@ logs/<geometry>/
 ├── <label>_results.csv      # one row: run-level metrics
 ├── <label>_events.json      # per-event timing/RSS   (event plugin only)
 ├── <label>_regions.json     # per-detector timing    (region plugin only)
-└── <label>_event_size.json  # what the output file holds on disk, collection by collection
+├── <label>_event_size.json  # what the output file holds on disk, collection by collection
+└── event_source.json.gz     # the events' generator particles, from the first run's output file
 ```
 
 A `k4bench k4run` run (default `logs/<options-stem>/`) writes the same log,
@@ -34,7 +35,8 @@ format, and instead of the regions JSON:
 ├── <label>_event_size.json  # what each file the job created holds on disk, collection by collection
 ├── <label>_warm-up.log      # the log of the unmeasured warm-up, only when it failed
 ├── <label>_heap.log         # the log of the memory pass, only when it failed
-└── marlin_processors.xml.gz # `Marlin -x` of the stack, only when a job ran Marlin processors
+├── marlin_processors.xml.gz # `Marlin -x` of the stack, only when a job ran Marlin processors
+└── event_source.json.gz     # the input's generator particles and collections, event by event (--source-input only)
 ```
 
 Its labels are `baseline` and `variant_<name>` for each variant. A
@@ -605,6 +607,57 @@ The numbers are this run's: the benchmark writes tens to a few thousand events
 with the job's own compression setting, and a production file of many more
 events fills ROOT's baskets further, which can compress a little differently.
 
+What each event holds is recorded, as additive optional keys, for the runs
+that measure it: a ddsim
+benchmark's first run (its baseline, or the single run of an include or
+exclude benchmark) and every measured run of a k4run benchmark, never a
+warm-up or memory pass. Each list has one value per entry of the file:
+
+| Field | Meaning |
+|---|---|
+| `collections[].entries` | the collection's elements in each entry, from the count its branch keeps per entry |
+| `collections[].energy_gev` | for `edm4hep::SimCalorimeterHitCollection` and `edm4hep::CalorimeterHitCollection`, the summed energy of its hits in each entry, to six significant digits |
+| `event_headers` | `event_number` and `run_number`: each entry's EventHeader numbers, `null` for an entry without one |
+
+A collection whose counts or energies could not be read has none, which never
+means zero; its bytes are kept. A file without them reads with no per-event
+data, and a reader that predates them ignores them.
+[`OutputFile.event_counts`](api/analysis/event_size.md) and
+`OutputFile.event_energies` give them as frames indexed by entry.
+
+## event source JSON
+
+`event_source.json.gz`, gzipped JSON (`schema_version: 1`), one per run and
+shared by its configurations: what went into the events. A ddsim benchmark
+writes it from its first run's output file; a k4run benchmark given
+`--source-input` (the nightly passes the job's input when it reads exactly
+one) writes it from that file before the first run, and removes it after the
+runs when any run's job options set `FirstEventEntry` to other than 0, since
+it describes the file's first entries. A failure to write it never fails the
+run.
+
+| Field | Meaning |
+|---|---|
+| `origin` | `recorded` by the benchmark; `backfill-verified`, added later from the file the run read, matched by checksum; `backfill-inferred`, added later from a file that should hold the same generator particles |
+| `source` | `file` (its name), `first_entry` and `events` (the entries read), `sha256` (k4run inputs), `label` (the ddsim configuration whose output it is) |
+| `event_headers` | as in the event size JSON, for the entries read |
+| `generator` | `offsets` (`events + 1` values: where each event's particles begin) and one list per column for the particles of the generator record (`generatorStatus` not 0): `pdg`, `gen_status`, `charge`, `mass`, `px`, `py`, `pz`, `vx`, `vy`, `vz` (GeV, mm), floats to six significant digits |
+| `input_content` | k4run only: `collections`, each with `name`, `type` and, as in the event size JSON, `entries` and `energy_gev` for the entries read |
+
+Entry *i* is the *i*-th event the job's profiling counted, since every job
+reads its input from its first entry: the key that joins this file to the
+per-event timing. The EventHeader numbers are kept beside it, not used as the
+key. What transport made of the particles (`simulatorStatus`, end points) is
+left out, since it depends on the detector and so differs between the
+configurations sharing the file. The record is still simulation's, not the
+generator's alone: it carries the crossing-angle boost the steering sets, and
+the products of decays Geant4 performs start where transport left their parent,
+so in Z→bb̄ about 1% of the particles, all born off the interaction point,
+differ slightly between detectors.
+[`load_event_source`](api/analysis/event_source.md) reads it as an
+`EventSource`, whose `particles()` adds `p`, `pt`, `E`, `theta`, `phi`, `eta`,
+`abs_cos_theta`, `vr` and the masks `final` and `charged`.
+
 ## EOS layout
 
 Nightly results live under `EOS_ROOT = /eos/user/j/jbeirer/k4bench`, encoding
@@ -614,10 +667,10 @@ first (`k4bench/layout.py` spells every path):
 
 ```text
 runs/{suite}/{concept}/{detector}/{platform}/key4hep-{release}/{sample}/{YYYY-MM-DD}/
-    sim:   run_info.json  machine_info.json
+    sim:   run_info.json  machine_info.json  [event_source.json.gz]
            {config}_results.csv  {config}_events.json  {config}_regions.json  {config}.log
            [{config}_event_size.json]
-    reco:  run_info.json  machine_info.json  [marlin_processors.xml.gz]
+    reco:  run_info.json  machine_info.json  [marlin_processors.xml.gz]  [event_source.json.gz]
            {config}_results.csv  {config}_events.json  {config}_components.json
            {config}_joboptions.opts  {config}_dataflow.json  {config}.log
            [{config}_heap.json]  [{config}_event_size.json]  [{config}_warm-up.log]

@@ -359,6 +359,18 @@ def _build_k4run_parser() -> argparse.ArgumentParser:
             "<label>_heap.json (default: off)."
         ),
     )
+    parser.add_argument(
+        "--source-input",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        dest="source_input",
+        help=(
+            "The job's EDM4hep input file: before the first run, record the "
+            "generator particles and collections of the events the job reads "
+            "from it into event_source.json.gz (default: none)."
+        ),
+    )
     _add_output_args(parser, program="k4run", default_dir="logs/<options stem>/")
     return parser
 
@@ -432,4 +444,5 @@ def _build_k4run_config(args: argparse.Namespace) -> K4runConfig:
         verbose=args.verbose,
         warm_up=args.warm_up,
         memory_events=args.memory_events,
+        source_input=args.source_input,
     )

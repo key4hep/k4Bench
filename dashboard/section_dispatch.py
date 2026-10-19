@@ -30,6 +30,7 @@ from k4bench.analysis.loader import judgeable_config_rows
 from sections import SectionScope
 from sidebar import RunSelection, TrendWindow
 from tabs import (
+    correlations,
     detectors_overview,
     event_memory,
     event_size,
@@ -196,6 +197,14 @@ def _event_memory(ctx: PageContext) -> SectionScope | None:
     )
 
 
+def _correlations(ctx: PageContext) -> SectionScope | None:
+    """The run's per-event costs, its event time and each detector's time and
+    steps, against what each event holds."""
+    return correlations.render(
+        ctx.data_dir, ctx.run.results, ctx.run.event_data, region_data=ctx.run.region_data,
+    )
+
+
 def _event_size(ctx: PageContext) -> SectionScope | None:
     """What each event of the run's output files takes on disk, and, in remote
     mode, its history across the window."""
@@ -233,6 +242,7 @@ RENDERERS: dict[str, Renderer] = {
     "Region Timing": _region_timing,
     "Event Timing": _event_timing,
     "Event Memory": _event_memory,
+    "Correlations": _correlations,
     "Event Size": _event_size,
     "Machine Info": _machine_info,
     "Logs": _logs,

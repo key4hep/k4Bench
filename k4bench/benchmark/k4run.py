@@ -35,6 +35,12 @@ most likely fail again, slower.
 After the last run, each run's data flow (:mod:`k4bench.analysis.dataflow`) is
 built from what its job recorded, with ``Marlin -x`` of the stack saved beside
 it when a job ran Marlin processors.
+
+Given the job's input file (*source_input*), what went into the events, the
+file's generator particles and collections event by event, is recorded once
+before the first run as ``event_source.json.gz``
+(:mod:`k4bench.analysis.event_source`); each measured run records what each
+event of its own outputs holds.
 """
 
 from __future__ import annotations
@@ -49,10 +55,12 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from k4bench.analysis.dataflow import build_dataflow
+from k4bench.analysis.dataflow import build_dataflow, parse_joboptions
+from k4bench.analysis.event_source import record_event_source
 from k4bench.artifacts import (
     COMPONENTS_SUFFIX,
     DATAFLOW_SUFFIX,
+    EVENT_SOURCE,
     HEAP_LOG_SUFFIX,
     HEAP_SUFFIX,
     JOBOPTIONS_SUFFIX,
@@ -71,6 +79,9 @@ _VARIANT_NAME_RE = re.compile(r"^[A-Za-z0-9_.+-]+$")
 
 #: Events of the unmeasured run before each measured one.
 WARM_UP_EVENTS = 1
+
+#: The job option that starts a k4FWCore job past its input's first entry.
+_FIRST_ENTRY_OPTION = "FirstEventEntry"
 
 
 @dataclass
@@ -106,6 +117,11 @@ class K4runConfig:
     memory_events:
         Events of the untimed memory pass after each run that succeeds,
         which records the heap each component held; ``None`` skips it.
+    source_input:
+        The job's input file, from whose first *n_events* entries what went
+        into the events is recorded; ``None`` records none. Dropped when a
+        run's job starts past the first entry. A relative path is relative
+        to the current directory.
     """
 
     options: list[str]
@@ -118,6 +134,7 @@ class K4runConfig:
     verbose: bool = False
     warm_up: bool = True
     memory_events: int | None = None
+    source_input: Path | None = None
 
     def __post_init__(self) -> None:
         if not self.options:
@@ -140,6 +157,10 @@ class K4runConfig:
         if self.setup_script is not None:
             # Sourced from the run's working directory, not the caller's.
             self.setup_script = self.setup_script.resolve()
+        if self.source_input is not None:
+            if not self.source_input.is_file():
+                raise ValueError(f"Source input not found: {self.source_input}")
+            self.source_input = self.source_input.resolve()
 
 
 def planned_k4run_labels(variants: list[str]) -> list[str]:
@@ -161,8 +182,15 @@ def run_k4run_benchmark(config: K4runConfig) -> list[RunResult]:
 
     # Removed first, so a run is never credited with a previous benchmark's.
     (config.log_dir / MARLIN_PROCESSORS).unlink(missing_ok=True)
+    (config.log_dir / EVENT_SOURCE).unlink(missing_ok=True)
     for label in labels:
         label_path(config.log_dir, label, DATAFLOW_SUFFIX).unlink(missing_ok=True)
+
+    if config.source_input is not None and record_event_source(
+        config.log_dir / EVENT_SOURCE, config.source_input,
+        n_events=config.n_events, input_content=True, checksum=True,
+    ):
+        print(f"Event source: {config.n_events} events of {config.source_input.name}")
 
     results: list[RunResult] = []
     for index, (label, args) in enumerate(runs, start=1):
@@ -190,6 +218,7 @@ def run_k4run_benchmark(config: K4runConfig) -> list[RunResult]:
                     setup_script=config.setup_script,
                     extra_args=args,
                     verbose=config.verbose,
+                    per_event_content=True,
                 )
             finally:
                 _remove(work_dir)
@@ -200,11 +229,36 @@ def run_k4run_benchmark(config: K4runConfig) -> list[RunResult]:
                 _memory_pass(config, label, args)
             except Exception:  # noqa: BLE001 - the heap file is an extra, never the benchmark's failure
                 print(f"  WARNING: no heap file for {label}:\n{traceback.format_exc()}")
+    _drop_offset_event_source(config, labels)
     try:
         _record_dataflow(config, labels)
     except Exception:  # noqa: BLE001 - the data flow is an extra, never the benchmark's failure
         print(f"  WARNING: no data flow recorded:\n{traceback.format_exc()}")
     return results
+
+
+def _drop_offset_event_source(config: K4runConfig, labels: list[str]) -> None:
+    """Remove the event source when a run's job options start reading the
+    input past its first entry: the source describes the entries
+    ``0 .. n_events - 1``, which that run's events are not."""
+    path = config.log_dir / EVENT_SOURCE
+    if not path.is_file():
+        return
+    for label in labels:
+        try:
+            options = parse_joboptions(label_path(config.log_dir, label, JOBOPTIONS_SUFFIX).read_text())
+        except OSError:
+            continue
+        offsets = [
+            f"{owner}.{_FIRST_ENTRY_OPTION} = {values[_FIRST_ENTRY_OPTION]}"
+            for owner, values in options.items()
+            if values.get(_FIRST_ENTRY_OPTION, 0) != 0
+        ]
+        if offsets:
+            path.unlink()
+            print(f"  WARNING: no event source: {label} sets {', '.join(offsets)}, "
+                  f"the source describes the input's first {config.n_events} entries")
+            return
 
 
 def _record_dataflow(config: K4runConfig, labels: list[str]) -> None:

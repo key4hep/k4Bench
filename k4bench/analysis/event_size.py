@@ -32,6 +32,19 @@ What the numbers do not say:
   little differently;
 - the size of a file in any other format: an LCIO (``.slcio``) or RNTuple
   file has its size on disk only.
+
+What each event holds
+---------------------
+Measured with ``per_event``, a podio file also has, entry by entry, each
+collection's ``entries`` (its elements, read from the count its branch keeps
+per entry), each calorimeter hit collection's ``energy_gev``
+(:data:`CALORIMETER_TYPES`, the sum of its hits' energies) and the
+``event_headers`` (the EventHeader's event and run number, ``None`` for an
+entry without one). Each collection is read on its own: one whose counts or
+energies cannot be read has none, which never reads as zero, and the bytes of
+every collection are kept whatever its per-event reading did.
+:meth:`OutputFile.event_counts` and :meth:`OutputFile.event_energies` give
+them back as frames indexed by entry.
 """
 
 from __future__ import annotations
@@ -42,6 +55,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from k4bench.artifacts import EVENT_SIZE_SUFFIX, labelled_files
@@ -62,6 +76,17 @@ _TYPE_INFO = "events___CollectionTypeInfo/events___CollectionTypeInfo."
 #: ROOT's compression algorithms, by the hundreds of a compression setting.
 _ALGORITHMS = {0: "ROOT's default", 1: "ZLIB", 2: "LZMA", 3: "old ZLIB", 4: "LZ4", 5: "ZSTD"}
 
+#: The collection types whose hits' energies are summed per event.
+CALORIMETER_TYPES = frozenset({
+    "edm4hep::SimCalorimeterHitCollection", "edm4hep::CalorimeterHitCollection",
+})
+
+#: The collection type holding each event's EventHeader.
+_EVENT_HEADER_TYPE = "edm4hep::EventHeaderCollection"
+
+#: Significant digits an energy sum keeps.
+_DIGITS = 6
+
 
 @dataclass(frozen=True)
 class CollectionSize:
@@ -73,6 +98,10 @@ class CollectionSize:
     subset: bool
     compressed_bytes: int
     uncompressed_bytes: int
+    #: Its elements in each entry; ``None`` when not measured or unreadable.
+    entries: tuple[int, ...] | None = None
+    #: Its hits' summed energy in each entry, for :data:`CALORIMETER_TYPES`.
+    energy_gev: tuple[float, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -90,6 +119,10 @@ class OutputFile:
     compression: int | None = None
     #: Its events tree's collections, :data:`FRAME_PARAMETERS` among them.
     collections: tuple[CollectionSize, ...] = ()
+    #: Each entry's EventHeader event and run number, ``None`` for an entry
+    #: without one; ``None`` when not measured.
+    event_numbers: tuple[int | None, ...] | None = None
+    run_numbers: tuple[int | None, ...] | None = None
 
     @property
     def has_events(self) -> bool:
@@ -121,14 +154,32 @@ class OutputFile:
         df["share"] = df["compressed_kb"] / total if total > 0 else 0.0
         return df.sort_values("compressed_kb", ascending=False, kind="stable")
 
+    def event_counts(self) -> pd.DataFrame:
+        """Each measured collection's elements per entry: one column per
+        collection, indexed by ``entry``. Empty when none was measured."""
+        return self._event_frame({c.name: c.entries for c in self.collections})
+
+    def event_energies(self) -> pd.DataFrame:
+        """Each measured calorimeter hit collection's summed energy (GeV)
+        per entry: one column per collection, indexed by ``entry``."""
+        return self._event_frame({c.name: c.energy_gev for c in self.collections})
+
+    def _event_frame(self, columns: Mapping[str, tuple | None]) -> pd.DataFrame:
+        measured = {name: values for name, values in columns.items() if values is not None}
+        index = pd.RangeIndex(self.events or 0, name="entry")
+        return pd.DataFrame(measured, index=index) if measured else pd.DataFrame(index=index)
+
     @classmethod
     def from_json(cls, raw: Mapping) -> OutputFile:
         parameters = raw.get("parameters")
         events, compression = raw.get("events"), raw.get("compression")
+        n = None if events is None else int(events)
         collections = [
             CollectionSize(
                 c["name"], c["type"], bool(c["subset"]),
                 int(c["compressed_bytes"]), int(c["uncompressed_bytes"]),
+                entries=_per_entry(c, "entries", int, n),
+                energy_gev=_per_entry(c, "energy_gev", float, n),
             )
             for c in raw.get("collections") or ()
         ]
@@ -137,12 +188,31 @@ class OutputFile:
                 FRAME_PARAMETERS, "", False,
                 int(parameters["compressed_bytes"]), int(parameters["uncompressed_bytes"]),
             ))
+        headers = raw.get("event_headers") or {}
         return cls(
             name=raw["name"], bytes=int(raw["bytes"]),
-            events=None if events is None else int(events),
+            events=n,
             compression=None if compression is None else int(compression),
             collections=tuple(collections),
+            event_numbers=_per_entry(headers, "event_number", _optional_int, n),
+            run_numbers=_per_entry(headers, "run_number", _optional_int, n),
         )
+
+
+def _optional_int(value) -> int | None:
+    return None if value is None else int(value)
+
+
+def _per_entry(raw: Mapping, key: str, kind, events: int | None) -> tuple | None:
+    """*raw*'s per-entry list under *key* as a tuple of *kind*, or ``None``
+    without one; a list whose length is not the file's *events* is refused."""
+    values = raw.get(key)
+    if values is None:
+        return None
+    if events is None or len(values) != events:
+        raise ValueError(f"{key} of {raw.get('name', 'the file')} has {len(values)} "
+                         f"values for {events} events")
+    return tuple(kind(v) for v in values)
 
 
 def describe_compression(setting: int | None) -> str:
@@ -186,20 +256,23 @@ def read_event_size(path: Path) -> tuple[OutputFile, ...]:
         raise ValueError(f"{path}: malformed event size record ({exc!r})") from exc
 
 
-def record_event_size(json_path: Path, files: Mapping[str, Path]) -> None:
-    """Write what each of *files* (name to path) holds to *json_path*, warning
-    about a file that could not be read. A failure costs only this record,
-    never the run."""
+def record_event_size(
+    json_path: Path, files: Mapping[str, Path], *, per_event: bool = False,
+) -> None:
+    """Write what each of *files* (name to path) holds to *json_path*, and
+    what each event holds when *per_event*, warning about a file that could
+    not be read. A failure costs only this record, never the run."""
     try:
-        record = measure_outputs(files)
+        record = measure_outputs(files, per_event=per_event)
         json_path.write_text(json.dumps(record, separators=(",", ":")))
     except Exception:  # noqa: BLE001 - the event size is an extra, never the run's failure
         print(f"  WARNING: no event size recorded:\n{traceback.format_exc()}")
 
 
-def measure_outputs(files: Mapping[str, Path]) -> dict:
+def measure_outputs(files: Mapping[str, Path], *, per_event: bool = False) -> dict:
     """The ``_event_size.json`` record of *files*, name to path: each one's
-    size on disk and, for a podio file, what its events hold."""
+    size on disk and, for a podio file, what its events hold, event by event
+    when *per_event*."""
     open_root = _root_opener() if any(p.suffix == ".root" for p in files.values()) else None
     records = []
     for name, path in files.items():
@@ -207,11 +280,29 @@ def measure_outputs(files: Mapping[str, Path]) -> dict:
         if open_root is not None and path.suffix == ".root":
             try:
                 with open_root(path) as root_file:
-                    record.update(_podio_events(root_file))
+                    record.update(_podio_events(root_file, per_event=per_event))
             except Exception as exc:  # noqa: BLE001 - one unreadable file hides no other
                 print(f"  WARNING: could not read the events of {name}: {exc}")
         records.append(record)
     return {"schema_version": EVENT_SIZE_SCHEMA_VERSION, "files": records}
+
+
+def event_content(root_file, *, entry_stop: int | None = None) -> dict:
+    """What each event of an open uproot *root_file* holds, up to
+    *entry_stop*: ``collections``, each collection's measured ``entries`` and
+    ``energy_gev`` by name (a collection that could not be read is left out),
+    and ``event_headers``. Empty for a file that is not a podio file."""
+    collections = podio_collections(root_file)
+    if collections is None:
+        return {}
+    tree = root_file["events"]
+    measured: dict[str, dict] = {}
+    for name, (type_, subset) in collections.items():
+        content = _collection_content(tree, name, type_, subset, entry_stop)
+        if content:
+            measured[name] = content
+    headers = read_event_headers(tree, collections, entry_stop)
+    return {"collections": measured, **({"event_headers": headers} if headers else {})}
 
 
 def collection_sizes(
@@ -250,28 +341,100 @@ def _root_opener():
     return uproot.open
 
 
-def _podio_events(root_file) -> dict:
-    """What the podio events tree of an open uproot file holds; empty when it
-    has none."""
+def podio_collections(root_file) -> dict[str, tuple[str, bool]] | None:
+    """The ``events`` category's collections podio's metadata lists in an open
+    uproot file, name to type and whether it is a subset; ``None`` for a file
+    that is not a podio file."""
     kinds = root_file.classnames(recursive=False, cycle=False)
     if kinds.get("events") != "TTree" or kinds.get("podio_metadata") != "TTree":
-        return {}
+        return None
     metadata = root_file["podio_metadata"]
     names, types, subsets = (
         metadata[_TYPE_INFO + leaf].array(library="np")[0]
         for leaf in ("name", "dataType", "isSubset")
     )
+    return {str(n): (str(t), bool(s)) for n, t, s in zip(names, types, subsets, strict=True)}
+
+
+def _podio_events(root_file, *, per_event: bool = False) -> dict:
+    """What the podio events tree of an open uproot file holds, event by
+    event too when *per_event*; empty when it has none."""
+    known = podio_collections(root_file)
+    if known is None:
+        return {}
     tree = root_file["events"]
-    collections, parameters = collection_sizes(
-        tree.branches,
-        {str(n): (str(t), bool(s)) for n, t, s in zip(names, types, subsets, strict=True)},
-    )
-    return {
+    collections, parameters = collection_sizes(tree.branches, known)
+    record = {
         "events": int(tree.num_entries),
         "compression": int(root_file.file.fCompress),
         "collections": collections,
         "parameters": parameters,
     }
+    if per_event:
+        for collection in collections:
+            collection.update(_collection_content(
+                tree, collection["name"], collection["type"], collection["subset"], None,
+            ))
+        if headers := read_event_headers(tree, known, None):
+            record["event_headers"] = headers
+    return record
+
+
+def _collection_content(tree, name: str, type_: str, subset: bool, entry_stop) -> dict:
+    """What *name* holds in each entry of *tree* up to *entry_stop*: its
+    ``entries`` and, for :data:`CALORIMETER_TYPES`, its ``energy_gev``; each
+    left out when it could not be read."""
+    content: dict = {}
+    branch = f"{name}{_SUBSET_SUFFIX}" if subset else name
+    try:
+        counts = tree[branch].array(
+            interpretation=_count_interpretation(), entry_stop=entry_stop, library="np",
+        )
+        if (counts < 0).any():
+            raise ValueError("negative element count")
+        content["entries"] = [int(n) for n in counts]
+    except Exception as exc:  # noqa: BLE001 - one unreadable collection hides no other
+        print(f"  WARNING: no per-event counts for {name}: {exc}")
+    if type_ in CALORIMETER_TYPES and not subset:
+        try:
+            hits = tree[f"{name}/{name}.energy"].array(entry_stop=entry_stop, library="np")
+            content["energy_gev"] = [round_significant(float(np.sum(e))) for e in hits]
+        except Exception as exc:  # noqa: BLE001 - one unreadable collection hides no other
+            print(f"  WARNING: no per-event energies for {name}: {exc}")
+    return content
+
+
+def read_event_headers(tree, collections: Mapping[str, tuple[str, bool]], entry_stop) -> dict | None:
+    """Each entry's EventHeader event and run number up to *entry_stop*,
+    ``None`` for an entry without one; ``None`` when the file has no
+    EventHeader collection or it could not be read."""
+    name = next((n for n, (t, subset) in collections.items()
+                 if t == _EVENT_HEADER_TYPE and not subset), None)
+    if name is None:
+        return None
+    try:
+        numbers = {
+            key: [int(v[0]) if len(v) else None for v in
+                  tree[f"{name}/{name}.{member}"].array(entry_stop=entry_stop, library="np")]
+            for key, member in (("event_number", "eventNumber"), ("run_number", "runNumber"))
+        }
+    except Exception as exc:  # noqa: BLE001 - the headers are an extra of the record
+        print(f"  WARNING: no event headers read from {name}: {exc}")
+        return None
+    return numbers
+
+
+def _count_interpretation():
+    """How uproot reads the element count a collection's branch keeps per
+    entry: a big-endian 32-bit integer."""
+    import uproot
+
+    return uproot.AsDtype(">i4")
+
+
+def round_significant(value: float) -> float:
+    """*value* to :data:`_DIGITS` significant digits."""
+    return float(f"{value:.{_DIGITS}g}")
 
 
 def _owner(branch: str, names: set[str]) -> str | None:
