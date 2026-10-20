@@ -30,6 +30,12 @@ _CURVE_POINTS = 32
 _EDGE_COLOR = "rgba(110, 118, 129, 0.45)"
 _WRITER_EDGE_COLOR = "rgba(110, 118, 129, 0.18)"
 _HOLLOW_COLOR = "#8a919b"
+_LABEL_COLOR = "#3c4350"
+#: A label's backing, so the edges it crosses do not run through its text.
+_LABEL_BACKGROUND = "rgba(255, 255, 255, 0.85)"
+
+#: Height of one row of nodes, in pixels.
+_ROW_HEIGHT = 100
 
 
 @dataclass(frozen=True)
@@ -261,14 +267,14 @@ def plot_dataflow(
     largest = max((n.seconds or 0.0 for n in view.nodes), default=0.0) or 1.0
     nodes = list(view.nodes)
     hollow = [n.id not in connected and n.id != view.sink for n in nodes]
+    sizes = [10 + 32 * ((n.seconds or 0.0) / largest) ** 0.5 for n in nodes]
     fig.add_trace(go.Scatter(
         x=[positions[n.id][0] for n in nodes],
         y=[positions[n.id][1] for n in nodes],
-        mode="markers+text", showlegend=False,
-        text=[n.label for n in nodes], textposition="top center",
-        textfont=dict(size=11),
+        mode="markers", showlegend=False,
+        text=[n.label for n in nodes],
         marker=dict(
-            size=[10 + 32 * ((n.seconds or 0.0) / largest) ** 0.5 for n in nodes],
+            size=sizes,
             symbol=["square" if n.is_group else "circle" for n in nodes],
             color=["rgba(0,0,0,0)" if h else _BLUE for h in hollow],
             line=dict(
@@ -286,7 +292,26 @@ def plot_dataflow(
     ys = [p[1] for p in positions.values()] or [0.0]
     xs = [p[0] for p in positions.values()] or [0.0]
     loose_y = [positions[n.id][1] for n, h in zip(nodes, hollow) if h]
+    sink_alone = view.sink is not None and not any(view.sink in edge for edge in view.edges)
+    # A label goes above its node, but below it when the node one layer to
+    # the left at the same height has its label above: side by side, two long
+    # names would run into each other.
+    above: dict[tuple[float, float], bool] = {}
+    for node_id in sorted(positions, key=lambda n: positions[n]):
+        x, y = positions[node_id]
+        above[(x, y)] = not above.get((x - 1, y), False)
     annotations = []
+    for node, size in zip(nodes, sizes):
+        x, y = positions[node.id]
+        up = above[(x, y)]
+        text = node.label
+        if node.id == view.sink and sink_alone:
+            text += f"<br><span style='font-size:10px;color:{_HOLLOW_COLOR}'>inputs hidden</span>"
+        annotations.append(dict(
+            x=x, y=y, xref="x", yref="y", showarrow=False, text=text,
+            yanchor="bottom" if up else "top", yshift=(size / 2 + 3) * (1 if up else -1),
+            font=dict(size=12, color=_LABEL_COLOR), bgcolor=_LABEL_BACKGROUND, borderpad=1,
+        ))
     if loose_y:
         annotations.append(dict(
             x=min(xs), y=loose_y[0] - 0.55, xref="x", yref="y", xanchor="left", showarrow=False,
@@ -294,7 +319,7 @@ def plot_dataflow(
         ))
     fig.update_layout(
         template=_TEMPLATE,
-        height=height or int(max(420, 70 * (max(ys) - min(ys) + 2))),
+        height=height or int(max(480, _ROW_HEIGHT * (max(ys) - min(ys) + 2))),
         margin=dict(l=10, r=10, t=10, b=10),
         xaxis=dict(visible=False, range=[min(xs) - 0.6, max(xs) + 0.6]),
         yaxis=dict(visible=False, range=[min(ys) - 0.9, max(ys) + 0.9]),

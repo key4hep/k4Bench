@@ -308,9 +308,10 @@ def plot_heap_timeline(
     )
     if log_range is not None:
         bottom, top = log_range
-        # Ticks at 1, 2 and 5 of each decade, not every digit.
+        # Ticks at 1, 2 and 5 of each decade, not every digit, each written
+        # in full (0.5, not 5).
         fig.update_yaxes(
-            title_text=y_title, type="log", dtick="D2",
+            title_text=y_title, type="log", dtick="D2", tickformat=",~g",
             range=[bottom - math.log10(divisor), top - math.log10(divisor)],
         )
     else:
