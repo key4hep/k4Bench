@@ -341,16 +341,43 @@ def _step_findings(summary: pd.DataFrame, heap: ComponentHeap) -> list[_Finding]
     return findings
 
 
-def _render_findings(summary: pd.DataFrame, heap: ComponentHeap) -> None:
-    """A card per component that keeps heap it took on, steadily or at
-    once: the steps first, the largest, then what grows, the fastest."""
-    findings = _step_findings(summary, heap) + _leak_findings(summary, heap)
+#: Findings the notice above the chart names; the rest are counted.
+_NOTICE_NAMED = 2
+
+
+def _findings(summary: pd.DataFrame, heap: ComponentHeap) -> list[_Finding]:
+    """Every component that keeps heap it took on, steadily or at once: the
+    steps first, the largest, then what grows, the fastest."""
+    return _step_findings(summary, heap) + _leak_findings(summary, heap)
+
+
+def _findings_title(findings: list[_Finding]) -> str:
+    n = len({f.name for f in findings})
+    return (f"{n} component{'s' if n > 1 else ''} keep{'' if n > 1 else 's'} heap "
+            f"{'they' if n > 1 else 'it'} took on")
+
+
+def _render_findings_notice(findings: list[_Finding]) -> None:
+    """One line above the chart naming what the cards below it show, so a
+    reader who stops at the chart still learns of them."""
     if not findings:
         return
-    n = len({f.name for f in findings})
+    named = [f"{_name(f.name)} {f.value}" for f in findings[:_NOTICE_NAMED]]
+    if (rest := len(findings) - len(named)) > 0:
+        named.append(f"{rest} more")
     st.markdown(
-        f":orange[:material/warning:] **{n} component{'s' if n > 1 else ''} "
-        f"keep{'' if n > 1 else 's'} heap {'they' if n > 1 else 'it'} took on**",
+        f":orange[:material/warning:] **{_findings_title(findings)}:** {', '.join(named)} "
+        "· details below the chart"
+    )
+
+
+def _render_findings(findings: list[_Finding]) -> None:
+    """A card per finding, under a heading the notice above the chart points to."""
+    if not findings:
+        return
+    st.space("small")
+    st.markdown(
+        f"##### :orange[:material/warning:] {_findings_title(findings)}",
         help=(
             "**Grows**: what it holds rises steadily from event to event, and it "
             "still holds the gain after finalize.\n\n"
@@ -414,6 +441,8 @@ def _render_current_run(ctx: PageContext, display_options_slot) -> None:
     label, heap = selected
     summary, totals = _summarise(ctx.data_dir, label)
     _render_tiles(summary, totals)
+    findings = _findings(summary, heap)
+    _render_findings_notice(findings)
 
     st.markdown(
         "##### Heap by component, event by event",
@@ -506,7 +535,7 @@ def _render_current_run(ctx: PageContext, display_options_slot) -> None:
             margin=dict(l=20, r=20, t=_T_MARGIN, b=bottom),
         )
         st.plotly_chart(fig, width="stretch", key=f"{_KEY}_timeline")
-    _render_findings(summary, heap)
+    _render_findings(findings)
 
 
 def _component_table(
