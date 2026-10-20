@@ -612,12 +612,19 @@ def test_memory_gives_the_jobs_heap_and_names_what_grows_and_is_kept(
     tiles = {m.label: m.value for m in at.metric}
     assert tiles["Before the first event"] == "596 MB"
     assert tiles["Growth per event"] == "+4.7 MB"
-    assert [w.value for w in at.warning] == [
-        "- **LumiCalReco** grows 2 MB per event (20 MB over the run); after finalize it "
-        "still holds 20 MB more than after event 1.\n"
-        "- **VertexFinder** grows 1.2 MB per event (12 MB over the run); after finalize it "
-        "still holds 12 MB more than after event 1."
+    # After the four tiles, a card each, the fastest-growing first, its
+    # sentence in the badge's tooltip.
+    assert [(m.label, m.value, m.proto.delta) for m in at.metric[4:]] == [
+        ("LumiCalReco", "+20 MB", "+2 MB per event"),
+        ("VertexFinder", "+12 MB", "+1.2 MB per event"),
     ]
+    assert [m.proto.help for m in at.markdown if "-badge[" in m.value] == [
+        "**LumiCalReco** grows 2 MB per event (20 MB over the run); after finalize it "
+        "still holds 20 MB more than after event 1.",
+        "**VertexFinder** grows 1.2 MB per event (12 MB over the run); after finalize it "
+        "still holds 12 MB more than after event 1.",
+    ]
+    assert "20 MB still held after finalize" in [c.value for c in at.caption]
     traces = _traces(at)
     named = [t["name"] for t in traces if t.get("stackgroup") == "heap"]
     assert named[0] == "No component" and named[1].startswith("Other (")
@@ -741,7 +748,10 @@ def test_memory_names_what_stepped_up_and_marks_its_step(monkeypatch, tmp_path, 
     name = next(n for n in json.loads((run / "baseline_heap.json").read_text())["components"]
                 if n.startswith("My"))
     at = _page(monkeypatch, tmp_path, run, "Memory")
-    assert at.warning[-1].value == (
+    # Its card comes first, ahead of what grows.
+    card = next(m for m in at.metric if m.label == name)
+    assert (card.value, card.proto.delta) == ("+300 MB", "1 step, at event 4")
+    assert next(m for m in at.markdown if "-badge[" in m.value).proto.help == (
         f"**{name}** stepped up by 300 MB at event 4; it held 300 MB at the last "
         "event's end and 300 MB after finalize."
     )
@@ -1400,3 +1410,4 @@ def test_gaudi_algorithms_without_recorded_handles_are_named(monkeypatch, tmp_pa
     at = _page(monkeypatch, tmp_path, run, "Data Flow")
     text = " ".join(m.value for m in at.expander[0].markdown)
     assert "Not recorded** (auditor too old): k4FWCore__Reader" in text
+

@@ -21,6 +21,7 @@ statistic over events, as everywhere a run's event loop is summarised.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from functools import partial
 
 import numpy as np
@@ -230,9 +231,42 @@ def _render_tiles(summary: pd.DataFrame, totals: HeapTotals) -> None:
                 st.caption(caption)
 
 
-def _render_leaks(summary: pd.DataFrame, heap: ComponentHeap) -> None:
-    """One line per component that grows and keeps what it gained, or why
-    none could be checked."""
+@dataclass(frozen=True)
+class _Finding:
+    """A component that grows or stepped up and kept it, as its card shows it."""
+
+    #: Its button's key.
+    key: str
+    name: str
+    #: "Grows" or "Steps up".
+    kind: str
+    value: str
+    delta: str
+    caption: str
+    #: The whole finding in a sentence.
+    sentence: str
+    spark: list[float]
+
+
+#: Each finding kind's badge colour and icon.
+_KINDS = {
+    "Grows": ("orange", ":material/trending_up:"),
+    "Steps up": ("red", ":material/stairs:"),
+}
+
+#: Finding cards side by side, as many as the tiles above them.
+_CARDS_PER_ROW = 4
+
+
+def _held_spark(heap: ComponentHeap, name: str) -> list[float]:
+    """What *name* held at each event's end, warm-up left out, in MB."""
+    held = heap.execute["held_bytes"].sort_index()[name] / MB
+    return _spark(held[held.index != _WARM_UP_EVENT])
+
+
+def _leak_findings(summary: pd.DataFrame, heap: ComponentHeap) -> list[_Finding]:
+    """A finding per component that grows and keeps what it gained, or
+    none, said so, when too few events were measured to tell."""
     events = _measured_events(heap)
     if 0 < len(events) < LEAK_MIN_EVENTS:
         st.info(
@@ -240,31 +274,27 @@ def _render_leaks(summary: pd.DataFrame, heap: ComponentHeap) -> None:
             f"from a single step ({LEAK_MIN_EVENTS} are needed), so no component is "
             "checked for growth it keeps."
         )
-        return
+        return []
     suspects = summary[summary["leak"]].sort_values("growth_mb_per_event", ascending=False)
-    if suspects.empty:
-        return
-    span = float(events[-1] - events[0])
-    lines = [
-        f"**{_name(name)}** grows {format_mb(row.growth_mb_per_event)} per event "
-        f"({format_mb(row.growth_mb_per_event * span)} over the run); after finalize it "
-        f"still holds {format_mb(row.retained_mb)} more than after event {events[0]}."
+    span = float(events[-1] - events[0]) if len(events) else 0.0
+    return [
+        _Finding(
+            key=f"{_KEY}_inspect_{name}", name=name, kind="Grows",
+            value=format_mb(row.growth_mb_per_event * span, signed=True),
+            delta=f"{format_mb(row.growth_mb_per_event, signed=True)} per event",
+            caption=f"{format_mb(row.retained_mb)} still held after finalize",
+            sentence=(
+                f"**{_name(name)}** grows {format_mb(row.growth_mb_per_event)} per event "
+                f"({format_mb(row.growth_mb_per_event * span)} over the run); after finalize "
+                f"it still holds {format_mb(row.retained_mb)} more than after event {events[0]}."
+            ),
+            spark=_held_spark(heap, name),
+        )
         for name, row in suspects.iterrows()
     ]
-    st.warning(
-        lines[0] if len(lines) == 1 else "\n".join(f"- {line}" for line in lines),
-        icon="⚠️",
-    )
-    with st.container(horizontal=True, vertical_alignment="center", gap="small"):
-        st.caption("Inspect in Components:")
-        for name in suspects.index:
-            st.button(
-                _name(name), key=f"{_KEY}_inspect_{name}", type="tertiary",
-                icon=":material/arrow_forward:", on_click=_inspect, args=(name,),
-            )
 
 
-#: Steps a warning line names at most, the largest; the rest are counted.
+#: Steps a finding names at most, the largest; the rest are counted.
 _STEPS_NAMED = 4
 
 
@@ -280,31 +310,71 @@ def _step_list(steps: pd.DataFrame) -> str:
     return text
 
 
-def _render_steps(summary: pd.DataFrame, heap: ComponentHeap) -> None:
-    """One line per component whose heap rose at once and stayed up."""
+def _step_findings(summary: pd.DataFrame, heap: ComponentHeap) -> list[_Finding]:
+    """A finding per component whose heap rose at once and stayed up."""
     stepped = summary[summary["stepped"]].sort_values("stepped_mb", ascending=False)
     if stepped.empty:
-        return
+        return []
     steps = heap.steps(warm_up=_WARM_UP_EVENT)
     steps = steps[steps["kept"]]
     last = heap.execute["held_bytes"].sort_index().iloc[-1] / MB
-    lines = [
-        f"**{_name(name)}** stepped up by {_step_list(steps[steps['component'] == name])}; "
-        f"it held {format_mb(last[name])} at the last event's end and "
-        f"{format_mb(row.after_finalize_mb)} after finalize."
-        for name, row in stepped.iterrows()
-    ]
-    st.warning(
-        lines[0] if len(lines) == 1 else "\n".join(f"- {line}" for line in lines),
-        icon="⚠️",
+    findings = []
+    for name, row in stepped.iterrows():
+        own = steps[steps["component"] == name]
+        events = own["event_number"].sort_values().tolist()
+        at = ", ".join(str(e) for e in events[:_STEPS_NAMED])
+        if len(events) > _STEPS_NAMED:
+            at += ", …"
+        findings.append(_Finding(
+            key=f"{_KEY}_inspect_step_{name}", name=name, kind="Steps up",
+            value=format_mb(float(own["step_mb"].sum()), signed=True),
+            delta=f"{len(events)} step{'s' if len(events) > 1 else ''}, "
+                  f"at event{'s' if len(events) > 1 else ''} {at}",
+            caption=f"{format_mb(row.after_finalize_mb)} still held after finalize",
+            sentence=(
+                f"**{_name(name)}** stepped up by {_step_list(own)}; it held "
+                f"{format_mb(last[name])} at the last event's end and "
+                f"{format_mb(row.after_finalize_mb)} after finalize."
+            ),
+            spark=_held_spark(heap, name),
+        ))
+    return findings
+
+
+def _render_findings(summary: pd.DataFrame, heap: ComponentHeap) -> None:
+    """A card per component that keeps heap it took on, steadily or at
+    once: the steps first, the largest, then what grows, the fastest."""
+    findings = _step_findings(summary, heap) + _leak_findings(summary, heap)
+    if not findings:
+        return
+    n = len({f.name for f in findings})
+    st.markdown(
+        f":orange[:material/warning:] **{n} component{'s' if n > 1 else ''} "
+        f"keep{'' if n > 1 else 's'} heap {'they' if n > 1 else 'it'} took on**",
+        help=(
+            "**Grows**: what it holds rises steadily from event to event, and it "
+            "still holds the gain after finalize.\n\n"
+            f"**Steps up**: it took on {format_mb(STEP_MIN_MB)} or more in one event "
+            "and kept it.\n\nThe sparkline is what it held at each event's end; "
+            "the name opens it in Components."
+        ),
     )
-    with st.container(horizontal=True, vertical_alignment="center", gap="small"):
-        st.caption("Inspect in Components:")
-        for name in stepped.index:
-            st.button(
-                _name(name), key=f"{_KEY}_inspect_step_{name}", type="tertiary",
-                icon=":material/arrow_forward:", on_click=_inspect, args=(name,),
-            )
+    for start in range(0, len(findings), _CARDS_PER_ROW):
+        row = findings[start:start + _CARDS_PER_ROW]
+        for column, finding in zip(st.columns(_CARDS_PER_ROW), row):
+            with column, st.container(border=True, height="stretch", gap="small"):
+                color, icon = _KINDS[finding.kind]
+                st.badge(finding.kind, color=color, icon=icon, help=finding.sentence)
+                st.button(
+                    _name(finding.name), key=finding.key, type="tertiary",
+                    icon=":material/arrow_forward:", on_click=_inspect, args=(finding.name,),
+                )
+                st.metric(
+                    _name(finding.name), finding.value, delta=finding.delta,
+                    delta_color="inverse", delta_arrow="off", label_visibility="collapsed",
+                    chart_data=finding.spark or None, chart_type="area",
+                )
+                st.caption(finding.caption)
 
 
 def _inspect(name: str) -> None:
@@ -344,8 +414,7 @@ def _render_current_run(ctx: PageContext, display_options_slot) -> None:
     label, heap = selected
     summary, totals = _summarise(ctx.data_dir, label)
     _render_tiles(summary, totals)
-    _render_leaks(summary, heap)
-    _render_steps(summary, heap)
+    _render_findings(summary, heap)
 
     st.markdown(
         "##### Heap by component, event by event",
