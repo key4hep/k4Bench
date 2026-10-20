@@ -199,6 +199,14 @@ footer { margin-top: 0 !important; padding-top: 0 !important; }
     overflow-wrap: anywhere;
 }
 
+/* The reco Memory findings' names on one line, cut short with an ellipsis
+   when they do not fit (the badge's tooltip names them in full), so the
+   cards of a row line up. */
+[class*="st-key-reco_memory_inspect_"] button { max-width: 100%; }
+[class*="st-key-reco_memory_inspect_"] button p {
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600;
+}
+
 /* Sticky footer: keep the copyright pinned to the bottom of the viewport
    when the page is short, but let it flow normally (and scroll) when the
    content is taller than the window. Achieved with a full-height flex
