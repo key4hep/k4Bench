@@ -52,6 +52,9 @@ _TOP_N_KEY = "reco_breakdown_hist_topn"
 #: Components each current-run donut names; the rest are one "Other" slice.
 _PIE_TOP_N = 5
 
+#: The donuts' height: three share the row, so each is as wide as a third of it.
+_PIE_HEIGHT = 540
+
 #: The phases broken down by component (``trend.COMPONENT_PHASES``), as their
 #: chart titles name them.
 _PHASE_TITLES = {
@@ -113,12 +116,13 @@ def _render_current_run(ctx: PageContext) -> None:
                 st.markdown(f"##### {title}")
                 st.caption(f"No component time recorded for {title.lower()}.")
                 continue
+            fig = plot_phase_component_pie(
+                seconds, top_n=_PIE_TOP_N, colors=colors, title=title,
+                duration=phases.get(phase),
+            )
+            fig.update_layout(height=_PIE_HEIGHT, margin=dict(l=0, r=0, t=40, b=0))
             st.plotly_chart(
-                plot_phase_component_pie(
-                    seconds, top_n=_PIE_TOP_N, colors=colors, title=title,
-                    duration=phases.get(phase),
-                ),
-                width="stretch", key=f"reco_breakdown_{phase}_chart",
+                fig, width="stretch", key=f"reco_breakdown_{phase}_chart",
                 config={"displayModeBar": False},
             )
 
