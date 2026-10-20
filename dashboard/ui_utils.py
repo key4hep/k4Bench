@@ -731,19 +731,10 @@ SYMBOLS = ["circle", "square", "diamond", "cross",
 
 # ── Legend helpers ─────────────────────────────────────────────────────────────
 
-#: Bottom margin (px) reserved for tick labels + horizontal legend.
-#: Kept as a floor for the dynamic sizing in :func:`legend_below`.
-_LEGEND_B_MARGIN = 160
-
-#: Breathing room (px) between the x-tick labels and the legend, on top of the
-#: per-chart ``tick_clearance``.  ~75 px ≈ 2 cm at 96 DPI.
-_LEGEND_GAP = 75
-
 def legend_below(
     n_entries: int,
     *,
     tick_clearance: int = 60,
-    gap: int = _LEGEND_GAP,
     entry_width: int = 220,
     font_size: int = 13,
     ref_width: int = 1100,
@@ -759,29 +750,25 @@ def legend_below(
     --------------------------
     The legend is :func:`~k4bench.analysis.plots._utils.bottom_legend`, which
     Plotly lays out at whatever width the figure is drawn, so it fits at any
-    width. ``b_margin`` is only the room the figure starts from: the ticks,
-    *gap* and the legend's rows at ``ref_width``. Where the legend wraps onto
-    more rows, automargin takes the extra room out of the gap and then the plot;
-    where onto fewer, the gap is wider.
+    width. ``b_margin`` is only the room the figure starts from: the ticks and
+    the legend's rows at ``ref_width``. Where the legend wraps onto more rows,
+    automargin takes the extra room out of the plot, keeping the legend clear of
+    the ticks; where onto fewer, the legend sits further below them.
 
     Parameters
     ----------
     n_entries : number of legend items (e.g. configs or detectors plotted).
     tick_clearance : px the x-tick labels / axis titles need below the plot
         (use ~70 for rotated date ticks).
-    gap : extra breathing room between the ticks and the legend, on top of
-        ``tick_clearance`` (default :data:`_LEGEND_GAP` ≈ 2 cm).
     ref_width : plot width (px) the starting margin's row count is estimated
-        at; it sets the gap only, never whether the legend fits.
+        at; it sets the starting margin only, never whether the legend fits.
     """
     usable = max(1, ref_width - 2 * side_margin)
     per_row = max(1, usable // entry_width)
     rows = max(1, math.ceil(max(1, n_entries) / per_row))
     row_h = font_size + 8
     legend_h = rows * row_h + 12
-    # Offset from the plot's bottom edge to the legend's top edge.
-    offset = tick_clearance + gap
-    b_margin = max(_LEGEND_B_MARGIN, offset + legend_h)
+    b_margin = tick_clearance + legend_h
     return bottom_legend(entry_width=entry_width, font_size=font_size), b_margin
 
 
