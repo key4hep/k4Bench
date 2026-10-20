@@ -362,7 +362,7 @@ def _render_current_run(ctx: PageContext, display_options_slot) -> None:
             "a component took on in one event and kept."
         ),
     )
-    group_col, mode_col, shown_col = st.columns([1.6, 2.6, 2], vertical_alignment="bottom")
+    group_col, mode_col, shown_col, log_col = st.columns([1.6, 2.6, 2, 1.2], vertical_alignment="bottom")
     drop_stale_selection(f"{_KEY}_group", _GROUPS)
     with group_col:
         group = st.segmented_control(
@@ -380,6 +380,15 @@ def _render_current_run(ctx: PageContext, display_options_slot) -> None:
             help="How many of the largest components (or packages) get a band of "
                  "their own; the rest are one Other band. One that grows or steps up "
                  "and keeps it always gets a band besides.",
+        )
+    with log_col:
+        log_y = st.toggle(
+            "Log y axis", value=False, key=f"{_KEY}_log_y", bind="query-params", disabled=change,
+            help="One component can hold most of the heap; on a log axis the bands "
+                 "beneath it stay readable. A band's height then shows how much it "
+                 "adds to those below it, so the lowest bands look larger than they "
+                 "are: read sizes in the hover. Change since the first event is "
+                 "always linear: its lines cross zero.",
         )
 
     held = heap.execute["held_bytes"].sort_index() / MB
@@ -418,6 +427,7 @@ def _render_current_run(ctx: PageContext, display_options_slot) -> None:
     fig = plot_heap_timeline(
         held, before, after, named, colors=colors,
         rss=_rss(ctx, label), change=change, warm_up=_WARM_UP_EVENT, steps=steps,
+        log_y=log_y,
     )
     if fig is None:
         st.info(f"No event of **{label}** has heap recorded.")
