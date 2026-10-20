@@ -91,6 +91,36 @@ def test_change_shows_growth_in_a_series_not_named():
     assert np.sum([lines[name] for name in lines], axis=0).tolist() == total.tolist()
 
 
+def test_log_y_reaches_below_the_lowest_band_and_labels_bands_in_decades():
+    assert plot_heap_timeline(HELD, BEFORE, AFTER, NAMED).layout.yaxis.type is None
+    fig = plot_heap_timeline(HELD, BEFORE, AFTER, NAMED, log_y=True)
+    axis = fig.layout.yaxis
+    assert axis.type == "log"
+    # The lowest top is the 40 MB no-component band after finalize, the
+    # highest the 419 MB stack at the last event.
+    low, high = math.log10(40.0), math.log10(419.0)
+    span = high - low
+    assert axis.range[0] == pytest.approx(low - 0.1 * span)
+    assert axis.range[1] == pytest.approx(high + 0.05 * span)
+    # The geometry's band, 54 to 354 MB at the last event, is labelled at its
+    # middle in decades.
+    (geo,) = [a for a in fig.layout.annotations if a.text == "Geo"]
+    assert geo.y == pytest.approx((math.log10(54.0) + math.log10(354.0)) / 2)
+
+
+def test_log_y_is_left_linear_with_change():
+    fig = plot_heap_timeline(HELD, BEFORE, AFTER, NAMED, change=True, log_y=True)
+    assert fig.layout.yaxis.type is None
+
+
+def test_log_y_counts_decades_of_gigabytes():
+    fig = plot_heap_timeline(HELD * 10, BEFORE * 10, AFTER * 10, NAMED, log_y=True)
+    span = math.log10(419.0 / 40.0)
+    assert fig.layout.yaxis.range[1] == pytest.approx(math.log10(4190.0 / 1024) + 0.05 * span)
+    (geo,) = [a for a in fig.layout.annotations if a.text == "Geo"]
+    assert geo.y == pytest.approx((math.log10(540.0 / 1024) + math.log10(3540.0 / 1024)) / 2)
+
+
 #: The cache's 20 MB step at event 2.
 STEPS = pd.DataFrame({"series": ["Cache"], "event_number": [2], "step_mb": [20.0]})
 

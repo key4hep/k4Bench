@@ -133,6 +133,7 @@ def plot_heap_timeline(
     change: bool = False,
     warm_up: int | None = 0,
     steps: pd.DataFrame | None = None,
+    log_y: bool = False,
 ) -> go.Figure | None:
     """The heap each series held, from initialization through each event to
     finalization.
@@ -163,7 +164,9 @@ def plot_heap_timeline(
     marker in the series' colour on the top of the stack, one for all of an
     event's steps (in the largest's colour, every one in the hover), or on
     the series' line with *change* (a step of a series not named is not
-    marked there).
+    marked there). With *log_y*, the stack is drawn on a log axis reaching
+    below the lowest band, so the small bands under a large one stay
+    readable; it does not apply with *change*, whose lines cross zero.
     ``None`` when there is nothing to draw.
     """
     if held.empty:
@@ -175,6 +178,7 @@ def plot_heap_timeline(
     palette = iter(vivid * (len(named) // len(vivid) + 1))
     color_of = {name: colors.get(name) or next(palette) for name in named}
     fig = go.Figure()
+    log_range = None
 
     if change:
         grown = held - held.iloc[0]
@@ -212,6 +216,8 @@ def plot_heap_timeline(
         total = table.sum(axis=1)
         largest = max(float(total.max()), float(rss.max()) if rss is not None and len(rss) else 0.0)
         divisor, unit = _scale(largest)
+        if log_y:
+            log_range = _log_range(stack, rss)
         last, below = str(events[-1]), 0.0
         for label, values, color in stack:
             fig.add_trace(go.Scatter(
@@ -220,9 +226,18 @@ def plot_heap_timeline(
                 hovertemplate=f"{label}: %{{y:.3g}} {unit}<extra></extra>",
             ))
             width = float(values[last])
-            if largest and width / largest >= _LABEL_SHARE:
+            if log_range is None:
+                share, y = (width / largest if largest else 0.0), (below + width / 2) / divisor
+            else:
+                # What a band spans on the axis, and its middle, are in decades.
+                bottom, top = log_range
+                low = max(math.log10(below), bottom) if below > 0 else bottom
+                high = math.log10(below + width) if below + width > 0 else bottom
+                share = (high - low) / (top - bottom)
+                y = (low + high) / 2 - math.log10(divisor)
+            if share >= _LABEL_SHARE:
                 fig.add_annotation(
-                    x=last, y=(below + width / 2) / divisor, text=label, showarrow=False,
+                    x=last, y=y, text=label, showarrow=False,
                     xanchor="right", xshift=-8, font=dict(size=11, color=_text_on(color)),
                 )
             below += width
@@ -291,9 +306,35 @@ def plot_heap_timeline(
     fig.update_xaxes(
         type="category", tickmode="array", tickvals=ticks, tickangle=0, title_text="Event number",
     )
-    fig.update_yaxes(title_text=y_title, rangemode="tozero" if not change else "normal")
+    if log_range is not None:
+        bottom, top = log_range
+        # Ticks at 1, 2 and 5 of each decade, not every digit.
+        fig.update_yaxes(
+            title_text=y_title, type="log", dtick="D2",
+            range=[bottom - math.log10(divisor), top - math.log10(divisor)],
+        )
+    else:
+        fig.update_yaxes(title_text=y_title, rangemode="tozero" if not change else "normal")
     _style(fig)
     return fig
+
+
+def _log_range(
+    stack: list[tuple[str, pd.Series, str]], rss: pd.Series | None,
+) -> tuple[float, float] | None:
+    """The log axis, in decades of MB, that a *stack* of bands (and the *rss*
+    line beside it) is drawn on: from a margin below the lowest top of a band,
+    so the lowest band shows, to just above the highest. ``None`` when nothing
+    in it is positive."""
+    tops = pd.concat([values for _, values, _ in stack], axis=1).cumsum(axis=1).to_numpy().ravel()
+    if rss is not None:
+        tops = np.concatenate([tops, rss.to_numpy(dtype=float)])
+    positive = tops[np.isfinite(tops) & (tops > 0)]
+    if not positive.size:
+        return None
+    low, high = math.log10(positive.min()), math.log10(positive.max())
+    span = max(high - low, 1.0)
+    return low - 0.1 * span, high + 0.05 * span
 
 
 def plot_component_heap_events(
