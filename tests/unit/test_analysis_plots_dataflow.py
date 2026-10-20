@@ -121,7 +121,10 @@ class TestView:
         assert positions["Producer"][1] == positions["Writer"][1]
         fig = plot_dataflow(view, positions)
         assert "rgba(0,0,0,0)" not in fig.data[-1].marker.color
-        assert not fig.layout.annotations
+        assert not [a for a in fig.layout.annotations if a.text == "No collections recorded"]
+        # Its label says why no edge reaches it.
+        writer = [a.text for a in fig.layout.annotations if a.text.startswith("Writer")]
+        assert len(writer) == 1 and "inputs hidden" in writer[0]
 
     def test_unknown_times_stay_unknown(self, flow):
         assert dataflow_view(flow).nodes[1].seconds is None

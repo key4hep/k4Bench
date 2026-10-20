@@ -313,8 +313,10 @@ def _render_current_run(
         c[0].metric(
             "CPU freq",
             f"{freq_start:.0f} MHz" if freq_start is not None else "N/A",
+            # A change that rounds to 0 MHz is none, not a red "-0 MHz".
             delta=(f"{freq_end - freq_start:.0f} MHz"
-                   if (freq_start is not None and freq_end is not None) else None),
+                   if (freq_start is not None and freq_end is not None
+                       and round(freq_end - freq_start) != 0) else None),
             delta_color="normal",
             help=("Kernel-reported CPU frequency before the benchmark (delta = change by end). "
                   "A drop indicates the CPU slowed down — possible throttling due to heat or governor policy. "
@@ -429,7 +431,7 @@ def _render_current_run(
         # short fields pair up.
         st.metric("OS",     machine_info.get("os",     "N/A"))
         st.metric("Kernel", machine_info.get("kernel", "N/A"))
-        c = st.columns(2)
+        c = st.columns([2, 1])
         c[0].metric("Hostname",  machine_info.get("hostname", "N/A"))
         c[1].metric("Container", "Yes" if machine_info.get("in_container") else "No")
 

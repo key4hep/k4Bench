@@ -276,8 +276,9 @@ def render_historical_trends(
         title_text="Key4hep Nightly Tag",
     )
     if log_y:
-        # Ticks at 1, 2 and 5 of each decade, not every digit.
-        fig.update_yaxes(type="log", dtick="D2")
+        # Ticks at 1, 2 and 5 of each decade, not every digit, each written
+        # in full (0.5, not 5).
+        fig.update_yaxes(type="log", dtick="D2", tickformat=",~g")
 
     # ── Legend & margins ──────────────────────────────────────────────────────
     # tick_clearance=75: rotated (-30°) date ticks + "Key4hep Nightly Tag" title.

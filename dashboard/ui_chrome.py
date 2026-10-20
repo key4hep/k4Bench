@@ -191,7 +191,8 @@ footer { margin-top: 0 !important; padding-top: 0 !important; }
    kernel version). Keeps every metric the same size while showing the
    value in full. */
 [data-testid="stMetricValue"],
-[data-testid="stMetricValue"] > div {
+[data-testid="stMetricValue"] > div,
+[data-testid="stMetricValue"] p {
     white-space: normal !important;
     overflow: visible !important;
     text-overflow: clip !important;
