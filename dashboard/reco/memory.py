@@ -4,12 +4,12 @@ grows without being released.
 
 It reads the run's memory pass (``_heap.json``), a second run of the job after
 the timed one that charges every heap block to the component that allocated
-it. Current Run gives the job's heap in four tiles, names each component that
-grows and still holds what it gained after finalize, and each whose heap
-stepped up at once in an event and stayed up, and draws every component's
+it. Current Run gives the job's heap in four tiles, draws every component's
 heap event by event, as held or as its change since the first event, its
-steps marked, with the timed run's anonymous RSS beside it; each component a
-warning names opens in Components from a button below it. Components lists every
+steps marked, with the timed run's anonymous RSS beside it, and below it names
+each component that grows and still holds what it gained after finalize, and
+each whose heap stepped up at once in an event and stayed up; each one a card
+names opens in Components from its name. Components lists every
 component that held heap with its numbers and its heap across the events, and
 draws the selected one event by event: what it held as each event started,
 the most it held during it and what it kept. Historical Trends draws one of a
@@ -414,7 +414,6 @@ def _render_current_run(ctx: PageContext, display_options_slot) -> None:
     label, heap = selected
     summary, totals = _summarise(ctx.data_dir, label)
     _render_tiles(summary, totals)
-    _render_findings(summary, heap)
 
     st.markdown(
         "##### Heap by component, event by event",
@@ -500,13 +499,14 @@ def _render_current_run(ctx: PageContext, display_options_slot) -> None:
     )
     if fig is None:
         st.info(f"No event of **{label}** has heap recorded.")
-        return
-    legend, bottom = legend_below(len(fig.data), tick_clearance=60)
-    fig.update_layout(
-        height=_PLOT_H + _T_MARGIN + bottom, legend=legend,
-        margin=dict(l=20, r=20, t=_T_MARGIN, b=bottom),
-    )
-    st.plotly_chart(fig, width="stretch", key=f"{_KEY}_timeline")
+    else:
+        legend, bottom = legend_below(len(fig.data), tick_clearance=60)
+        fig.update_layout(
+            height=_PLOT_H + _T_MARGIN + bottom, legend=legend,
+            margin=dict(l=20, r=20, t=_T_MARGIN, b=bottom),
+        )
+        st.plotly_chart(fig, width="stretch", key=f"{_KEY}_timeline")
+    _render_findings(summary, heap)
 
 
 def _component_table(
