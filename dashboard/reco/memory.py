@@ -14,8 +14,9 @@ component that held heap with its numbers and its heap across the events, and
 draws the selected one event by event: what it held as each event started,
 the most it held during it and what it kept. Historical Trends draws one of a
 configuration's numbers across the trend window as a line per component:
-what it held before the first event or at a typical event's end, its
-working set or its growth per event. The warm-up event is left out of every
+what it held before the first event or at a typical event's end, beside
+the whole job's own median, its working set or its growth per event. The
+warm-up event is left out of every
 statistic over events, as everywhere a run's event loop is summarised.
 """
 from __future__ import annotations
@@ -41,6 +42,7 @@ from k4bench.analysis.heap import (
 from k4bench.analysis.loader import judgeable_config_data
 from k4bench.analysis.plots._theme import _vivid
 from k4bench.analysis.plots.heap import (
+    _INK,
     _NO_COMPONENT_LINE,
     _OTHER_LINE,
     NO_COMPONENT_LABEL,
@@ -714,7 +716,13 @@ _HIST_METRICS = {
 
 #: The metrics whose components add up to the job's heap: the rest of them
 #: are one Other line, and what no component allocated is a line of its own.
-_ADDITIVE = ("before_first_mb", "typical_mb")
+#: A typical event's is a median, which does not add up: its components are
+#: drawn beside the job's own median (:data:`WHOLE_JOB_LABEL`) instead.
+_ADDITIVE = ("before_first_mb",)
+
+#: The line of the whole job's typical heap: the median over the events of
+#: what every component and no component held together at each one's end.
+WHOLE_JOB_LABEL = "Whole-job median"
 
 #: Each metric's panels: a trend column and its title, before its unit.
 _HIST_PANELS = {
@@ -737,7 +745,11 @@ _HIST_HEADINGS = {
     "typical_mb": (
         "Heap at an event's end, night by night",
         "What each component held at the end of an event: its median over the run's "
-        "events, the warm-up event left out.",
+        "events, the warm-up event left out. **Whole-job median** is the median of the "
+        "whole heap at an event's end, every component's and no component's added up "
+        "in each event first; what no component allocated is *No component*, in grey. "
+        "Medians do not add up: the components' lines are not shares of the whole "
+        "job's, and together they need not reach it.",
     ),
     "working_set_median_mb": (
         "Working set, night by night",
@@ -757,20 +769,22 @@ _HIST_HEADINGS = {
 _HIST_SERIES = (
     "\n\nThe largest components over the window are named (**Largest shown**), and "
     "besides them every component that grows or steps up and keeps it on any night of "
-    "the window. "
-    "When a nightly tag was run more than once, only its latest run is drawn."
+    "the window."
 )
 _HIST_REST = (
     " The rest are one *Other* line, and what no component allocated is *No "
     "component*, both in grey."
 )
+_HIST_LEFT_OUT = " The rest are not drawn."
+_HIST_LATEST = " When a nightly tag was run more than once, only its latest run is drawn."
 
 
 def _hist_colors(named: list[str], palette: list[str], other: str | None) -> dict[str, str]:
     """:func:`_colors`, with *other* and no component in the grey of the
-    timeline's lines."""
+    timeline's lines and the whole job in its ink."""
     colors = _colors(named, palette)
     colors[NO_COMPONENT_LABEL] = _NO_COMPONENT_LINE
+    colors[WHOLE_JOB_LABEL] = _INK
     if other is not None:
         colors[other] = _OTHER_LINE
     return colors
@@ -837,7 +851,10 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
         .median().sort_values(ascending=False).index,
     ]))
     title, about = _HIST_HEADINGS[metric]
-    st.markdown(f"##### {title}", help=about + (_HIST_REST if additive else "") + _HIST_SERIES)
+    st.markdown(
+        f"##### {title}",
+        help=about + _HIST_SERIES + (_HIST_REST if additive else _HIST_LEFT_OUT) + _HIST_LATEST,
+    )
 
     if additive:
         # What no component allocated is not a component, as the part of a
@@ -866,9 +883,25 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
         series = components[components["component"].isin(labels)].assign(
             label=lambda df: df["component"],
         )
-        # No line here is grey, so each takes the palette's colour of its
-        # place, the grey among them.
-        colors = None
+        if metric == "typical_mb":
+            # The components' medians are drawn as they are, and the whole
+            # job's is its own row of the trend, not their sum. What no
+            # component allocated is no rival for a place among the named.
+            labels = [label for label in labels if label != NO_COMPONENT]
+            whole = rows[rows["component"].isna()].assign(label=WHOLE_JOB_LABEL)
+            apart = components[components["component"] == NO_COMPONENT].assign(
+                label=NO_COMPONENT_LABEL,
+            )
+            series = pd.concat([whole, series[series["component"] != NO_COMPONENT], apart])
+            colors = partial(_hist_colors, labels, other=None)
+            labels = [
+                *([WHOLE_JOB_LABEL] if len(whole) else []), *labels,
+                *([NO_COMPONENT_LABEL] if len(apart) else []),
+            ]
+        else:
+            # No line here is grey, so each takes the palette's colour of its
+            # place, the grey among them.
+            colors = None
     panels = _HIST_PANELS[metric]
     if metric == "growth_mb_per_event":
         unit, value_format = "MB", _growth_format

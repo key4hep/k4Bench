@@ -991,7 +991,7 @@ def _line_colors(at: AppTest) -> dict[str, str]:
 
 def test_the_memory_history_draws_each_components_heap_night_by_night(reco_run_with_heap):
     from k4bench.analysis.plots import PALETTE
-    from k4bench.analysis.plots.heap import _NO_COMPONENT_LINE, _OTHER_LINE
+    from k4bench.analysis.plots.heap import _INK, _NO_COMPONENT_LINE
 
     at = _memory_history(_nights(reco_run_with_heap))
     assert at.segmented_control(key="reco_memory_hist_metric").value == "Typical event"
@@ -1002,11 +1002,12 @@ def test_the_memory_history_draws_each_components_heap_night_by_night(reco_run_w
     at.slider(key="reco_memory_hist_topn").set_value(2).run()
     traces = _traces(at)
     assert {t["type"] for t in traces} == {"scatter"}
-    # The suspects, the fastest-growing first, then the two largest; the rest
-    # and what no component allocated last, in grey.
+    # The whole job's median in ink, the suspects, the fastest-growing first,
+    # then the two largest, and what no component allocated last, in grey;
+    # the rest are not drawn.
     assert _line_colors(at) == {
-        "LumiCalReco": PALETTE[0], "VertexFinder": PALETTE[1], "GeoSvc": PALETTE[2],
-        "k4FWCore__Reader": PALETTE[3], "Other (1)": _OTHER_LINE, "No component": _NO_COMPONENT_LINE,
+        "Whole-job median": _INK, "LumiCalReco": PALETTE[0], "VertexFinder": PALETTE[1],
+        "GeoSvc": PALETTE[2], "k4FWCore__Reader": PALETTE[3], "No component": _NO_COMPONENT_LINE,
     }
     geo = next(t for t in traces if t["name"] == "GeoSvc")
     assert _values(geo["y"]) == pytest.approx([397.0] * len(_NIGHTS))
@@ -1049,6 +1050,69 @@ def test_the_memory_history_leaves_a_night_without_a_typical_event_out(reco_run_
         values = _values(trace["y"])
         assert np.isnan(values[1]), trace["name"]
         assert not np.isnan(values[0]), trace["name"]
+
+
+def _rotating(raw: dict) -> None:
+    # Events 1–9 pass 100 MB from one of three components to the next, so
+    # each holds it at a third of the events' ends and its median is 0 MB,
+    # while the whole job's is 100 MB beside what no component holds: 7 MB
+    # at five events' ends, nothing at four. The warm-up event holds nothing:
+    # counted, it would take the job's median to 103.5 MB and no component's
+    # to 3.5 MB.
+    names = raw["components"]
+    rotating = names[1:4]
+    events = list(range(10))
+
+    def held(event: int) -> list[int]:
+        values = [0] * len(names)
+        if event:
+            values[names.index(rotating[event % 3])] = 100 * _MIB
+            values[0] = 7 * _MIB if event <= 5 else 0
+        return values
+
+    raw["before_first_event"]["held_bytes"] = [0] * len(names)
+    raw["before_first_event"]["peak_held_bytes"] = [0] * len(names)
+    raw["event_numbers"] = events
+    starts = [held(e - 1) if e else [0] * len(names) for e in events]
+    raw["execute"] = {
+        "start_held_bytes": starts,
+        "held_bytes": [held(e) for e in events],
+        # A component peaks at no less than it held as the event started.
+        "peak_held_bytes": [list(map(max, start, held(e))) for e, start in zip(events, starts)],
+        "malloc_in_use_bytes": [sum(held(e)) for e in events],
+        "rss_anon_mb": [700.0] * len(events),
+    }
+    raw["at_end"]["held_bytes"] = [0] * len(names)
+
+
+def test_the_memory_history_draws_the_whole_jobs_median_not_the_sum_of_medians(
+    reco_run_with_heap,
+):
+    from k4bench.analysis.plots.heap import _INK, _NO_COMPONENT_LINE
+
+    runs = _nights(reco_run_with_heap)
+    for run in runs:
+        _rewrite_heap(run, _rotating)
+    # The middle night has no memory pass: no point, not 0 MB.
+    (runs[1] / "baseline_heap.json").unlink()
+    rotating = json.loads((runs[0] / "baseline_heap.json").read_text())["components"][1:4]
+    at = _memory_history(runs)
+    assert at.segmented_control(key="reco_memory_hist_metric").value == "Typical event"
+    traces = {t["name"]: t for t in _traces(at)}
+    # The components' medians as they are, no Other summing the rest.
+    assert set(traces) == {"Whole-job median", *rotating, "No component"}
+    assert {name: list(_values(traces[name]["y"])) for name in traces} == {
+        "Whole-job median": [107.0, 107.0], **{name: [0.0, 0.0] for name in rotating},
+        "No component": [7.0, 7.0],
+    }
+    assert [x[:10] for x in traces["Whole-job median"]["x"]] == [_NIGHTS[0], _NIGHTS[2]]
+    assert _line_colors(at)["Whole-job median"] == _INK
+    assert _line_colors(at)["No component"] == _NO_COMPONENT_LINE
+    # Fewer components named leave the whole job's median as it is.
+    at.slider(key="reco_memory_hist_topn").set_value(1).run()
+    traces = {t["name"]: t for t in _traces(at)}
+    assert len(set(traces) & set(rotating)) == 1
+    assert list(_values(traces["Whole-job median"]["y"])) == [107.0, 107.0]
 
 
 def test_the_memory_history_names_the_heaviest_events_needs(reco_run_with_heap):
