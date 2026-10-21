@@ -407,7 +407,7 @@ def _event_timing_history_app(dashboard_dir, run_dir) -> None:
         config=Config(run_dir, "https://store.example", "/tmp", "https://dash.example"),
         selection=None, data_dir=run_dir, run_meta=None,
         run=RunData(None, None, None, results, sorted(results["label"].unique()),
-                    components=cached_load_component_timing(run_dir)),
+                    components=cached_load_component_timing(run_dir)[0]),
         window=TrendWindow(None, (run_dir,)), trend_machine=None, reliability={},
     )
     page._event_timing(ctx)
@@ -529,7 +529,7 @@ def _components_only_app(dashboard_dir, run_dir, trends_enabled) -> None:
     # The run's algorithms were timed, its events were not read.
     event_timing.render(
         None, None, trends_enabled, {},
-        components=cached_load_component_timing(run_dir),
+        components=cached_load_component_timing(run_dir)[0],
     )
 
 
@@ -559,7 +559,7 @@ def _warm_up_only_app(dashboard_dir, run_dir) -> None:
     from data import cached_load_component_timing, cached_load_event_timing
     from tabs import event_timing
 
-    components = cached_load_component_timing(run_dir)
+    components = cached_load_component_timing(run_dir)[0]
     # The variant's VertexFinder ran in the warm-up event alone.
     wall = components["variant_truth_tracking"].execute["wall_s"]
     wall.loc[wall.index != 0, "VertexFinder"] = float("nan")
@@ -934,6 +934,87 @@ def test_a_malformed_heap_file_hides_no_other_configuration(
         "The heap file of **variant_truth_tracking** could not be read, so it is not offered:"
     )
     assert any(m.label == "Before the first event" for m in at.metric)
+
+
+def _run_with_broken_components(tmp_path, *labels: str) -> Path:
+    """The fixture run with each of *labels*' ``_components.json`` malformed."""
+    run = tmp_path / "run"
+    shutil.copytree(RECO_RUN, run)
+    for label in labels:
+        (run / f"{label}_components.json").write_text("{")
+    return run
+
+
+_UNREADABLE_VARIANT = (
+    "- **variant_truth_tracking**: variant_truth_tracking_components.json: JSONDecodeError:"
+)
+
+
+@pytest.mark.parametrize("section", [
+    "Breakdown", "Efficiency", "Memory", "Data Flow", "Event Timing", "Correlations",
+])
+def test_a_malformed_component_file_is_named_in_every_section_reading_one(
+    monkeypatch, tmp_path, section,
+):
+    run = _run_with_broken_components(tmp_path, "variant_truth_tracking")
+    at = _page(monkeypatch, tmp_path, run, section)
+    (warning,) = [w.value for w in at.warning if "component costs" in w.value]
+    assert _UNREADABLE_VARIANT in warning
+
+
+@pytest.mark.parametrize("section, key", [
+    ("Breakdown", "reco_breakdown_config"), ("Efficiency", "reco_efficiency_config"),
+])
+def test_a_malformed_component_file_hides_no_other_configuration(
+    monkeypatch, tmp_path, section, key,
+):
+    run = _run_with_broken_components(tmp_path, "variant_truth_tracking")
+    at = _page(monkeypatch, tmp_path, run, section)
+    assert at.selectbox(key=key).options == ["baseline"]
+
+
+def test_a_malformed_component_file_keeps_its_configurations_events(monkeypatch, tmp_path):
+    run = _run_with_broken_components(tmp_path, "variant_truth_tracking")
+    at = _page(monkeypatch, tmp_path, run, "Event Timing")
+    assert "variant_truth_tracking" in at.multiselect(key="evt_timing_configs").options
+
+
+def test_a_run_whose_component_files_are_all_unreadable_says_so(monkeypatch, tmp_path):
+    run = _run_with_broken_components(tmp_path, "baseline", "variant_truth_tracking")
+    at = _page(monkeypatch, tmp_path, run, "Breakdown")
+    assert "left a `_components.json` that could be read" in at.info[0].value
+
+
+def test_a_run_without_component_files_says_so_without_a_warning(monkeypatch, tmp_path):
+    run = tmp_path / "run"
+    shutil.copytree(RECO_RUN, run)
+    for path in run.glob("*_components.json"):
+        path.unlink()
+    at = _page(monkeypatch, tmp_path, run, "Efficiency")
+    assert at.info[0].value.endswith("left a `_components.json`.")
+    assert not at.warning
+
+
+def test_a_failed_configurations_malformed_component_file_is_not_news(monkeypatch, tmp_path):
+    run = _run_with_broken_components(tmp_path, "variant_truth_tracking")
+    results = run / "variant_truth_tracking_results.csv"
+    header, row = results.read_text().splitlines()
+    results.write_text(f"{header}\n{row.replace(',0,', ',1,', 1)}\n")
+    at = _page(monkeypatch, tmp_path, run, "Breakdown")
+    assert at.selectbox(key="reco_breakdown_config").options == ["baseline"]
+    assert not at.warning
+
+
+def test_a_repaired_component_file_is_offered_after_a_refresh(monkeypatch, tmp_path):
+    run = _run_with_broken_components(tmp_path, "variant_truth_tracking")
+    at = _page(monkeypatch, tmp_path, run, "Breakdown")
+    shutil.copy(RECO_RUN / "variant_truth_tracking_components.json", run)
+    next(b for b in at.button if b.label == "Refresh Data").click().run()
+    assert not at.exception, at.exception
+    assert at.selectbox(key="reco_breakdown_config").options == [
+        "baseline", "variant_truth_tracking",
+    ]
+    assert not at.warning
 
 
 def test_a_run_without_a_memory_pass_says_so(monkeypatch, tmp_path):

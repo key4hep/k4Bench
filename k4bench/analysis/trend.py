@@ -19,8 +19,8 @@ import numpy as np
 import pandas as pd
 
 from k4bench.analysis.loader import (
-    load_component_heap,
-    load_component_timing,
+    load_each_component_heap,
+    load_each_component_timing,
     load_event_timing,
     load_region_timing,
     load_results,
@@ -320,8 +320,9 @@ def build_phase_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
     in it, with the component's self ``seconds`` there
     (:meth:`~k4bench.analysis.components.ComponentTiming.phase_component_seconds`). Columns ``run_id``,
     ``run_date``, ``k4h_release_date``, ``k4h_release``, ``label``, ``phase``,
-    ``component``, ``seconds`` and ``x_date``. ``None`` when no run has
-    component files (ddsim runs have none).
+    ``component``, ``seconds`` and ``x_date``. Each component file is read
+    on its own, so one that is malformed drops no other config of its run.
+    ``None`` when no run has component files (ddsim runs have none).
     """
     if not run_dirs:
         return None
@@ -332,14 +333,9 @@ def build_phase_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
         if not run_dir.is_dir():
             continue
         meta = parse_run_dir(run_dir)
-        try:
-            timings = load_component_timing(run_dir)
-        except EXPECTED_LOAD_ERRORS as exc:
-            _log.debug("build_phase_trend: skipping '%s': %s", run_dir, exc)
-            continue
-        except Exception:
-            _log.exception("build_phase_trend: error loading '%s'", run_dir)
-            continue
+        timings, unreadable = load_each_component_timing(run_dir)
+        for label, reason in unreadable.items():
+            _log.debug("build_phase_trend: skipping '%s' of '%s': %s", label, run_dir, reason)
 
         run = {
             "run_id":           run_dir.name,
@@ -373,7 +369,9 @@ def build_efficiency_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
     warm-up event, event 0, left out): columns ``run_id``, ``run_date``,
     ``k4h_release_date``, ``k4h_release``, ``label``, ``component``, the
     :data:`~k4bench.analysis.efficiency.EFFICIENCY_COLUMNS` and ``x_date``.
-    ``None`` when no run has component files with hardware counts.
+    Each component file is read on its own, so one that is malformed drops
+    no other config of its run. ``None`` when no run has component files
+    with hardware counts.
     """
     if not run_dirs:
         return None
@@ -384,14 +382,9 @@ def build_efficiency_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
         if not run_dir.is_dir():
             continue
         meta = parse_run_dir(run_dir)
-        try:
-            timings = load_component_timing(run_dir)
-        except EXPECTED_LOAD_ERRORS as exc:
-            _log.debug("build_efficiency_trend: skipping '%s': %s", run_dir, exc)
-            continue
-        except Exception:
-            _log.exception("build_efficiency_trend: error loading '%s'", run_dir)
-            continue
+        timings, unreadable = load_each_component_timing(run_dir)
+        for label, reason in unreadable.items():
+            _log.debug("build_efficiency_trend: skipping '%s' of '%s': %s", label, run_dir, reason)
 
         run = {
             "run_id":           run_dir.name,
@@ -443,7 +436,7 @@ def build_heap_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
     rows: list[dict] = []
     for d in run_dirs:
         run_dir = Path(d)
-        if not run_dir.is_dir() or not (files := labelled_files(run_dir, HEAP_SUFFIX)):
+        if not run_dir.is_dir() or not labelled_files(run_dir, HEAP_SUFFIX):
             continue
         meta = parse_run_dir(run_dir)
         run = {
@@ -452,15 +445,10 @@ def build_heap_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
             "k4h_release_date": meta["k4h_release_date"],
             "k4h_release":      meta["k4h_release"],
         }
-        for _, label in files:
-            try:
-                heap = load_component_heap(run_dir, [label])[label]
-            except EXPECTED_LOAD_ERRORS as exc:
-                _log.debug("build_heap_trend: skipping '%s' of '%s': %s", label, run_dir, exc)
-                continue
-            except Exception:
-                _log.exception("build_heap_trend: error loading '%s' of '%s'", label, run_dir)
-                continue
+        heaps, unreadable = load_each_component_heap(run_dir)
+        for label, reason in unreadable.items():
+            _log.debug("build_heap_trend: skipping '%s' of '%s': %s", label, run_dir, reason)
+        for label, heap in heaps.items():
             summary = heap.summary(warm_up=0).loc[heap.holders()]
             rows.extend(
                 {**run, "label": label, "component": component, **values}
@@ -576,7 +564,9 @@ def build_algorithm_timing_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | No
     ``label``, ``component``, ``n_events``, ``mean_time_s``,
     ``median_time_s``, ``p95_time_s``, ``std_time_s``,
     ``trimmed_mean_time_s`` (absent below enough events) and ``x_date``.
-    ``None`` when no run has component files (ddsim runs have none).
+    Each component file is read on its own, so one that is malformed drops
+    no other config of its run. ``None`` when no run has component files
+    (ddsim runs have none).
     """
     if not run_dirs:
         return None
@@ -587,14 +577,9 @@ def build_algorithm_timing_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | No
         if not run_dir.is_dir():
             continue
         meta = parse_run_dir(run_dir)
-        try:
-            timings = load_component_timing(run_dir)
-        except EXPECTED_LOAD_ERRORS as exc:
-            _log.debug("build_algorithm_timing_trend: skipping '%s': %s", run_dir, exc)
-            continue
-        except Exception:
-            _log.exception("build_algorithm_timing_trend: error loading '%s'", run_dir)
-            continue
+        timings, unreadable = load_each_component_timing(run_dir)
+        for label, reason in unreadable.items():
+            _log.debug("build_algorithm_timing_trend: skipping '%s' of '%s': %s", label, run_dir, reason)
 
         run = {
             "run_id":           run_dir.name,

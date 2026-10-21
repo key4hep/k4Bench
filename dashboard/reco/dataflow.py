@@ -229,6 +229,8 @@ def render(ctx: PageContext) -> None:
         timed = "time per event, the warm-up left out"
     elif config in ctx.run.components:
         timed = "one size, no algorithm timed after the warm-up"
+    elif config in ctx.run.unreadable_components:
+        timed = "one size, the algorithm timing could not be read"
     else:
         timed = "one size, no algorithm timing recorded"
     st.caption(f"Dot size: {timed} · Square: algorithms of one class, click to expand "

@@ -18,7 +18,13 @@ from __future__ import annotations
 from data import cached_load_trend_algorithm_timing, cached_load_trend_event_timing
 from k4bench.layout import RECO
 from reco import breakdown, dataflow, efficiency, memory, overview
-from section_dispatch import RENDERERS, PageContext, judgeable_trend
+from section_dispatch import (
+    RENDERERS,
+    PageContext,
+    Renderer,
+    judgeable_trend,
+    warn_unreadable_components,
+)
 from sections import SECTION_SCOPE, SectionScope
 from suite_page import SuitePage, render_page
 from tabs import correlations, event_timing, logs
@@ -45,6 +51,15 @@ def _correlations(ctx: PageContext) -> SectionScope | None:
     )
 
 
+def _warning_unreadable_components(render: Renderer) -> Renderer:
+    """*render*, first naming the run's configurations whose component costs
+    could not be read."""
+    def rendered(ctx: PageContext) -> SectionScope | None:
+        warn_unreadable_components(ctx)
+        return render(ctx)
+    return rendered
+
+
 def _logs(ctx: PageContext) -> None:
     """Per-config status and the log explorer, reading Gaudi's messages."""
     logs.render(ctx.run.results, ctx.data_dir, ctx.run_meta, log_format=logs.GAUDI)
@@ -69,12 +84,15 @@ RECO_PAGE = SuitePage(
     },
     renderers={
         "Overview": overview.render,
-        "Breakdown": breakdown.render,
-        "Efficiency": efficiency.render,
-        "Memory": memory.render,
-        "Data Flow": dataflow.render,
-        "Event Timing": _event_timing,
-        "Correlations": _correlations,
+        # The sections that read the run's component costs.
+        **{name: _warning_unreadable_components(render) for name, render in (
+            ("Breakdown", breakdown.render),
+            ("Efficiency", efficiency.render),
+            ("Memory", memory.render),
+            ("Data Flow", dataflow.render),
+            ("Event Timing", _event_timing),
+            ("Correlations", _correlations),
+        )},
         **{name: RENDERERS[name] for name in _SHARED},
         "Logs": _logs,
     },

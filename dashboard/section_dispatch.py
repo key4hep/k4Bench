@@ -173,6 +173,28 @@ def judgeable_trend(
     return judgeable_config_rows(frame, ctx.run.trend_results)
 
 
+def warn_unreadable_components(ctx: PageContext) -> None:
+    """Name each configuration of the run whose ``_components.json`` could
+    not be read, and why: it is drawn without its component costs."""
+    unreadable = ctx.run.unreadable_components
+    if not unreadable:
+        return
+    reasons = "\n".join(f"- **{label}**: {reason}" for label, reason in sorted(unreadable.items()))
+    st.warning(
+        "The component costs of these configurations could not be read, so "
+        f"they are not offered:\n\n{reasons}"
+    )
+
+
+def no_components_reason(ctx: PageContext) -> str:
+    """Why the run offers no configuration's component costs: none that
+    succeeded left a ``_components.json``, or none it left could be read."""
+    if ctx.run.unreadable_components:
+        return ("no configuration that succeeded left a `_components.json` that "
+                "could be read (see the warning above).")
+    return "no configuration that succeeded left a `_components.json`."
+
+
 def _region_timing(ctx: PageContext) -> SectionScope | None:
     return region_timing.render(
         ctx.run.region_data,
