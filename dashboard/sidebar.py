@@ -270,9 +270,13 @@ def _pick_run_date(
     re-defaults to its latest, saying so. ``None``, with the reason on
     screen, when the release's runs cannot be listed and nothing pinned one,
     or when the link's run is not in the store: then the latest is offered
-    with a button, never opened in its place.
+    with a button, never opened in its place. A pin shown while the listing
+    did not answer is checked like a link once it does.
     """
     linked = None if key in st.session_state else st.query_params.get(RUN)
+    # The pin, with its release, that a listing has not yet confirmed.
+    unchecked_key = f"_{key}_unchecked"
+    parent = (detector, platform, sample, stack)
     try:
         listed = cached_list_runs(base_url, suite, detector, platform, stack, sample)
     except Exception as err:
@@ -286,15 +290,23 @@ def _pick_run_date(
             f"Could not list the runs of {stack}: {err}. Showing the pinned run "
             f"measured {pinned}; the others are offered once the listing answers."
         )
+        st.session_state[unchecked_key] = (*parent, pinned)
         runs, latest = [pinned], None
     else:
         runs = sorted((run for run in listed if is_run_id(run)), reverse=True)
         if not runs:
             st.warning("No runs found for the selected combination.")
             return None
+        unchecked = st.session_state.get(unchecked_key)
+        if (
+            linked is None and unchecked is not None
+            and unchecked == (*parent, st.session_state.get(key))
+        ):
+            linked = unchecked[-1]
         if linked and linked not in runs:
             _offer_latest_run(key, linked, runs[0], detector, platform, sample, stack)
             return None
+        st.session_state.pop(unchecked_key, None)
         latest = runs[0]
 
     run = _url_synced_selectbox(
@@ -451,15 +463,24 @@ def _window_range(
     changed. It is judged only against *complete* listings, which are also
     the only ones recorded as the scope: a stalled one would have it dropped
     as unknown and then, once the listing answers, count as a new release.
+    A stalled listing's short slider can lose the range picked before it;
+    the URL, which only complete listings write, still holds it, and it is
+    restored from there once the listing answers.
     """
-    scope_key = f"_{key}_scope"
+    scope_key, stalled_key = f"_{key}_scope", f"_{key}_stalled"
     previous = st.session_state.get(scope_key)
     if complete:
         st.session_state[scope_key] = (tuple(releases), across_detectors)
     if previous is not None:
-        if complete and previous != (tuple(releases), across_detectors):
+        if not complete:
+            st.session_state[stalled_key] = True
+            return None
+        stalled = st.session_state.pop(stalled_key, False)
+        if previous != (tuple(releases), across_detectors):
             st.session_state.pop(key, None)
-        return None
+            return None
+        if not stalled:
+            return None
     linked = st.query_params.get(RELEASES)
     if not linked or not complete:
         return None

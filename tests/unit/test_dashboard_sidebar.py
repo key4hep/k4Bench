@@ -240,6 +240,19 @@ def test_a_stalled_run_listing_keeps_the_pinned_run():
     assert at.selectbox(key="sb_run").options == ["2026-10-11 · latest", "2026-10-10"]
 
 
+def test_a_linked_run_shown_through_a_stalled_listing_is_checked_once_it_answers():
+    at = _run_pick({"detector": "CLD_o2_v09", "stack": NEW, "run": "2026-10-05"}, fail="runs")
+    assert "pinned run measured 2026-10-05" in at.warning[0].value
+    at.session_state["fail"] = None
+    at.run()
+    # Not quietly replaced by the latest: named, with the fallback on offer.
+    assert at.session_state["picked"] is None
+    assert "The linked run `2026-10-05` is not in the store" in at.warning[0].value
+    assert _query(at)["run"] == "2026-10-05"
+    next(b for b in at.button if b.label.startswith("Open the latest run")).click().run()
+    assert _picked(at)[-1] == "2026-10-11"
+
+
 def test_a_stalled_run_listing_without_a_pin_stops():
     at = _run_pick({"detector": "CLD_o2_v09"}, fail="runs")
     assert at.session_state["picked"] is None
@@ -333,7 +346,7 @@ def _window_app(
     import sidebar
 
     def _platform_stacks(url, suite, plat):
-        if platform_stacks is None:
+        if platform_stacks is None or st.session_state.get("stall"):
             raise OSError("listing timed out")
         # A test publishes a release mid-session through "new_stacks".
         return [*st.session_state.get("new_stacks", []), *platform_stacks]
@@ -581,3 +594,20 @@ def test_a_section_without_the_choice_draws_the_latest_and_keeps_the_link():
     assert at.session_state["window"].all_runs is False
     # Kept for a section that honours it.
     assert _query(at)["history"] == "all"
+
+
+def test_a_stalled_listing_does_not_move_a_picked_window():
+    # 09-22 is a platform release this detector never ran: while the
+    # platform's listing stalls, the slider offers only the detector's own.
+    linked = f"{_rel('09-22')}..{_rel('09-26')}"
+    at = _run_window(LONG_RUNS, params={"releases": linked})
+    assert at.select_slider[0].value == (_rel("09-22"), _rel("09-26"))
+    at.session_state["stall"] = True
+    at.run()
+    assert "Could not list the platform's releases" in at.warning[0].value
+    assert _query(at)["releases"] == linked
+    at.session_state["stall"] = False
+    at.run()
+    # The listing answered again: the window is the one picked before the stall.
+    assert at.select_slider[0].value == (_rel("09-22"), _rel("09-26"))
+    assert _query(at)["releases"] == linked
