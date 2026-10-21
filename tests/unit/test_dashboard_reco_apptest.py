@@ -1347,6 +1347,8 @@ def test_the_data_flow_groups_the_instances_of_a_class(monkeypatch, tmp_path):
     assert "MyAIDAProcessor" not in ids and "EventNumber" not in ids
     assert any(c.value.startswith("5 algorithms without recorded links not drawn")
                for c in at.caption)
+    assert any(c.value.startswith("Dot size: time per event, the warm-up left out")
+               for c in at.caption)
     (limits,) = at.expander
     text = " ".join(m.value for m in limits.markdown)
     # The Reader's outputs were backfilled and the Writer reads by its rules,
@@ -1457,10 +1459,39 @@ def test_a_component_timed_in_no_event_has_no_time():
 
     from reco.dataflow import _seconds_per_event
 
-    wall = pd.DataFrame({"Timed": [1.0, np.nan], "Untimed": [np.nan, np.nan]})
+    # Run only in the warm-up event 0 is not run either.
+    wall = pd.DataFrame({"Timed": [9.0, 1.0, np.nan], "Untimed": [np.nan] * 3,
+                         "WarmUpOnly": [1.0, np.nan, np.nan]})
     timing = SimpleNamespace(execute={"wall_s": wall})
     ctx = SimpleNamespace(run=SimpleNamespace(components={"baseline": timing}))
     assert _seconds_per_event(ctx, "baseline") == {"Timed": 0.5}
+
+
+def test_data_flow_and_efficiency_agree_on_an_algorithm_run_in_every_event():
+    from types import SimpleNamespace
+
+    from reco.dataflow import _seconds_per_event
+
+    from k4bench.analysis.efficiency import component_efficiency
+
+    events = pd.Index([0, 1, 2, 3], name="event_number")
+    execute = {
+        "wall_s": pd.DataFrame({"Always": [1.0, 0.004, 0.002, 0.003],
+                                "Filtered": [1.0, 0.006, np.nan, np.nan]}, index=events),
+        "instructions": pd.DataFrame({"Always": [1e9] * 4, "Filtered": [1e9, 1e9, np.nan, np.nan]},
+                                     index=events),
+        "cycles": pd.DataFrame({"Always": [1e9] * 4, "Filtered": [1e9, 1e9, np.nan, np.nan]},
+                               index=events),
+    }
+    ctx = SimpleNamespace(run=SimpleNamespace(
+        components={"baseline": SimpleNamespace(execute=execute)},
+    ))
+    flow = _seconds_per_event(ctx, "baseline")
+    efficiency = component_efficiency(execute)["ms_per_event"] / 1e3
+    assert flow["Always"] == pytest.approx(efficiency["Always"]) == pytest.approx(0.003)
+    # Filtered: its share of every event in Data Flow, its time when run in Efficiency.
+    assert flow["Filtered"] == pytest.approx(0.002)
+    assert efficiency["Filtered"] == pytest.approx(0.006)
 
 
 def test_gaudi_algorithms_without_recorded_handles_are_named(monkeypatch, tmp_path):

@@ -840,8 +840,9 @@ shows up as *Unattributed* rather than being spread over the others.
 
 - **Current Run** draws one point per algorithm of a configuration's event
   loop, coloured by the stack package its code comes from: its self time per
-  event across (log scale) and its instructions per cycle up, the warm-up event
-  left out. **Point size** chooses what a point's area shows: heap allocations
+  event it ran in across (log scale) and its instructions per cycle up, the
+  warm-up event left out. An algorithm a filter skips in some events is timed
+  over the others only, and hovering says in how many of the events it ran. **Point size** chooses what a point's area shows: heap allocations
   per event (the default), the allocation rate (allocations per second of the
   algorithm's own time, how hard it leans on the allocator however long it
   runs), allocated memory per event, or nothing. **Named algorithms** sets how many of
@@ -851,7 +852,7 @@ shows up as *Unattributed* rather than being spread over the others.
   run whose hardware counters could not be read, the view says why instead.
 - **Historical Trends** draws the slowest algorithms (Top N in Display
   options) across the trend window in three panels: time, instructions and
-  instructions per cycle per event. Instructions follow the work an algorithm
+  instructions per cycle per event it ran in. Instructions follow the work an algorithm
   does, not the machine it ran on, so time that moved while the instructions
   held is the machine, and instructions that moved are the software, its
   configuration or its input.
@@ -945,9 +946,11 @@ statistic over events.
 order, joined by the collections one writes and a later one reads
 (`{config}_dataflow.json`, see
 [File formats](../../reference/file-formats.md#dataflow-json)). A dot's area is
-the algorithm's event-loop time per event, and hovering an edge's middle lists
-the collections it carries, with the name a converter gave one on the way
-(`MCParticles → MCParticle`). Algorithms sharing a class are one square node
+the algorithm's event-loop time per event, the warm-up event left out and the
+events a filter skipped it in counted, so a class's square is the sum of its
+instances; for an algorithm run in every event it is the time Efficiency
+shows. Hovering an edge's middle lists the collections it carries, with the
+name a converter gave one on the way (`MCParticles → MCParticle`). Algorithms sharing a class are one square node
 (`DDPlanarDigiProcessor ×6`): clicking it shows each instance, and **Expand
 all**/**Collapse all** do so for every class. Clicking an algorithm lists what
 it reads, with who wrote each collection, and what it writes, with who reads

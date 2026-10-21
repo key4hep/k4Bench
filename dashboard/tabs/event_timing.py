@@ -101,7 +101,7 @@ def _timing_selector(components: Mapping[str, ComponentTiming], baseline: str) -
             "The whole event, and any algorithms to set beside it: each one's own "
             "time in each event, what it spent outside the algorithms it ran "
             "itself. Algorithms are listed slowest first, with their mean time "
-            "per event."
+            "in the events they ran in."
         ),
     )
     return chosen or [_WHOLE_EVENT]
@@ -343,8 +343,8 @@ def _slowest_slider(n_algorithms: int) -> int:
         "Slowest algorithms", min_value=0, max_value=n_algorithms,
         value=min(_SLOWEST_DEFAULT, n_algorithms), key=_SLOWEST_KEY, bind="query-params",
         help="How many of the configuration's slowest algorithms, by their mean "
-             "time per event over the window, to draw beside the whole event: "
-             "each one's own time in each event.",
+             "time in the events they ran in over the window, to draw beside the "
+             "whole event: each one's own time in each event it ran in.",
     )
 
 

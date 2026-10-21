@@ -113,3 +113,26 @@ def test_points_can_be_one_size():
 def test_as_many_of_the_slowest_algorithms_are_named_as_asked():
     (points,) = plot_component_efficiency(component_efficiency(EXECUTE), labelled=1).data
     assert list(points.text) == ["Track", ""]
+
+
+def test_efficiency_counts_the_events_each_algorithm_ran_in_and_says_so():
+    table = component_efficiency(EXECUTE)
+    assert table.loc["Track", ["events", "executed_events"]].tolist() == [2, 2]
+    assert table.loc["Vertex", ["events", "executed_events"]].tolist() == [2, 1]
+    fig = plot_component_efficiency(table)
+    (points,) = fig.data
+    hover = dict(points.customdata)
+    assert hover["Track"].startswith("2.00 s per event it ran in<br>")
+    assert hover["Vertex"].startswith("500 ms per event it ran in (1 of 2 events)<br>")
+    assert fig.layout.xaxis.title.text.startswith("Self time per event it ran in")
+
+
+def test_ipc_is_not_made_up_for_an_event_without_counts():
+    # Cycles counted in every event, instructions missing in event 2: the
+    # sums are unknown, so no IPC rather than one over event 1 alone.
+    execute = {
+        "wall_s": _frame({"Algo": [1.0, 1.0, 1.0]}),
+        "instructions": _frame({"Algo": [1e9, 2e9, None]}),
+        "cycles": _frame({"Algo": [1e9, 1e9, 1e9]}),
+    }
+    assert component_efficiency(execute).empty
