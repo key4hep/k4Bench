@@ -140,7 +140,8 @@ def test_pick_run_follows_the_deep_link_and_defaults_to_the_newest_run():
     }
     assert "Available in 2 release(s)" in at.caption[0].value
     # The release and the night it was measured are named apart.
-    assert at.caption[1].value == "Key4hep **2026-10-10** · measured **2026-10-11** · run 2 of 2"
+    assert at.caption[0].value == "Available in 2 release(s)."
+    assert at.caption[1].value == "Measured **2026-10-11** · run 2 of 2"
     assert at.selectbox(key="sb_run").options == ["2026-10-11 · latest", "2026-10-10"]
 
 
@@ -232,7 +233,7 @@ def test_a_stalled_run_listing_keeps_the_pinned_run():
     assert "pinned run measured 2026-10-10" in at.warning[0].value
     assert at.selectbox(key="sb_run").options == ["2026-10-10"]
     # Its place among the release's runs is unknown until the listing answers.
-    assert "Key4hep **2026-10-10** · measured **2026-10-10**" in _captions(at)
+    assert "Measured **2026-10-10**" in _captions(at)
     # Once the listing answers, the others are offered, the pin kept.
     at.session_state["fail"] = None
     at.run()

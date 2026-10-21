@@ -224,7 +224,7 @@ def pick_run(
 
     # Stack — only releases that actually contain the chosen sample, newest
     # first, so the default jumps to the latest release that has the sample.
-    # Sort explicitly here so the "defaults to the newest" caption holds
+    # Sort explicitly here so the default is the newest
     # regardless of the order scan_stack_samples happens to return.
     stacks = sorted(
         (stk for stk, samps in stack_samples.items() if sample in samps),
@@ -237,7 +237,7 @@ def pick_run(
         "Stack", stacks, f"{key_prefix}sb_stack", STACK,
         f"doesn't hold {sample} for {detector}",
     )
-    st.caption(f"Available in {len(stacks)} release(s); defaults to the newest.")
+    st.caption(f"Available in {len(stacks)} release(s).")
     if not stack:
         return None
 
@@ -305,7 +305,7 @@ def _pick_run_date(
         # Runs are counted oldest first; a listing that did not answer has no count.
         place = f" · run {len(runs) - runs.index(run)} of {len(runs)}" if latest else ""
         st.caption(
-            f"Key4hep **{pretty_release(stack)}** · measured **{run}**{place}",
+            f"Measured **{run}**{place}",
             help=(
                 "A release is re-run every night until the next one is tagged. "
                 "The Run selector opens on the latest run. Single-run views show "
