@@ -1073,10 +1073,12 @@ def _rotating(raw: dict) -> None:
     raw["before_first_event"]["held_bytes"] = [0] * len(names)
     raw["before_first_event"]["peak_held_bytes"] = [0] * len(names)
     raw["event_numbers"] = events
+    starts = [held(e - 1) if e else [0] * len(names) for e in events]
     raw["execute"] = {
-        "start_held_bytes": [held(e - 1) if e else [0] * len(names) for e in events],
+        "start_held_bytes": starts,
         "held_bytes": [held(e) for e in events],
-        "peak_held_bytes": [held(e) for e in events],
+        # A component peaks at no less than it held as the event started.
+        "peak_held_bytes": [list(map(max, start, held(e))) for e, start in zip(events, starts)],
         "malloc_in_use_bytes": [sum(held(e)) for e in events],
         "rss_anon_mb": [700.0] * len(events),
     }
