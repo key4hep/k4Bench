@@ -69,6 +69,9 @@ class SuitePage:
     reports: bool = True
     #: Whether its sections read the run's per-component costs.
     components: bool = False
+    #: Sections whose histories can draw every run of a release rather than
+    #: its latest, which the sidebar then offers (:attr:`sidebar.TrendWindow.all_runs`).
+    all_runs_sections: frozenset[str] = frozenset()
 
     @property
     def title(self) -> str:
@@ -128,13 +131,12 @@ def render_page(page: SuitePage) -> None:
             )
             # A section that spans every detector draws the window over every
             # release on the platform; the others read the selected detector's.
-            across_detectors = (
-                page.scopes[current_section(sections, key=section_key)].detector
-                is not SCOPED
-            )
+            section = current_section(sections, key=section_key)
+            across_detectors = page.scopes[section].detector is not SCOPED
             window = pick_trend_window(
                 config.data_url, selection, config.cache_dir, across_detectors,
-                suite=page.suite, reports=page.reports,
+                suite=page.suite, reports=page.reports, key_prefix=page.key_prefix,
+                offer_all_runs=section in page.all_runs_sections,
             )
         else:
             # Kept for the session, so each page returns to its own directory.
@@ -229,6 +231,7 @@ def render_page(page: SuitePage) -> None:
         platform=selection.platform if selection else None,
         sample=selection.sample if selection else None,
         release=selection.stack if selection else None,
+        run=selection.run if selection else None,
         data_dir=data_dir, override=scope_override, slot=scope_note,
         scopes=page.scopes,
     )

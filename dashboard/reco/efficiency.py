@@ -20,7 +20,7 @@ from data import cached_load_trend_efficiency
 from k4bench.analysis.components import HARDWARE_METRICS, WARM_UP_EVENT
 from k4bench.analysis.efficiency import algorithm_efficiency
 from k4bench.analysis.plots.efficiency import LABELLED, plot_component_efficiency
-from k4bench.analysis.plots.phases import latest_run_per_tag
+from k4bench.analysis.plots.phases import history_rows
 from reco._sources import package_labels
 from section_dispatch import PageContext, judgeable_trend, no_components_reason
 from sections import TREND_WINDOW_SCOPE, SectionScope
@@ -166,7 +166,7 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
         "Configuration", sorted(trend["label"].unique()), key=f"{_KEY}_hist_config",
         bind="query-params",
     )
-    rows = latest_run_per_tag(trend[trend["label"] == config])
+    rows = history_rows(trend[trend["label"] == config], all_runs=ctx.window.all_runs)
     # The Top N chooses the algorithms before the renderer draws its popover,
     # in which it then sits; Streamlit has already restored the slider's value.
     top_n = int(st.session_state.get(_HIST_TOP_N_KEY, _HIST_TOP_N))
@@ -200,6 +200,7 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
         extra_controls=(
             top_n_control(_HIST_TOP_N_KEY, "algorithms", "algorithms", default=_HIST_TOP_N),
         ),
+        all_runs=ctx.window.all_runs,
     )
 
 

@@ -179,6 +179,12 @@ def pretty_release(stack: str) -> str:
     return stack.removeprefix(RELEASE_PREFIX)
 
 
+def plural(n: int, noun: str) -> str:
+    """*n* and *noun*, in the plural unless *n* is one: ``1 release``,
+    ``2 releases`` — never ``1 release(s)``."""
+    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
+
+
 #: LCG/Spack-style platform triplet vocabulary for :func:`describe_platform`.
 _OS_LABELS = {
     "almalinux": "AlmaLinux", "centos": "CentOS", "ubuntu": "Ubuntu",

@@ -138,8 +138,8 @@ def run_metadata(run_dir: str) -> dict:
     """Return metadata for a single run (date) directory.
 
     Thin public wrapper over :func:`k4bench.analysis.trend.parse_run_dir` for
-    callers that already hold one concrete run directory (e.g. the cached
-    latest run for single-run tabs).
+    callers that already hold one concrete run directory (e.g. the sidebar's
+    selected run, for single-run tabs).
     """
     return _parse_run_dir(Path(run_dir))
 
@@ -255,7 +255,7 @@ def load_run(
         labels.update(results["label"].unique())
     labels.update(event_data or ())
     labels.update(region_data or ())
-    # The latest run alone can be missing every config (a failed/timed-out
+    # The selected run alone can be missing every config (a failed/timed-out
     # job, or ones retired from the newest release) while the trend window
     # still has history for them — union those labels in too, so the
     # "no benchmark data" guards don't blank out a page that Run

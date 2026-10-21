@@ -22,6 +22,7 @@ from typing import Literal
 from urllib.parse import urlencode
 
 import pandas as pd
+import requests
 import streamlit as st
 
 from k4bench.blame.models import BlameReport, BlameSchemaError
@@ -334,7 +335,14 @@ def render(
     compared: the toggle's remembered state says nothing about a view that was
     never drawn.
     """
-    stacks = list_platform_stacks(data_url, SIM, platform)
+    try:
+        stacks = list_platform_stacks(data_url, SIM, platform)
+    except requests.RequestException as err:
+        st.warning(
+            f"Could not list the Key4hep releases on `{platform}`: {err}. "
+            "They are listed again on your next interaction."
+        )
+        return None
     # Before the release-count guard: a platform with too few releases to
     # compare must still drop the previous platform's picker and toggle state,
     # or returning to a comparable platform resumes a scope the reader left

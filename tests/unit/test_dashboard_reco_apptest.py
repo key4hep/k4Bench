@@ -43,11 +43,15 @@ def _page_app(dashboard_dir) -> None:
     page.main()
 
 
-def _page(monkeypatch, tmp_path, run_dir: Path, tab: str | None = None) -> AppTest:
+def _page(
+    monkeypatch, tmp_path, run_dir: Path, tab: str | None = None, params=None,
+) -> AppTest:
     _local_env(monkeypatch, run_dir, tmp_path / "cache")
     at = AppTest.from_function(_page_app, args=(str(_DASHBOARD_DIR),), default_timeout=60)
     if tab:
         at.query_params["tab"] = tab
+    for key, value in (params or {}).items():
+        at.query_params[key] = value
     at.run()
     assert not at.exception, at.exception
     return at
@@ -389,6 +393,62 @@ def test_event_timing_sets_algorithms_beside_the_whole_event(monkeypatch, tmp_pa
     assert "MyConformalTracking time (s)" in _axis_titles(at)
     assert at.selectbox(key="evt_timing_baseline").options == ["baseline"]
     assert at.dataframe[0].value.index.tolist() == ["baseline"]
+
+
+def _timing_values(at: AppTest) -> list[str]:
+    values = at.query_params["timing"]
+    return values if isinstance(values, list) else [values]
+
+
+def test_event_timing_links_its_timings_by_name_not_by_label(monkeypatch, tmp_path):
+    at = _page(monkeypatch, tmp_path, RECO_RUN, "Event Timing")
+    # The labels carry this run's times; the link carries the names alone.
+    assert _timing_values(at) == ["Whole event", "MyConformalTracking"]
+    at.multiselect(key="evt_timing_timings").set_value(["Whole event", "VertexFinder"]).run()
+    assert _timing_values(at) == ["Whole event", "VertexFinder"]
+
+    # A copied link reopens them; one that did not run here is named.
+    linked = _page(monkeypatch, tmp_path, RECO_RUN, "Event Timing",
+                   params={"timing": ["VertexFinder", "NoSuchAlgorithm"]})
+    assert linked.multiselect(key="evt_timing_timings").value == ["VertexFinder"]
+    assert any(
+        "Not timed in this run: `NoSuchAlgorithm`" in c.value for c in linked.caption
+    )
+
+
+def _timing_selector_app(dashboard_dir, run_dir) -> None:
+    import sys as _sys
+    if dashboard_dir not in _sys.path:
+        _sys.path.insert(0, dashboard_dir)
+    import streamlit as st
+
+    from data import cached_load_component_timing
+    from tabs import event_timing
+
+    components = cached_load_component_timing(run_dir)[0]
+    # A test opens another run, one timed by the variant alone, through "variant".
+    if st.session_state.get("variant"):
+        components = {"variant_truth_tracking": components["variant_truth_tracking"]}
+    st.session_state["chosen"] = event_timing._timing_selector(components, "baseline")
+
+
+def test_event_timing_names_an_algorithm_the_next_run_did_not_time():
+    at = AppTest.from_function(
+        _timing_selector_app, args=(str(_DASHBOARD_DIR), str(RECO_RUN)), default_timeout=60,
+    )
+    at.run()
+    at.multiselect(key="evt_timing_timings").set_value(["Whole event", "MyConformalTracking"]).run()
+    # Only the baseline runs MyConformalTracking.
+    at.session_state["variant"] = True
+    at.run()
+    assert not at.exception, at.exception
+    assert at.session_state["chosen"] == ["Whole event"]
+    assert any("Not timed in this run: `MyConformalTracking`" in c.value for c in at.caption)
+    assert _timing_values(at) == ["Whole event"]
+    # The choices it kept are kept, and nothing is named again.
+    at.run()
+    assert at.session_state["chosen"] == ["Whole event"]
+    assert not at.caption
 
 
 def _event_timing_history_app(dashboard_dir, run_dir) -> None:

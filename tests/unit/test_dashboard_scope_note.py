@@ -48,7 +48,7 @@ def test_every_declared_dimension_is_a_sentinel_a_phrase_or_absent():
 # ── the rendered line ────────────────────────────────────────────────────────
 
 def _note(dashboard_dir, section, detector, platform, sample, release, data_dir,
-          platform_wide, use_slot):
+          platform_wide, use_slot, run=None):
     """``render_scope_note`` alone, re-executed as its own Streamlit script.
 
     ``AppTest.from_function`` execs this source in a fresh script context, so it
@@ -66,7 +66,7 @@ def _note(dashboard_dir, section, detector, platform, sample, release, data_dir,
     render_scope_note(
         section,
         detector=detector, platform=platform, sample=sample, release=release,
-        data_dir=data_dir,
+        run=run, data_dir=data_dir,
         override=STACK_CHANGES_PLATFORM_WIDE if platform_wide else None,
         slot=st.empty() if use_slot else None,
     )
@@ -74,11 +74,11 @@ def _note(dashboard_dir, section, detector, platform, sample, release, data_dir,
 
 def _run(section, *, detector="CLD", platform=PLAT, sample="single_e",
          release=STACK, data_dir="/cache/CLD/.../2026-07-10",
-         platform_wide=False, use_slot=False) -> AppTest:
+         platform_wide=False, use_slot=False, run=None) -> AppTest:
     at = AppTest.from_function(
         _note,
         args=(str(_DASHBOARD_DIR), section, detector, platform, sample,
-              release, data_dir, platform_wide, use_slot),
+              release, data_dir, platform_wide, use_slot, run),
         default_timeout=30,
     )
     at.run()
@@ -110,6 +110,19 @@ def test_config_impact_names_the_selected_release():
         "— Single e⁻ · 10 GeV — 2026-07-10"
     )
     assert PLAT not in line and STACK not in line
+
+
+def test_a_single_run_section_names_the_release_and_the_night_measured():
+    line = _line(_run("Config Impact", sample="single_e-_10GeV", run="2026-07-12"))
+    assert line.endswith("— Key4hep 2026-07-10, measured 2026-07-12")
+
+
+def test_regressions_names_no_night_from_the_sidebar():
+    # Its picker chooses the report night on screen, which need not be the
+    # night the sidebar's run was measured.
+    line = _line(_run("Regressions", sample="single_e-_10GeV", run="2026-07-12"))
+    assert "measured" not in line and "2026-07-12" not in line
+    assert line.endswith("— 2026-07-10")
 
 
 def test_run_trends_says_it_plots_every_release():

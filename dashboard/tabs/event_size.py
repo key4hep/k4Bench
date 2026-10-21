@@ -250,7 +250,9 @@ def _render_current_run(data_dir: str, results: pd.DataFrame | None) -> None:
         )
 
 
-def _render_historical(trend: pd.DataFrame | None, display_options_slot) -> None:
+def _render_historical(
+    trend: pd.DataFrame | None, display_options_slot, all_runs: bool = False,
+) -> None:
     if trend is None or trend.empty:
         st.info(
             "No event sizes in the selected window. Widen the trend window in the "
@@ -290,7 +292,7 @@ def _render_historical(trend: pd.DataFrame | None, display_options_slot) -> None
     top_n = int(st.session_state.get(_TOP_N_KEY, _TOP_N))
     series = phase_component_series(
         collections, top_n, value="compressed_kb",
-        apart={FRAME_PARAMETERS: _FRAME_PARAMETERS_LABEL},
+        apart={FRAME_PARAMETERS: _FRAME_PARAMETERS_LABEL}, all_runs=all_runs,
     )
     top_n_control_ = top_n_control(_TOP_N_KEY, "collections", "collections", default=_TOP_N)
     if lines:
@@ -302,7 +304,7 @@ def _render_historical(trend: pd.DataFrame | None, display_options_slot) -> None
             series, list(dict.fromkeys(series["label"])), [(stat, title)],
             std_col="", n_col_candidates=[], unit=unit, error_sources={},
             key_prefix=_HIST_KEY, display_options_slot=display_options_slot,
-            extra_controls=(top_n_control_,),
+            extra_controls=(top_n_control_,), all_runs=all_runs,
         )
         return
     display = display_options(
@@ -314,6 +316,7 @@ def _render_historical(trend: pd.DataFrame | None, display_options_slot) -> None
     fig = plot_phase_history(
         series, palette=PALETTES[display["palette"]], relative=relative,
         value="compressed_kb", unit="kB", y_title="Event size (kB, compressed)", whole="event",
+        all_runs=all_runs,
     )
     if fig is None:
         st.info(f"No event sizes for **{config}** in the selected window.")
@@ -326,16 +329,18 @@ def render(
     data_dir: str,
     results: pd.DataFrame | None,
     load_trend: Callable[[], pd.DataFrame | None] | None = None,
+    *,
+    all_runs: bool = False,
 ) -> SectionScope | None:
     """The run in *data_dir*, its configurations' *results* deciding which
     succeeded, and, given *load_trend*, which loads the trend window's
     ``build_event_size_trend`` rows of configurations that succeeded, its
-    history."""
+    history: every run of a release when *all_runs*."""
     views = _VIEWS if load_trend is not None else _VIEWS[:1]
     drop_stale_selection(_VIEW_KEY, views)
     view, _, display_options_slot = view_control_row(views, key=_VIEW_KEY)
     if view == "Historical Trends" and load_trend is not None:
-        _render_historical(load_trend(), display_options_slot)
+        _render_historical(load_trend(), display_options_slot, all_runs)
         # The trends span the window's releases, not the sidebar's one.
         return TREND_WINDOW_SCOPE
     _render_current_run(data_dir, results)

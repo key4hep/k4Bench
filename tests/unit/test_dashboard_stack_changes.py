@@ -74,7 +74,13 @@ def _app(dashboard_dir, stack_names, packages, from_release, to_release,
 
     _tab.cached_fetch_stack_snapshot = lambda url, suite, detector, platform, stack, sample: (snapshots or {}).get(stack)
     _tab.cached_list_detectors = lambda url, suite: ["IDEA"]
-    _tab.list_platform_stacks = lambda url, suite, platform: sorted(set(stack_names), reverse=True)
+    def _platform_stacks(url, suite, platform):
+        if stack_names == "stall":
+            import requests
+            raise requests.ReadTimeout("read timed out")
+        return sorted(set(stack_names), reverse=True)
+
+    _tab.list_platform_stacks = _platform_stacks
     _tab.cached_fetch_stack_packages = (
         lambda url, suite, detector, platform, stack: packages.get(stack)
     )
@@ -141,6 +147,13 @@ def _run(stack_names=None, packages=None, from_release=None, to_release=None,
 
 
 # ── the release-vs-release contract ──────────────────────────────────────────
+
+def test_a_stalled_release_listing_is_said_not_raised():
+    at = _run(stack_names="stall", selected_stack="key4hep-2026-07-10")
+    assert "Could not list the Key4hep releases" in at.warning[0].value
+    assert "read timed out" in at.warning[0].value
+    assert not at.selectbox
+
 
 def test_release_strips_the_directory_prefix():
     # The tab talks in nightly tags; EOS stores them as key4hep-{date} dirs.

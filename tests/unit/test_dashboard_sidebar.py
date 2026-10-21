@@ -32,7 +32,17 @@ STORE = {
 }
 
 
-def _pick_run_app(dashboard_dir, store, plat, fail, pick_kwargs) -> None:
+#: {(detector, stack): [run dates]} — every release re-run on later nights;
+#: the two releases share the night 2026-10-10.
+RUNS = {
+    ("ALLEGRO_o1_v04", NEW): ["2026-10-10", "2026-10-11"],
+    ("ALLEGRO_o1_v04", OLD): ["2026-10-09", "2026-10-10"],
+    ("CLD_o2_v09", NEW): ["2026-10-10", "2026-10-11"],
+    ("CLD_o2_v09", OLD): ["2026-10-09"],
+}
+
+
+def _pick_run_app(dashboard_dir, store, runs, plat, fail, pick_kwargs) -> None:
     # No annotations: AppTest.from_function execs this body as a bare script.
     import sys as _sys
     if dashboard_dir not in _sys.path:
@@ -43,44 +53,83 @@ def _pick_run_app(dashboard_dir, store, plat, fail, pick_kwargs) -> None:
 
     # Every suite the listings were asked for, in call order.
     st.session_state["suites"] = suites = []
+    # A test changes how the store answers mid-session through "fail".
+    failing = st.session_state.get("fail", fail)
+    # What a test publishes after the cache was filled, through "published":
+    # {"platforms": {det: [platform]}, "stacks": {det: {stack: [samples]}},
+    # "runs": {(det, stack): [dates]}}; a detector is new when "stacks" names
+    # one the store lacks. Only a read that bypasses the cache sees it.
+    published = st.session_state.get("published", {})
 
-    def _list_detectors(url, suite):
+    def _list_detectors(url, suite, fresh=False):
         suites.append(suite)
-        if fail == "detectors":
+        if failing == "detectors":
             raise OSError("listing timed out")
-        return sorted(store)
+        return sorted({*store, *(published.get("stacks", {}) if fresh else {})})
 
-    def _list_platforms(url, suite, det):
+    def _list_platforms(url, suite, det, fresh=False):
         suites.append(suite)
-        return [plat]
+        return [plat, *(published.get("platforms", {}).get(det, []) if fresh else [])]
 
-    def _scan_stack_samples(url, suite, det, p):
+    def _scan_stack_samples(url, suite, det, p, fresh=False):
         suites.append(suite)
-        return store[det]
+        # A detector never scanned before is read from the store anyway.
+        return {
+            **store.get(det, {}),
+            **(published.get("stacks", {}).get(det, {}) if fresh or det not in store else {}),
+        }
 
-    def _fetch_latest_run(url, suite, det, p, stack, sample, cache):
+    def _list_runs(url, suite, det, p, stack, sample, fresh=False):
         suites.append(suite)
-        return None if fail == "run" else f"/cache/{suite}/{det}/{stack}/{sample}"
+        if failing == "runs":
+            raise OSError("listing timed out")
+        if failing == "no runs":
+            return []
+        # A test lands a run mid-session through "new_runs".
+        new = st.session_state.get("new_runs", {}).get((det, stack), [])
+        if fresh and failing == "fresh runs":
+            raise OSError("listing timed out")
+        # A release never listed before is read from the store anyway.
+        if fresh or (det, stack) not in runs:
+            new = [*new, *published.get("runs", {}).get((det, stack), [])]
+        return sorted([*runs.get((det, stack), []), *new], reverse=True)
+
+    def _read_again(cached, *args):
+        st.session_state["read_again"] = st.session_state.get("read_again", 0) + 1
+        return cached(*args, fresh=True)
+
+    def _forget(cached, *args):
+        st.session_state.setdefault("forgotten", []).append((cached.__name__, args[2:]))
+
+    def _fetch_run(url, suite, det, p, stack, sample, day, cache):
+        suites.append(suite)
+        return f"/cache/{suite}/{det}/{stack}/{sample}/{day}"
 
     sidebar.cached_list_detectors = _list_detectors
     sidebar.cached_list_platforms = _list_platforms
     sidebar.cached_scan_stack_samples = _scan_stack_samples
-    sidebar.cached_fetch_latest_run = _fetch_latest_run
+    sidebar.cached_list_runs = _list_runs
+    sidebar.cached_fetch_run = _fetch_run
+    sidebar.read_again = _read_again
+    sidebar.forget = _forget
     # "away" stands for the reader being on another page: nothing is picked,
     # and the page switch cleared the URL the pickers mirror themselves in.
     if st.session_state.get("away"):
         st.query_params.clear()
         return
+    sidebar.render_refresh_button()
     st.session_state["picked"] = sidebar.pick_run(
         "https://store.invalid", "/cache", **pick_kwargs
     )
 
 
-def _run_pick(params=None, fail=None, **pick_kwargs) -> AppTest:
+def _run_pick(params=None, fail=None, published=None, **pick_kwargs) -> AppTest:
     at = AppTest.from_function(
-        _pick_run_app, args=(str(_DASHBOARD_DIR), STORE, PLAT, fail, pick_kwargs),
+        _pick_run_app, args=(str(_DASHBOARD_DIR), STORE, RUNS, PLAT, fail, pick_kwargs),
         default_timeout=30,
     )
+    if published:
+        at.session_state["published"] = published
     for key, value in (params or {}).items():
         at.query_params[key] = value
     at.run()
@@ -94,24 +143,240 @@ def _query(at: AppTest) -> dict[str, str]:
     return {k: v[0] if isinstance(v, list) else v for k, v in values.items()}
 
 
-def test_pick_run_follows_the_deep_link_and_defaults_to_the_newest_release():
+def _picked(at: AppTest) -> tuple[str, ...]:
+    """The picked run's identity, every level of it."""
+    ref = at.session_state["picked"].ref
+    return (ref.suite, ref.detector, ref.platform, ref.stack, ref.sample, ref.date)
+
+
+def _captions(at: AppTest) -> list[str]:
+    return [c.value for c in at.caption]
+
+
+def test_pick_run_follows_the_deep_link_and_defaults_to_the_newest_run():
     at = _run_pick({"detector": "CLD_o2_v09", "sample": "single_e-_10GeV"})
     picked = at.session_state["picked"]
-    assert (picked.detector, picked.platform, picked.sample, picked.stack) == (
-        "CLD_o2_v09", PLAT, "single_e-_10GeV", NEW,
-    )
-    assert picked.data_dir == f"/cache/sim/CLD_o2_v09/{NEW}/single_e-_10GeV"
-    # The address bar is written back to what is on screen.
+    assert _picked(at) == ("sim", "CLD_o2_v09", PLAT, NEW, "single_e-_10GeV", "2026-10-11")
+    assert picked.data_dir == f"/cache/sim/CLD_o2_v09/{NEW}/single_e-_10GeV/2026-10-11"
+    # The address bar is written back to what is on screen, the run exactly.
     assert _query(at) == {
         "detector": "CLD_o2_v09", "platform": PLAT,
-        "sample": "single_e-_10GeV", "stack": NEW,
+        "sample": "single_e-_10GeV", "stack": NEW, "run": "2026-10-11",
     }
-    assert "Available in 2 release(s)" in at.caption[0].value
+    # The release and the night it was measured are named apart.
+    assert at.caption[0].value == "Available in 2 releases"
+    assert at.caption[1].value == "Measured **2026-10-11** · run 2 of 2"
+    assert at.selectbox(key="sb_run").options == ["2026-10-11 · latest", "2026-10-10"]
+
+
+def test_a_pinned_link_keeps_its_run_after_the_release_is_run_again():
+    link = {"detector": "CLD_o2_v09", "sample": "single_e-_10GeV", "stack": NEW,
+            "run": "2026-10-10"}
+    at = _run_pick(link)
+    assert _picked(at)[-1] == "2026-10-10"
+    # Run B lands under the same release: the session and a fresh visit to
+    # the same link both keep run A.
+    at.session_state["new_runs"] = {("CLD_o2_v09", NEW): ["2026-10-12"]}
+    at.button[0].click().run()  # Refresh Data
+    assert _picked(at)[-1] == "2026-10-10"
+    assert at.selectbox(key="sb_run").options[0] == "2026-10-12 · latest"
+    assert _query(at)["run"] == "2026-10-10"
+    fresh = AppTest.from_function(
+        _pick_run_app, args=(str(_DASHBOARD_DIR), STORE, RUNS, PLAT, None, {}),
+        default_timeout=30,
+    )
+    fresh.session_state["new_runs"] = {("CLD_o2_v09", NEW): ["2026-10-12"]}
+    for key, value in link.items():
+        fresh.query_params[key] = value
+    fresh.run()
+    assert _picked(fresh)[-1] == "2026-10-10"
+
+
+def test_a_fresh_visit_pins_the_latest_run_it_opened_on():
+    at = _run_pick({"detector": "CLD_o2_v09"})
+    assert _picked(at)[-1] == "2026-10-11"
+    at.session_state["new_runs"] = {("CLD_o2_v09", NEW): ["2026-10-12"]}
+    at.run()
+    assert _picked(at)[-1] == "2026-10-11"
+    assert _query(at)["run"] == "2026-10-11"
+
+
+def test_runs_of_one_night_stay_apart_across_releases_and_detectors():
+    at = _run_pick({"detector": "ALLEGRO_o1_v04", "sample": "single_e-_10GeV",
+                    "stack": NEW, "run": "2026-10-10"})
+    first = at.session_state["picked"]
+    # The same night, measured with the older release: kept, as a valid choice
+    # one level down is, but a different run.
+    at.selectbox(key="sb_stack").set_value(OLD).run()
+    second = at.session_state["picked"]
+    assert (second.stack, second.run) == (OLD, "2026-10-10")
+    # And by another detector.
+    at.selectbox(key="sb_stack").set_value(NEW).run()
+    at.selectbox(key="sb_detector").set_value("CLD_o2_v09").run()
+    third = at.session_state["picked"]
+    assert (third.detector, third.stack, third.run) == ("CLD_o2_v09", NEW, "2026-10-10")
+    refs = {first.ref, second.ref, third.ref}
+    assert len(refs) == 3
+    assert len({sel.data_dir for sel in (first, second, third)}) == 3
+
+
+def test_changing_release_resets_a_run_it_does_not_have_and_says_so():
+    at = _run_pick({"detector": "CLD_o2_v09", "stack": NEW, "run": "2026-10-11"})
+    at.selectbox(key="sb_stack").set_value(OLD).run()
+    assert _picked(at)[-2:] == ("single_e-_10GeV", "2026-10-09")
+    assert any(
+        f"`2026-10-11` isn't a run of {OLD} — showing `2026-10-09`" in c for c in _captions(at)
+    ), _captions(at)
+    assert _query(at)["run"] == "2026-10-09"
+
+
+def test_a_linked_run_missing_from_the_store_is_named_with_an_explicit_fallback():
+    at = _run_pick({"detector": "CLD_o2_v09", "stack": NEW, "run": "2026-10-05"})
+    # Nothing is drawn in its place until the reader asks for the latest.
+    assert at.session_state["picked"] is None
+    assert "The linked run `2026-10-05` is not in the store" in at.warning[0].value
+    assert f"CLD_o2_v09 on {PLAT} with {NEW}" in at.warning[0].value
+    assert not [box for box in at.selectbox if box.key == "sb_run"]
+    at.button[1].click().run()
+    assert _picked(at)[-1] == "2026-10-11"
+    assert _query(at)["run"] == "2026-10-11"
+    assert not at.warning
+
+
+def test_a_link_to_a_run_published_since_the_listing_was_cached_opens_it():
+    at = _run_pick(
+        {"detector": "CLD_o2_v09", "stack": NEW, "run": "2026-10-12"},
+        published={"runs": {("CLD_o2_v09", NEW): ["2026-10-12"]}},
+    )
+    assert _picked(at)[-1] == "2026-10-12"
+    assert not at.warning
+    assert at.selectbox(key="sb_run").options[0] == "2026-10-12 · latest"
+
+
+def test_a_link_to_a_newer_run_the_store_lacks_too_is_refused_after_one_more_read():
+    at = _run_pick({"detector": "CLD_o2_v09", "stack": NEW, "run": "2026-10-30"})
+    assert at.session_state["picked"] is None
+    assert "The linked run `2026-10-30` is not in the store" in at.warning[0].value
+    assert at.session_state["read_again"] == 1
+
+
+def test_an_older_missing_run_is_refused_without_reading_the_store_again():
+    # Nothing older than the newest listed run can have been published since.
+    at = _run_pick({"detector": "CLD_o2_v09", "stack": NEW, "run": "2026-10-05"})
+    assert at.session_state["picked"] is None
+    assert "read_again" not in at.session_state
+
+
+def test_a_failed_second_read_keeps_the_linked_run_rather_than_refusing_it():
+    at = _run_pick({"detector": "CLD_o2_v09", "stack": NEW, "run": "2026-10-12"},
+                   fail="fresh runs")
+    assert _picked(at)[-1] == "2026-10-12"
+    assert "Could not list the runs of" in at.warning[0].value
+
+
+def test_a_link_to_a_release_published_since_the_scan_was_cached_opens_it():
+    newer = "key4hep-2026-10-12"
+    at = _run_pick(
+        {"detector": "CLD_o2_v09", "stack": newer, "run": "2026-10-12"},
+        published={
+            "stacks": {"CLD_o2_v09": {newer: ["single_e-_10GeV"]}},
+            "runs": {("CLD_o2_v09", newer): ["2026-10-12"]},
+        },
+    )
+    assert _picked(at)[3:] == (newer, "single_e-_10GeV", "2026-10-12")
+    assert not at.warning
+
+
+@pytest.mark.parametrize(("link", "published", "picked"), [
+    # A sample added to a release the cached scan already held.
+    ({"detector": "CLD_o2_v09", "stack": NEW, "sample": "p8_ee_Zbb_ecm91"},
+     {"stacks": {"CLD_o2_v09": {NEW: ["p8_ee_Zbb_ecm91", "single_e-_10GeV"]}}},
+     ("CLD_o2_v09", PLAT, NEW, "p8_ee_Zbb_ecm91")),
+    # A platform added for a detector.
+    ({"detector": "CLD_o2_v09", "platform": "aarch64-el9-gcc16-opt"},
+     {"platforms": {"CLD_o2_v09": ["aarch64-el9-gcc16-opt"]}},
+     ("CLD_o2_v09", "aarch64-el9-gcc16-opt", NEW, "single_e-_10GeV")),
+    # A detector added to the suite.
+    ({"detector": "IDEA_o1_v03"},
+     {"stacks": {"IDEA_o1_v03": {NEW: ["single_e-_10GeV"]}},
+      "runs": {("IDEA_o1_v03", NEW): ["2026-10-11"]}},
+     ("IDEA_o1_v03", PLAT, NEW, "single_e-_10GeV")),
+], ids=["sample", "platform", "detector"])
+def test_a_link_to_a_level_published_since_its_listing_was_cached_opens_it(
+    link, published, picked,
+):
+    at = _run_pick(link, published=published)
+    detector, platform, stack, sample = picked
+    assert _picked(at)[1:5] == (detector, platform, stack, sample)
+    assert not at.warning
+    assert not [c for c in _captions(at) if c.startswith("⚠️")]
+    # The trend window's run dates are read afresh too, so its history holds
+    # what the link opened.
+    assert ("cached_list_run_dates", (detector, platform, sample)) in (
+        at.session_state["forgotten"]
+    )
+
+
+def test_a_link_the_cache_already_holds_reads_nothing_again():
+    at = _run_pick({"detector": "CLD_o2_v09", "stack": NEW, "run": "2026-10-10"})
+    assert "read_again" not in at.session_state
+    assert "forgotten" not in at.session_state
+
+
+def test_a_malformed_run_link_is_named_and_not_guessed():
+    at = _run_pick({"detector": "CLD_o2_v09", "run": "last-tuesday"})
+    assert at.session_state["picked"] is None
+    assert "`last-tuesday` does not name a run" in at.warning[0].value
+
+
+def test_a_stalled_run_listing_keeps_the_pinned_run():
+    at = _run_pick({"detector": "CLD_o2_v09", "stack": NEW, "run": "2026-10-10"}, fail="runs")
+    # Not replaced by a guess at the latest: the pinned run is still drawn.
+    assert _picked(at)[-1] == "2026-10-10"
+    assert "Could not list the runs of" in at.warning[0].value
+    assert "pinned run measured 2026-10-10" in at.warning[0].value
+    assert at.selectbox(key="sb_run").options == ["2026-10-10"]
+    # Its place among the release's runs is unknown until the listing answers.
+    assert "Measured **2026-10-10**" in _captions(at)
+    # Once the listing answers, the others are offered, the pin kept.
+    at.session_state["fail"] = None
+    at.run()
+    assert _picked(at)[-1] == "2026-10-10"
+    assert at.selectbox(key="sb_run").options == ["2026-10-11 · latest", "2026-10-10"]
+
+
+def test_a_linked_run_shown_through_a_stalled_listing_is_checked_once_it_answers():
+    at = _run_pick({"detector": "CLD_o2_v09", "stack": NEW, "run": "2026-10-05"}, fail="runs")
+    assert "pinned run measured 2026-10-05" in at.warning[0].value
+    at.session_state["fail"] = None
+    at.run()
+    # Not quietly replaced by the latest: named, with the fallback on offer.
+    assert at.session_state["picked"] is None
+    assert "The linked run `2026-10-05` is not in the store" in at.warning[0].value
+    assert _query(at)["run"] == "2026-10-05"
+    next(b for b in at.button if b.label.startswith("Open the latest run")).click().run()
+    assert _picked(at)[-1] == "2026-10-11"
+
+
+def test_a_stalled_run_listing_without_a_pin_stops():
+    at = _run_pick({"detector": "CLD_o2_v09"}, fail="runs")
+    assert at.session_state["picked"] is None
+    assert "Failed to list the runs of" in at.error[0].value
+
+
+def test_a_stale_linked_release_is_named():
+    at = _run_pick({"detector": "CLD_o2_v09", "stack": "key4hep-2026-01-01"})
+    assert _picked(at)[3] == NEW
+    assert any(
+        "`key4hep-2026-01-01` doesn't hold single_e-_10GeV for CLD_o2_v09 — showing" in c
+        for c in _captions(at)
+    ), _captions(at)
 
 
 def test_pick_run_offers_only_the_releases_that_hold_the_sample():
     at = _run_pick({"detector": "ALLEGRO_o1_v04", "sample": "p8_ee_Zbb_ecm91"})
     assert at.selectbox(key="sb_stack").options == [NEW]
+    assert at.caption[0].value == "Available in 1 release"
     assert at.session_state["picked"].stack == NEW
 
 
@@ -119,7 +384,7 @@ def test_pick_run_names_a_sample_that_switching_detector_dropped():
     at = _run_pick({"detector": "ALLEGRO_o1_v04", "sample": "p8_ee_Zbb_ecm91"})
     at.selectbox(key="sb_detector").set_value("CLD_o2_v09").run()
     assert at.session_state["picked"].sample == "single_e-_10GeV"
-    notes = [c.value for c in at.caption]
+    notes = _captions(at)
     assert any(
         "`p8_ee_Zbb_ecm91` isn't benchmarked for CLD_o2_v09 — showing `single_e-_10GeV`" in n
         for n in notes
@@ -132,14 +397,16 @@ def test_pick_run_walks_the_requested_suite_under_its_own_keys():
         suite="reco", key_prefix="reco_",
     )
     assert set(at.session_state["suites"]) == {"reco"}
-    assert at.session_state["picked"].data_dir == f"/cache/reco/CLD_o2_v09/{NEW}/single_e-_10GeV"
+    assert at.session_state["picked"].data_dir == (
+        f"/cache/reco/CLD_o2_v09/{NEW}/single_e-_10GeV/2026-10-11"
+    )
     assert [box.key for box in at.selectbox] == [
-        "reco_sb_detector", "reco_sb_platform", "reco_sb_sample", "reco_sb_stack",
+        "reco_sb_detector", "reco_sb_platform", "reco_sb_sample", "reco_sb_stack", "reco_sb_run",
     ]
     # Every page shares the URL's parameter names.
     assert _query(at) == {
         "detector": "CLD_o2_v09", "platform": PLAT,
-        "sample": "single_e-_10GeV", "stack": NEW,
+        "sample": "single_e-_10GeV", "stack": NEW, "run": "2026-10-11",
     }
 
 
@@ -153,10 +420,11 @@ def test_pick_run_returns_to_the_run_a_reader_left_on_another_page():
     at.session_state["away"] = False
     at.run()
     picked = at.session_state["picked"]
-    assert (picked.detector, picked.stack) == ("CLD_o2_v09", OLD)
+    assert (picked.detector, picked.stack, picked.run) == ("CLD_o2_v09", OLD, "2026-10-09")
     # The address bar is a deep link to it again.
     assert _query(at)["detector"] == "CLD_o2_v09"
     assert _query(at)["stack"] == OLD
+    assert _query(at)["run"] == "2026-10-09"
 
 
 def test_pick_run_stops_where_the_store_cannot_be_read():
@@ -167,7 +435,7 @@ def test_pick_run_stops_where_the_store_cannot_be_read():
 
 
 def test_pick_run_stops_when_the_release_has_no_run():
-    at = _run_pick(fail="run")
+    at = _run_pick(fail="no runs")
     assert at.session_state["picked"] is None
     assert at.warning[0].value == "No runs found for the selected combination."
 
@@ -183,7 +451,7 @@ def _window_app(
     import sidebar
 
     def _platform_stacks(url, suite, plat):
-        if platform_stacks is None:
+        if platform_stacks is None or st.session_state.get("stall"):
             raise OSError("listing timed out")
         # A test publishes a release mid-session through "new_stacks".
         return [*st.session_state.get("new_stacks", []), *platform_stacks]
@@ -210,10 +478,12 @@ def _window_app(
         return tuple(f"/cache/{stack}/{d}" for stack, dates in items for d in dates)
 
     sidebar.cached_fetch_runs_windowed = _fetch_runs_windowed
-    selection = sidebar.RunSelection(
-        st.session_state.get("detector", "CLD_o2_v09"),
-        "PLAT", "single_e-_10GeV", "key4hep-2026-10-10", "/cache/run",
-    )
+    from k4bench.layout import RunRef
+
+    selection = sidebar.RunSelection(RunRef(
+        window_kwargs.get("suite", "sim"), st.session_state.get("detector", "CLD_o2_v09"),
+        "PLAT", "key4hep-2026-10-10", "single_e-_10GeV", "2026-10-10",
+    ), "/cache/run")
     # A test changes section mid-session through "across".
     st.session_state["window"] = sidebar.pick_trend_window(
         "https://store.invalid", selection, "/cache",
@@ -247,7 +517,7 @@ LONG_RUNS = {_rel(d): [f"2026-{d}"] for d in ("09-24", "09-26", "09-28", "10-10"
 
 def _run_window(
     run_dates, report_nights=REPORT_NIGHTS, platform_stacks=PLATFORM_STACKS,
-    across=True, **window_kwargs,
+    across=True, params=None, **window_kwargs,
 ) -> AppTest:
     at = AppTest.from_function(
         _window_app,
@@ -257,6 +527,8 @@ def _run_window(
         ),
         default_timeout=30,
     )
+    for key, value in (params or {}).items():
+        at.query_params[key] = value
     at.run()
     assert not at.exception, at.exception
     return at
@@ -273,10 +545,10 @@ def test_across_detectors_the_window_opens_on_the_platforms_last_10_releases():
     assert at.select_slider[0].value == (_rel("09-22"), _rel("10-10"))
     # The 10-10 release was re-run on the newest report night.
     assert window.dates == (date(2026, 9, 22), date(2026, 10, 11))
-    # The window is not part of the deep link.
-    assert _query(at) == {}
+    # The window is part of the deep link, by its releases' directories.
+    assert _query(at) == {"releases": f"{_rel('09-22')}..{_rel('10-10')}"}
     # The selected detector's runs are no part of what the Overview draws.
-    assert at.caption[0].value == "2026-09-22 → 2026-10-10 · 10 release(s)"
+    assert at.caption[0].value == "2026-09-22 → 2026-10-10 · 10 releases"
 
 
 def test_for_one_detector_the_window_ranges_over_its_own_releases():
@@ -294,7 +566,7 @@ def test_for_one_detector_the_window_ranges_over_its_own_releases():
         f"/cache/{_rel('10-10')}/2026-10-11",
         f"/cache/{_rel('10-12')}/2026-10-12",
     )
-    assert at.caption[0].value == "2026-10-08 → 2026-10-12 · 3 release(s) · 4 run(s)"
+    assert at.caption[0].value == "2026-10-08 → 2026-10-12 · 3 releases · 4 runs"
     # The platform's releases are not listed at all: the failing stub would
     # have warned.
     assert not at.warning
@@ -374,3 +646,73 @@ def test_changing_scope_reopens_the_window_on_the_newest_releases():
     at.session_state["across"] = False
     at.run()
     assert at.select_slider[0].value == (_rel("09-24"), _rel("10-10"))
+
+
+def test_a_linked_window_reopens_on_its_releases():
+    at = _run_window(LONG_RUNS, params={"releases": f"{_rel('09-24')}..{_rel('09-28')}"})
+    assert at.select_slider[0].value == (_rel("09-24"), _rel("09-28"))
+    assert at.session_state["window"].dates == (date(2026, 9, 24), date(2026, 9, 29))
+    # A link holds the window even though newer releases were published since.
+    assert _query(at)["releases"] == f"{_rel('09-24')}..{_rel('09-28')}"
+
+
+def test_a_linked_window_the_store_does_not_offer_is_named():
+    at = _run_window(LONG_RUNS, params={"releases": f"{_rel('01-01')}..{_rel('09-28')}"})
+    assert at.select_slider[0].value == (_rel("09-22"), _rel("10-10"))
+    assert any("The linked window" in c and "showing the newest" in c for c in _captions(at))
+    assert _query(at)["releases"] == f"{_rel('09-22')}..{_rel('10-10')}"
+
+
+def test_a_stalled_listing_leaves_a_linked_window_in_the_url():
+    linked = f"{_rel('09-24')}..{_rel('09-28')}"
+    at = _run_window(LONG_RUNS, platform_stacks=None, params={"releases": linked})
+    # Judged against a listing that did not answer, the link could only be
+    # dropped: it is kept for the next run, and not overwritten.
+    assert _query(at)["releases"] == linked
+    assert not any("The linked window" in c for c in _captions(at))
+
+
+def test_the_runs_per_release_choice_is_offered_where_a_section_honours_it():
+    at = _run_window(NEW_DETECTOR_RUNS, across=False, offer_all_runs=True)
+    assert at.radio[0].value == "latest"
+    assert at.session_state["window"].all_runs is False
+    at.radio[0].set_value("all").run()
+    assert at.session_state["window"].all_runs is True
+    assert _query(at)["history"] == "all"
+    # The window is the same either way: what changes is what a history draws.
+    assert len(at.session_state["window"].run_dirs) == 4
+
+
+def test_a_linked_runs_per_release_choice_is_restored_or_named():
+    at = _run_window(NEW_DETECTOR_RUNS, across=False, offer_all_runs=True,
+                     params={"history": "all"})
+    assert at.session_state["window"].all_runs is True
+    at = _run_window(NEW_DETECTOR_RUNS, across=False, offer_all_runs=True,
+                     params={"history": "every"})
+    assert at.session_state["window"].all_runs is False
+    assert "`every` is not a choice of runs" in " ".join(_captions(at))
+
+
+def test_a_section_without_the_choice_draws_the_latest_and_keeps_the_link():
+    at = _run_window(NEW_DETECTOR_RUNS, across=False, params={"history": "all"})
+    assert not at.radio
+    assert at.session_state["window"].all_runs is False
+    # Kept for a section that honours it.
+    assert _query(at)["history"] == "all"
+
+
+def test_a_stalled_listing_does_not_move_a_picked_window():
+    # 09-22 is a platform release this detector never ran: while the
+    # platform's listing stalls, the slider offers only the detector's own.
+    linked = f"{_rel('09-22')}..{_rel('09-26')}"
+    at = _run_window(LONG_RUNS, params={"releases": linked})
+    assert at.select_slider[0].value == (_rel("09-22"), _rel("09-26"))
+    at.session_state["stall"] = True
+    at.run()
+    assert "Could not list the platform's releases" in at.warning[0].value
+    assert _query(at)["releases"] == linked
+    at.session_state["stall"] = False
+    at.run()
+    # The listing answered again: the window is the one picked before the stall.
+    assert at.select_slider[0].value == (_rel("09-22"), _rel("09-26"))
+    assert _query(at)["releases"] == linked

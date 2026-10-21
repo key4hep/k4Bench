@@ -41,6 +41,7 @@ def _event_timing(ctx: PageContext) -> SectionScope | None:
         ctx.trends_enabled, ctx.reliability,
         components=ctx.run.components,
         load_algorithm_trend=lambda: judgeable_trend(ctx, cached_load_trend_algorithm_timing),
+        all_runs=ctx.window.all_runs,
     )
 
 
@@ -100,6 +101,9 @@ RECO_PAGE = SuitePage(
     # No nightly report judges the reco suite yet.
     reports=False,
     components=True,
+    all_runs_sections=frozenset({
+        "Breakdown", "Efficiency", "Memory", "Event Timing", "Event Memory", "Event Size",
+    }),
 )
 
 

@@ -17,6 +17,7 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from k4bench.analysis.plots._theme import _TEMPLATE
+from k4bench.analysis.plots.phases import run_label
 from k4bench.metrics import metric_unit
 from k4bench.regression.engine import BASELINE_WINDOW_RUNS, NOISE_WINDOW_RUNS
 from stats import build_stability_table
@@ -92,6 +93,7 @@ def render_historical_trends(
     log_y: bool = False,
     colors: Callable[[list[str]], Mapping[str, str]] | None = None,
     value_format: Callable[[float], str] | None = None,
+    all_runs: bool = False,
 ) -> None:
     """Render historical statistics in a grid of up to three columns.
 
@@ -143,6 +145,12 @@ def render_historical_trends(
     value_format :
         Writes a statistic's value in the hover, in place of four significant
         digits and *unit*.
+    all_runs :
+        Draw every run of a release, in the order measured, rather than each
+        release's latest on the release's date: one place on the x axis per
+        run, ticked with its night and named with its release in the hover
+        (:func:`~k4bench.analysis.plots.phases.run_label`), so two runs of one
+        night stay two points.
     """
     # ── Display options ───────────────────────────────────────────────────────
     # The opacity slider is keyed ``…_line_alpha`` rather than ``…_alpha``: the
@@ -168,13 +176,27 @@ def render_historical_trends(
     df = trend_df[trend_df["label"].isin(filtered_labels)].copy()
     df["x_date"]  = pd.to_datetime(df["x_date"])
     df["run_date"] = pd.to_datetime(df["run_date"])
-    df = df.loc[df.groupby(["label", "x_date"])["run_date"].idxmax()].reset_index(drop=True)
+    if all_runs:
+        df = df.dropna(subset=["run_date"]).reset_index(drop=True)
+    else:
+        df = df.loc[df.groupby(["label", "x_date"])["run_date"].idxmax()].reset_index(drop=True)
     if df.empty:
         st.warning(no_data_msg or "No trend data for the selected configurations.")
         return
 
-    unique_dates = sorted(df["x_date"].dropna().unique())
-    tick_labels  = [pd.Timestamp(d).strftime("%Y-%m-%d") for d in unique_dates]
+    if all_runs:
+        # One category per run, in the order measured: two releases measured
+        # the same night are two places, not one.
+        df = df.sort_values(["run_date", "x_date"], kind="stable").reset_index(drop=True)
+        releases = df["k4h_release"] if "k4h_release" in df.columns else ["unknown"] * len(df)
+        df["run_label"] = [run_label(d, r) for d, r in zip(df["run_date"], releases)]
+        x_col = "run_label"
+        unique_dates = list(dict.fromkeys(df["run_label"]))
+        tick_labels = [label.split(" · ")[0] for label in unique_dates]
+    else:
+        x_col = "x_date"
+        unique_dates = sorted(df[x_col].dropna().unique())
+        tick_labels = [pd.Timestamp(d).strftime("%Y-%m-%d") for d in unique_dates]
 
     # ── Figure ────────────────────────────────────────────────────────────────
     n_cols = min(3, len(stats_spec))
@@ -190,7 +212,9 @@ def render_historical_trends(
 
     marker_alpha = max(0.1, alpha - 0.2)
     for cfg_idx, cfg_label in enumerate(filtered_labels):
-        cfg_df = df[df["label"] == cfg_label].sort_values("x_date")
+        cfg_df = df[df["label"] == cfg_label]
+        if not all_runs:
+            cfg_df = cfg_df.sort_values("x_date")
         if cfg_df.empty:
             continue
         n_colors     = len(palette)
@@ -237,7 +261,7 @@ def render_historical_trends(
                 )
             fig.add_trace(
                 go.Scatter(
-                    x=cfg_df["x_date"],
+                    x=cfg_df[x_col],
                     y=cfg_df[stat_col],
                     mode="lines+markers",
                     name=cfg_label,
@@ -254,7 +278,10 @@ def render_historical_trends(
                     ),
                     hovertemplate=(
                         f"<b>{cfg_label}</b><br>"
-                        "Tag: %{customdata[1]} (%{x|%Y-%m-%d})<br>"
+                        + (
+                            "Measured %{x}<br>"
+                            if all_runs else "Tag: %{customdata[1]} (%{x|%Y-%m-%d})<br>"
+                        )
                         + (
                             f"{stat_label}: %{{y:.4g}} {(units or {}).get(stat_col, unit)}<br>"
                             if value_format is None
@@ -268,12 +295,14 @@ def render_historical_trends(
             )
 
     fig.update_xaxes(
-        type="date",
+        type="category" if all_runs else "date",
+        categoryorder="array" if all_runs else None,
+        categoryarray=unique_dates if all_runs else None,
         tickmode="array",
         tickvals=unique_dates,
         ticktext=tick_labels,
         tickangle=-30,
-        title_text="Key4hep Nightly Tag",
+        title_text="Night measured" if all_runs else "Key4hep Nightly Tag",
     )
     if log_y:
         # Ticks at 1, 2 and 5 of each decade, not every digit, each written

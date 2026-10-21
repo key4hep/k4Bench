@@ -54,6 +54,7 @@ k4Bench/
 │   ├── remote_cache.py       #   Streamlit-cached wrappers around k4bench.remote
 │   ├── stats.py              #   summary-statistics tables
 │   ├── trend_window.py       #   pure window-resolution logic (unit-tested)
+│   ├── url_params.py         #   the page URL's parameter names, parsed and built
 │   ├── ui_chrome.py / ui_utils.py
 │   ├── tabs/                 #   one module per dashboard tab
 │   ├── Dockerfile

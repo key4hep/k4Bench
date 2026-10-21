@@ -8,11 +8,12 @@ import streamlit as st
 from k4bench.analysis.components import ComponentTiming
 from k4bench.analysis.plots import plot_event_timing
 from k4bench.analysis.plots._utils import _default_baseline
-from k4bench.analysis.plots.phases import latest_run_per_tag
+from k4bench.analysis.plots.phases import history_rows
 from sections import TREND_WINDOW_SCOPE, SectionScope
 from stats import build_event_stats_table, style_stats_table
 from tabs._historical_trends import render_historical_trends
 from tabs._reliability import render_reliability_filter
+from url_params import TIMING, WHOLE_EVENT
 from ui_utils import (
     baseline_selector_control,
     cached_event_bin_options,
@@ -38,7 +39,7 @@ _VIEWS = ["Current Run", "Historical Trends"]
 _KEY_PREFIX = "evt_timing"
 
 #: The "Timing of" choice that is the event's own time, before any algorithm.
-_WHOLE_EVENT = "Whole event"
+_WHOLE_EVENT = WHOLE_EVENT
 _TIMINGS_KEY = "evt_timing_timings"
 
 #: The event that warms the job up, left out of every per-event view.
@@ -85,14 +86,26 @@ def _timing_selector(components: Mapping[str, ComponentTiming], baseline: str) -
     *baseline* configuration's slowest algorithm at first. Never empty:
     cleared, it is the whole event.
 
-    Unlike the other controls on the page it is not bound to the URL: a bound
-    widget is stored by its labels, which carry this run's times, so a link
-    would lose its algorithms once the release is run again."""
+    Mirrored in ``?timing=``, one value per choice, by the algorithms' names:
+    a widget bound to the URL is stored by its labels, which carry this run's
+    times, so a link would lose its algorithms once another run is shown. An
+    algorithm a link or an earlier run chose that did not run in this run is
+    named, and left out; with none left, it is the whole event."""
     times = _algorithm_times(components)
-    slowest = _slowest_algorithm(components[baseline]) if baseline in components else None
+    remembered = st.session_state.get(_TIMINGS_KEY)
+    requested = st.query_params.get_all(TIMING) if remembered is None else remembered
+    known = [name for name in requested if name == _WHOLE_EVENT or name in times]
+    if missing := [name for name in requested if name not in known]:
+        st.caption(
+            "⚠️ Not timed in this run: " + ", ".join(f"`{name}`" for name in missing)
+        )
+    if remembered is None:
+        slowest = _slowest_algorithm(components[baseline]) if baseline in components else None
+        st.session_state[_TIMINGS_KEY] = known or [_WHOLE_EVENT, *([slowest] if slowest else [])]
+    elif missing:
+        st.session_state[_TIMINGS_KEY] = known or [_WHOLE_EVENT]
     chosen = st.multiselect(
-        "Timing of", [_WHOLE_EVENT, *times],
-        default=[_WHOLE_EVENT, *([slowest] if slowest else [])], key=_TIMINGS_KEY,
+        "Timing of", [_WHOLE_EVENT, *times], key=_TIMINGS_KEY,
         format_func=lambda name: (
             name if name == _WHOLE_EVENT else f"{name}  ·  {_per_event(times[name].mean())}"
         ),
@@ -104,6 +117,7 @@ def _timing_selector(components: Mapping[str, ComponentTiming], baseline: str) -
             "in the events they ran in."
         ),
     )
+    st.query_params[TIMING] = chosen or [_WHOLE_EVENT]
     return chosen or [_WHOLE_EVENT]
 
 
@@ -277,15 +291,16 @@ def _slowest_history(
     algorithm_trend: pd.DataFrame,
     reliability: dict[str, bool | None] | None = None,
     reliability_slot=None,
+    all_runs: bool = False,
 ) -> tuple[pd.DataFrame | None, bool]:
     """One configuration's whole-event history beside its slowest
     algorithms', chosen with a Configuration selector and a Slowest
     algorithms slider on one row, the whole event first and the algorithms
     slowest first, each a series named after it; and whether the row's Log
     y axis toggle is on. The runs the reliability choice keeps, and of
-    those each nightly tag's latest, rank the algorithms, as they are the
-    ones drawn. ``None`` when the window has no history at all, an empty
-    frame when the reliability choice left none."""
+    those each nightly tag's latest — or, *all_runs*, every one — rank the
+    algorithms, as they are the ones drawn. ``None`` when the window has no
+    history at all, an empty frame when the reliability choice left none."""
     # One reliability choice for both frames: the event rows have no component.
     both = render_reliability_filter(
         pd.concat(
@@ -310,7 +325,7 @@ def _slowest_history(
         )
     algorithms = algorithm_trend[algorithm_trend["label"] == config]
     if not algorithms.empty:
-        algorithms = latest_run_per_tag(algorithms)
+        algorithms = history_rows(algorithms, all_runs=all_runs)
     ranked = (
         algorithms.groupby("component")["mean_time_s"].median().sort_values(ascending=False)
     )
@@ -355,10 +370,11 @@ def _render_historical(
     display_options_slot=None,
     ordered: bool = False,
     log_y: bool = False,
+    all_runs: bool = False,
 ) -> None:
     """Render the historical event timing trends view (3-panel: Median | Mean | Std):
     its series sorted, or in the frame's order when *ordered*, on log y axes
-    when *log_y*."""
+    when *log_y*, every run of a release when *all_runs*."""
     if not is_valid_df(trend_event_df):
         st.info(
             "No event timing trend data in the selected window. "
@@ -394,6 +410,7 @@ def _render_historical(
         no_data_msg="No event timing trend data in the selected window.",
         display_options_slot=display_options_slot,
         log_y=log_y,
+        all_runs=all_runs,
     )
 
 
@@ -405,6 +422,7 @@ def render(
     *,
     components: Mapping[str, ComponentTiming] | None = None,
     load_algorithm_trend: Callable[[], pd.DataFrame | None] | None = None,
+    all_runs: bool = False,
 ) -> SectionScope | None:
     """The per-event timing views. Given a k4run job's *components*, the
     current run's "Timing of" selector sets any algorithms' own time in each
@@ -412,7 +430,8 @@ def render(
     history draws one configuration's slowest algorithms beside its whole
     event, from *load_algorithm_trend*
     (:func:`~k4bench.analysis.trend.build_algorithm_timing_trend`), loaded
-    only for the history."""
+    only for the history. The history draws every run of a release when
+    *all_runs*."""
     if event_data is None and not components and not trends_enabled:
         st.info("No event timing data available in the selected directory.")
         return None
@@ -455,7 +474,7 @@ def render(
     log_y = ordered = False
     if is_valid_df(algorithm_trend):
         trend_event_df, log_y = _slowest_history(
-            trend_event_df, algorithm_trend, reliability, reliability_slot,
+            trend_event_df, algorithm_trend, reliability, reliability_slot, all_runs,
         )
         if trend_event_df is not None and trend_event_df.empty:
             return TREND_WINDOW_SCOPE
@@ -467,6 +486,7 @@ def render(
         display_options_slot=display_options_slot,
         ordered=ordered,
         log_y=log_y,
+        all_runs=all_runs,
     )
     # The trends span the window's releases, not the sidebar's one — reported
     # so the scope note above stops naming it.

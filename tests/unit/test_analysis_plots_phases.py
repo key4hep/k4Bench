@@ -15,6 +15,7 @@ from k4bench.analysis.plots import (  # noqa: E402
 from k4bench.analysis.plots import PALETTE  # noqa: E402
 from k4bench.analysis.plots.phases import (  # noqa: E402
     UNATTRIBUTED,
+    history_rows,
     phase_component_series,
     top_components,
 )
@@ -198,6 +199,66 @@ def test_a_tag_run_twice_shows_only_its_latest_run():
     ]
     totals = next(t for t in plot_phase_history(series).data if t.type == "scatter")
     assert list(totals.y) == [3.0]
+
+
+def _run(release: str, run_date: str, seconds: dict[str, float]) -> pd.DataFrame:
+    """One run of *release*, measured on *run_date*."""
+    return pd.DataFrame({
+        "run_id": run_date, "x_date": pd.Timestamp(release),
+        "run_date": pd.Timestamp(run_date), "k4h_release": f"key4hep-{release}",
+        "phase": "execute", "component": list(seconds), "seconds": list(seconds.values()),
+    })
+
+
+#: The 10-11 release measured on 10-11 and re-run on 10-12, the night the
+#: 10-12 release was first measured too.
+REPEATS = pd.concat([
+    _run("2026-10-11", "2026-10-11", {"A": 1.0, "B": 2.0}),
+    _run("2026-10-11", "2026-10-12", {"A": 1.5, "B": 2.5}),
+    _run("2026-10-12", "2026-10-12", {"A": 4.0, "B": 5.0}),
+], ignore_index=True)
+
+
+def _runs(frame: pd.DataFrame) -> list[tuple[str, str]]:
+    return sorted(set(zip(frame["k4h_release"], frame["run_id"])))
+
+
+def test_history_rows_keep_each_tags_latest_run_or_every_run():
+    assert _runs(history_rows(REPEATS)) == [
+        ("key4hep-2026-10-11", "2026-10-12"), ("key4hep-2026-10-12", "2026-10-12"),
+    ]
+    assert _runs(history_rows(REPEATS, all_runs=True)) == _runs(REPEATS)
+
+
+def test_latest_per_release_draws_one_column_per_tag():
+    series = phase_component_series(REPEATS, top_n=6)
+    totals = next(t for t in plot_phase_history(series).data if t.type == "scatter")
+    assert list(totals.y) == [4.0, 9.0]
+    assert plot_phase_history(series).layout.xaxis.type == "date"
+
+
+def test_all_runs_draws_every_repeat_as_its_own_column():
+    series = phase_component_series(REPEATS, top_n=6, all_runs=True)
+    assert _runs(series) == _runs(REPEATS)
+    fig = plot_phase_history(series, all_runs=True)
+    totals = next(t for t in fig.data if t.type == "scatter")
+    # Two runs of one night, of different releases, are two columns, never
+    # summed; ordered by the night measured, the older release first.
+    assert list(totals.y) == [3.0, 4.0, 9.0]
+    assert list(totals.x) == [
+        "2026-10-11 · Key4hep 2026-10-11",
+        "2026-10-12 · Key4hep 2026-10-11",
+        "2026-10-12 · Key4hep 2026-10-12",
+    ]
+    assert fig.layout.xaxis.type == "category"
+    assert list(fig.layout.xaxis.ticktext) == ["2026-10-11", "2026-10-12", "2026-10-12"]
+    assert fig.layout.xaxis.title.text == "Night measured"
+
+
+def test_all_runs_shares_are_each_runs_own():
+    series = phase_component_series(REPEATS, top_n=6, all_runs=True)
+    shares = series.groupby(["k4h_release", "run_id"])["share_pct"].sum()
+    assert shares.tolist() == pytest.approx([100.0, 100.0, 100.0])
 
 
 def test_a_phase_timed_as_a_whole_is_one_series():

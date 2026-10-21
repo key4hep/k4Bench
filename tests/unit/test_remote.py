@@ -600,11 +600,12 @@ def test_fetch_runs_windowed_empty_returns_empty(web, tmp_path):
     ) == []
 
 
-def test_ensure_latest_run_cached_picks_newest(web, tmp_path):
-    run_dir = remote.ensure_latest_run_cached(
-        BASE, SIM, "DET", "PLAT", "key4hep-2026-05-20", "single_e", cache_root=str(tmp_path)
-    )
-    assert Path(run_dir).name == "2026-05-21"  # newest of the two dates
+def test_list_runs_lists_one_releases_run_dates_newest_first(web):
+    # Discovery only: the sidebar's Run selector lists the dates without
+    # downloading a run.
+    assert remote.list_runs(BASE, SIM, "DET", "PLAT", "key4hep-2026-05-20", "single_e") == [
+        "2026-05-21", "2026-05-20",
+    ]
 
 
 # ---------------------------------------------------------------------------

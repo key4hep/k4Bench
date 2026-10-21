@@ -51,7 +51,7 @@ from k4bench.analysis.plots.heap import (
     plot_component_heap_events,
     plot_heap_timeline,
 )
-from k4bench.analysis.plots.phases import latest_run_per_tag, phase_component_series
+from k4bench.analysis.plots.phases import history_rows, phase_component_series
 from reco._sources import SOURCE_COLUMN_CONFIG, package_labels, source_columns
 from section_dispatch import PageContext, judgeable_trend
 from sections import TREND_WINDOW_SCOPE, SectionScope
@@ -776,7 +776,10 @@ _HIST_REST = (
     "component*, both in grey."
 )
 _HIST_LEFT_OUT = " The rest are not drawn."
-_HIST_LATEST = " When a nightly tag was run more than once, only its latest run is drawn."
+_HIST_LATEST = (
+    " When a nightly tag was run more than once, only its latest run is drawn, "
+    "unless the sidebar's Runs per release is Every run."
+)
 
 
 def _hist_colors(named: list[str], palette: list[str], other: str | None) -> dict[str, str]:
@@ -837,7 +840,8 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
                  "always gets one besides.",
         )
 
-    rows = latest_run_per_tag(trend[trend["label"] == config])
+    all_runs = ctx.window.all_runs
+    rows = history_rows(trend[trend["label"] == config], all_runs=all_runs)
     components = rows[rows["component"].notna()]
     if not components[metric].notna().any():
         st.info(f"No {name.lower()} recorded for **{config}** in the selected window.")
@@ -862,7 +866,7 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
         # place among the named and is not folded into Other.
         series = phase_component_series(
             components, top_n, value=metric, always=suspects,
-            apart={NO_COMPONENT: NO_COMPONENT_LABEL},
+            apart={NO_COMPONENT: NO_COMPONENT_LABEL}, all_runs=all_runs,
         )
         labels = list(dict.fromkeys(series["label"]))
         other = next((label for label in labels if label.startswith("Other (")), None)
@@ -914,7 +918,7 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
         series, labels, [(column, f"{panel} ({unit})") for column, panel in panels],
         std_col="", n_col_candidates=[], unit=unit, error_sources={},
         key_prefix=_HIST_KEY, display_options_slot=display_options_slot,
-        colors=colors, value_format=value_format,
+        colors=colors, value_format=value_format, all_runs=all_runs,
     )
 
 

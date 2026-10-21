@@ -41,15 +41,56 @@ runs/sim/{concept}/{detector}/{platform}/key4hep-{release}/{sample}/{YYYY-MM-DD}
 ```
 
 The sidebar lets you drill down through that hierarchy: **detector → platform →
-physics sample → Key4hep release**. Single-run tabs use the newest uploaded
-run for that selection; the trend window controls the multi-run views.
+physics sample → Key4hep release → run**. A release is re-run every night
+until the next one is tagged, so it usually has several runs; the **Run**
+selector names each by the night it was measured, newest first, and opens on
+the latest. The caption under it names the night it was measured and which
+of the release's runs it is (`Measured 2026-10-21 · run 5 of 5`). The release
+and the night are different things: a re-run of an older
+release can share its night with the first run of a newer one. Single-run tabs
+show the selected run; the trend window controls the multi-run views.
 
 Each level is rebuilt from the one above it, so changing the detector can leave
-the selected platform or sample with no match — in which case it re-defaults to
-a valid one and says so right under the selector. That notice matters because
+the selected platform, sample, release or run with no match — in which case it
+re-defaults to a valid one and says so right under the selector. A choice that
+is still valid is kept: switching detector keeps the night, when the other
+detector ran that night too. That notice matters because
 the Overview tab is scoped by platform and sample *across all detectors*:
 without it, a sample that quietly moved would look like detectors vanishing
 from its charts.
+
+### Links
+
+The selected run is written into the page URL exactly — detector, platform,
+sample, release and the night it was measured — so a copied link keeps showing
+the same measurement after the release is run again. A link without a run
+(such as the nightly mail's, which name a release) opens on that release's
+latest run and then pins it. A link to a run that is not in the store, or a
+value that does not spell one, is named under the sidebar with a button to
+open the release's latest run instead; nothing else is drawn in its place.
+When the store does not answer a listing, a linked run is still shown, with a
+warning, rather than replaced by a guess at the latest. A linked detector,
+platform, sample or release that is not on offer is named under its selector.
+
+The sidebar's parameters, which every link — copied from the address bar,
+or in the nightly mail and pull-request comments — reads back:
+
+| Parameter | What it names |
+|---|---|
+| `tab` | the section |
+| `detector`, `platform`, `sample` | the store levels, as their directories are named |
+| `stack` | the Key4hep release directory, e.g. `key4hep-2026-10-17` |
+| `run` | the run: the night it was measured, e.g. `2026-10-21` |
+| `releases` | the trend window's oldest and newest release, `key4hep-2026-09-22..key4hep-2026-10-17` |
+| `history` | `latest` (the default) or `all`: which runs of a release a history draws |
+| `timing` | Event Timing's **Timing of** choices, once each, by the algorithms' names |
+| `component` | reserved for a component of the selected run; not read yet |
+
+The suite is the page's path (`/` or `/reconstruction`), not a parameter.
+Every value is the store's own identifier, never a label shown for it.
+The controls inside a section are in the URL too, under their widget keys (see
+below). [`url_params`](https://github.com/key4hep/k4Bench/blob/main/dashboard/url_params.py)
+spells these names in the code.
 
 Not every tab honours the whole hierarchy, so a single muted line directly
 under the section bar names the slice the tab in front of you actually uses —
@@ -116,10 +157,12 @@ inserts a separate warning or controls row.
 
 The controls that stay on the page are also in the page URL, so a copied link
 reopens what was on screen: the section, its view, the configuration and the
-other choices next to them. Display options are not in it, so a link draws the
-figures the default way; neither is the trend window (see below), nor a row
-selected in a table or a node clicked in a graph, nor Event Timing's **Timing
-of** algorithms, whose names carry the run's times.
+other choices next to them, as well as the run and the trend window (see
+[Links](#links)). Event Timing's **Timing of** algorithms are in it by their
+names, without the times their labels carry, so a link keeps them when it
+opens on another run. Display options are not in it, so a link draws the
+figures the default way; neither is a row selected in a table or a node
+clicked in a graph.
 
 Tabs with multiple views use the same lightweight selector: horizontal radio
 buttons under a bold **View** label. The segmented bar is reserved for the
@@ -284,9 +327,22 @@ so a release tonight's batch is still uploading has nothing to show there
 until its report lands. On the other tabs it is offered as soon as the selected
 detector's run is uploaded. When a new release becomes available, or the tab or
 detector changes what the slider ranges over, it reopens on the newest releases
-rather than staying on a range picked for something else. The window is not
-part of the page URL. (Its resolution lives in [`trend_window`](../../reference/api/analysis/index.md) — pure logic,
+rather than staying on a range picked for something else. The window is part
+of the page URL (`releases=`), so a copied link opens on the same releases
+even after newer ones are published; a linked range that is not on offer is
+named and the window opens on the newest releases instead. (Its resolution lives in [`trend_window`](../../reference/api/analysis/index.md) — pure logic,
 unit-tested.)
+
+A release is re-run nightly, and most historical views draw one point per
+release: its latest run. Where a section's history can draw every run instead
+— Event Timing, Event Memory and Event Size, and on the Reconstruction page
+also Breakdown, Efficiency and Memory — the sidebar offers **Runs per
+release** under the slider: **Latest run per release** (the default) or
+**Every run**, which draws each run on the night it was measured, a release's
+repeats side by side, so how much one release's measurements spread can be
+read off the chart. Two runs are never merged into one point or column because
+they share a night or a release; the hover names each one's night and release.
+The choice is part of the URL (`history=`).
 
 Nights the nightly regression detector **confirmed** a step are ringed in red
 on the lines, and nights it flagged but hasn't confirmed are ringed as ⚠️ watch
@@ -838,7 +894,8 @@ instead of it silently dropping out of the charts.
   top components (six by default, set in Display options), the rest as
   *Other*, and *Unattributed*, as stacked columns or as lines, in seconds or as
   a share of the phase. When a nightly tag was run more than once, only its
-  latest run is drawn. Configure is timed only as a whole, so it is one line.
+  latest run is drawn, unless the sidebar's **Runs per release** is **Every
+  run**. Configure is timed only as a whole, so it is one line.
 
 Component times are *self* times: what the auditor charged to that component
 alone. They add up within a phase, which is why the donuts and columns can be
@@ -953,7 +1010,8 @@ failed, have none, and the section says so. It has three views:
   to the next each event, each one's median is 0 MB and the whole job's
   100 MB). The working set and growth are not summed either, and the rest of
   them are not drawn. When a nightly tag was run more than once, only its
-  latest run is drawn.
+  latest run is drawn, unless the sidebar's **Runs per release** is **Every
+  run**.
 
 Heap is memory allocated, not memory resident: the timed run's anonymous RSS
 can sit below the heap when blocks were allocated and never touched, and above
