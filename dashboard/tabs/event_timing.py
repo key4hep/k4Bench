@@ -88,18 +88,22 @@ def _timing_selector(components: Mapping[str, ComponentTiming], baseline: str) -
 
     Mirrored in ``?timing=``, one value per choice, by the algorithms' names:
     a widget bound to the URL is stored by its labels, which carry this run's
-    times, so a link would lose its algorithms once another run is shown. A
-    link's algorithm that did not run in this run is named, and left out."""
+    times, so a link would lose its algorithms once another run is shown. An
+    algorithm a link or an earlier run chose that did not run in this run is
+    named, and left out; with none left, it is the whole event."""
     times = _algorithm_times(components)
-    if _TIMINGS_KEY not in st.session_state:
-        linked = st.query_params.get_all(TIMING)
-        known = [name for name in linked if name == _WHOLE_EVENT or name in times]
-        if missing := [name for name in linked if name not in known]:
-            st.caption(
-                "⚠️ Not timed in this run: " + ", ".join(f"`{name}`" for name in missing)
-            )
+    remembered = st.session_state.get(_TIMINGS_KEY)
+    requested = st.query_params.get_all(TIMING) if remembered is None else remembered
+    known = [name for name in requested if name == _WHOLE_EVENT or name in times]
+    if missing := [name for name in requested if name not in known]:
+        st.caption(
+            "⚠️ Not timed in this run: " + ", ".join(f"`{name}`" for name in missing)
+        )
+    if remembered is None:
         slowest = _slowest_algorithm(components[baseline]) if baseline in components else None
         st.session_state[_TIMINGS_KEY] = known or [_WHOLE_EVENT, *([slowest] if slowest else [])]
+    elif missing:
+        st.session_state[_TIMINGS_KEY] = known or [_WHOLE_EVENT]
     chosen = st.multiselect(
         "Timing of", [_WHOLE_EVENT, *times], key=_TIMINGS_KEY,
         format_func=lambda name: (

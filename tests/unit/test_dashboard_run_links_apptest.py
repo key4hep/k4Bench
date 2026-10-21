@@ -180,6 +180,28 @@ def test_a_history_draws_the_latest_run_per_release_or_every_run(store):
     ]
 
 
+def test_every_run_keeps_runs_of_one_night_apart_on_a_line_too(store):
+    at = _open(store, {
+        "tab": "Breakdown", "reco_breakdown_view": "Historical Trends",
+        "reco_breakdown_hist_chart_type": "Lines", "history": "all",
+    })
+    chart = json.loads(at.get("plotly_chart")[0].proto.spec)
+    line = next(t for t in chart["data"] if t["type"] == "scatter")
+    # 10-17 is two runs, of two releases: two places on the axis.
+    assert line["x"] == [
+        "2026-10-15 · Key4hep 2026-10-15",
+        "2026-10-17 · Key4hep 2026-10-15",
+        "2026-10-17 · Key4hep 2026-10-17",
+        "2026-10-18 · Key4hep 2026-10-17",
+        "2026-10-19 · Key4hep 2026-10-17",
+    ]
+    axis = chart["layout"]["xaxis"]
+    assert axis["type"] == "category"
+    assert axis["ticktext"] == [
+        "2026-10-15", "2026-10-17", "2026-10-17", "2026-10-18", "2026-10-19",
+    ]
+
+
 def test_a_stale_run_link_on_the_page_offers_the_latest_and_draws_nothing_else(store):
     at = _open(store, {"tab": "Logs", "stack": NEW, "run": "2026-10-01"})
     assert "The linked run `2026-10-01` is not in the store" in at.warning[0].value

@@ -416,6 +416,41 @@ def test_event_timing_links_its_timings_by_name_not_by_label(monkeypatch, tmp_pa
     )
 
 
+def _timing_selector_app(dashboard_dir, run_dir) -> None:
+    import sys as _sys
+    if dashboard_dir not in _sys.path:
+        _sys.path.insert(0, dashboard_dir)
+    import streamlit as st
+
+    from data import cached_load_component_timing
+    from tabs import event_timing
+
+    components = cached_load_component_timing(run_dir)[0]
+    # A test opens another run, one timed by the variant alone, through "variant".
+    if st.session_state.get("variant"):
+        components = {"variant_truth_tracking": components["variant_truth_tracking"]}
+    st.session_state["chosen"] = event_timing._timing_selector(components, "baseline")
+
+
+def test_event_timing_names_an_algorithm_the_next_run_did_not_time():
+    at = AppTest.from_function(
+        _timing_selector_app, args=(str(_DASHBOARD_DIR), str(RECO_RUN)), default_timeout=60,
+    )
+    at.run()
+    at.multiselect(key="evt_timing_timings").set_value(["Whole event", "MyConformalTracking"]).run()
+    # Only the baseline runs MyConformalTracking.
+    at.session_state["variant"] = True
+    at.run()
+    assert not at.exception, at.exception
+    assert at.session_state["chosen"] == ["Whole event"]
+    assert any("Not timed in this run: `MyConformalTracking`" in c.value for c in at.caption)
+    assert _timing_values(at) == ["Whole event"]
+    # The choices it kept are kept, and nothing is named again.
+    at.run()
+    assert at.session_state["chosen"] == ["Whole event"]
+    assert not at.caption
+
+
 def _event_timing_history_app(dashboard_dir, run_dir) -> None:
     import sys as _sys
     if dashboard_dir not in _sys.path:
