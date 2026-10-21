@@ -20,7 +20,7 @@ from k4bench.analysis.components import (
     ComponentTiming,
     event_loop_time,
 )
-from k4bench.analysis.loader import load_component_timing
+from k4bench.analysis.loader import load_component_timing, load_each_component_timing
 
 S = 1_000_000_000  # ns per s
 
@@ -360,6 +360,61 @@ class TestLoadComponentTiming:
         self._write(tmp_path, "default", _raw(schema_version=2))
         with pytest.raises(ValueError, match="default_components.json: unsupported future"):
             load_component_timing(tmp_path)
+
+
+def _short_matrix(path: Path) -> None:
+    raw = _raw()
+    raw["execute"]["wall_s"] = raw["execute"]["wall_s"][:-1]
+    path.write_text(json.dumps(raw))
+
+
+#: A component file broken each way a run can leave one, and what its reason names.
+_BROKEN = {
+    "malformed JSON": (lambda path: path.write_text("{"), "JSONDecodeError: Expecting"),
+    "future schema": (
+        lambda path: path.write_text(json.dumps(_raw(schema_version=2))),
+        "ValueError: unsupported future schema_version 2",
+    ),
+    "matrix shape": (_short_matrix, "ValueError: execute.wall_s is not"),
+    "unreadable file": (lambda path: path.mkdir(), "IsADirectoryError: Is a directory"),
+}
+
+
+class TestLoadEachComponentTiming:
+    @pytest.mark.parametrize("broken", list(_BROKEN))
+    def test_a_broken_file_hides_only_its_own_configuration(self, tmp_path, broken):
+        (tmp_path / "default_components.json").write_text(json.dumps(_raw()))
+        corrupt, reason = _BROKEN[broken]
+        corrupt(tmp_path / "native_components.json")
+        loaded, unreadable = load_each_component_timing(tmp_path)
+        assert list(loaded) == ["default"]
+        assert isinstance(loaded["default"], ComponentTiming)
+        assert list(unreadable) == ["native"]
+        # The file by its name, never by where the run was cached.
+        assert unreadable["native"].startswith(f"native_components.json: {reason}")
+        assert str(tmp_path) not in unreadable["native"]
+
+    def test_a_requested_broken_file_still_raises(self, tmp_path):
+        (tmp_path / "native_components.json").write_text("{")
+        with pytest.raises(ValueError):
+            load_component_timing(tmp_path, labels=["native"])
+
+    def test_an_unexpected_error_is_logged_and_hides_only_its_configuration(
+        self, tmp_path, caplog,
+    ):
+        (tmp_path / "default_components.json").write_text(json.dumps(_raw()))
+        raw = _raw()
+        del raw["components"][0]["name"]
+        (tmp_path / "native_components.json").write_text(json.dumps(raw))
+        loaded, unreadable = load_each_component_timing(tmp_path)
+        assert list(loaded) == ["default"]
+        assert unreadable == {"native": "native_components.json: unexpected error (KeyError)"}
+        (record,) = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert "native_components.json" in record.getMessage()
+        assert record.exc_info is not None
+
+    def test_a_directory_without_component_files_has_nothing_unreadable(self, tmp_path):
+        assert load_each_component_timing(tmp_path) == ({}, {})
 
 
 def test_sequencers_are_the_components_others_are_nested_in(timing):

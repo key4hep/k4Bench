@@ -27,7 +27,7 @@ from k4bench.analysis.plots.efficiency import (
 )
 from k4bench.analysis.plots.phases import latest_run_per_tag
 from reco._sources import package_labels
-from section_dispatch import PageContext, judgeable_trend
+from section_dispatch import PageContext, judgeable_trend, no_components_reason
 from sections import TREND_WINDOW_SCOPE, SectionScope
 from tabs._historical_trends import render_historical_trends
 from tabs._reliability import render_reliability_filter
@@ -99,10 +99,7 @@ def _labelled_slider(n_algorithms: int) -> int:
 def _render_current_run(ctx: PageContext) -> None:
     labels = sorted(ctx.run.components)
     if not labels:
-        st.info(
-            "No algorithm timing in this run: no configuration that succeeded "
-            "left a `_components.json`."
-        )
+        st.info(f"No algorithm timing in this run: {no_components_reason(ctx)}")
         return
     config_col, size_col, named_col = st.columns([4, 2, 2], vertical_alignment="bottom")
     with config_col:

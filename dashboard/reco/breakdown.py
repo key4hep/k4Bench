@@ -29,7 +29,7 @@ from k4bench.analysis.plots.phases import (
     top_components,
 )
 from reco._sources import SOURCE_COLUMN_CONFIG, source_columns
-from section_dispatch import PageContext, judgeable_trend
+from section_dispatch import PageContext, judgeable_trend, no_components_reason
 from sections import TREND_WINDOW_SCOPE, SectionScope
 from tabs._historical_trends import render_historical_trends
 from tabs._reliability import render_reliability_filter
@@ -74,10 +74,7 @@ def _select_config(ctx: PageContext) -> tuple[str, ComponentTiming] | None:
     its component costs; ``None``, said so, when the run has none."""
     labels = sorted(ctx.run.components)
     if not labels:
-        st.info(
-            "No phase timing in this run: no configuration that succeeded "
-            "left a `_components.json`."
-        )
+        st.info(f"No phase timing in this run: {no_components_reason(ctx)}")
         return None
     config = st.selectbox(
         "Configuration", labels, key="reco_breakdown_config", bind="query-params",

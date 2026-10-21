@@ -8,6 +8,7 @@ trend loaders, used directly by the nightly regression report in CI — so unlik
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -197,6 +198,22 @@ def test_build_algorithm_timing_trend_skips_runs_without_component_files(tmp_pat
 def test_build_phase_trend_skips_runs_without_component_files(tmp_path):
     sim = _make_run(tmp_path, "2026-10-01", "key4hep-2026-10-01", 50.0)
     assert trend.build_phase_trend((str(sim),)) is None
+
+
+@pytest.mark.parametrize("build", [
+    trend.build_phase_trend, trend.build_efficiency_trend, trend.build_algorithm_timing_trend,
+], ids=["phase", "efficiency", "algorithm_timing"])
+def test_component_trends_keep_a_runs_other_configs_beside_a_malformed_file(tmp_path, build):
+    broken, valid = (tmp_path / "broken", tmp_path / "valid")
+    for run in (broken, valid):
+        shutil.copytree(_RECO_RUN, run)
+    (broken / "variant_truth_tracking_components.json").write_text("{")
+    df = build((str(broken), str(valid)))
+    labels = df.groupby("run_id")["label"].unique().map(sorted).to_dict()
+    # The malformed file gives no row at all, so neither a zero nor a gap filled in.
+    assert labels == {
+        "broken": ["baseline"], "valid": ["baseline", "variant_truth_tracking"],
+    }
 
 
 # ── build_heap_trend ──────────────────────────────────────────────────────────

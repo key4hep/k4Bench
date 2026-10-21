@@ -800,6 +800,15 @@ measurement as uploaded.
 | **Machine info** | the host the benchmark ran on | `machine_info.json` |
 | **Logs** | the k4run log, read as a Gaudi log, and the job options | `*.log`, `*_joboptions.opts` |
 
+Each configuration's `_components.json` is read on its own. One that is
+malformed, of a future schema or unreadable takes only that configuration out
+of the sections reading component costs: each of them warns with the
+configuration, the file and the error, and the configuration's results, events
+and logs stay on offer. A configuration that failed is not offered whatever its
+file holds, so its file is not warned about. In the history, the run gives no
+point for that configuration, never a zero. **Refresh Data** reads a repaired
+file again.
+
 **Overview** draws the Simulation Overview's Performance Trends and Performance
 Landscape views from the runs themselves, with the same like-for-like rules: one
 platform and sample, the baseline configuration. It is available only against

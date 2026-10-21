@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+import logging
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TypeVar
 
@@ -37,6 +38,15 @@ from k4bench.plugin.schema import (
 _RETURNCODE_RECORDED = "_returncode_recorded"
 
 _T = TypeVar("_T")
+
+_log = logging.getLogger(__name__)
+
+#: What reading one configuration's file raises when the file is absent,
+#: unreadable or malformed; anything else is a bug, logged with its traceback.
+_UNREADABLE_FILE_ERRORS = (OSError, ValueError)
+
+#: The most characters of an error message a reason keeps.
+_MAX_REASON_CHARS = 200
 
 
 def with_cpu_efficiency(df: pd.DataFrame) -> pd.DataFrame:
@@ -478,7 +488,9 @@ def load_component_timing(
     ValueError
         For a requested label without a file, an unsupported
         ``schema_version`` (:func:`~k4bench.plugin.schema.validate_component_schema`),
-        or a file whose tables do not match its component and event lists.
+        or a file whose tables do not match its component and event lists;
+        the first such file stops the load. :func:`load_each_component_timing`
+        reads each file on its own instead.
     """
     out: dict[str, ComponentTiming] = {}
     for path, label in _label_files(Path(log_dir), COMPONENTS_SUFFIX, labels, "component"):
@@ -487,6 +499,56 @@ def load_component_timing(
         validate_component_schema(raw, source=path)
         out[label] = ComponentTiming.from_json(raw, source=path)
     return out
+
+
+def unreadable_reason(path: Path, exc: BaseException) -> str:
+    """Why *path* could not be read, from *exc*: the file's name, the error's
+    class and its message, with the file's full path left out and the
+    message cut short, so it shows none of the file's contents at length."""
+    if isinstance(exc, OSError) and exc.strerror:
+        message = exc.strerror
+    else:
+        message = str(exc).replace(f"{path}: ", "").replace(str(path), path.name)
+    if len(message) > _MAX_REASON_CHARS:
+        message = message[: _MAX_REASON_CHARS - 1] + "…"
+    return f"{path.name}: {type(exc).__name__}: {message}"
+
+
+def _load_each(
+    load: Callable[[Path, list[str]], dict[str, _T]], log_dir: Path, suffix: str,
+) -> tuple[dict[str, _T], dict[str, str]]:
+    """Every label's *suffix* file in *log_dir* that *load* could read, and
+    why each other could not (:func:`unreadable_reason`): each file is read on
+    its own, so one that is malformed hides no other configuration."""
+    loaded: dict[str, _T] = {}
+    unreadable: dict[str, str] = {}
+    for path, label in labelled_files(log_dir, suffix):
+        try:
+            loaded.update(load(log_dir, [label]))
+        except _UNREADABLE_FILE_ERRORS as exc:
+            unreadable[label] = unreadable_reason(path, exc)
+        except Exception as exc:
+            _log.exception("unexpected error reading '%s'", path)
+            unreadable[label] = f"{path.name}: unexpected error ({type(exc).__name__})"
+    return loaded, unreadable
+
+
+def load_each_component_timing(
+    log_dir: str | Path,
+) -> tuple[dict[str, ComponentTiming], dict[str, str]]:
+    """Every label's ``_components.json`` in *log_dir* that could be read
+    (:func:`load_component_timing`), and why each other could not. Both empty
+    when *log_dir* holds no component files (a ddsim run)."""
+    return _load_each(load_component_timing, Path(log_dir), COMPONENTS_SUFFIX)
+
+
+def load_each_component_heap(
+    log_dir: str | Path,
+) -> tuple[dict[str, ComponentHeap], dict[str, str]]:
+    """Every label's ``_heap.json`` in *log_dir* that could be read
+    (:func:`load_component_heap`), and why each other could not. Both empty
+    when *log_dir* holds no heap files (no memory pass ran)."""
+    return _load_each(load_component_heap, Path(log_dir), HEAP_SUFFIX)
 
 
 def load_component_heap(
