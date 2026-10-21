@@ -34,6 +34,7 @@ from k4bench.artifacts import (
     matching,
 )
 from k4bench.provenance.sources import load_run_packages
+from k4bench.provenance.stack import STACK_MANIFESTS
 
 _log = logging.getLogger(__name__)
 
@@ -58,6 +59,8 @@ HEAP: Artifacts = (RUN_INFO, f"*{HEAP_SUFFIX}")
 DATAFLOW: Artifacts = (f"*{DATAFLOW_SUFFIX}",)
 EVENT_SIZE: Artifacts = (RUN_INFO, f"*{EVENT_SIZE_SUFFIX}")
 EVENT_SOURCE_FILES: Artifacts = (EVENT_SOURCE,)
+#: The stack's packages and, from its manifests, where each was installed.
+PACKAGES: Artifacts = (RUN_INFO, *STACK_MANIFESTS)
 
 
 def _keyed_on(artifacts: Artifacts) -> dict:
@@ -146,7 +149,7 @@ def cached_load_component_heap(data_dir: str) -> tuple[dict[str, ComponentHeap],
     return load_each_component_heap(data_dir)
 
 
-@st.cache_data(show_spinner=False, max_entries=16, hash_funcs=_keyed_on((RUN_INFO,)))
+@st.cache_data(show_spinner=False, max_entries=16, hash_funcs=_keyed_on(PACKAGES))
 def cached_load_run_packages(data_dir: str) -> dict[str, dict]:
     """The stack packages of the run in *data_dir*; empty when it recorded none."""
     return load_run_packages(data_dir)

@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from data import HEAP, cached_load_component_heap, cached_load_trend_heap
+from data import HEAP, PACKAGES, cached_load_component_heap, cached_load_trend_heap
 from k4bench.analysis.components import ComponentTiming
 from k4bench.analysis.heap import (
     LEAK_MIN_EVENTS,
@@ -423,7 +423,7 @@ def _groups(ctx: PageContext, label: str, names) -> pd.Series:
     timing: ComponentTiming | None = ctx.run.components.get(label)
     if timing is None:
         return pd.Series("Unknown", index=names, dtype=object).mask(names == NO_COMPONENT, NO_COMPONENT)
-    packages = package_labels(ctx.data_dir, timing, names)
+    packages = package_labels(ctx.run_dir(PACKAGES), timing, names)
     return packages.mask(packages.index == NO_COMPONENT, NO_COMPONENT)
 
 
@@ -551,7 +551,7 @@ def _component_table(
     shown = summary.loc[heap.holders()].sort_values("typical_mb", ascending=False, kind="stable")
     timing: ComponentTiming | None = ctx.run.components.get(label)
     sources = (
-        source_columns(ctx.data_dir, timing, shown.index) if timing is not None
+        source_columns(ctx.run_dir(PACKAGES), timing, shown.index) if timing is not None
         else pd.DataFrame({"Package": "—", "Code": None, "Repository": None}, index=shown.index)
     )
     return pd.DataFrame({

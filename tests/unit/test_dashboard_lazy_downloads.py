@@ -11,6 +11,7 @@ that could not be downloaded is said so, never drawn as a run without it.
 
 from __future__ import annotations
 
+import gzip
 import json
 import shutil
 import sys
@@ -41,12 +42,16 @@ BASE_FILES = {
     "run_info.json", "machine_info.json", "baseline_results.csv",
     "variant_truth_tracking_results.csv",
 }
+#: Where the stack installed a package, which names a component's package.
+MANIFEST = "LCG_externals.txt.gz"
+_INSTALL = "/cvmfs/sft-nightlies.cern.ch/lcg/nightlies/k4fwcore/HEAD/x86_64-el9-gcc16-opt"
 
 
 def _store() -> dict[str, object]:
     """The fake store: every run a copy of the reco fixture plus a heap file."""
     files = {p.name: p.read_bytes() for p in RECO_RUN.iterdir() if p.name != "README.md"}
     files["baseline_heap.json"] = b"{}"
+    files[MANIFEST] = gzip.compress(f"k4fwcore; 98b4e; HEAD; {_INSTALL}; Gaudi-242b8\n".encode())
     platform = f"{BASE}/runs/reco/CLD/{DET}/{PLAT}"
     tree: dict[str, object] = {
         f"{BASE}/runs/reco": ["CLD/"],
@@ -165,7 +170,7 @@ def _of(downloads, night=NEWEST) -> set[str]:
 
 
 def test_a_current_run_view_downloads_its_own_files_of_the_selected_run(store):
-    _open("Breakdown")
+    at = _open("Breakdown")
     got = store.downloads()
     # The selected run alone, nothing of the window's other runs.
     assert {night for night, _ in got} == {NEWEST}
@@ -177,6 +182,10 @@ def test_a_current_run_view_downloads_its_own_files_of_the_selected_run(store):
     files_per_run = sum(1 for name in store.tree if name.rsplit("/", 2)[-2] == NEWEST)
     whole = sum(len(nights) for nights in RUNS.values()) * files_per_run
     assert len(got) * 8 < whole
+    # The components' table names each one's package, from the stack manifest.
+    at.radio(key="reco_breakdown_view").set_value("Components").run()
+    assert not at.exception, at.exception
+    assert store.downloads() == [(NEWEST, MANIFEST)]
 
 
 def test_each_view_downloads_only_what_it_adds(store):
@@ -252,6 +261,23 @@ def test_a_file_that_could_not_be_downloaded_is_said_so_and_read_again(store):
     _section(at, "Memory")
     assert not any("Could not download" in w.value for w in at.warning)
     assert _of(store.downloads()) == {"baseline_heap.json"}
+
+
+def test_the_packages_are_read_again_once_the_stack_manifests_arrive(tmp_path):
+    from data import cached_load_run_packages
+
+    st.cache_data.clear()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "run_info.json").write_text(json.dumps({"k4h_packages": {
+        "k4fwcore": {"commit": "767ff81", "version": "HEAD"},
+    }}))
+    assert "install_path" not in cached_load_run_packages(str(run_dir))["k4fwcore"]
+    (run_dir / MANIFEST).write_bytes(gzip.compress(
+        f"k4fwcore; 98b4e; HEAD; {_INSTALL}; Gaudi-242b8\n".encode()
+    ))
+    assert cached_load_run_packages(str(run_dir))["k4fwcore"]["install_path"] == _INSTALL
+    st.cache_data.clear()
 
 
 def test_a_load_is_read_again_once_its_files_arrive(tmp_path):
