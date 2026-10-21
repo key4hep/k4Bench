@@ -843,9 +843,9 @@ shows up as *Unattributed* rather than being spread over the others.
   event it ran in across (log scale) and its instructions per cycle up, the
   warm-up event left out. An algorithm a filter skips in some events is timed
   over the others only, and hovering says in how many of the events it ran. **Point size** chooses what a point's area shows: heap allocations
-  per event (the default), the allocation rate (allocations per second of the
+  per event it ran in (the default), the allocation rate (allocations per second of the
   algorithm's own time, how hard it leans on the allocator however long it
-  runs), allocated memory per event, or nothing. **Named algorithms** sets how many of
+  runs), allocated memory per event it ran in, or nothing. **Named algorithms** sets how many of
   the slowest carry their name, up to all of them. An algorithm runs
   efficiently at around 2 or more instructions per cycle; below 1, the shaded
   band, it mostly waits, usually on memory. Hovering gives the numbers. For a

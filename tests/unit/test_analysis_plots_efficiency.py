@@ -80,7 +80,7 @@ def test_the_chart_puts_time_on_a_log_axis_and_names_the_longest():
     # The most allocations per event, the largest point.
     sizes = np.asarray(points.marker.size, dtype=float)
     assert sizes[0] > sizes[1]
-    assert "200 allocations per event" in points.customdata[0][1]
+    assert "200 allocations per event it ran in" in points.customdata[0][1]
     # Or the allocation rate: Vertex allocates 20 a second.
     (points,) = plot_component_efficiency(
         component_efficiency(EXECUTE), size="allocations_per_s",

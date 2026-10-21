@@ -22,9 +22,9 @@ def _rate(value: float) -> str:
 #: :func:`~k4bench.analysis.efficiency.component_efficiency` column and how
 #: its hover writes one.
 SIZE_METRICS = {
-    "allocations_per_event": lambda v: f"{v:,.0f} allocations per event",
+    "allocations_per_event": lambda v: f"{v:,.0f} allocations per event it ran in",
     "allocations_per_s": _rate,
-    "allocated_mb_per_event": lambda v: f"{v:,.1f} MB allocated per event",
+    "allocated_mb_per_event": lambda v: f"{v:,.1f} MB allocated per event it ran in",
 }
 
 #: The algorithms, longest first, whose names the chart writes by their point.

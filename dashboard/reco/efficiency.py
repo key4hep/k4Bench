@@ -4,7 +4,7 @@ moves from night to night.
 Current Run draws one point per algorithm of a configuration's event loop,
 coloured by the stack package its code comes from: its time in the events it
 ran in against its instructions per cycle, sized by its heap allocations per
-event (by default), its allocation rate or allocated memory, or not at all. Low
+event it ran in (by default), its allocation rate or allocated memory, or not at all. Low
 instructions per cycle at a high time points at code waiting on memory.
 Historical Trends draws the slowest algorithms across the trend window in three
 panels, time, instructions and instructions per cycle per event it ran in: time
@@ -46,9 +46,9 @@ _KEY = "reco_efficiency"
 #: What a point's area shows, by its option's name: a
 #: :data:`~k4bench.analysis.plots.efficiency.SIZE_METRICS` column, or nothing.
 _SIZES = {
-    "Allocations per event": "allocations_per_event",
+    "Allocations per event it ran in": "allocations_per_event",
     "Allocation rate": "allocations_per_s",
-    "Allocated memory per event": "allocated_mb_per_event",
+    "Allocated memory per event it ran in": "allocated_mb_per_event",
     "Same size": None,
 }
 
@@ -59,7 +59,7 @@ _HIST_TOP_N_KEY = f"{_KEY}_hist_topn"
 #: The history's panels: a trend column and its title, and the hover's unit.
 _HIST_PANELS = [
     ("ms_per_event", "Time per event it ran in (ms)"),
-    ("instructions_g", "Instructions per event (×10⁹)"),
+    ("instructions_g", "Instructions per event it ran in (×10⁹)"),
     ("ipc", "Instructions per cycle"),
 ]
 _HIST_UNITS = {"ms_per_event": "ms", "instructions_g": "G", "ipc": ""}
