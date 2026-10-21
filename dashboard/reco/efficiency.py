@@ -1,17 +1,16 @@
-"""Reconstruction Efficiency: which algorithms run inefficiently, and how that
-moves from night to night.
+"""Reconstruction Efficiency: each algorithm's time against the instructions
+its thread retired and the cycles it took, and how they move from night to night.
 
 Current Run draws one point per algorithm of a configuration's event loop,
 coloured by the stack package its code comes from: its time in the events it
 ran in against its instructions per cycle, sized by its heap allocations per
-event it ran in (by default), its allocation rate or allocated memory, or not at all. Low
-instructions per cycle at a high time points at code waiting on memory.
+event it ran in (by default), its allocation rate or allocated memory, or not at all.
 Historical Trends draws the slowest algorithms across the trend window in three
-panels, time, instructions and instructions per cycle per event it ran in: time
-that moved while the instructions held is the machine, instructions that moved
-the software. The warm-up event is left out, as everywhere a run's event loop is
-summarised. A line above each chart says what it shows; how to read it is
-behind its help.
+panels, time, instructions and instructions per cycle per event it ran in.
+The counters describe a change; they do not by themselves name its cause, so
+the help says what to check rather than giving a verdict. The warm-up event is
+left out, as everywhere a run's event loop is summarised. A line above each
+chart says what it shows; how to read it is behind its help.
 """
 from __future__ import annotations
 
@@ -20,11 +19,7 @@ import streamlit as st
 from data import cached_load_trend_efficiency
 from k4bench.analysis.components import HARDWARE_METRICS, WARM_UP_EVENT
 from k4bench.analysis.efficiency import algorithm_efficiency
-from k4bench.analysis.plots.efficiency import (
-    LABELLED,
-    STALL_IPC,
-    plot_component_efficiency,
-)
+from k4bench.analysis.plots.efficiency import LABELLED, plot_component_efficiency
 from k4bench.analysis.plots.phases import latest_run_per_tag
 from reco._sources import package_labels
 from section_dispatch import PageContext, judgeable_trend, no_components_reason
@@ -73,11 +68,15 @@ def _intro() -> None:
         help=(
             "**Further right:** the longer it takes in an event it runs in (log "
             "scale); hovering says how many events it skipped, if any.\n\n"
-            "**Higher up:** the more work the CPU gets done in each clock cycle "
-            "(instructions per cycle).\n\n"
-            "An algorithm runs efficiently at around 2 or more instructions per "
-            f"cycle. In the shaded band below {STALL_IPC:g} it spends most of its "
-            "time waiting, usually on memory."
+            "**Higher up:** the more instructions it retires per counted CPU "
+            "cycle (IPC). Both are counted in user space on the thread that "
+            "called it, so work it hands to threads of its own is not.\n\n"
+            "IPC depends on the processor and the instruction mix: a vectorised "
+            "implementation can finish sooner while retiring fewer instructions "
+            "at a lower IPC, so a higher IPC is not better across different "
+            "code. Read it with the time and the instructions when comparing "
+            "similar workloads; a low IPC alone does not say an algorithm "
+            "waits on memory."
         ),
     )
 
@@ -111,8 +110,11 @@ def _render_current_run(ctx: PageContext) -> None:
         size = _SIZES[st.selectbox(
             "Point size", list(_SIZES), key=f"{_KEY}_size", bind="query-params",
             help="What a point's area shows, the largest point being the most. "
-                 "Allocation rate is allocations per second of the algorithm's "
-                 "own time: how hard it leans on the allocator, however long it runs.",
+                 "Allocations count the heap blocks it allocated; allocation rate "
+                 "is those per second of the algorithm's own time: how hard it "
+                 "leans on the allocator, however long it runs. Allocated memory "
+                 "is the heap memory those blocks take, freed or not: churn, not the heap "
+                 "it keeps (that is Memory's).",
         )]
     timing = ctx.run.components[config]
     table = algorithm_efficiency(timing, warm_up=WARM_UP_EVENT)
@@ -175,15 +177,20 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
         instructions_g=lambda df: df["instructions_per_event"] / 1e9,
     )
     st.caption(
-        "The slowest algorithms night by night: their time, the work they do and "
-        "how fast the CPU gets through it.",
+        "The slowest algorithms night by night: their time, the instructions they "
+        "retire and their instructions per cycle.",
         help=(
-            "**Instructions** follow the work an algorithm does, not the machine it "
-            "ran on.\n\n"
-            "**Time moved, instructions held:** the machine ran it slower; "
-            "instructions per cycle fell with it.\n\n"
-            "**Instructions moved:** the software, its configuration or its input "
-            "changed what it does."
+            "**Time** is the elapsed (wall) time of its calls; the CPU time of "
+            "the thread that called it leaves out what it waited off the CPU. "
+            "**Instructions** and cycles are counted in user space on that "
+            "thread.\n\n"
+            "**Instructions moved:** the work it executed changed, through its "
+            "code, its configuration, its input or how it was compiled; the "
+            "count alone does not say which.\n\n"
+            "**Time moved, instructions held:** worth checking the cycles, the "
+            "thread's CPU time, the host's load and scheduling, its clock and "
+            "memory effects. The counters narrow the investigation; they do "
+            "not establish the cause."
         ),
     )
     render_historical_trends(

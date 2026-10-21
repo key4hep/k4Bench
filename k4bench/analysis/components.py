@@ -32,10 +32,16 @@ wrote (:data:`THREAD_METRICS`):
 
 Where the hardware performance counters could be read (:data:`HARDWARE_METRICS`):
 
-- ``instructions`` — user-space instructions executed. They depend on the work
-  done, not on the host's load, so they show changes too small for time to;
-- ``cycles`` — user-space CPU cycles; instructions per cycle tell more work
-  apart from the same work run slower.
+- ``instructions`` — user-space instructions the calling thread retired. They
+  follow the work done more than the host's load, so they show changes too
+  small for time to;
+- ``cycles`` — user-space CPU cycles the calling thread was counted for. Their
+  ratio, instructions per cycle, depends on the processor, the instruction mix
+  and memory behaviour alike, so it does not by itself say why a call took
+  longer.
+
+Both are counted on the calling thread only: work a library hands to threads
+of its own is not included.
 
 Where they could not, :attr:`ComponentTiming.hardware_counters_error` says why.
 
