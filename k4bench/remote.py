@@ -408,8 +408,10 @@ SUBSET_TREE = "subsets"
 ARTIFACT_MANIFEST = ".artifacts.json"
 _MANIFEST_VERSION = 1
 
-#: What became of a file asked for, in the manifest. A file listed but never
-#: asked for has no entry: it was not requested.
+#: What became of a listed file asked for, in the manifest: :data:`ABSENT`
+#: is one listed but gone when asked for (a 404). A file listed but never
+#: asked for has no entry: it was not requested. One the listing lacks has no
+#: entry either: the listing itself says it is absent.
 FETCHED, ABSENT, FAILED = "fetched", "absent", "failed"
 
 
@@ -433,7 +435,7 @@ def ensure_run_artifacts(
     A run :func:`ensure_run_cached` already holds whole is returned as it is.
     Otherwise the files land in the run's directory below :data:`SUBSET_TREE`,
     whose manifest (:data:`ARTIFACT_MANIFEST`) keeps the run's listing and,
-    for each file asked for, whether it was fetched, is absent, or failed.
+    for each listed file asked for, whether it was fetched, is absent, or failed.
     A file fetched or known absent costs no request, so asking again for what
     is there is free, and asking for more fetches only the rest.
 
@@ -468,9 +470,6 @@ def ensure_run_artifacts(
             listing = {_safe_name(name): name for name in _list_files(url)}
             manifest = {"version": _MANIFEST_VERSION, "listing": listing, "files": {}}
         files = manifest["files"]
-        for name in artifacts:
-            if name not in manifest["listing"] and not _is_pattern(name):
-                files[name] = {"state": ABSENT}
         session = _get_session()
         try:
             for name in _pending(run_dir, manifest, artifacts):
@@ -488,11 +487,6 @@ def ensure_run_artifacts(
         finally:
             _publish_file(run_dir, ARTIFACT_MANIFEST, json.dumps(manifest).encode())
     return run_dir
-
-
-def _is_pattern(name: str) -> bool:
-    """Whether *name* is a pattern rather than one file's name."""
-    return any(char in name for char in "*?[")
 
 
 def _pending(run_dir: Path, manifest: dict | None, artifacts: tuple[str, ...]) -> list[str] | None:

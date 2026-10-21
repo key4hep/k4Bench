@@ -1091,8 +1091,9 @@ def test_absent_files_are_recorded_and_not_asked_for_again(part_web, monkeypatch
     artifacts = ("*_heap.json", "event_source.json.gz")
     run_dir = remote.ensure_run_artifacts(*_RUN, artifacts, cache_root=str(tmp_path))
     states = {n: e["state"] for n, e in _manifest(run_dir)["files"].items()}
-    # The one never listed is absent without a request.
-    assert states == {"baseline_heap.json": "absent", "event_source.json.gz": "absent"}
+    assert states == {"baseline_heap.json": "absent"}
+    # The one never listed is absent by the listing, without a request.
+    assert "event_source.json.gz" not in _manifest(run_dir)["listing"]
     assert part_web.files() == ["baseline_heap.json"]
     part_web.requested.clear()
     remote.ensure_run_artifacts(*_RUN, artifacts, cache_root=str(tmp_path))
