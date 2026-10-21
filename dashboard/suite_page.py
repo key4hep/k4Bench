@@ -3,10 +3,12 @@ draw the active section.
 
 Every suite's page is the same skeleton. In remote mode the sidebar walks the
 suite's run tree on WebEOS (:mod:`sidebar`); in local mode it reads one run
-directory. Either way the selected run is loaded once (:func:`data.load_run`)
-and handed to the active section through a
-:class:`section_dispatch.PageContext`. What differs between the suites — their
-sections, the scope each honours, how each is drawn — is a :class:`SuitePage`.
+directory. Either way the selected run's results are loaded
+(:func:`data.load_run`) and handed, with the trend window, to the active
+section through a :class:`section_dispatch.PageContext`, which reads — and in
+remote mode downloads — the rest of what the section draws when it asks. What
+differs between the suites — their sections, the scope each honours, how each
+is drawn — is a :class:`SuitePage`.
 """
 from __future__ import annotations
 
@@ -17,16 +19,14 @@ import streamlit as st
 
 from config import Config
 from data import (
-    RunData,
     cached_load_results,
-    cached_load_trend_machine_info,
     load_machine_info,
     load_run,
     run_metadata,
 )
 from k4bench.analysis.loader import run_suite
 from k4bench.layout import RECO, SIM
-from k4bench.results.reliability_evidence import run_reliability_map
+from remote_cache import FilesUnavailable
 from section_dispatch import Renderer, PageContext, current_section, pick_section
 from sections import SCOPED, SectionScope
 from sidebar import (
@@ -99,7 +99,7 @@ def render_page(page: SuitePage) -> None:
     selection: RunSelection | None = None
     run_meta: dict | None = None
     window = TrendWindow()
-    run: RunData | None = None
+    ctx: PageContext | None = None
     # The suite of a local directory that holds another suite's run.
     foreign_suite: str | None = None
     # Trends-capable sections are gated on *remote mode*, not on whether the
@@ -155,11 +155,21 @@ def render_page(page: SuitePage) -> None:
         elif not config.data_url and (suite := run_suite(Path(data_dir))) != page.suite:
             foreign_suite = suite
         else:
-            run = load_run(data_dir, window.run_dirs, components=page.components)
+            run = load_run(
+                data_dir, selection.files if selection else None, components=page.components,
+            )
+            ctx = PageContext(
+                config=config,
+                selection=selection,
+                data_dir=data_dir,
+                run_meta=run_meta,
+                run=run,
+                window=window,
+            )
             # Remote mode shows the run-quality card under the Stack selector.
             if not config.data_url:
                 render_sidebar_run_quality(load_machine_info(data_dir), run.results)
-            if not run.labels:
+            if not ctx.labels:
                 st.warning("No benchmark data found in the specified directory.")
 
         render_sidebar_footer()
@@ -172,7 +182,7 @@ def render_page(page: SuitePage) -> None:
         )
         return
 
-    if run is None or not run.labels:
+    if ctx is None or not ctx.labels:
         path_hint = f" in **{data_dir}**" if data_dir else ""
         st.info(
             f"No benchmark results found{path_hint}. "
@@ -182,22 +192,7 @@ def render_page(page: SuitePage) -> None:
 
     # Run status banners (per-config detail + logs live in the Logs tab; the
     # per-run reliability status lives in the sidebar run-quality card).
-    render_run_status(run.results, run_meta)
-
-    # Of the window's trend frames, only results (loaded with the run) and
-    # machine info are loaded on every rerun: together they make the shared
-    # reliability map. The heavier trends are built (or, once cached,
-    # deep-copied by st.cache_data) only when their own tab is active, so
-    # switching between the other tabs never pays for the heaviest frame
-    # (per-event timing across the whole window).
-    trend_machine = (
-        cached_load_trend_machine_info(window.run_dirs) if window.run_dirs else None
-    )
-    # Per-run reliability verdict, computed once from the full trend so every
-    # historical tab shares one consistent warning / exclude filter that matches
-    # the Machine Info tab's per-run verdict. Empty in local mode or when no
-    # machine info is available, in which case the filter is a no-op.
-    reliability = run_reliability_map(run.trend_results, trend_machine)
+    render_run_status(ctx.run.results, run_meta)
 
     active_section = pick_section(sections, key=section_key)
 
@@ -209,16 +204,13 @@ def render_page(page: SuitePage) -> None:
     # which may itself change the scope (see the fill below).
     scope_note = st.empty()
 
-    scope_override = page.renderers[active_section](PageContext(
-        config=config,
-        selection=selection,
-        data_dir=data_dir,
-        run_meta=run_meta,
-        run=run,
-        window=window,
-        trend_machine=trend_machine,
-        reliability=reliability,
-    ))
+    # Only what the section draws is read: the run's other files and the
+    # window's history are downloaded when the section first asks for them.
+    try:
+        scope_override = page.renderers[active_section](ctx)
+    except FilesUnavailable as err:
+        st.warning(f"{err} They are downloaded again on your next interaction.")
+        scope_override = None
 
     # Fill the slot reserved above the section. A section that offers a control
     # over its own scope — a historical sub-view, Stack Changes' "Whole platform"

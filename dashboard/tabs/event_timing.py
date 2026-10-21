@@ -416,9 +416,8 @@ def _render_historical(
 
 def render(
     event_data: dict | None,
-    trend_event_df: pd.DataFrame | None,
+    load_history: Callable[[], tuple[pd.DataFrame | None, dict[str, bool | None]]] | None = None,
     trends_enabled: bool = False,
-    reliability: dict[str, bool | None] | None = None,
     *,
     components: Mapping[str, ComponentTiming] | None = None,
     load_algorithm_trend: Callable[[], pd.DataFrame | None] | None = None,
@@ -426,9 +425,10 @@ def render(
 ) -> SectionScope | None:
     """The per-event timing views. Given a k4run job's *components*, the
     current run's "Timing of" selector sets any algorithms' own time in each
-    event beside the whole event's. Whenever the window holds any, the
-    history draws one configuration's slowest algorithms beside its whole
-    event, from *load_algorithm_trend*
+    event beside the whole event's. *load_history* loads the window's event
+    trend and its runs' reliability, only for the history. Whenever the
+    window holds any, the history draws one configuration's slowest
+    algorithms beside its whole event, from *load_algorithm_trend*
     (:func:`~k4bench.analysis.trend.build_algorithm_timing_trend`), loaded
     only for the history. The history draws every run of a release when
     *all_runs*."""
@@ -469,6 +469,7 @@ def render(
                 controls=tuple(controls) if controls else None,
             )
         return None
+    trend_event_df, reliability = load_history() if load_history else (None, None)
     # Whatever the selected run holds, the window's algorithm history.
     algorithm_trend = load_algorithm_trend() if load_algorithm_trend else None
     log_y = ordered = False

@@ -155,16 +155,37 @@ def test_discovery_that_stopped_short_raises_and_is_read_again(monkeypatch, name
 def test_partial_trend_download_returns_the_runs_that_landed(monkeypatch):
     landed = [{"stack": "S", "date": "2026-09-24", "run_dir": "/cache/S/2026-09-24"}]
 
-    def fetch_runs_windowed(*args, cache_root=None, strict=False):
+    def fetch_runs_windowed(*args, cache_root=None, strict=False, artifacts=None):
         assert strict
+        assert artifacts == ("run_info.json",)
         raise remote.IncompleteFetch(landed, ["S/2026-09-23: read timed out"])
 
     monkeypatch.setattr(remote, "fetch_runs_windowed", fetch_runs_windowed)
     got = remote_cache.cached_fetch_runs_windowed(
         BASE, SIM, "DET", "PLAT", "single_e", "/cache",
-        (("S", ("2026-09-23", "2026-09-24")),),
+        (("S", ("2026-09-23", "2026-09-24")),), ("run_info.json",),
     )
     assert got == ("/cache/S/2026-09-24",)
+
+
+def test_a_run_files_download_that_failed_is_tried_again(monkeypatch):
+    calls = []
+
+    def ensure_run_artifacts(*args, cache_root=None):
+        calls.append(args[-1])
+        if len(calls) == 1:
+            raise remote.requests.ReadTimeout("read timed out")
+        return Path("/cache/run")
+
+    monkeypatch.setattr(remote, "ensure_run_artifacts", ensure_run_artifacts)
+    args = (BASE, SIM, "DET", "PLAT", "S", "single_e", "2026-09-24", "/cache")
+    with pytest.raises(remote.requests.ReadTimeout):
+        remote_cache.cached_fetch_run_files(*args, ("*_events.json",))
+    assert remote_cache.cached_fetch_run_files(*args, ("*_events.json",)) == "/cache/run"
+    assert remote_cache.cached_fetch_run_files(*args, ("*_events.json",)) == "/cache/run"
+    # Other files of the same run are a download of their own.
+    remote_cache.cached_fetch_run_files(*args, ("*_heap.json",))
+    assert calls == [("*_events.json",), ("*_events.json",), ("*_heap.json",)]
 
 
 @pytest.mark.parametrize("name, wrapper, args", [

@@ -71,7 +71,7 @@ sequenceDiagram
     Reg->>Reg: k4bench.regression: reliability-filtered step detection
     Reg->>EOS: upload reports/sim/{date}/report.json
     Reg-->>Mail: email on confirmed regressions/failures only
-    Dash->>EOS: list + download runs over HTTPS (cached on disk)
+    Dash->>EOS: list runs, download the files a view reads over HTTPS (cached on disk)
     Dash->>Dash: load via k4bench.analysis; render tabs
     Dash->>EOS: fetch reports/sim/{date}/report.json (Regressions tab)
 ```
@@ -85,9 +85,13 @@ summary; the night still runs, because a repeat measurement of a release is what
 
 The EOS directory layout is the integration contract between CI and the
 dashboard — see [File formats → EOS layout](../reference/file-formats.md#eos-layout).
-Because historical runs are immutable, the dashboard downloads each at most once
-and publishes it into its on-disk cache atomically, so concurrent reruns never
-see a half-written run.
+Because historical runs are immutable, the dashboard downloads each file of a
+run at most once, and only when a view reads it (`k4bench.remote.ensure_run_artifacts`):
+each file is published into its on-disk cache atomically, under a per-run lock
+and manifest, so concurrent reruns never see a half-written file and two views
+asking for different files of one run both get theirs. The nightly report and
+the CLI download whole runs (`ensure_run_cached`), published with a single
+atomic rename of the run directory and marked `.complete`.
 
 The `regression-report` job (`.github/scripts/regression_report.{py,sh}`) runs
 after the benchmark fan-out, so a crashed detector job still surfaces in the

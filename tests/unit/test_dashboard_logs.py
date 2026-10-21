@@ -87,7 +87,7 @@ def _logs_app(dashboard_dir, results_csv, run_dir, gaudi) -> None:
     from tabs import logs as _logs
 
     _logs.render(
-        _pd.read_csv(results_csv), run_dir, {},
+        _pd.read_csv(results_csv), lambda _files: run_dir, {},
         log_format=_logs.GAUDI if gaudi else _logs.GEANT4,
     )
 

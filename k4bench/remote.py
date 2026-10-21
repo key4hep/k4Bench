@@ -20,24 +20,31 @@ laid out as :mod:`k4bench.layout` defines::
       reports/{suite}/{YYYY-MM-DD}/report.json, blame.json
 
 Every function reading runs takes the suite it reads right after *base_url*.
+
+A run is downloaded into a local cache either whole (:func:`ensure_run_cached`)
+or file by file, only the files a reader asks for (:func:`ensure_run_artifacts`).
 """
 
 from __future__ import annotations
 
+import fcntl
+import json
 import logging
 import os
 import re
 import shutil
 import tempfile
 import threading
+from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import unquote
 
 import requests
 from urllib3.util import Retry
 
-from k4bench.artifacts import RUN_INFO
+from k4bench.artifacts import RUN_INFO, matching
 from k4bench.layout import (
     concept_of, concept_path, report_path, run_path, run_url, store_url,
 )
@@ -343,19 +350,7 @@ def ensure_run_cached(
     session = _get_session()
     try:
         for fname in _list_files(url):
-            # Validate the *decoded* name: a percent-encoded separator (e.g.
-            # "%2e%2e%2fevil.csv" → "../evil.csv") slips past a raw-name check but
-            # escapes the run dir once written, so decode first, then reject any
-            # name that is not a single, plain path component.
-            decoded = unquote(fname)
-            if (
-                not decoded
-                or decoded in (".", "..")
-                or "/" in decoded
-                or "\\" in decoded
-                or Path(decoded).name != decoded
-            ):
-                raise ValueError(f"Unsafe filename in listing: {fname!r}")
+            decoded = _safe_name(fname)
             resp = session.get(f"{url}/{fname}", timeout=_TIMEOUT)
             resp.raise_for_status()
             (tmp_dir / decoded).write_bytes(resp.content)
@@ -365,6 +360,25 @@ def ensure_run_cached(
         shutil.rmtree(tmp_dir, ignore_errors=True)
         raise
     return run_dir
+
+
+def _safe_name(listed: str) -> str:
+    """The file name a run's listing spells as *listed*, decoded; raises
+    ``ValueError`` unless it is a single, plain path component."""
+    # Validate the *decoded* name: a percent-encoded separator (e.g.
+    # "%2e%2e%2fevil.csv" → "../evil.csv") slips past a raw-name check but
+    # escapes the run dir once written, so decode first, then reject any
+    # name that is not a single, plain path component.
+    decoded = unquote(listed)
+    if (
+        not decoded
+        or decoded in (".", "..")
+        or "/" in decoded
+        or "\\" in decoded
+        or Path(decoded).name != decoded
+    ):
+        raise ValueError(f"Unsafe filename in listing: {listed!r}")
+    return decoded
 
 
 def _publish_run_dir(tmp_dir: Path, run_dir: Path, sentinel: Path) -> None:
@@ -383,6 +397,152 @@ def _publish_run_dir(tmp_dir: Path, run_dir: Path, sentinel: Path) -> None:
         os.replace(tmp_dir, run_dir)
 
 
+#: Below the cache root, the runs downloaded file by file
+#: (:func:`ensure_run_artifacts`), apart from the whole runs
+#: :func:`ensure_run_cached` publishes: neither ever replaces or clears a
+#: directory of the other, and part of a run never passes for all of it.
+SUBSET_TREE = "subsets"
+
+#: A subset directory's record of its run: the run's listing, and what became
+#: of each file asked for (see :func:`ensure_run_artifacts`).
+ARTIFACT_MANIFEST = ".artifacts.json"
+_MANIFEST_VERSION = 1
+
+#: What became of a file asked for, in the manifest. A file listed but never
+#: asked for has no entry: it was not requested.
+FETCHED, ABSENT, FAILED = "fetched", "absent", "failed"
+
+
+def ensure_run_artifacts(
+    base_url: str,
+    suite: str,
+    detector: str,
+    platform: str,
+    stack: str,
+    sample: str,
+    date: str,
+    artifacts: Iterable[str],
+    cache_root: str | None = None,
+) -> Path:
+    """Download the files of one run that *artifacts* match, and return the
+    directory holding them.
+
+    For a reader that needs only part of a run. *artifacts* are file names or
+    patterns over them (:func:`k4bench.artifacts.matching`), matched against
+    the run's listing, so a label's file is fetched only where the run has it.
+    A run :func:`ensure_run_cached` already holds whole is returned as it is.
+    Otherwise the files land in the run's directory below :data:`SUBSET_TREE`,
+    whose manifest (:data:`ARTIFACT_MANIFEST`) keeps the run's listing and,
+    for each file asked for, whether it was fetched, is absent, or failed.
+    A file fetched or known absent costs no request, so asking again for what
+    is there is free, and asking for more fetches only the rest.
+
+    Each file is published with one atomic rename, so a reader never sees
+    half of one, and the manifest is written under a lock on the directory,
+    so concurrent callers asking for different files of one run each end with
+    theirs. Nothing here writes ``.complete``: a run's directory here never
+    holds all of it by contract, whatever it happens to hold.
+
+    A listing that does not answer raises and records nothing. A file that
+    does not answer raises too, recorded as failed after those fetched before
+    it; the next call asks for it again. A 404 is an answer: the file is
+    absent. An unsafe name in the listing raises ``ValueError`` and records
+    nothing, as in :func:`ensure_run_cached`.
+    """
+    root = Path(cache_root) if cache_root else _default_cache_root()
+    rel = run_path(suite, detector, platform, stack, sample, date)
+    whole = root / rel
+    if (whole / ".complete").exists():
+        return whole
+    run_dir = root / SUBSET_TREE / rel
+    artifacts = tuple(artifacts)
+    if _pending(run_dir, _read_manifest(run_dir), artifacts) == []:
+        return run_dir
+
+    url = run_url(base_url, suite, detector, platform, stack, sample, date)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    with _locked(run_dir):
+        # Re-read under the lock: another caller may have fetched them meanwhile.
+        manifest = _read_manifest(run_dir)
+        if manifest is None:
+            listing = {_safe_name(name): name for name in _list_files(url)}
+            manifest = {"version": _MANIFEST_VERSION, "listing": listing, "files": {}}
+        files = manifest["files"]
+        for name in artifacts:
+            if name not in manifest["listing"] and not _is_pattern(name):
+                files[name] = {"state": ABSENT}
+        session = _get_session()
+        try:
+            for name in _pending(run_dir, manifest, artifacts):
+                try:
+                    resp = session.get(f"{url}/{manifest['listing'][name]}", timeout=_TIMEOUT)
+                    resp.raise_for_status()
+                except requests.RequestException as exc:
+                    if not _is_absent(exc):
+                        files[name] = {"state": FAILED, "error": str(exc)}
+                        raise
+                    files[name] = {"state": ABSENT}
+                    continue
+                _publish_file(run_dir, name, resp.content)
+                files[name] = {"state": FETCHED, "bytes": len(resp.content)}
+        finally:
+            _publish_file(run_dir, ARTIFACT_MANIFEST, json.dumps(manifest).encode())
+    return run_dir
+
+
+def _is_pattern(name: str) -> bool:
+    """Whether *name* is a pattern rather than one file's name."""
+    return any(char in name for char in "*?[")
+
+
+def _pending(run_dir: Path, manifest: dict | None, artifacts: tuple[str, ...]) -> list[str] | None:
+    """The listed files *artifacts* match that *run_dir* still lacks and that
+    are not known absent; ``None`` while the listing is unknown."""
+    if manifest is None:
+        return None
+    files = manifest["files"]
+    pending = []
+    for name in matching(manifest["listing"], artifacts):
+        state = files.get(name, {}).get("state")
+        if state == ABSENT or state == FETCHED and (run_dir / name).is_file():
+            continue
+        pending.append(name)
+    return pending
+
+
+def _read_manifest(run_dir: Path) -> dict | None:
+    """*run_dir*'s manifest, or ``None`` when it has none this version reads."""
+    try:
+        manifest = json.loads((run_dir / ARTIFACT_MANIFEST).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(manifest, dict) or manifest.get("version") != _MANIFEST_VERSION:
+        return None
+    return manifest
+
+
+def _publish_file(run_dir: Path, name: str, content: bytes) -> None:
+    """Write *content* as *run_dir*'s file *name* with one atomic rename: a
+    reader finds all of it or none."""
+    fd, tmp = tempfile.mkstemp(prefix=".tmp-", dir=run_dir)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(content)
+        os.replace(tmp, run_dir / name)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+@contextmanager
+def _locked(run_dir: Path) -> Iterator[None]:
+    """Hold *run_dir*'s lock, which every thread and process downloading into
+    it takes in turn."""
+    with open(run_dir / ".lock", "a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+
+
 def fetch_runs_windowed(
     base_url: str,
     suite: str,
@@ -393,12 +553,15 @@ def fetch_runs_windowed(
     cache_root: str | None = None,
     *,
     strict: bool = False,
+    artifacts: tuple[str, ...] | None = None,
 ) -> list[dict]:
     """Fetch every ``(stack, date)`` in *stacks_dates* in parallel, returning a
     list of ``{"stack", "date", "run_dir"}`` for the runs successfully cached.
 
     Each run is fetched at most once (see :func:`ensure_run_cached`); callers pass
     an already date-windowed *stacks_dates* so only in-window runs are downloaded.
+    Given *artifacts*, only the files of each run they match are
+    (:func:`ensure_run_artifacts`), and a run counts as cached once those are.
     Runs that fail to download are logged and skipped rather than aborting the load.
 
     With *strict*, no download starts after the first failure that makes the
@@ -426,14 +589,17 @@ def fetch_runs_windowed(
     results: list[dict] = []
     failures: list[str] = []
     local_error: OSError | None = None
-    with ThreadPoolExecutor(max_workers=_POOL_MAXSIZE) as pool:
-        futures = {
-            pool.submit(
-                ensure_run_cached,
+    def fetch(stack: str, date: str) -> Path:
+        if artifacts is None:
+            return ensure_run_cached(
                 base_url, suite, detector, platform, stack, sample, date, cache_root,
-            ): (stack, date)
-            for stack, date in tasks
-        }
+            )
+        return ensure_run_artifacts(
+            base_url, suite, detector, platform, stack, sample, date, artifacts, cache_root,
+        )
+
+    with ThreadPoolExecutor(max_workers=_POOL_MAXSIZE) as pool:
+        futures = {pool.submit(fetch, stack, date): (stack, date) for stack, date in tasks}
         for fut in as_completed(futures):
             if fut.cancelled():
                 continue

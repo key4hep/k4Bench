@@ -206,17 +206,15 @@ def _phase_history_app(dashboard_dir, run_dir) -> None:
         _sys.path.insert(0, dashboard_dir)
     from config import Config
     from data import RunData
-    from k4bench.analysis.trend import build_results_trend
     from reco import breakdown
     from section_dispatch import PageContext
     from sidebar import TrendWindow
 
-    results = build_results_trend((run_dir,))
     ctx = PageContext(
         config=Config(run_dir, "https://store.example", "/tmp", "https://dash.example"),
         selection=None, data_dir=run_dir, run_meta=None,
-        run=RunData(None, None, None, results, sorted(results["label"].unique())),
-        window=TrendWindow(None, (run_dir,)), trend_machine=None, reliability={},
+        run=RunData(None, lambda _artifacts: run_dir),
+        window=TrendWindow(None, download=lambda _artifacts: (run_dir,)),
     )
     breakdown.render(ctx)
 
@@ -287,17 +285,15 @@ def _efficiency_history_app(dashboard_dir, run_dir) -> None:
         _sys.path.insert(0, dashboard_dir)
     from config import Config
     from data import RunData
-    from k4bench.analysis.trend import build_results_trend
     from reco import efficiency
     from section_dispatch import PageContext
     from sidebar import TrendWindow
 
-    results = build_results_trend((run_dir,))
     ctx = PageContext(
         config=Config(run_dir, "https://store.example", "/tmp", "https://dash.example"),
         selection=None, data_dir=run_dir, run_meta=None,
-        run=RunData(None, None, None, results, sorted(results["label"].unique())),
-        window=TrendWindow(None, (run_dir,)), trend_machine=None, reliability={},
+        run=RunData(None, lambda _artifacts: run_dir),
+        window=TrendWindow(None, download=lambda _artifacts: (run_dir,)),
     )
     efficiency.render(ctx)
 
@@ -456,19 +452,17 @@ def _event_timing_history_app(dashboard_dir, run_dir) -> None:
     if dashboard_dir not in _sys.path:
         _sys.path.insert(0, dashboard_dir)
     from config import Config
-    from data import RunData, cached_load_component_timing
-    from k4bench.analysis.trend import build_results_trend
+    from data import RunData, cached_load_results
     from reco import page
     from section_dispatch import PageContext
     from sidebar import TrendWindow
 
-    results = build_results_trend((run_dir,))
     ctx = PageContext(
         config=Config(run_dir, "https://store.example", "/tmp", "https://dash.example"),
         selection=None, data_dir=run_dir, run_meta=None,
-        run=RunData(None, None, None, results, sorted(results["label"].unique()),
-                    components=cached_load_component_timing(run_dir)[0]),
-        window=TrendWindow(None, (run_dir,)), trend_machine=None, reliability={},
+        run=RunData(cached_load_results(run_dir), lambda _artifacts: run_dir,
+                    reads_components=True),
+        window=TrendWindow(None, download=lambda _artifacts: (run_dir,)),
     )
     page._event_timing(ctx)
 
@@ -556,7 +550,7 @@ def _synthetic_history_app(dashboard_dir, event, algorithms) -> None:
 
     # The selected run has no algorithm timing; the window has.
     event_timing.render(
-        None, event, True, {"r0": True, "r1": True, "r2": False},
+        None, lambda: (event, {"r0": True, "r1": True, "r2": False}), True,
         components=None, load_algorithm_trend=lambda: algorithms,
     )
 
@@ -588,8 +582,7 @@ def _components_only_app(dashboard_dir, run_dir, trends_enabled) -> None:
 
     # The run's algorithms were timed, its events were not read.
     event_timing.render(
-        None, None, trends_enabled, {},
-        components=cached_load_component_timing(run_dir)[0],
+        None, None, trends_enabled, components=cached_load_component_timing(run_dir)[0],
     )
 
 
@@ -623,7 +616,7 @@ def _warm_up_only_app(dashboard_dir, run_dir) -> None:
     # The variant's VertexFinder ran in the warm-up event alone.
     wall = components["variant_truth_tracking"].execute["wall_s"]
     wall.loc[wall.index != 0, "VertexFinder"] = float("nan")
-    event_timing.render(cached_load_event_timing(run_dir), None, False, {}, components=components)
+    event_timing.render(cached_load_event_timing(run_dir), None, False, components=components)
 
 
 def test_event_timing_leaves_out_a_configuration_timed_in_the_warm_up_alone():
@@ -1093,17 +1086,15 @@ def _memory_history_app(dashboard_dir, run_dirs) -> None:
         _sys.path.insert(0, dashboard_dir)
     from config import Config
     from data import RunData
-    from k4bench.analysis.trend import build_results_trend
     from reco import memory
     from section_dispatch import PageContext
     from sidebar import TrendWindow
 
-    results = build_results_trend(run_dirs)
     ctx = PageContext(
         config=Config(run_dirs[-1], "https://store.example", "/tmp", "https://dash.example"),
         selection=None, data_dir=run_dirs[-1], run_meta=None,
-        run=RunData(None, None, None, results, sorted(results["label"].unique())),
-        window=TrendWindow(None, run_dirs), trend_machine=None, reliability={},
+        run=RunData(None, lambda _artifacts: run_dirs[-1]),
+        window=TrendWindow(None, download=lambda _artifacts: run_dirs),
     )
     memory.render(ctx)
 

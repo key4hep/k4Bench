@@ -343,10 +343,11 @@ def _trends_body(
 ) -> None:
     """Run Trends' controls, data prep and figures, scoped to a fragment so a
     style tweak or a Confirmed/Watch pill reruns only this block — not the whole
-    app (sidebar, eager trend loads, reliability map). *trend_df* is loaded once
-    outside it (``data.load_run``) and replayed on a fragment rerun, which also
-    reuses the cached nightly reports behind the flag lookup rather than
-    re-issuing the threaded HTTPS fetch whose shutdown can race a rerun.
+    app (sidebar, trend loads, reliability map). *trend_df* is loaded once
+    outside it (``section_dispatch.PageContext.trend_results``) and replayed on
+    a fragment rerun, which also reuses the cached nightly reports behind the
+    flag lookup rather than re-issuing the threaded HTTPS fetch whose shutdown
+    can race a rerun.
     """
     # Keep failed values for diagnostic markers, but never let them replace a
     # healthy rerun's ordinary line point for the same nightly tag.
@@ -415,8 +416,9 @@ def _trends_body(
 
     # ── Reliability filter ──────────────────────────────────────────────────────
     # Reliability is a per-run verdict (one machine condition per run, shared by
-    # all its configs), computed once in app.py from the full trend so it matches
-    # the Machine Info tab's verdict for the same run.
+    # all its configs), computed once per page from the full trend
+    # (``section_dispatch.PageContext.reliability``) so it matches the Machine
+    # Info tab's verdict for the same run.
     #
     # Applied *before* the same-tag dedup below, so excluding a run means the run
     # is gone rather than the tag: a tag whose newest run is unreliable falls back

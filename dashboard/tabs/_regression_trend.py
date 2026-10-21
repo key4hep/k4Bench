@@ -10,6 +10,7 @@ baseline gate, onset/confirmation markers and blame-window shading.
 
 from __future__ import annotations
 
+import glob
 from collections import Counter
 from collections.abc import Callable
 
@@ -19,6 +20,7 @@ import requests
 import streamlit as st
 
 from data import (
+    RUN_BASE,
     cached_load_trend_event_timing,
     cached_load_trend_machine_info,
     cached_load_trend_results,
@@ -30,6 +32,7 @@ from k4bench.analysis.loader import (
     with_cpu_efficiency,
 )
 from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
+from k4bench.artifacts import EVENTS_SUFFIX
 from k4bench.regression.engine import Z_THRESHOLD
 from k4bench.regression.models import MetricVerdict, Severity
 from k4bench.labels import pretty_sample
@@ -204,9 +207,15 @@ def _metric_history(
     windowed_items = tuple(sorted(
         (stack, tuple(dates)) for stack, dates in window.items()
     ))
+    # Of each run, what the chart reads: its results and machine info, and an
+    # event metric's events of the verdict's configuration alone.
+    files = RUN_BASE + (
+        (f"{glob.escape(verdict.label)}{EVENTS_SUFFIX}",)
+        if verdict.metric in EVENT_VALUE_METRICS else ()
+    )
     run_dirs = fetch_runs_windowed(
         data_url, SIM, verdict.detector, verdict.platform, verdict.sample,
-        cache_dir, windowed_items,
+        cache_dir, windowed_items, files,
     )
     if not run_dirs:
         return None

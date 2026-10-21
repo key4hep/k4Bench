@@ -12,7 +12,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from data import cached_load_dataflow
+from data import DATAFLOW, cached_load_dataflow
 from k4bench.analysis.components import event_loop_time
 from k4bench.analysis.dataflow import Collection, DataFlow, Graph
 from k4bench.analysis.loader import judgeable_config_data
@@ -193,7 +193,7 @@ def _render_limits(flow: DataFlow, graph: Graph, view: FlowView) -> None:
 
 
 def render(ctx: PageContext) -> None:
-    flows = judgeable_config_data(cached_load_dataflow(ctx.data_dir), ctx.run.results) or {}
+    flows = judgeable_config_data(cached_load_dataflow(ctx.run_dir(DATAFLOW)), ctx.run.results) or {}
     if not flows:
         st.info("No data flow recorded for this run.")
         return

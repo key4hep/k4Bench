@@ -6,6 +6,8 @@ that builds the view selector and delegates to the chosen view.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pandas as pd
 import streamlit as st
 
@@ -21,10 +23,11 @@ from .step_analysis import _render_step_analysis
 
 def render(
     region_data: dict | None,
-    trend_region_df: pd.DataFrame | None,
+    load_history: Callable[[], tuple[pd.DataFrame | None, dict[str, bool | None]]] | None = None,
     trends_enabled: bool = False,
-    reliability: dict[str, bool | None] | None = None,
 ) -> SectionScope | None:
+    """The region timing views; *load_history* loads the window's region
+    timing trend and its runs' reliability, only for Historical Trends."""
     if region_data is None and not trends_enabled:
         st.info("No region timing data available in the selected directory.")
         return None
@@ -62,7 +65,7 @@ def render(
                 region_data, display_options_slot=display_options_slot,
             )
     elif view == "Historical Trends":
-        _render_historical(trend_region_df, reliability)
+        _render_historical(*(load_history() if load_history else (None, None)))
         # The trends span the window's releases, not the sidebar's one —
         # reported so the scope note above stops naming it. The other three
         # views are the selected run, which the registry already describes.

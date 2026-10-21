@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pandas as pd
 import streamlit as st
 
@@ -254,14 +256,14 @@ def _render_historical(
 
 def render(
     event_data: dict | None,
-    trend_event_df: pd.DataFrame | None,
+    load_history: Callable[[], tuple[pd.DataFrame | None, dict[str, bool | None]]] | None = None,
     trends_enabled: bool = False,
-    reliability: dict[str, bool | None] | None = None,
     *,
     all_runs: bool = False,
 ) -> SectionScope | None:
-    """The per-event memory views; the history draws every run of a release
-    when *all_runs*."""
+    """The per-event memory views. *load_history* loads the window's event
+    trend and its runs' reliability, only for the history, which draws every
+    run of a release when *all_runs*."""
     if event_data is None and not trends_enabled:
         st.info("No event memory data available in the selected directory.")
         return None
@@ -278,6 +280,7 @@ def render(
         else:
             _render_current_run(event_data, display_options_slot)
         return None
+    trend_event_df, reliability = load_history() if load_history else (None, None)
     _render_historical(
         trend_event_df, reliability,
         reliability_slot=reliability_slot,

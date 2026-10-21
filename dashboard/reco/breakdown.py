@@ -15,7 +15,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from data import cached_load_trend_phases
+from data import COMPONENTS, cached_load_trend_phases
 from k4bench.analysis.components import ComponentTiming
 from k4bench.analysis.plots import (
     plot_event_composition,
@@ -201,7 +201,7 @@ _CHARTS = {"Bars": False, "Lines": True}
 
 
 def _render_historical(ctx: PageContext, reliability_slot, display_options_slot) -> None:
-    trend = judgeable_trend(ctx, cached_load_trend_phases)
+    trend = judgeable_trend(ctx, cached_load_trend_phases, COMPONENTS)
     if trend is None or trend.empty:
         st.info(
             "No phase timing in the selected window. Widen the trend window in "

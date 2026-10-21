@@ -286,16 +286,27 @@ def cached_list_runs(
     return list_runs(base_url, suite, detector, platform, stack, sample)
 
 
-@st.cache_data(show_spinner="Downloading run...", ttl=3600)
-def cached_fetch_run(
+class FilesUnavailable(Exception):
+    """Files of the selected run that a view reads could not be downloaded.
+
+    Raised in place of the view's data, so that a stall is never drawn as a
+    run without those files; the page says so where the view stops.
+    """
+
+
+@st.cache_data(show_spinner="Downloading run files...", ttl=3600)
+def cached_fetch_run_files(
     base_url: str, suite: str, detector: str, platform: str, stack: str, sample: str,
-    date: str, cache_dir: str,
+    date: str, cache_dir: str, artifacts: tuple[str, ...],
 ) -> str:
-    """One exact run, downloaded once into the on-disk cache
-    (:func:`k4bench.remote.ensure_run_cached`); its cached directory."""
-    from k4bench.remote import ensure_run_cached
-    return str(ensure_run_cached(
-        base_url, suite, detector, platform, stack, sample, date, cache_root=cache_dir,
+    """The cached directory of one exact run once it holds the files
+    *artifacts* match (:func:`k4bench.remote.ensure_run_artifacts`), which
+    are downloaded first; files already there are not downloaded again. A
+    download that fails raises, and so is not cached."""
+    from k4bench.remote import ensure_run_artifacts
+    return str(ensure_run_artifacts(
+        base_url, suite, detector, platform, stack, sample, date, artifacts,
+        cache_root=cache_dir,
     ))
 
 
@@ -308,8 +319,10 @@ def _fetch_runs_windowed(
     sample: str,
     cache_dir: str,
     stacks_dates_items: tuple[tuple[str, tuple[str, ...]], ...],
+    artifacts: tuple[str, ...] | None = None,
 ) -> tuple[str, ...]:
-    """Download the windowed ``(stack, date)`` set and return cached run dirs.
+    """Download the windowed ``(stack, date)`` set and return cached run dirs:
+    each run whole, or, given *artifacts*, only the files they match.
 
     *stacks_dates_items* is a hashable ``((stack, (date, ...)), ...)`` so the cache
     key varies with the selected window — widening reuses already-cached runs and
@@ -320,7 +333,7 @@ def _fetch_runs_windowed(
     try:
         runs = fetch_runs_windowed(
             base_url, suite, detector, platform, sample, stacks_dates,
-            cache_root=cache_dir, strict=True,
+            cache_root=cache_dir, strict=True, artifacts=artifacts,
         )
     except IncompleteFetch as exc:
         raise IncompleteFetch(
@@ -337,9 +350,13 @@ def cached_fetch_runs_windowed(
     sample: str,
     cache_dir: str,
     stacks_dates_items: tuple[tuple[str, tuple[str, ...]], ...],
+    artifacts: tuple[str, ...] | None = None,
 ) -> tuple[str, ...]:
-    """:func:`_fetch_runs_windowed`, cached only when every run landed."""
+    """:func:`_fetch_runs_windowed`, cached only when every run landed. An
+    incomplete one holds only the runs that did: one missing is left out of
+    the history rather than read as a run without those files."""
     return _keep_complete(
         _fetch_runs_windowed,
         base_url, suite, detector, platform, sample, cache_dir, stacks_dates_items,
+        artifacts,
     )

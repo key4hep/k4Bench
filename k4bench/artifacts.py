@@ -29,6 +29,8 @@ others.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 #: Run-wide metadata written by the nightly runner.
@@ -72,6 +74,18 @@ HEAP_LOG_SUFFIX = "_heap.log"
 def label_path(run_dir: Path, label: str, suffix: str) -> Path:
     """Path of *label*'s artifact with *suffix* inside *run_dir*."""
     return run_dir / f"{label}{suffix}"
+
+
+def matching(names: Iterable[str], patterns: Iterable[str]) -> list[str]:
+    """The names of *names* that any of *patterns* matches, in order.
+
+    A pattern is a file name, or a shell-style pattern over one
+    (:func:`fnmatch.fnmatchcase`): ``f"*{EVENTS_SUFFIX}"`` is every label's
+    events. A run's file names are matched rather than spelled out because
+    its labels are known only from its listing.
+    """
+    patterns = tuple(patterns)
+    return [name for name in names if any(fnmatchcase(name, p) for p in patterns)]
 
 
 def labelled_files(run_dir: Path, suffix: str) -> list[tuple[Path, str]]:
