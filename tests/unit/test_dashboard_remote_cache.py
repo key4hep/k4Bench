@@ -310,3 +310,18 @@ def test_an_unexpected_listing_error_is_not_swallowed(monkeypatch):
     # must surface rather than read as "this platform has no releases".
     with pytest.raises(TypeError):
         remote_cache.list_platform_stacks("u", SIM, "PLAT")
+
+
+def test_read_again_reads_one_listing_past_the_cache(monkeypatch):
+    # A run published after its release's listing was cached: the cached
+    # listing lacks it until it is read again.
+    answers = iter([["2026-10-11"], ["2026-10-12", "2026-10-11"]])
+    monkeypatch.setattr(remote, "list_runs", lambda *args: next(answers))
+    args = (BASE, SIM, "DET", "PLAT", "key4hep-2026-10-10", "single_e")
+    assert remote_cache.cached_list_runs(*args) == ["2026-10-11"]
+    assert remote_cache.cached_list_runs(*args) == ["2026-10-11"]
+    assert remote_cache.read_again(remote_cache.cached_list_runs, *args) == [
+        "2026-10-12", "2026-10-11",
+    ]
+    # And what it read is what the cache holds from then on.
+    assert remote_cache.cached_list_runs(*args) == ["2026-10-12", "2026-10-11"]

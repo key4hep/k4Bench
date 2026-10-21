@@ -66,11 +66,16 @@ def _pick_run_app(dashboard_dir, store, runs, plat, fail, pick_kwargs) -> None:
         suites.append(suite)
         return [plat]
 
-    def _scan_stack_samples(url, suite, det, p):
-        suites.append(suite)
-        return store[det]
+    # What a test publishes after the cache was filled, through "published":
+    # {"stacks": {det: {stack: [samples]}}, "runs": {(det, stack): [dates]}}.
+    # Only a read that bypasses the cache sees it.
+    published = st.session_state.get("published", {})
 
-    def _list_runs(url, suite, det, p, stack, sample):
+    def _scan_stack_samples(url, suite, det, p, fresh=False):
+        suites.append(suite)
+        return {**store[det], **(published.get("stacks", {}).get(det, {}) if fresh else {})}
+
+    def _list_runs(url, suite, det, p, stack, sample, fresh=False):
         suites.append(suite)
         if failing == "runs":
             raise OSError("listing timed out")
@@ -78,7 +83,15 @@ def _pick_run_app(dashboard_dir, store, runs, plat, fail, pick_kwargs) -> None:
             return []
         # A test lands a run mid-session through "new_runs".
         new = st.session_state.get("new_runs", {}).get((det, stack), [])
-        return sorted([*runs[(det, stack)], *new], reverse=True)
+        if fresh:
+            if failing == "fresh runs":
+                raise OSError("listing timed out")
+            new = [*new, *published.get("runs", {}).get((det, stack), [])]
+        return sorted([*runs.get((det, stack), []), *new], reverse=True)
+
+    def _read_again(cached, *args):
+        st.session_state["read_again"] = st.session_state.get("read_again", 0) + 1
+        return cached(*args, fresh=True)
 
     def _fetch_run(url, suite, det, p, stack, sample, day, cache):
         suites.append(suite)
@@ -89,6 +102,7 @@ def _pick_run_app(dashboard_dir, store, runs, plat, fail, pick_kwargs) -> None:
     sidebar.cached_scan_stack_samples = _scan_stack_samples
     sidebar.cached_list_runs = _list_runs
     sidebar.cached_fetch_run = _fetch_run
+    sidebar.read_again = _read_again
     # "away" stands for the reader being on another page: nothing is picked,
     # and the page switch cleared the URL the pickers mirror themselves in.
     if st.session_state.get("away"):
@@ -100,11 +114,13 @@ def _pick_run_app(dashboard_dir, store, runs, plat, fail, pick_kwargs) -> None:
     )
 
 
-def _run_pick(params=None, fail=None, **pick_kwargs) -> AppTest:
+def _run_pick(params=None, fail=None, published=None, **pick_kwargs) -> AppTest:
     at = AppTest.from_function(
         _pick_run_app, args=(str(_DASHBOARD_DIR), STORE, RUNS, PLAT, fail, pick_kwargs),
         default_timeout=30,
     )
+    if published:
+        at.session_state["published"] = published
     for key, value in (params or {}).items():
         at.query_params[key] = value
     at.run()
@@ -215,6 +231,50 @@ def test_a_linked_run_missing_from_the_store_is_named_with_an_explicit_fallback(
     at.button[1].click().run()
     assert _picked(at)[-1] == "2026-10-11"
     assert _query(at)["run"] == "2026-10-11"
+    assert not at.warning
+
+
+def test_a_link_to_a_run_published_since_the_listing_was_cached_opens_it():
+    at = _run_pick(
+        {"detector": "CLD_o2_v09", "stack": NEW, "run": "2026-10-12"},
+        published={"runs": {("CLD_o2_v09", NEW): ["2026-10-12"]}},
+    )
+    assert _picked(at)[-1] == "2026-10-12"
+    assert not at.warning
+    assert at.selectbox(key="sb_run").options[0] == "2026-10-12 · latest"
+
+
+def test_a_link_to_a_newer_run_the_store_lacks_too_is_refused_after_one_more_read():
+    at = _run_pick({"detector": "CLD_o2_v09", "stack": NEW, "run": "2026-10-30"})
+    assert at.session_state["picked"] is None
+    assert "The linked run `2026-10-30` is not in the store" in at.warning[0].value
+    assert at.session_state["read_again"] == 1
+
+
+def test_an_older_missing_run_is_refused_without_reading_the_store_again():
+    # Nothing older than the newest listed run can have been published since.
+    at = _run_pick({"detector": "CLD_o2_v09", "stack": NEW, "run": "2026-10-05"})
+    assert at.session_state["picked"] is None
+    assert "read_again" not in at.session_state
+
+
+def test_a_failed_second_read_keeps_the_linked_run_rather_than_refusing_it():
+    at = _run_pick({"detector": "CLD_o2_v09", "stack": NEW, "run": "2026-10-12"},
+                   fail="fresh runs")
+    assert _picked(at)[-1] == "2026-10-12"
+    assert "Could not list the runs of" in at.warning[0].value
+
+
+def test_a_link_to_a_release_published_since_the_scan_was_cached_opens_it():
+    newer = "key4hep-2026-10-12"
+    at = _run_pick(
+        {"detector": "CLD_o2_v09", "stack": newer, "run": "2026-10-12"},
+        published={
+            "stacks": {"CLD_o2_v09": {newer: ["single_e-_10GeV"]}},
+            "runs": {("CLD_o2_v09", newer): ["2026-10-12"]},
+        },
+    )
+    assert _picked(at)[3:] == (newer, "single_e-_10GeV", "2026-10-12")
     assert not at.warning
 
 

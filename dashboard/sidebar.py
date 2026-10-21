@@ -28,6 +28,7 @@ from remote_cache import (
     cached_list_runs,
     cached_scan_stack_samples,
     list_platform_stacks,
+    read_again,
 )
 from trend_window import (
     DEFAULT_RELEASES,
@@ -206,6 +207,16 @@ def pick_run(
     except Exception as err:
         st.error(f"Failed to scan releases: {err}")
         return None
+    # A link to a release newer than the cached scan holds — one published
+    # since it was read — is looked for in the store before it is called stale.
+    linked = None if f"{key_prefix}sb_stack" in st.session_state else st.query_params.get(STACK)
+    if linked and stack_samples and linked > max(stack_samples):
+        try:
+            stack_samples = read_again(
+                cached_scan_stack_samples, base_url, suite, detector, platform,
+            )
+        except Exception as err:
+            st.warning(f"Could not scan the releases again for `{linked}`: {err}")
 
     # Sample — union across all stacks, so a sample stays selectable
     # (and its trend history visible) even when the newest release dropped it.
@@ -278,7 +289,20 @@ def _pick_run_date(
     unchecked_key = f"_{key}_unchecked"
     parent = (detector, platform, sample, stack)
     try:
-        listed = cached_list_runs(base_url, suite, detector, platform, stack, sample)
+        runs = _run_dates(cached_list_runs(base_url, suite, detector, platform, stack, sample))
+        unchecked = st.session_state.get(unchecked_key)
+        if (
+            linked is None and unchecked is not None
+            and unchecked == (*parent, st.session_state.get(key))
+        ):
+            linked = unchecked[-1]
+        if linked and linked not in runs and (not runs or linked > runs[0]):
+            # Newer than anything the cached listing holds: perhaps published
+            # since it was read, so the store is asked again before the link
+            # is refused.
+            runs = _run_dates(read_again(
+                cached_list_runs, base_url, suite, detector, platform, stack, sample,
+            ))
     except Exception as err:
         pinned = st.session_state.get(key) or linked
         if not is_run_id(pinned):
@@ -293,16 +317,9 @@ def _pick_run_date(
         st.session_state[unchecked_key] = (*parent, pinned)
         runs, latest = [pinned], None
     else:
-        runs = sorted((run for run in listed if is_run_id(run)), reverse=True)
         if not runs:
             st.warning("No runs found for the selected combination.")
             return None
-        unchecked = st.session_state.get(unchecked_key)
-        if (
-            linked is None and unchecked is not None
-            and unchecked == (*parent, st.session_state.get(key))
-        ):
-            linked = unchecked[-1]
         if linked and linked not in runs:
             _offer_latest_run(key, linked, runs[0], detector, platform, sample, stack)
             return None
@@ -325,6 +342,12 @@ def _pick_run_date(
             ),
         )
     return run
+
+
+def _run_dates(listed: list[str]) -> list[str]:
+    """The run directories of a listing, newest first; anything that is not a
+    run's date left out."""
+    return sorted((run for run in listed if is_run_id(run)), reverse=True)
 
 
 def _offer_latest_run(

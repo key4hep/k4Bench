@@ -58,6 +58,14 @@ def _keep_complete(cached, *args):
         return exc.partial
 
 
+def read_again(cached, *args):
+    """The cached function *cached*'s answer for *args*, read from the store
+    again rather than from the cache: for a link naming something newer than
+    the cached listing holds, which may have been published since it was read."""
+    cached.clear(*args)
+    return cached(*args)
+
+
 @st.cache_data(show_spinner="Fetching detectors...", ttl=3600)
 def cached_list_detectors(base_url: str, suite: str) -> list[str]:
     from k4bench.remote import list_detectors
