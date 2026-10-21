@@ -27,6 +27,7 @@ from remote_cache import (
     cached_list_run_dates,
     cached_list_runs,
     cached_scan_stack_samples,
+    forget,
     list_platform_stacks,
     read_again,
 )
@@ -168,12 +169,20 @@ def pick_run(
         resource_link_card(base_url, "🗄️", "WebEOS data", base_url.rstrip("/")),
         unsafe_allow_html=True,
     )
+    # Whether a listing was read again for a link: then the trend window's
+    # run dates are too, so its history holds what the link opened.
+    reread: list[str] = []
 
     try:
         detectors = cached_list_detectors(base_url, suite)
     except Exception as err:
         st.error(f"Failed to list detectors: {err}")
         return None
+    linked = _linked(f"{key_prefix}sb_detector", DETECTOR)
+    detectors = _reread_for_link(
+        detectors, bool(linked) and linked not in detectors, "the detectors", reread,
+        cached_list_detectors, base_url, suite,
+    )
     if not detectors:
         st.error("No detectors found at the configured WebEOS URL.")
         return None
@@ -190,6 +199,11 @@ def pick_run(
     except Exception as err:
         st.error(f"Failed to list platforms: {err}")
         return None
+    linked = _linked(f"{key_prefix}sb_platform", PLATFORM)
+    platforms = _reread_for_link(
+        platforms, bool(linked) and linked not in platforms, f"the platforms of {detector}",
+        reread, cached_list_platforms, base_url, suite, detector,
+    )
     if not platforms:
         st.warning(f"No platforms found for detector '{detector}'.")
         return None
@@ -207,16 +221,17 @@ def pick_run(
     except Exception as err:
         st.error(f"Failed to scan releases: {err}")
         return None
-    # A link to a release newer than the cached scan holds — one published
-    # since it was read — is looked for in the store before it is called stale.
-    linked = None if f"{key_prefix}sb_stack" in st.session_state else st.query_params.get(STACK)
-    if linked and stack_samples and linked > max(stack_samples):
-        try:
-            stack_samples = read_again(
-                cached_scan_stack_samples, base_url, suite, detector, platform,
-            )
-        except Exception as err:
-            st.warning(f"Could not scan the releases again for `{linked}`: {err}")
+    linked_stack = _linked(f"{key_prefix}sb_stack", STACK)
+    linked_sample = _linked(f"{key_prefix}sb_sample", SAMPLE)
+    stack_samples = _reread_for_link(
+        stack_samples,
+        bool(linked_stack) and linked_stack not in stack_samples
+        or bool(linked_sample) and not any(linked_sample in s for s in stack_samples.values())
+        or bool(linked_stack and linked_sample)
+        and linked_sample not in stack_samples.get(linked_stack, ()),
+        f"the releases on {platform}", reread,
+        cached_scan_stack_samples, base_url, suite, detector, platform,
+    )
 
     # Sample — union across all stacks, so a sample stays selectable
     # (and its trend history visible) even when the newest release dropped it.
@@ -253,8 +268,10 @@ def pick_run(
         return None
 
     run = _pick_run_date(
-        base_url, suite, detector, platform, stack, sample, f"{key_prefix}sb_run",
+        base_url, suite, detector, platform, stack, sample, f"{key_prefix}sb_run", reread,
     )
+    if reread:
+        forget(cached_list_run_dates, base_url, suite, detector, platform, sample)
     if run is None:
         return None
     ref = RunRef(suite, detector, platform, stack, sample, run)
@@ -268,9 +285,31 @@ def pick_run(
     return RunSelection(ref, data_dir)
 
 
+def _linked(key: str, param: str) -> str | None:
+    """The link's ``?param=`` for the selectbox under *key* on its first
+    visit; ``None`` once it has a value of its own."""
+    return None if key in st.session_state else st.query_params.get(param)
+
+
+def _reread_for_link(listing, lacks: bool, what: str, reread: list[str], cached, *args):
+    """*listing*, or, when it *lacks* what a first visit's link names —
+    perhaps published since it was cached — the cached function *cached*'s
+    answer for *args* read from the store again, noted in *reread*. A read
+    that fails leaves *listing*, saying so."""
+    if not lacks:
+        return listing
+    try:
+        listing = read_again(cached, *args)
+    except Exception as err:
+        st.warning(f"Could not list {what} again: {err}")
+        return listing
+    reread.append(what)
+    return listing
+
+
 def _pick_run_date(
     base_url: str, suite: str, detector: str, platform: str, stack: str, sample: str,
-    key: str,
+    key: str, reread: list[str],
 ) -> str | None:
     """The Run selectbox: which of *stack*'s runs of *sample* the single-run
     views show, by the night it was measured, newest first.
@@ -282,7 +321,8 @@ def _pick_run_date(
     screen, when the release's runs cannot be listed and nothing pinned one,
     or when the link's run is not in the store: then the latest is offered
     with a button, never opened in its place. A pin shown while the listing
-    did not answer is checked like a link once it does.
+    did not answer is checked like a link once it does. A listing read again
+    for the link is noted in *reread*.
     """
     linked = None if key in st.session_state else st.query_params.get(RUN)
     # The pin, with its release, that a listing has not yet confirmed.
@@ -303,6 +343,7 @@ def _pick_run_date(
             runs = _run_dates(read_again(
                 cached_list_runs, base_url, suite, detector, platform, stack, sample,
             ))
+            reread.append(f"the runs of {stack}")
     except Exception as err:
         pinned = st.session_state.get(key) or linked
         if not is_run_id(pinned):

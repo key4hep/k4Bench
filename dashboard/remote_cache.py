@@ -58,11 +58,17 @@ def _keep_complete(cached, *args):
         return exc.partial
 
 
+def forget(cached, *args) -> None:
+    """Drop the cached function *cached*'s answer for *args*, so that its
+    next call reads the store."""
+    cached.clear(*args)
+
+
 def read_again(cached, *args):
     """The cached function *cached*'s answer for *args*, read from the store
-    again rather than from the cache: for a link naming something newer than
-    the cached listing holds, which may have been published since it was read."""
-    cached.clear(*args)
+    again rather than from the cache: for a link naming something the cached
+    listing lacks, which may have been published since it was read."""
+    forget(cached, *args)
     return cached(*args)
 
 

@@ -55,25 +55,29 @@ def _pick_run_app(dashboard_dir, store, runs, plat, fail, pick_kwargs) -> None:
     st.session_state["suites"] = suites = []
     # A test changes how the store answers mid-session through "fail".
     failing = st.session_state.get("fail", fail)
+    # What a test publishes after the cache was filled, through "published":
+    # {"platforms": {det: [platform]}, "stacks": {det: {stack: [samples]}},
+    # "runs": {(det, stack): [dates]}}; a detector is new when "stacks" names
+    # one the store lacks. Only a read that bypasses the cache sees it.
+    published = st.session_state.get("published", {})
 
-    def _list_detectors(url, suite):
+    def _list_detectors(url, suite, fresh=False):
         suites.append(suite)
         if failing == "detectors":
             raise OSError("listing timed out")
-        return sorted(store)
+        return sorted({*store, *(published.get("stacks", {}) if fresh else {})})
 
-    def _list_platforms(url, suite, det):
+    def _list_platforms(url, suite, det, fresh=False):
         suites.append(suite)
-        return [plat]
-
-    # What a test publishes after the cache was filled, through "published":
-    # {"stacks": {det: {stack: [samples]}}, "runs": {(det, stack): [dates]}}.
-    # Only a read that bypasses the cache sees it.
-    published = st.session_state.get("published", {})
+        return [plat, *(published.get("platforms", {}).get(det, []) if fresh else [])]
 
     def _scan_stack_samples(url, suite, det, p, fresh=False):
         suites.append(suite)
-        return {**store[det], **(published.get("stacks", {}).get(det, {}) if fresh else {})}
+        # A detector never scanned before is read from the store anyway.
+        return {
+            **store.get(det, {}),
+            **(published.get("stacks", {}).get(det, {}) if fresh or det not in store else {}),
+        }
 
     def _list_runs(url, suite, det, p, stack, sample, fresh=False):
         suites.append(suite)
@@ -83,15 +87,19 @@ def _pick_run_app(dashboard_dir, store, runs, plat, fail, pick_kwargs) -> None:
             return []
         # A test lands a run mid-session through "new_runs".
         new = st.session_state.get("new_runs", {}).get((det, stack), [])
-        if fresh:
-            if failing == "fresh runs":
-                raise OSError("listing timed out")
+        if fresh and failing == "fresh runs":
+            raise OSError("listing timed out")
+        # A release never listed before is read from the store anyway.
+        if fresh or (det, stack) not in runs:
             new = [*new, *published.get("runs", {}).get((det, stack), [])]
         return sorted([*runs.get((det, stack), []), *new], reverse=True)
 
     def _read_again(cached, *args):
         st.session_state["read_again"] = st.session_state.get("read_again", 0) + 1
         return cached(*args, fresh=True)
+
+    def _forget(cached, *args):
+        st.session_state.setdefault("forgotten", []).append((cached.__name__, args[2:]))
 
     def _fetch_run(url, suite, det, p, stack, sample, day, cache):
         suites.append(suite)
@@ -103,6 +111,7 @@ def _pick_run_app(dashboard_dir, store, runs, plat, fail, pick_kwargs) -> None:
     sidebar.cached_list_runs = _list_runs
     sidebar.cached_fetch_run = _fetch_run
     sidebar.read_again = _read_again
+    sidebar.forget = _forget
     # "away" stands for the reader being on another page: nothing is picked,
     # and the page switch cleared the URL the pickers mirror themselves in.
     if st.session_state.get("away"):
@@ -276,6 +285,42 @@ def test_a_link_to_a_release_published_since_the_scan_was_cached_opens_it():
     )
     assert _picked(at)[3:] == (newer, "single_e-_10GeV", "2026-10-12")
     assert not at.warning
+
+
+@pytest.mark.parametrize(("link", "published", "picked"), [
+    # A sample added to a release the cached scan already held.
+    ({"detector": "CLD_o2_v09", "stack": NEW, "sample": "p8_ee_Zbb_ecm91"},
+     {"stacks": {"CLD_o2_v09": {NEW: ["p8_ee_Zbb_ecm91", "single_e-_10GeV"]}}},
+     ("CLD_o2_v09", PLAT, NEW, "p8_ee_Zbb_ecm91")),
+    # A platform added for a detector.
+    ({"detector": "CLD_o2_v09", "platform": "aarch64-el9-gcc16-opt"},
+     {"platforms": {"CLD_o2_v09": ["aarch64-el9-gcc16-opt"]}},
+     ("CLD_o2_v09", "aarch64-el9-gcc16-opt", NEW, "single_e-_10GeV")),
+    # A detector added to the suite.
+    ({"detector": "IDEA_o1_v03"},
+     {"stacks": {"IDEA_o1_v03": {NEW: ["single_e-_10GeV"]}},
+      "runs": {("IDEA_o1_v03", NEW): ["2026-10-11"]}},
+     ("IDEA_o1_v03", PLAT, NEW, "single_e-_10GeV")),
+], ids=["sample", "platform", "detector"])
+def test_a_link_to_a_level_published_since_its_listing_was_cached_opens_it(
+    link, published, picked,
+):
+    at = _run_pick(link, published=published)
+    detector, platform, stack, sample = picked
+    assert _picked(at)[1:5] == (detector, platform, stack, sample)
+    assert not at.warning
+    assert not [c for c in _captions(at) if c.startswith("⚠️")]
+    # The trend window's run dates are read afresh too, so its history holds
+    # what the link opened.
+    assert ("cached_list_run_dates", (detector, platform, sample)) in (
+        at.session_state["forgotten"]
+    )
+
+
+def test_a_link_the_cache_already_holds_reads_nothing_again():
+    at = _run_pick({"detector": "CLD_o2_v09", "stack": NEW, "run": "2026-10-10"})
+    assert "read_again" not in at.session_state
+    assert "forgotten" not in at.session_state
 
 
 def test_a_malformed_run_link_is_named_and_not_guessed():
