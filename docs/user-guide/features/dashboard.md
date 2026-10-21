@@ -44,8 +44,10 @@ The sidebar lets you drill down through that hierarchy: **detector → platform 
 physics sample → Key4hep release → run**. A release is re-run every night
 until the next one is tagged, so it usually has several runs; the **Run**
 selector names each by the night it was measured, newest first, and opens on
-the latest. The caption under it names the release that was measured and the
-night it was measured, which are different things: a re-run of an older
+the latest. The caption under it names the release that was measured, the
+night it was measured and which of the release's runs it is
+(`Key4hep 2026-10-17 · measured 2026-10-21 · run 5 of 5`). The release and
+the night are different things: a re-run of an older
 release can share its night with the first run of a newer one. Single-run tabs
 show the selected run; the trend window controls the multi-run views.
 

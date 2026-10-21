@@ -302,10 +302,15 @@ def _pick_run_date(
         format_func=lambda day: f"{day} · latest" if day == latest else day,
     )
     if run:
+        # Runs are counted oldest first; a listing that did not answer has no count.
+        place = f" · run {len(runs) - runs.index(run)} of {len(runs)}" if latest else ""
         st.caption(
-            f"Measured {run} with Key4hep release {pretty_release(stack)}; "
-            f"{len(runs)} run(s) of this release, defaults to the latest. "
-            "Single-run views show this run; historical views read the Trend window."
+            f"Key4hep **{pretty_release(stack)}** · measured **{run}**{place}",
+            help=(
+                "A release is re-run every night until the next one is tagged. "
+                "The Run selector opens on the latest run. Single-run views show "
+                "the selected run; historical views use the Trend window."
+            ),
         )
     return run
 
