@@ -7,6 +7,8 @@ import json
 import math
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from k4bench.analysis.components import (
@@ -16,6 +18,7 @@ from k4bench.analysis.components import (
     INCLUSIVE_METRICS,
     THREAD_METRICS,
     ComponentTiming,
+    event_loop_time,
 )
 from k4bench.analysis.loader import load_component_timing
 
@@ -375,3 +378,56 @@ def test_phase_component_seconds_sums_the_event_loop_over_its_events(timing):
     assert loop["Geo"] == 0.0
     assert timing.phase_component_seconds("initialize")["Geo"] == 2.0
     assert timing.phase_component_seconds("finalize").empty
+
+
+def _wall(columns: dict[str, list], events: list[int]) -> pd.DataFrame:
+    return pd.DataFrame(columns, index=pd.Index(events, name="event_number"), dtype=float)
+
+
+def test_event_loop_time_tells_the_share_of_every_event_from_the_time_when_run():
+    # Event 0 warms up, a hundred times slower; Filtered runs in event 1 only.
+    wall = _wall({"Always": [0.1, 1e-3, 1e-3, 1e-3], "Filtered": [0.6, 6e-3, None, None]},
+                 [0, 1, 2, 3])
+    time = event_loop_time(wall)
+    filtered, always = time.loc["Filtered"], time.loc["Always"]
+    assert filtered["events"] == 3
+    assert filtered["executed_events"] == 1
+    assert filtered["coverage"] == pytest.approx(1 / 3)
+    assert filtered["seconds"] == pytest.approx(6e-3)
+    assert filtered["seconds_per_event"] == pytest.approx(2e-3)
+    assert filtered["seconds_when_run"] == pytest.approx(6e-3)
+    # Run in every event, the two agree.
+    assert always["seconds_per_event"] == pytest.approx(always["seconds_when_run"])
+    assert always["coverage"] == 1.0
+
+
+def test_event_loop_time_leaves_out_the_warm_up_by_its_number_not_its_row():
+    # Events 5, 7, 8 (a gap at 6): no event 0, so the first is kept.
+    wall = _wall({"Algo": [3.0, 1.0, 2.0]}, [5, 7, 8])
+    time = event_loop_time(wall)
+    assert time.loc["Algo", "events"] == 3
+    assert time.loc["Algo", "seconds_per_event"] == pytest.approx(2.0)
+    # And the warm-up counts when asked to.
+    with_warm_up = event_loop_time(_wall({"Algo": [9.0, 1.0]}, [0, 1]), warm_up=None)
+    assert with_warm_up.loc["Algo", "seconds_per_event"] == pytest.approx(5.0)
+
+
+def test_event_loop_time_has_no_time_without_an_event_run_in():
+    wall = _wall({"WarmUpOnly": [1.0, None], "Never": [None, None], "Free": [0.0, 0.0]}, [0, 1])
+    time = event_loop_time(wall)
+    # Run only in the warm-up, or never: unknown, not free.
+    for name in ("WarmUpOnly", "Never"):
+        assert time.loc[name, "executed_events"] == 0
+        assert np.isnan(time.loc[name, ["seconds", "seconds_per_event",
+                                        "seconds_when_run"]].astype(float)).all()
+    # A measured zero stays zero.
+    assert time.loc["Free", "seconds_per_event"] == 0.0
+    assert time.loc["Free", "seconds_when_run"] == 0.0
+
+
+@pytest.mark.parametrize("events", [[0], []])
+def test_event_loop_time_without_an_event_past_the_warm_up(events):
+    time = event_loop_time(_wall({"Algo": [1.0] * len(events)}, events))
+    assert time.loc["Algo", "events"] == 0
+    assert np.isnan(time.loc["Algo", ["coverage", "seconds_per_event",
+                                      "seconds_when_run"]].astype(float)).all()

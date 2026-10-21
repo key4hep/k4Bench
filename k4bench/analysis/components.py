@@ -115,6 +115,16 @@ INCLUSIVE_METRICS = ("peak_heap_bytes", "largest_allocation_bytes")
 #: what it shows depends on the order the calls ran in.
 NON_ADDITIVE_METRICS = (*INCLUSIVE_METRICS, "peak_rss_increase_mb")
 
+#: The event that warms the job up, bringing in the conditions, geometry and
+#: code later events find in place: left out of every summary of the event
+#: loop. The auditor numbers events as they are processed, so it is the first.
+WARM_UP_EVENT = 0
+
+#: The columns of :func:`event_loop_time`.
+EVENT_LOOP_TIME_COLUMNS = [
+    "seconds", "events", "executed_events", "coverage", "seconds_per_event", "seconds_when_run",
+]
+
 
 @dataclass(frozen=True)
 class ComponentTiming:
@@ -324,3 +334,45 @@ class ComponentTiming:
         if self.process_start_epoch_ns is not None and "initialize" in self.phases:
             out["configure"] = (self.phases["initialize"][0] - self.process_start_epoch_ns) / 1e9
         return out
+
+
+def without_warm_up(frame: pd.DataFrame, warm_up: int | None = WARM_UP_EVENT) -> pd.DataFrame:
+    """*frame*'s events but the *warm_up* event, found by its number: a job
+    whose recorded events start after it keeps its first. ``None`` keeps
+    every event."""
+    return frame if warm_up is None else frame[frame.index != warm_up]
+
+
+def event_loop_time(wall: pd.DataFrame, *, warm_up: int | None = WARM_UP_EVENT) -> pd.DataFrame:
+    """Each component's own time in the event loop, the *warm_up* event left
+    out (:func:`without_warm_up`). *wall* is :attr:`ComponentTiming.execute`'s
+    ``wall_s``, where ``NaN`` is an event the component did not run in.
+
+    Indexed by component, with :data:`EVENT_LOOP_TIME_COLUMNS`:
+
+    - ``seconds``, its own time summed over the events left;
+    - ``events``, how many events are left, the same for every component;
+    - ``executed_events``, how many of those it ran in, and ``coverage``,
+      their share of ``events``;
+    - ``seconds_per_event``, ``seconds`` over ``events``: what it adds to an
+      event on average, the events it was skipped in included, so it adds up
+      across components;
+    - ``seconds_when_run``, ``seconds`` over ``executed_events``: what it
+      costs in an event it runs in. The two agree for a component run in
+      every event.
+
+    A component that ran in none of the events left, or with no event left,
+    has no time: ``seconds`` and the ratios are ``NaN``, never zero.
+    """
+    wall = without_warm_up(wall, warm_up)
+    events = len(wall)
+    executed = wall.notna().sum()
+    seconds = wall.sum().where(executed > 0)
+    return pd.DataFrame({
+        "seconds": seconds,
+        "events": events,
+        "executed_events": executed,
+        "coverage": executed / events if events else float("nan"),
+        "seconds_per_event": seconds / events if events else float("nan"),
+        "seconds_when_run": seconds / executed.where(executed > 0),
+    }, index=wall.columns, columns=EVENT_LOOP_TIME_COLUMNS)

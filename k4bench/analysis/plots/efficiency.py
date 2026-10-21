@@ -22,9 +22,9 @@ def _rate(value: float) -> str:
 #: :func:`~k4bench.analysis.efficiency.component_efficiency` column and how
 #: its hover writes one.
 SIZE_METRICS = {
-    "allocations_per_event": lambda v: f"{v:,.0f} allocations per event",
+    "allocations_per_event": lambda v: f"{v:,.0f} allocations per event it ran in",
     "allocations_per_s": _rate,
-    "allocated_mb_per_event": lambda v: f"{v:,.1f} MB allocated per event",
+    "allocated_mb_per_event": lambda v: f"{v:,.1f} MB allocated per event it ran in",
 }
 
 #: The algorithms, longest first, whose names the chart writes by their point.
@@ -42,6 +42,11 @@ def _milliseconds(value: float) -> str:
     return f"{value / 1e3:.2f} s" if value >= 1e3 else f"{value:.3g} ms"
 
 
+def _coverage(ran: float, events: float) -> str:
+    """The events an algorithm skipped, when it skipped any."""
+    return f" ({ran:.0f} of {events:.0f} events)" if ran < events else ""
+
+
 def plot_component_efficiency(
     table: pd.DataFrame,
     *,
@@ -53,7 +58,7 @@ def plot_component_efficiency(
     """Each algorithm of
     :func:`~k4bench.analysis.efficiency.component_efficiency`'s *table* as a
     point:
-    its time per event across on a log axis, its instructions per cycle up,
+    its time per event it ran in across on a log axis, its instructions per cycle up,
     instructions per cycle below :data:`STALL_IPC` shaded.
 
     *size*, a :data:`SIZE_METRICS` column, sets the points' areas; ``None``,
@@ -79,9 +84,12 @@ def plot_component_efficiency(
         for i, name in enumerate(table.index[:labelled])
     }
     hover = pd.Series([
-        f"{_milliseconds(ms)} per event<br>IPC {ipc:.2f}"
+        f"{_milliseconds(ms)} per event it ran in{_coverage(ran, events)}<br>IPC {ipc:.2f}"
         + (f"<br>{SIZE_METRICS[size](v)}" if size in SIZE_METRICS and pd.notna(v) else "")
-        for ms, ipc, v in zip(table["ms_per_event"], table["ipc"], values)
+        for ms, ipc, v, ran, events in zip(
+            table["ms_per_event"], table["ipc"], values,
+            table["executed_events"], table["events"],
+        )
     ], index=table.index)
     if groups is None:
         members = {None: table.index}
@@ -115,7 +123,7 @@ def plot_component_efficiency(
         template=_TEMPLATE, height=480, margin=dict(l=20, r=20, t=30, b=10),
         showlegend=groups is not None,
     )
-    fig.update_xaxes(type="log", title_text="Self time per event (ms, log scale)")
+    fig.update_xaxes(type="log", title_text="Self time per event it ran in (ms, log scale)")
     fig.update_yaxes(
         title_text="Instructions per cycle", rangemode="tozero",
         range=[0, max(float(table["ipc"].max()) * 1.15, 1.0)],

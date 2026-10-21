@@ -48,8 +48,9 @@ class Node:
     members: tuple[str, ...]
     impl: str
     framework: str
-    #: Event-loop seconds per event, summed over the members; ``None`` when
-    #: any member is untimed.
+    #: Event-loop seconds per event (each member's ``seconds_per_event`` of
+    #: :func:`~k4bench.analysis.components.event_loop_time`), summed over the
+    #: members; ``None`` when any member is untimed.
     seconds: float | None
 
     @property

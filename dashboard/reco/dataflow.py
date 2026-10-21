@@ -13,6 +13,7 @@ import pandas as pd
 import streamlit as st
 
 from data import cached_load_dataflow
+from k4bench.analysis.components import event_loop_time
 from k4bench.analysis.dataflow import Collection, DataFlow, Graph
 from k4bench.analysis.loader import judgeable_config_data
 from k4bench.analysis.plots.dataflow import (
@@ -43,14 +44,15 @@ _CHART_CONFIG = {
 
 
 def _seconds_per_event(ctx: PageContext, config: str) -> dict[str, float]:
+    """Each algorithm's own time per event, the warm-up left out and the
+    events it was skipped in counted: what it adds to the workload, which
+    adds up over a group's members. One that ran in no such event is left
+    out, unknown rather than free."""
     timing = ctx.run.components.get(config)
     if timing is None:
         return {}
-    wall = timing.execute["wall_s"]
-    # A component timed in no event is unknown, not free.
-    return {
-        name: float(wall[name].sum()) / len(wall) for name in wall.columns if wall[name].notna().any()
-    } if len(wall) else {}
+    per_event = event_loop_time(timing.execute["wall_s"])["seconds_per_event"].dropna()
+    return {str(name): float(seconds) for name, seconds in per_event.items()}
 
 
 def _clicked_node(event, fig) -> str | None:
@@ -209,7 +211,8 @@ def render(ctx: PageContext) -> None:
     flow = flows[config]
     with writer_col:
         writer = st.toggle("Show Writer inputs", key=_WRITER_KEY, bind="query-params")
-    view = dataflow_view(flow, _seconds_per_event(ctx, config),
+    seconds = _seconds_per_event(ctx, config)
+    view = dataflow_view(flow, seconds,
                          st.session_state[_EXPANDED_KEY], writer_edges=writer, isolated=False)
     with expand_col:
         if st.button("Expand all", disabled=not view.groups, width="stretch"):
@@ -222,7 +225,13 @@ def render(ctx: PageContext) -> None:
 
     graph = flow.graph()
     fig = plot_dataflow(view, layered_positions(view), selected=st.session_state[_SELECTED_KEY])
-    st.caption("Dot size: time per event · Square: algorithms of one class, click to expand "
+    if seconds:
+        timed = "time per event, the warm-up left out"
+    elif config in ctx.run.components:
+        timed = "one size, no algorithm timed after the warm-up"
+    else:
+        timed = "one size, no algorithm timing recorded"
+    st.caption(f"Dot size: {timed} · Square: algorithms of one class, click to expand "
                "· Click an algorithm for its collections · Hover an edge for what it carries")
     event = st.plotly_chart(
         fig, key=f"{_CHART_KEY}_{st.session_state[_CHART_KEY]}", on_select="rerun",

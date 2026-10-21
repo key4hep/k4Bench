@@ -2,14 +2,14 @@
 moves from night to night.
 
 Current Run draws one point per algorithm of a configuration's event loop,
-coloured by the stack package its code comes from: its time per event against
-its instructions per cycle, sized by its heap allocations per event (by
-default), its allocation rate or allocated memory, or not at all. Low
+coloured by the stack package its code comes from: its time in the events it
+ran in against its instructions per cycle, sized by its heap allocations per
+event it ran in (by default), its allocation rate or allocated memory, or not at all. Low
 instructions per cycle at a high time points at code waiting on memory.
 Historical Trends draws the slowest algorithms across the trend window in three
-panels, time, instructions and instructions per cycle per event: time that
-moved while the instructions held is the machine, instructions that moved the
-software. The warm-up event is left out, as everywhere a run's event loop is
+panels, time, instructions and instructions per cycle per event it ran in: time
+that moved while the instructions held is the machine, instructions that moved
+the software. The warm-up event is left out, as everywhere a run's event loop is
 summarised. A line above each chart says what it shows; how to read it is
 behind its help.
 """
@@ -18,7 +18,7 @@ from __future__ import annotations
 import streamlit as st
 
 from data import cached_load_trend_efficiency
-from k4bench.analysis.components import HARDWARE_METRICS
+from k4bench.analysis.components import HARDWARE_METRICS, WARM_UP_EVENT
 from k4bench.analysis.efficiency import algorithm_efficiency
 from k4bench.analysis.plots.efficiency import (
     LABELLED,
@@ -41,17 +41,14 @@ from ui_utils import (
     view_control_row,
 )
 
-#: The event that warms the job up (``component_stats.WARM_UP_EVENT``).
-_WARM_UP_EVENT = 0
-
 _KEY = "reco_efficiency"
 
 #: What a point's area shows, by its option's name: a
 #: :data:`~k4bench.analysis.plots.efficiency.SIZE_METRICS` column, or nothing.
 _SIZES = {
-    "Allocations per event": "allocations_per_event",
+    "Allocations per event it ran in": "allocations_per_event",
     "Allocation rate": "allocations_per_s",
-    "Allocated memory per event": "allocated_mb_per_event",
+    "Allocated memory per event it ran in": "allocated_mb_per_event",
     "Same size": None,
 }
 
@@ -61,8 +58,8 @@ _HIST_TOP_N_KEY = f"{_KEY}_hist_topn"
 
 #: The history's panels: a trend column and its title, and the hover's unit.
 _HIST_PANELS = [
-    ("ms_per_event", "Time per event (ms)"),
-    ("instructions_g", "Instructions per event (×10⁹)"),
+    ("ms_per_event", "Time per event it ran in (ms)"),
+    ("instructions_g", "Instructions per event it ran in (×10⁹)"),
     ("ipc", "Instructions per cycle"),
 ]
 _HIST_UNITS = {"ms_per_event": "ms", "instructions_g": "G", "ipc": ""}
@@ -74,7 +71,8 @@ def _intro() -> None:
         "Each point is an algorithm in the event loop, coloured by the package its "
         "code comes from.",
         help=(
-            "**Further right:** the longer it takes per event (log scale).\n\n"
+            "**Further right:** the longer it takes in an event it runs in (log "
+            "scale); hovering says how many events it skipped, if any.\n\n"
             "**Higher up:** the more work the CPU gets done in each clock cycle "
             "(instructions per cycle).\n\n"
             "An algorithm runs efficiently at around 2 or more instructions per "
@@ -120,7 +118,7 @@ def _render_current_run(ctx: PageContext) -> None:
                  "own time: how hard it leans on the allocator, however long it runs.",
         )]
     timing = ctx.run.components[config]
-    table = algorithm_efficiency(timing, warm_up=_WARM_UP_EVENT)
+    table = algorithm_efficiency(timing, warm_up=WARM_UP_EVENT)
     if table.empty and set(HARDWARE_METRICS) <= timing.execute.keys():
         st.info(
             f"No algorithm of **{config}**'s event loop has instruction counts "
