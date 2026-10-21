@@ -1,10 +1,13 @@
-"""How efficiently a k4run job's algorithms run in the event loop, per event:
-their time, the instructions they execute and how many of those the CPU gets
-through per cycle, and how hard they lean on the heap allocator.
+"""A k4run job's algorithms in the event loop, per event: their time, the
+instructions their calling thread retired and how many of those per counted
+cycle, and how hard they lean on the heap allocator.
 
-Instructions follow the work an algorithm does, not the host it ran on, so
-next to its time they tell a change in the software (instructions moved) from
-a slower or busier machine (instructions held, instructions per cycle fell).
+Instructions follow the work an algorithm executes (its code, configuration,
+input and code generation) more than the host it ran on, so next to its time
+they narrow down what to look at when the time moves; they do not by themselves
+name the cause. Instructions per cycle depend on the processor and the
+instruction mix as much as on stalls, so they compare similar workloads, not
+different implementations.
 """
 
 from __future__ import annotations

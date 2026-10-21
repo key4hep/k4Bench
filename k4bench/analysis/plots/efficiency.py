@@ -1,6 +1,6 @@
-"""How efficiently a k4run job's algorithms run in the event loop: each one's
-time per event against its instructions per cycle, sized by its heap
-allocations (:func:`plot_component_efficiency`, from
+"""A k4run job's algorithms in the event loop: each one's time per event
+against its instructions per cycle, sized by its heap allocations
+(:func:`plot_component_efficiency`, from
 :func:`~k4bench.analysis.efficiency.component_efficiency`)."""
 
 from __future__ import annotations
@@ -30,14 +30,6 @@ SIZE_METRICS = {
 #: The algorithms, longest first, whose names the chart writes by their point.
 LABELLED = 8
 
-#: Instructions per cycle below which code mostly waits, on memory or
-#: mispredicted branches, rather than executes: the chart shades it.
-STALL_IPC = 1.0
-
-#: The shaded band's colour, as ``r,g,b``.
-STALL_RGB = "224,122,93"
-
-
 def _milliseconds(value: float) -> str:
     return f"{value / 1e3:.2f} s" if value >= 1e3 else f"{value:.3g} ms"
 
@@ -58,8 +50,7 @@ def plot_component_efficiency(
     """Each algorithm of
     :func:`~k4bench.analysis.efficiency.component_efficiency`'s *table* as a
     point:
-    its time per event it ran in across on a log axis, its instructions per cycle up,
-    instructions per cycle below :data:`STALL_IPC` shaded.
+    its time per event it ran in across on a log axis, its instructions per cycle up.
 
     *size*, a :data:`SIZE_METRICS` column, sets the points' areas; ``None``,
     or a column without values, draws them all one size. *groups* maps an
@@ -116,9 +107,6 @@ def plot_component_efficiency(
                 + "<br>%{customdata[1]}<extra></extra>"
             ),
         ))
-    fig.add_hrect(
-        y0=0, y1=STALL_IPC, fillcolor=f"rgba({STALL_RGB},0.08)", line_width=0, layer="below",
-    )
     fig.update_layout(
         template=_TEMPLATE, height=480, margin=dict(l=20, r=20, t=30, b=10),
         showlegend=groups is not None,
@@ -126,6 +114,6 @@ def plot_component_efficiency(
     fig.update_xaxes(type="log", title_text="Self time per event it ran in (ms, log scale)")
     fig.update_yaxes(
         title_text="Instructions per cycle", rangemode="tozero",
-        range=[0, max(float(table["ipc"].max()) * 1.15, 1.0)],
+        range=[0, float(table["ipc"].max()) * 1.15 or 1.0],
     )
     return fig

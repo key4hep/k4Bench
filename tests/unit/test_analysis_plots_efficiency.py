@@ -90,6 +90,15 @@ def test_the_chart_puts_time_on_a_log_axis_and_names_the_longest():
     assert not math.isnan(fig.layout.yaxis.range[1])
 
 
+def test_a_low_ipc_is_drawn_without_a_verdict():
+    fig = plot_component_efficiency(component_efficiency(EXECUTE))
+    # Vertex retires half an instruction a cycle: a number, not a diagnosis.
+    (points,) = fig.data
+    assert "<br>IPC 0.50<br>" in points.customdata[1][1]
+    assert not fig.layout.shapes
+    assert fig.layout.yaxis.range[1] == pytest.approx(2.0 * 1.15)
+
+
 def test_points_coloured_by_group_are_one_trace_each_the_costliest_first():
     table = component_efficiency(EXECUTE)
     fig = plot_component_efficiency(
