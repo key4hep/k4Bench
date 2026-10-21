@@ -103,17 +103,20 @@ def list_platform_stacks(base_url: str, suite: str, platform: str) -> list[str]:
 
     Unioned across detectors rather than read from one: detectors join and
     leave the matrix, so no single detector's history is the full set of
-    releases.
+    releases. A detector whose listing did not answer raises: the union
+    without its releases would pass for the whole set.
     """
     stacks: set[str] = set()
     for detector in cached_list_detectors(base_url, suite):
         try:
             stacks.update(cached_list_stacks(base_url, suite, detector, platform))
-        except requests.RequestException:
+        except requests.HTTPError as exc:
             # A detector never benchmarked on this platform has no such
-            # directory to list. Only that is expected here — a broader catch
-            # would bury a bug in the listing itself as "no releases".
-            continue
+            # directory to list: a 404 is that answer. Only that is expected
+            # here — a timeout or a 5xx says nothing about its releases, and a
+            # broader catch would bury a bug in the listing as "no releases".
+            if getattr(exc.response, "status_code", None) != 404:
+                raise
     return sorted(stacks, reverse=True)
 
 

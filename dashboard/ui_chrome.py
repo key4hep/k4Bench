@@ -14,7 +14,7 @@ import streamlit as st
 from k4bench.analysis.loader import failed_config_mask
 from k4bench.labels import pretty_platform, pretty_release, pretty_sample
 from k4bench.regression.lineage import is_detector_replaced, is_replaced
-from sections import SECTION_SCOPE, SectionScope
+from sections import SCOPED, SECTION_SCOPE, SectionScope
 
 
 def order_platforms(platforms: list[str]) -> list[str]:
@@ -120,7 +120,8 @@ def render_scope_note(
     14.2.0" into two dimensions that look like four.
 
     The release is the software that was measured, and *run* the night it
-    was measured; given one, the note names both, never one for the other.
+    was measured; given one, a section that draws the sidebar's run (its
+    scope's ``run``) is noted with both, never one for the other.
 
     In local mode the hierarchy does not exist (there is no EOS tree to walk,
     just one run directory), so every dimension arrives as ``None`` and the
@@ -139,8 +140,8 @@ def render_scope_note(
         (scope.platform, platform, pretty_platform),
         (scope.sample,   sample,   pretty_sample),
         (scope.release,  release,  lambda stack: (
-            f"Key4hep {pretty_release(stack)}, measured {run}" if run
-            else pretty_release(stack)
+            f"Key4hep {pretty_release(stack)}, measured {run}"
+            if run and scope.run is SCOPED else pretty_release(stack)
         )),
     ):
         if declared is None:

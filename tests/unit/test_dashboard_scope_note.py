@@ -117,6 +117,14 @@ def test_a_single_run_section_names_the_release_and_the_night_measured():
     assert line.endswith("— Key4hep 2026-07-10, measured 2026-07-12")
 
 
+def test_regressions_names_no_night_from_the_sidebar():
+    # Its picker chooses the report night on screen, which need not be the
+    # night the sidebar's run was measured.
+    line = _line(_run("Regressions", sample="single_e-_10GeV", run="2026-07-12"))
+    assert "measured" not in line and "2026-07-12" not in line
+    assert line.endswith("— 2026-07-10")
+
+
 def test_run_trends_says_it_plots_every_release():
     line = _line(_run("Run Trends"))
     assert "all releases" in line and STACK not in line

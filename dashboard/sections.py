@@ -77,12 +77,17 @@ class SectionScope:
       dimension, which would read as if the sidebar still applied.
     * ``None`` — the dimension is meaningless for this section, so the note
       omits it entirely.
+
+    *run* is :data:`SCOPED` for a section that draws the sidebar's run itself,
+    whose note then names the night it was measured beside its release; any
+    other section shows a night of its own choosing, or none.
     """
 
     detector: "_Scoped | str | None"
     platform: "_Scoped | str | None"
     sample:   "_Scoped | str | None"
     release:  "_Scoped | str | None"
+    run:      "_Scoped | None" = None
 
 
 #: The sidebar slice each section honours, one entry per :data:`SECTION_NAMES`
@@ -120,7 +125,7 @@ SECTION_SCOPE: dict[str, SectionScope] = {
         release="all releases in the trend window",
     ),
     # The release selects which report nights are on offer; the tab's picker
-    # then chooses one of them. When the night on screen was benchmarked by a
+    # then chooses one of them, so the sidebar's run is not what it shows. When the night on screen was benchmarked by a
     # different release (the fallback when EOS cannot tie any night to the
     # sidebar's), the tab says which by returning
     # :func:`regressions_derived_release`.
@@ -145,28 +150,28 @@ SECTION_SCOPE: dict[str, SectionScope] = {
     # sub-views widen across the trend window's releases, which they report by
     # returning :data:`TREND_WINDOW_SCOPE`.
     "Config Impact": SectionScope(
-        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
+        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED, run=SCOPED,
     ),
     "Region Timing": SectionScope(
-        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
+        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED, run=SCOPED,
     ),
     "Event Timing": SectionScope(
-        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
+        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED, run=SCOPED,
     ),
     "Event Memory": SectionScope(
-        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
+        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED, run=SCOPED,
     ),
     "Correlations": SectionScope(
-        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
+        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED, run=SCOPED,
     ),
     "Event Size": SectionScope(
-        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
+        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED, run=SCOPED,
     ),
     "Machine Info": SectionScope(
-        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
+        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED, run=SCOPED,
     ),
     "Logs": SectionScope(
-        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
+        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED, run=SCOPED,
     ),
 }
 

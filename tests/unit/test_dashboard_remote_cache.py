@@ -263,18 +263,41 @@ def test_stacks_are_unioned_across_detectors(monkeypatch):
     ]
 
 
-def test_a_detector_without_the_platform_is_skipped(monkeypatch):
+def _http_error(status: int):
     import requests
 
+    response = requests.Response()
+    response.status_code = status
+    return requests.HTTPError(f"{status}", response=response)
+
+
+def test_a_detector_without_the_platform_is_skipped(monkeypatch):
     def _stacks(url, suite, detector, platform):
         if detector == "SiD":
-            raise requests.RequestException("404")  # never ran on this platform
+            raise _http_error(404)  # never ran on this platform
         return ["key4hep-2026-07-10"]
 
     monkeypatch.setattr(remote_cache, "cached_list_detectors", lambda url, suite: ["IDEA", "SiD"])
     monkeypatch.setattr(remote_cache, "cached_list_stacks", _stacks)
     # One detector missing a platform must not blank the whole list.
     assert remote_cache.list_platform_stacks("u", SIM, "PLAT") == ["key4hep-2026-07-10"]
+
+
+@pytest.mark.parametrize("error", [
+    remote.requests.ReadTimeout("read timed out"), _http_error(504),
+], ids=["timeout", "gateway"])
+def test_a_detector_listing_that_did_not_answer_is_not_skipped(monkeypatch, error):
+    def _stacks(url, suite, detector, platform):
+        if detector == "SiD":
+            raise error
+        return ["key4hep-2026-07-10"]
+
+    monkeypatch.setattr(remote_cache, "cached_list_detectors", lambda url, suite: ["IDEA", "SiD"])
+    monkeypatch.setattr(remote_cache, "cached_list_stacks", _stacks)
+    # A stall says nothing about SiD's releases: the union would be short, and
+    # the sidebar would judge a linked trend window against it as complete.
+    with pytest.raises(type(error)):
+        remote_cache.list_platform_stacks("u", SIM, "PLAT")
 
 
 def test_an_unexpected_listing_error_is_not_swallowed(monkeypatch):
