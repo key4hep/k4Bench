@@ -138,9 +138,8 @@ def test_pick_run_follows_the_deep_link_and_defaults_to_the_newest_run():
         "detector": "CLD_o2_v09", "platform": PLAT,
         "sample": "single_e-_10GeV", "stack": NEW, "run": "2026-10-11",
     }
-    assert "Available in 2 release(s)" in at.caption[0].value
     # The release and the night it was measured are named apart.
-    assert at.caption[0].value == "Available in 2 release(s)"
+    assert at.caption[0].value == "Available in 2 releases"
     assert at.caption[1].value == "Measured **2026-10-11** · run 2 of 2"
     assert at.selectbox(key="sb_run").options == ["2026-10-11 · latest", "2026-10-10"]
 
@@ -259,6 +258,7 @@ def test_a_stale_linked_release_is_named():
 def test_pick_run_offers_only_the_releases_that_hold_the_sample():
     at = _run_pick({"detector": "ALLEGRO_o1_v04", "sample": "p8_ee_Zbb_ecm91"})
     assert at.selectbox(key="sb_stack").options == [NEW]
+    assert at.caption[0].value == "Available in 1 release"
     assert at.session_state["picked"].stack == NEW
 
 
@@ -430,7 +430,7 @@ def test_across_detectors_the_window_opens_on_the_platforms_last_10_releases():
     # The window is part of the deep link, by its releases' directories.
     assert _query(at) == {"releases": f"{_rel('09-22')}..{_rel('10-10')}"}
     # The selected detector's runs are no part of what the Overview draws.
-    assert at.caption[0].value == "2026-09-22 → 2026-10-10 · 10 release(s)"
+    assert at.caption[0].value == "2026-09-22 → 2026-10-10 · 10 releases"
 
 
 def test_for_one_detector_the_window_ranges_over_its_own_releases():
@@ -448,7 +448,7 @@ def test_for_one_detector_the_window_ranges_over_its_own_releases():
         f"/cache/{_rel('10-10')}/2026-10-11",
         f"/cache/{_rel('10-12')}/2026-10-12",
     )
-    assert at.caption[0].value == "2026-10-08 → 2026-10-12 · 3 release(s) · 4 run(s)"
+    assert at.caption[0].value == "2026-10-08 → 2026-10-12 · 3 releases · 4 runs"
     # The platform's releases are not listed at all: the failing stub would
     # have warned.
     assert not at.warning

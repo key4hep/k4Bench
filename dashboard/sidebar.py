@@ -16,7 +16,7 @@ from datetime import date
 
 import streamlit as st
 
-from k4bench.labels import pretty_release
+from k4bench.labels import plural, pretty_release
 from k4bench.layout import SIM, RunRef
 from remote_cache import (
     cached_fetch_run,
@@ -237,7 +237,7 @@ def pick_run(
         "Stack", stacks, f"{key_prefix}sb_stack", STACK,
         f"doesn't hold {sample} for {detector}",
     )
-    st.caption(f"Available in {len(stacks)} release(s)")
+    st.caption(f"Available in {plural(len(stacks), 'release')}")
     if not stack:
         return None
 
@@ -415,9 +415,9 @@ def pick_trend_window(
     selected = releases_between(releases, lo, hi)
     windowed = runs_in_window(stacks_dates, selected)
     first, last = release_day(selected[0]), release_day(selected[-1])
-    caption = f"{first:%Y-%m-%d} → {last:%Y-%m-%d} · {len(selected)} release(s)"
+    caption = f"{first:%Y-%m-%d} → {last:%Y-%m-%d} · {plural(len(selected), 'release')}"
     if not across_detectors:
-        caption += f" · {sum(len(dates) for _, dates in windowed)} run(s)"
+        caption += f" · {plural(sum(len(dates) for _, dates in windowed), 'run')}"
     st.caption(caption)
     try:
         run_dirs = cached_fetch_runs_windowed(

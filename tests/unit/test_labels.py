@@ -174,3 +174,8 @@ def test_labels_is_a_leaf_module():
         for alias in node.names
     }
     assert not [name for name in imported if name.startswith("k4bench")]
+
+
+@pytest.mark.parametrize(("n", "expected"), [(0, "0 releases"), (1, "1 release"), (10, "10 releases")])
+def test_a_count_is_plural_unless_it_is_one(n, expected):
+    assert labels.plural(n, "release") == expected
