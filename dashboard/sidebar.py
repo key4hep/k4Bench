@@ -8,18 +8,28 @@ mail's and pull-request comments' deep links set (see
 ``k4bench.regression.render.dashboard_link``). Once resolved, the run is
 written there exactly, so a copied link keeps showing the same measurement
 after the release is run again.
+
+Neither downloads more than a view reads. The selected run comes with its
+:data:`data.RUN_BASE` files, and the rest of its files are downloaded when a
+view first asks for them (:meth:`RunSelection.files`); the trend window is
+found by directory listings alone, and its runs' files are downloaded when a
+history view first asks (:meth:`TrendWindow.run_dirs`).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import date
+from functools import partial
 
 import streamlit as st
 
+from data import RUN_BASE, Artifacts
 from k4bench.labels import plural, pretty_release
 from k4bench.layout import SIM, RunRef
 from remote_cache import (
-    cached_fetch_run,
+    FilesUnavailable,
+    cached_fetch_run_files,
     cached_fetch_runs_windowed,
     cached_list_detectors,
     cached_list_platforms,
@@ -71,8 +81,12 @@ class RunSelection:
 
     #: The selected run, exactly.
     ref: RunRef
-    #: Its directory in the local download cache.
+    #: Its directory in the local download cache, holding its
+    #: :data:`data.RUN_BASE` files; the rest arrive as views ask (:meth:`files`).
     data_dir: str
+    #: The store it is downloaded from, and the cache it is downloaded into.
+    base_url: str = ""
+    cache_dir: str = ""
 
     @property
     def detector(self) -> str:
@@ -96,6 +110,24 @@ class RunSelection:
         """The night the run was measured: its id."""
         return self.ref.date
 
+    def files(self, artifacts: Artifacts) -> str:
+        """The run's cached directory once it holds the files *artifacts*
+        match, which are downloaded first; those already there are not
+        downloaded again. Raises :class:`remote_cache.FilesUnavailable`
+        when they could not be, which is not cached: the next call asks again.
+        """
+        ref = self.ref
+        try:
+            return cached_fetch_run_files(
+                self.base_url, ref.suite, ref.detector, ref.platform, ref.stack, ref.sample,
+                ref.date, self.cache_dir, tuple(artifacts),
+            )
+        except Exception as err:
+            raise FilesUnavailable(
+                f"Could not download the files this view reads of the run measured "
+                f"{ref.date} with {ref.stack}: {str(err).rstrip('.')}."
+            ) from err
+
 
 @dataclass(frozen=True)
 class TrendWindow:
@@ -105,11 +137,24 @@ class TrendWindow:
     #: window's releases (for a suite without reports, of the nights its runs
     #: ran); ``None`` when nothing has run yet.
     dates: tuple[date, date] | None = None
-    #: The windowed runs' cached directories, across all releases.
-    run_dirs: tuple[str, ...] = ()
+    #: The windowed runs as the store lists them, ``((stack, (date, ...)), ...)``
+    #: across all releases: found, not downloaded.
+    runs: tuple[tuple[str, tuple[str, ...]], ...] = ()
     #: Whether the histories that draw one run per release draw every run
     #: instead, a release's repeats side by side.
     all_runs: bool = False
+    #: Downloads the given artifacts of :attr:`runs` (see :meth:`run_dirs`);
+    #: ``None`` for a window without runs to download.
+    download: Callable[[Artifacts], tuple[str, ...]] | None = field(
+        default=None, compare=False, repr=False,
+    )
+
+    def run_dirs(self, artifacts: Artifacts) -> tuple[str, ...]:
+        """The cached directories of the windowed runs that hold the files
+        *artifacts* match, which are downloaded first. Only of those runs: a
+        run that could not be downloaded is left out of the history, never
+        read as one without the files."""
+        return self.download(artifacts) if self.download is not None else ()
 
 
 def _url_synced_selectbox(
@@ -276,13 +321,13 @@ def pick_run(
         return None
     ref = RunRef(suite, detector, platform, stack, sample, run)
     try:
-        data_dir = cached_fetch_run(
-            base_url, suite, detector, platform, stack, sample, run, cache_dir,
+        data_dir = cached_fetch_run_files(
+            base_url, suite, detector, platform, stack, sample, run, cache_dir, RUN_BASE,
         )
     except Exception as err:
         st.error(f"Failed to download the run measured {run} with {stack}: {err}")
         return None
-    return RunSelection(ref, data_dir)
+    return RunSelection(ref, data_dir, base_url, cache_dir)
 
 
 def _linked(key: str, param: str) -> str | None:
@@ -422,11 +467,12 @@ def pick_trend_window(
     or, *across_detectors*, over every release benchmarked on the platform by
     any detector — what a section that compares the detectors draws, which
     must not shrink to the history of whichever one the sidebar has selected.
-    The releases and run dates come from directory listings only; just the
-    windowed runs are downloaded. A suite without nightly *reports* bounds the
-    window by its runs alone. *offer_all_runs* adds the choice of drawing
-    every run of a release rather than its latest, for a section whose
-    histories honour it. Both are mirrored in the URL (see :func:`_window_range`);
+    The releases and run dates come from directory listings only, and nothing
+    is downloaded here: a history view downloads the files it reads of the
+    windowed runs (:meth:`TrendWindow.run_dirs`). A suite without nightly
+    *reports* bounds the window by its runs alone. *offer_all_runs* adds the
+    choice of drawing every run of a release rather than its latest, for a
+    section whose histories honour it. Both are mirrored in the URL (see :func:`_window_range`);
     *key_prefix* keeps each page's own.
     """
     # Whether every listing answered: one that did not leaves the slider's
@@ -495,13 +541,6 @@ def pick_trend_window(
     if not across_detectors:
         caption += f" · {plural(sum(len(dates) for _, dates in windowed), 'run')}"
     st.caption(caption)
-    try:
-        run_dirs = cached_fetch_runs_windowed(
-            base_url, suite, run.detector, run.platform, run.sample, cache_dir, windowed,
-        )
-    except Exception as err:
-        st.warning(f"Could not load trend data: {err}")
-        run_dirs = ()
     # The newest night the store knows of: its newest report, or, for a suite
     # no report judges, its newest run — a release keeps being re-run nightly
     # until the next one is tagged.
@@ -510,7 +549,26 @@ def pick_trend_window(
     )
     last_night = max([release_day(releases[-1]), *nights])
     all_runs = offer_all_runs and _pick_history(f"{key_prefix}trend_history") == HISTORY_ALL
-    return TrendWindow(report_span(selected, releases, last_night), run_dirs, all_runs)
+    download = partial(
+        _download_window, base_url, suite, run.detector, run.platform, run.sample, cache_dir,
+        windowed,
+    ) if windowed else None
+    return TrendWindow(report_span(selected, releases, last_night), windowed, all_runs, download)
+
+
+def _download_window(
+    base_url: str, suite: str, detector: str, platform: str, sample: str, cache_dir: str,
+    windowed: tuple[tuple[str, tuple[str, ...]], ...], artifacts: Artifacts,
+) -> tuple[str, ...]:
+    """The cached directories of the *windowed* runs once they hold the files
+    *artifacts* match; none, saying so, when the download failed outright."""
+    try:
+        return cached_fetch_runs_windowed(
+            base_url, suite, detector, platform, sample, cache_dir, windowed, tuple(artifacts),
+        )
+    except Exception as err:
+        st.warning(f"Could not load trend data: {err}")
+        return ()
 
 
 def _window_range(

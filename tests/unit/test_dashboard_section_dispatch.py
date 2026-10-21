@@ -1,6 +1,7 @@
 """The section renderer table: one entry per section, in bar order, and the
-context it draws from refusing a remote-only read in local mode. Also the
-active section, which the sidebar reads before the bar is drawn.
+context it draws from refusing a remote-only read in local mode and reading
+the window's history only when a view asks. Also the active section, which
+the sidebar reads before the bar is drawn.
 
 The table is a hand-maintained registry next to the three in ``sections.py``,
 so it can drift the same way: a section added to the bar but not here would
@@ -23,8 +24,10 @@ if str(_DASHBOARD_DIR) not in sys.path:
 import section_dispatch  # noqa: E402
 import sections  # noqa: E402
 from config import Config  # noqa: E402
-from data import RunData  # noqa: E402
+from data import EVENTS, RUN_BASE, RunData, cached_load_trend_event_timing  # noqa: E402
 from sidebar import TrendWindow  # noqa: E402
+
+RECO_RUN = str(Path(__file__).resolve().parents[1] / "fixtures" / "reco_run")
 
 
 def test_every_section_has_a_renderer_in_bar_order():
@@ -37,10 +40,8 @@ def _local_context() -> section_dispatch.PageContext:
         selection=None,
         data_dir="run",
         run_meta=None,
-        run=RunData(None, None, None, None, ["baseline"]),
+        run=RunData(None, lambda _artifacts: "run"),
         window=TrendWindow(),
-        trend_machine=None,
-        reliability={},
     )
 
 
@@ -49,6 +50,46 @@ def test_local_mode_has_no_trends_and_no_store_selection():
     assert not ctx.trends_enabled
     with pytest.raises(RuntimeError, match="remote-only section"):
         ctx.remote
+
+
+def _remote_context(results, asked: list) -> section_dispatch.PageContext:
+    """A context whose window of one run records what it was asked for."""
+    def download(artifacts):
+        asked.append(artifacts)
+        return (RECO_RUN,)
+
+    return section_dispatch.PageContext(
+        config=Config(RECO_RUN, "https://store.example", "/tmp", "https://dash.example"),
+        selection=None,
+        data_dir=RECO_RUN,
+        run_meta=None,
+        run=RunData(results, lambda _artifacts: RECO_RUN),
+        window=TrendWindow(None, (("S", ("2026-10-17",)),), download=download),
+    )
+
+
+def test_the_history_is_read_only_when_a_view_asks_for_it():
+    from data import cached_load_results
+
+    asked: list = []
+    ctx = _remote_context(cached_load_results(RECO_RUN), asked)
+    assert ctx.labels == ["baseline", "variant_truth_tracking"]
+    load = section_dispatch.history(ctx, cached_load_trend_event_timing, EVENTS)
+    assert asked == []
+    trend, reliability = load()
+    # The view's own files, then the results that judge them and the hosts.
+    assert asked[0] == EVENTS and set(asked[1:]) == {RUN_BASE}
+    assert set(trend["label"]) == {"baseline", "variant_truth_tracking"}
+    assert reliability == {"reco_run": True}
+    load()
+    assert len(asked) == 4  # the trend again, the results and reliability kept
+
+
+def test_a_run_without_results_takes_its_labels_from_the_window():
+    asked: list = []
+    ctx = _remote_context(None, asked)
+    assert ctx.labels == ["baseline", "variant_truth_tracking"]
+    assert asked == [RUN_BASE]
 
 
 def _section_app(dashboard_dir) -> None:

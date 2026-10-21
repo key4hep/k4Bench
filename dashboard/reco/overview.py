@@ -5,7 +5,9 @@ It draws the Simulation Overview's Performance Trends and Landscape views
 (:func:`tabs.detectors_overview.render_figures`). No nightly report judges the
 reco suite, so their inputs come from the runs themselves: every detector's
 runs of the sidebar's platform and sample in the trend window, read with the
-same trend builders Run Trends uses, and their values carry no verdict.
+same trend builders Run Trends uses, and their values carry no verdict. Of
+each run only what those read is downloaded: its results and machine info,
+and the events of the one configuration compared.
 """
 from __future__ import annotations
 
@@ -14,10 +16,13 @@ import requests
 import streamlit as st
 
 from data import (
+    RUN_BASE,
     cached_load_trend_event_timing,
     cached_load_trend_machine_info,
     cached_load_trend_results,
 )
+from k4bench.artifacts import EVENTS_SUFFIX
+from k4bench.labels import BASELINE_LABEL
 from k4bench.layout import RECO
 from k4bench.results.reliability_evidence import run_reliability_map
 from remote_cache import (
@@ -29,6 +34,10 @@ from section_dispatch import PageContext
 from tabs import detectors_overview
 from tabs._overview_data import run_history_rows, run_overview_inputs, run_reliability_rows
 from trend_window import release_day, runs_in_window
+
+#: What the comparison reads of each run (:func:`run_history_rows` keeps the
+#: baseline alone).
+_FILES = (*RUN_BASE, f"{BASELINE_LABEL}{EVENTS_SUFFIX}")
 
 
 def _detector_rows(
@@ -58,7 +67,7 @@ def _detector_rows(
         return None
     run_dirs = cached_fetch_runs_windowed(
         ctx.config.data_url, RECO, detector, sel.platform, sel.sample,
-        ctx.config.cache_dir, windowed,
+        ctx.config.cache_dir, windowed, _FILES,
     )
     results = cached_load_trend_results(run_dirs) if run_dirs else None
     if results is None:

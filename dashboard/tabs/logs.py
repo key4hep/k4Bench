@@ -11,8 +11,10 @@ log is Geant4's (:data:`GEANT4`), a k4run log Gaudi's and its components'
 
 from __future__ import annotations
 
+import glob
 import hashlib
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -370,9 +372,15 @@ def _render_joboptions(run_dir: Path, label: str) -> None:
         st.caption(f"{len(shown):,} of {len(lines):,} lines · {stat.st_size / 1024:,.0f} KB")
 
 
+def _log_files(label: str) -> tuple[str, ...]:
+    """What this view reads of one configuration: its log and job options."""
+    name = glob.escape(label)
+    return f"{name}{LOG_SUFFIX}", f"{name}{JOBOPTIONS_SUFFIX}"
+
+
 def render(
     results: "pd.DataFrame | None",
-    run_dir: str | None,
+    run_files: Callable[[tuple[str, ...]], str] | None,
     run_meta: dict | None = None,
     log_format: LogFormat = GEANT4,
 ) -> None:
@@ -384,8 +392,10 @@ def render(
     and the full ddsim log. There is no separate status table or config dropdown;
     the chips *are* both the status overview and the selector.
 
-    Logs are already in the local cache (``{label}.log`` in *run_dir*), so
-    everything reads directly with no extra download.
+    *run_files* gives the run's directory once it holds the files of the
+    given names (``data.RunData.directory``): only the selected
+    configuration's are asked for, so a remote run's other logs are never
+    downloaded for this view.
     """
     if results is None or "label" not in results.columns:
         st.info("No run data available for the current selection.")
@@ -458,10 +468,11 @@ def render(
     chosen = selected or default_label
 
     # ── Logs for the selected configuration ─────────────────────────────────────
-    if not run_dir:
+    if run_files is None:
         st.caption("Logs are only available when viewing cached or remote runs.")
         return
 
+    run_dir = run_files(_log_files(chosen))
     log_path = label_path(Path(run_dir), chosen, LOG_SUFFIX)
     try:
         stat = log_path.stat()

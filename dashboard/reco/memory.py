@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from data import cached_load_component_heap, cached_load_trend_heap
+from data import HEAP, PACKAGES, cached_load_component_heap, cached_load_trend_heap
 from k4bench.analysis.components import ComponentTiming
 from k4bench.analysis.heap import (
     LEAK_MIN_EVENTS,
@@ -134,7 +134,7 @@ def _colors(named: list[str], palette: list[str]) -> dict[str, str]:
 def _heaps(ctx: PageContext) -> dict[str, ComponentHeap]:
     """The run's heap files of configurations that succeeded, naming any
     that could not be read."""
-    heaps, unreadable = cached_load_component_heap(ctx.data_dir)
+    heaps, unreadable = cached_load_component_heap(ctx.run_dir(HEAP))
     for label, reason in unreadable.items():
         st.warning(f"The heap file of **{label}** could not be read, so it is not offered: {reason}")
     return judgeable_config_data(heaps, ctx.run.results) or {}
@@ -423,7 +423,7 @@ def _groups(ctx: PageContext, label: str, names) -> pd.Series:
     timing: ComponentTiming | None = ctx.run.components.get(label)
     if timing is None:
         return pd.Series("Unknown", index=names, dtype=object).mask(names == NO_COMPONENT, NO_COMPONENT)
-    packages = package_labels(ctx.data_dir, timing, names)
+    packages = package_labels(ctx.run_dir(PACKAGES), timing, names)
     return packages.mask(packages.index == NO_COMPONENT, NO_COMPONENT)
 
 
@@ -441,7 +441,7 @@ def _render_current_run(ctx: PageContext, display_options_slot) -> None:
     if (selected := _select_config(ctx)) is None:
         return
     label, heap = selected
-    summary, totals = _summarise(ctx.data_dir, label)
+    summary, totals = _summarise(ctx.run_dir(HEAP), label)
     _render_tiles(summary, totals)
     findings = _findings(summary, heap)
     _render_findings_notice(findings)
@@ -551,7 +551,7 @@ def _component_table(
     shown = summary.loc[heap.holders()].sort_values("typical_mb", ascending=False, kind="stable")
     timing: ComponentTiming | None = ctx.run.components.get(label)
     sources = (
-        source_columns(ctx.data_dir, timing, shown.index) if timing is not None
+        source_columns(ctx.run_dir(PACKAGES), timing, shown.index) if timing is not None
         else pd.DataFrame({"Package": "—", "Code": None, "Repository": None}, index=shown.index)
     )
     return pd.DataFrame({
@@ -607,7 +607,7 @@ def _render_components(ctx: PageContext) -> None:
     if (selected := _select_config(ctx)) is None:
         return
     label, heap = selected
-    summary, _ = _summarise(ctx.data_dir, label)
+    summary, _ = _summarise(ctx.run_dir(HEAP), label)
     table = _component_table(ctx, label, heap, summary)
     st.markdown(
         "##### Components",
@@ -805,7 +805,7 @@ def _growth_format(value: float) -> str:
 
 
 def _render_historical(ctx: PageContext, reliability_slot, display_options_slot) -> None:
-    trend = judgeable_trend(ctx, cached_load_trend_heap)
+    trend = judgeable_trend(ctx, cached_load_trend_heap, HEAP)
     if trend is None or trend.empty:
         st.info(
             "No heap data in the selected window. Widen the trend window in the "

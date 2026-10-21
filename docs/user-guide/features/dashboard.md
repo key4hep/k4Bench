@@ -844,7 +844,7 @@ measurement as uploaded.
 
 | Section | What it shows | Backed by |
 | --- | --- | --- |
-| **Overview** | every reco detector's baseline time and memory side by side, over the trend window | `*_results.csv`, `*_events.json` of every detector's runs |
+| **Overview** | every reco detector's baseline time and memory side by side, over the trend window | `*_results.csv`, `machine_info.json`, `baseline_events.json` of every detector's runs |
 | **Breakdown** | where the job's time goes, phase by phase and component by component | `*_components.json` |
 | **Efficiency** | each algorithm's time per event against its instructions per cycle and heap allocations, and how time, instructions and instructions per cycle move night to night | `*_components.json` |
 | **Memory** | where the job's heap goes component by component, from initialization through every event to finalization, and what grows or steps up without being released | `*_heap.json`, `*_components.json`, `*_events.json` |
@@ -1098,12 +1098,26 @@ install is required.
 
 ## How downloads are cached
 
-Historical runs are **immutable**, so the dashboard downloads each run at most
-once into `K4BENCH_CACHE_DIR` and reuses it across reruns. Downloads are staged
-in a temp dir and published with a single atomic `rename`, so a reader never
-sees a half-written run and an interrupted download leaves no partial run
-behind. Filenames from the directory listing are validated (decoded, then
-rejected if they aren't a single plain path component) to prevent path-traversal.
+The dashboard downloads only the files the view on screen reads. Choosing a
+run downloads its `run_info.json`, `machine_info.json` and `*_results.csv`,
+which every view shows; the rest of its files are downloaded the first time a
+view reads them: the component costs when Breakdown opens, one
+configuration's log when Logs shows it, the heap files when Memory opens.
+The trend window is found from directory listings alone, so moving it
+downloads nothing; a history view downloads the files it draws of the
+window's runs when it opens.
+
+Historical runs are **immutable**, so each file is downloaded at most once
+into `K4BENCH_CACHE_DIR`, below `subsets/` in the store's own layout, and
+reused by every later view and session. Each file is published with an atomic
+`rename`, so a reader never sees half of one. Each run's `.artifacts.json`
+keeps the run's listing and, for every file asked for, whether it was
+fetched, is absent from the run, or failed; a failed file is downloaded again
+on the next interaction, and the view says it could not be read rather than
+drawing the run without it. A run already cached whole (an older cache, or a
+CLI download) is reused as it is. Filenames from the directory listing are
+validated (decoded, then rejected if they aren't a single plain path
+component) to prevent path-traversal.
 Details: [Architecture → data flow](../../architecture/data-flow.md).
 
 ## Deployment

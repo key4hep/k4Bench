@@ -31,6 +31,8 @@ CPU-efficiency floor, and the 10× context-switch baseline.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -752,8 +754,8 @@ def render(
     machine_info: dict | None,
     run_meta: dict | None = None,
     results: pd.DataFrame | None = None,
-    trend_machine_df: pd.DataFrame | None = None,
-    trend_results_df: pd.DataFrame | None = None,
+    load_trend_machine: Callable[[], pd.DataFrame | None] | None = None,
+    load_trend_results: Callable[[], pd.DataFrame | None] | None = None,
     trends_enabled: bool = False,
 ) -> SectionScope | None:
     """Render the Machine Info tab.
@@ -767,11 +769,13 @@ def render(
     results:
         Per-config results DataFrame for the selected run — supplies the measured
         contention metrics (CPU efficiency, involuntary context switches).
-    trend_machine_df:
-        Per-run machine load / memory trend DataFrame (remote mode), or ``None``.
-    trend_results_df:
-        Per-config results trend DataFrame (remote mode) — supplies the measured
-        contention trend panels, or ``None``.
+    load_trend_machine:
+        Loads the per-run machine load / memory trend DataFrame (remote mode),
+        or ``None``; called only for the Historical Trends view.
+    load_trend_results:
+        Loads the per-config results trend DataFrame (remote mode) — the
+        measured contention trend panels, and the current run's
+        context-switch baseline — or ``None``.
     trends_enabled:
         Whether multi-run (remote) data is available — gates the trends view.
     """
@@ -795,9 +799,15 @@ def render(
                 "Machine info is written by CI jobs running the new directory layout."
             )
         else:
-            _render_current_run(machine_info, run_meta, results, trend_results_df)
+            _render_current_run(
+                machine_info, run_meta, results,
+                load_trend_results() if load_trend_results else None,
+            )
         return None
-    _render_historical(trend_machine_df, trend_results_df)
+    _render_historical(
+        load_trend_machine() if load_trend_machine else None,
+        load_trend_results() if load_trend_results else None,
+    )
     # The trends span the window's releases, not the sidebar's one — reported
     # so the scope note above stops naming it.
     return TREND_WINDOW_SCOPE

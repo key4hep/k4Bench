@@ -36,7 +36,8 @@ def package_labels(
     data_dir: str, timing: ComponentTiming, names, *, unknown: str = "Unknown",
 ) -> pd.Series:
     """The stack package each of *names* comes from, by its class's library;
-    *unknown* where no package holds it."""
+    *unknown* where no package holds it. *data_dir* holds the run's
+    :data:`data.PACKAGES` files."""
     packages = cached_load_run_packages(data_dir)
     libraries = timing.components["impl_library"]
     return pd.Series(
@@ -48,7 +49,8 @@ def package_labels(
 def source_columns(data_dir: str, timing: ComponentTiming, names) -> pd.DataFrame:
     """The ``Package``, ``Code`` and ``Repository`` of each of *names* (as
     :data:`SOURCE_COLUMN_CONFIG` writes them), indexed by name: "—" and no
-    links for one no package holds, or that the run did not record."""
+    links for one no package holds, or that the run did not record.
+    *data_dir* holds the run's :data:`data.PACKAGES` files."""
     packages = cached_load_run_packages(data_dir)
     rows = {}
     for name in names:

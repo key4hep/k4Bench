@@ -15,13 +15,21 @@ EDM4hep files the job wrote.
 """
 from __future__ import annotations
 
-from data import cached_load_trend_algorithm_timing, cached_load_trend_event_timing
+from data import (
+    COMPONENTS,
+    EVENT_SIZE,
+    EVENT_SOURCE_FILES,
+    EVENTS,
+    cached_load_trend_algorithm_timing,
+    cached_load_trend_event_timing,
+)
 from k4bench.layout import RECO
 from reco import breakdown, dataflow, efficiency, memory, overview
 from section_dispatch import (
     RENDERERS,
     PageContext,
     Renderer,
+    history,
     judgeable_trend,
     warn_unreadable_components,
 )
@@ -37,10 +45,12 @@ def _event_timing(ctx: PageContext) -> SectionScope | None:
     """The sim tab, with each algorithm's own time in each event on offer."""
     return event_timing.render(
         ctx.run.event_data,
-        judgeable_trend(ctx, cached_load_trend_event_timing),
-        ctx.trends_enabled, ctx.reliability,
+        history(ctx, cached_load_trend_event_timing, EVENTS),
+        ctx.trends_enabled,
         components=ctx.run.components,
-        load_algorithm_trend=lambda: judgeable_trend(ctx, cached_load_trend_algorithm_timing),
+        load_algorithm_trend=lambda: judgeable_trend(
+            ctx, cached_load_trend_algorithm_timing, COMPONENTS,
+        ),
         all_runs=ctx.window.all_runs,
     )
 
@@ -48,7 +58,8 @@ def _event_timing(ctx: PageContext) -> SectionScope | None:
 def _correlations(ctx: PageContext) -> SectionScope | None:
     """The sim tab, with each algorithm's costs in each event on offer."""
     return correlations.render(
-        ctx.data_dir, ctx.run.results, ctx.run.event_data, components=ctx.run.components,
+        ctx.run_dir(EVENT_SOURCE_FILES + EVENT_SIZE), ctx.run.results, ctx.run.event_data,
+        components=ctx.run.components,
     )
 
 
@@ -63,7 +74,7 @@ def _warning_unreadable_components(render: Renderer) -> Renderer:
 
 def _logs(ctx: PageContext) -> None:
     """Per-config status and the log explorer, reading Gaudi's messages."""
-    logs.render(ctx.run.results, ctx.data_dir, ctx.run_meta, log_format=logs.GAUDI)
+    logs.render(ctx.run.results, ctx.run_dir, ctx.run_meta, log_format=logs.GAUDI)
 
 
 RECO_PAGE = SuitePage(

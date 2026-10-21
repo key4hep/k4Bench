@@ -21,6 +21,8 @@ if str(_DASHBOARD_DIR) not in sys.path:
     sys.path.insert(0, str(_DASHBOARD_DIR))
 
 import sidebar  # noqa: E402
+from data import EVENTS, RUN_BASE  # noqa: E402
+from remote_cache import FilesUnavailable  # noqa: E402
 
 PLAT = "x86_64-el9-gcc16-opt"
 NEW, OLD = "key4hep-2026-10-10", "key4hep-2026-10-09"
@@ -101,15 +103,16 @@ def _pick_run_app(dashboard_dir, store, runs, plat, fail, pick_kwargs) -> None:
     def _forget(cached, *args):
         st.session_state.setdefault("forgotten", []).append((cached.__name__, args[2:]))
 
-    def _fetch_run(url, suite, det, p, stack, sample, day, cache):
+    def _fetch_run_files(url, suite, det, p, stack, sample, day, cache, artifacts):
         suites.append(suite)
+        st.session_state.setdefault("run_files", []).append(artifacts)
         return f"/cache/{suite}/{det}/{stack}/{sample}/{day}"
 
     sidebar.cached_list_detectors = _list_detectors
     sidebar.cached_list_platforms = _list_platforms
     sidebar.cached_scan_stack_samples = _scan_stack_samples
     sidebar.cached_list_runs = _list_runs
-    sidebar.cached_fetch_run = _fetch_run
+    sidebar.cached_fetch_run_files = _fetch_run_files
     sidebar.read_again = _read_again
     sidebar.forget = _forget
     # "away" stands for the reader being on another page: nothing is picked,
@@ -167,6 +170,43 @@ def test_pick_run_follows_the_deep_link_and_defaults_to_the_newest_run():
     assert at.caption[0].value == "Available in 2 releases"
     assert at.caption[1].value == "Measured **2026-10-11** · run 2 of 2"
     assert at.selectbox(key="sb_run").options == ["2026-10-11 · latest", "2026-10-10"]
+
+
+def test_the_picked_run_comes_with_only_the_files_every_view_reads():
+    at = _run_pick({"detector": "CLD_o2_v09", "sample": "single_e-_10GeV"})
+    assert at.session_state["run_files"] == [RUN_BASE]
+    picked = at.session_state["picked"]
+    assert (picked.base_url, picked.cache_dir) == ("https://store.invalid", "/cache")
+
+
+def test_a_view_asks_the_picked_run_for_its_own_files(monkeypatch):
+    from k4bench.layout import RunRef
+
+    ref = RunRef("reco", "CLD_o2_v09", PLAT, NEW, "single_e-_10GeV", "2026-10-11")
+    selection = sidebar.RunSelection(ref, "/cache/run", "https://store.invalid", "/cache")
+    asked = []
+    monkeypatch.setattr(
+        sidebar, "cached_fetch_run_files", lambda *args: asked.append(args) or "/cache/run",
+    )
+    assert selection.files(EVENTS) == "/cache/run"
+    assert asked == [(
+        "https://store.invalid", "reco", "CLD_o2_v09", PLAT, NEW, "single_e-_10GeV",
+        "2026-10-11", "/cache", EVENTS,
+    )]
+
+
+def test_a_run_file_that_cannot_be_downloaded_is_never_an_empty_answer(monkeypatch):
+    from k4bench.layout import RunRef
+
+    ref = RunRef("reco", "CLD_o2_v09", PLAT, NEW, "single_e-_10GeV", "2026-10-11")
+    selection = sidebar.RunSelection(ref, "/cache/run", "https://store.invalid", "/cache")
+
+    def stalled(*_args):
+        raise OSError("read timed out")
+
+    monkeypatch.setattr(sidebar, "cached_fetch_run_files", stalled)
+    with pytest.raises(FilesUnavailable, match="2026-10-11 with key4hep-2026-10-10: read timed out[.]$"):
+        selection.files(EVENTS)
 
 
 def test_a_pinned_link_keeps_its_run_after_the_release_is_run_again():
@@ -473,8 +513,8 @@ def _window_app(
 
     sidebar.cached_list_report_dates = _report_dates
     sidebar.list_platform_stacks = _platform_stacks
-    def _fetch_runs_windowed(url, suite, det, plat, sample, cache, items):
-        suites.append(suite)
+    def _fetch_runs_windowed(url, suite, det, plat, sample, cache, items, artifacts):
+        st.session_state.setdefault("downloads", []).append((suite, items, artifacts))
         return tuple(f"/cache/{stack}/{d}" for stack, dates in items for d in dates)
 
     sidebar.cached_fetch_runs_windowed = _fetch_runs_windowed
@@ -485,14 +525,22 @@ def _window_app(
         "PLAT", "key4hep-2026-10-10", "single_e-_10GeV", "2026-10-10",
     ), "/cache/run")
     # A test changes section mid-session through "across".
-    st.session_state["window"] = sidebar.pick_trend_window(
+    st.session_state["window"] = window = sidebar.pick_trend_window(
         "https://store.invalid", selection, "/cache",
         st.session_state.get("across", across), **window_kwargs,
     )
+    # A test has a history view ask for the window's files through "ask".
+    if (asked := st.session_state.get("ask")) is not None:
+        st.session_state["run_dirs"] = window.run_dirs(asked)
 
 
 def _rel(day: str) -> str:
     return f"key4hep-2026-{day}"
+
+
+def _listed(window) -> tuple[str, ...]:
+    """The window's runs, as the stub downloads would cache them."""
+    return tuple(f"/cache/{stack}/{d}" for stack, dates in window.runs for d in dates)
 
 
 #: Every release on the platform, newest first as the listing returns them:
@@ -560,7 +608,7 @@ def test_for_one_detector_the_window_ranges_over_its_own_releases():
     assert slider.options == ["2026-10-08", "2026-10-10", "2026-10-12"]
     assert slider.value == (_rel("10-08"), _rel("10-12"))
     window = at.session_state["window"]
-    assert window.run_dirs == (
+    assert _listed(window) == (
         f"/cache/{_rel('10-08')}/2026-10-08",
         f"/cache/{_rel('10-10')}/2026-10-10",
         f"/cache/{_rel('10-10')}/2026-10-11",
@@ -579,10 +627,10 @@ def test_a_suite_without_reports_bounds_the_window_by_its_runs():
         suite="reco", reports=False,
     )
     assert not at.warning
-    assert at.session_state["suites"] == ["reco", "reco"]
+    assert at.session_state["suites"] == ["reco"]
     window = at.session_state["window"]
     assert window.dates == (date(2026, 10, 8), date(2026, 10, 12))
-    assert len(window.run_dirs) == 4
+    assert len(_listed(window)) == 4
 
 
 def test_without_reports_the_window_runs_to_the_newest_rerun_of_its_release():
@@ -591,6 +639,18 @@ def test_without_reports_the_window_runs_to_the_newest_rerun_of_its_release():
     at = _run_window(runs, report_nights=None, platform_stacks=None, across=False,
                      suite="reco", reports=False)
     assert at.session_state["window"].dates == (date(2026, 10, 8), date(2026, 10, 16))
+
+
+def test_the_window_is_listed_and_downloaded_only_when_a_history_asks():
+    at = _run_window(NEW_DETECTOR_RUNS, across=False)
+    at.select_slider[0].set_value((_rel("10-10"), _rel("10-12"))).run()
+    # Listing the releases and moving the slider download nothing.
+    assert "downloads" not in at.session_state
+    at.session_state["ask"] = EVENTS
+    at.run()
+    windowed = ((_rel("10-10"), ("2026-10-10", "2026-10-11")), (_rel("10-12"), ("2026-10-12",)))
+    assert at.session_state["downloads"] == [("sim", windowed, EVENTS)]
+    assert at.session_state["run_dirs"] == _listed(at.session_state["window"])
 
 
 def test_trend_window_is_absent_until_something_has_run():
@@ -604,7 +664,7 @@ def test_trend_window_falls_back_to_the_detectors_releases():
     assert "Could not list the platform's releases: listing timed out" in at.warning[0].value
     window = at.session_state["window"]
     assert window.dates == (date(2026, 10, 10), date(2026, 10, 11))
-    assert window.run_dirs == (f"/cache/{_rel('10-10')}/2026-10-10",)
+    assert _listed(window) == (f"/cache/{_rel('10-10')}/2026-10-10",)
 
 
 def test_a_picked_range_spans_the_releases_between_its_two_ends():
@@ -613,7 +673,7 @@ def test_a_picked_range_spans_the_releases_between_its_two_ends():
     window = at.session_state["window"]
     # The 09-28 release was benchmarked until 09-30 was tagged.
     assert window.dates == (date(2026, 9, 24), date(2026, 9, 29))
-    assert window.run_dirs == tuple(
+    assert _listed(window) == tuple(
         f"/cache/{_rel(d)}/2026-{d}" for d in ("09-24", "09-26", "09-28")
     )
 
@@ -680,7 +740,7 @@ def test_the_runs_per_release_choice_is_offered_where_a_section_honours_it():
     assert at.session_state["window"].all_runs is True
     assert _query(at)["history"] == "all"
     # The window is the same either way: what changes is what a history draws.
-    assert len(at.session_state["window"].run_dirs) == 4
+    assert len(_listed(at.session_state["window"])) == 4
 
 
 def test_a_linked_runs_per_release_choice_is_restored_or_named():

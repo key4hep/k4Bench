@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from data import cached_load_trend_efficiency
+from data import COMPONENTS, PACKAGES, cached_load_trend_efficiency
 from k4bench.analysis.components import HARDWARE_METRICS, WARM_UP_EVENT
 from k4bench.analysis.efficiency import algorithm_efficiency
 from k4bench.analysis.plots.efficiency import LABELLED, plot_component_efficiency
@@ -134,7 +134,7 @@ def _render_current_run(ctx: PageContext) -> None:
         return
     with named_col:
         labelled = _labelled_slider(len(table))
-    packages = package_labels(ctx.data_dir, timing, table.index)
+    packages = package_labels(ctx.run_dir(PACKAGES), timing, table.index)
     n_packages = packages.nunique()
     fig = plot_component_efficiency(
         table, size=size, groups=packages,
@@ -150,7 +150,7 @@ def _render_current_run(ctx: PageContext) -> None:
 
 
 def _render_historical(ctx: PageContext, reliability_slot, display_options_slot) -> None:
-    trend = judgeable_trend(ctx, cached_load_trend_efficiency)
+    trend = judgeable_trend(ctx, cached_load_trend_efficiency, COMPONENTS)
     if trend is None or trend.empty:
         st.info(
             "No instruction counts in the selected window. Widen the trend window "

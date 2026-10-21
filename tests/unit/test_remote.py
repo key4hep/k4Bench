@@ -931,3 +931,247 @@ def test_other_scope_supplies_versions_without_claiming_loaded_packages(monkeypa
     snapshot = remote.fetch_stack_snapshot(BASE, SIM, "ILD", "platform", "release", None)
     assert snapshot.complete and snapshot.packages["Geant4"]["version"] == "11.4.3"
     assert snapshot.loaded is None and snapshot.datasets is None and snapshot.os is None
+
+
+# ---------------------------------------------------------------------------
+# Downloading part of a run
+# ---------------------------------------------------------------------------
+
+#: One run of every kind of file a dashboard view reads, the per-event and log
+#: files the bulk of it.
+_PART_RUN = f"{RUNS}/DET/DET/PLAT/key4hep-2026-05-20/single_e/2026-05-21"
+_PART_FILES = {
+    "run_info.json": b'{"date": "2026-05-21"}',
+    "machine_info.json": b"{}",
+    "baseline_results.csv": b"label\nbaseline\n",
+    "variant_results.csv": b"label\nvariant\n",
+    "baseline_events.json": b"e" * 4000,
+    "variant_events.json": b"e" * 4000,
+    "baseline_heap.json": b"h" * 8000,
+    "baseline.log": b"l" * 16000,
+}
+_RUN = (BASE, SIM, "DET", "PLAT", "key4hep-2026-05-20", "single_e", "2026-05-21")
+_BASE = ("run_info.json", "machine_info.json", "*_results.csv")
+
+
+class _CountingWeb(FakeWeb):
+    """:class:`FakeWeb` also counting the bytes it served."""
+
+    def __init__(self, tree):
+        super().__init__(tree)
+        self.served = 0
+
+    def get(self, url, timeout=None):
+        response = super().get(url, timeout)
+        self.served += len(response.content) + len(response.text)
+        return response
+
+    def files(self) -> list[str]:
+        """The names of the files requested, in order, the listings left out."""
+        return [u.rsplit("/", 1)[-1] for u in self.requested if u.rstrip("/") != _PART_RUN]
+
+
+@pytest.fixture
+def part_web(monkeypatch):
+    tree = {_PART_RUN: list(_PART_FILES)}
+    tree.update({f"{_PART_RUN}/{name}": content for name, content in _PART_FILES.items()})
+    fake = _CountingWeb(tree)
+    _use_session(monkeypatch, fake.get)
+    return fake
+
+
+def _manifest(run_dir: Path) -> dict:
+    return json.loads((run_dir / remote.ARTIFACT_MANIFEST).read_text())
+
+
+def test_part_of_a_run_downloads_only_the_files_asked_for(part_web, tmp_path):
+    run_dir = remote.ensure_run_artifacts(*_RUN, _BASE, cache_root=str(tmp_path))
+    assert run_dir == tmp_path / remote.SUBSET_TREE / run_path(*_RUN[1:])
+    assert sorted(part_web.files()) == [
+        "baseline_results.csv", "machine_info.json", "run_info.json", "variant_results.csv",
+    ]
+    assert len(part_web.requested) == 5  # and the one listing
+    assert part_web.served < sum(map(len, _PART_FILES.values())) / 10
+    assert sorted(p.name for p in run_dir.iterdir() if not p.name.startswith(".")) == sorted(
+        part_web.files()
+    )
+    # Part of a run never passes for all of it.
+    assert not (run_dir / ".complete").exists()
+    assert not (tmp_path / run_path(*_RUN[1:])).exists()
+    files = _manifest(run_dir)["files"]
+    assert {name: entry["state"] for name, entry in files.items()} == {
+        "run_info.json": "fetched", "machine_info.json": "fetched",
+        "baseline_results.csv": "fetched", "variant_results.csv": "fetched",
+    }
+    # The rest is listed, not requested.
+    assert set(_manifest(run_dir)["listing"]) == set(_PART_FILES)
+
+
+def test_asking_again_downloads_nothing_and_asking_for_more_only_the_rest(part_web, tmp_path):
+    remote.ensure_run_artifacts(*_RUN, _BASE, cache_root=str(tmp_path))
+    first = len(part_web.requested)
+    remote.ensure_run_artifacts(*_RUN, _BASE, cache_root=str(tmp_path))
+    remote.ensure_run_artifacts(*_RUN, ("run_info.json",), cache_root=str(tmp_path))
+    assert len(part_web.requested) == first
+    run_dir = remote.ensure_run_artifacts(
+        *_RUN, ("run_info.json", "*_events.json"), cache_root=str(tmp_path),
+    )
+    # The listing is not read again, nor the run info.
+    assert part_web.files()[first - 1:] == ["baseline_events.json", "variant_events.json"]
+    assert len(part_web.requested) == first + 2
+    assert (run_dir / "baseline_results.csv").exists()
+    assert (run_dir / "baseline_events.json").read_bytes() == _PART_FILES["baseline_events.json"]
+
+
+def test_a_whole_run_already_cached_is_reused(part_web, tmp_path):
+    whole = remote.ensure_run_cached(*_RUN, cache_root=str(tmp_path))
+    part_web.requested.clear()
+    assert remote.ensure_run_artifacts(*_RUN, _BASE, cache_root=str(tmp_path)) == whole
+    assert part_web.requested == []
+
+
+def test_a_whole_run_downloaded_later_leaves_the_part_alone(part_web, tmp_path):
+    part = remote.ensure_run_artifacts(*_RUN, _BASE, cache_root=str(tmp_path))
+    whole = remote.ensure_run_cached(*_RUN, cache_root=str(tmp_path))
+    assert whole != part and (whole / ".complete").exists()
+    assert (part / "baseline_results.csv").exists()
+    assert not (part / ".complete").exists()
+
+
+def test_a_file_that_failed_is_recorded_and_fetched_again(part_web, monkeypatch, tmp_path):
+    stalled = {"variant_events.json"}
+
+    def get(url, timeout=None):
+        if url.rsplit("/", 1)[-1] in stalled:
+            part_web.requested.append(url)
+            raise remote.requests.ReadTimeout(f"read timed out: {url}")
+        return part_web.get(url, timeout)
+
+    _use_session(monkeypatch, get)
+    with pytest.raises(remote.requests.ReadTimeout):
+        remote.ensure_run_artifacts(*_RUN, ("*_events.json",), cache_root=str(tmp_path))
+    run_dir = tmp_path / remote.SUBSET_TREE / run_path(*_RUN[1:])
+    states = {n: e["state"] for n, e in _manifest(run_dir)["files"].items()}
+    assert states == {"baseline_events.json": "fetched", "variant_events.json": "failed"}
+    assert "read timed out" in _manifest(run_dir)["files"]["variant_events.json"]["error"]
+    assert not (run_dir / "variant_events.json").exists()
+    # Another view's files of the same run are not held up by it.
+    remote.ensure_run_artifacts(*_RUN, ("baseline_heap.json",), cache_root=str(tmp_path))
+    assert (run_dir / "baseline_heap.json").exists()
+
+    stalled.clear()
+    part_web.requested.clear()
+    remote.ensure_run_artifacts(*_RUN, ("*_events.json",), cache_root=str(tmp_path))
+    assert part_web.files() == ["variant_events.json"]
+    assert _manifest(run_dir)["files"]["variant_events.json"]["state"] == "fetched"
+
+
+def test_a_listing_that_failed_records_nothing(part_web, monkeypatch, tmp_path):
+    _use_session(monkeypatch, _timed_out)
+    with pytest.raises(remote.requests.ReadTimeout):
+        remote.ensure_run_artifacts(*_RUN, _BASE, cache_root=str(tmp_path))
+    run_dir = tmp_path / remote.SUBSET_TREE / run_path(*_RUN[1:])
+    assert not (run_dir / remote.ARTIFACT_MANIFEST).exists()
+    _use_session(monkeypatch, part_web.get)
+    remote.ensure_run_artifacts(*_RUN, _BASE, cache_root=str(tmp_path))
+    assert (run_dir / "run_info.json").exists()
+
+
+def test_absent_files_are_recorded_and_not_asked_for_again(part_web, monkeypatch, tmp_path):
+    # Listed, then gone: a 404 is an answer.
+    del part_web.tree[f"{_PART_RUN}/baseline_heap.json"]
+
+    def get(url, timeout=None):
+        if url.rstrip("/") not in part_web.tree:
+            part_web.requested.append(url)
+            raise _http_error(url, 404)
+        return part_web.get(url, timeout)
+
+    _use_session(monkeypatch, get)
+    artifacts = ("*_heap.json", "event_source.json.gz")
+    run_dir = remote.ensure_run_artifacts(*_RUN, artifacts, cache_root=str(tmp_path))
+    states = {n: e["state"] for n, e in _manifest(run_dir)["files"].items()}
+    assert states == {"baseline_heap.json": "absent"}
+    # The one never listed is absent by the listing, without a request.
+    assert "event_source.json.gz" not in _manifest(run_dir)["listing"]
+    assert part_web.files() == ["baseline_heap.json"]
+    part_web.requested.clear()
+    remote.ensure_run_artifacts(*_RUN, artifacts, cache_root=str(tmp_path))
+    assert part_web.requested == []
+
+
+@pytest.mark.parametrize("payload", ["../evil.csv", "%2e%2e%2fevil.csv", "%2e%2e"])
+def test_part_of_a_run_rejects_an_unsafe_listing(monkeypatch, tmp_path, payload):
+    fake = FakeWeb({_PART_RUN: ["run_info.json", payload]})
+    _use_session(monkeypatch, fake.get)
+    with pytest.raises(ValueError, match="Unsafe filename"):
+        remote.ensure_run_artifacts(*_RUN, ("run_info.json",), cache_root=str(tmp_path))
+    run_dir = tmp_path / remote.SUBSET_TREE / run_path(*_RUN[1:])
+    assert not (run_dir / remote.ARTIFACT_MANIFEST).exists()
+    assert fake.requested == [_PART_RUN + "/"]
+    assert not list(tmp_path.rglob("evil.csv"))
+
+
+def test_concurrent_parts_of_one_run_both_land(part_web, monkeypatch, tmp_path):
+    import threading
+    import time
+
+    def slow(url, timeout=None):
+        # Long enough that the two downloads overlap.
+        time.sleep(0.01)
+        return part_web.get(url, timeout)
+
+    _use_session(monkeypatch, slow)
+    asks = [("*_events.json",), ("*_heap.json", "*.log"), _BASE, ("*_events.json",)]
+    errors = []
+
+    def ask(artifacts):
+        try:
+            remote.ensure_run_artifacts(*_RUN, artifacts, cache_root=str(tmp_path))
+        except Exception as exc:  # pragma: no cover - reported below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=ask, args=(a,)) for a in asks]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    run_dir = tmp_path / remote.SUBSET_TREE / run_path(*_RUN[1:])
+    assert {n: e["state"] for n, e in _manifest(run_dir)["files"].items()} == dict.fromkeys(
+        _PART_FILES, "fetched",
+    )
+    for name, content in _PART_FILES.items():
+        assert (run_dir / name).read_bytes() == content
+    # Each file once, the listing once, whatever the interleaving.
+    assert sorted(part_web.files()) == sorted(_PART_FILES)
+    assert len(part_web.requested) == len(_PART_FILES) + 1
+    assert not (run_dir / ".complete").exists()
+    assert not (tmp_path / run_path(*_RUN[1:])).exists()
+
+
+def test_a_manifest_of_another_version_is_read_again(part_web, tmp_path):
+    run_dir = remote.ensure_run_artifacts(*_RUN, ("run_info.json",), cache_root=str(tmp_path))
+    (run_dir / remote.ARTIFACT_MANIFEST).write_text('{"version": 0}')
+    part_web.requested.clear()
+    remote.ensure_run_artifacts(*_RUN, ("run_info.json",), cache_root=str(tmp_path))
+    assert part_web.files() == ["run_info.json"]
+    assert _manifest(run_dir)["version"] == 1
+
+
+def test_windowed_runs_download_only_the_files_asked_for(web, tmp_path):
+    windowed = {"key4hep-2026-05-20": ["2026-05-20", "2026-05-21"]}
+    runs = remote.fetch_runs_windowed(
+        BASE, SIM, "DET", "PLAT", "single_e", windowed, cache_root=str(tmp_path),
+        artifacts=("run_info.json",),
+    )
+    assert sorted(r["date"] for r in runs) == ["2026-05-20", "2026-05-21"]
+    assert not any(u.endswith("baseline_results.csv") for u in web.requested)
+    for run in runs:
+        assert Path(run["run_dir"]).is_relative_to(tmp_path / remote.SUBSET_TREE)
+        assert not (Path(run["run_dir"]) / ".complete").exists()
+    # Without artifacts, whole runs as ever.
+    whole = remote.fetch_runs_windowed(
+        BASE, SIM, "DET", "PLAT", "single_e", windowed, cache_root=str(tmp_path),
+    )
+    assert all((Path(r["run_dir"]) / ".complete").exists() for r in whole)

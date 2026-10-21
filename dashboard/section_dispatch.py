@@ -3,8 +3,11 @@
 :data:`RENDERERS` maps every :data:`sections.SECTION_NAMES` entry to a function
 of one :class:`PageContext`. The tabs keep their own signatures; each entry
 only says which part of the context its tab takes. Only the active section is
-drawn, so a section's own heavy data (the per-event trends) is loaded inside
-its entry rather than up front.
+drawn, and the context loads nothing up front beyond the selected run's
+results: each entry asks for the files its tab reads (:meth:`PageContext.run_dir`,
+the :class:`data.RunData` attributes), and hands a history view a loader
+called only once that view is open, so in remote mode a section downloads
+what it draws and no more.
 
 A fourth registry next to the three in :mod:`sections`, and kept apart from
 them for the same reason: how a section is drawn is a separate fact from where
@@ -14,19 +17,29 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import cached_property
 
 import pandas as pd
 import streamlit as st
 
 from config import Config
 from data import (
+    EVENT_SIZE,
+    EVENT_SOURCE_FILES,
+    EVENTS,
+    REGIONS,
+    RUN_BASE,
+    Artifacts,
     RunData,
     cached_load_trend_event_size,
     cached_load_trend_event_timing,
+    cached_load_trend_machine_info,
     cached_load_trend_region_timing,
+    cached_load_trend_results,
     load_machine_info,
 )
 from k4bench.analysis.loader import judgeable_config_rows
+from k4bench.results.reliability_evidence import run_reliability_map
 from sections import SectionScope
 from sidebar import RunSelection, TrendWindow
 from tabs import (
@@ -47,21 +60,59 @@ from tabs import (
 
 @dataclass(frozen=True)
 class PageContext:
-    """Everything the sidebar resolved and loaded, for the active section."""
+    """Everything the sidebar resolved, for the active section: the run and
+    the window, whose files are read when the section first asks for them."""
 
     config: Config
     #: The sidebar's selection; ``None`` in local mode, which has no store
     #: hierarchy and offers none of the sections that read it.
     selection: RunSelection | None
-    #: The run the single-run tabs show.
+    #: The directory of the run the single-run tabs show, holding its
+    #: :data:`data.RUN_BASE` files; any other file is read from
+    #: :meth:`run_dir`, which makes sure it is there.
     data_dir: str
     run_meta: dict | None
     run: RunData
     window: TrendWindow
-    trend_machine: pd.DataFrame | None
-    #: Per-run reliability verdict (``{run_id: reliable}``) shared by every
-    #: historical view; empty in local mode.
-    reliability: dict
+
+    def run_dir(self, artifacts: Artifacts) -> str:
+        """The run's directory once it holds the files *artifacts* match
+        (:attr:`data.RunData.directory`)."""
+        return self.run.directory(artifacts)
+
+    @cached_property
+    def trend_results(self) -> pd.DataFrame | None:
+        """The window's results, which every trend view draws on; ``None``
+        when the window holds none, as in local mode."""
+        run_dirs = self.window.run_dirs(RUN_BASE)
+        return cached_load_trend_results(run_dirs) if run_dirs else None
+
+    @cached_property
+    def trend_machine(self) -> pd.DataFrame | None:
+        """The window's machine info; ``None`` when the window holds none."""
+        run_dirs = self.window.run_dirs(RUN_BASE)
+        return cached_load_trend_machine_info(run_dirs) if run_dirs else None
+
+    @cached_property
+    def reliability(self) -> dict[str, bool | None]:
+        """Per-run reliability verdict (``{run_id: reliable}``) shared by every
+        historical view, matching the Machine Info tab's per-run verdict;
+        empty in local mode or when no machine info is available, in which
+        case the filter it feeds is a no-op."""
+        return run_reliability_map(self.trend_results, self.trend_machine)
+
+    @property
+    def labels(self) -> list[str]:
+        """Every configuration with data on screen: the run's, or, when it has
+        none — a failed or timed-out job, say, or ones retired from the
+        newest release — the window's, whose history the trend views still
+        draw."""
+        if self.run.labels:
+            return self.run.labels
+        results = self.trend_results
+        if results is None or "label" not in results.columns:
+            return []
+        return sorted(results["label"].dropna().unique())
 
     @property
     def trends_enabled(self) -> bool:
@@ -133,7 +184,7 @@ def _run_trends(ctx: PageContext) -> None:
     """The sidebar triple's history across every release in the window."""
     sel = ctx.remote
     trends.render(
-        ctx.run.trend_results, ctx.reliability,
+        ctx.trend_results, ctx.reliability,
         data_url=ctx.config.data_url, detector=sel.detector,
         platform=sel.platform, sample=sel.sample,
     )
@@ -166,11 +217,26 @@ def _config_impact(ctx: PageContext) -> None:
 
 
 def judgeable_trend(
-    ctx: PageContext, load: Callable[[tuple[str, ...]], pd.DataFrame | None]
+    ctx: PageContext,
+    load: Callable[[tuple[str, ...]], pd.DataFrame | None],
+    artifacts: Artifacts,
 ) -> pd.DataFrame | None:
-    """One per-event trend frame for the window, its failed configs dropped."""
-    frame = load(ctx.window.run_dirs) if ctx.window.run_dirs else None
-    return judgeable_config_rows(frame, ctx.run.trend_results)
+    """One trend frame for the window — *load* over the windowed runs once
+    they hold the files *artifacts* match — its failed configs dropped."""
+    run_dirs = ctx.window.run_dirs(artifacts)
+    frame = load(run_dirs) if run_dirs else None
+    return judgeable_config_rows(frame, ctx.trend_results)
+
+
+def history(
+    ctx: PageContext,
+    load: Callable[[tuple[str, ...]], pd.DataFrame | None],
+    artifacts: Artifacts,
+) -> Callable[[], tuple[pd.DataFrame | None, dict[str, bool | None]]]:
+    """What a tab's history view draws, loaded only once that view is open:
+    the :func:`judgeable_trend` of *load* over *artifacts*, and the window's
+    per-run reliability."""
+    return lambda: (judgeable_trend(ctx, load, artifacts), ctx.reliability)
 
 
 def warn_unreadable_components(ctx: PageContext) -> None:
@@ -198,24 +264,24 @@ def no_components_reason(ctx: PageContext) -> str:
 def _region_timing(ctx: PageContext) -> SectionScope | None:
     return region_timing.render(
         ctx.run.region_data,
-        judgeable_trend(ctx, cached_load_trend_region_timing),
-        ctx.trends_enabled, ctx.reliability,
+        history(ctx, cached_load_trend_region_timing, REGIONS),
+        ctx.trends_enabled,
     )
 
 
 def _event_timing(ctx: PageContext) -> SectionScope | None:
     return event_timing.render(
         ctx.run.event_data,
-        judgeable_trend(ctx, cached_load_trend_event_timing),
-        ctx.trends_enabled, ctx.reliability, all_runs=ctx.window.all_runs,
+        history(ctx, cached_load_trend_event_timing, EVENTS),
+        ctx.trends_enabled, all_runs=ctx.window.all_runs,
     )
 
 
 def _event_memory(ctx: PageContext) -> SectionScope | None:
     return event_memory.render(
         ctx.run.event_data,
-        judgeable_trend(ctx, cached_load_trend_event_timing),
-        ctx.trends_enabled, ctx.reliability, all_runs=ctx.window.all_runs,
+        history(ctx, cached_load_trend_event_timing, EVENTS),
+        ctx.trends_enabled, all_runs=ctx.window.all_runs,
     )
 
 
@@ -223,7 +289,8 @@ def _correlations(ctx: PageContext) -> SectionScope | None:
     """The run's per-event costs, its event time and each detector's time and
     steps, against what each event holds."""
     return correlations.render(
-        ctx.data_dir, ctx.run.results, ctx.run.event_data, region_data=ctx.run.region_data,
+        ctx.run_dir(EVENT_SOURCE_FILES + EVENT_SIZE), ctx.run.results, ctx.run.event_data,
+        region_data=ctx.run.region_data,
     )
 
 
@@ -231,9 +298,9 @@ def _event_size(ctx: PageContext) -> SectionScope | None:
     """What each event of the run's output files takes on disk, and, in remote
     mode, its history across the window."""
     return event_size.render(
-        ctx.data_dir, ctx.run.results,
-        (lambda: judgeable_trend(ctx, cached_load_trend_event_size)) if ctx.trends_enabled
-        else None,
+        ctx.run_dir(EVENT_SIZE), ctx.run.results,
+        (lambda: judgeable_trend(ctx, cached_load_trend_event_size, EVENT_SIZE))
+        if ctx.trends_enabled else None,
         all_runs=ctx.window.all_runs,
     )
 
@@ -243,15 +310,15 @@ def _machine_info(ctx: PageContext) -> SectionScope | None:
         load_machine_info(ctx.data_dir),
         run_meta=ctx.run_meta,
         results=ctx.run.results,
-        trend_machine_df=ctx.trend_machine,
-        trend_results_df=ctx.run.trend_results,
+        load_trend_machine=lambda: ctx.trend_machine,
+        load_trend_results=lambda: ctx.trend_results,
         trends_enabled=ctx.trends_enabled,
     )
 
 
 def _logs(ctx: PageContext) -> None:
     """Per-config status and the log explorer."""
-    logs.render(ctx.run.results, ctx.data_dir, ctx.run_meta)
+    logs.render(ctx.run.results, ctx.run_dir, ctx.run_meta)
 
 
 #: How each section is drawn. A section that offers a control over its own
