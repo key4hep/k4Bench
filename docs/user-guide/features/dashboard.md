@@ -921,10 +921,18 @@ failed, have none, and the section says so. It has three views:
   **Largest shown**; for the working set, the largest of each panel) and
   every component that grows or steps up and keeps it on any night of the
   window besides, a line each, in one colour whatever is shown.
-  The first two add up to the job's heap, so the rest of it is one more line,
-  *Other*, and what no component allocated another, *No component*, both in
-  grey. When a nightly tag was run more than once, only its latest run is
-  drawn.
+  Before the first event the components add up to the job's heap, so the rest
+  of it is one more line, *Other*, and what no component allocated another,
+  *No component*, both in grey. A typical event's heap is a median, and
+  medians do not add up: its components are drawn as they are, the rest left
+  out, beside *No component* in grey and *Whole-job median* in black, the
+  median of the whole heap at an event's end, summed over every component in
+  each event first. A component's line is not its share of the whole job's,
+  and together they need not reach it (when 100 MB passes from one component
+  to the next each event, each one's median is 0 MB and the whole job's
+  100 MB). The working set and growth are not summed either, and the rest of
+  them are not drawn. When a nightly tag was run more than once, only its
+  latest run is drawn.
 
 Heap is memory allocated, not memory resident: the timed run's anonymous RSS
 can sit below the heap when blocks were allocated and never touched, and above
