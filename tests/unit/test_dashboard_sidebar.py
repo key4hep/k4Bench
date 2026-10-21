@@ -140,7 +140,7 @@ def test_pick_run_follows_the_deep_link_and_defaults_to_the_newest_run():
     }
     assert "Available in 2 release(s)" in at.caption[0].value
     # The release and the night it was measured are named apart.
-    assert at.caption[0].value == "Available in 2 release(s)."
+    assert at.caption[0].value == "Available in 2 release(s)"
     assert at.caption[1].value == "Measured **2026-10-11** · run 2 of 2"
     assert at.selectbox(key="sb_run").options == ["2026-10-11 · latest", "2026-10-10"]
 

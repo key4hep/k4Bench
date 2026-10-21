@@ -237,7 +237,7 @@ def pick_run(
         "Stack", stacks, f"{key_prefix}sb_stack", STACK,
         f"doesn't hold {sample} for {detector}",
     )
-    st.caption(f"Available in {len(stacks)} release(s).")
+    st.caption(f"Available in {len(stacks)} release(s)")
     if not stack:
         return None
 
