@@ -207,7 +207,7 @@ def _event_timing(ctx: PageContext) -> SectionScope | None:
     return event_timing.render(
         ctx.run.event_data,
         judgeable_trend(ctx, cached_load_trend_event_timing),
-        ctx.trends_enabled, ctx.reliability,
+        ctx.trends_enabled, ctx.reliability, all_runs=ctx.window.all_runs,
     )
 
 
@@ -215,7 +215,7 @@ def _event_memory(ctx: PageContext) -> SectionScope | None:
     return event_memory.render(
         ctx.run.event_data,
         judgeable_trend(ctx, cached_load_trend_event_timing),
-        ctx.trends_enabled, ctx.reliability,
+        ctx.trends_enabled, ctx.reliability, all_runs=ctx.window.all_runs,
     )
 
 
@@ -234,6 +234,7 @@ def _event_size(ctx: PageContext) -> SectionScope | None:
         ctx.data_dir, ctx.run.results,
         (lambda: judgeable_trend(ctx, cached_load_trend_event_size)) if ctx.trends_enabled
         else None,
+        all_runs=ctx.window.all_runs,
     )
 
 

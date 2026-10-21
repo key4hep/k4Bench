@@ -18,6 +18,7 @@ SIM_PAGE = SuitePage(
     remote_only=REMOTE_ONLY,
     scopes=SECTION_SCOPE,
     renderers=RENDERERS,
+    all_runs_sections=frozenset({"Event Timing", "Event Memory", "Event Size"}),
 )
 
 

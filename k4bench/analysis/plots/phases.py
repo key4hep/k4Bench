@@ -1,6 +1,10 @@
 """How long a k4run job's phases take, and which components their time goes
 to: in one run (:func:`plot_phase_component_pie`, :func:`plot_event_composition` for the
-event loop event by event) and across nightly tags (:func:`plot_phase_history`)."""
+event loop event by event) and across nightly tags (:func:`plot_phase_history`).
+
+A history draws each nightly tag's latest run by default; given ``all_runs``,
+it draws every run, a tag re-run on later nights once per night it ran
+(:func:`history_rows`)."""
 
 from __future__ import annotations
 
@@ -8,6 +12,8 @@ from collections.abc import Mapping, Sequence
 
 import pandas as pd
 import plotly.graph_objects as go
+
+from k4bench.labels import pretty_release
 
 from ._theme import _OTHER_COLOR, _PALETTE, _TEMPLATE
 from ._utils import bottom_legend
@@ -206,11 +212,31 @@ def _of_runs(rows: pd.DataFrame, runs: pd.MultiIndex) -> pd.DataFrame:
     return rows[pd.MultiIndex.from_frame(rows[["x_date", "run_id"]]).isin(runs)]
 
 
+def _every_run(*frames: pd.DataFrame) -> pd.MultiIndex:
+    """Every run among *frames*' runs, as ``(x_date, run_id)``."""
+    runs = pd.concat([f[["x_date", "run_id"]] for f in frames]).drop_duplicates()
+    return pd.MultiIndex.from_frame(runs)
+
+
 def latest_run_per_tag(rows: pd.DataFrame) -> pd.DataFrame:
     """The *rows* of each nightly tag's (``x_date``'s) latest run: a tag is
     re-run nightly until the next one, and a column mixing its runs would
     show none of them."""
     return _of_runs(rows, _latest_runs(rows))
+
+
+def history_rows(rows: pd.DataFrame, *, all_runs: bool = False) -> pd.DataFrame:
+    """The *rows* a history draws: each nightly tag's latest run's
+    (:func:`latest_run_per_tag`), or, *all_runs*, every run's, a tag's
+    repeats each on its own."""
+    return rows if all_runs else latest_run_per_tag(rows)
+
+
+def run_label(run_date: pd.Timestamp, release: str) -> str:
+    """One run as an all-runs history names it: the night it was measured and
+    the release it measured, which together tell any two of a series apart."""
+    day = "unknown" if pd.isna(run_date) else pd.Timestamp(run_date).strftime("%Y-%m-%d")
+    return f"{day} · Key4hep {pretty_release(str(release))}"
 
 
 def phase_component_series(
@@ -219,6 +245,7 @@ def phase_component_series(
     value: str = "seconds",
     always: Sequence[str] = (),
     apart: Mapping[str, str] | None = None,
+    all_runs: bool = False,
 ) -> pd.DataFrame:
     """One phase's time per nightly tag as series to draw: the *top_n*
     components that took longest over the window (ranked by their median),
@@ -244,14 +271,16 @@ def phase_component_series(
     one in a run is ``NaN`` there. The components of *always* each have a
     series whatever their rank, ahead of the *top_n*, in their order. Those
     of *apart* are not ranked: each is a series of its own after "Other",
-    under the name it maps to.
+    under the name it maps to. *all_runs* keeps every run of *rows* and
+    *durations*, not each tag's latest only (:func:`history_rows`).
     """
     if durations is not None and durations.empty:
         durations = None
     if rows.empty and durations is None:
         return pd.DataFrame(columns=_series_columns(value))
     run_keys = ["run_id", "run_date", "x_date", "k4h_release"]
-    runs = _latest_runs(rows, *([durations] if durations is not None else []))
+    frames = [rows, *([durations] if durations is not None else [])]
+    runs = _every_run(*frames) if all_runs else _latest_runs(*frames)
     rows = _of_runs(rows, runs)
     apart = dict(apart or {})
     by_itself = rows["component"].isin(list(apart))
@@ -302,6 +331,7 @@ def plot_phase_history(
     unit: str = "s",
     y_title: str = "Time (s)",
     whole: str = "phase",
+    all_runs: bool = False,
 ) -> go.Figure | None:
     """One phase's time per nightly tag, a column per tag stacking
     :func:`phase_component_series`' series in their order, "Other" grey and
@@ -314,17 +344,36 @@ def plot_phase_history(
     Series of another quantity than time (their :func:`phase_component_series`
     *value*) give its column as *value*, its *unit*, the *y_title* of the
     axis and what a column is the *whole* of.
+
+    *all_runs* draws a column per run instead, every run of a tag, in the
+    order they were measured: each named by the night it ran, the hover
+    adding its release (:func:`run_label`). Two runs are never one column,
+    whatever night or tag they share.
     """
     if series.empty:
         return None
     # The series' order is the input's: longest first, "Other" and
     # "Unattributed" last.
     names = list(dict.fromkeys(series["label"]))
-    series = latest_run_per_tag(series.dropna(subset=["run_date"]))
-    dates = sorted(pd.to_datetime(series["x_date"]).unique())
-    table = series.pivot_table(
-        index="x_date", columns="label", values=value, aggfunc="sum", fill_value=0.0,
-    ).reindex(index=dates, columns=names, fill_value=0.0)
+    series = history_rows(series.dropna(subset=["run_date"]), all_runs=all_runs)
+    if all_runs:
+        runs = (
+            series[["x_date", "run_id", "run_date", "k4h_release"]]
+            .drop_duplicates(["x_date", "run_id"])
+            .sort_values(["run_date", "x_date", "run_id"], kind="stable")
+        )
+        index = pd.MultiIndex.from_frame(runs[["x_date", "run_id"]])
+        table = series.pivot_table(
+            index=["x_date", "run_id"], columns="label", values=value, aggfunc="sum",
+            fill_value=0.0,
+        ).reindex(index=index, columns=names, fill_value=0.0)
+        dates = [run_label(d, r) for d, r in zip(runs["run_date"], runs["k4h_release"])]
+        table.index = dates
+    else:
+        dates = sorted(pd.to_datetime(series["x_date"]).unique())
+        table = series.pivot_table(
+            index="x_date", columns="label", values=value, aggfunc="sum", fill_value=0.0,
+        ).reindex(index=dates, columns=names, fill_value=0.0)
     totals = table.sum(axis=1)
 
     fig = go.Figure()
@@ -357,13 +406,22 @@ def plot_phase_history(
         margin=dict(l=20, r=20, t=30, b=20), hovermode="x unified",
         legend=bottom_legend(),
     )
-    # The date axis the other trend views draw: one tick per nightly tag, and
-    # a night without a run is a gap.
-    fig.update_xaxes(
-        type="date", tickmode="array", tickvals=dates,
-        ticktext=[pd.Timestamp(d).strftime("%Y-%m-%d") for d in dates], tickangle=-30,
-        title_text="Key4hep Nightly Tag",
-    )
+    if all_runs:
+        # A column per run, ticked with the night it was measured; the hover
+        # names its release too.
+        fig.update_xaxes(
+            type="category", tickmode="array", tickvals=dates,
+            ticktext=[label.split(" · ")[0] for label in dates], tickangle=-30,
+            title_text="Night measured",
+        )
+    else:
+        # The date axis the other trend views draw: one tick per nightly tag, and
+        # a night without a run is a gap.
+        fig.update_xaxes(
+            type="date", tickmode="array", tickvals=dates,
+            ticktext=[pd.Timestamp(d).strftime("%Y-%m-%d") for d in dates], tickangle=-30,
+            title_text="Key4hep Nightly Tag",
+        )
     top_y = 100 if relative else float(totals.max()) * 1.12
     fig.update_yaxes(
         title_text=f"Share of the {whole} (%)" if relative else y_title,

@@ -2,9 +2,12 @@
 tabs show, and which window of history the trend views read.
 
 Both walk the WebEOS run store, so both exist in remote mode only; local mode
-has one run directory and nothing above it. Every selectbox here is mirrored in
-the page URL, which is what the nightly mail's and pull-request comments' deep
-links set (see ``k4bench.regression.render.dashboard_link``).
+has one run directory and nothing above it. Every control here is mirrored in
+the page URL under the names :mod:`url_params` gives, which is what the nightly
+mail's and pull-request comments' deep links set (see
+``k4bench.regression.render.dashboard_link``). Once resolved, the run is
+written there exactly, so a copied link keeps showing the same measurement
+after the release is run again.
 """
 from __future__ import annotations
 
@@ -14,14 +17,15 @@ from datetime import date
 import streamlit as st
 
 from k4bench.labels import pretty_release
-from k4bench.layout import SIM
+from k4bench.layout import SIM, RunRef
 from remote_cache import (
-    cached_fetch_latest_run,
+    cached_fetch_run,
     cached_fetch_runs_windowed,
     cached_list_detectors,
     cached_list_platforms,
     cached_list_report_dates,
     cached_list_run_dates,
+    cached_list_runs,
     cached_scan_stack_samples,
     list_platform_stacks,
 )
@@ -44,17 +48,51 @@ from ui_chrome import (
     resource_link_card,
     seed_query_param,
 )
+from url_params import (
+    DETECTOR,
+    HISTORY,
+    HISTORY_ALL,
+    HISTORY_MODES,
+    PLATFORM,
+    RELEASES,
+    RUN,
+    SAMPLE,
+    STACK,
+    is_run_id,
+    parse_release_range,
+    release_range,
+)
 
 @dataclass(frozen=True)
 class RunSelection:
     """The sidebar's place in the run store, and the run the single-run tabs show."""
 
-    detector: str
-    platform: str
-    sample: str
-    stack: str
-    #: The selected stack's latest run, downloaded into the local cache.
+    #: The selected run, exactly.
+    ref: RunRef
+    #: Its directory in the local download cache.
     data_dir: str
+
+    @property
+    def detector(self) -> str:
+        return self.ref.detector
+
+    @property
+    def platform(self) -> str:
+        return self.ref.platform
+
+    @property
+    def sample(self) -> str:
+        return self.ref.sample
+
+    @property
+    def stack(self) -> str:
+        """The Key4hep release the run measured."""
+        return self.ref.stack
+
+    @property
+    def run(self) -> str:
+        """The night the run was measured: its id."""
+        return self.ref.date
 
 
 @dataclass(frozen=True)
@@ -67,26 +105,35 @@ class TrendWindow:
     dates: tuple[date, date] | None = None
     #: The windowed runs' cached directories, across all releases.
     run_dirs: tuple[str, ...] = ()
+    #: Whether the histories that draw one run per release draw every run
+    #: instead, a release's repeats side by side.
+    all_runs: bool = False
 
 
 def _url_synced_selectbox(
-    label: str, options: list[str], key: str, param: str
-) -> tuple[str | None, str | None]:
-    """A selectbox mirrored in ``?param=``, returning ``(value, dropped)``.
+    label: str, options: list[str], key: str, param: str, reason: str,
+    format_func=str,
+) -> str | None:
+    """A selectbox mirrored in ``?param=``, returning its value.
 
     A remembered value no longer among *options* is dropped first (see
     :func:`ui_chrome.drop_stale_selection`), a first visit opens on the URL's
     value, and the selection is written back so the address bar stays a deep
-    link to what is on screen. The value is kept for the whole session, so
-    switching to another page and back returns to it: a page switch clears
-    the URL, which therefore cannot carry it.
+    link to what is on screen. A dropped value, or a link's value that is not
+    among *options*, is named under the selectbox with the *reason* it is not
+    (see :func:`ui_chrome.render_scope_reset`). The value is kept for the whole
+    session, so switching to another page and back returns to it: a page
+    switch clears the URL, which therefore cannot carry it.
     """
     dropped = drop_stale_selection(key, options)
-    seed_query_param(key, param, options)
-    value = st.selectbox(label, options, key=key, persist_state="session")
+    rejected = seed_query_param(key, param, options)
+    value = st.selectbox(
+        label, options, key=key, persist_state="session", format_func=format_func,
+    )
     if value:
         st.query_params[param] = value
-    return value, dropped
+        render_scope_reset(dropped or rejected, value, reason)
+    return value
 
 
 def render_refresh_button() -> None:
@@ -107,14 +154,14 @@ def render_refresh_button() -> None:
 def pick_run(
     base_url: str, cache_dir: str, *, suite: str = SIM, key_prefix: str = "",
 ) -> RunSelection | None:
-    """Detector → Platform → Sample → Stack in *suite*'s run tree, then the
-    stack's latest run.
+    """Detector → Platform → Sample → Stack → Run in *suite*'s run tree.
 
-    Each list is read from the store below the level above it. ``None`` when a
-    level cannot be listed or is empty, or the run cannot be downloaded — the
-    reason is already on screen, and nothing below it can be drawn.
-    *key_prefix* prefixes the selectboxes' keys, so each page keeps its own
-    selection; the URL parameters they mirror are the same on every page.
+    Each list is read from the store below the level above it; the Run
+    opens on the release's latest. ``None`` when a level cannot be listed or
+    is empty, a link's run is not in the store, or the run cannot be
+    downloaded — the reason is already on screen, and nothing below it can be
+    drawn. *key_prefix* prefixes the selectboxes' keys, so each page keeps its
+    own selection; the URL parameters they mirror are the same on every page.
     """
     st.markdown(
         resource_link_card(base_url, "🗄️", "WebEOS data", base_url.rstrip("/")),
@@ -129,8 +176,9 @@ def pick_run(
     if not detectors:
         st.error("No detectors found at the configured WebEOS URL.")
         return None
-    detector, _ = _url_synced_selectbox(
-        "Detector", order_detectors(detectors), f"{key_prefix}sb_detector", "detector"
+    detector = _url_synced_selectbox(
+        "Detector", order_detectors(detectors), f"{key_prefix}sb_detector", DETECTOR,
+        "isn't benchmarked here",
     )
     if not detector:
         return None
@@ -144,12 +192,12 @@ def pick_run(
     if not platforms:
         st.warning(f"No platforms found for detector '{detector}'.")
         return None
-    platform, dropped = _url_synced_selectbox(
-        "Platform", order_platforms(platforms), f"{key_prefix}sb_platform", "platform"
+    platform = _url_synced_selectbox(
+        "Platform", order_platforms(platforms), f"{key_prefix}sb_platform", PLATFORM,
+        f"isn't available for {detector}",
     )
     if not platform:
         return None
-    render_scope_reset(dropped, platform, f"isn't available for {detector}")
 
     # Scan the release tree once; derive both the sample union and the
     # per-sample stack list from the same {stack: [samples]} map.
@@ -165,14 +213,14 @@ def pick_run(
     if not samples:
         st.warning(f"No samples found for '{detector} / {platform}'.")
         return None
-    sample, dropped = _url_synced_selectbox(
-        "Sample", samples, f"{key_prefix}sb_sample", "sample"
+    # The Overview tab is scoped by sample across all detectors, so a
+    # re-default here changes which detectors it shows: hence the note.
+    sample = _url_synced_selectbox(
+        "Sample", samples, f"{key_prefix}sb_sample", SAMPLE,
+        f"isn't benchmarked for {detector}",
     )
     if not sample:
         return None
-    # The Overview tab is scoped by sample across all detectors, so this
-    # re-default silently changes which detectors it shows.
-    render_scope_reset(dropped, sample, f"isn't benchmarked for {detector}")
 
     # Stack — only releases that actually contain the chosen sample, newest
     # first, so the default jumps to the latest release that has the sample.
@@ -185,32 +233,106 @@ def pick_run(
     if not stacks:
         st.warning(f"No releases contain sample '{sample}' for '{detector} / {platform}'.")
         return None
-    stack, _ = _url_synced_selectbox("Stack", stacks, f"{key_prefix}sb_stack", "stack")
-    st.caption(
-        f"Available in {len(stacks)} release(s); defaults to the newest. "
-        "Single-run views use it; historical views read the Trend window."
+    stack = _url_synced_selectbox(
+        "Stack", stacks, f"{key_prefix}sb_stack", STACK,
+        f"doesn't hold {sample} for {detector}",
     )
+    st.caption(f"Available in {len(stacks)} release(s); defaults to the newest.")
     if not stack:
         return None
 
-    # Single-run tabs only ever show the latest run for the selected
-    # stack — fetch just that one (cached), not the whole date history.
+    run = _pick_run_date(
+        base_url, suite, detector, platform, stack, sample, f"{key_prefix}sb_run",
+    )
+    if run is None:
+        return None
+    ref = RunRef(suite, detector, platform, stack, sample, run)
     try:
-        data_dir = cached_fetch_latest_run(
-            base_url, suite, detector, platform, stack, sample, cache_dir
+        data_dir = cached_fetch_run(
+            base_url, suite, detector, platform, stack, sample, run, cache_dir,
         )
     except Exception as err:
-        st.error(f"Failed to download latest run: {err}")
+        st.error(f"Failed to download the run measured {run} with {stack}: {err}")
         return None
-    if not data_dir:
-        st.warning("No runs found for the selected combination.")
-        return None
-    return RunSelection(detector, platform, sample, stack, data_dir)
+    return RunSelection(ref, data_dir)
+
+
+def _pick_run_date(
+    base_url: str, suite: str, detector: str, platform: str, stack: str, sample: str,
+    key: str,
+) -> str | None:
+    """The Run selectbox: which of *stack*'s runs of *sample* the single-run
+    views show, by the night it was measured, newest first.
+
+    A first visit opens on the link's run, or on the latest; the choice is
+    then written to the URL, which pins it. Changing a level above keeps the
+    run where the new release has one of the same night, and otherwise
+    re-defaults to its latest, saying so. ``None``, with the reason on
+    screen, when the release's runs cannot be listed and nothing pinned one,
+    or when the link's run is not in the store: then the latest is offered
+    with a button, never opened in its place.
+    """
+    linked = None if key in st.session_state else st.query_params.get(RUN)
+    try:
+        listed = cached_list_runs(base_url, suite, detector, platform, stack, sample)
+    except Exception as err:
+        pinned = st.session_state.get(key) or linked
+        if not is_run_id(pinned):
+            st.error(f"Failed to list the runs of {stack}: {err}")
+            return None
+        # A listing that did not answer says nothing about the pinned run,
+        # which is therefore still shown — not replaced by a guess at the latest.
+        st.warning(
+            f"Could not list the runs of {stack}: {err}. Showing the pinned run "
+            f"measured {pinned}; the others are offered once the listing answers."
+        )
+        runs, latest = [pinned], None
+    else:
+        runs = sorted((run for run in listed if is_run_id(run)), reverse=True)
+        if not runs:
+            st.warning("No runs found for the selected combination.")
+            return None
+        if linked and linked not in runs:
+            _offer_latest_run(key, linked, runs[0], detector, platform, sample, stack)
+            return None
+        latest = runs[0]
+
+    run = _url_synced_selectbox(
+        "Run", runs, key, RUN, f"isn't a run of {stack}",
+        format_func=lambda day: f"{day} · latest" if day == latest else day,
+    )
+    if run:
+        st.caption(
+            f"Measured {run} with Key4hep release {pretty_release(stack)}; "
+            f"{len(runs)} run(s) of this release, defaults to the latest. "
+            "Single-run views show this run; historical views read the Trend window."
+        )
+    return run
+
+
+def _offer_latest_run(
+    key: str, linked: str, latest: str,
+    detector: str, platform: str, sample: str, stack: str,
+) -> None:
+    """Say that the link's run *linked* is not in the store, and offer the
+    release's *latest* in its place, with a button."""
+    what = "is not in the store" if is_run_id(linked) else "does not name a run"
+    st.warning(
+        f"The linked run `{linked}` {what}: no {sample} run of {detector} on "
+        f"{platform} with {stack} was measured that night."
+    )
+
+    def _open_latest() -> None:
+        st.session_state[key] = latest
+        st.query_params[RUN] = latest
+
+    st.button(f"Open the latest run, {latest}", on_click=_open_latest, width="stretch")
 
 
 def pick_trend_window(
     base_url: str, run: RunSelection, cache_dir: str, across_detectors: bool,
-    *, suite: str = SIM, reports: bool = True,
+    *, suite: str = SIM, reports: bool = True, key_prefix: str = "",
+    offer_all_runs: bool = False,
 ) -> TrendWindow:
     """The Trend window section, and the runs it covers for *run*'s
     detector, platform and sample in *suite*'s run tree.
@@ -221,15 +343,21 @@ def pick_trend_window(
     must not shrink to the history of whichever one the sidebar has selected.
     The releases and run dates come from directory listings only; just the
     windowed runs are downloaded. A suite without nightly *reports* bounds the
-    window by its runs alone.
+    window by its runs alone. *offer_all_runs* adds the choice of drawing
+    every run of a release rather than its latest, for a section whose
+    histories honour it. Both are mirrored in the URL (see :func:`_window_range`);
+    *key_prefix* keeps each page's own.
     """
+    # Whether every listing answered: one that did not leaves the slider's
+    # releases short, against which a link's window must not be judged.
+    complete = True
     try:
         stacks_dates = cached_list_run_dates(
             base_url, suite, run.detector, run.platform, run.sample
         )
     except Exception as err:
         st.warning(f"Could not scan trend run dates: {err}")
-        stacks_dates = {}
+        stacks_dates, complete = {}, False
 
     platform_stacks: list[str] = []
     if across_detectors:
@@ -237,6 +365,7 @@ def pick_trend_window(
             platform_stacks = list_platform_stacks(base_url, suite, run.platform)
         except Exception as err:
             st.warning(f"Could not list the platform's releases: {err}")
+            complete = False
     # The selected detector's own releases are folded into the platform's so
     # a listing that missed one cannot hide its runs.
     releases = dated_releases([*platform_stacks, *stacks_dates])
@@ -249,6 +378,7 @@ def pick_trend_window(
             report_nights = cached_list_report_dates(base_url, suite)
         except Exception as err:
             st.warning(f"Could not list nightly reports: {err}")
+            complete = False
     report_days = to_dates(report_nights)
     if across_detectors and report_days:
         # The Overview draws the reports, so a release tonight's batch is still
@@ -259,14 +389,12 @@ def pick_trend_window(
 
     st.header("Trend window")
     opening = releases[-DEFAULT_RELEASES:]
-    # No key: a widget without one is identified by its options and default,
-    # so a new release — on the Overview, a newly reported one — re-opens the
-    # slider on the newest releases rather than leaving it on a range that
-    # stopped at yesterday's. So does a change of scope — another section, or
-    # a detector with other releases — while the same releases keep the range.
+    key = f"{key_prefix}trend_releases"
     lo, hi = st.select_slider(
         "Releases", releases,
-        value=(opening[0], opening[-1]),
+        value=_window_range(key, releases, across_detectors, complete)
+        or (opening[0], opening[-1]),
+        key=key, persist_state="session",
         format_func=pretty_release,
         help=(
             "The Key4hep releases this tab draws, out of every release "
@@ -277,6 +405,8 @@ def pick_trend_window(
             "selected detector was benchmarked with."
         ) + " Smaller windows load faster.",
     )
+    if complete:
+        st.query_params[RELEASES] = release_range(lo, hi)
     selected = releases_between(releases, lo, hi)
     windowed = runs_in_window(stacks_dates, selected)
     first, last = release_day(selected[0]), release_day(selected[-1])
@@ -298,4 +428,64 @@ def pick_trend_window(
         day for days in stacks_dates.values() for day in days
     )
     last_night = max([release_day(releases[-1]), *nights])
-    return TrendWindow(report_span(selected, releases, last_night), run_dirs)
+    all_runs = offer_all_runs and _pick_history(f"{key_prefix}trend_history") == HISTORY_ALL
+    return TrendWindow(report_span(selected, releases, last_night), run_dirs, all_runs)
+
+
+def _window_range(
+    key: str, releases: list[str], across_detectors: bool, complete: bool,
+) -> tuple[str, str] | None:
+    """The range the Releases slider under *key* opens on when it has none:
+    a link's ``?releases=`` on a first visit, else ``None`` for the newest.
+
+    A new release — on the Overview, a newly reported one — re-opens the
+    slider on the newest releases rather than leaving it on a range that
+    stopped at yesterday's. So does a change of scope — another section, or a
+    detector with other releases — while the same releases keep the range.
+    A link's range is honoured on the first visit only, before anything has
+    changed. It is judged only against *complete* listings, which are also
+    the only ones recorded as the scope: a stalled one would have it dropped
+    as unknown and then, once the listing answers, count as a new release.
+    """
+    scope_key = f"_{key}_scope"
+    previous = st.session_state.get(scope_key)
+    if complete:
+        st.session_state[scope_key] = (tuple(releases), across_detectors)
+    if previous is not None:
+        if complete and previous != (tuple(releases), across_detectors):
+            st.session_state.pop(key, None)
+        return None
+    linked = st.query_params.get(RELEASES)
+    if not linked or not complete:
+        return None
+    bounds = parse_release_range(linked)
+    if bounds is None or not set(bounds) <= set(releases):
+        st.caption(
+            f"⚠️ The linked window `{linked}` is not a range of the releases on "
+            "offer — showing the newest."
+        )
+        return None
+    # A link opens on its range even where this session had already drawn one.
+    st.session_state.pop(key, None)
+    return tuple(sorted(bounds, key=releases.index))
+
+
+def _pick_history(key: str) -> str:
+    """Whether the histories draw each release's latest run or all of them,
+    mirrored in ``?history=``; the latest on a first visit without one."""
+    rejected = seed_query_param(key, HISTORY, list(HISTORY_MODES))
+    mode = st.radio(
+        "Runs per release", list(HISTORY_MODES), format_func=HISTORY_MODES.get,
+        key=key, persist_state="session",
+        help=(
+            "A release is re-run every night until the next one is tagged. "
+            "**Latest run per release** draws one point per release, its newest "
+            "run, on the release's date. **Every run** draws each run on the "
+            "night it was measured, a release's repeats side by side, to show "
+            "how much one release's measurements spread."
+        ),
+    )
+    st.query_params[HISTORY] = mode
+    if rejected:
+        st.caption(f"⚠️ `{rejected}` is not a choice of runs — showing {HISTORY_MODES[mode]}.")
+    return mode

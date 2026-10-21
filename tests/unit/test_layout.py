@@ -15,7 +15,7 @@ import pytest
 
 from k4bench import layout
 from k4bench.layout import (
-    LEVELS, RECO, SIM, SUITES, concept_of, concept_path, input_path, iter_run_dirs,
+    LEVELS, RECO, SIM, SUITES, RunRef, concept_of, concept_path, input_path, iter_run_dirs,
     report_path, reproducer_path, run_dir_of, run_path, run_url, stack_dir,
 )
 
@@ -108,6 +108,19 @@ def test_iter_run_dirs_yields_every_run_with_its_identity(tmp_path):
         SIM, *_RUN
     )
     assert run.path == path
+    # Its identity, without where this store keeps it.
+    assert RunRef(SIM, *_RUN).store_path == "/".join(_SIM_DIR)
+    assert isinstance(run, RunRef)
+
+
+def test_a_run_ref_names_one_run_of_one_night():
+    # Every detector and release of a night shares its date: none of them is
+    # the same run.
+    ref = RunRef(SIM, *_RUN)
+    assert ref != RunRef(SIM, "ALLEGRO_o1_v04", *_RUN[1:])
+    assert ref != RunRef(SIM, _RUN[0], _RUN[1], "key4hep-2026-09-30", *_RUN[3:])
+    assert ref != RunRef(RECO, *_RUN)
+    assert len({ref, RunRef(SIM, *_RUN)}) == 1
 
 
 def test_iter_run_dirs_orders_by_level_not_by_path_string(tmp_path):

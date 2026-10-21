@@ -191,8 +191,10 @@ def _render_historical(
     reliability: dict[str, bool | None] | None = None,
     reliability_slot=None,
     display_options_slot=None,
+    all_runs: bool = False,
 ) -> None:
-    """Render historical trends of the chosen RSS kind."""
+    """Render historical trends of the chosen RSS kind, every run of a release
+    when *all_runs*."""
     if not is_valid_df(trend_event_df):
         st.info(
             "No event memory trend data in the selected window. "
@@ -242,6 +244,7 @@ def _render_historical(
         key_prefix="evt_memory_hist",
         no_data_msg="No event memory trend data in the selected window.",
         display_options_slot=display_options_slot,
+        all_runs=all_runs,
     )
     # Unreliable runs are dropped inside regardless of the toggle above.
     render_stability_expander(
@@ -254,7 +257,11 @@ def render(
     trend_event_df: pd.DataFrame | None,
     trends_enabled: bool = False,
     reliability: dict[str, bool | None] | None = None,
+    *,
+    all_runs: bool = False,
 ) -> SectionScope | None:
+    """The per-event memory views; the history draws every run of a release
+    when *all_runs*."""
     if event_data is None and not trends_enabled:
         st.info("No event memory data available in the selected directory.")
         return None
@@ -275,6 +282,7 @@ def render(
         trend_event_df, reliability,
         reliability_slot=reliability_slot,
         display_options_slot=display_options_slot,
+        all_runs=all_runs,
     )
     # The trends span the window's releases, not the sidebar's one — reported
     # so the scope note above stops naming it.

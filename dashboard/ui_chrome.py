@@ -79,6 +79,7 @@ def render_scope_note(
     platform: str | None = None,
     sample: str | None = None,
     release: str | None = None,
+    run: str | None = None,
     data_dir: str | None = None,
     override: "SectionScope | None" = None,
     slot: "st.delta_generator.DeltaGenerator | None" = None,
@@ -118,6 +119,9 @@ def render_scope_note(
     use ``·`` internally, and reusing it here would flatten "AlmaLinux 9 · GCC
     14.2.0" into two dimensions that look like four.
 
+    The release is the software that was measured, and *run* the night it
+    was measured; given one, the note names both, never one for the other.
+
     In local mode the hierarchy does not exist (there is no EOS tree to walk,
     just one run directory), so every dimension arrives as ``None`` and the
     note names *data_dir* instead.
@@ -134,7 +138,10 @@ def render_scope_note(
         (scope.detector, detector, str),
         (scope.platform, platform, pretty_platform),
         (scope.sample,   sample,   pretty_sample),
-        (scope.release,  release,  pretty_release),
+        (scope.release,  release,  lambda stack: (
+            f"Key4hep {pretty_release(stack)}, measured {run}" if run
+            else pretty_release(stack)
+        )),
     ):
         if declared is None:
             continue
@@ -407,7 +414,7 @@ def render_scope_reset(dropped: str | None, current: str, reason: str) -> None:
         st.caption(f"⚠️ `{dropped}` {reason} — showing `{current}`.")
 
 
-def seed_query_param(key: str, param: str, options: list[str]) -> None:
+def seed_query_param(key: str, param: str, options: list[str]) -> str | None:
     """Seed a keyed widget's initial value from ``?param=...`` in the page
     URL, e.g. a nightly regression email's "view in dashboard" link (see
     ``k4bench.regression.render.dashboard_link``).
@@ -420,8 +427,15 @@ def seed_query_param(key: str, param: str, options: list[str]) -> None:
     already has a value (from an earlier rerun or a widget interaction), so
     it only ever applies on that one first run — call this immediately
     before creating the widget with ``key=key``.
+
+    Returns the URL's value when it is not among *options* — a stale or
+    mistyped link the widget opens without — so the caller can say so;
+    ``None`` otherwise.
     """
     if key not in st.session_state:
         wanted = st.query_params.get(param)
         if wanted in options:
             st.session_state[key] = wanted
+        elif wanted:
+            return wanted
+    return None

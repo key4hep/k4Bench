@@ -257,16 +257,29 @@ def cached_fetch_reports(
     return _keep_complete(_fetch_reports, base_url, suite, dates)
 
 
-@st.cache_data(show_spinner="Downloading latest run...", ttl=3600)
-def cached_fetch_latest_run(
+@st.cache_data(show_spinner="Listing runs...", ttl=600)
+def cached_list_runs(
     base_url: str, suite: str, detector: str, platform: str, stack: str, sample: str,
-    cache_dir: str,
-) -> str | None:
-    from k4bench.remote import ensure_latest_run_cached
-    p = ensure_latest_run_cached(
-        base_url, suite, detector, platform, stack, sample, cache_root=cache_dir
-    )
-    return str(p) if p else None
+) -> list[str]:
+    """The run dates of one release's *sample*, newest first: discovery only,
+    one directory listing. A listing that did not answer raises, and so is not
+    cached: the sidebar must not take a stall for a release without the run a
+    link pinned."""
+    from k4bench.remote import list_runs
+    return list_runs(base_url, suite, detector, platform, stack, sample)
+
+
+@st.cache_data(show_spinner="Downloading run...", ttl=3600)
+def cached_fetch_run(
+    base_url: str, suite: str, detector: str, platform: str, stack: str, sample: str,
+    date: str, cache_dir: str,
+) -> str:
+    """One exact run, downloaded once into the on-disk cache
+    (:func:`k4bench.remote.ensure_run_cached`); its cached directory."""
+    from k4bench.remote import ensure_run_cached
+    return str(ensure_run_cached(
+        base_url, suite, detector, platform, stack, sample, date, cache_root=cache_dir,
+    ))
 
 
 @st.cache_data(show_spinner="Downloading trend data...", ttl=3600)

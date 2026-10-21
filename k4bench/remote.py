@@ -735,25 +735,3 @@ def fetch_blame(
     """
     url = store_url(base_url, f"{report_path(suite, date)}/blame.json")
     return _fetch_json(url, strict=strict, missing_is_normal=True)
-
-
-def ensure_latest_run_cached(
-    base_url: str,
-    suite: str,
-    detector: str,
-    platform: str,
-    stack: str,
-    sample: str,
-    cache_root: str | None = None,
-) -> Path | None:
-    """Cache and return only the newest run for *(detector, platform, stack, sample)*.
-
-    Single-run tabs only ever display the latest run, so there is no need to
-    download the full date history for the selected stack.
-    """
-    runs = list_runs(base_url, suite, detector, platform, stack, sample)  # newest first
-    if not runs:
-        return None
-    return ensure_run_cached(
-        base_url, suite, detector, platform, stack, sample, runs[0], cache_root
-    )

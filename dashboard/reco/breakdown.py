@@ -259,7 +259,8 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
     # The Top N chooses the series before either chart draws its popover, in
     # which it then sits; Streamlit has already restored the slider's value.
     top_n = int(st.session_state.get(_TOP_N_KEY, _TOP_N))
-    series = phase_component_series(components, top_n, durations)
+    all_runs = ctx.window.all_runs
+    series = phase_component_series(components, top_n, durations, all_runs=all_runs)
     top_n_control_ = top_n_control(_TOP_N_KEY, "components", "components", default=_TOP_N)
     stat, title, unit = (
         ("share_pct", "Share of the phase (%)", "%") if relative else ("seconds", "Time (s)", "s")
@@ -269,7 +270,7 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
             series, list(dict.fromkeys(series["label"])), [(stat, title)],
             std_col="", n_col_candidates=[], unit=unit, error_sources={},
             key_prefix="reco_breakdown_hist", display_options_slot=display_options_slot,
-            extra_controls=(top_n_control_,) if by_component else (),
+            extra_controls=(top_n_control_,) if by_component else (), all_runs=all_runs,
         )
         return
     display = display_options(
@@ -278,7 +279,9 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
         key_prefix="reco_breakdown_hist_display",
         slot=display_options_slot,
     )
-    fig = plot_phase_history(series, palette=PALETTES[display["palette"]], relative=relative)
+    fig = plot_phase_history(
+        series, palette=PALETTES[display["palette"]], relative=relative, all_runs=all_runs,
+    )
     fit_legend_below(fig, series["label"].nunique())
     st.plotly_chart(fig, width="stretch", key="reco_breakdown_hist_chart")
 

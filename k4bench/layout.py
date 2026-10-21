@@ -152,8 +152,14 @@ def store_url(base_url: str, path: str) -> str:
 
 
 @dataclass(frozen=True)
-class RunDir:
-    """One run directory of a local store and the identity its path spells."""
+class RunRef:
+    """The identity of one run: every level of its path in the store.
+
+    ``date`` is the night the run was measured — the run's id, its directory
+    name — and ``stack`` the Key4hep release it measured. Neither alone names
+    a run: a release is re-run nightly until the next one is tagged, and
+    every detector, platform and sample runs on the same night.
+    """
 
     suite: str
     detector: str
@@ -161,6 +167,19 @@ class RunDir:
     stack: str
     sample: str
     date: str
+
+    @property
+    def store_path(self) -> str:
+        """The run's store-relative directory (:func:`run_path`)."""
+        return run_path(
+            self.suite, self.detector, self.platform, self.stack, self.sample, self.date,
+        )
+
+
+@dataclass(frozen=True)
+class RunDir(RunRef):
+    """One run directory of a local store and the identity its path spells."""
+
     path: Path
 
 
