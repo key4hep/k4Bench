@@ -132,7 +132,7 @@ def test_a_link_restores_the_run_section_view_and_window(store):
         "tab": "Breakdown", "reco_breakdown_view": "Historical Trends",
         "stack": OLD, "run": "2026-10-15", "releases": f"{OLD}..{OLD}",
     })
-    assert at.session_state["reco_active_section"] == "Breakdown"
+    assert at.session_state["reco_active_section"] == "Time"
     assert at.radio(key="reco_breakdown_view").value == "Historical Trends"
     assert at.selectbox(key="reco_sb_stack").value == OLD
     assert at.selectbox(key="reco_sb_run").value == "2026-10-15"
@@ -143,7 +143,7 @@ def test_a_link_restores_the_run_section_view_and_window(store):
 
 def test_moving_between_sections_keeps_the_run(store):
     at = _open(store, {"tab": "Logs", "stack": OLD, "run": "2026-10-17"})
-    for section in ("Efficiency", "Breakdown", "Logs"):
+    for section in ("Components", "Time", "Logs"):
         at.button_group[0].set_value(section).run()
         assert not at.exception, at.exception
         assert _query(at)["tab"] == section
@@ -154,7 +154,7 @@ def test_moving_between_sections_keeps_the_run(store):
 def test_the_history_mode_is_offered_only_where_a_section_honours_it(store):
     at = _open(store, {"tab": "Logs", "history": "all"})
     assert not [r for r in at.radio if r.key == "reco_trend_history"]
-    at.button_group[0].set_value("Breakdown").run()
+    at.button_group[0].set_value("Time").run()
     assert at.radio(key="reco_trend_history").value == "all"
 
 

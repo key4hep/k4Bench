@@ -12,7 +12,7 @@ is drawn — is a :class:`SuitePage`.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import streamlit as st
@@ -27,7 +27,7 @@ from data import (
 from k4bench.analysis.loader import run_suite
 from k4bench.layout import RECO, SIM
 from remote_cache import FilesUnavailable
-from section_dispatch import Renderer, PageContext, current_section, pick_section
+from section_dispatch import Aliases, Renderer, PageContext, current_section, pick_section
 from sections import SCOPED, SectionScope
 from sidebar import (
     RunSelection,
@@ -72,6 +72,9 @@ class SuitePage:
     #: Sections whose histories can draw every run of a release rather than
     #: its latest, which the sidebar then offers (:attr:`sidebar.TrendWindow.all_runs`).
     all_runs_sections: frozenset[str] = frozenset()
+    #: Old section names a link may still carry (see
+    #: :func:`section_dispatch.current_section`).
+    aliases: Aliases = field(default_factory=dict)
 
     @property
     def title(self) -> str:
@@ -131,7 +134,7 @@ def render_page(page: SuitePage) -> None:
             )
             # A section that spans every detector draws the window over every
             # release on the platform; the others read the selected detector's.
-            section = current_section(sections, key=section_key)
+            section = current_section(sections, key=section_key, aliases=page.aliases)
             across_detectors = page.scopes[section].detector is not SCOPED
             window = pick_trend_window(
                 config.data_url, selection, config.cache_dir, across_detectors,
@@ -194,7 +197,7 @@ def render_page(page: SuitePage) -> None:
     # per-run reliability status lives in the sidebar run-quality card).
     render_run_status(ctx.run.results, run_meta)
 
-    active_section = pick_section(sections, key=section_key)
+    active_section = pick_section(sections, key=section_key, aliases=page.aliases)
 
     # One muted line naming what the active section is actually showing. Driven
     # by the page's scope registry, so it states only the dimensions that

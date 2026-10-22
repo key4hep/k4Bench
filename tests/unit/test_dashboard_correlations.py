@@ -109,7 +109,8 @@ def test_an_algorithm_is_drawn_against_what_it_reads(monkeypatch, tmp_path):
     run = _reco_run(tmp_path)
     times = _write_source(run)
     at = _reco_page(monkeypatch, tmp_path, run)
-    assert at.session_state["reco_active_section"] == "Correlations"
+    assert at.session_state["reco_active_section"] == "Events"
+    assert at.button_group(key="reco_events_lens").value == "What drives the cost"
     # The baseline alone: no configuration to choose.
     with pytest.raises(KeyError):
         at.selectbox(key="corr_config")

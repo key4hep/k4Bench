@@ -4,7 +4,8 @@ The graph joins the algorithms of one configuration's job by the collections
 one writes and a later one reads (:mod:`k4bench.analysis.dataflow`), each
 algorithm sized by its event-loop time. Algorithms sharing a class are one
 square node until clicked, which expands them; clicking an algorithm lists
-what it reads and writes underneath. What the recorded data cannot show is
+what it reads and writes underneath, beside a button opening it in the
+Components section. What the recorded data cannot show is
 listed under the graph rather than drawn as if it were known.
 """
 from __future__ import annotations
@@ -22,6 +23,8 @@ from k4bench.analysis.plots.dataflow import (
     layered_positions,
     plot_dataflow,
 )
+from reco._controls import select_config
+from reco._inspect import inspect_button
 from section_dispatch import PageContext
 
 _CONFIG_KEY = "reco_dataflow_config"
@@ -43,7 +46,7 @@ _CHART_CONFIG = {
 }
 
 
-def _seconds_per_event(ctx: PageContext, config: str) -> dict[str, float]:
+def seconds_per_event(ctx: PageContext, config: str) -> dict[str, float]:
     """Each algorithm's own time per event, the warm-up left out and the
     events it was skipped in counted: what it adds to the workload, which
     adds up over a group's members. One that ran in no such event is left
@@ -110,15 +113,17 @@ def _io_table(flow: DataFlow, graph: Graph, name: str) -> tuple[pd.DataFrame, pd
     return pd.DataFrame(reads), pd.DataFrame(writes)
 
 
-def _render_selected(flow: DataFlow, graph: Graph, view: FlowView) -> None:
+def _render_selected(flow: DataFlow, graph: Graph, view: FlowView, config: str) -> None:
     name = st.session_state.get(_SELECTED_KEY)
     if not name or all(a.name != name for a in flow.algorithms):
         return
     algorithm = next(a for a in flow.algorithms if a.name == name)
-    title_col, action_col = st.columns([4, 1], vertical_alignment="bottom")
+    title_col, inspect_col, action_col = st.columns([4, 1.4, 1.4], vertical_alignment="bottom")
     with title_col:
         st.markdown(f"##### {name}")
         st.caption(f"{algorithm.impl} · {'Marlin' if algorithm.framework == 'marlin' else 'Gaudi'}")
+    with inspect_col:
+        inspect_button(name, config, "Data Flow", key="reco_dataflow_inspect")
     group = view.groups.get(algorithm.impl)
     if group and algorithm.impl in st.session_state[_EXPANDED_KEY]:
         with action_col:
@@ -126,6 +131,15 @@ def _render_selected(flow: DataFlow, graph: Graph, view: FlowView) -> None:
                 st.session_state[_EXPANDED_KEY].discard(algorithm.impl)
                 st.session_state[_SELECTED_KEY] = None
                 st.rerun()
+    render_collections(flow, graph, name)
+
+
+def render_collections(flow: DataFlow, graph: Graph, name: str, *, compact: bool = False) -> None:
+    """What algorithm *name* of *flow* reads, with who wrote each collection,
+    and what it writes, with who reads it; for the Writer, what its rules
+    keep. *compact* leaves out the parameter and the store of each, and the
+    type where none has one."""
+    algorithm = next(a for a in flow.algorithms if a.name == name)
     if algorithm.output_commands is not None:
         # The Writer declares no data handles: its reads follow from its
         # keep/drop rules, as the graph links them into it.
@@ -138,6 +152,13 @@ def _render_selected(flow: DataFlow, graph: Graph, view: FlowView) -> None:
         st.info("Not recorded for this run.")
         return
     reads, writes = _io_table(flow, graph, name)
+    if compact:
+        # Gaudi handles carry no type: a column empty throughout says nothing.
+        reads, writes = (
+            table.drop(columns=["Parameter", "Store"], errors="ignore")
+            .loc[:, lambda t: [c for c in t.columns if c != "Type" or t[c].ne("").any()]]
+            for table in (reads, writes)
+        )
     read_col, write_col = st.columns(2, gap="medium")
     with read_col:
         st.markdown("**Reads**")
@@ -205,13 +226,11 @@ def render(ctx: PageContext) -> None:
         [3, 2, 1, 1], gap="small", vertical_alignment="bottom",
     )
     with config_col:
-        config = st.selectbox(
-            "Configuration", sorted(flows), key=_CONFIG_KEY, bind="query-params",
-        )
+        config = select_config(sorted(flows), _CONFIG_KEY)
     flow = flows[config]
     with writer_col:
         writer = st.toggle("Show Writer inputs", key=_WRITER_KEY, bind="query-params")
-    seconds = _seconds_per_event(ctx, config)
+    seconds = seconds_per_event(ctx, config)
     view = dataflow_view(flow, seconds,
                          st.session_state[_EXPANDED_KEY], writer_edges=writer, isolated=False)
     with expand_col:
@@ -244,5 +263,5 @@ def render(ctx: PageContext) -> None:
         st.session_state[_CHART_KEY] += 1
         st.rerun()
     _render_hidden(flow, view)
-    _render_selected(flow, graph, view)
+    _render_selected(flow, graph, view, config)
     _render_limits(flow, graph, view)

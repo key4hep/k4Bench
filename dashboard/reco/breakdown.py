@@ -1,21 +1,20 @@
-"""Reconstruction Breakdown: where the job's time goes, phase by phase and
-component by component.
+"""Reconstruction Time, by phases and components: where the job's time goes,
+phase by phase and component by component.
 
 Current Run gives each phase of the selected run as a card, then a donut each
 of its initialization, event loop and finalization by component, and the event
-loop event by event in the donuts' colours. Components lists the selected run's
-algorithms and services with their time per phase and links to their code at
-the revision the run's stack built. Historical Trends draws one phase
+loop event by event in the donuts' colours, where clicking a component opens
+it in the Components section. Historical Trends draws one phase
 at a time across the trend window, its components as stacked columns or, with
 the trend views' shared renderer, as lines; configure, timed only as a whole,
-as one line.
+as one line. Every component's time per phase, and its code, is in the
+Components section.
 """
 from __future__ import annotations
 
-import pandas as pd
 import streamlit as st
 
-from data import COMPONENTS, PACKAGES, cached_load_trend_phases
+from data import COMPONENTS, cached_load_trend_phases
 from k4bench.analysis.components import ComponentTiming
 from k4bench.analysis.plots import (
     plot_event_composition,
@@ -28,7 +27,8 @@ from k4bench.analysis.plots.phases import (
     phase_component_series,
     top_components,
 )
-from reco._sources import SOURCE_COLUMN_CONFIG, source_columns
+from reco._controls import select_config
+from reco._inspect import clickable_chart
 from section_dispatch import PageContext, judgeable_trend, no_components_reason
 from sections import TREND_WINDOW_SCOPE, SectionScope
 from tabs._historical_trends import render_historical_trends
@@ -48,6 +48,7 @@ from ui_utils import (
 #: Components a phase's history names; the rest are one "Other" series.
 _TOP_N = 6
 _TOP_N_KEY = "reco_breakdown_hist_topn"
+
 
 #: Components each current-run donut names; the rest are one "Other" slice.
 _PIE_TOP_N = 5
@@ -70,15 +71,13 @@ def _seconds(value: float) -> str:
 
 
 def _select_config(ctx: PageContext) -> tuple[str, ComponentTiming] | None:
-    """The configuration chosen for the run views, shared between them, and
+    """The configuration chosen for the current run, and
     its component costs; ``None``, said so, when the run has none."""
     labels = sorted(ctx.run.components)
     if not labels:
         st.info(f"No phase timing in this run: {no_components_reason(ctx)}")
         return None
-    config = st.selectbox(
-        "Configuration", labels, key="reco_breakdown_config", bind="query-params",
-    )
+    config = select_config(labels, "reco_breakdown_config")
     return config, ctx.run.components[config]
 
 
@@ -125,7 +124,10 @@ def _render_current_run(ctx: PageContext) -> None:
 
     title_col, order_col = st.columns([3, 1], vertical_alignment="bottom")
     with title_col:
-        st.markdown("##### Event loop, event by event")
+        st.markdown(
+            "##### Event loop, event by event",
+            help="Click a component's part of a column to open it in Components.",
+        )
     with order_col:
         order = st.segmented_control(
             "Order", ["Event order", "Longest first"], default="Event order",
@@ -137,62 +139,7 @@ def _render_current_run(ctx: PageContext) -> None:
         colors=colors, sort=order == "Longest first", warm_up=_WARM_UP_EVENT,
     )
     fit_legend_below(fig, len(fig.data))
-    st.plotly_chart(fig, width="stretch", key="reco_breakdown_events_chart")
-
-
-def _render_components(ctx: PageContext) -> None:
-    """Every algorithm and service, most expensive first, with its own time in
-    each phase and links to its code."""
-    if (selected := _select_config(ctx)) is None:
-        return
-    _, timing = selected
-    per_phase = {phase: timing.phase_component_seconds(phase) for phase in _PHASE_TITLES}
-    components = timing.components[timing.components["category"].isin(("algorithm", "service"))]
-    if components.empty:
-        return
-    sources = source_columns(ctx.run_dir(PACKAGES), timing, components.index)
-    rows = []
-    for name, component in components.iterrows():
-        rows.append({
-            "Component": name,
-            "Class": component["impl"],
-            "Kind": component["category"].capitalize(),
-            **{title: float(per_phase[phase].get(name, 0.0) or 0.0)
-               for phase, title in _PHASE_TITLES.items()},
-            **sources.loc[name].to_dict(),
-        })
-    df = pd.DataFrame(rows)
-    df = df.iloc[(-df[list(_PHASE_TITLES.values())].sum(axis=1)).argsort(kind="stable")]
-
-    st.caption(
-        "Each algorithm's and service's own wall time per phase, the event loop's "
-        "summed over events, and the package its code comes from at the revision "
-        "this run's stack built."
-    )
-    st.dataframe(
-        df,
-        hide_index=True,
-        width="stretch",
-        column_config={
-            "Component": st.column_config.TextColumn("Component", width="medium"),
-            "Class": st.column_config.TextColumn(
-                "Class", help="The class doing the work: the component's type, or the "
-                              "Marlin processor a MarlinProcessorWrapper runs.",
-            ),
-            "Kind": st.column_config.TextColumn("Kind", width="small"),
-            **{title: st.column_config.NumberColumn(title, format="%.2f s")
-               for title in _PHASE_TITLES.values()},
-            **SOURCE_COLUMN_CONFIG,
-        },
-    )
-    unresolved = components[(components["impl"] != components["type"])
-                            & (components["impl_library"] == "")]
-    if not unresolved.empty:
-        st.caption(
-            f"{len(unresolved)} Marlin processor(s) have no package: the run did not "
-            "record the library defining them (k4bench 0.0.49 and earlier recorded "
-            "only the wrapper's)."
-        )
+    clickable_chart(fig, "reco_breakdown_events_chart", config, "Time", width="stretch")
 
 
 #: What each component of a phase's history is drawn as.
@@ -218,10 +165,7 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
         [2, 3, 1.4, 1.8], vertical_alignment="bottom",
     )
     with config_col:
-        config = st.selectbox(
-            "Configuration", sorted(trend["label"].unique()), key="reco_breakdown_hist_config",
-            bind="query-params",
-        )
+        config = select_config(sorted(trend["label"].unique()), "reco_breakdown_hist_config")
     rows = trend[trend["label"] == config]
     totals = rows[rows["component"].isna()]
     longest = totals.groupby("phase")["seconds"].max()
@@ -287,7 +231,7 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
 
 
 def render(ctx: PageContext) -> SectionScope | None:
-    views = ["Current Run", "Components"] + (["Historical Trends"] if ctx.trends_enabled else [])
+    views = ["Current Run"] + (["Historical Trends"] if ctx.trends_enabled else [])
     drop_stale_selection("reco_breakdown_view", views)
     view, reliability_slot, display_options_slot = view_control_row(
         views, key="reco_breakdown_view",
@@ -295,8 +239,5 @@ def render(ctx: PageContext) -> SectionScope | None:
     if view == "Historical Trends":
         _render_historical(ctx, reliability_slot, display_options_slot)
         return TREND_WINDOW_SCOPE
-    if view == "Components":
-        _render_components(ctx)
-    else:
-        _render_current_run(ctx)
+    _render_current_run(ctx)
     return None

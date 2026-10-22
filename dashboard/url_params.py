@@ -19,7 +19,8 @@ measurement and the same history:
                default) or ``all``
 ``timing``     Event Timing's "Timing of" choices, one value each: the
                algorithms' names, or :data:`WHOLE_EVENT`
-``component``  reserved: one component of the selected run, by its name
+``component``  the Reconstruction page's Component section: one algorithm
+               or service of the selected run's configuration, by its name
 =============  ================================================================
 
 The suite is not a parameter: it is the page's path (Simulation at ``/``,
@@ -45,7 +46,7 @@ RUN = "run"
 RELEASES = "releases"
 HISTORY = "history"
 TIMING = "timing"
-#: Reserved for a component of the selected run; nothing reads it yet.
+#: The component the Reconstruction page's Component section shows.
 COMPONENT = "component"
 
 #: ``history`` values: each release's latest run, or every run.
