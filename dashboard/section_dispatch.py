@@ -133,8 +133,12 @@ Renderer = Callable[[PageContext], SectionScope | None]
 
 
 #: A section's old name, and the section and the widget values it now opens
-#: on: ``{old name: (section, {widget key: value})}``.
-Aliases = Mapping[str, tuple[str, Mapping[str, str]]]
+#: on: ``{old name: (section, {widget key: value})}``; the values may instead
+#: be a function of the link's parameters, for a section whose own controls
+#: were renamed.
+Aliases = Mapping[
+    str, tuple[str, Mapping[str, str] | Callable[[Mapping[str, str]], Mapping[str, str]]],
+]
 
 
 def current_section(
@@ -150,7 +154,8 @@ def current_section(
     on the bar is in session_state before the rerun it starts, so this already
     names the section being opened. A section's old name in *aliases* opens
     the section it is now part of, with the widget values that show what it
-    showed (a view, say), so an old link still lands where it pointed.
+    showed (a view, say, or the configuration its own controls chose), so an
+    old link still lands where it pointed.
     """
     if key not in st.session_state:
         requested = (st.query_params.get("tab") or "").strip().lower()
@@ -161,6 +166,8 @@ def current_section(
         )
         if matched is None and alias is not None:
             matched, values = alias
+            if callable(values):
+                values = values(st.query_params)
             for widget, value in values.items():
                 st.session_state.setdefault(widget, value)
         st.session_state[key] = matched or section_names[0]

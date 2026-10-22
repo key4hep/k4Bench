@@ -102,6 +102,33 @@ def test_a_link_to_a_former_section_opens_where_it_now_is(monkeypatch, tmp_path,
         assert at.button_group(key=key).value == value
 
 
+def test_a_link_to_the_former_efficiency_opens_its_configuration(monkeypatch, tmp_path):
+    at = _page(monkeypatch, tmp_path, RECO_RUN, "Efficiency", {
+        "reco_efficiency_view": "Current Run",
+        "reco_efficiency_config": "variant_truth_tracking",
+        "reco_efficiency_hist_config": "baseline",
+    })
+    assert at.session_state["reco_active_section"] == "Components"
+    assert at.selectbox(key="reco_component_config").value == "variant_truth_tracking"
+
+
+@pytest.mark.parametrize(("params", "values"), [
+    ({"reco_efficiency_view": "Historical Trends", "reco_efficiency_config": "baseline",
+      "reco_efficiency_hist_config": "variant_truth_tracking"},
+     {"reco_component_view": "Historical Trends", "reco_component_config": "variant_truth_tracking"}),
+    ({"reco_efficiency_view": "Current Run", "reco_efficiency_config": "baseline",
+      "reco_efficiency_hist_config": "variant_truth_tracking"},
+     {"reco_component_view": "Current Run", "reco_component_config": "baseline"}),
+    ({"reco_efficiency_config": "baseline"}, {"reco_component_config": "baseline"}),
+    ({}, {}),
+])
+def test_the_former_efficiency_view_and_configuration_carry_over(params, values):
+    from reco.page import RECO_PAGE
+
+    _section, link = RECO_PAGE.aliases["Efficiency"]
+    assert link(params) == values
+
+
 def test_each_lens_is_in_the_url(monkeypatch, tmp_path):
     at = _page(monkeypatch, tmp_path, RECO_RUN, "Time", {"reco_time_lens": "Per event"})
     assert at.button_group(key="reco_time_lens").value == "Per event"

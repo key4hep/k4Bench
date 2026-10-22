@@ -245,8 +245,12 @@ def test_every_section_opens_the_same_component_and_goes_back(
     monkeypatch, tmp_path, reco_run_with_heap, section, inspect,
 ):
     at = _page(monkeypatch, tmp_path, reco_run_with_heap(), section)
+    # Left on its history: inspecting from a section of the run on screen
+    # shows that run.
+    at.session_state["reco_component_view"] = "Historical Trends"
     inspect(at)
     assert _shown(at) == ("Components", "baseline", "VertexFinder")
+    assert _state(at, "reco_component_view") == "Current Run"
     assert "#### VertexFinder" in _headings(at)
     assert at.button(key="reco_component_back").label == f"Back to {section}"
     at.button(key="reco_component_back").click()
@@ -460,6 +464,62 @@ def test_the_history_leaves_a_night_without_the_component_as_a_named_gap(reco_ru
     held = next(t for t in _traces(at) if t["yaxis"] == "y3")
     assert np.isnan(_values(held["y"])[1])
     assert any("no memory pass in 1 run: 2026-10-19" in c.value for c in at.caption)
+
+
+def _history(runs: list[Path], component: str | None = None) -> AppTest:
+    """The Components section over *runs*, the last on screen, opened on its
+    history."""
+    at = AppTest.from_function(
+        _history_app, args=(str(_DASHBOARD_DIR), tuple(map(str, runs))), default_timeout=60,
+    )
+    if component is not None:
+        at.query_params["component"] = component
+    _run(at)
+    at.radio(key="reco_component_view").set_value("Historical Trends")
+    return _run(at)
+
+
+def test_the_history_does_not_need_the_run_on_screen_to_have_components(reco_run_with_heap):
+    runs = [reco_run_with_heap(night, night) for night in _NIGHTS]
+    for path in runs[-1].glob("*_components.json"):
+        path.unlink()
+    at = AppTest.from_function(
+        _history_app, args=(str(_DASHBOARD_DIR), tuple(map(str, runs))), default_timeout=60,
+    )
+    _run(at)
+    assert any("No component costs in this run" in i.value for i in at.info)
+    at = _history(runs, "LumiCalReco")
+    assert not at.info and not at.warning
+    assert at.selectbox(key="reco_component_hist_component_baseline_0").value == "LumiCalReco"
+    values = _values(next(t for t in _traces(at) if t["yaxis"] == "y")["y"])
+    assert np.isfinite(values[:2]).all()
+
+
+def test_the_history_draws_a_component_the_run_on_screen_no_longer_has(reco_run_with_heap):
+    runs = _nights(reco_run_with_heap, drop_on="2026-10-20")
+    at = AppTest.from_function(
+        _history_app, args=(str(_DASHBOARD_DIR), tuple(map(str, runs))), default_timeout=60,
+    )
+    at.query_params["component"] = "LumiCalReco"
+    _run(at)
+    assert any("**LumiCalReco** is not a component" in w.value for w in at.warning)
+    at.radio(key="reco_component_view").set_value("Historical Trends")
+    _run(at)
+    assert not at.warning
+    values = _values(next(t for t in _traces(at) if t["yaxis"] == "y")["y"])
+    assert np.isfinite(values[:2]).all() and np.isnan(values[2])
+    assert any("not in the job in 1 run: 2026-10-20" in c.value for c in at.caption)
+
+
+def test_the_history_says_so_of_a_component_the_window_never_had(reco_run_with_heap):
+    runs = [reco_run_with_heap(night, night) for night in _NIGHTS]
+    at = _history(runs, "NoSuchAlgorithm")
+    assert any("**NoSuchAlgorithm** is not a component of **baseline** in any run"
+               in w.value for w in at.warning)
+    assert not at.get("plotly_chart")
+    at.selectbox(key="reco_component_hist_component_baseline_0").set_value("LumiCalReco")
+    _run(at)
+    assert not at.warning and _traces(at)
 
 
 def test_a_component_memory_warns_about_carries_a_warning_sign(

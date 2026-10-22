@@ -24,6 +24,8 @@ format, so the shared per-event tabs draw a reco run as they draw a sim run.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import streamlit as st
 
 from data import (
@@ -35,7 +37,7 @@ from data import (
     cached_load_trend_event_timing,
 )
 from k4bench.layout import RECO
-from reco import breakdown, component, dataflow, memory, overview
+from reco import _inspect, breakdown, component, dataflow, memory, overview
 from section_dispatch import (
     RENDERERS,
     PageContext,
@@ -56,6 +58,20 @@ MEMORY_LENS = "reco_memory_lens"
 MEMORY_LENSES = ("Heap by component", "Per event")
 EVENTS_LENS = "reco_events_lens"
 EVENTS_LENSES = ("What drives the cost", "Output size")
+
+
+def _efficiency_link(params: Mapping[str, str]) -> dict[str, str]:
+    """The Components view and configuration a link to the former Efficiency
+    section showed: its view, and the configuration of that view."""
+    view = params.get("reco_efficiency_view")
+    config = params.get(
+        "reco_efficiency_hist_config" if view == "Historical Trends" else "reco_efficiency_config"
+    )
+    return {
+        key: value
+        for key, value in ((_inspect.VIEW_KEY, view), (_inspect.CONFIG_KEY, config))
+        if value
+    }
 
 
 def _event_timing(ctx: PageContext) -> SectionScope | None:
@@ -153,7 +169,7 @@ RECO_PAGE = SuitePage(
         "Breakdown": ("Time", {TIME_LENS: TIME_LENSES[0]}),
         "Event Timing": ("Time", {TIME_LENS: TIME_LENSES[1]}),
         "Event Memory": ("Memory", {MEMORY_LENS: MEMORY_LENSES[1]}),
-        "Efficiency": ("Components", {}),
+        "Efficiency": ("Components", _efficiency_link),
         "Component": ("Components", {}),
         "Correlations": ("Events", {EVENTS_LENS: EVENTS_LENSES[0]}),
         "Event Size": ("Events", {EVENTS_LENS: EVENTS_LENSES[1]}),

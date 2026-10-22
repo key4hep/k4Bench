@@ -65,8 +65,10 @@ from reco._controls import select_config
 from reco._inspect import (
     COMPONENT_KEY,
     CONFIG_KEY,
+    CURRENT_RUN,
     ORIGIN_KEY,
     TABLE_NONCE_KEY,
+    VIEW_KEY,
     clickable_chart,
     go_back,
 )
@@ -81,7 +83,6 @@ from ui_utils import view_control_row
 from url_params import COMPONENT
 
 _KEY = "reco_component"
-_VIEW_KEY = f"{_KEY}_view"
 #: A component asked for (by a link, or kept from another run or
 #: configuration) that the one on screen does not have.
 _MISSING_KEY = f"{_KEY}_missing"
@@ -654,24 +655,67 @@ def _render_gaps(rows: pd.DataFrame, column: str, config: str) -> None:
         st.caption(f"Gaps for **{config}**: " + "; ".join(parts) + ".")
 
 
-def _render_historical(
-    ctx: PageContext, config: str, name: str, reliability_slot, display_options_slot,
-) -> None:
-    drop_stale_selection(f"{_HIST_KEY}_group", list(_HIST_GROUPS))
-    group = st.segmented_control(
-        "Show", list(_HIST_GROUPS), default="Time", key=f"{_HIST_KEY}_group",
-        bind="query-params",
-    ) or "Time"
+def _window_components(trend: pd.DataFrame, config: str) -> list[str]:
+    """The components configuration *config* had in any run of the window's
+    *trend*, the slowest per event it ran in first, then by initialization."""
+    rows = trend[(trend["label"] == config) & trend["component"].notna()]
+    medians = rows.groupby("component")[["seconds_when_run", "initialize_s"]].median()
+    return medians.sort_values(
+        ["seconds_when_run", "initialize_s"], ascending=False, na_position="last", kind="stable",
+    ).index.tolist()
+
+
+def _select_in_window(config: str, names: list[str]) -> str | None:
+    """The component whose history is drawn, chosen among *names*, those of
+    *config* in the window: the one remembered, also when the run on screen
+    lacks it, else the link's, else the first; returns it. One the window
+    lacks is said so, and nothing is drawn until another is chosen."""
+    requested = (
+        st.session_state.get(COMPONENT_KEY) or st.session_state.get(_MISSING_KEY)
+        or st.query_params.get(COMPONENT) or (names[0] if names else None)
+    )
+    choice = st.selectbox(
+        "Component", names, index=names.index(requested) if requested in names else None,
+        key=f"{_HIST_KEY}_component_{config}_{st.session_state.get(TABLE_NONCE_KEY, 0)}",
+        placeholder="Choose a component",
+    )
+    if choice is not None:
+        requested = choice
+    if requested not in names:
+        st.session_state[_MISSING_KEY] = requested
+        st.session_state[COMPONENT_KEY] = None
+        if requested is not None:
+            st.warning(f"**{requested}** is not a component of **{config}** in any run of "
+                       "the selected window, so nothing of it is shown.")
+        return None
+    st.session_state[COMPONENT_KEY] = requested
+    st.session_state.pop(_MISSING_KEY, None)
+    st.query_params[COMPONENT] = requested
+    return requested
+
+
+def _render_historical(ctx: PageContext, reliability_slot, display_options_slot) -> None:
+    """The history of a component of any configuration the window recorded,
+    whatever the run on screen holds."""
     summary_trend = judgeable_trend(ctx, cached_load_trend_component_summary, COMPONENTS)
-    # The heap's history reads every run's memory pass: only when asked for.
-    heap_trend = judgeable_trend(ctx, cached_load_trend_heap, HEAP) if group == "Memory" else None
-    history = component_history(summary_trend, heap_trend, config, name)
-    if history.empty:
+    if summary_trend is None or summary_trend.empty:
         st.info(
             "No component costs in the selected window. Widen the trend window in "
             "the sidebar."
         )
         return
+    config = _config_row(sorted(summary_trend["label"].unique()))
+    name = _select_in_window(config, _window_components(summary_trend, config))
+    if name is None:
+        return
+    drop_stale_selection(f"{_HIST_KEY}_group", list(_HIST_GROUPS))
+    group = st.segmented_control(
+        "Show", list(_HIST_GROUPS), default="Time", key=f"{_HIST_KEY}_group",
+        bind="query-params",
+    ) or "Time"
+    # The heap's history reads every run's memory pass: only when asked for.
+    heap_trend = judgeable_trend(ctx, cached_load_trend_heap, HEAP) if group == "Memory" else None
+    history = component_history(summary_trend, heap_trend, config, name)
     history = render_reliability_filter(
         history, ctx.reliability, key=f"{_HIST_KEY}_exclude_unreliable", slot=reliability_slot,
     )
@@ -694,14 +738,9 @@ def _render_historical(
     )
 
 
-def render(ctx: PageContext) -> SectionScope | None:
-    views = ["Current Run"] + (["Historical Trends"] if ctx.trends_enabled else [])
-    drop_stale_selection(_VIEW_KEY, views)
-    view, reliability_slot, display_options_slot = view_control_row(views, key=_VIEW_KEY)
-    labels = sorted(ctx.run.components)
-    if not labels:
-        st.info(f"No component costs in this run: {no_components_reason(ctx)}")
-        return None
+def _config_row(labels: list[str]) -> str:
+    """The configuration chosen among *labels*, beside the way back to the
+    section the Components section was opened from."""
     drop_stale_selection(CONFIG_KEY, labels)
     config_col, back_col = st.columns([2, 3], vertical_alignment="bottom")
     with config_col:
@@ -710,6 +749,21 @@ def render(ctx: PageContext) -> SectionScope | None:
         if origin := st.session_state.get(ORIGIN_KEY):
             st.button(f"Back to {origin}", key=f"{_KEY}_back", icon=":material/arrow_back:",
                       type="tertiary", on_click=go_back)
+    return config
+
+
+def render(ctx: PageContext) -> SectionScope | None:
+    views = [CURRENT_RUN] + (["Historical Trends"] if ctx.trends_enabled else [])
+    drop_stale_selection(VIEW_KEY, views)
+    view, reliability_slot, display_options_slot = view_control_row(views, key=VIEW_KEY)
+    if view == "Historical Trends":
+        _render_historical(ctx, reliability_slot, display_options_slot)
+        return TREND_WINDOW_SCOPE
+    labels = sorted(ctx.run.components)
+    if not labels:
+        st.info(f"No component costs in this run: {no_components_reason(ctx)}")
+        return None
+    config = _config_row(labels)
     timing = ctx.run.components[config]
     summary = component_summary(timing, warm_up=WARM_UP_EVENT)
     heap = memory.heaps(ctx).get(config)
@@ -725,8 +779,5 @@ def render(ctx: PageContext) -> SectionScope | None:
                 "so nothing of it is shown. Select one of its components above."
             )
         return None
-    if view == "Historical Trends":
-        _render_historical(ctx, config, name, reliability_slot, display_options_slot)
-        return TREND_WINDOW_SCOPE
     _render_current_run(ctx, config, timing, summary, heap, heap_summary, names, name)
     return None

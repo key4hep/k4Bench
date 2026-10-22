@@ -858,7 +858,7 @@ choice at its top (in the URL too) says which:
 
 A link to one of the page's former sections (Breakdown, Efficiency, Event
 Timing, Event Memory, Correlations, Event Size) opens the section and view it
-is now part of. Where a run has a single configuration, the sections offer no
+is now part of; an Efficiency link keeps its view and configuration. Where a run has a single configuration, the sections offer no
 **Configuration** choice.
 
 Each configuration's `_components.json` is read on its own. One that is
@@ -1048,7 +1048,10 @@ warm-up event left out of everything over events:
   each collection, and what it writes, with who reads it (and the LCIO type,
   where there is one).
 
-Its **Historical Trends** draws its numbers across the trend window, chosen by
+Its **Historical Trends** draws its numbers across the trend window, whatever
+the run on screen holds: its configurations and components are those any run
+of the window recorded, so a component since removed from the job, or a run
+without component costs, still has a history. Its numbers are chosen by
 **Show**: **Time** (time per event, its 95th percentile, the events it ran in,
 initialization), **CPU** (instructions and IPC per event it ran in, page
 faults, context switches) or **Memory** (allocations and allocated memory per

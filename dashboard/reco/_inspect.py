@@ -21,11 +21,14 @@ from url_params import COMPONENT
 
 #: The section listing the components and inspecting one.
 SECTION = "Components"
+#: Its view of the run on screen.
+CURRENT_RUN = "Current Run"
 #: The Reconstruction page's section bar (``suite_page`` keys it by the
 #: page's prefix).
 SECTION_KEY = "reco_active_section"
-#: The Components section's configuration, component and the section it was
-#: opened from.
+#: The Components section's view, configuration, component and the section it
+#: was opened from.
+VIEW_KEY = "reco_component_view"
 CONFIG_KEY = "reco_component_config"
 COMPONENT_KEY = "reco_component_name"
 ORIGIN_KEY = "reco_component_origin"
@@ -36,10 +39,11 @@ TABLE_NONCE_KEY = "reco_component_table_nonce"
 
 def inspect(name: str | None, config: str, origin: str) -> None:
     """Open component *name* of configuration *config* in the Components
-    section, coming from section *origin*; ``None`` opens it on the component
-    it last showed. A widget callback: it runs before the rerun draws the
-    section bar."""
+    section's Current Run, coming from section *origin*, which shows the run
+    on screen; ``None`` opens it on the component it last showed. A widget
+    callback: it runs before the rerun draws the section bar."""
     st.session_state[SECTION_KEY] = SECTION
+    st.session_state[VIEW_KEY] = CURRENT_RUN
     st.session_state[CONFIG_KEY] = config
     st.session_state[ORIGIN_KEY] = origin
     if name is not None:
