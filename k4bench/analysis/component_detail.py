@@ -309,14 +309,16 @@ def component_history(
     heap_trend: pd.DataFrame | None,
     label: str,
     name: str,
+    runs: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Component *name* of configuration *label* in each run of the window:
-    one row per run either trend holds (any configuration's), in the order
-    measured.
+    one row per run either trend holds (any configuration's), or *runs* (the
+    window's results, say) holds, in the order measured.
 
     *summary_trend* is :func:`~k4bench.analysis.trend.build_component_summary_trend`'s,
     *heap_trend* :func:`~k4bench.analysis.trend.build_heap_trend`'s; either
-    may be ``None``. Columns: the runs' ``run_id``, ``run_date``,
+    may be ``None``. A run only *runs* holds, which left no component costs
+    that could be read, is :data:`NOT_TIMED`. Columns: the runs' ``run_id``, ``run_date``,
     ``k4h_release_date``, ``k4h_release`` and ``x_date``; ``label``, *name*,
     as the trend views name a series; ``status`` (:data:`TIMED`,
     :data:`ABSENT` or :data:`NOT_TIMED`) and ``heap_status`` (:data:`HELD`,
@@ -330,6 +332,8 @@ def component_history(
                *TIMED_HISTORY_COLUMNS, *HEAP_HISTORY_COLUMNS]
     if not frames:
         return pd.DataFrame(columns=columns)
+    if runs is not None and not runs.empty:
+        frames.append(runs)
     runs = (
         pd.concat([f[_RUN_KEYS] for f in frames])
         .drop_duplicates(["x_date", "run_id"])

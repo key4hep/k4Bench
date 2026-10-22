@@ -17,7 +17,7 @@ zero. The numbers are assembled in :mod:`k4bench.analysis.component_detail`.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from collections import Counter
 from pathlib import Path
 
@@ -87,6 +87,9 @@ _KEY = "reco_component"
 #: configuration) that the one on screen does not have.
 _MISSING_KEY = f"{_KEY}_missing"
 _HIST_KEY = f"{_KEY}_hist"
+#: A configuration asked for (by another section, or kept from another run)
+#: that the view on screen lacks, and the one shown instead.
+_MISSING_CONFIG_KEY = f"{_KEY}_missing_config"
 
 
 def _time(seconds: float) -> str:
@@ -704,7 +707,9 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
             "the sidebar."
         )
         return
-    config = _config_row(sorted(summary_trend["label"].unique()))
+    config = _config_row(
+        sorted(summary_trend["label"].unique()), "in any run of the selected window",
+    )
     name = _select_in_window(config, _window_components(summary_trend, config))
     if name is None:
         return
@@ -715,7 +720,7 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
     ) or "Time"
     # The heap's history reads every run's memory pass: only when asked for.
     heap_trend = judgeable_trend(ctx, cached_load_trend_heap, HEAP) if group == "Memory" else None
-    history = component_history(summary_trend, heap_trend, config, name)
+    history = component_history(summary_trend, heap_trend, config, name, ctx.trend_results)
     history = render_reliability_filter(
         history, ctx.reliability, key=f"{_HIST_KEY}_exclude_unreliable", slot=reliability_slot,
     )
@@ -738,10 +743,12 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
     )
 
 
-def _config_row(labels: list[str]) -> str:
-    """The configuration chosen among *labels*, beside the way back to the
-    section the Components section was opened from."""
-    drop_stale_selection(CONFIG_KEY, labels)
+def _config_row(labels: list[str], where: str, why: Mapping[str, str] | None = None) -> str:
+    """The configuration chosen among *labels*, those with component costs
+    *where*, beside the way back to the section the Components section was
+    opened from. One asked for that is not among them is said so, with *why*
+    it lacks them where known, as long as the one shown instead is."""
+    dropped = drop_stale_selection(CONFIG_KEY, labels)
     config_col, back_col = st.columns([2, 3], vertical_alignment="bottom")
     with config_col:
         config = select_config(labels, CONFIG_KEY)
@@ -749,6 +756,18 @@ def _config_row(labels: list[str]) -> str:
         if origin := st.session_state.get(ORIGIN_KEY):
             st.button(f"Back to {origin}", key=f"{_KEY}_back", icon=":material/arrow_back:",
                       type="tertiary", on_click=go_back)
+    if dropped is not None:
+        st.session_state[_MISSING_CONFIG_KEY] = (dropped, config)
+    asked, instead = st.session_state.get(_MISSING_CONFIG_KEY, (None, None))
+    if asked is None or asked in labels or instead != config:
+        st.session_state.pop(_MISSING_CONFIG_KEY, None)
+    else:
+        reason = (why or {}).get(asked)
+        st.warning(
+            f"**{asked}** has no component costs {where}"
+            + (f": its `_components.json` could not be read ({reason})" if reason else "")
+            + f", so **{config}** is shown instead."
+        )
     return config
 
 
@@ -763,7 +782,7 @@ def render(ctx: PageContext) -> SectionScope | None:
     if not labels:
         st.info(f"No component costs in this run: {no_components_reason(ctx)}")
         return None
-    config = _config_row(labels)
+    config = _config_row(labels, f"in {_run_name(ctx)}", ctx.run.unreadable_components)
     timing = ctx.run.components[config]
     summary = component_summary(timing, warm_up=WARM_UP_EVENT)
     heap = memory.heaps(ctx).get(config)

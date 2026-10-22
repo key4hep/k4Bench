@@ -258,6 +258,33 @@ def test_every_section_opens_the_same_component_and_goes_back(
     assert at.session_state["reco_active_section"] == section
 
 
+def test_a_configuration_without_component_costs_is_never_swapped_silently(
+    monkeypatch, tmp_path, reco_run_with_heap,
+):
+    run = reco_run_with_heap()
+    (run / "variant_truth_tracking_heap.json").write_text(
+        (run / "baseline_heap.json").read_text())
+    (run / "baseline_components.json").unlink()
+    at = _page(monkeypatch, tmp_path, run, "Memory")
+    at.session_state["reco_memory_config"] = "baseline"
+    _run(at)
+    _inspect_from_memory(at)
+    assert at.session_state["reco_active_section"] == "Components"
+    (warning,) = at.warning
+    assert warning.value.startswith(
+        "**baseline** has no component costs in run directory `run`, so "
+        "**variant_truth_tracking** is shown instead"
+    )
+    # It stays while the one shown does, through reruns and other sections.
+    _run(at)
+    assert len(at.warning) == 1
+    at.session_state["reco_active_section"] = "Data Flow"
+    _run(at)
+    at.session_state["reco_active_section"] = "Components"
+    _run(at)
+    assert len(at.warning) == 1
+
+
 def test_a_click_on_what_is_no_component_opens_nothing(monkeypatch, tmp_path):
     at = _page(monkeypatch, tmp_path, RECO_RUN, "Time")
     _click(at, "reco_breakdown_events_chart", "Other (40)")
@@ -509,6 +536,17 @@ def test_the_history_draws_a_component_the_run_on_screen_no_longer_has(reco_run_
     values = _values(next(t for t in _traces(at) if t["yaxis"] == "y")["y"])
     assert np.isfinite(values[:2]).all() and np.isnan(values[2])
     assert any("not in the job in 1 run: 2026-10-20" in c.value for c in at.caption)
+
+
+def test_the_history_leaves_a_night_without_component_costs_as_a_named_gap(reco_run_with_heap):
+    runs = [reco_run_with_heap(night, night) for night in _NIGHTS]
+    for path in [*runs[1].glob("*_components.json"), *runs[1].glob("*_heap.json")]:
+        path.unlink()
+    at = _history(runs, "LumiCalReco")
+    values = _values(next(t for t in _traces(at) if t["yaxis"] == "y")["y"])
+    assert np.isfinite(values[0]) and np.isnan(values[1]) and np.isfinite(values[2])
+    assert any("the configuration was not timed in 1 run: 2026-10-19" in c.value
+               for c in at.caption)
 
 
 def test_the_history_says_so_of_a_component_the_window_never_had(reco_run_with_heap):

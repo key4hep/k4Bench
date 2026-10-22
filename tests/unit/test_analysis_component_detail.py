@@ -254,6 +254,25 @@ def test_the_history_leaves_a_gap_where_the_component_is_missing():
     assert component_history(None, None, "baseline", "Tracking").empty
 
 
+def test_a_run_of_the_window_without_component_costs_is_a_gap():
+    trend = pd.DataFrame([
+        *_summary_rows("2026-10-18", "baseline", {"Tracking": 2.0}),
+        *_summary_rows("2026-10-20", "baseline", {"Tracking": 3.0}),
+    ])
+    # The window's results: the middle night ran and left no component costs.
+    results = pd.DataFrame([
+        {k: v for k, v in _summary_rows(night, "baseline", {})[0].items()
+         if k not in ("label", "component")}
+        for night in ("2026-10-18", "2026-10-19", "2026-10-20")
+    ])
+    history = component_history(trend, None, "baseline", "Tracking", results)
+    assert history["run_id"].tolist() == ["2026-10-18", "2026-10-19", "2026-10-20"]
+    assert history["status"].tolist() == [TIMED, NOT_TIMED, TIMED]
+    assert np.isnan(history["ms_when_run"].iloc[1])
+    # Without any component costs, nothing to draw.
+    assert component_history(None, None, "baseline", "Tracking", results).empty
+
+
 def test_the_heap_history_tells_no_heap_held_from_no_memory_pass(tmp_path, reco_run_with_heap):
     held = reco_run_with_heap("held", "2026-10-18")
     without = tmp_path / "without"
