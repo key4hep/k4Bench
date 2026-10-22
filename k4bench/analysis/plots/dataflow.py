@@ -143,6 +143,20 @@ def dataflow_view(
                     frozenset(linked - {None}))
 
 
+def neighbourhood(view: FlowView, node: str) -> FlowView:
+    """*view* cut down to *node* and the nodes it reads from or writes to
+    directly, with the edges between *node* and them: one algorithm's place
+    in the job's data flow, which :func:`layered_positions` lays out as what
+    it reads, it, and what reads it."""
+    edges = {pair: links for pair, links in view.edges.items() if node in pair}
+    keep = {node, *(member for pair in edges for member in pair)}
+    return FlowView(
+        tuple(n for n in view.nodes if n.id in keep), edges,
+        view.sink if view.sink in keep else None,
+        linked=frozenset(keep),
+    )
+
+
 def _chained(members: set[str], edges: Iterable[tuple[str, str]]) -> bool:
     """Whether one of *members* reads, directly or through algorithms outside
     them, from another."""
@@ -223,16 +237,22 @@ def _ms(seconds: float | None) -> str:
     return f"{ms / 1000:.2f} s per event" if ms >= 1000 else f"{ms:.3g} ms per event"
 
 
+#: The ring around the selected node.
+_SELECTED_RING = "#d62728"
+
+
 def plot_dataflow(
     view: FlowView,
     positions: Mapping[str, tuple[float, float]] | None = None,
     *,
     selected: str | None = None,
     height: int | None = None,
+    ring: str = _SELECTED_RING,
 ) -> go.Figure:
-    """Draw *view*: a dot per node, its area the node's time per event, a
-    curve per edge, its width the number of collections it carries, hovering
-    anywhere along it to list them. A group node is a square. The last trace is the nodes, its
+    """Draw *view*: a dot per node, its area the node's time per event, the
+    *selected* one ringed in *ring*, a curve per edge, its width the number
+    of collections it carries, hovering anywhere along it to list them. A
+    group node is a square. The last trace is the nodes, its
     ``customdata[i][0]`` the id of the node at index ``i``."""
     positions = positions or layered_positions(view)
     fig = go.Figure()
@@ -280,7 +300,7 @@ def plot_dataflow(
             color=["rgba(0,0,0,0)" if h else _BLUE for h in hollow],
             line=dict(
                 width=[3 if n.id == selected else 1.5 for n in nodes],
-                color=["#d62728" if n.id == selected else (_HOLLOW_COLOR if h else "white")
+                color=[ring if n.id == selected else (_HOLLOW_COLOR if h else "white")
                        for n, h in zip(nodes, hollow)],
             ),
         ),

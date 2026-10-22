@@ -159,18 +159,6 @@ def test_build_phase_trend_gives_phases_and_their_components():
     assert loop.sort_values("seconds")["component"].iloc[-1] == "MyConformalTracking"
 
 
-def test_build_efficiency_trend_gives_each_algorithm_per_event():
-    df = trend.build_efficiency_trend((str(_RECO_RUN),))
-    baseline = df[df["label"] == "baseline"].set_index("component")
-    tracking = baseline.loc["MyConformalTracking"]
-    assert tracking["ms_per_event"] > 1000
-    assert tracking["instructions_per_event"] > 1e9
-    assert 0 < tracking["ipc"] < 8
-    # Algorithms only: no services.
-    assert "GeoSvc" not in baseline.index
-    assert df["x_date"].notna().all()
-
-
 def test_build_algorithm_timing_trend_gives_each_algorithms_event_time_statistics():
     df = trend.build_algorithm_timing_trend((str(_RECO_RUN),))
     baseline = df[df["label"] == "baseline"].set_index("component")
@@ -185,11 +173,6 @@ def test_build_algorithm_timing_trend_gives_each_algorithms_event_time_statistic
     assert "MyConformalTracking" not in set(variant["component"])
 
 
-def test_build_efficiency_trend_skips_runs_without_component_files(tmp_path):
-    sim = _make_run(tmp_path, "2026-10-01", "key4hep-2026-10-01", 50.0)
-    assert trend.build_efficiency_trend((str(sim),)) is None
-
-
 def test_build_algorithm_timing_trend_skips_runs_without_component_files(tmp_path):
     sim = _make_run(tmp_path, "2026-10-01", "key4hep-2026-10-01", 50.0)
     assert trend.build_algorithm_timing_trend((str(sim),)) is None
@@ -201,8 +184,9 @@ def test_build_phase_trend_skips_runs_without_component_files(tmp_path):
 
 
 @pytest.mark.parametrize("build", [
-    trend.build_phase_trend, trend.build_efficiency_trend, trend.build_algorithm_timing_trend,
-], ids=["phase", "efficiency", "algorithm_timing"])
+    trend.build_phase_trend, trend.build_component_summary_trend,
+    trend.build_algorithm_timing_trend,
+], ids=["phase", "component_summary", "algorithm_timing"])
 def test_component_trends_keep_a_runs_other_configs_beside_a_malformed_file(tmp_path, build):
     broken, valid = (tmp_path / "broken", tmp_path / "valid")
     for run in (broken, valid):

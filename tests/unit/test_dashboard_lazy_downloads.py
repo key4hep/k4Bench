@@ -182,10 +182,13 @@ def test_a_current_run_view_downloads_its_own_files_of_the_selected_run(store):
     files_per_run = sum(1 for name in store.tree if name.rsplit("/", 2)[-2] == NEWEST)
     whole = sum(len(nights) for nights in RUNS.values()) * files_per_run
     assert len(got) * 8 < whole
-    # The components' table names each one's package, from the stack manifest.
-    at.radio(key="reco_breakdown_view").set_value("Components").run()
-    assert not at.exception, at.exception
-    assert store.downloads() == [(NEWEST, MANIFEST)]
+    # The components' table names each one's package, from the stack
+    # manifest, beside its heap; and the one inspected its collections.
+    _section(at, "Components")
+    got = store.downloads()
+    assert {night for night, _ in got} == {NEWEST}
+    assert MANIFEST in _of(got) and "baseline_heap.json" in _of(got)
+    assert not any(name.endswith(("_events.json", ".log")) for name in _of(got))
 
 
 def test_each_view_downloads_only_what_it_adds(store):
@@ -199,12 +202,13 @@ def test_each_view_downloads_only_what_it_adds(store):
     _section(at, "Memory")
     got = store.downloads()
     assert _of(got) == {"baseline_heap.json"} and len(got) == 1
-    _section(at, "Event Timing")
+    _section(at, "Time")
+    at.button_group(key="reco_time_lens").set_value("Per event").run()
     assert store.downloads() == [
         (NEWEST, "baseline_events.json"), (NEWEST, "variant_truth_tracking_events.json"),
     ]
     # Back where it started: nothing new.
-    _section(at, "Breakdown")
+    at.button_group(key="reco_time_lens").set_value("Phases and components").run()
     _section(at, "Logs")
     assert store.downloads() == []
 

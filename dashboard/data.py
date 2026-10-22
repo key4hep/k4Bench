@@ -235,20 +235,20 @@ def cached_load_trend_phases(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
 
 
 @st.cache_data(
-    show_spinner="Loading efficiency trends...", ttl=3600, hash_funcs=_keyed_on(COMPONENTS),
-)
-def cached_load_trend_efficiency(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
-    """Cached :func:`k4bench.analysis.trend.build_efficiency_trend`."""
-    return _trend.build_efficiency_trend(run_dirs)
-
-
-@st.cache_data(
     show_spinner="Loading algorithm timing trends...", ttl=3600,
     hash_funcs=_keyed_on(COMPONENTS),
 )
 def cached_load_trend_algorithm_timing(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
     """Cached :func:`k4bench.analysis.trend.build_algorithm_timing_trend`."""
     return _trend.build_algorithm_timing_trend(run_dirs)
+
+
+@st.cache_data(
+    show_spinner="Loading component history...", ttl=3600, hash_funcs=_keyed_on(COMPONENTS),
+)
+def cached_load_trend_component_summary(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
+    """Cached :func:`k4bench.analysis.trend.build_component_summary_trend`."""
+    return _trend.build_component_summary_trend(run_dirs)
 
 
 @st.cache_data(show_spinner="Loading heap trends...", ttl=3600, hash_funcs=_keyed_on(HEAP))

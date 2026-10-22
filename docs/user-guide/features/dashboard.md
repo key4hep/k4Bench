@@ -84,7 +84,7 @@ or in the nightly mail and pull-request comments — reads back:
 | `releases` | the trend window's oldest and newest release, `key4hep-2026-09-22..key4hep-2026-10-17` |
 | `history` | `latest` (the default) or `all`: which runs of a release a history draws |
 | `timing` | Event Timing's **Timing of** choices, once each, by the algorithms' names |
-| `component` | reserved for a component of the selected run; not read yet |
+| `component` | the Reconstruction page's **Components**: the algorithm or service of the selected run it inspects, by its name |
 
 The suite is the page's path (`/` or `/reconstruction`), not a parameter.
 Every value is the store's own identifier, never a label shown for it.
@@ -336,7 +336,7 @@ unit-tested.)
 A release is re-run nightly, and most historical views draw one point per
 release: its latest run. Where a section's history can draw every run instead
 — Event Timing, Event Memory and Event Size, and on the Reconstruction page
-also Breakdown, Efficiency and Memory — the sidebar offers **Runs per
+also Time, Memory, Components and Events — the sidebar offers **Runs per
 release** under the slider: **Latest run per release** (the default) or
 **Every run**, which draws each run on the night it was measured, a release's
 repeats side by side, so how much one release's measurements spread can be
@@ -842,19 +842,24 @@ No nightly report judges the reco suite yet, so this page has no Regressions or
 Stack Changes section and its views carry no verdicts: every value is the
 measurement as uploaded.
 
-| Section | What it shows | Backed by |
-| --- | --- | --- |
-| **Overview** | every reco detector's baseline time and memory side by side, over the trend window | `*_results.csv`, `machine_info.json`, `baseline_events.json` of every detector's runs |
-| **Breakdown** | where the job's time goes, phase by phase and component by component | `*_components.json` |
-| **Efficiency** | each algorithm's time per event against its instructions per cycle and heap allocations, and how time, instructions and instructions per cycle move night to night | `*_components.json` |
-| **Memory** | where the job's heap goes component by component, from initialization through every event to finalization, and what grows or steps up without being released | `*_heap.json`, `*_components.json`, `*_events.json` |
-| **Data Flow** | which algorithm feeds which, through the collections it writes and a later one reads | `*_dataflow.json`, `*_components.json` |
-| **Event timing** | per-event wall time distributions, as on the Simulation page, and any algorithms' own time per event beside them | `*_events.json`, `*_components.json` |
-| **Event memory** | per-event RSS and growth, as on the Simulation page | `*_events.json` |
-| **Correlations** | each event's time, and each algorithm's time, instructions and allocations, against what the event holds, as on the Simulation page | `event_source.json.gz`, `*_event_size.json`, `*_components.json` |
-| **Event size** | what each event of the EDM4hep files the job wrote takes on disk, as on the Simulation page | `*_event_size.json` |
-| **Machine info** | the host the benchmark ran on | `machine_info.json` |
-| **Logs** | the k4run log, read as a Gaudi log, and the job options | `*.log`, `*_joboptions.opts` |
+Each section answers one question. Where it can be looked at two ways, a
+choice at its top (in the URL too) says which:
+
+| Section | The question | What it shows | Backed by |
+| --- | --- | --- | --- |
+| **Overview** | How do the detectors compare? | every reco detector's baseline time and memory side by side, over the trend window | `*_results.csv`, `machine_info.json`, `baseline_events.json` of every detector's runs |
+| **Time** | Where does the time go? | **Phases and components**: the job's phases and each component's share of them; **Per event**: the time of each event, and of any algorithm in it | `*_components.json`, `*_events.json` |
+| **Memory** | Where does the memory go? | **Heap by component**: what each component holds, and what grows or steps up without being released; **Per event**: the process's RSS event by event | `*_heap.json`, `*_components.json`, `*_events.json` |
+| **Components** | What is this component doing? | one algorithm or service in charts: its time, IPC, allocations and heap, where it stands among the others, its data flow, and their history | `*_components.json`, `*_heap.json`, `*_dataflow.json` |
+| **Data Flow** | Who feeds whom? | which algorithm feeds which, through the collections it writes and a later one reads | `*_dataflow.json`, `*_components.json` |
+| **Events** | What makes an event expensive, and what does it write? | **What drives the cost**: each event's costs against what it holds; **Output size**: what each event of the EDM4hep files takes on disk | `event_source.json.gz`, `*_event_size.json`, `*_components.json` |
+| **Machine Info** | Was the host fine? | the host the benchmark ran on | `machine_info.json` |
+| **Logs** | Did it fail, and why? | the k4run log, read as a Gaudi log, and the job options | `*.log`, `*_joboptions.opts` |
+
+A link to one of the page's former sections (Breakdown, Efficiency, Event
+Timing, Event Memory, Correlations, Event Size) opens the section and view it
+is now part of; an Efficiency link keeps its view and configuration. Where a run has a single configuration, the sections offer no
+**Configuration** choice.
 
 Each configuration's `_components.json` is read on its own. One that is
 malformed, of a future schema or unreadable takes only that configuration out
@@ -871,7 +876,7 @@ platform and sample, the baseline configuration. It is available only against
 the remote store. If a detector's runs could not be listed, a warning names it
 instead of it silently dropping out of the charts.
 
-**Breakdown** has three views:
+**Time**, looked at by **Phases and components**, has two views:
 
 - **Current Run** shows each phase of the selected run that lasted 50 ms or
   more (in practice configure, initialize, event loop and finalize) as a card
@@ -882,17 +887,11 @@ instead of it silently dropping out of the charts.
   is the phase's measured duration. A component keeps one colour across the
   donuts and the chart below them, which stacks the event loop's components
   event by event, in event order or longest first; the first event, which warms
-  the job up, is drawn paler.
-- **Components** lists every algorithm and service of the selected run's
-  configuration, most expensive first, with its time per phase, its class (for
-  a wrapped Marlin processor, the processor's) and the stack package its
-  library comes from, linking to that package's repository at the commit the
-  run's stack built and to a search for the class's definition. A package
-  built from a release is named with its version, and linked only where its
-  repository is known (Gaudi's is).
+  the job up, is drawn paler. Clicking a component's part of a column opens it
+  in **Components** (the donuts cannot be clicked: Streamlit reports no
+  selection on them).
 - **Historical Trends** draws one phase at a time across the trend window: its
-  top components (six by default, set in Display options), the rest as
-  *Other*, and *Unattributed*, as stacked columns or as lines, in seconds or as
+  top components (six by default, set in Display options), the rest as *Other*, and *Unattributed*, as stacked columns or as lines, in seconds or as
   a share of the phase. When a nightly tag was run more than once, only its
   latest run is drawn, unless the sidebar's **Runs per release** is **Every
   run**. Configure is timed only as a whole, so it is one line.
@@ -902,44 +901,12 @@ alone. They add up within a phase, which is why the donuts and columns can be
 stacked, and the part of a phase's duration that no component accounts for
 shows up as *Unattributed* rather than being spread over the others.
 
-**Efficiency** has two views:
-
-- **Current Run** draws one point per algorithm of a configuration's event
-  loop, coloured by the stack package its code comes from: its self time per
-  event it ran in across (log scale) and its instructions per cycle up, the
-  warm-up event left out. An algorithm a filter skips in some events is timed
-  over the others only, and hovering says in how many of the events it ran. **Point size** chooses what a point's area shows: heap allocations
-  per event it ran in (the default), the allocation rate (allocations per second of the
-  algorithm's own time, how hard it leans on the allocator however long it
-  runs), allocated memory per event it ran in, or nothing. **Named algorithms** sets how many of
-  the slowest carry their name, up to all of them. Allocations, the allocation
-  rate and allocated memory are different quantities, and all three are churn:
-  allocated memory counts blocks whether or not they were freed, so it is not
-  the heap an algorithm keeps (that is **Memory**'s). Instructions per cycle
-  (IPC) are the instructions retired per counted CPU cycle, both in user space
-  on the thread that called the algorithm, so work it hands to threads of its
-  own is not counted. IPC depends on the processor and the instruction mix: a
-  vectorised implementation can run faster while retiring fewer instructions
-  at a lower IPC. Read it with the time and the instructions when comparing
-  similar workloads; a low IPC alone does not say an algorithm waits on memory.
-  Hovering gives the numbers. For a run whose hardware counters could not be
-  read, the view says why instead.
-- **Historical Trends** draws the slowest algorithms (Top N in Display
-  options) across the trend window in three panels: time, instructions and
-  instructions per cycle per event it ran in. Time is the calls' elapsed (wall)
-  time, not the CPU time of the thread that made them. Instructions that moved
-  mean the work executed changed, through the code, its configuration, its
-  input or how it was compiled, without saying which. Time that moved while the
-  instructions held is worth checking against the cycles, the thread's CPU
-  time, the host's load and scheduling, its clock and memory effects: the
-  counters narrow the investigation, they do not establish the cause.
-
-**Memory** reads the run's memory pass (`{config}_heap.json`, see
+**Memory**, looked at by **Heap by component**, reads the run's memory pass (`{config}_heap.json`, see
 [File formats](../../reference/file-formats.md#heap-json)): a second run of the
 job after the timed one, which charges every heap block to the component that
 allocated it and keeps it charged until it is freed. Runs from before the
 pass existed (nightlies before 2026-10-19), and configurations whose pass
-failed, have none, and the section says so. It has three views:
+failed, have none, and the section says so. It has two views:
 
 - **Current Run** gives the configuration's heap in four tiles: what it held
   before the first event (with its largest holder), in the event loop (the
@@ -960,8 +927,8 @@ failed, have none, and the section says so. It has three views:
   That is how a memory pool that grows to fit the largest event so far looks
   (GGTFTrackFinder, which runs ONNX Runtime, rises by +4.13, +8.25 and
   +16.5 GB on ALLEGRO_o1_v04 Zbb), and the leak warning cannot see it, since
-  the heap then holds still. A button under each warning opens each component it names
-  in **Components**, its row selected. Below, every component's heap from
+  the heap then holds still. The name on each card opens that component in
+  **Components**, its heap event by event there. Below, every component's heap from
   initialization through each event to finalization is stacked, the most
   stable at the bottom: every component either warning names and the largest components (six by
   default, set by **Largest shown**), the rest as *Other*, and what no component
@@ -977,20 +944,6 @@ failed, have none, and the section says so. It has three views:
   rises and a one-off step jumps, with *Other* and *No component* as grey
   lines: together the lines make the whole heap's change, so growth in a
   component not named still shows.
-- **Components** lists every component that held heap, the largest typical
-  holder first: what it held before the first event (*Initialized*), at an
-  event's end (*Typical*, the median) and after finalize (*Finalized*), its
-  heap across the events as a sparkline, its *working set* (the most it held
-  during an event beyond what it held as the event started: what the event
-  needed of it: median, 95th percentile, and the most any event needed with
-  that event's number), its growth per event, and the package links of
-  Breakdown's Components. *⚠ grows* and *⚠ steps* mark what the two
-  warnings name.
-  Selecting a row draws that component event by event: a bar from what it
-  held as each event started up to the most it held during it, and a mark at
-  what it held at the event's end. With nothing selected, it draws the
-  fastest-growing suspect, else the component that stepped up the most, else
-  the one whose events need the most.
 - **Historical Trends** draws one of a configuration's numbers across the
   trend window, chosen by **Metric**: what each component held before the
   first event, at a typical event's end (the median), its working set (the
@@ -1020,26 +973,99 @@ that created it, so the event data the input reader creates is the reader's
 until the output writer frees it. The warm-up event is left out of every
 statistic over events.
 
+**Memory**, looked at **Per event**, draws the process's RSS event by event,
+as the Simulation page's Event Memory does.
+
 **Data Flow** draws one configuration's algorithms left to right in data-flow
 order, joined by the collections one writes and a later one reads
 (`{config}_dataflow.json`, see
 [File formats](../../reference/file-formats.md#dataflow-json)). A dot's area is
 the algorithm's event-loop time per event, the warm-up event left out and the
 events a filter skipped it in counted, so a class's square is the sum of its
-instances; for an algorithm run in every event it is the time Efficiency
-shows. Hovering an edge's middle lists the collections it carries, with the
+instances; for an algorithm run in every event it is the time per event
+Components shows. Hovering an edge's middle lists the collections it carries, with the
 name a converter gave one on the way (`MCParticles → MCParticle`). Algorithms sharing a class are one square node
 (`DDPlanarDigiProcessor ×6`): clicking it shows each instance, and **Expand
 all**/**Collapse all** do so for every class. Clicking an algorithm lists what
 it reads, with who wrote each collection, and what it writes, with who reads
-it. What the Writer saves is drawn on request, as it reads nearly everything.
+it, beside **Inspect component**, which opens it in **Components**. What the Writer saves is drawn on request, as it reads nearly everything.
 Algorithms that no recorded collection links to another, such as Marlin
 processors that declare no collections, are not drawn; a caption under the
 graph counts them, and the **Limitations** expander names them along with
 everything else the run could not record: reads with no recorded writer, and
 sources the run predates. Drag to pan, scroll to zoom, double-click to reset.
 
-**Event timing** draws the per-event time as the Simulation page does, and its
+**Components** answers "what is this component doing?" in charts. At its top,
+a table lists every algorithm and service of the configuration, the slowest
+per event first (then those run in no event, by their initialization): its own
+time per event it ran in and, as a sparkline, in each event; its
+initialization and finalization; the heap it held at an event's end and, as a
+sparkline, at each event's end (from the memory pass, where the run has one);
+and its package, with links to its code and to the package's repository at
+the commit the run's stack built. **⚠** after a name marks a component Memory
+warns about: its heap grows and it keeps the gain, or it stepped up and stayed
+up. The sparklines show at a glance which components
+grow, step up or vary from event to event. The table can be searched and
+sorted, and selecting a row shows that component below it.
+Time's event-loop columns, Memory's findings and Data Flow's **Inspect
+component** open a component here, on its configuration, and **Back to**
+returns to that section as it was left. The configuration and the component
+are in the page URL (`component=`); a component the selected run or
+configuration does not have, from a link or after switching either, is said
+so, and nothing of it is drawn until another is chosen. The section opens on
+the algorithm that adds the most to an event. For the component shown, the
+warm-up event left out of everything over events:
+
+- its class (for a wrapped Marlin processor, the processor's), its package,
+  and buttons to its code and to the package's repository at the commit the
+  run's stack built (a package built from a release is linked only where its
+  repository is known; one whose library the run did not record has none);
+- tiles: its time per event it ran in (a sparkline of every event, and its
+  median and how many of the events it ran in under it), its initialization
+  and finalization,
+  its instructions per cycle (IPC: instructions retired per counted CPU cycle
+  on the thread that called it, which depends on the processor and the
+  instruction mix, so it compares similar workloads only), the heap it held at
+  an event's end and its growth per event, with Memory's *Grows* or *Steps
+  up* when Memory names it. A service shows its initialization and
+  finalization instead of the event-loop tiles;
+- **Ranking**: a panel per measure (event-loop time per event,
+  initialization, allocations in the event loop, heap held at an event's
+  end), every algorithm and service with some of it as a column on a log
+  axis, the largest first, this one in red and the others grey, with
+  its rank and its share of the total above (the heap held, a median, has no
+  share). The event-loop
+  time counts the events a filter skipped it in, so it is what it adds to the
+  job's time per event. A click on a column shows that component;
+- its time and the heap it held at each event's end, event by event, as two
+  charts of one layout over the same events, each with its mean as a dotted
+  line (the heap from the memory pass, a run of its own, so the two are set
+  side by side, never joined event by event);
+
+- **Data flow**: the algorithms whose collections it reads and those that
+  read what it writes, the collections on an edge's hover; a click shows that
+  algorithm. Under it, two small tables list what it reads, with who wrote
+  each collection, and what it writes, with who reads it (and the LCIO type,
+  where there is one).
+
+Its **Historical Trends** draws its numbers across the trend window, whatever
+the run on screen holds: its configurations and components are those any run
+of the window recorded, so a component since removed from the job, or a run
+without component costs, still has a history. Its numbers are chosen by
+**Show**: **Time** (time per event, its 95th percentile, the events it ran in,
+initialization), **CPU** (instructions and IPC per event it ran in, page
+faults, context switches) or **Memory** (allocations and allocated memory per
+event it ran in, the heap held, the working set and its growth). The counters
+describe the calls; they do not by themselves say why its time changed.
+Instructions
+that moved mean the work executed changed, through the code, its
+configuration, its input or how it was compiled, without saying which; time
+that moved while the instructions held is worth checking against the thread's
+CPU time and the host's load. A run it was not in, whose configuration was not
+timed, or without a memory pass, is a gap in the lines, never a zero, and a
+line above the chart names those runs and why.
+
+**Time**, looked at **Per event**, draws the per-event time as the Simulation page's Event Timing does, and its
 **Timing of** selector, on one row with the Baseline and Configurations, sets
 any algorithms beside the whole event: each one's own time in each event, what
 it spent outside the algorithms it ran itself, the warm-up event left out. It
@@ -1057,6 +1083,11 @@ first, ranked by their mean time per event over the runs drawn: those the
 **Runs** choice keeps, each nightly tag's latest; up to all of them), on a log
 y axis unless **Log y axis** is switched off. They draw the algorithms whenever
 the window has their timing, even if the selected run has none.
+
+**Events**, looked at by **What drives the cost**, is the Simulation page's
+Correlations with each algorithm's time, instructions and allocations on
+offer beside the event's; by **Output size**, it is the Simulation page's Event
+Size, for the EDM4hep files the k4run job wrote.
 
 **Logs** reads the log's Gaudi and Marlin severities rather than the word
 "error": the **Errors** filter keeps ERROR and FATAL messages, ROOT errors,
@@ -1101,7 +1132,7 @@ install is required.
 The dashboard downloads only the files the view on screen reads. Choosing a
 run downloads its `run_info.json`, `machine_info.json` and `*_results.csv`,
 which every view shows; the rest of its files are downloaded the first time a
-view reads them: the component costs when Breakdown opens, one
+view reads them: the component costs when Time opens, one
 configuration's log when Logs shows it, the heap files when Memory opens.
 The trend window is found from directory listings alone, so moving it
 downloads nothing; a history view downloads the files it draws of the

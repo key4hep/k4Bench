@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -57,18 +58,82 @@ def _page(
     return at
 
 
+def _choose_component(at: AppTest, name: str) -> None:
+    """Select *name*'s row of the Components table."""
+    row = [c.removesuffix(" ⚠") for c in at.dataframe[0].value["Component"]].index(name)
+    config = at.selectbox(key="reco_component_config").value
+    try:
+        nonce = at.session_state["reco_component_table_nonce"]
+    except KeyError:
+        nonce = 0
+    at.session_state[f"reco_component_table_{os.environ['K4BENCH_DATA_DIR']}_{config}_{nonce}"] = {
+        "selection": {"rows": [row], "columns": [], "cells": []},
+    }
+    at.run()
+    assert not at.exception, at.exception
+
+
 def _traces(at: AppTest) -> list[dict]:
     return json.loads(at.get("plotly_chart")[0].proto.spec)["data"]
 
 
-def test_a_local_run_opens_on_the_breakdown(monkeypatch, tmp_path):
+def test_a_local_run_opens_on_the_time(monkeypatch, tmp_path):
     # The Overview compares detectors across the window, which a local run lacks.
     at = _page(monkeypatch, tmp_path, RECO_RUN)
-    assert at.session_state["reco_active_section"] == "Breakdown"
+    assert at.session_state["reco_active_section"] == "Time"
     assert at.button_group[0].options == [
-        "Breakdown", "Efficiency", "Memory", "Data Flow", "Event Timing", "Event Memory",
-        "Correlations", "Event Size", "Machine Info", "Logs",
+        "Time", "Memory", "Components", "Data Flow", "Events", "Machine Info", "Logs",
     ]
+
+
+@pytest.mark.parametrize(("tab", "section", "lens"), [
+    ("Breakdown", "Time", ("reco_time_lens", "Phases and components")),
+    ("event timing", "Time", ("reco_time_lens", "Per event")),
+    ("Event Memory", "Memory", ("reco_memory_lens", "Per event")),
+    ("Efficiency", "Components", None),
+    ("Correlations", "Events", ("reco_events_lens", "What drives the cost")),
+    ("Event Size", "Events", ("reco_events_lens", "Output size")),
+])
+def test_a_link_to_a_former_section_opens_where_it_now_is(monkeypatch, tmp_path, tab, section, lens):
+    at = _page(monkeypatch, tmp_path, RECO_RUN, tab)
+    assert at.session_state["reco_active_section"] == section
+    if lens is not None:
+        key, value = lens
+        assert at.button_group(key=key).value == value
+
+
+def test_a_link_to_the_former_efficiency_opens_its_configuration(monkeypatch, tmp_path):
+    at = _page(monkeypatch, tmp_path, RECO_RUN, "Efficiency", {
+        "reco_efficiency_view": "Current Run",
+        "reco_efficiency_config": "variant_truth_tracking",
+        "reco_efficiency_hist_config": "baseline",
+    })
+    assert at.session_state["reco_active_section"] == "Components"
+    assert at.selectbox(key="reco_component_config").value == "variant_truth_tracking"
+
+
+@pytest.mark.parametrize(("params", "values"), [
+    ({"reco_efficiency_view": "Historical Trends", "reco_efficiency_config": "baseline",
+      "reco_efficiency_hist_config": "variant_truth_tracking"},
+     {"reco_component_view": "Historical Trends", "reco_component_config": "variant_truth_tracking"}),
+    ({"reco_efficiency_view": "Current Run", "reco_efficiency_config": "baseline",
+      "reco_efficiency_hist_config": "variant_truth_tracking"},
+     {"reco_component_view": "Current Run", "reco_component_config": "baseline"}),
+    ({"reco_efficiency_config": "baseline"}, {"reco_component_config": "baseline"}),
+    ({}, {}),
+])
+def test_the_former_efficiency_view_and_configuration_carry_over(params, values):
+    from reco.page import RECO_PAGE
+
+    _section, link = RECO_PAGE.aliases["Efficiency"]
+    assert link(params) == values
+
+
+def test_each_lens_is_in_the_url(monkeypatch, tmp_path):
+    at = _page(monkeypatch, tmp_path, RECO_RUN, "Time", {"reco_time_lens": "Per event"})
+    assert at.button_group(key="reco_time_lens").value == "Per event"
+    # Event Timing's own controls, with the algorithms on offer.
+    assert at.multiselect(key="evt_timing_timings")
 
 
 def _values(array) -> np.ndarray:
@@ -109,9 +174,10 @@ def test_the_breakdown_gives_each_phase_and_its_components(monkeypatch, tmp_path
     # Every event of the event loop, the warm-up included.
     assert by_event["Refit"]["x"][0] == "0"
     assert len(by_event["Refit"]["x"]) == 12
-    # Local mode has no trend window to draw history from.
-    assert at.radio(key="reco_breakdown_view").options == ["Current Run", "Components"]
-    # The component table is a view of its own.
+    # Local mode has no trend window to draw history from: one view, no choice.
+    with pytest.raises(KeyError):
+        at.radio(key="reco_breakdown_view")
+    # Every component's table is the Components section's.
     assert not at.dataframe
 
 
@@ -155,26 +221,20 @@ def _run_with_tracking_package(tmp_path) -> Path:
     return run
 
 
-def test_the_component_table_links_each_class_to_its_package(monkeypatch, tmp_path):
+def test_a_component_names_its_package_and_links_to_its_code(monkeypatch, tmp_path):
     run = _run_with_tracking_package(tmp_path)
-    at = _page(monkeypatch, tmp_path, run, "Breakdown")
-    at.radio(key="reco_breakdown_view").set_value("Components").run()
+    at = _page(monkeypatch, tmp_path, run, "Components", {"component": "MyConformalTracking"})
+    identity = next(c.value for c in at.caption if "configuration **baseline**" in c.value)
+    assert "**ConformalTrackingV2**" in identity
+    assert "package conformaltracking @ 38735aa" in identity
+    links = {b.proto.label: b.proto.url for b in at.get("link_button")}
+    assert links["Repository"] == "https://github.com/iLCSoft/ConformalTracking/tree/38735aa"
+    assert "symbol%3AConformalTrackingV2" in links["Code"]
+    # A processor whose library was not recorded has no package, and no links.
+    _choose_component(at, "Refit")
     assert not at.exception, at.exception
-    assert not at.get("plotly_chart")
-    (table,) = at.dataframe
-    df = table.value.set_index("Component")
-    row = df.loc["MyConformalTracking"]
-    assert row["Class"] == "ConformalTrackingV2"
-    assert row["Package"] == "conformaltracking @ 38735aa"
-    assert row["Repository"] == "https://github.com/iLCSoft/ConformalTracking/tree/38735aa"
-    assert "symbol%3AConformalTrackingV2" in row["Code"]
-    # Algorithms and services, most expensive first.
-    assert set(df["Kind"]) == {"Algorithm", "Service"}
-    totals = df[["Initialization", "Event loop", "Finalization"]].sum(axis=1)
-    assert list(totals) == sorted(totals, reverse=True)
-    # The other processors' libraries were not recorded.
-    assert not df.loc["Refit", "Package"].startswith("marlintrk")
-    assert any("Marlin processor(s) have no package" in c.value for c in at.caption)
+    assert "package unknown" in next(c.value for c in at.caption if "configuration **" in c.value)
+    assert not at.get("link_button")
 
 
 def test_the_event_chart_can_put_the_longest_events_first(monkeypatch, tmp_path):
@@ -192,12 +252,6 @@ def test_the_breakdown_follows_the_configuration(monkeypatch, tmp_path):
     (loop,) = _charts(at)[1]
     assert "MyTruthTrackFinder" in loop["labels"]
     assert "MyConformalTracking" not in loop["labels"]
-    # The Components view keeps the chosen configuration.
-    at.radio(key="reco_breakdown_view").set_value("Components").run()
-    assert at.selectbox(key="reco_breakdown_config").value == "variant_truth_tracking"
-    components = at.dataframe[0].value["Component"].tolist()
-    assert "MyTruthTrackFinder" in components
-    assert "MyConformalTracking" not in components
 
 
 def _phase_history_app(dashboard_dir, run_dir) -> None:
@@ -254,95 +308,18 @@ def test_the_phase_history_is_one_chart_for_the_chosen_phase():
     assert not at.caption
 
 
-def test_efficiency_draws_each_algorithm_of_the_event_loop(monkeypatch, tmp_path):
-    run = _run_with_tracking_package(tmp_path)
-    at = _page(monkeypatch, tmp_path, run, "Efficiency")
-    # Coloured by package: one trace each, the most time first. The fixture's
-    # manifest names only the tracking's package.
-    traces = _traces(at)
-    assert [t["name"] for t in traces] == ["Unknown", "conformaltracking @ 38735aa"]
-    names = [name for t in traces for name, _ in t["customdata"]]
-    assert traces[1]["customdata"][0][0] == "MyConformalTracking"
-    # Algorithms only: no services, no sequencers.
-    assert "GeoSvc" not in names
-    assert all(0 < ipc < 8 for t in traces for ipc in _values(t["y"]))
-    # The points can be one size.
-    at.selectbox(key="reco_efficiency_size").set_value("Same size").run()
-    assert not at.exception, at.exception
-    assert len({s for t in _traces(at) for s in _values(t["marker"]["size"])}) == 1
-    # And carry no names, or all of them.
-    slider = at.slider(key="reco_efficiency_labelled")
-    assert slider.max == len(names)
-    slider.set_value(0).run()
-    assert not any(name for t in _traces(at) for name in t["text"])
-    at.slider(key="reco_efficiency_labelled").set_value(len(names)).run()
-    assert all(name for t in _traces(at) for name in t["text"])
-
-
-def _efficiency_history_app(dashboard_dir, run_dir) -> None:
-    import sys as _sys
-    if dashboard_dir not in _sys.path:
-        _sys.path.insert(0, dashboard_dir)
-    from config import Config
-    from data import RunData
-    from reco import efficiency
-    from section_dispatch import PageContext
-    from sidebar import TrendWindow
-
-    ctx = PageContext(
-        config=Config(run_dir, "https://store.example", "/tmp", "https://dash.example"),
-        selection=None, data_dir=run_dir, run_meta=None,
-        run=RunData(None, lambda _artifacts: run_dir),
-        window=TrendWindow(None, download=lambda _artifacts: (run_dir,)),
-    )
-    efficiency.render(ctx)
-
-
-def test_efficiency_history_draws_time_instructions_and_ipc_of_the_slowest():
-    at = AppTest.from_function(
-        _efficiency_history_app, args=(str(_DASHBOARD_DIR), str(RECO_RUN)), default_timeout=60,
-    )
-    at.run()
-    at.radio(key="reco_efficiency_view").set_value("Historical Trends").run()
-    assert not at.exception, at.exception
-    lines = _traces(at)
-    # Five algorithms, slowest first, in each of three panels.
-    names = list(dict.fromkeys(t["name"] for t in lines))
-    assert len(names) == 5 and names[0] == "MyConformalTracking"
-    assert len(lines) == 15
-    ipc = [t for t in lines if t["yaxis"] == "y3"]
-    assert all(0 < y < 8 for t in ipc for y in _values(t["y"]))
-
-
-def test_efficiency_says_why_a_run_has_no_instruction_counts(monkeypatch, tmp_path):
+def test_a_run_timed_in_the_warm_up_alone_shows_no_event_loop_numbers(monkeypatch, tmp_path):
     run = tmp_path / "run"
     shutil.copytree(RECO_RUN, run)
     for path in run.glob("*_components.json"):
         raw = json.loads(path.read_text())
-        for table in (raw["execute"], *raw["lifecycle"].values()):
-            table.pop("instructions"), table.pop("cycles")
-        raw["hardware_counters_error"] = "perf_event_open: Function not implemented"
-        path.write_text(json.dumps(raw))
-    at = _page(monkeypatch, tmp_path, run, "Efficiency")
-    assert "perf_event_open: Function not implemented" in at.info[0].value
-    assert not at.get("plotly_chart")
-
-
-def test_efficiency_tells_counted_runs_without_events_from_runs_without_counts(
-    monkeypatch, tmp_path,
-):
-    run = tmp_path / "run"
-    shutil.copytree(RECO_RUN, run)
-    for path in run.glob("*_components.json"):
-        raw = json.loads(path.read_text())
-        # Only the warm-up event, which the tab leaves out.
+        # Only the warm-up event, which every summary leaves out.
         raw["event_numbers"] = raw["event_numbers"][:1]
         raw["execute"] = {metric: rows[:1] for metric, rows in raw["execute"].items()}
         path.write_text(json.dumps(raw))
-    at = _page(monkeypatch, tmp_path, run, "Efficiency")
-    assert "after the warm-up event" in at.info[0].value
-    assert "did not count" not in at.info[0].value
-    assert not at.get("plotly_chart")
+    at = _page(monkeypatch, tmp_path, run, "Components", {"component": "VertexFinder"})
+    assert "Time per event" not in {m.label for m in at.metric}
+    assert any(c.value == "Not run in the event loop." for c in at.caption)
 
 
 def _axis_titles(at: AppTest) -> set[str]:
@@ -660,8 +637,9 @@ def test_memory_gives_the_jobs_heap_and_names_what_grows_and_is_kept(
     monkeypatch, tmp_path, reco_run_with_heap,
 ):
     at = _page(monkeypatch, tmp_path, reco_run_with_heap(), "Memory")
-    # Only the baseline ran its memory pass.
-    assert at.selectbox(key="reco_memory_config").options == ["baseline"]
+    # Only the baseline ran its memory pass: nothing to choose.
+    with pytest.raises(KeyError):
+        at.selectbox(key="reco_memory_config")
     tiles = {m.label: m.value for m in at.metric}
     assert tiles["Before the first event"] == "596 MB"
     assert tiles["Growth per event"] == "+4.7 MB"
@@ -705,31 +683,17 @@ def test_the_suspects_take_the_first_colours_and_keep_them_as_fewer_are_shown(
     assert "k4FWCore__Writer" not in narrowed
 
 
-def test_a_warned_component_opens_in_the_components_view(monkeypatch, tmp_path, reco_run_with_heap):
+def test_a_warned_component_opens_in_components(monkeypatch, tmp_path, reco_run_with_heap):
     at = _page(monkeypatch, tmp_path, reco_run_with_heap(), "Memory")
     assert [b.label for b in at.button if (b.key or "").startswith("reco_memory_inspect_")] == [
         "LumiCalReco", "VertexFinder",
     ]
-    # Not the one Components opens on by itself: the fastest-growing one.
+    # Not the one Components opens on by itself.
     at.button(key="reco_memory_inspect_VertexFinder").click().run()
     assert not at.exception
-    assert at.radio(key="reco_memory_view").value == "Components"
-    assert "##### VertexFinder, event by event" in [m.value for m in at.markdown]
-    table = at.dataframe[0]
-    assert table.value.iloc[json.loads(table.proto.selection_default)["selection"]["rows"][0]][
-        "Component"
-    ] == "VertexFinder"
-
-
-def test_a_link_opens_the_view_it_names(monkeypatch, tmp_path, reco_run_with_heap):
-    _local_env(monkeypatch, reco_run_with_heap(), tmp_path / "cache")
-    at = AppTest.from_function(_page_app, args=(str(_DASHBOARD_DIR),), default_timeout=60)
-    at.query_params["tab"] = "Memory"
-    at.query_params["reco_memory_view"] = "Components"
-    at.run()
-    assert not at.exception, at.exception
-    assert at.radio(key="reco_memory_view").value == "Components"
-    assert "##### Components" in [m.value for m in at.markdown]
+    assert at.session_state["reco_active_section"] == "Components"
+    assert at.session_state["reco_component_name"] == "VertexFinder"
+    assert "#### VertexFinder" in [m.value for m in at.markdown]
 
 
 def test_memory_draws_each_series_change_since_the_first_event(
@@ -767,20 +731,26 @@ def test_a_smaller_palette_repeats_colours_rather_than_hide_a_suspect(
     assert set(flagged) <= bands
 
 
-def test_memory_lists_the_components_and_draws_the_suspect_event_by_event(
-    monkeypatch, tmp_path, reco_run_with_heap,
-):
-    at = _page(monkeypatch, tmp_path, reco_run_with_heap(), "Memory")
-    at.radio(key="reco_memory_view").set_value("Components").run()
-    assert not at.exception
+def test_components_set_the_heap_beside_the_time(monkeypatch, tmp_path, reco_run_with_heap):
+    at = _page(monkeypatch, tmp_path, reco_run_with_heap(), "Components", {"component": "LumiCalReco"})
+    tiles = {m.label: m.value for m in at.metric}
+    assert tiles["Heap held"] == "14 MB" and tiles["Growth per event"] == "+2 MB"
+    assert [m.value for m in at.markdown if "-badge[" in m.value] == [
+        ":orange-badge[:material/trending_up: Grows]",
+    ]
+    assert "##### Heap per event" in [m.value for m in at.markdown]
+    # The table links every component to its code; a flag is a tint, not a column.
     table = at.dataframe[0].value
-    assert table["Component"].tolist()[:2] == ["GeoSvc", "k4FWCore__Reader"]
-    flagged = table[table["Flag"] != ""]["Component"].tolist()
-    assert flagged == ["LumiCalReco", "VertexFinder"]
-    reader = table[table["Component"] == "k4FWCore__Reader"].iloc[0]
-    assert reader["Working set"] == pytest.approx(5.0)
-    assert len(reader["Held per event"]) == 12
-    assert "##### LumiCalReco, event by event" in [m.value for m in at.markdown]
+    assert {"Package", "Code", "Repository"} <= set(table.columns)
+    assert "Flag" not in table.columns
+    # Where it stands on the heap: the geometry and the reader hold more.
+    standing = next(json.loads(c.proto.spec) for c in at.get("plotly_chart")
+                    if "reco_component_standing" in c.proto.id)
+    heap = standing["data"][-1]
+    assert [row[0] for row in heap["customdata"]][:3] == ["GeoSvc", "k4FWCore__Reader", "LumiCalReco"]
+    # A component that held no heap held none: zero, not unknown.
+    _choose_component(at, "Refit")
+    assert {m.label: m.value for m in at.metric}["Heap held"] == "0 MB"
 
 
 def _pool(raw: dict) -> None:
@@ -814,12 +784,9 @@ def test_memory_names_what_stepped_up_and_marks_its_step(monkeypatch, tmp_path, 
 
     at.button(key=f"reco_memory_inspect_step_{name}").click().run()
     assert not at.exception
-    assert at.radio(key="reco_memory_view").value == "Components"
-    table = at.dataframe[0].value
-    row = table[table["Component"] == name].iloc[0]
-    assert row["Flag"] == "⚠ steps"
-    assert (row["Working set max"], row["Max in event"]) == (pytest.approx(300.0), 4)
-    assert f"##### {name}, event by event" in [m.value for m in at.markdown]
+    assert at.session_state["reco_active_section"] == "Components"
+    assert any("-badge[" in m.value and "Steps up" in m.value for m in at.markdown)
+    assert "##### Heap per event" in [m.value for m in at.markdown]
 
 
 def _rewrite_heap(run: Path, change) -> None:
@@ -893,61 +860,22 @@ def test_memory_draws_a_run_whatever_statistics_it_lacks(
     run = reco_run_with_heap()
     _rewrite_heap(run, change)
     at = _page(monkeypatch, tmp_path, run, "Memory")
-    at.radio(key="reco_memory_view").set_value("Components").run()
     assert not at.exception
-    assert len(at.dataframe[0].value)
+    at = _page(monkeypatch, tmp_path, run, "Components", {"component": "LumiCalReco"})
+    assert "#### LumiCalReco" in [m.value for m in at.markdown]
+    assert "Heap held" in {m.label for m in at.metric}
 
 
-def test_a_component_that_needed_memory_in_the_warm_up_alone_is_listed(
+def test_a_component_stays_chosen_in_another_run_that_has_it(
     monkeypatch, tmp_path, reco_run_with_heap,
 ):
-    def spike(raw: dict) -> None:
-        # MyTrackChecker allocates and frees 500 MB in event 0 and holds nothing else.
-        raw["execute"]["peak_held_bytes"][0][raw["components"].index("MyTrackChecker")] = 500 * _MIB
-
-    run = reco_run_with_heap()
-    _rewrite_heap(run, spike)
-    at = _page(monkeypatch, tmp_path, run, "Memory")
-    at.radio(key="reco_memory_view").set_value("Components").run()
-    assert not at.exception
-    components = at.dataframe[0].value["Component"].tolist()
-    assert "MyTrackChecker" in components
-    # Components that never held anything stay out.
-    assert "MyCLICPfoSelectorTight" not in components
-
-
-def test_a_selection_past_the_tables_end_draws_the_default(
-    monkeypatch, tmp_path, reco_run_with_heap,
-):
-    from reco.memory import _table_key
-
-    run = reco_run_with_heap()
-    at = _page(monkeypatch, tmp_path, run, "Memory")
-    at.radio(key="reco_memory_view").set_value("Components").run()
-    at.session_state[_table_key(str(run), "baseline")] = {
-        "selection": {"rows": [99], "columns": [], "cells": []},
-    }
-    at.run()
-    assert not at.exception
-    assert "##### LumiCalReco, event by event" in [m.value for m in at.markdown]
-
-
-def test_a_selection_stays_with_its_run(monkeypatch, tmp_path, reco_run_with_heap):
-    from reco.memory import _table_key
-
     first, second = reco_run_with_heap("first"), reco_run_with_heap("second")
-    at = _page(monkeypatch, tmp_path, first, "Memory")
-    at.radio(key="reco_memory_view").set_value("Components").run()
-    writer = at.dataframe[0].value["Component"].tolist().index("k4FWCore__Writer")
-    at.session_state[_table_key(str(first), "baseline")] = {
-        "selection": {"rows": [writer], "columns": [], "cells": []},
-    }
-    at.run()
-    assert "##### k4FWCore__Writer, event by event" in [m.value for m in at.markdown]
-    # The same configuration of another run opens on its own default.
+    at = _page(monkeypatch, tmp_path, first, "Components", {"component": "k4FWCore__Writer"})
+    assert "#### k4FWCore__Writer" in [m.value for m in at.markdown]
     at.text_input(key="reco_data_dir").set_value(str(second)).run()
     assert not at.exception
-    assert "##### LumiCalReco, event by event" in [m.value for m in at.markdown]
+    assert "#### k4FWCore__Writer" in [m.value for m in at.markdown]
+    assert "run directory `second`" in " ".join(c.value for c in at.caption)
 
 
 def test_too_few_events_to_tell_steady_growth_is_said_so(monkeypatch, tmp_path, reco_run_with_heap):
@@ -963,7 +891,7 @@ def test_too_few_events_to_tell_steady_growth_is_said_so(monkeypatch, tmp_path, 
 
 
 def test_a_sparkline_keeps_a_spike_of_one_event():
-    from reco.memory import _SPARK_POINTS, _spark
+    from reco.memory import _SPARK_POINTS, spark as _spark
 
     held = pd.Series(100.0, index=range(1200))
     held[501] = 600.0
@@ -982,7 +910,8 @@ def test_a_malformed_heap_file_hides_no_other_configuration(
     run = reco_run_with_heap()
     (run / "variant_truth_tracking_heap.json").write_text("{")
     at = _page(monkeypatch, tmp_path, run, "Memory")
-    assert at.selectbox(key="reco_memory_config").options == ["baseline"]
+    with pytest.raises(KeyError):
+        at.selectbox(key="reco_memory_config")
     assert [w.value for w in at.warning][0].startswith(
         "The heap file of **variant_truth_tracking** could not be read, so it is not offered:"
     )
@@ -1004,7 +933,7 @@ _UNREADABLE_VARIANT = (
 
 
 @pytest.mark.parametrize("section", [
-    "Breakdown", "Efficiency", "Memory", "Data Flow", "Event Timing", "Correlations",
+    "Time", "Memory", "Components", "Data Flow", "Event Timing", "Events",
 ])
 def test_a_malformed_component_file_is_named_in_every_section_reading_one(
     monkeypatch, tmp_path, section,
@@ -1016,14 +945,17 @@ def test_a_malformed_component_file_is_named_in_every_section_reading_one(
 
 
 @pytest.mark.parametrize("section, key", [
-    ("Breakdown", "reco_breakdown_config"), ("Efficiency", "reco_efficiency_config"),
+    ("Time", "reco_breakdown_config"), ("Components", "reco_component_config"),
 ])
 def test_a_malformed_component_file_hides_no_other_configuration(
     monkeypatch, tmp_path, section, key,
 ):
     run = _run_with_broken_components(tmp_path, "variant_truth_tracking")
     at = _page(monkeypatch, tmp_path, run, section)
-    assert at.selectbox(key=key).options == ["baseline"]
+    # The baseline alone is left: nothing to choose.
+    with pytest.raises(KeyError):
+        at.selectbox(key=key)
+    assert not at.info
 
 
 def test_a_malformed_component_file_keeps_its_configurations_events(monkeypatch, tmp_path):
@@ -1043,7 +975,7 @@ def test_a_run_without_component_files_says_so_without_a_warning(monkeypatch, tm
     shutil.copytree(RECO_RUN, run)
     for path in run.glob("*_components.json"):
         path.unlink()
-    at = _page(monkeypatch, tmp_path, run, "Efficiency")
+    at = _page(monkeypatch, tmp_path, run, "Components")
     assert at.info[0].value.endswith("left a `_components.json`.")
     assert not at.warning
 
@@ -1054,7 +986,8 @@ def test_a_failed_configurations_malformed_component_file_is_not_news(monkeypatc
     header, row = results.read_text().splitlines()
     results.write_text(f"{header}\n{row.replace(',0,', ',1,', 1)}\n")
     at = _page(monkeypatch, tmp_path, run, "Breakdown")
-    assert at.selectbox(key="reco_breakdown_config").options == ["baseline"]
+    with pytest.raises(KeyError):
+        at.selectbox(key="reco_breakdown_config")
     assert not at.warning
 
 
@@ -1589,22 +1522,22 @@ def test_an_unlinked_instance_in_a_drawn_group_is_not_called_hidden():
 def test_a_component_timed_in_no_event_has_no_time():
     from types import SimpleNamespace
 
-    from reco.dataflow import _seconds_per_event
+    from reco.dataflow import seconds_per_event
 
     # Run only in the warm-up event 0 is not run either.
     wall = pd.DataFrame({"Timed": [9.0, 1.0, np.nan], "Untimed": [np.nan] * 3,
                          "WarmUpOnly": [1.0, np.nan, np.nan]})
     timing = SimpleNamespace(execute={"wall_s": wall})
     ctx = SimpleNamespace(run=SimpleNamespace(components={"baseline": timing}))
-    assert _seconds_per_event(ctx, "baseline") == {"Timed": 0.5}
+    assert seconds_per_event(ctx, "baseline") == {"Timed": 0.5}
 
 
-def test_data_flow_and_efficiency_agree_on_an_algorithm_run_in_every_event():
+def test_data_flow_and_components_agree_on_an_algorithm_run_in_every_event():
     from types import SimpleNamespace
 
-    from reco.dataflow import _seconds_per_event
+    from reco.dataflow import seconds_per_event
 
-    from k4bench.analysis.efficiency import component_efficiency
+    from k4bench.analysis.component_detail import component_summary
 
     events = pd.Index([0, 1, 2, 3], name="event_number")
     execute = {
@@ -1615,15 +1548,15 @@ def test_data_flow_and_efficiency_agree_on_an_algorithm_run_in_every_event():
         "cycles": pd.DataFrame({"Always": [1e9] * 4, "Filtered": [1e9, 1e9, np.nan, np.nan]},
                                index=events),
     }
-    ctx = SimpleNamespace(run=SimpleNamespace(
-        components={"baseline": SimpleNamespace(execute=execute)},
-    ))
-    flow = _seconds_per_event(ctx, "baseline")
-    efficiency = component_efficiency(execute)["ms_per_event"] / 1e3
-    assert flow["Always"] == pytest.approx(efficiency["Always"]) == pytest.approx(0.003)
-    # Filtered: its share of every event in Data Flow, its time when run in Efficiency.
-    assert flow["Filtered"] == pytest.approx(0.002)
-    assert efficiency["Filtered"] == pytest.approx(0.006)
+    timing = SimpleNamespace(execute=execute, lifecycle={})
+    ctx = SimpleNamespace(run=SimpleNamespace(components={"baseline": timing}))
+    flow = seconds_per_event(ctx, "baseline")
+    summary = component_summary(timing)
+    assert flow["Always"] == pytest.approx(summary.at["Always", "seconds_when_run"]) == pytest.approx(0.003)
+    # Filtered: its share of every event in Data Flow, as Components' standing
+    # counts it, beside its time in the events it ran in.
+    assert flow["Filtered"] == pytest.approx(summary.at["Filtered", "seconds_per_event"]) == pytest.approx(0.002)
+    assert summary.at["Filtered", "seconds_when_run"] == pytest.approx(0.006)
 
 
 def test_gaudi_algorithms_without_recorded_handles_are_named(monkeypatch, tmp_path):

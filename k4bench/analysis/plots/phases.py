@@ -142,7 +142,8 @@ def plot_event_composition(
     where a component did not run). *colors* maps a component to its colour,
     as :func:`plot_phase_component_pie` takes it. *sort* orders the events by
     their time, longest first, instead of by event number. The *warm_up*
-    event is drawn paler.
+    event is drawn paler. A component's bars carry its name as their
+    ``customdata``; "Other"'s carry none.
     """
     times = times.fillna(0.0)
     named = [c for c in components if c in times.columns]
@@ -164,6 +165,7 @@ def plot_event_composition(
         )
         fig.add_trace(go.Bar(
             x=labels, y=seconds.reindex(order), name=name,
+            customdata=[(name,)] * len(labels) if name in named else None,
             marker=dict(color=color, opacity=opacity),
             hovertemplate=f"{name}: %{{y:.3g}} s<extra></extra>",
         ))

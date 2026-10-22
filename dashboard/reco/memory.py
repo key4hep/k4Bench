@@ -9,14 +9,11 @@ heap event by event, as held or as its change since the first event, its
 steps marked, with the timed run's anonymous RSS beside it, and below it names
 each component that grows and still holds what it gained after finalize, and
 each whose heap stepped up at once in an event and stayed up; each one a card
-names opens in Components from its name. Components lists every
-component that held heap with its numbers and its heap across the events, and
-draws the selected one event by event: what it held as each event started,
-the most it held during it and what it kept. Historical Trends draws one of a
-configuration's numbers across the trend window as a line per component:
-what it held before the first event or at a typical event's end, beside
-the whole job's own median, its working set or its growth per event. The
-warm-up event is left out of every
+names opens in the Components section from its name. Historical Trends draws one of a
+configuration's numbers across the trend window as a line per component, the
+largest and those that grow or step up: what it held before the first event
+or at a typical event's end, beside the whole job's own median, its working
+set or its growth per event. The warm-up event is left out of every
 statistic over events, as everywhere a run's event loop is summarised.
 """
 from __future__ import annotations
@@ -48,11 +45,12 @@ from k4bench.analysis.plots.heap import (
     NO_COMPONENT_LABEL,
     _scale,
     format_mb,
-    plot_component_heap_events,
     plot_heap_timeline,
 )
 from k4bench.analysis.plots.phases import history_rows, phase_component_series
-from reco._sources import SOURCE_COLUMN_CONFIG, package_labels, source_columns
+from reco._controls import select_config
+from reco._inspect import inspect
+from reco._sources import package_labels
 from section_dispatch import PageContext, judgeable_trend
 from sections import TREND_WINDOW_SCOPE, SectionScope
 from tabs._historical_trends import render_historical_trends
@@ -71,11 +69,6 @@ from ui_utils import (
 _KEY = "reco_memory"
 _VIEW_KEY = f"{_KEY}_view"
 
-#: The component a warning's button opened the Components view on, and how
-#: many times one did: each time, the table is a new widget, which starts from
-#: that component's row selected.
-_FOCUS_KEY = f"{_KEY}_focus"
-_TABLE_NONCE_KEY = f"{_KEY}_table_nonce"
 
 #: The event that warms the job up (``component_stats.WARM_UP_EVENT``).
 _WARM_UP_EVENT = 0
@@ -89,8 +82,6 @@ _TOP_N_KEY = f"{_KEY}_topn"
 #: Points a sparkline draws at most, of a run's events.
 _SPARK_POINTS = 150
 
-#: Rows the components table shows before it scrolls.
-_TABLE_ROWS = 15
 
 #: What the timeline's bands are.
 _GROUPS = ["Component", "Package"]
@@ -131,17 +122,17 @@ def _colors(named: list[str], palette: list[str]) -> dict[str, str]:
     return {name: vivid[i % len(vivid)] for i, name in enumerate(named)}
 
 
-def _heaps(ctx: PageContext) -> dict[str, ComponentHeap]:
+def heaps(ctx: PageContext) -> dict[str, ComponentHeap]:
     """The run's heap files of configurations that succeeded, naming any
     that could not be read."""
-    heaps, unreadable = cached_load_component_heap(ctx.run_dir(HEAP))
+    loaded, unreadable = cached_load_component_heap(ctx.run_dir(HEAP))
     for label, reason in unreadable.items():
         st.warning(f"The heap file of **{label}** could not be read, so it is not offered: {reason}")
-    return judgeable_config_data(heaps, ctx.run.results) or {}
+    return judgeable_config_data(loaded, ctx.run.results) or {}
 
 
 @st.cache_data(show_spinner=False, max_entries=32)
-def _summarise(data_dir: str, label: str) -> tuple[pd.DataFrame, HeapTotals]:
+def summarise(data_dir: str, label: str) -> tuple[pd.DataFrame, HeapTotals]:
     """*label*'s per-component summary and job totals, the warm-up left out."""
     heap = cached_load_component_heap(data_dir)[0][label]
     return heap.summary(warm_up=_WARM_UP_EVENT), heap.totals(warm_up=_WARM_UP_EVENT)
@@ -150,21 +141,19 @@ def _summarise(data_dir: str, label: str) -> tuple[pd.DataFrame, HeapTotals]:
 def _select_config(ctx: PageContext) -> tuple[str, ComponentHeap] | None:
     """The configuration chosen for both views, and its heap; ``None``, said
     so, when the run has none."""
-    heaps = _heaps(ctx)
-    if not heaps:
+    found = heaps(ctx)
+    if not found:
         st.info(
             "No heap breakdown in this run: no configuration that succeeded left "
             "a `_heap.json`. The memory pass runs in the nightlies from 2026-10-19 "
             "on; one that failed leaves its log in the run as `<configuration>_heap.log`."
         )
         return None
-    label = st.selectbox(
-        "Configuration", sorted(heaps), key=f"{_KEY}_config", bind="query-params",
-    )
-    return label, heaps[label]
+    label = select_config(sorted(found), f"{_KEY}_config")
+    return label, found[label]
 
 
-def _spark(values: pd.Series) -> list[float]:
+def spark(values: pd.Series) -> list[float]:
     """At most :data:`_SPARK_POINTS` of *values*: the least and the most of
     each of half as many runs of them, in the order they came, so a spike in
     a single event survives the thinning."""
@@ -204,7 +193,7 @@ def _render_tiles(summary: pd.DataFrame, totals: HeapTotals) -> None:
             "median at an event's end",
             "The heap at the end of each event, the warm-up event left out: its "
             "median here, every event in the sparkline.",
-            _spark(totals.per_event_mb),
+            spark(totals.per_event_mb),
         ),
         (
             "Largest", format_mb(totals.largest_mb),
@@ -223,18 +212,18 @@ def _render_tiles(summary: pd.DataFrame, totals: HeapTotals) -> None:
             None,
         ),
     ]
-    for column, (title, value, caption, help_text, spark) in zip(st.columns(len(tiles)), tiles):
+    for column, (title, value, caption, help_text, points) in zip(st.columns(len(tiles)), tiles):
         with column, st.container(border=True, height="stretch"):
             st.metric(
                 title, value, help=help_text,
-                chart_data=spark or None, chart_type="area" if spark else "line",
+                chart_data=points or None, chart_type="area" if points else "line",
             )
             if caption:
                 st.caption(caption)
 
 
 @dataclass(frozen=True)
-class _Finding:
+class Finding:
     """A component that grows or stepped up and kept it, as its card shows it."""
 
     #: Its button's key.
@@ -251,7 +240,7 @@ class _Finding:
 
 
 #: Each finding kind's badge colour and icon.
-_KINDS = {
+FINDING_KINDS = {
     "Grows": ("orange", ":material/trending_up:"),
     "Steps up": ("red", ":material/stairs:"),
 }
@@ -260,13 +249,13 @@ _KINDS = {
 _CARDS_PER_ROW = 4
 
 
-def _held_spark(heap: ComponentHeap, name: str) -> list[float]:
+def held_spark(heap: ComponentHeap, name: str) -> list[float]:
     """What *name* held at each event's end, warm-up left out, in MB."""
     held = heap.execute["held_bytes"].sort_index()[name] / MB
-    return _spark(held[held.index != _WARM_UP_EVENT])
+    return spark(held[held.index != _WARM_UP_EVENT])
 
 
-def _leak_findings(summary: pd.DataFrame, heap: ComponentHeap) -> list[_Finding]:
+def _leak_findings(summary: pd.DataFrame, heap: ComponentHeap) -> list[Finding]:
     """A finding per component that grows and keeps what it gained, or
     none, said so, when too few events were measured to tell."""
     events = _measured_events(heap)
@@ -280,7 +269,7 @@ def _leak_findings(summary: pd.DataFrame, heap: ComponentHeap) -> list[_Finding]
     suspects = summary[summary["leak"]].sort_values("growth_mb_per_event", ascending=False)
     span = float(events[-1] - events[0]) if len(events) else 0.0
     return [
-        _Finding(
+        Finding(
             key=f"{_KEY}_inspect_{name}", name=name, kind="Grows",
             value=format_mb(row.growth_mb_per_event * span, signed=True),
             delta=f"{format_mb(row.growth_mb_per_event, signed=True)} per event",
@@ -290,7 +279,7 @@ def _leak_findings(summary: pd.DataFrame, heap: ComponentHeap) -> list[_Finding]
                 f"({format_mb(row.growth_mb_per_event * span)} over the run); after finalize "
                 f"it still holds {format_mb(row.retained_mb)} more than after event {events[0]}."
             ),
-            spark=_held_spark(heap, name),
+            spark=held_spark(heap, name),
         )
         for name, row in suspects.iterrows()
     ]
@@ -312,7 +301,7 @@ def _step_list(steps: pd.DataFrame) -> str:
     return text
 
 
-def _step_findings(summary: pd.DataFrame, heap: ComponentHeap) -> list[_Finding]:
+def _step_findings(summary: pd.DataFrame, heap: ComponentHeap) -> list[Finding]:
     """A finding per component whose heap rose at once and stayed up."""
     stepped = summary[summary["stepped"]].sort_values("stepped_mb", ascending=False)
     if stepped.empty:
@@ -327,7 +316,7 @@ def _step_findings(summary: pd.DataFrame, heap: ComponentHeap) -> list[_Finding]
         at = ", ".join(str(e) for e in events[:_STEPS_NAMED])
         if len(events) > _STEPS_NAMED:
             at += ", …"
-        findings.append(_Finding(
+        findings.append(Finding(
             key=f"{_KEY}_inspect_step_{name}", name=name, kind="Steps up",
             value=format_mb(float(own["step_mb"].sum()), signed=True),
             delta=f"{len(events)} step{'s' if len(events) > 1 else ''}, "
@@ -338,7 +327,7 @@ def _step_findings(summary: pd.DataFrame, heap: ComponentHeap) -> list[_Finding]
                 f"{format_mb(last[name])} at the last event's end and "
                 f"{format_mb(row.after_finalize_mb)} after finalize."
             ),
-            spark=_held_spark(heap, name),
+            spark=held_spark(heap, name),
         ))
     return findings
 
@@ -347,19 +336,19 @@ def _step_findings(summary: pd.DataFrame, heap: ComponentHeap) -> list[_Finding]
 _NOTICE_NAMED = 2
 
 
-def _findings(summary: pd.DataFrame, heap: ComponentHeap) -> list[_Finding]:
+def heap_findings(summary: pd.DataFrame, heap: ComponentHeap) -> list[Finding]:
     """Every component that keeps heap it took on, steadily or at once: the
     steps first, the largest, then what grows, the fastest."""
     return _step_findings(summary, heap) + _leak_findings(summary, heap)
 
 
-def _findings_title(findings: list[_Finding]) -> str:
+def _findings_title(findings: list[Finding]) -> str:
     n = len({f.name for f in findings})
     return (f"{n} component{'s' if n > 1 else ''} keep{'' if n > 1 else 's'} heap "
             f"{'they' if n > 1 else 'it'} took on")
 
 
-def _render_findings_notice(findings: list[_Finding]) -> None:
+def _render_findings_notice(findings: list[Finding]) -> None:
     """One line above the chart naming what the cards below it show, so a
     reader who stops at the chart still learns of them."""
     if not findings:
@@ -373,7 +362,7 @@ def _render_findings_notice(findings: list[_Finding]) -> None:
     )
 
 
-def _render_findings(findings: list[_Finding]) -> None:
+def _render_findings(findings: list[Finding], label: str) -> None:
     """A card per finding, under a heading the notice above the chart points to."""
     if not findings:
         return
@@ -392,11 +381,14 @@ def _render_findings(findings: list[_Finding]) -> None:
         row = findings[start:start + _CARDS_PER_ROW]
         for column, finding in zip(st.columns(_CARDS_PER_ROW), row):
             with column, st.container(border=True, height="stretch", gap="small"):
-                color, icon = _KINDS[finding.kind]
+                color, icon = FINDING_KINDS[finding.kind]
                 st.badge(finding.kind, color=color, icon=icon, help=finding.sentence)
+                # What no component allocated is no component to open.
                 st.button(
                     _name(finding.name), key=finding.key, type="tertiary",
-                    icon=":material/arrow_forward:", on_click=_inspect, args=(finding.name,),
+                    icon=":material/arrow_forward:", on_click=inspect,
+                    args=(finding.name, label, "Memory"),
+                    disabled=finding.name == NO_COMPONENT,
                 )
                 st.metric(
                     _name(finding.name), finding.value, delta=finding.delta,
@@ -404,18 +396,6 @@ def _render_findings(findings: list[_Finding]) -> None:
                     chart_data=finding.spark or None, chart_type="area",
                 )
                 st.caption(finding.caption)
-
-
-def _inspect(name: str) -> None:
-    """Open *name* in the Components view, its row selected and drawn."""
-    st.session_state[_VIEW_KEY] = "Components"
-    st.session_state[_FOCUS_KEY] = name
-    st.session_state[_TABLE_NONCE_KEY] = st.session_state.get(_TABLE_NONCE_KEY, 0) + 1
-
-
-def _clear_focus() -> None:
-    """A row the user selects, or none, outranks a warning's choice."""
-    st.session_state.pop(_FOCUS_KEY, None)
 
 
 def _groups(ctx: PageContext, label: str, names) -> pd.Series:
@@ -441,9 +421,9 @@ def _render_current_run(ctx: PageContext, display_options_slot) -> None:
     if (selected := _select_config(ctx)) is None:
         return
     label, heap = selected
-    summary, totals = _summarise(ctx.run_dir(HEAP), label)
+    summary, totals = summarise(ctx.run_dir(HEAP), label)
     _render_tiles(summary, totals)
-    findings = _findings(summary, heap)
+    findings = heap_findings(summary, heap)
     _render_findings_notice(findings)
 
     st.markdown(
@@ -537,170 +517,7 @@ def _render_current_run(ctx: PageContext, display_options_slot) -> None:
             margin=dict(l=20, r=20, t=_T_MARGIN, b=bottom),
         )
         st.plotly_chart(fig, width="stretch", key=f"{_KEY}_timeline")
-    _render_findings(findings)
-
-
-def _component_table(
-    ctx: PageContext, label: str, heap: ComponentHeap, summary: pd.DataFrame,
-) -> pd.DataFrame:
-    """Every component that held heap at any moment, the largest typical
-    holder first, with its sources and its heap across the events."""
-    held = heap.execute["held_bytes"].sort_index() / MB
-    # Whether a component is listed reads every moment, the warm-up event's
-    # too: one that only needed memory then is still worth inspecting.
-    shown = summary.loc[heap.holders()].sort_values("typical_mb", ascending=False, kind="stable")
-    timing: ComponentTiming | None = ctx.run.components.get(label)
-    sources = (
-        source_columns(ctx.run_dir(PACKAGES), timing, shown.index) if timing is not None
-        else pd.DataFrame({"Package": "—", "Code": None, "Repository": None}, index=shown.index)
-    )
-    return pd.DataFrame({
-        "Flag": [
-            "⚠ " + ", ".join(flag for flag, on in (("grows", leak), ("steps", step)) if on)
-            if leak or step else ""
-            for leak, step in zip(shown["leak"], shown["stepped"])
-        ],
-        "Component": [_name(name) for name in shown.index],
-        "Initialized": shown["before_first_mb"].to_numpy(),
-        "Typical": shown["typical_mb"].to_numpy(),
-        "Held per event": [_spark(held[name]) for name in shown.index],
-        "Working set": shown["working_set_median_mb"].to_numpy(),
-        "Working set p95": shown["working_set_p95_mb"].to_numpy(),
-        "Working set max": shown["working_set_max_mb"].to_numpy(),
-        "Max in event": shown["working_set_max_event"].astype("Int64").to_numpy(),
-        "Growth": shown["growth_mb_per_event"].to_numpy(),
-        "Finalized": shown["after_finalize_mb"].to_numpy(),
-        **{column: sources[column].to_numpy() for column in SOURCE_COLUMN_CONFIG},
-    }, index=shown.index)
-
-
-def _table_key(data_dir: str, label: str, nonce: int = 0) -> str:
-    """The components table's widget key: one per run and configuration, so a
-    selection never outlives the table it was made in, and one per warning
-    button click (*nonce*), so a click starts from the row it selects."""
-    return f"{_KEY}_table_{data_dir}_{label}_{nonce}"
-
-
-def _default_component(shown: pd.DataFrame) -> str | None:
-    """What the Components view draws with no row selected, of the components
-    *shown* (their :meth:`~k4bench.analysis.heap.ComponentHeap.summary` rows):
-    the one that grows fastest and keeps it, as the warning names it first,
-    else the one that stepped up the most and kept it, else the one whose
-    events need the most, else the largest holder.
-    Statistics a run lacks (no events but the warm-up, no peaks per event) are
-    passed over; ``None`` when nothing is shown."""
-    suspects = shown.loc[shown["leak"], "growth_mb_per_event"].dropna()
-    if len(suspects):
-        return suspects.idxmax()
-    stepped = shown.loc[shown["stepped"], "stepped_mb"]
-    if len(stepped):
-        return stepped.idxmax()
-    for column in ("working_set_median_mb", "typical_mb", "largest_mb",
-                   "before_first_mb", "after_finalize_mb"):
-        values = shown[column].dropna()
-        if len(values) and values.max() > 0:
-            return values.idxmax()
-    return shown.index[0] if len(shown) else None
-
-
-def _render_components(ctx: PageContext) -> None:
-    if (selected := _select_config(ctx)) is None:
-        return
-    label, heap = selected
-    summary, _ = _summarise(ctx.run_dir(HEAP), label)
-    table = _component_table(ctx, label, heap, summary)
-    st.markdown(
-        "##### Components",
-        help=(
-            "Every component that held heap at some moment, in MB: before the "
-            "first event (**Initialized**), the median at an event's end "
-            "(**Typical**), and after finalize (**Finalized**). The **working "
-            "set** is the most it held during an event beyond what it held as the "
-            "event started: what the event needed of it. **Growth** is how much "
-            "what it holds grows from one event to the next. **⚠ grows** "
-            "marks a component that grew by 10 MB or more over the events, "
-            "steadily rather than in one step, and after finalize still holds "
-            "10 MB or more of it, at least half of what it gained. **⚠ steps** "
-            f"marks one whose heap rose by {format_mb(STEP_MIN_MB)} or more from one "
-            "event's end to the next's, and at every event's end from then to the "
-            "last still held at least half of what it rose by.\n\n"
-            "Select a row to draw its events."
-        ),
-    )
-    focus = st.session_state.get(_FOCUS_KEY)
-    focus = focus if focus in table.index else None
-    event = st.dataframe(
-        table,
-        hide_index=True,
-        width="stretch",
-        # Up to :data:`_TABLE_ROWS` rows at once, the header's height included.
-        height=35 * (min(len(table), _TABLE_ROWS) + 1) + 3,
-        on_select=_clear_focus,
-        selection_mode="single-row",
-        selection_default={"selection": {"rows": [table.index.get_loc(focus)]}} if focus else None,
-        key=_table_key(ctx.data_dir, label, st.session_state.get(_TABLE_NONCE_KEY, 0)),
-        column_config={
-            "Flag": st.column_config.TextColumn("Flag", width="small"),
-            "Component": st.column_config.TextColumn("Component", width="medium"),
-            "Initialized": st.column_config.NumberColumn("Initialized", format="%.1f MB"),
-            "Typical": st.column_config.NumberColumn("Typical", format="%.1f MB"),
-            # From zero: on a scale from its own least, a few kB would read
-            # as a cliff.
-            "Held per event": st.column_config.AreaChartColumn(
-                "Held per event", width="medium", y_min=0,
-                help="What it held at the end of each event, from zero up to its most.",
-            ),
-            "Working set": st.column_config.NumberColumn(
-                "Working set", format="%.2f MB", help="The median over the events.",
-            ),
-            "Working set p95": st.column_config.NumberColumn("Working set p95", format="%.2f MB"),
-            "Working set max": st.column_config.NumberColumn(
-                "Working set max", format="%.2f MB",
-                help="The most any one event needed of it.",
-            ),
-            "Max in event": st.column_config.NumberColumn(
-                "Max in event", format="%d", help="The event that needed the most of it.",
-            ),
-            "Growth": st.column_config.NumberColumn(
-                "Growth", format="%+.3f MB", help="Per event.",
-            ),
-            "Finalized": st.column_config.NumberColumn("Finalized", format="%.1f MB"),
-            **SOURCE_COLUMN_CONFIG,
-        },
-    )
-    # Positions in this table; one past its end selects nothing.
-    rows = [row for row in (event.selection.rows if event is not None else []) if 0 <= row < len(table)]
-    if rows:
-        name = table.index[rows[0]]
-    elif focus:
-        name = focus
-    else:
-        name = _default_component(summary.loc[table.index])
-    if name is not None:
-        _render_component_events(heap, summary, name)
-
-
-def _render_component_events(heap: ComponentHeap, summary: pd.DataFrame, name: str) -> None:
-    """*name*'s heap event by event."""
-    st.markdown(
-        f"##### {_name(name)}, event by event",
-        help=(
-            "Each bar runs from what it held as the event started to the most it "
-            "held during the event, its working set; the mark is what it held at "
-            "the event's end. A bar that starts where the last one ended is memory "
-            "kept from one event to the next."
-        ),
-    )
-    fig = plot_component_heap_events(
-        heap.execute["start_held_bytes"][name] / MB,
-        heap.execute["peak_held_bytes"][name] / MB,
-        heap.execute["held_bytes"][name] / MB,
-        before_first=summary.at[name, "before_first_mb"],
-        after_finalize=summary.at[name, "after_finalize_mb"],
-        warm_up=_WARM_UP_EVENT,
-    )
-    if fig is not None:
-        st.plotly_chart(fig, width="stretch", key=f"{_KEY}_component_events")
+    _render_findings(findings, label)
 
 
 _HIST_KEY = f"{_KEY}_hist"
@@ -819,10 +636,7 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
         return
     config_col, metric_col, shown_col = st.columns([2, 4.6, 2], vertical_alignment="bottom")
     with config_col:
-        config = st.selectbox(
-            "Configuration", sorted(trend["label"].unique()), key=f"{_HIST_KEY}_config",
-            bind="query-params",
-        )
+        config = select_config(sorted(trend["label"].unique()), f"{_HIST_KEY}_config")
     drop_stale_selection(f"{_HIST_KEY}_metric", list(_HIST_METRICS))
     with metric_col:
         name = st.segmented_control(
@@ -923,14 +737,11 @@ def _render_historical(ctx: PageContext, reliability_slot, display_options_slot)
 
 
 def render(ctx: PageContext) -> SectionScope | None:
-    views = ["Current Run", "Components"] + (["Historical Trends"] if ctx.trends_enabled else [])
+    views = ["Current Run"] + (["Historical Trends"] if ctx.trends_enabled else [])
     drop_stale_selection(_VIEW_KEY, views)
     view, reliability_slot, display_options_slot = view_control_row(views, key=_VIEW_KEY)
     if view == "Historical Trends":
         _render_historical(ctx, reliability_slot, display_options_slot)
         return TREND_WINDOW_SCOPE
-    if view == "Components":
-        _render_components(ctx)
-    else:
-        _render_current_run(ctx, display_options_slot)
+    _render_current_run(ctx, display_options_slot)
     return None

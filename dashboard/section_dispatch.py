@@ -15,7 +15,7 @@ it sits in the bar, which data source it needs and what scope it honours.
 """
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import cached_property
 
@@ -132,7 +132,18 @@ class PageContext:
 Renderer = Callable[[PageContext], SectionScope | None]
 
 
-def current_section(section_names: list[str], key: str = "active_section") -> str:
+#: A section's old name, and the section and the widget values it now opens
+#: on: ``{old name: (section, {widget key: value})}``; the values may instead
+#: be a function of the link's parameters, for a section whose own controls
+#: were renamed.
+Aliases = Mapping[
+    str, tuple[str, Mapping[str, str] | Callable[[Mapping[str, str]], Mapping[str, str]]],
+]
+
+
+def current_section(
+    section_names: list[str], key: str = "active_section", aliases: Aliases | None = None,
+) -> str:
     """The active section, readable before the section bar is drawn — the
     sidebar, which is drawn first, scopes its trend window by it.
 
@@ -141,24 +152,39 @@ def current_section(section_names: list[str], key: str = "active_section") -> st
     session_state the same way as ``seed_query_param`` (see its docstring) —
     case-insensitively here, since section names are matched by label. A click
     on the bar is in session_state before the rerun it starts, so this already
-    names the section being opened.
+    names the section being opened. A section's old name in *aliases* opens
+    the section it is now part of, with the widget values that show what it
+    showed (a view, say, or the configuration its own controls chose), so an
+    old link still lands where it pointed.
     """
     if key not in st.session_state:
         requested = (st.query_params.get("tab") or "").strip().lower()
         matched = next((name for name in section_names if name.lower() == requested), None)
+        alias = next(
+            (target for name, target in (aliases or {}).items() if name.lower() == requested),
+            None,
+        )
+        if matched is None and alias is not None:
+            matched, values = alias
+            if callable(values):
+                values = values(st.query_params)
+            for widget, value in values.items():
+                st.session_state.setdefault(widget, value)
         st.session_state[key] = matched or section_names[0]
     # Clicking the active section again deselects it.
     return st.session_state[key] or section_names[0]
 
 
-def pick_section(section_names: list[str], key: str = "active_section") -> str:
+def pick_section(
+    section_names: list[str], key: str = "active_section", aliases: Aliases | None = None,
+) -> str:
     """The section bar, returning the active section (see :func:`current_section`).
 
     *key* holds the selection; each page passes its own, and it is kept for
     the whole session, so returning from another page reopens the section it
     left.
     """
-    current_section(section_names, key)
+    current_section(section_names, key, aliases)
     active = st.segmented_control(
         "Section", section_names,
         key=key, label_visibility="collapsed", width="stretch",

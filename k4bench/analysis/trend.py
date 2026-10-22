@@ -25,7 +25,7 @@ from k4bench.analysis.loader import (
     load_region_timing,
     load_results,
 )
-from k4bench.analysis.efficiency import EFFICIENCY_COLUMNS, algorithm_efficiency
+from k4bench.analysis.component_detail import component_summary
 from k4bench.analysis.event_size import KB, read_event_size
 from k4bench.analysis.heap import SUMMARY_COLUMNS
 from k4bench.analysis.robust import MAX_SLOPE_EVENTS, MIN_SLOPE_EVENTS, theil_sen_slope  # noqa: F401 (re-exported)
@@ -361,22 +361,24 @@ def build_phase_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
     return _finalize_dates(pd.DataFrame(rows))
 
 
-def build_efficiency_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
-    """Load how efficiently each k4run job's algorithms ran across *run_dirs*.
+def build_component_summary_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
+    """Load every k4run job's components across *run_dirs*, each with its
+    :func:`~k4bench.analysis.component_detail.component_summary` (the
+    warm-up event, event 0, left out).
 
-    One row per run, config and algorithm with hardware counts, with its
-    :func:`~k4bench.analysis.efficiency.algorithm_efficiency` per event (the
-    warm-up event, event 0, left out): columns ``run_id``, ``run_date``,
-    ``k4h_release_date``, ``k4h_release``, ``label``, ``component``, the
-    :data:`~k4bench.analysis.efficiency.EFFICIENCY_COLUMNS` and ``x_date``.
-    Each component file is read on its own, so one that is malformed drops
-    no other config of its run. ``None`` when no run has component files
-    with hardware counts.
+    One row per run, config and component its component file lists, whether
+    or not it ran, and one per run and config with ``component`` ``NaN``,
+    saying the config's file was read: a component missing from a run that
+    has that row was not in the job. Columns ``run_id``, ``run_date``,
+    ``k4h_release_date``, ``k4h_release``, ``label``, ``component``,
+    ``category``, the summary's columns and ``x_date``. Each component file
+    is read on its own, so one that is malformed drops no other config of its
+    run. ``None`` when no run has component files (ddsim runs have none).
     """
     if not run_dirs:
         return None
 
-    rows: list[dict] = []
+    frames: list[pd.DataFrame] = []
     for d in run_dirs:
         run_dir = Path(d)
         if not run_dir.is_dir():
@@ -384,7 +386,7 @@ def build_efficiency_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
         meta = parse_run_dir(run_dir)
         timings, unreadable = load_each_component_timing(run_dir)
         for label, reason in unreadable.items():
-            _log.debug("build_efficiency_trend: skipping '%s' of '%s': %s", label, run_dir, reason)
+            _log.debug("build_component_summary_trend: skipping '%s' of '%s': %s", label, run_dir, reason)
 
         run = {
             "run_id":           run_dir.name,
@@ -393,16 +395,15 @@ def build_efficiency_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
             "k4h_release":      meta["k4h_release"],
         }
         for label, timing in timings.items():
-            table = algorithm_efficiency(timing)
-            rows.extend(
-                {**run, "label": label, "component": component,
-                 **{column: float(values[column]) for column in EFFICIENCY_COLUMNS}}
-                for component, values in table.iterrows()
+            summary = component_summary(timing).assign(category=timing.components["category"])
+            frames.append(pd.DataFrame([{**run, "label": label, "component": None}]))
+            frames.append(
+                summary.rename_axis("component").reset_index().assign(**run, label=label)
             )
 
-    if not rows:
+    if not frames:
         return None
-    return _finalize_dates(pd.DataFrame(rows))
+    return _finalize_dates(pd.concat(frames, ignore_index=True))
 
 
 #: The :class:`~k4bench.analysis.heap.HeapTotals` moments
