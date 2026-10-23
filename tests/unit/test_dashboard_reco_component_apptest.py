@@ -567,11 +567,48 @@ def test_a_component_memory_warns_about_carries_a_warning_sign(
     names = at.dataframe[0].value["Component"].tolist()
     assert {"LumiCalReco ⚠", "VertexFinder ⚠"} <= set(names)
     assert "GeoSvc" in names and "Refit" in names
-    # The slowest per event first, then those run in no event.
+    # The one that adds the most to an event first, then those run in no event.
     per_event = at.dataframe[0].value["Per event"]
     timed = per_event.dropna()
     assert list(timed) == sorted(timed, reverse=True)
     assert per_event.isna().sum() == 0 or per_event.iloc[len(timed):].isna().all()
+
+
+def _rarely_run(tmp_path, name: str, seconds: float) -> Path:
+    """:data:`RECO_RUN` with *name* of baseline run only in the warm-up, for
+    100 s, and in event 5, for *seconds*: skipped in every other event."""
+    run = tmp_path / "run"
+    shutil.copytree(RECO_RUN, run)
+    path = run / "baseline_components.json"
+    raw = json.loads(path.read_text())
+    column = [c["name"] for c in raw["components"]].index(name)
+    for rows in raw["execute"].values():
+        for event, row in zip(raw["event_numbers"], rows):
+            if event not in (0, 5):
+                row[column] = None
+    wall = dict(zip(raw["event_numbers"], raw["execute"]["wall_s"]))
+    wall[0][column], wall[5][column] = 100.0, seconds
+    path.write_text(json.dumps(raw))
+    return run
+
+
+def test_a_costly_algorithm_that_rarely_runs_ranks_by_what_it_adds_to_an_event(
+    monkeypatch, tmp_path,
+):
+    # Costlier when it runs than any other, in one event of the eleven past
+    # the warm-up: it adds less to an event than the two that always run.
+    run = _rarely_run(tmp_path, "VertexFinder", 5.0)
+    at = _page(monkeypatch, tmp_path, run, "Components")
+    table = at.dataframe[0].value.set_index("Component")
+    names = table.index.tolist()
+    assert names[:3] == ["MyConformalTracking", "Refit", "VertexFinder"]
+    assert table.loc["VertexFinder", "Per event"] == pytest.approx(5e3 / 11)
+    # The section opens on the table's first row, which Ranking ranks first too.
+    assert _shown(at)[2] == "MyConformalTracking"
+    # Its own time per event it ran in is on its tiles.
+    at = _page(monkeypatch, tmp_path, run, "Components", {"component": "VertexFinder"})
+    assert _tiles(at)["Time per event"] == "5 s"
+    assert any("ran in 1 of 11 events" in c.value for c in at.caption)
 
 
 def test_its_time_and_heap_event_by_event_share_one_layout(monkeypatch, tmp_path, reco_run_with_heap):
