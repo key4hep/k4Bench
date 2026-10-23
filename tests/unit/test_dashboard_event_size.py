@@ -68,8 +68,7 @@ def test_the_reco_page_gives_the_event_size_of_each_file_the_job_wrote(
     ])
     event_sizes.write(run, "variant_truth_tracking")
     at = _reco_page(monkeypatch, tmp_path, run)
-    assert at.session_state["reco_active_section"] == "Events"
-    assert at.button_group(key="reco_events_lens").value == "Output size"
+    assert at.session_state["reco_active_section"] == "Event Size"
     assert at.selectbox(key="evt_size_config").options == ["baseline", "variant_truth_tracking"]
     # The largest file first.
     assert at.selectbox(key="evt_size_file").options == [

@@ -51,7 +51,7 @@ from pathlib import PurePath
 import numpy as np
 import pandas as pd
 
-from k4bench.analysis.components import ComponentTiming
+from k4bench.analysis.components import INCLUSIVE_METRICS, ComponentTiming
 from k4bench.analysis.event_size import OutputFile
 from k4bench.analysis.event_source import EventSource
 from k4bench.analysis.expression import evaluate
@@ -223,13 +223,15 @@ def event_table(
         *([(source.file, source.event_numbers, source.run_numbers)] if source is not None else []),
         *((f.name, f.event_numbers, f.run_numbers) for f in measured),
     ])
-    n = sizes.pop()
-    frame = pd.DataFrame(index=pd.RangeIndex(n, name="entry"))
+    index = pd.RangeIndex(sizes.pop(), name="entry")
+    # Gathered first and framed at once: a frame grown a column at a time
+    # fragments.
+    values: dict[str, np.ndarray] = {}
     columns: dict[str, Column] = {}
     taken = {f.name for f in (*FEATURES, *PRIMARY_FEATURES)}
 
-    def add(name: str, values, column: Column) -> None:
-        frame[name] = np.asarray(values, dtype=float)
+    def add(name: str, data, column: Column) -> None:
+        values[name] = np.asarray(data, dtype=float)
         columns[name] = column
         taken.add(name)
 
@@ -245,14 +247,16 @@ def event_table(
             _add_content(add, taken, "out_", output.event_counts(), output.event_energies(),
                          output.name, "output")
 
+    frame = pd.DataFrame(values, index=index)
     table = EventTable(frame, columns, source, left_out)
     if source is not None:
         features = list(FEATURES)
         if _one_primary(table):
             features += PRIMARY_FEATURES
-        truth = {f.name: table.evaluate(f.expression) for f in features}
-        for f in features:
-            frame[f.name] = truth[f.name].to_numpy()
+        truth = pd.DataFrame(
+            {f.name: table.evaluate(f.expression).to_numpy() for f in features}, index=index,
+        )
+        frame = pd.concat([frame, truth], axis=1)
         columns = {
             **{f.name: Column(f.label, "truth", f.ranked, expression=f.expression) for f in features},
             **columns,
@@ -379,6 +383,10 @@ MEASURE_METRICS = {
     # Includes the calls it made: a sequencer's is its children's largest.
     "peak_heap_bytes": ("peak heap (incl. nested calls)", "B"),
 }
+
+#: The metrics of :data:`MEASURE_METRICS`, as read, each of which is a call's
+#: largest and no count: summed over algorithms, they are the cost of nothing.
+PEAK_METRICS = frozenset(MEASURE_METRICS[m][0] for m in INCLUSIVE_METRICS if m in MEASURE_METRICS)
 
 WHOLE_EVENT = "Whole event"
 

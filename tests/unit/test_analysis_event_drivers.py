@@ -4,6 +4,7 @@ and fitted."""
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -378,3 +379,13 @@ class TestTrend:
         above = above_trend(pairs, Trend(0.0, 0.0))
         assert 9 in above.index
         assert np.isnan(above.loc[9, "ratio"])
+
+
+def test_a_table_of_many_collections_is_framed_at_once():
+    # A frame grown a column at a time warns past a hundred of them.
+    source = _source([[{"pdg": 211}]] * 3, counts={f"In{i}": [1, 2, 3] for i in range(80)})
+    output = _output("sim.root", {f"C{i}": [1, 2, 3] for i in range(80)})
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", pd.errors.PerformanceWarning)
+        table = event_table(source, content=[output])
+    assert len(table.frame.columns) == len(table.columns) > 160
