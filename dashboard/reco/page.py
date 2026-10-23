@@ -73,12 +73,6 @@ def _efficiency_link(params: Mapping[str, str]) -> dict[str, str]:
     }
 
 
-def _events_link(params: Mapping[str, str]) -> str:
-    """The section a link to the former Events section showed: Event Size
-    for its output size lens, Correlations for its default."""
-    return "Event Size" if params.get("reco_events_lens") == "Output size" else "Correlations"
-
-
 def _event_timing(ctx: PageContext) -> SectionScope | None:
     """The sim tab, with each algorithm's own time in each event on offer."""
     return event_timing.render(
@@ -176,7 +170,7 @@ RECO_PAGE = SuitePage(
         "Event Memory": ("Memory", {MEMORY_LENS: MEMORY_LENSES[1]}),
         "Efficiency": ("Components", _efficiency_link),
         "Component": ("Components", {}),
-        "Events": (_events_link, {}),
+        "Events": ("Correlations", {}),
     },
 )
 
