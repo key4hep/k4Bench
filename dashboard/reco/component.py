@@ -143,14 +143,14 @@ def _component_table(
     ctx: PageContext, timing: ComponentTiming, summary: pd.DataFrame,
     heap: ComponentHeap | None, heap_summary: pd.DataFrame | None,
 ) -> pd.DataFrame:
-    """Every algorithm and service of the job, the slowest per event it ran in
-    first, then those run in no event by their initialization, each with its
-    time and its heap: as numbers, and event by event as sparklines. Indexed by
-    name."""
+    """Every algorithm and service of the job, the one that adds the most to
+    an event first, the events it was skipped in counted, then those run in no
+    event by their initialization, each with its time and its heap: as
+    numbers, and event by event as sparklines. Indexed by name."""
     choices = component_choices(timing)
     rows = summary.loc[choices.index]
     order = rows.sort_values(
-        ["seconds_when_run", "initialize_s"], ascending=False, na_position="last", kind="stable",
+        ["seconds_per_event", "initialize_s"], ascending=False, na_position="last", kind="stable",
     ).index
     rows, choices = rows.loc[order], choices.loc[order]
     flagged = (
@@ -160,7 +160,7 @@ def _component_table(
     table = pd.DataFrame({
         "Component": [f"{name} ⚠" if flagged[name] else name for name in order],
         "Kind": choices["category"].str.capitalize().to_numpy(),
-        "Per event": rows["seconds_when_run"].to_numpy() * 1e3,
+        "Per event": rows["seconds_per_event"].to_numpy() * 1e3,
         "Time per event": [memory.spark(_event_times(timing, name)) for name in order],
         "Initialize": rows["initialize_s"].to_numpy() * 1e3,
         "Finalize": rows["finalize_s"].to_numpy() * 1e3,
@@ -184,7 +184,9 @@ _TABLE_COLUMNS = {
     "Kind": st.column_config.TextColumn("Kind", width="small"),
     "Per event": st.column_config.NumberColumn(
         "Per event", format="%.2f ms",
-        help="Its own wall time per event it ran in, the warm-up left out.",
+        help="Its own wall time over the events, the warm-up left out, divided by all of "
+             "them, those it was skipped in counted: what it adds to the job's time per "
+             "event. Its time per event it ran in is on its tiles below.",
     ),
     "Time per event": st.column_config.LineChartColumn(
         "Time per event", width="medium", y_min=0,
@@ -238,8 +240,9 @@ def _select_component(
 
     st.markdown(
         "##### Components",
-        help="The slowest per event first; then the services and the algorithms run in "
-             "no event, by their initialization. "
+        help="The one that adds the most to an event first, the events it was skipped "
+             "in counted; then the services and the algorithms run in no event, by their "
+             "initialization. "
              "The sparklines are its time and its heap in each event. **⚠** marks a "
              "component Memory warns about: its heap grows and it keeps the gain after "
              "finalize, or it stepped up by 100 MB or more in an event and kept it. "

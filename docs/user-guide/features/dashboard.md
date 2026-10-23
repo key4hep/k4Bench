@@ -996,9 +996,11 @@ everything else the run could not record: reads with no recorded writer, and
 sources the run predates. Drag to pan, scroll to zoom, double-click to reset.
 
 **Components** answers "what is this component doing?" in charts. At its top,
-a table lists every algorithm and service of the configuration, the slowest
-per event first (then those run in no event, by their initialization): its own
-time per event it ran in and, as a sparkline, in each event; its
+a table lists every algorithm and service of the configuration, the one that
+adds the most to an event first (then those run in no event, by their
+initialization): its own time per event, the events it was skipped in counted,
+so a costly algorithm that rarely runs ranks by what it adds to the job, and
+its own time in each event it ran in as a sparkline; its
 initialization and finalization; the heap it held at an event's end and, as a
 sparkline, at each event's end (from the memory pass, where the run has one);
 and its package, with links to its code and to the package's repository at
