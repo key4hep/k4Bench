@@ -116,8 +116,7 @@ def test_an_algorithm_is_drawn_against_what_it_reads(monkeypatch, tmp_path):
     run = _reco_run(tmp_path)
     times = _write_source(run)
     at = _reco_page(monkeypatch, tmp_path, run)
-    assert at.session_state["reco_active_section"] == "Events"
-    assert at.button_group(key="reco_events_lens").value == "What drives the cost"
+    assert at.session_state["reco_active_section"] == "Correlations"
     # Both configurations on offer, the baseline drawn first.
     assert at.selectbox(key="corr_config").options == ["baseline", "variant_truth_tracking"]
     assert at.selectbox(key="corr_config").value == "baseline"
@@ -631,8 +630,7 @@ def test_a_click_on_an_algorithm_opens_it_in_components_and_goes_back(monkeypatc
     assert at.session_state["reco_component_name"] == "MyTruthTrackFinder"
     at.button(key="reco_component_back").click().run()
     assert not at.exception, at.exception
-    assert at.session_state["reco_active_section"] == "Events"
-    assert at.button_group(key="reco_events_lens").value == "What drives the cost"
+    assert at.session_state["reco_active_section"] == "Correlations"
     assert at.selectbox(key="corr_config").value == _VARIANT
     assert at.selectbox(key="corr_of").value == "Refit"
     assert at.text_input(key="corr_x").value == _GAPPED

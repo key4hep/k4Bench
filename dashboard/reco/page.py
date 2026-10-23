@@ -14,9 +14,10 @@ lens at its top chooses which (:func:`_lenses`):
 - **Components**: every algorithm on one map, and everything the run recorded
   of the one selected, which the other sections open by a click;
 - **Data Flow**: which algorithm feeds which;
-- **Events**: what an event's cost goes with (the Simulation page's
-  Correlations, each algorithm's costs on offer), or what the EDM4hep files the
-  job wrote take per event (Event Size);
+- **Correlations**: what an event's cost goes with, the Simulation page's
+  section with each algorithm's costs on offer;
+- **Event Size**: what the EDM4hep files the job wrote take per event, the
+  Simulation page's section;
 - **Machine Info** and **Logs**, the latter reading the log as Gaudi's.
 
 The k4Bench auditor writes each label's ``_events.json`` in the ddsim event
@@ -56,8 +57,6 @@ TIME_LENS = "reco_time_lens"
 TIME_LENSES = ("Phases and components", "Per event")
 MEMORY_LENS = "reco_memory_lens"
 MEMORY_LENSES = ("Heap by component", "Per event")
-EVENTS_LENS = "reco_events_lens"
-EVENTS_LENSES = ("What drives the cost", "Output size")
 
 
 def _efficiency_link(params: Mapping[str, str]) -> dict[str, str]:
@@ -131,16 +130,17 @@ def _logs(ctx: PageContext) -> None:
 RECO_PAGE = SuitePage(
     suite=RECO,
     sections=(
-        "Overview", "Time", "Memory", "Components", "Data Flow", "Events",
-        "Machine Info", "Logs",
+        "Overview", "Time", "Memory", "Components", "Data Flow", "Correlations",
+        "Event Size", "Machine Info", "Logs",
     ),
     # Like the Simulation Overview, it compares detectors across the window.
     remote_only=frozenset({"Overview"}),
     scopes={
         "Overview": SECTION_SCOPE["Overview"],
         **{name: SECTION_SCOPE["Region Timing"]
-           for name in ("Time", "Memory", "Components", "Data Flow", "Events")},
-        **{name: SECTION_SCOPE[name] for name in ("Machine Info", "Logs")},
+           for name in ("Time", "Memory", "Components", "Data Flow")},
+        **{name: SECTION_SCOPE[name]
+           for name in ("Correlations", "Event Size", "Machine Info", "Logs")},
     },
     renderers={
         "Overview": overview.render,
@@ -152,9 +152,8 @@ RECO_PAGE = SuitePage(
         )))),
         "Components": _warning_unreadable_components(component.render),
         "Data Flow": _warning_unreadable_components(dataflow.render),
-        "Events": _lenses(EVENTS_LENS, dict(zip(EVENTS_LENSES, (
-            _warning_unreadable_components(_correlations), RENDERERS["Event Size"],
-        )))),
+        "Correlations": _warning_unreadable_components(_correlations),
+        "Event Size": RENDERERS["Event Size"],
         "Machine Info": RENDERERS["Machine Info"],
         "Logs": _logs,
     },
@@ -162,7 +161,7 @@ RECO_PAGE = SuitePage(
     # No nightly report judges the reco suite yet.
     reports=False,
     components=True,
-    all_runs_sections=frozenset({"Time", "Memory", "Components", "Events"}),
+    all_runs_sections=frozenset({"Time", "Memory", "Components", "Event Size"}),
     # The sections the page had before its sections were grouped by question,
     # which links may still name.
     aliases={
@@ -171,8 +170,7 @@ RECO_PAGE = SuitePage(
         "Event Memory": ("Memory", {MEMORY_LENS: MEMORY_LENSES[1]}),
         "Efficiency": ("Components", _efficiency_link),
         "Component": ("Components", {}),
-        "Correlations": ("Events", {EVENTS_LENS: EVENTS_LENSES[0]}),
-        "Event Size": ("Events", {EVENTS_LENS: EVENTS_LENSES[1]}),
+        "Events": ("Correlations", {}),
     },
 )
 

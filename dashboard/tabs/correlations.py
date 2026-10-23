@@ -82,7 +82,7 @@ _EVENT_KEY = f"{_KEY}_event"
 _EVENT_CHART_KEY = f"{_KEY}_event_chart"
 #: The Reconstruction page's section this is drawn in, which the Components
 #: section, opened from it, offers to go back to.
-_SECTION = "Events"
+_SECTION = "Correlations"
 
 #: The costs of the chosen kind the matrix draws, costliest first, and the
 #: quantities it sets them against.

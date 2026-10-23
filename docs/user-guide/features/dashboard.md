@@ -287,7 +287,7 @@ Top to bottom:
   recorded nothing in it, has no bar and is counted under the chart. For time
   these are each algorithm's own time, not that of the algorithms it called:
   not a profile of the event, and they need not add up to its time. Click a
-  bar to open that algorithm in **Components**, whose **Back to Events**
+  bar to open that algorithm in **Components**, whose **Back to Correlations**
   returns to the plot as it was left. Switching configuration keeps the event,
   since every configuration reads the same input. A configuration whose
   algorithms were not audited shows the event's time alone.
@@ -878,13 +878,14 @@ choice at its top (in the URL too) says which:
 | **Memory** | Where does the memory go? | **Heap by component**: what each component holds, and what grows or steps up without being released; **Per event**: the process's RSS event by event | `*_heap.json`, `*_components.json`, `*_events.json` |
 | **Components** | What is this component doing? | one algorithm or service in charts: its time, IPC, allocations and heap, where it stands among the others, its data flow, and their history | `*_components.json`, `*_heap.json`, `*_dataflow.json` |
 | **Data Flow** | Who feeds whom? | which algorithm feeds which, through the collections it writes and a later one reads | `*_dataflow.json`, `*_components.json` |
-| **Events** | What makes an event expensive, and what does it write? | **What drives the cost**: each event's costs against what it holds; **Output size**: what each event of the EDM4hep files takes on disk | `event_source.json.gz`, `*_event_size.json`, `*_components.json` |
+| **Correlations** | What makes an event expensive? | each event's costs against what it holds, and one event's cost algorithm by algorithm | `event_source.json.gz`, `*_event_size.json`, `*_components.json`, `*_events.json` |
+| **Event Size** | What does each event write? | what each event of the EDM4hep files takes on disk | `*_event_size.json` |
 | **Machine Info** | Was the host fine? | the host the benchmark ran on | `machine_info.json` |
 | **Logs** | Did it fail, and why? | the k4run log, read as a Gaudi log, and the job options | `*.log`, `*_joboptions.opts` |
 
 A link to one of the page's former sections (Breakdown, Efficiency, Event
-Timing, Event Memory, Correlations, Event Size) opens the section and view it
-is now part of; an Efficiency link keeps its view and configuration. Where a run has a single configuration, the sections offer no
+Timing, Event Memory, Events) opens the section and view it is now part of,
+an Events link Correlations; an Efficiency link keeps its view and configuration. Where a run has a single configuration, the sections offer no
 **Configuration** choice.
 
 Each configuration's `_components.json` is read on its own. One that is
@@ -1112,10 +1113,10 @@ first, ranked by their mean time per event over the runs drawn: those the
 y axis unless **Log y axis** is switched off. They draw the algorithms whenever
 the window has their timing, even if the selected run has none.
 
-**Events**, looked at by **What drives the cost**, is the Simulation page's
-Correlations with each algorithm's time, instructions and allocations on
-offer beside the event's, for the configuration chosen above it, and one
-event of its plot opened to what each algorithm cost in it; by **Output size**, it is the Simulation page's Event
+**Correlations** is the Simulation page's Correlations with each
+algorithm's time, instructions and allocations on offer beside the event's,
+for the configuration chosen above it, and one event of its plot opened to
+what each algorithm cost in it. **Event Size** is the Simulation page's Event
 Size, for the EDM4hep files the k4run job wrote.
 
 **Logs** reads the log's Gaudi and Marlin severities rather than the word

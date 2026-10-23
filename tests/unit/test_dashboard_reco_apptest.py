@@ -82,7 +82,8 @@ def test_a_local_run_opens_on_the_time(monkeypatch, tmp_path):
     at = _page(monkeypatch, tmp_path, RECO_RUN)
     assert at.session_state["reco_active_section"] == "Time"
     assert at.button_group[0].options == [
-        "Time", "Memory", "Components", "Data Flow", "Events", "Machine Info", "Logs",
+        "Time", "Memory", "Components", "Data Flow", "Correlations", "Event Size",
+        "Machine Info", "Logs",
     ]
 
 
@@ -91,8 +92,7 @@ def test_a_local_run_opens_on_the_time(monkeypatch, tmp_path):
     ("event timing", "Time", ("reco_time_lens", "Per event")),
     ("Event Memory", "Memory", ("reco_memory_lens", "Per event")),
     ("Efficiency", "Components", None),
-    ("Correlations", "Events", ("reco_events_lens", "What drives the cost")),
-    ("Event Size", "Events", ("reco_events_lens", "Output size")),
+    ("Events", "Correlations", None),
 ])
 def test_a_link_to_a_former_section_opens_where_it_now_is(monkeypatch, tmp_path, tab, section, lens):
     at = _page(monkeypatch, tmp_path, RECO_RUN, tab)
@@ -933,7 +933,7 @@ _UNREADABLE_VARIANT = (
 
 
 @pytest.mark.parametrize("section", [
-    "Time", "Memory", "Components", "Data Flow", "Event Timing", "Events",
+    "Time", "Memory", "Components", "Data Flow", "Event Timing", "Correlations",
 ])
 def test_a_malformed_component_file_is_named_in_every_section_reading_one(
     monkeypatch, tmp_path, section,
