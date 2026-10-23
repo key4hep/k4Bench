@@ -32,6 +32,7 @@ import streamlit as st
 from data import cached_load_event_size, cached_load_event_source
 from k4bench.analysis.components import ComponentTiming
 from k4bench.analysis.event_drivers import (
+    PEAK_METRICS,
     WARM_UP_EVENT,
     WHOLE_EVENT,
     EventTable,
@@ -546,7 +547,8 @@ def _event_detail(
     costs = pd.Series({m.name: m.values.get(event, float("nan")) for m in algorithms}) * scale
     typical = pd.Series({m.name: float(m.values.median()) for m in algorithms}) * scale
     title = f"{metric[:1].upper()}{metric[1:]} in event {event}" + (f" ({unit})" if unit else "")
-    fig = plot_event_costs(costs, typical, title=title, highlight=measure.name)
+    fig = plot_event_costs(costs, typical, title=title, highlight=measure.name,
+                           additive=metric not in PEAK_METRICS)
     if fig is None:
         st.caption(f"No algorithm of **{config}** has a {metric} in event {event}.")
         return event

@@ -135,9 +135,12 @@ Renderer = Callable[[PageContext], SectionScope | None]
 #: A section's old name, and the section and the widget values it now opens
 #: on: ``{old name: (section, {widget key: value})}``; the values may instead
 #: be a function of the link's parameters, for a section whose own controls
-#: were renamed.
+#: were renamed, and so may the section, for one split into several.
 Aliases = Mapping[
-    str, tuple[str, Mapping[str, str] | Callable[[Mapping[str, str]], Mapping[str, str]]],
+    str, tuple[
+        str | Callable[[Mapping[str, str]], str],
+        Mapping[str, str] | Callable[[Mapping[str, str]], Mapping[str, str]],
+    ],
 ]
 
 
@@ -166,6 +169,8 @@ def current_section(
         )
         if matched is None and alias is not None:
             matched, values = alias
+            if callable(matched):
+                matched = matched(st.query_params)
             if callable(values):
                 values = values(st.query_params)
             for widget, value in values.items():

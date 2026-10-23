@@ -51,7 +51,7 @@ from pathlib import PurePath
 import numpy as np
 import pandas as pd
 
-from k4bench.analysis.components import ComponentTiming
+from k4bench.analysis.components import INCLUSIVE_METRICS, ComponentTiming
 from k4bench.analysis.event_size import OutputFile
 from k4bench.analysis.event_source import EventSource
 from k4bench.analysis.expression import evaluate
@@ -383,6 +383,10 @@ MEASURE_METRICS = {
     # Includes the calls it made: a sequencer's is its children's largest.
     "peak_heap_bytes": ("peak heap (incl. nested calls)", "B"),
 }
+
+#: The metrics of :data:`MEASURE_METRICS`, as read, each of which is a call's
+#: largest and no count: summed over algorithms, they are the cost of nothing.
+PEAK_METRICS = frozenset(MEASURE_METRICS[m][0] for m in INCLUSIVE_METRICS if m in MEASURE_METRICS)
 
 WHOLE_EVENT = "Whole event"
 

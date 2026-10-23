@@ -71,6 +71,24 @@ def test_an_events_costs_are_drawn_largest_first_the_rest_as_other():
     assert list(fig.layout.yaxis.categoryarray) == ["b", "d", "a", "Other (1)"]
 
 
+def test_the_highlighted_algorithm_is_named_however_small_its_cost():
+    costs = pd.Series({f"alg{i}": float(20 - i) for i in range(20)})
+    fig = plot_event_costs(costs, costs, title="t", highlight="alg19")
+    bars, other, median = fig.data
+    assert list(bars.y) == [f"alg{i}" for i in range(14)] + ["alg19"]
+    assert list(bars.marker.color) == [_BLUE] * 14 + [_RED]
+    assert bars.customdata[-1][0] == "alg19" and median.y[-1] == "alg19"
+    # alg14 to alg18.
+    assert other.y == ("Other (5)",) and other.x == (sum(range(2, 7)),)
+
+
+def test_peaks_left_out_are_their_largest_not_their_sum():
+    costs = pd.Series({"a": 9.0, "b": 4.0, "c": 3.0, "d": 2.0})
+    fig = plot_event_costs(costs, costs, title="t", top_n=1, additive=False)
+    other = fig.data[1]
+    assert other.y == ("Other (3), largest",) and other.x == (4.0,)
+
+
 def test_an_event_no_algorithm_has_a_cost_in_draws_nothing():
     costs = pd.Series({"a": float("nan")})
     assert plot_event_costs(costs, pd.Series({"a": 1.0}), title="t") is None

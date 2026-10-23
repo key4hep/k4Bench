@@ -102,6 +102,17 @@ def test_a_link_to_a_former_section_opens_where_it_now_is(monkeypatch, tmp_path,
         assert at.button_group(key=key).value == value
 
 
+@pytest.mark.parametrize(("lens", "section"), [
+    ("What drives the cost", "Correlations"),
+    ("Output size", "Event Size"),
+])
+def test_a_link_to_the_former_events_opens_the_section_its_lens_showed(
+    monkeypatch, tmp_path, lens, section,
+):
+    at = _page(monkeypatch, tmp_path, RECO_RUN, "Events", {"reco_events_lens": lens})
+    assert at.session_state["reco_active_section"] == section
+
+
 def test_a_link_to_the_former_efficiency_opens_its_configuration(monkeypatch, tmp_path):
     at = _page(monkeypatch, tmp_path, RECO_RUN, "Efficiency", {
         "reco_efficiency_view": "Current Run",

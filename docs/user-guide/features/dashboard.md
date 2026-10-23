@@ -885,7 +885,7 @@ choice at its top (in the URL too) says which:
 
 A link to one of the page's former sections (Breakdown, Efficiency, Event
 Timing, Event Memory, Events) opens the section and view it is now part of,
-an Events link Correlations; an Efficiency link keeps its view and configuration. Where a run has a single configuration, the sections offer no
+an Events link Correlations, or Event Size where it showed the output size; an Efficiency link keeps its view and configuration. Where a run has a single configuration, the sections offer no
 **Configuration** choice.
 
 Each configuration's `_components.json` is read on its own. One that is

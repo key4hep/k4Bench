@@ -83,16 +83,22 @@ def plot_event_costs(
     title: str,
     highlight: str | None = None,
     top_n: int = 15,
+    additive: bool = True,
 ) -> go.Figure | None:
     """One event's cost of each algorithm of *costs* (indexed by name) as a
-    bar, the largest at the top: the *top_n* largest named, the rest one
-    "Other". Across each named bar a tick at its *typical* cost; *highlight*'s
-    bar in red. The named bars carry their algorithm's name as
-    ``customdata[0]``, "Other" none. ``None`` when no algorithm has a cost."""
+    bar, the largest at the top: the *top_n* largest named, *highlight* among
+    them however small, the rest one "Other", their sum, or their largest
+    unless the costs are *additive*. Across each named bar a tick at its
+    *typical* cost; *highlight*'s bar in red. The named bars carry their
+    algorithm's name as ``customdata[0]``, "Other" none. ``None`` when no
+    algorithm has a cost."""
     costs = costs.dropna().sort_values(ascending=False, kind="stable")
     if costs.empty:
         return None
-    named, rest = costs.iloc[:top_n], costs.iloc[top_n:]
+    shown = costs.index[:top_n]
+    if highlight in costs.index and highlight not in shown:
+        shown = shown[:top_n - 1].append(pd.Index([highlight]))
+    named, rest = costs[costs.index.isin(shown)], costs[~costs.index.isin(shown)]
     names = list(named.index)
     median = typical.reindex(names)
     fig = go.Figure(go.Bar(
@@ -104,10 +110,10 @@ def plot_event_costs(
         showlegend=False,
     ))
     if len(rest):
-        other = f"Other ({len(rest)})"
+        other = f"Other ({len(rest)})" if additive else f"Other ({len(rest)}), largest"
         names.append(other)
         fig.add_trace(go.Bar(
-            x=[float(rest.sum())], y=[other], orientation="h",
+            x=[float(rest.sum() if additive else rest.max())], y=[other], orientation="h",
             marker=dict(color=_OTHER_COLOR, line=dict(width=0)),
             hovertemplate=f"{other}: " + "%{x:.4g}<extra></extra>", showlegend=False,
         ))
