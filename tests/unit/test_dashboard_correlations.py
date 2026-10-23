@@ -43,11 +43,12 @@ def _reco_app(dashboard_dir) -> None:
 
 def _write_source(
     run: Path, events: int = _EVENTS, origin: str = "recorded", follow: str = "VXDBarrelDigitiser",
-    numbered: bool = False,
+    numbered: bool = False, first_number: int = 0,
 ) -> list[float]:
     """An event source whose input's vertex hits follow the time of
     algorithm *follow* event by event, and whose events hold 1 to 4 charged
-    pions, each with its EventHeader if *numbered*; that algorithm's times."""
+    pions, each with its EventHeader if *numbered*, numbered from
+    *first_number*; that algorithm's times."""
     wall = load_component_timing(RECO_RUN)["baseline"].execute["wall_s"][follow]
     times = wall.iloc[:events].tolist()
     ranks = {t: i for i, t in enumerate(sorted(times))}
@@ -69,7 +70,10 @@ def _write_source(
         ]},
     }
     if numbered:
-        record["event_headers"] = {"event_number": list(range(events)), "run_number": [0] * events}
+        record["event_headers"] = {
+            "event_number": list(range(first_number, first_number + events)),
+            "run_number": [0] * events,
+        }
     (run / "event_source.json.gz").write_bytes(gzip.compress(json.dumps(record).encode()))
     return times
 
@@ -444,6 +448,226 @@ def test_a_configuration_whose_component_file_is_unreadable_has_its_event_time_a
     # Its 100 events, not the source's 12: no matrix or plot, and why.
     assert any("profiling counted 100 events" in w.value for w in at.warning)
     assert not _charts(at)
+
+
+def _clicking_app(dashboard_dir) -> None:
+    """The Reconstruction page, whose charts can be clicked: a
+    ``session_state["fake_click"]`` of ``(chart key, curve, point)`` calls
+    that chart's selection callback before the page is drawn, as Streamlit
+    calls it after a click, with the click on that point of that curve of
+    the figure drawn."""
+    import sys as _sys
+    from types import SimpleNamespace
+    if dashboard_dir not in _sys.path:
+        _sys.path.insert(0, dashboard_dir)
+    import streamlit as st
+    from reco import _inspect, page
+
+    if (click := st.session_state.pop("fake_click", None)) is not None:
+        chart, curve, point = click
+        event = SimpleNamespace(selection={"points": [{"curve_number": curve, "point_index": point}]})
+        real_clicked = _inspect.clicked_name
+        _inspect.clicked_name = lambda _event, fig: real_clicked(event, fig)
+        try:
+            st.session_state["callbacks"][chart]()
+        finally:
+            _inspect.clicked_name = real_clicked
+
+    real_chart = st.plotly_chart
+
+    def plotly_chart(fig, *args, **kwargs):
+        if callable(kwargs.get("on_select")):
+            chart = kwargs["key"].rsplit("_", 1)[0]
+            st.session_state.setdefault("callbacks", {})[chart] = kwargs["on_select"]
+        return real_chart(fig, *args, **kwargs)
+
+    st.plotly_chart = plotly_chart
+    try:
+        page.main()
+    finally:
+        st.plotly_chart = real_chart
+
+
+#: Real for the events with 3 or 4 of the source's 1 to 4 pions, the
+#: others missing from the plot: a point's place is not its event.
+_GAPPED = "sqrt(count(final) - 2.5)"
+_PLOTTED = [2, 3, 6, 7, 10, 11]
+
+
+def _audited_events(run: Path, label: str) -> list[float]:
+    """Make *label*'s events file hold the auditor's events, as a real job's
+    does (the fixture's holds 100); their times."""
+    path = run / f"{label}_events.json"
+    record = json.loads(path.read_text())
+    record = {k: v[:_EVENTS] if isinstance(v, list) else v for k, v in record.items()}
+    path.write_text(json.dumps(record))
+    return record["event_times_s"]
+
+
+def _clicking_page(monkeypatch, tmp_path, run: Path, params=None) -> AppTest:
+    _local_env(monkeypatch, run, tmp_path / "cache")
+    at = AppTest.from_function(_clicking_app, args=(str(_DASHBOARD_DIR),), default_timeout=60)
+    at.query_params["tab"] = "Correlations"
+    for key, value in (params or {}).items():
+        at.query_params[key] = value
+    at.run()
+    assert not at.exception, at.exception
+    return at
+
+
+def _click(at: AppTest, chart: str, curve: int, point: int) -> AppTest:
+    at.session_state["fake_click"] = (chart, curve, point)
+    at.run()
+    assert not at.exception, at.exception
+    return at
+
+
+def _chart(at: AppTest, key: str) -> dict:
+    """The chart drawn under *key*, whatever its nonce."""
+    return next(json.loads(c.proto.spec) for c in at.get("plotly_chart")
+                if f"-{key}_" in c.proto.id)
+
+
+def _refit_against_gaps(monkeypatch, tmp_path, **source) -> tuple[AppTest, Path]:
+    run = _reco_run(tmp_path)
+    _write_source(run, **source)
+    at = _clicking_page(monkeypatch, tmp_path, run, {"corr_of": "Refit", "corr_x": _GAPPED})
+    assert [int(e) for e in _values(_chart(at, "corr_chart")["data"][0]["customdata"])] == _PLOTTED
+    return at, run
+
+
+def test_a_click_on_a_point_shows_its_event_not_the_one_at_its_place(monkeypatch, tmp_path):
+    at, _ = _refit_against_gaps(monkeypatch, tmp_path)
+    assert at.selectbox(key="corr_event").value is None
+    with pytest.raises(StopIteration):
+        _chart(at, "corr_event_chart")
+    # The third point is event 6.
+    _click(at, "corr_chart", 0, 2)
+    assert at.selectbox(key="corr_event").value == 6
+    assert "Event **6** of **baseline**, entry 6 of `sim.edm4hep.root`" in _caption_text(at)
+    # Ringed on the plot, at its point.
+    ring = _chart(at, "corr_chart")["data"][-1]
+    assert ring["marker"]["symbol"] == "circle-open"
+    assert _values(ring["y"]) == pytest.approx([_wall("baseline", "Refit")[6] * 1e3])
+    # Each algorithm's own time in that event, of that configuration, the
+    # largest first, the one plotted in red.
+    bars = _chart(at, "corr_event_chart")["data"][0]
+    wall = load_component_timing(RECO_RUN)["baseline"].execute["wall_s"].loc[6]
+    names = [row[0] for row in bars["customdata"]]
+    assert _values(bars["x"]) == pytest.approx([wall[n] * 1e3 for n in names])
+    assert _values(bars["x"]) == sorted(_values(bars["x"]), reverse=True)
+    assert names[0] == wall.dropna().idxmax()
+    assert [c for n, c in zip(names, bars["marker"]["color"]) if c == "#d62728"] == ["#d62728"]
+    assert bars["marker"]["color"][names.index("Refit")] == "#d62728"
+
+
+def test_a_click_on_the_trend_line_or_a_ring_shows_no_event(monkeypatch, tmp_path):
+    at, _ = _refit_against_gaps(monkeypatch, tmp_path)
+    for curve in range(1, len(_chart(at, "corr_chart")["data"])):
+        _click(at, "corr_chart", curve, 0)
+        assert at.selectbox(key="corr_event").value is None
+    # Nor does the ring of the event shown: it stays shown.
+    _click(at, "corr_chart", 0, 2)
+    assert _chart(at, "corr_chart")["data"][-1]["name"] == "Selected"
+    _click(at, "corr_chart", len(_chart(at, "corr_chart")["data"]) - 1, 0)
+    assert at.selectbox(key="corr_event").value == 6
+
+
+def test_an_event_is_chosen_by_its_number_and_a_link_names_it(monkeypatch, tmp_path):
+    run = _reco_run(tmp_path)
+    _write_source(run)
+    times = _audited_events(run, "baseline")
+    at = _clicking_page(monkeypatch, tmp_path, run,
+                        {"corr_of": "Refit", "corr_x": "n_VertexBarrelCollection",
+                         "corr_event": "4"})
+    # Every event the job counted but the warm-up.
+    assert at.selectbox(key="corr_event").options == [str(e) for e in range(1, _EVENTS)]
+    assert at.selectbox(key="corr_event").value == 4
+    # The event's time beside the algorithm's, from the same job.
+    text = _caption_text(at)
+    assert f"Event time: {times[4]:.3g} s" in text
+    # Over a second, in seconds.
+    refit = _wall("baseline", "Refit")[4]
+    assert refit > 1 and f"Refit time: {refit:.3g} s" in text
+    at.selectbox(key="corr_event").set_value(9).run()
+    assert "Event **9** of **baseline**" in _caption_text(at)
+
+
+@pytest.mark.parametrize("asked", ["0", "99", "x"])
+def test_an_event_the_plot_has_not_is_not_shown(monkeypatch, tmp_path, asked):
+    run = _reco_run(tmp_path)
+    _write_source(run)
+    at = _clicking_page(monkeypatch, tmp_path, run,
+                        {"corr_of": "Refit", "corr_x": "n_VertexBarrelCollection",
+                         "corr_event": asked})
+    assert at.selectbox(key="corr_event").value is None
+    with pytest.raises(StopIteration):
+        _chart(at, "corr_event_chart")
+
+
+def test_another_configuration_shows_the_same_event_with_its_own_costs(monkeypatch, tmp_path):
+    at, _ = _refit_against_gaps(monkeypatch, tmp_path)
+    _click(at, "corr_chart", 0, 2)
+    at.selectbox(key="corr_config").set_value(_VARIANT).run()
+    assert not at.exception, at.exception
+    # Every configuration reads the same input: event 6 is the same event.
+    assert at.selectbox(key="corr_event").value == 6
+    assert f"Event **6** of **{_VARIANT}**" in _caption_text(at)
+    bars = _chart(at, "corr_event_chart")["data"][0]
+    wall = load_component_timing(RECO_RUN)[_VARIANT].execute["wall_s"].loc[6]
+    names = [row[0] for row in bars["customdata"]]
+    assert "MyTruthTrackFinder" in names and "MyConformalTracking" not in names
+    assert _values(bars["x"]) == pytest.approx([wall[n] * 1e3 for n in names])
+
+
+def test_a_click_on_an_algorithm_opens_it_in_components_and_goes_back(monkeypatch, tmp_path):
+    at, _ = _refit_against_gaps(monkeypatch, tmp_path)
+    at.selectbox(key="corr_config").set_value(_VARIANT).run()
+    _click(at, "corr_chart", 0, 2)
+    names = [row[0] for row in _chart(at, "corr_event_chart")["data"][0]["customdata"]]
+    _click(at, "corr_event_chart", 0, names.index("MyTruthTrackFinder"))
+    assert at.session_state["reco_active_section"] == "Components"
+    assert at.selectbox(key="reco_component_config").value == _VARIANT
+    assert at.session_state["reco_component_name"] == "MyTruthTrackFinder"
+    at.button(key="reco_component_back").click().run()
+    assert not at.exception, at.exception
+    assert at.session_state["reco_active_section"] == "Events"
+    assert at.button_group(key="reco_events_lens").value == "What drives the cost"
+    assert at.selectbox(key="corr_config").value == _VARIANT
+    assert at.selectbox(key="corr_of").value == "Refit"
+    assert at.text_input(key="corr_x").value == _GAPPED
+    assert at.selectbox(key="corr_event").value == 6
+
+
+def test_the_events_entry_and_its_eventheader_are_told_apart(monkeypatch, tmp_path):
+    at, _ = _refit_against_gaps(monkeypatch, tmp_path, numbered=True, first_number=1000)
+    _click(at, "corr_chart", 0, 2)
+    assert ("Event **6** of **baseline**, entry 6 of `sim.edm4hep.root` "
+            "(EventHeader event 1006, run 0)") in _caption_text(at)
+
+
+def test_an_event_without_a_value_of_the_expression_says_so(monkeypatch, tmp_path):
+    at, _ = _refit_against_gaps(monkeypatch, tmp_path)
+    # Event 5 holds 2 pions: it is no point, but can be chosen.
+    at.selectbox(key="corr_event").set_value(5).run()
+    assert f"{_GAPPED}: no value" in _caption_text(at)
+    assert _chart(at, "corr_event_chart")
+
+
+def test_a_configuration_without_audited_algorithms_shows_the_events_time_alone(
+    monkeypatch, tmp_path,
+):
+    run = _reco_run(tmp_path)
+    _write_source(run)
+    times = _audited_events(run, _VARIANT)
+    (run / f"{_VARIANT}_components.json").write_text("{not json")
+    at = _clicking_page(monkeypatch, tmp_path, run, {"corr_config": _VARIANT, "corr_event": "3"})
+    assert at.selectbox(key="corr_of").options == ["Whole event"]
+    text = _caption_text(at)
+    assert f"Event time: {times[3]:.3g} s" in text
+    assert f"No algorithm of **{_VARIANT}** was audited" in text
+    with pytest.raises(StopIteration):
+        _chart(at, "corr_event_chart")
 
 
 _RESULTS_HEADER = (

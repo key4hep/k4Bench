@@ -273,6 +273,24 @@ Top to bottom:
   above it): their event number, the line's value and how far above it they
   lie. Above that
   line, which is not to say expensive for everything they hold.
+- In reconstruction, **One event**: an event of the plot, chosen by a click on
+  its point or by its **Event** number (a link keeps it, as
+  `corr_event=<number>`), ringed on the plot. Its number is the job's own
+  count of the events it processed, which is the entry of its input it read;
+  the line beside it names that entry of the input file and, where the input
+  has an EventHeader, the event and run number it gives, which can differ. It
+  also gives the event's value of the cost and of the expression (or that it
+  has none) and, for time, the whole event's. Below, a bar per algorithm: its
+  own cost in that event, of the metric drawn, the largest first, the one
+  plotted in red, the rest folded into "Other", with a tick at its median over
+  the events it ran in. An algorithm that did not run in the event, or
+  recorded nothing in it, has no bar and is counted under the chart. For time
+  these are each algorithm's own time, not that of the algorithms it called:
+  not a profile of the event, and they need not add up to its time. Click a
+  bar to open that algorithm in **Components**, whose **Back to Events**
+  returns to the plot as it was left. Switching configuration keeps the event,
+  since every configuration reads the same input. A configuration whose
+  algorithms were not audited shows the event's time alone.
 
 The warm-up event is left out. The events are matched to what they hold by
 their position in the job's files; a run whose profiling counted other events,
@@ -1096,7 +1114,8 @@ the window has their timing, even if the selected run has none.
 
 **Events**, looked at by **What drives the cost**, is the Simulation page's
 Correlations with each algorithm's time, instructions and allocations on
-offer beside the event's, for the configuration chosen above it; by **Output size**, it is the Simulation page's Event
+offer beside the event's, for the configuration chosen above it, and one
+event of its plot opened to what each algorithm cost in it; by **Output size**, it is the Simulation page's Event
 Size, for the EDM4hep files the k4run job wrote.
 
 **Logs** reads the log's Gaudi and Marlin severities rather than the word

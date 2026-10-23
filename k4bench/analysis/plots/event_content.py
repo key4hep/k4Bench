@@ -1,5 +1,6 @@
 """A per-event cost against what each event holds: one point per event
-(:func:`plot_event_content`, from :func:`~k4bench.analysis.event_drivers.paired`)."""
+(:func:`plot_event_content`, from :func:`~k4bench.analysis.event_drivers.paired`),
+and what each algorithm cost in one of them (:func:`plot_event_costs`)."""
 
 from __future__ import annotations
 
@@ -7,10 +8,13 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-from ._theme import _BLUE, _RED, _TEMPLATE
+from ._theme import _BLUE, _OTHER_COLOR, _RED, _TEMPLATE
 
 #: Points the trend line is drawn through.
 _LINE_POINTS = 200
+
+#: The mark of the event selected, and of each algorithm's median.
+_INK = "#222222"
 
 
 def plot_event_content(
@@ -21,10 +25,13 @@ def plot_event_content(
     line=None,
     above: pd.DataFrame | None = None,
     log_y: bool = False,
+    selected: int | None = None,
 ) -> go.Figure | None:
     """Each event of *pairs* (``x``, ``y``, indexed by event) as a point. With *line* (a
     :class:`~k4bench.analysis.event_drivers.Trend`), the line is drawn and
-    the events of *above* ringed. ``None`` when there is nothing to draw."""
+    the events of *above* ringed; the event *selected* is marked. Only the
+    points carry ``customdata``, their event. ``None`` when there is nothing
+    to draw."""
     if pairs.empty:
         return None
     events = pairs.index.to_numpy()
@@ -54,12 +61,67 @@ def plot_event_content(
                 marker=dict(size=15, color="rgba(0,0,0,0)", line=dict(color=_RED, width=2)),
                 name="Above the trend", hoverinfo="skip", showlegend=False,
             ))
+    if selected is not None and selected in pairs.index:
+        fig.add_trace(go.Scatter(
+            x=[pairs.at[selected, "x"]], y=[pairs.at[selected, "y"]], mode="markers",
+            marker=dict(size=20, symbol="circle-open", color=_INK, line=dict(width=2.5)),
+            name="Selected", hoverinfo="skip", showlegend=False,
+        ))
     fig.update_layout(
         template=_TEMPLATE, height=480, margin=dict(l=20, r=20, t=30, b=10),
     )
     fig.update_xaxes(title_text=x_label)
     fig.update_yaxes(title_text=y_label, type="log" if log_y else "linear",
                      rangemode="normal" if log_y else "tozero")
+    return fig
+
+
+def plot_event_costs(
+    costs: pd.Series,
+    typical: pd.Series,
+    *,
+    title: str,
+    highlight: str | None = None,
+    top_n: int = 15,
+) -> go.Figure | None:
+    """One event's cost of each algorithm of *costs* (indexed by name) as a
+    bar, the largest at the top: the *top_n* largest named, the rest one
+    "Other". Across each named bar a tick at its *typical* cost; *highlight*'s
+    bar in red. The named bars carry their algorithm's name as
+    ``customdata[0]``, "Other" none. ``None`` when no algorithm has a cost."""
+    costs = costs.dropna().sort_values(ascending=False, kind="stable")
+    if costs.empty:
+        return None
+    named, rest = costs.iloc[:top_n], costs.iloc[top_n:]
+    names = list(named.index)
+    median = typical.reindex(names)
+    fig = go.Figure(go.Bar(
+        x=named.to_numpy(), y=names, orientation="h",
+        marker=dict(color=[_RED if n == highlight else _BLUE for n in names], line=dict(width=0)),
+        customdata=[(n, m) for n, m in zip(names, median)],
+        hovertemplate=("<b>%{customdata[0]}</b><br>%{x:.4g} in this event<br>"
+                       "median %{customdata[1]:.4g}<extra></extra>"),
+        showlegend=False,
+    ))
+    if len(rest):
+        other = f"Other ({len(rest)})"
+        names.append(other)
+        fig.add_trace(go.Bar(
+            x=[float(rest.sum())], y=[other], orientation="h",
+            marker=dict(color=_OTHER_COLOR, line=dict(width=0)),
+            hovertemplate=f"{other}: " + "%{x:.4g}<extra></extra>", showlegend=False,
+        ))
+    fig.add_trace(go.Scatter(
+        x=median.to_numpy(), y=list(median.index), mode="markers",
+        marker=dict(symbol="line-ns", size=18, line=dict(width=2, color=_INK)),
+        name="Median", hoverinfo="skip", showlegend=False,
+    ))
+    fig.update_layout(
+        template=_TEMPLATE, height=70 + 24 * len(names), bargap=0.25,
+        margin=dict(l=10, r=20, t=10, b=10),
+    )
+    fig.update_xaxes(title_text=title, rangemode="tozero", tickformat=",~g")
+    fig.update_yaxes(categoryorder="array", categoryarray=names, autorange="reversed")
     return fig
 
 

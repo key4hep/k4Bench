@@ -17,9 +17,12 @@ costliest costs of that metric against the quantities most associated with
 them, each square coloured and sized by their rank correlation, a click
 plotting it; one row choosing the cost to plot (Of), the expression it is
 plotted against and a log y axis; what an expression can use, with examples
-that work for the run; the scatter with its robust trend line; and the events
-well above that line. The warm-up event is left out, as in the other per-event
-views.
+that work for the run; the scatter with its robust trend line; the events
+well above that line; and, in reconstruction, one event of the scatter, chosen
+by a click on its point or by its number: which entry of the input it is, its
+values plotted, and what each algorithm cost in it of the metric drawn, a
+click on one opening it in Components. The warm-up event is left out, as in
+the other per-event views.
 """
 from __future__ import annotations
 
@@ -29,6 +32,7 @@ import streamlit as st
 from data import cached_load_event_size, cached_load_event_source
 from k4bench.analysis.components import ComponentTiming
 from k4bench.analysis.event_drivers import (
+    WARM_UP_EVENT,
     WHOLE_EVENT,
     EventTable,
     Measure,
@@ -45,9 +49,14 @@ from k4bench.analysis.event_drivers import (
 from k4bench.analysis.event_source import PARTICLE_FIELDS
 from k4bench.analysis.expression import MAX_LENGTH, ExpressionError
 from k4bench.analysis.loader import failed_config_mask, judgeable_config_data
-from k4bench.analysis.plots.event_content import plot_association_matrix, plot_event_content
+from k4bench.analysis.plots.event_content import (
+    plot_association_matrix,
+    plot_event_content,
+    plot_event_costs,
+)
 from k4bench.labels import BASELINE_LABEL
 from reco._controls import select_config
+from reco._inspect import clickable_chart
 from sections import SectionScope
 from ui_chrome import drop_stale_selection
 
@@ -67,6 +76,13 @@ _MATRIX_KEY = f"{_KEY}_matrix"
 #: A cost and expression a click on the matrix chose, applied on the rerun it
 #: starts, before the selectors they set are drawn.
 _PENDING_KEY = f"{_KEY}_pending"
+_CHART_KEY = f"{_KEY}_chart"
+#: The event shown on its own, and the chart of its algorithms.
+_EVENT_KEY = f"{_KEY}_event"
+_EVENT_CHART_KEY = f"{_KEY}_event_chart"
+#: The Reconstruction page's section this is drawn in, which the Components
+#: section, opened from it, offers to go back to.
+_SECTION = "Events"
 
 #: The costs of the chosen kind the matrix draws, costliest first, and the
 #: quantities it sets them against.
@@ -244,7 +260,7 @@ def render(
             st.caption(" ".join(notes))
 
     _matrix(of_metric, table, (measure.name, _column_of(table, expression)))
-    _plot(of_metric, table)
+    _plot(of_metric, table, config if reco else None)
     return None
 
 
@@ -294,17 +310,28 @@ def _scale(measure: Measure) -> tuple[float, str]:
     return _UNITS.get(measure.unit, (1.0, measure.unit))
 
 
+def _named(measure: Measure) -> str:
+    """What *measure* is: ``Event time``, ``Refit instructions``."""
+    if measure.name == WHOLE_EVENT:
+        return f"Event {measure.metric}"
+    return f"{measure.name} {measure.metric}"
+
+
 def _axis_title(measure: Measure) -> str:
     _, unit = _scale(measure)
-    what = measure.metric if measure.name == WHOLE_EVENT else f"{measure.name} {measure.metric}"
-    title = f"Event {what}" if measure.name == WHOLE_EVENT else what
+    title = _named(measure)
     return f"{title} ({unit})" if unit else title
 
 
 def _per_event(measure: Measure) -> str:
     """*measure*'s mean per event as a reader takes it in."""
+    return _written(float(measure.values.mean()), measure)
+
+
+def _written(value: float, measure: Measure) -> str:
+    """*value*, one of *measure*'s, as a reader takes it in."""
     scale, unit = _scale(measure)
-    value = float(measure.values.mean()) * scale
+    value *= scale
     if unit == "ms" and value >= 1e3:
         return f"{value / 1e3:.3g} s"
     return f"{value:.3g} {unit}".strip() if unit else f"{value:.3g}"
@@ -394,9 +421,10 @@ def _examples(table: EventTable) -> dict[str, str]:
     return examples
 
 
-def _plot(measures: list[Measure], table: EventTable) -> None:
+def _plot(measures: list[Measure], table: EventTable, config: str | None = None) -> None:
     """The plot row (the cost, the expression, the log y axis), the
-    reference, the scatter and the events above its trend."""
+    reference, the scatter and the events above its trend; with *config*, a
+    reconstruction configuration, also one event of the scatter on its own."""
     names = [m.name for m in measures]
     of_col, x_col, log_col = st.columns(
         [3, 8, 1.4], gap="small", vertical_alignment="bottom",
@@ -437,14 +465,11 @@ def _plot(measures: list[Measure], table: EventTable) -> None:
     pairs["y"] *= scale
     line = trend(pairs["x"], pairs["y"])
     above = above_trend(pairs, line) if line is not None else None
-    fig = plot_event_content(
-        pairs, x_label=x_label, y_label=_axis_title(measure),
-        line=line, above=above, log_y=log_y,
-    )
-    if fig is None:
+    if pairs.empty:
         st.info("No event has both values.")
         return
-    st.plotly_chart(fig, width="stretch", key=f"{_KEY}_chart")
+    # Filled last, once the event shown on its own, which it marks, is known.
+    chart = st.container()
     notes = []
     if missing := len(measure.values) - len(pairs):
         notes.append(f"{missing} of {len(measure.values)} events have no value of {x_label}.")
@@ -454,6 +479,111 @@ def _plot(measures: list[Measure], table: EventTable) -> None:
         st.caption(" ".join(notes))
     if above is not None and not above.empty:
         _above_table(above, x_label, _axis_title(measure))
+    event = None if config is None else _event_detail(measures, measure, table, x, x_label, config)
+    fig = plot_event_content(
+        pairs, x_label=x_label, y_label=_axis_title(measure),
+        line=line, above=above, log_y=log_y, selected=event,
+    )
+    with chart:
+        if config is None:
+            st.plotly_chart(fig, width="stretch", key=_CHART_KEY)
+        else:
+            # A point carries its event's number, whatever its place.
+            clickable_chart(fig, _CHART_KEY, config, _SECTION, on_click=_choose_event,
+                            width="stretch")
+
+
+def _choose_event(event: str) -> None:
+    st.session_state[_EVENT_KEY] = int(event)
+
+
+_EVENT_HELP = (
+    "One event of the plot, chosen by a click on its point or by its number: the "
+    "job's own count of the events it processed, the warm-up 0 left out, which is "
+    "the entry of its input the job read; the input's EventHeader may number it "
+    "otherwise. Each bar is an algorithm's own cost in this event, of the metric "
+    "drawn: for time, its own time, without the algorithms it called, so the bars "
+    "are no profile of the event and need not add up to its time. The tick across "
+    "a bar is that algorithm's median over the events it ran in. Click a bar to "
+    "open the algorithm in Components."
+)
+
+
+def _event_detail(
+    measures: list[Measure], measure: Measure, table: EventTable, x: pd.Series, x_label: str,
+    config: str,
+) -> int | None:
+    """One event of *config*'s plot of *measure* against *x*: which entry of
+    the input it is, its values plotted and, of the metric of *measures*,
+    each algorithm's cost in it, a click on one opening it in Components.
+    The event shown, or ``None`` before one is chosen."""
+    events = sorted(e for e in measure.profiled if e != WARM_UP_EVENT)
+    drop_stale_selection(_EVENT_KEY, events)
+    st.markdown("##### One event", help=_EVENT_HELP)
+    pick_col, about_col = st.columns([1, 4], vertical_alignment="bottom")
+    with pick_col:
+        event = st.selectbox(
+            "Event", events, index=None, key=_EVENT_KEY, bind="query-params",
+            placeholder="Click a point",
+        )
+    with about_col:
+        if event is None:
+            st.caption("Click a point of the plot, or choose an event by its number, to "
+                       "see what each algorithm cost in it.")
+            return None
+        st.caption(_identity(event, config, table, measures, measure, x, x_label))
+
+    metric = measure.metric
+    algorithms = [m for m in measures if m.name != WHOLE_EVENT and align(m, table) is None]
+    if not algorithms:
+        st.caption(
+            f"No algorithm of **{config}** was audited, so what each cost in it is not known."
+            if all(m.name == WHOLE_EVENT for m in measures) else
+            f"The events of **{config}**'s algorithms cannot be matched to what they hold."
+        )
+        return event
+    scale, unit = _scale(algorithms[0])
+    costs = pd.Series({m.name: m.values.get(event, float("nan")) for m in algorithms}) * scale
+    typical = pd.Series({m.name: float(m.values.median()) for m in algorithms}) * scale
+    title = f"{metric[:1].upper()}{metric[1:]} in event {event}" + (f" ({unit})" if unit else "")
+    fig = plot_event_costs(costs, typical, title=title, highlight=measure.name)
+    if fig is None:
+        st.caption(f"No algorithm of **{config}** has a {metric} in event {event}.")
+        return event
+    clickable_chart(fig, _EVENT_CHART_KEY, config, _SECTION, width="stretch",
+                    config={"displayModeBar": False})
+    if absent := int(costs.isna().sum()):
+        st.caption(f"{absent} of {len(costs)} algorithms have no {metric} in event {event}: "
+                   "they did not run in it, or recorded none.")
+    return event
+
+
+def _identity(
+    event: int, config: str, table: EventTable, measures: list[Measure], measure: Measure,
+    x: pd.Series, x_label: str,
+) -> str:
+    """Which event *event* is, and its values plotted."""
+    text = f"Event **{event}** of **{config}**"
+    if (source := table.source) is not None:
+        text += f", entry {source.first_entry + event} of `{source.file}`"
+        numbers, runs = source.event_numbers, source.run_numbers
+        if numbers is not None and numbers[event] is not None:
+            run = runs[event] if runs is not None else None
+            text += f" (EventHeader event {numbers[event]}" + (
+                f", run {run})" if run is not None else ")")
+    # The event's own time beside an algorithm's, from the same job.
+    whole = next((m for m in measures if m.name == WHOLE_EVENT), None)
+    shown = [whole] if (
+        whole is not None and whole is not measure and align(whole, table) is None
+    ) else []
+    parts = [
+        f"{_named(m)}: "
+        + (_written(float(m.values[event]), m) if event in m.values.index else "none")
+        for m in (*shown, measure)
+    ]
+    value = x.get(event)
+    parts.append(f"{x_label}: " + (f"{value:.4g}" if pd.notna(value) else "no value"))
+    return f"{text}. " + " · ".join(parts)
 
 
 def _reference(table: EventTable) -> None:
