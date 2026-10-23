@@ -229,12 +229,13 @@ reconstruction the one chosen) are set against what each event holds:
 A simulation benchmark records what its events hold for its first run only;
 its other configurations take a detector out and are not offered. On the
 Reconstruction page a **Configuration** dropdown, shown when more than one
-configuration succeeded, chooses whose costs and outputs are drawn, the
-baseline first; all of them read the same input, so they share its generator
-particles and collections. Switching keeps the metric, cost and expression
-where the new configuration has them, and says what it changed where it does
-not; a link naming a configuration that failed or is not in the run says so
-and shows the baseline. A run
+configuration succeeded with per-event costs recorded, chooses whose costs and
+outputs are drawn, the baseline first; all of them read the same input, so
+they share its generator particles and collections. Switching keeps the
+metric, cost and expression where the new configuration has them, and says
+what it changed where it does not; a link naming a configuration that failed,
+recorded no per-event costs or is not in the run says so and shows the first
+one on offer, ordinarily the baseline. A run
 recorded before this existed has nothing to show, unless its source was added
 later; a note then says whether it came from the run's own input or was
 inferred from another detector's simulation of the same sample.
