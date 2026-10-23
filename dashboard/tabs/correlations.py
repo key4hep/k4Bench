@@ -1,16 +1,18 @@
 """Correlations: what an event's cost goes with.
 
 Shared by the Simulation and the Reconstruction page. It sets the per-event
-costs of the baseline configuration (the single configuration of a benchmark
-without one) against what each of its events holds
+costs of one configuration against what each of its events holds
 (:mod:`k4bench.analysis.event_drivers`): the generator particles of the run's
 ``event_source.json.gz`` and what each collection held in each event, from the
 configuration's ``_event_size.json`` and, in reconstruction, the input's
-collections. A simulation benchmark records what its events hold for its first
-run only, and its other configurations take a detector out, so they are not
-offered.
+collections. Reconstruction offers each configuration that succeeded, the
+baseline first; every one reads the same input, so they share the source,
+and each its own outputs. A simulation benchmark records what its events
+hold for its first run only, and its other configurations take a detector
+out, so it draws the baseline (its single configuration without one) alone.
 
-Top to bottom: the metric (time, steps, instructions, ...); a matrix of the
+Top to bottom: the configuration, in reconstruction; the metric (time,
+steps, instructions, ...); a matrix of the
 costliest costs of that metric against the quantities most associated with
 them, each square coloured and sized by their rank correlation, a click
 plotting it; one row choosing the cost to plot (Of), the expression it is
@@ -42,13 +44,20 @@ from k4bench.analysis.event_drivers import (
 )
 from k4bench.analysis.event_source import PARTICLE_FIELDS
 from k4bench.analysis.expression import MAX_LENGTH, ExpressionError
-from k4bench.analysis.loader import judgeable_config_data
+from k4bench.analysis.loader import failed_config_mask, judgeable_config_data
 from k4bench.analysis.plots.event_content import plot_association_matrix, plot_event_content
 from k4bench.labels import BASELINE_LABEL
+from reco._controls import select_config
 from sections import SectionScope
 from ui_chrome import drop_stale_selection
 
 _KEY = "corr"
+_CONFIG_KEY = f"{_KEY}_config"
+#: A configuration asked for that is not on offer, and the one shown
+#: instead, said so for as long as that one is shown.
+_MISSING_CONFIG_KEY = f"{_KEY}_config_missing"
+#: The configuration drawn on the previous run, to tell when it changes.
+_SHOWN_KEY = f"{_KEY}_config_shown"
 _METRIC_KEY = f"{_KEY}_metric"
 _MEASURE_KEY = f"{_KEY}_of"
 _EXPRESSION_KEY = f"{_KEY}_x"
@@ -150,13 +159,35 @@ def render(
         return None
 
     # A click on the matrix chose these on the previous run.
-    if pending := st.session_state.pop(_PENDING_KEY, None):
+    pending = st.session_state.pop(_PENDING_KEY, None)
+
+    choosing = reco and len(configs) > 1
+    if choosing:
+        config_col, metric_col, note_col = st.columns(
+            [1, 1, 2], gap="medium", vertical_alignment="bottom",
+        )
+    else:
+        metric_col, note_col = st.columns([1, 3], gap="medium", vertical_alignment="bottom")
+    if reco:
+        config = _select_config(configs, results, config_col if choosing else None)
+    else:
+        # The full detector as configured: a simulation benchmark records
+        # what each event holds for its first run only, and its other
+        # configurations take a detector out, which is not what this is for.
+        config = configs[0]
+    # What was chosen among another configuration's costs and outputs is
+    # checked against this one's before it is drawn.
+    previous = st.session_state.get(_SHOWN_KEY)
+    st.session_state[_SHOWN_KEY] = config
+    changed = reco and previous is not None and previous != config
+    if changed:
+        # A new figure: a selection on the old one names other squares.
+        st.session_state[f"{_MATRIX_KEY}_nonce"] = (
+            st.session_state.get(f"{_MATRIX_KEY}_nonce", 0) + 1
+        )
+    elif pending:
         st.session_state[_MEASURE_KEY], st.session_state[_EXPRESSION_KEY] = pending
 
-    # The full detector and job as configured: a simulation benchmark records
-    # what each event holds for its first run only, and its other
-    # configurations take a detector out, which is not what this is for.
-    config = configs[0]
     try:
         table = (
             event_table(source, outputs=files.get(config, ())) if reco
@@ -173,36 +204,84 @@ def render(
         st.info(f"Nothing of what **{config}**'s events hold, or what they cost, was recorded.")
         return None
     metrics = list(dict.fromkeys(m.metric for m in measures))
-    metric_col, note_col = st.columns([1, 3], gap="medium", vertical_alignment="bottom")
+    notes = [] if config == BASELINE_LABEL or choosing else [f"Configuration **{config}**."]
     with metric_col:
+        asked = st.session_state.get(_METRIC_KEY) or st.query_params.get(_METRIC_KEY)
         drop_stale_selection(_METRIC_KEY, metrics)
         metric = st.selectbox(
             "Metric", metrics, key=_METRIC_KEY, bind="query-params",
             help="What is measured of each event: its time, or, as recorded, the steps "
                  "simulation took, an algorithm's instructions or allocations.",
         )
-    with note_col:
-        notes = [] if config == BASELINE_LABEL else [f"Configuration **{config}**."]
-        if source is not None and source.origin in _ORIGINS:
-            notes.append(_ORIGINS[source.origin])
-        notes += [f"`{name}` is left out: {why}." for name, why in table.left_out.items()]
-        if notes:
-            st.caption(" ".join(notes))
+    if changed and asked and asked != metric:
+        notes.append(f"**{config}** recorded no {asked}: its {metric} is shown.")
+    if source is not None and source.origin in _ORIGINS:
+        notes.append(_ORIGINS[source.origin])
+    notes += [f"`{name}` is left out: {why}." for name, why in table.left_out.items()]
 
     of_metric = [m for m in measures if m.metric == metric]
     names = [m.name for m in of_metric]
-    drop_stale_selection(_MEASURE_KEY, names)
     # The cost the plot row will hold: the matrix, drawn first, rings it.
     chosen = st.session_state.get(_MEASURE_KEY) or st.query_params.get(_MEASURE_KEY)
+    drop_stale_selection(_MEASURE_KEY, names)
     measure = of_metric[names.index(chosen) if chosen in names else 0]
+    if changed and chosen and chosen not in names:
+        notes.append(f"**{chosen}** has no {metric} in **{config}**: **{measure.name}** is shown.")
     default = _default_column(measure, table)
     if _EXPRESSION_KEY not in st.session_state and _EXPRESSION_KEY not in st.query_params:
         st.session_state[_EXPRESSION_KEY] = _expression_of(table, default)
     expression = st.session_state.get(_EXPRESSION_KEY) or st.query_params.get(_EXPRESSION_KEY, "")
+    if changed and expression.strip():
+        try:
+            table.evaluate(expression)
+        except ExpressionError as exc:
+            before = expression
+            expression = st.session_state[_EXPRESSION_KEY] = _expression_of(table, default)
+            notes.append(f"`{before.strip()}` cannot be computed for **{config}**'s events "
+                         f"({exc}): `{expression}` is plotted instead.")
+    if notes:
+        with note_col:
+            st.caption(" ".join(notes))
 
     _matrix(of_metric, table, (measure.name, _column_of(table, expression)))
     _plot(of_metric, table)
     return None
+
+
+def _select_config(configs: list[str], results: pd.DataFrame | None, column) -> str:
+    """The reconstruction configuration drawn: chosen among *configs* in
+    *column*, or the only one without a dropdown when *column* is ``None``.
+    One asked for, by a link or kept from another run, that is not among them
+    is said so, with why, for as long as the one shown instead is."""
+    asked = drop_stale_selection(_CONFIG_KEY, configs)
+    if asked is None and _CONFIG_KEY not in st.session_state:
+        asked = st.query_params.get(_CONFIG_KEY)
+    if column is None:
+        config = configs[0]
+    else:
+        with column:
+            config = select_config(configs, _CONFIG_KEY)
+    if asked is not None and asked not in configs:
+        st.session_state[_MISSING_CONFIG_KEY] = (asked, config)
+    missing, instead = st.session_state.get(_MISSING_CONFIG_KEY, (None, None))
+    if missing is None or missing in configs or instead != config:
+        st.session_state.pop(_MISSING_CONFIG_KEY, None)
+    else:
+        st.warning(f"**{missing}** {_why_not_offered(missing, results)}, so **{config}** "
+                   "is shown instead.")
+    return config
+
+
+def _why_not_offered(label: str, results: pd.DataFrame | None) -> str:
+    """Why configuration *label* has no per-event costs to draw."""
+    if results is None or "label" not in results.columns:
+        return "is not in this run"
+    ran = results["label"].astype(str) == label
+    if not ran.any():
+        return "is not in this run"
+    if failed_config_mask(results)[ran].any():
+        return "failed in this run"
+    return "recorded no per-event costs in this run"
 
 
 def _has_content(outputs) -> bool:

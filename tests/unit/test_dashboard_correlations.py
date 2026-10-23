@@ -43,10 +43,11 @@ def _reco_app(dashboard_dir) -> None:
 
 def _write_source(
     run: Path, events: int = _EVENTS, origin: str = "recorded", follow: str = "VXDBarrelDigitiser",
+    numbered: bool = False,
 ) -> list[float]:
     """An event source whose input's vertex hits follow the time of
     algorithm *follow* event by event, and whose events hold 1 to 4 charged
-    pions; that algorithm's times."""
+    pions, each with its EventHeader if *numbered*; that algorithm's times."""
     wall = load_component_timing(RECO_RUN)["baseline"].execute["wall_s"][follow]
     times = wall.iloc[:events].tolist()
     ranks = {t: i for i, t in enumerate(sorted(times))}
@@ -67,6 +68,8 @@ def _write_source(
              "entries": hits},
         ]},
     }
+    if numbered:
+        record["event_headers"] = {"event_number": list(range(events)), "run_number": [0] * events}
     (run / "event_source.json.gz").write_bytes(gzip.compress(json.dumps(record).encode()))
     return times
 
@@ -111,9 +114,9 @@ def test_an_algorithm_is_drawn_against_what_it_reads(monkeypatch, tmp_path):
     at = _reco_page(monkeypatch, tmp_path, run)
     assert at.session_state["reco_active_section"] == "Events"
     assert at.button_group(key="reco_events_lens").value == "What drives the cost"
-    # The baseline alone: no configuration to choose.
-    with pytest.raises(KeyError):
-        at.selectbox(key="corr_config")
+    # Both configurations on offer, the baseline drawn first.
+    assert at.selectbox(key="corr_config").options == ["baseline", "variant_truth_tracking"]
+    assert at.selectbox(key="corr_config").value == "baseline"
     assert at.selectbox(key="corr_metric").options == ["time", "CPU time", "instructions",
                                                               "allocations"]
     # The whole event's 100 events are not the 12 the source holds.
@@ -239,6 +242,208 @@ def test_a_source_that_cannot_be_read_is_warned_about(monkeypatch, tmp_path):
     (run / "event_source.json.gz").write_bytes(b"not gzip")
     at = _reco_page(monkeypatch, tmp_path, run)
     assert "generator particles could not be read" in at.warning[0].value
+
+
+_VARIANT = "variant_truth_tracking"
+
+
+def _wall(label: str, algorithm: str) -> list[float]:
+    """*label*'s time of *algorithm* in each of the fixture's events."""
+    return load_component_timing(RECO_RUN)[label].execute["wall_s"][algorithm].tolist()
+
+
+def _write_outputs(run: Path, label: str, collections: dict[str, list[int]]) -> None:
+    """*label*'s output file, its events numbered as the source's and
+    holding *collections*' elements."""
+    (run / f"{label}_event_size.json").write_text(json.dumps({"schema_version": 1, "files": [{
+        "name": f"{label}.edm4hep.root", "bytes": 10, "events": _EVENTS,
+        "event_headers": {"event_number": list(range(_EVENTS)), "run_number": [0] * _EVENTS},
+        "collections": [
+            {"name": name, "type": "edm4hep::ReconstructedParticleCollection", "subset": False,
+             "compressed_bytes": 5, "uncompressed_bytes": 9, "entries": entries}
+            for name, entries in collections.items()
+        ],
+    }]}))
+
+
+def _caption_text(at: AppTest) -> str:
+    return " ".join(c.value for c in at.caption)
+
+
+def test_a_run_of_one_configuration_offers_no_choice(monkeypatch, tmp_path):
+    run = _reco_run(tmp_path)
+    for path in run.glob(f"{_VARIANT}*"):
+        path.unlink()
+    _write_source(run)
+    at = _reco_page(monkeypatch, tmp_path, run)
+    with pytest.raises(KeyError):
+        at.selectbox(key="corr_config")
+    assert at.selectbox(key="corr_of").value == "Whole event"
+
+
+def test_the_chosen_configurations_costs_are_drawn(monkeypatch, tmp_path):
+    run = _reco_run(tmp_path)
+    _write_source(run)
+    at = _reco_page(monkeypatch, tmp_path, run)
+    at.selectbox(key="corr_of").set_value("Refit").run()
+    at.text_input(key="corr_x").set_value("n_VertexBarrelCollection").run()
+    baseline, variant = _wall("baseline", "Refit"), _wall(_VARIANT, "Refit")
+    assert baseline[1:] != variant[1:]
+    assert _values(_scatter(at)["data"][0]["y"]) == pytest.approx([t * 1e3 for t in baseline[1:]])
+
+    at.selectbox(key="corr_config").set_value(_VARIANT).run()
+    assert not at.exception, at.exception
+    # The algorithm and the expression, both the variant's too, are kept.
+    assert at.selectbox(key="corr_of").value == "Refit"
+    assert at.text_input(key="corr_x").value == "n_VertexBarrelCollection"
+    assert _values(_scatter(at)["data"][0]["y"]) == pytest.approx([t * 1e3 for t in variant[1:]])
+    # The variant's own algorithms, in the matrix as in the plot row.
+    options = at.selectbox(key="corr_of").options
+    assert "MyTruthTrackFinder" in options and "MyConformalTracking" not in options
+    rows = {c[0] for c in _charts(at)[0]["data"][0]["customdata"]}
+    assert "MyTruthTrackFinder" in rows and "MyConformalTracking" not in rows
+
+
+def test_a_link_opens_the_configuration_it_names(monkeypatch, tmp_path):
+    run = _reco_run(tmp_path)
+    _write_source(run)
+    _local_env(monkeypatch, run, tmp_path / "cache")
+    at = AppTest.from_function(_reco_app, args=(str(_DASHBOARD_DIR),), default_timeout=60)
+    at.query_params.update({"tab": "Correlations", "corr_config": _VARIANT, "corr_of": "Refit",
+                            "corr_x": "n_VertexBarrelCollection"})
+    at.run()
+    assert not at.exception, at.exception
+    assert at.selectbox(key="corr_config").value == _VARIANT
+    assert not any("shown instead" in w.value for w in at.warning)
+    assert _values(_scatter(at)["data"][0]["y"]) == pytest.approx(
+        [t * 1e3 for t in _wall(_VARIANT, "Refit")[1:]]
+    )
+
+
+def test_an_algorithm_the_chosen_configuration_lacks_is_said_to_be(monkeypatch, tmp_path):
+    run = _reco_run(tmp_path)
+    _write_source(run)
+    at = _reco_page(monkeypatch, tmp_path, run)
+    at.selectbox(key="corr_metric").set_value("instructions").run()
+    at.selectbox(key="corr_of").set_value("MyConformalTracking").run()
+    at.selectbox(key="corr_config").set_value(_VARIANT).run()
+    assert not at.exception, at.exception
+    shown = at.selectbox(key="corr_of").value
+    assert shown != "MyConformalTracking"
+    assert at.selectbox(key="corr_metric").value == "instructions"
+    assert (f"**MyConformalTracking** has no instructions in **{_VARIANT}**: **{shown}** is shown."
+            in _caption_text(at))
+
+
+def test_each_configuration_reads_its_own_outputs(monkeypatch, tmp_path):
+    run = _reco_run(tmp_path)
+    _write_source(run, numbered=True)
+    _write_outputs(run, "baseline", {"PandoraPFOs": list(range(10, 22)),
+                                     "SiTracks": list(range(_EVENTS))})
+    _write_outputs(run, _VARIANT, {"PandoraPFOs": list(range(50, 62))})
+    at = _reco_page(monkeypatch, tmp_path, run)
+    at.selectbox(key="corr_of").set_value("Refit").run()
+    at.text_input(key="corr_x").set_value("out_n_PandoraPFOs").run()
+    assert _values(_scatter(at)["data"][0]["x"]) == list(range(11, 22))
+
+    at.selectbox(key="corr_config").set_value(_VARIANT).run()
+    assert not at.exception, at.exception
+    assert at.text_input(key="corr_x").value == "out_n_PandoraPFOs"
+    assert _values(_scatter(at)["data"][0]["x"]) == list(range(51, 62))
+    names = at.expander[0].dataframe[0].value["Name"].to_list()
+    assert "out_n_PandoraPFOs" in names and "out_n_SiTracks" not in names
+
+
+def test_an_expression_the_chosen_configuration_cannot_give_is_replaced(monkeypatch, tmp_path):
+    run = _reco_run(tmp_path)
+    _write_source(run, numbered=True)
+    _write_outputs(run, "baseline", {"SiTracks": list(range(_EVENTS))})
+    at = _reco_page(monkeypatch, tmp_path, run)
+    at.selectbox(key="corr_of").set_value("Refit").run()
+    at.text_input(key="corr_x").set_value("out_n_SiTracks * 2").run()
+    assert _values(_scatter(at)["data"][0]["x"]) == [2 * i for i in range(1, _EVENTS)]
+
+    at.selectbox(key="corr_config").set_value(_VARIANT).run()
+    assert not at.exception, at.exception
+    replaced = at.text_input(key="corr_x").value
+    assert replaced and "out_n_SiTracks" not in replaced
+    assert not at.error
+    assert f"`out_n_SiTracks * 2` cannot be computed for **{_VARIANT}**'s events" in (
+        _caption_text(at)
+    )
+
+
+def test_a_pending_click_is_not_carried_to_another_configuration(monkeypatch, tmp_path):
+    run = _reco_run(tmp_path)
+    _write_source(run)
+    at = _reco_page(monkeypatch, tmp_path, run)
+    at.session_state["corr_pending"] = ("MyConformalTracking", "n_VertexBarrelCollection")
+    at.selectbox(key="corr_config").set_value(_VARIANT).run()
+    assert not at.exception, at.exception
+    assert at.selectbox(key="corr_of").value != "MyConformalTracking"
+    assert "corr_pending" not in at.session_state
+
+
+def test_stale_query_params_are_dropped_safely(monkeypatch, tmp_path):
+    run = _reco_run(tmp_path)
+    _write_source(run)
+    _local_env(monkeypatch, run, tmp_path / "cache")
+    at = AppTest.from_function(_reco_app, args=(str(_DASHBOARD_DIR),), default_timeout=60)
+    at.query_params.update({
+        "tab": "Correlations", "corr_config": "no_such_config", "corr_metric": "nonsense",
+        "corr_of": "NoSuchAlgorithm", "corr_x": "out_n_Nothing",
+    })
+    at.run()
+    assert not at.exception, at.exception
+    assert at.selectbox(key="corr_config").value == "baseline"
+    assert ("**no_such_config** is not in this run, so **baseline** is shown instead."
+            in [w.value for w in at.warning])
+    assert at.selectbox(key="corr_metric").value == "time"
+    assert at.selectbox(key="corr_of").value == "Whole event"
+    # The user's expression is kept, and why it draws nothing said.
+    assert at.text_input(key="corr_x").value == "out_n_Nothing"
+    at.selectbox(key="corr_of").set_value("Refit").run()
+    assert "cannot be computed" in at.error[0].value
+    # The warning stays while the baseline is shown in its place.
+    assert any("no_such_config" in w.value for w in at.warning)
+
+
+def test_a_failed_configuration_is_not_offered(monkeypatch, tmp_path):
+    run = _reco_run(tmp_path)
+    _write_source(run)
+    results = run / f"{_VARIANT}_results.csv"
+    header, row = results.read_text().splitlines()[:2]
+    results.write_text(f"{header}\n{row.replace(f'{_VARIANT},0,', f'{_VARIANT},1,', 1)}\n")
+    _local_env(monkeypatch, run, tmp_path / "cache")
+    at = AppTest.from_function(_reco_app, args=(str(_DASHBOARD_DIR),), default_timeout=60)
+    at.query_params.update({"tab": "Correlations", "corr_config": _VARIANT})
+    at.run()
+    assert not at.exception, at.exception
+    with pytest.raises(KeyError):
+        at.selectbox(key="corr_config")
+    assert (f"**{_VARIANT}** failed in this run, so **baseline** is shown instead."
+            in [w.value for w in at.warning])
+    at.selectbox(key="corr_of").set_value("MyConformalTracking").run()
+    assert _values(_scatter(at)["data"][0]["y"]) == pytest.approx(
+        [t * 1e3 for t in _wall("baseline", "MyConformalTracking")[1:]]
+    )
+
+
+def test_a_configuration_whose_component_file_is_unreadable_has_its_event_time_alone(
+    monkeypatch, tmp_path,
+):
+    run = _reco_run(tmp_path)
+    _write_source(run)
+    (run / f"{_VARIANT}_components.json").write_text("{not json")
+    at = _reco_page(monkeypatch, tmp_path, run)
+    assert any(_VARIANT in w.value for w in at.warning)
+    at.selectbox(key="corr_config").set_value(_VARIANT).run()
+    assert not at.exception, at.exception
+    assert at.selectbox(key="corr_metric").options == ["time"]
+    assert at.selectbox(key="corr_of").options == ["Whole event"]
+    # Its 100 events, not the source's 12: no matrix or plot, and why.
+    assert any("profiling counted 100 events" in w.value for w in at.warning)
+    assert not _charts(at)
 
 
 _RESULTS_HEADER = (

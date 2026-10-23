@@ -212,9 +212,9 @@ two attribution views (`at_location` and `by_birth`) and adds:
 
 ### Correlations tab
 
-What makes an event expensive. The baseline configuration's per-event costs
-(or those of a benchmark's single configuration) are set against what each
-event holds:
+What makes an event expensive. One configuration's per-event costs (in
+simulation the baseline, or a benchmark's single configuration; in
+reconstruction the one chosen) are set against what each event holds:
 
 - its generator particles, from the run's `event_source.json.gz`: canned
   quantities such as the charged final-state particles, those born more than
@@ -227,7 +227,14 @@ event holds:
   `out_E_…`.
 
 A simulation benchmark records what its events hold for its first run only;
-its other configurations take a detector out and are not offered. A run
+its other configurations take a detector out and are not offered. On the
+Reconstruction page a **Configuration** dropdown, shown when more than one
+configuration succeeded, chooses whose costs and outputs are drawn, the
+baseline first; all of them read the same input, so they share its generator
+particles and collections. Switching keeps the metric, cost and expression
+where the new configuration has them, and says what it changed where it does
+not; a link naming a configuration that failed or is not in the run says so
+and shows the baseline. A run
 recorded before this existed has nothing to show, unless its source was added
 later; a note then says whether it came from the run's own input or was
 inferred from another detector's simulation of the same sample.
@@ -1088,7 +1095,7 @@ the window has their timing, even if the selected run has none.
 
 **Events**, looked at by **What drives the cost**, is the Simulation page's
 Correlations with each algorithm's time, instructions and allocations on
-offer beside the event's; by **Output size**, it is the Simulation page's Event
+offer beside the event's, for the configuration chosen above it; by **Output size**, it is the Simulation page's Event
 Size, for the EDM4hep files the k4run job wrote.
 
 **Logs** reads the log's Gaudi and Marlin severities rather than the word
