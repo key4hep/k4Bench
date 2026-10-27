@@ -71,6 +71,7 @@ from k4bench.blame.history import HistoricalPR
 from k4bench.blame.llm import (
     MAX_OUTPUT_TOKENS,
     ChatClient,
+    FailoverClient,
     chat_client_from_env,
     extract_json,
     one_line,
@@ -503,7 +504,7 @@ class OpenAICompatAttributor:
     adapter's.
     """
 
-    client: ChatClient
+    client: ChatClient | FailoverClient
 
     def attribute(self, request: AttributionRequest) -> Attribution | None:
         if not request.regressions:

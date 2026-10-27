@@ -21,9 +21,14 @@ Three properties shape it, and they are the same ones the stages above rely on:
   field and asks again. Every one of those is bounded, and the bound is the same
   for both stages.
 
+* **No single provider.** An optional second endpoint takes over when the first
+  cannot answer (:class:`FailoverClient`) — a lapsed key or exhausted billing is
+  not something retries fix, and without a fallback it costs the night every
+  ranking and every pull-request comment.
+
 * **Honest failure.** :meth:`ChatClient.complete` raises once the attempts are
   spent; the *callers* turn that into "no ranking" / "no attribution", which the
-  rest of the pipeline already handles. Nothing here invents a fallback answer.
+  rest of the pipeline already handles. Nothing here invents an answer.
 """
 
 from __future__ import annotations
@@ -168,6 +173,99 @@ class ChatClient:
         raise last_exc  # bounded attempts failed; the caller degrades to no answer
 
 
+#: HTTP statuses that mean the *account* cannot be served, not that this one
+#: request failed: a key revoked or unauthorised (401/403), billing or credit
+#: exhausted (402), a model the provider no longer serves (404). Retrying
+#: cannot change any of them, and neither can the next group's call.
+_PROVIDER_REFUSED = frozenset({401, 402, 403, 404})
+
+#: Consecutive failed :meth:`ChatClient.complete` calls — each already the
+#: end of its own bounded retries — after which :class:`FailoverClient` stops
+#: asking a provider for the rest of the run. Two, so one bad request does not
+#: retire a healthy provider while an outage that eats every attempt of every
+#: group cannot spend the CI wall-clock limit on retries.
+_RETIRE_AFTER = 2
+
+
+def provider_refused(exc: BaseException) -> bool:
+    """Whether *exc* is an HTTP status that retries and later calls cannot fix."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    return isinstance(exc, requests.HTTPError) and status in _PROVIDER_REFUSED
+
+
+@dataclass
+class FailoverClient:
+    """Several :class:`ChatClient` endpoints tried in order.
+
+    One provider is one point of failure for the whole attribution stage: its
+    key lapses, its billing stops, its model is retired, and every group of the
+    night comes back with no ranking and no pull-request comment. Behind this
+    client the same exchange moves to the next endpoint instead.
+
+    The first endpoint that answers wins, and an endpoint that is
+    :func:`refused <provider_refused>` — or fails :data:`_RETIRE_AFTER` calls in
+    a row — is skipped for the rest of the run, so a dead provider costs one or
+    two calls rather than every group's retries. The interface is
+    :class:`ChatClient`'s, so the stages cannot tell the difference. When no
+    endpoint is left, :meth:`complete` raises the last real failure.
+    """
+
+    clients: list[ChatClient]
+    _failures: list[int] = field(default_factory=list, repr=False)
+    _retired: set[int] = field(default_factory=set, repr=False)
+    _last_error: Exception | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if not self.clients:
+            raise ValueError("FailoverClient needs at least one endpoint")
+        self._failures = [0] * len(self.clients)
+
+    @property
+    def model(self) -> str:
+        """The preferred endpoint's model — what the run is configured to use."""
+        return self.clients[0].model
+
+    @property
+    def max_tokens(self) -> int:
+        return self.clients[0].max_tokens
+
+    def complete(
+        self, system: str, user: str, *, max_output_tokens: int | None = None
+    ) -> tuple[str, str]:
+        for index, client in enumerate(self.clients):
+            if index in self._retired:
+                continue
+            try:
+                reply = client.complete(
+                    system, user, max_output_tokens=max_output_tokens
+                )
+            except Exception as exc:
+                self._last_error = exc
+                self._failures[index] += 1
+                refused = provider_refused(exc)
+                if refused or self._failures[index] >= _RETIRE_AFTER:
+                    self._retired.add(index)
+                _log.error(
+                    "llm: %s failed (%s)%s",
+                    client.model, exc,
+                    self._next_step(index, retired=index in self._retired),
+                )
+                continue
+            self._failures[index] = 0
+            return reply
+        raise self._last_error or RuntimeError("llm: every configured endpoint is retired")
+
+    def _next_step(self, index: int, *, retired: bool) -> str:
+        remaining = [
+            c.model for i, c in enumerate(self.clients)
+            if i != index and i not in self._retired
+        ]
+        stopped = "; not asking it again this run" if retired else ""
+        if remaining:
+            return f"{stopped}; trying {remaining[0]}"
+        return f"{stopped}; no other endpoint is left"
+
+
 def _retryable_failure(
     exc: Exception,
     response,
@@ -204,19 +302,29 @@ def _retry_delay(response, attempt: int) -> float:
     return min(_MAX_RETRY_DELAY, float(2 ** attempt))
 
 
-def chat_client_from_env(*, model_env: str | None = None) -> ChatClient | None:
-    """A :class:`ChatClient` from ``K4BENCH_LLM_*``, or ``None``.
+def chat_client_from_env(
+    *, model_env: str | None = None
+) -> ChatClient | FailoverClient | None:
+    """The configured model endpoint(s) from ``K4BENCH_LLM_*``, or ``None``.
 
     Model calls are *off by default*: unset ``K4BENCH_LLM_URL`` or
     ``K4BENCH_LLM_MODEL`` returns ``None``, and each stage then does its job
     without one. Only a configured environment (CI with the secrets, or a dev
     box for a backfill) enables them.
 
+    ``K4BENCH_LLM_FALLBACK_URL`` / ``_MODEL`` / ``_API_KEY`` name a second
+    endpoint, on a different provider, that takes over whenever the first
+    cannot answer (see :class:`FailoverClient`); with both set the result is a
+    :class:`FailoverClient`, otherwise the plain :class:`ChatClient`. The
+    output-token floor is shared. A fallback is optional — ranking without one
+    works, and fails with its provider.
+
     *model_env* names an optional environment variable consulted before
     ``K4BENCH_LLM_MODEL`` — the seam that lets one stage run on a different
     model from another (see
     :func:`k4bench.blame.attribute.attributor_from_env`) without a second
-    endpoint, key or code path.
+    endpoint, key or code path. It chooses the preferred endpoint's model only;
+    the fallback runs the model it names.
     """
     url = os.environ.get("K4BENCH_LLM_URL", "").strip()
     model = ""
@@ -225,7 +333,6 @@ def chat_client_from_env(*, model_env: str | None = None) -> ChatClient | None:
     model = model or os.environ.get("K4BENCH_LLM_MODEL", "").strip()
     if not url or not model:
         return None
-    api_key = os.environ.get("K4BENCH_LLM_API_KEY", "").strip() or None
     raw_max_tokens = os.environ.get("K4BENCH_LLM_MAX_TOKENS", "").strip()
     max_tokens = DEFAULT_MAX_TOKENS
     if raw_max_tokens:
@@ -239,7 +346,23 @@ def chat_client_from_env(*, model_env: str | None = None) -> ChatClient | None:
                 "llm: ignoring invalid K4BENCH_LLM_MAX_TOKENS=%r; using %d",
                 raw_max_tokens, DEFAULT_MAX_TOKENS,
             )
-    return ChatClient(url=url, model=model, api_key=api_key, max_tokens=max_tokens)
+    primary = ChatClient(
+        url=url, model=model, max_tokens=max_tokens,
+        api_key=os.environ.get("K4BENCH_LLM_API_KEY", "").strip() or None,
+    )
+    fallback_url = os.environ.get("K4BENCH_LLM_FALLBACK_URL", "").strip()
+    fallback_model = os.environ.get("K4BENCH_LLM_FALLBACK_MODEL", "").strip()
+    if bool(fallback_url) != bool(fallback_model):
+        _log.warning(
+            "llm: K4BENCH_LLM_FALLBACK_URL and K4BENCH_LLM_FALLBACK_MODEL must "
+            "both be set; running without a fallback endpoint"
+        )
+    if not (fallback_url and fallback_model):
+        return primary
+    return FailoverClient(clients=[primary, ChatClient(
+        url=fallback_url, model=fallback_model, max_tokens=max_tokens,
+        api_key=os.environ.get("K4BENCH_LLM_FALLBACK_API_KEY", "").strip() or None,
+    )])
 
 
 # ── Defensive response parsing ────────────────────────────────────────────────

@@ -958,6 +958,27 @@ responses grow the output allowance up to a fixed ceiling. The complete blame
 stage also has a CI wall-clock limit. None of these failures can fail or delay
 the already-uploaded nightly report beyond that bound.
 
+One provider is one point of failure, so a second endpoint can be configured
+with `K4BENCH_LLM_FALLBACK_URL`, `K4BENCH_LLM_FALLBACK_MODEL` and
+`K4BENCH_LLM_FALLBACK_API_KEY` (a different provider from the first). Every call
+goes to the first endpoint and moves to the fallback when it cannot answer. An
+account-level refusal — HTTP 401, 402, 403 or 404: a lapsed key, exhausted
+billing, a retired model — is not retried and retires that endpoint for the run;
+so does a second consecutive call that spends all its attempts. Without a
+fallback, such a failure leaves the night's regressions unranked.
+
+A night whose ranking is incomplete is not silent. If the model judged *nothing*
+(`blame_report.py` exits 1), no `blame.json` is written. If it judged some
+windows but not others (exit 2), the sidecar is written and the unjudged windows
+stay unranked — "Not scored by the ranker" on the dashboard, absent from the
+email's ranked list, and never a comment target. Either way, a blame step that
+timed out or crashed, a comment step that failed, and a comment-storm
+suppression each raise an error annotation on the workflow run, and the report
+job fails once `report.json` is uploaded and the e-group email is sent — a green
+run means attribution was not wanted or was complete, never that comments were
+quietly skipped. Unranked windows are retried the next night while their
+regression stays open.
+
 Ranking is **optional**: with endpoint/model unset, candidates are still written
 but left unranked (`score` 0, `description` ""), the dashboard shows the package
 diff without the candidate ledger, and the email omits the "most likely" line.

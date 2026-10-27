@@ -59,6 +59,10 @@ sys.path.insert(0, str(_REPO_ROOT))
 
 _log = logging.getLogger(__name__)
 
+#: The comment-storm circuit breaker tripped and nothing was posted. Not a
+#: failure of this step, but not a quiet night either: the caller reports it.
+EXIT_SUPPRESSED = 3
+
 
 def _benchmark_inputs(root: Path = _REPO_ROOT / ".github" / "benchmarks") -> dict:
     """Legacy run-info supplements keyed by ``(detector, sample)``, from the sim
@@ -426,15 +430,15 @@ def main(argv: list[str] | None = None) -> int:
     except CommentStormError as exc:
         # Distinct from "no candidate reached the threshold" below: the circuit
         # breaker tripped, so something is likely wrong with tonight's
-        # attribution. Kept best-effort (exit 0) but said in words automation can
-        # tell apart from a healthy quiet night.
+        # attribution. Best-effort, but with its own exit status so the workflow
+        # can tell it apart from a healthy quiet night.
         print(
             f"blame comments for {night}: SUPPRESSED — {exc.count} comments "
             f"exceeded the max_comments cap of {exc.cap}; attribution is suspect, "
             f"so none were posted",
             file=sys.stderr,
         )
-        return 0
+        return EXIT_SUPPRESSED
     if not plans:
         print(
             f"blame comments for {night}: no candidate "

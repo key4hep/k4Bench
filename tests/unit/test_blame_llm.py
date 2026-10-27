@@ -19,6 +19,7 @@ import requests
 from k4bench.blame.llm import (
     DEFAULT_MAX_TOKENS,
     ChatClient,
+    FailoverClient,
     chat_client_from_env,
     coerce_int,
     extract_json,
@@ -40,7 +41,7 @@ class _FakeResp:
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            raise requests.HTTPError(f"HTTP {self.status_code}")
+            raise requests.HTTPError(f"HTTP {self.status_code}", response=self)
 
     def json(self):
         return self._body
@@ -206,6 +207,8 @@ def _clear_llm_env(monkeypatch):
     for var in (
         "K4BENCH_LLM_URL", "K4BENCH_LLM_MODEL", "K4BENCH_LLM_API_KEY",
         "K4BENCH_LLM_MAX_TOKENS", "K4BENCH_LLM_SUMMARY_MODEL",
+        "K4BENCH_LLM_FALLBACK_URL", "K4BENCH_LLM_FALLBACK_MODEL",
+        "K4BENCH_LLM_FALLBACK_API_KEY",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -253,6 +256,59 @@ def test_env_model_override_wins_but_only_when_set(monkeypatch):
     )
     # The override is per-stage: the stage that does not ask for it is unaffected.
     assert chat_client_from_env().model == "cheap/model"
+
+
+def test_env_without_a_fallback_is_a_plain_client(monkeypatch):
+    _clear_llm_env(monkeypatch)
+    monkeypatch.setenv("K4BENCH_LLM_URL", "https://llm.example/v1")
+    monkeypatch.setenv("K4BENCH_LLM_MODEL", "some/model")
+    assert isinstance(chat_client_from_env(), ChatClient)
+
+
+def test_env_builds_a_failover_client_when_a_fallback_is_configured(monkeypatch):
+    _clear_llm_env(monkeypatch)
+    monkeypatch.setenv("K4BENCH_LLM_URL", "https://llm.example/v1")
+    monkeypatch.setenv("K4BENCH_LLM_MODEL", "some/model")
+    monkeypatch.setenv("K4BENCH_LLM_API_KEY", "primary-key")
+    monkeypatch.setenv("K4BENCH_LLM_MAX_TOKENS", "9000")
+    monkeypatch.setenv("K4BENCH_LLM_FALLBACK_URL", "https://other.example/v1")
+    monkeypatch.setenv("K4BENCH_LLM_FALLBACK_MODEL", "other/model")
+    monkeypatch.setenv("K4BENCH_LLM_FALLBACK_API_KEY", "fallback-key")
+    client = chat_client_from_env()
+    assert isinstance(client, FailoverClient)
+    primary, fallback = client.clients
+    assert (primary.model, primary.api_key) == ("some/model", "primary-key")
+    assert (fallback.url, fallback.model, fallback.api_key) == (
+        "https://other.example/v1", "other/model", "fallback-key",
+    )
+    assert primary.max_tokens == fallback.max_tokens == 9000
+    # The failover client answers for the run's configured model and budget.
+    assert (client.model, client.max_tokens) == ("some/model", 9000)
+
+
+@pytest.mark.parametrize("missing", ["K4BENCH_LLM_FALLBACK_URL", "K4BENCH_LLM_FALLBACK_MODEL"])
+def test_env_ignores_a_half_configured_fallback(monkeypatch, caplog, missing):
+    _clear_llm_env(monkeypatch)
+    monkeypatch.setenv("K4BENCH_LLM_URL", "https://llm.example/v1")
+    monkeypatch.setenv("K4BENCH_LLM_MODEL", "some/model")
+    monkeypatch.setenv("K4BENCH_LLM_FALLBACK_URL", "https://other.example/v1")
+    monkeypatch.setenv("K4BENCH_LLM_FALLBACK_MODEL", "other/model")
+    monkeypatch.delenv(missing)
+    with caplog.at_level("WARNING"):
+        client = chat_client_from_env()
+    assert isinstance(client, ChatClient)
+    assert "must both be set" in caplog.text
+
+
+def test_env_summary_model_override_leaves_the_fallback_model_alone(monkeypatch):
+    _clear_llm_env(monkeypatch)
+    monkeypatch.setenv("K4BENCH_LLM_URL", "https://llm.example/v1")
+    monkeypatch.setenv("K4BENCH_LLM_MODEL", "cheap/model")
+    monkeypatch.setenv("K4BENCH_LLM_SUMMARY_MODEL", "strong/model")
+    monkeypatch.setenv("K4BENCH_LLM_FALLBACK_URL", "https://other.example/v1")
+    monkeypatch.setenv("K4BENCH_LLM_FALLBACK_MODEL", "other/model")
+    client = chat_client_from_env(model_env="K4BENCH_LLM_SUMMARY_MODEL")
+    assert [c.model for c in client.clients] == ["strong/model", "other/model"]
 
 
 def test_env_accepts_a_max_tokens_override(monkeypatch):
@@ -316,3 +372,93 @@ def test_one_line_flattens_and_clips():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
+
+
+# ── Failover between providers ────────────────────────────────────────────────
+
+def _failover(primary, fallback, **kwargs) -> FailoverClient:
+    return FailoverClient(clients=[_client(primary, **kwargs), _client(fallback, **kwargs)])
+
+
+def _calls(client: FailoverClient, index: int) -> int:
+    return len(client.clients[index].session.calls)
+
+
+def test_the_preferred_endpoint_answers_when_it_can():
+    client = _failover([_completion("a")], [_completion("b")])
+    assert client.complete("s", "u") == ("a", "stop")
+    assert (_calls(client, 0), _calls(client, 1)) == (1, 0)
+
+
+@pytest.mark.parametrize("status", [401, 402, 403, 404])
+def test_a_refused_account_fails_over_without_retrying(status):
+    # The 402 that cost a night every pull-request comment: no retry can fix a
+    # provider that will not serve the account, so the first attempt is the last.
+    client = _failover([_FakeResp({}, status=status)], [_completion("b")])
+    assert client.complete("s", "u") == ("b", "stop")
+    assert (_calls(client, 0), _calls(client, 1)) == (1, 1)
+
+
+def test_a_refused_endpoint_is_not_asked_again_for_the_run():
+    client = _failover(
+        [_FakeResp({}, status=402)], [_completion("b"), _completion("c")],
+    )
+    client.complete("s", "u")
+    assert client.complete("s", "u") == ("c", "stop")
+    assert (_calls(client, 0), _calls(client, 1)) == (1, 2)
+
+
+def test_an_exhausted_endpoint_fails_over_for_that_call_only():
+    client = _failover(
+        [_FakeResp({}, status=500)] * 4 + [_completion("again")],
+        [_completion("b")],
+    )
+    assert client.complete("s", "u") == ("b", "stop")
+    # One failed call is not enough to retire a provider that is usually fine.
+    assert client.complete("s", "u") == ("again", "stop")
+    assert _calls(client, 0) == 5
+
+
+def test_an_endpoint_failing_call_after_call_is_retired():
+    client = _failover(
+        [_FakeResp({}, status=500)] * 8, [_completion("b"), _completion("c"), _completion("d")],
+    )
+    for expected in "bcd":
+        assert client.complete("s", "u") == (expected, "stop")
+    # Two calls spent their four attempts each; the third never reached it.
+    assert (_calls(client, 0), _calls(client, 1)) == (8, 3)
+
+
+def test_a_success_resets_the_failure_count():
+    client = _failover(
+        [_FakeResp({}, status=500)] * 4 + [_completion("a")] + [_FakeResp({}, status=500)] * 4
+        + [_completion("a2")],
+        [_completion("b"), _completion("c")],
+    )
+    assert client.complete("s", "u")[0] == "b"
+    assert client.complete("s", "u")[0] == "a"
+    assert client.complete("s", "u")[0] == "c"
+    assert client.complete("s", "u")[0] == "a2"
+
+
+def test_every_endpoint_failing_raises_the_last_real_error():
+    client = _failover([_FakeResp({}, status=402)], [_FakeResp({}, status=403)])
+    with pytest.raises(requests.HTTPError, match="HTTP 403"):
+        client.complete("s", "u")
+    # Both are retired now; a later call fails fast and still says why.
+    with pytest.raises(requests.HTTPError, match="HTTP 403"):
+        client.complete("s", "u")
+    assert (_calls(client, 0), _calls(client, 1)) == (1, 1)
+
+
+def test_failover_logs_the_switch(caplog):
+    client = _failover([_FakeResp({}, status=402)], [_completion("b")])
+    with caplog.at_level("ERROR"):
+        client.complete("s", "u")
+    assert "some/model failed" in caplog.text
+    assert "not asking it again this run" in caplog.text
+
+
+def test_a_failover_client_needs_an_endpoint():
+    with pytest.raises(ValueError):
+        FailoverClient(clients=[])

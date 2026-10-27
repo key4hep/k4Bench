@@ -53,6 +53,7 @@ from k4bench.blame.github import path_under
 from k4bench.blame.llm import (
     MAX_OUTPUT_TOKENS,
     ChatClient,
+    FailoverClient,
     chat_client_from_env,
     coerce_int,
     extract_json,
@@ -402,7 +403,7 @@ class OpenAICompatRanker:
     :class:`RankResult` rather than raising: a late report beats a blocked one,
     and blame is a best-effort sidecar."""
 
-    client: ChatClient
+    client: ChatClient | FailoverClient
 
     def rank(self, request: RankRequest) -> RankResult:
         """Score every candidate, retrieving historical evidence at most once.

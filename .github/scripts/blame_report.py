@@ -15,13 +15,21 @@ writing
 This is best-effort and runs *after* ``report.json`` is built and uploaded: a
 GitHub outage, a rate limit, or a force-pushed ``develop`` must never degrade the
 nightly report or its email. The caller isolates this command from the report
-and email. When ranking is configured, an empty or partial model response exits
-non-zero and writes no sidecar rather than silently publishing data the dashboard
-would hide. A score of zero is valid, but every candidate must still have the
-model's explanation — except regressions whose candidate discovery came back
-incomplete (rate limit, force-pushed range, caps): those are deliberately written
+and email. When ranking is configured, a night in which the model judged nothing
+exits non-zero and writes no sidecar rather than publishing candidates it never
+looked at. A *partial* ranking is published: a window the model could not
+reach stays unranked ("Not scored by the ranker" on the dashboard, absent from the
+email's ranked list, never a comment target) and the windows it did judge are not
+held back by it. A score of zero is valid; a candidate counts as judged only with
+the model's explanation — and regressions whose candidate discovery came back
+incomplete (rate limit, force-pushed range, caps) are deliberately written
 unranked, since a "most likely" over a partial candidate set would overclaim.
 Most nights have no confirmed, attributable regression at all.
+
+The exit status tells the caller which of those happened — see
+:data:`EXIT_FAILED` and :data:`EXIT_PARTIAL`; ``regression_report.sh`` turns
+both into a workflow error, because attribution that was wanted and is missing
+must be seen, not inferred from a log.
 
 Provenance is read from local run directories the report build already cached
 (``--cache-dir``) or a local tree (``--data-dir``); ``--data-url`` is a remote
@@ -73,6 +81,12 @@ from k4bench.artifacts import RUN_INFO  # noqa: E402
 from k4bench.layout import SIM, run_path, stack_dir  # noqa: E402
 
 _log = logging.getLogger(__name__)
+
+#: Ranking was configured and regressions needed attributing, but nothing could
+#: be ranked, so no sidecar was written.
+EXIT_FAILED = 1
+#: A sidecar was written, but some of its windows could not be ranked.
+EXIT_PARTIAL = 2
 
 
 def _local_packages(roots: list[str], platform: str, release: str) -> dict | None:
@@ -315,6 +329,17 @@ def main(argv: list[str] | None = None) -> int:
             getattr(client, "model", type(ranker).__name__),
             getattr(client, "max_tokens", "provider default"),
         )
+        endpoints = getattr(client, "clients", ())
+        if len(endpoints) > 1:
+            _log.info(
+                "blame_report: fallback model %s takes over if %s cannot answer",
+                endpoints[1].model, endpoints[0].model,
+            )
+        else:
+            _log.warning(
+                "blame_report: no K4BENCH_LLM_FALLBACK_* endpoint — an outage "
+                "of the one provider leaves tonight's regressions unattributed"
+            )
 
     blame = build_blame_report(
         report, packages_for_release=packages_for_release,
@@ -336,17 +361,27 @@ def main(argv: list[str] | None = None) -> int:
         print(f"blame for {blame.report_night or 'no data'}: nothing to attribute")
         return 0
 
+    status = 0
     if ranker is not None:
         n_ranked, n_expected, missing = ranking_coverage(blame)
         if n_expected and n_ranked != n_expected:
             shown = ", ".join(missing[:5])
             suffix = f", … (+{len(missing) - 5} more)" if len(missing) > 5 else ""
-            _log.error(
-                "blame_report: ranking incomplete (%d/%d rankable candidate rows); "
-                "refusing to write blame.json. Missing: %s%s",
-                n_ranked, n_expected, shown, suffix,
+            detail = (
+                f"{n_ranked}/{n_expected} rankable candidate rows ranked; "
+                f"missing: {shown}{suffix}"
             )
-            return 1
+            if not n_ranked:
+                _log.error(
+                    "blame_report: ranking failed — %s; refusing to write "
+                    "blame.json", detail,
+                )
+                return EXIT_FAILED
+            _log.error(
+                "blame_report: ranking incomplete — %s; writing blame.json with "
+                "the windows that were ranked", detail,
+            )
+            status = EXIT_PARTIAL
 
     out.mkdir(parents=True, exist_ok=True)
     blame_path.write_text(json.dumps(blame.to_json(), indent=2) + "\n")
@@ -357,7 +392,7 @@ def main(argv: list[str] | None = None) -> int:
         f"{len(blame.entries)} attributed regression(s), "
         f"{n_candidates} candidate PR(s) -> {blame_path}"
     )
-    return 0
+    return status
 
 
 if __name__ == "__main__":

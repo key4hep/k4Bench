@@ -31,6 +31,9 @@
 #   K4BENCH_LLM_API_KEY           — bearer token for the endpoint (kept in secrets)
 #   K4BENCH_LLM_MAX_TOKENS        — optional initial completion-token budget;
 #                                   length truncation grows it up to a safe cap
+#   K4BENCH_LLM_FALLBACK_URL/_MODEL/_API_KEY
+#                                 — a second endpoint (different provider) that
+#                                   takes over when the one above cannot answer
 #   K4BENCH_LLM_SUMMARY_MODEL     — optional model id for the PR comments'
 #                                   cross-configuration review only (step 5c);
 #                                   defaults to K4BENCH_LLM_MODEL
@@ -58,6 +61,18 @@ set -euo pipefail
 # package index's install hooks.
 PR_COMMENT_TOKEN="${K4BENCH_PR_COMMENT_TOKEN:-}"
 unset K4BENCH_PR_COMMENT_TOKEN
+
+# Attribution that was wanted and did not happen — a model that could not be
+# reached, a step that timed out or crashed, a comment that failed to post — is
+# an error annotation on the run and, once the report is uploaded and mailed, a
+# failed job. The report and the e-group email never wait on it; what it refuses
+# is a green run that quietly posted no pull-request comments. A night with
+# nothing to attribute, or nothing a comment was warranted for, is not a problem.
+ATTRIBUTION_PROBLEMS=0
+flag_attribution() {
+    echo "::error title=Pull-request attribution::$1"
+    ATTRIBUTION_PROBLEMS=$((ATTRIBUTION_PROBLEMS + 1))
+}
 
 # Personal EOS area (same as nightly_benchmark.sh).
 EOS_FQDN="eosuser.cern.ch"
@@ -144,9 +159,11 @@ echo "::endgroup::"
 # Runs *after* the report is uploaded and is fully isolated: a GitHub outage, a
 # rate limit, or a force-pushed develop must not fail the job. The whole block
 # is `{ ...; } || echo`, so any failure — build, upload, remote cleanup —
-# degrades to a log line instead of tripping `set -e`. When no blame.json is
-# produced (most nights: nothing to attribute; otherwise incomplete ranking,
-# timeout, or another best-effort failure), any sidecar an earlier run of this
+# degrades to a log line instead of tripping `set -e`. The blame command's exit
+# status is read, not swallowed: a failed, partial or timed-out attribution is
+# flagged (`flag_attribution`) and fails the job once the email is out. When no
+# blame.json is produced (most nights: nothing to attribute; otherwise a
+# ranking that failed outright, a timeout, or another failure), any sidecar an earlier run of this
 # night left on EOS is removed — report.json was just replaced above, and a
 # stale sidecar must not be joined to a report it never examined. Reuses the
 # report build's run cache for provenance (no re-download); GITHUB_TOKEN
@@ -157,13 +174,20 @@ echo "::endgroup::"
 # connections but never makes useful progress.
 echo "::group::5b. Blame sidecar"
 {
+    blame_rc=0
     timeout --signal=TERM --kill-after=30s "${K4BENCH_BLAME_TIMEOUT:-1h}" \
       python .github/scripts/blame_report.py \
         --report report/report.json \
         --output-dir report \
         --cache-dir "${RUNNER_TEMP:-/tmp}/k4bench_cache" \
         --data-url "${K4BENCH_DATA_URL}" \
-      || echo "No blame sidecar this night (nothing to attribute, incomplete ranking, timeout, or another best-effort failure)." >&2
+      || blame_rc=$?
+    case "${blame_rc}" in
+        0) ;;
+        2) flag_attribution "Some of tonight's regressions could not be ranked by the model; their windows carry no pull-request attribution and no comment (see 5b in the log)." ;;
+        124|137) flag_attribution "The blame step hit its ${K4BENCH_BLAME_TIMEOUT:-1h} wall-clock limit; tonight's regressions carry no pull-request attribution and no comment." ;;
+        *) flag_attribution "The blame step failed (exit ${blame_rc}); tonight's regressions carry no pull-request attribution and no comment (see 5b in the log)." ;;
+    esac
     if [[ -f report/blame.json ]]; then
         # Remove the previous sidecar before uploading: if the upload then
         # fails, the night is left with *no* sidecar — absence is the safe
@@ -211,7 +235,12 @@ if [[ -f report/blame.json ]]; then
               --config .github/blame-comments.yml \
               --reproducer-dir "root://${EOS_FQDN}/${EOS_ROOT}/${REPRODUCER_DIR}" \
               --dashboard-url "${K4BENCH_DASHBOARD_URL:-https://k4bench-dashboard.app.cern.ch}" \
-          || echo "No pull-request comments this night (nothing attributed confidently, no enabled repo, missing PyYAML, timeout, or a failed write)." >&2
+          || { comment_rc=$?
+               if [[ "${comment_rc}" == 3 ]]; then
+                   flag_attribution "The comment-storm circuit breaker tripped: tonight's attribution looked suspect, so no pull-request comment was posted (see 5c in the log)."
+               else
+                   flag_attribution "The pull-request comment step failed (exit ${comment_rc}): a comment may be missing, or a write to a Key4hep repository failed (see 5c in the log)."
+               fi; }
     } || echo "Pull-request comments step failed (best-effort; the report and email are unaffected)." >&2
 else
     echo "No blame sidecar this night — no pull request to comment on."
@@ -228,3 +257,8 @@ python -m k4bench.regression.notify report/report.json \
     --actions-url "${GITHUB_RUN_URL:-}" \
     --data-url "${K4BENCH_DATA_URL}"
 echo "::endgroup::"
+
+if (( ATTRIBUTION_PROBLEMS > 0 )); then
+    echo "ERROR: ${ATTRIBUTION_PROBLEMS} pull-request attribution problem(s) tonight — the report and the e-group email went out, but attribution is incomplete (see the annotations above)." >&2
+    exit 1
+fi
