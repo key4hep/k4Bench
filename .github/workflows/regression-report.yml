@@ -101,11 +101,13 @@ jobs:
           # A second endpoint on a *different provider*, used whenever the one
           # above cannot answer — a key that lapsed, billing that stopped, a
           # model that was retired, an outage. Without it any of those costs the
-          # night every ranking and every pull-request comment. Both URL and
-          # model are needed; the key is optional for keyless endpoints.
-          K4BENCH_LLM_FALLBACK_URL:     ${{ vars.K4BENCH_LLM_FALLBACK_URL }}
-          K4BENCH_LLM_FALLBACK_MODEL:   ${{ vars.K4BENCH_LLM_FALLBACK_MODEL }}
-          K4BENCH_LLM_FALLBACK_API_KEY: ${{ secrets.K4BENCH_LLM_FALLBACK_API_KEY }}
+          # night every ranking and every pull-request comment. Defaults to the
+          # CERN aigw proxy and the GLM model the AI PR review already falls back
+          # to, under the same per-model key; the repository variables
+          # K4BENCH_LLM_FALLBACK_URL / _MODEL override the endpoint and model.
+          K4BENCH_LLM_FALLBACK_URL:     ${{ vars.K4BENCH_LLM_FALLBACK_URL || 'https://aigw.cern.ch/v1' }}
+          K4BENCH_LLM_FALLBACK_MODEL:   ${{ vars.K4BENCH_LLM_FALLBACK_MODEL || 'GLM-5.2-NGT' }}
+          K4BENCH_LLM_FALLBACK_API_KEY: ${{ secrets.CERN_AIGW_GLM_API_KEY }}
           # The ranker may ask, once per window, to read the code behind an
           # older release boundary in the metric's own history before judging —
           # one extra model call and a bounded GitHub read, and an unranked
