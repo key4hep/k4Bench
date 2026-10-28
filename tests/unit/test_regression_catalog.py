@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from k4bench.analysis.trend import build_event_timing_trend, build_results_trend
+from k4bench.artifacts import COMPONENTS_SUFFIX, EVENTS_SUFFIX, RESULTS_SUFFIX
 from k4bench.layout import RECO, SIM, SUITES
 from k4bench.metrics import METRICS
 from k4bench.regression.catalog import (
@@ -13,6 +14,7 @@ from k4bench.regression.catalog import (
     REPORTED_ONLY_METRICS,
     RESULTS,
     RUN_METRICS,
+    source_of,
     sources,
 )
 from k4bench.regression.engine import ABS_DELTA_FLOOR, EFFECT_FLOOR
@@ -40,6 +42,30 @@ def test_the_reco_suite_adds_its_components_to_the_sim_suites_sources():
     reco = sources(RECO)
     assert reco[: len(sources(SIM))] == sources(SIM)
     assert any(source.component_judged for source in reco)
+
+
+def test_each_source_names_the_file_its_frame_is_built_from():
+    assert {source.name: source.suffix for source in sources(RECO)} == {
+        RESULTS: RESULTS_SUFFIX, "events": EVENTS_SUFFIX, "components": COMPONENTS_SUFFIX,
+    }
+
+
+def test_a_metric_is_read_from_the_source_recording_it_for_the_job_or_a_component():
+    def name(suite, metric, component=None):
+        source = source_of(suite, metric, component)
+        return source.name if source is not None else None
+
+    assert name(SIM, "wall_time_s") == RESULTS
+    assert name(SIM, "user_cpu_s") == RESULTS
+    assert name(SIM, "mean_rss_mb") == "events"
+    assert name(RECO, "initialize_s") == "components"
+    assert name(RECO, "initialize_s", "GeoSvc") == "components"
+    assert name(RECO, "seconds_per_event", "MyConformalTracking") == "components"
+    # Judged for the whole job only, or by another suite only, or never.
+    assert name(RECO, "wall_time_s", "GeoSvc") is None
+    assert name(RECO, "seconds_per_event") is None
+    assert name(SIM, "initialize_s") is None
+    assert name(SIM, "returncode") is None
 
 
 @pytest.mark.parametrize("suite", SUITES)

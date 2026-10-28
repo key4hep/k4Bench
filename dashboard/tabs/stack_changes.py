@@ -31,8 +31,9 @@ from k4bench.provenance.diff import (
 )
 from k4bench.provenance.stack import StackSnapshot
 from k4bench.regression.models import MetricVerdict, NightlyReport
+from k4bench.regression.render import SUITE_PROGRAMS
 from k4bench.labels import pretty_release, pretty_sample
-from k4bench.layout import SIM, stack_dir
+from k4bench.layout import stack_dir
 from sections import STACK_CHANGES_PLATFORM_WIDE, SectionScope
 from remote_cache import (
     cached_fetch_blame,
@@ -264,14 +265,15 @@ def _from_default_for(releases: list[str], default: str | None = None) -> str:
     return default if default in releases else releases[1]
 
 
-def _forget_stale_stack_scope(platform: str, stack: str) -> None:
-    """Re-default the comparison when the sidebar platform/stack changes.
+def _forget_stale_stack_scope(suite: str, platform: str, stack: str) -> None:
+    """Re-default the comparison when the page's suite or the sidebar
+    platform/stack changes.
 
     The widget keys and the query parameters written by this tab otherwise
     outlive a trip to another section. On the first render, query parameters
     are preserved because they may be an intentional deep link.
     """
-    scope = (platform, stack)
+    scope = (suite, platform, stack)
     previous = st.session_state.get(_SCOPE_KEY)
     st.session_state[_SCOPE_KEY] = scope
     if previous is not None and previous != scope:
@@ -285,33 +287,38 @@ def _forget_stale_stack_scope(platform: str, stack: str) -> None:
             st.query_params.pop(param, None)
 
 
-def _packages(data_url: str, platform: str, stack: str) -> dict | None:
-    """The release's package map, from whichever detector has it recorded.
+def _packages(data_url: str, suite: str, platform: str, stack: str) -> dict | None:
+    """The release's package map, from whichever of *suite*'s detectors has it
+    recorded.
 
     Detectors are tried in turn because any one of them may have skipped this
     release, or may have run it before provenance capture existed.
     """
-    for detector in cached_list_detectors(data_url, SIM):
-        packages = cached_fetch_stack_packages(data_url, SIM, detector, platform, stack)
+    for detector in cached_list_detectors(data_url, suite):
+        packages = cached_fetch_stack_packages(data_url, suite, detector, platform, stack)
         if packages:
             return packages
     return None
 
 
-def packages_for_release(data_url: str, platform: str, release: str) -> dict | None:
+def packages_for_release(
+    data_url: str, suite: str, platform: str, release: str,
+) -> dict | None:
     """The package map for a bare release tag (e.g. ``2026-07-10``) on *platform*,
-    from whichever detector recorded it. The public provenance lookup other tabs
+    from whichever of *suite*'s detectors recorded it. The public provenance lookup other tabs
     use, so they need neither the ``key4hep-`` prefix nor this module's
     internals."""
-    return _packages(data_url, platform, stack_dir(release))
+    return _packages(data_url, suite, platform, stack_dir(release))
 
 
-def _snapshot(data_url: str, platform: str, stack: str, detector: str, sample: str):
-    snapshot = cached_fetch_stack_snapshot(data_url, SIM, detector, platform, stack, sample)
+def _snapshot(
+    data_url: str, suite: str, platform: str, stack: str, detector: str, sample: str,
+):
+    snapshot = cached_fetch_stack_snapshot(data_url, suite, detector, platform, stack, sample)
     if snapshot is not None:
         return snapshot
-    for source in dict.fromkeys([detector, *cached_list_detectors(data_url, SIM)]):
-        snapshot = cached_fetch_stack_snapshot(data_url, SIM, source, platform, stack, None)
+    for source in dict.fromkeys([detector, *cached_list_detectors(data_url, suite)]):
+        snapshot = cached_fetch_stack_snapshot(data_url, suite, source, platform, stack, None)
         if snapshot is not None:
             return snapshot
     return None
@@ -325,10 +332,11 @@ def _git_packages(packages: dict, snapshot: StackSnapshot | None) -> dict:
 
 
 def render(
-    data_url: str, cache_dir: str, platform: str, detector: str, sample: str,
+    data_url: str, suite: str, cache_dir: str, platform: str, detector: str, sample: str,
     stack: str,
 ) -> SectionScope | None:
-    """Render the tab; return the scope note's override when one applies.
+    """Render the tab for *suite*'s runs and reports; return the scope note's
+    override when one applies.
 
     ``None`` — the registry's declaration stands — on every path that does not
     reach the reverse view, including the three ranges below that cannot be
@@ -336,7 +344,7 @@ def render(
     never drawn.
     """
     try:
-        stacks = list_platform_stacks(data_url, SIM, platform)
+        stacks = list_platform_stacks(data_url, suite, platform)
     except requests.RequestException as err:
         st.warning(
             f"Could not list the Key4hep releases on `{platform}`: {err}. "
@@ -347,7 +355,7 @@ def render(
     # compare must still drop the previous platform's picker and toggle state,
     # or returning to a comparable platform resumes a scope the reader left
     # behind on another one.
-    _forget_stale_stack_scope(platform, stack)
+    _forget_stale_stack_scope(suite, platform, stack)
     if len(stacks) < 2:
         st.info(
             f"Need at least two Key4hep releases on `{platform}` to compare; "
@@ -395,11 +403,12 @@ def render(
 
     span = _span(releases, base_release, head_release)
     snapshots = [
-        _snapshot(data_url, platform, stack_dir(release), detector, sample)
+        _snapshot(data_url, suite, platform, stack_dir(release), detector, sample)
         for release in (base_release, head_release)
     ]
     base, head = [
-        snapshot.packages if snapshot else _packages(data_url, platform, stack_dir(release))
+        snapshot.packages if snapshot
+        else _packages(data_url, suite, platform, stack_dir(release))
         for snapshot, release in zip(snapshots, (base_release, head_release))
     ]
     missing = [r for r, p in ((base_release, base), (head_release, head)) if not p]
@@ -416,7 +425,7 @@ def render(
     elif all(snapshot is not None and snapshot.complete for snapshot in snapshots):
         provenance_state = _render_snapshot_diff(
             *snapshots, base_release, head_release, span,
-            scope=f"ddsim · {detector} · {pretty_sample(sample)}",
+            scope=f"{SUITE_PROGRAMS[suite]} · {detector} · {pretty_sample(sample)}",
         )
     else:
         # With one uncaptured endpoint only the shared HEAD evidence is comparable.
@@ -433,7 +442,7 @@ def render(
     # non-empty span means the *selected range* spans more than one release
     # step (see :func:`_span`) — the only case where the diff is cumulative.
     platform_wide = _render_regressions_in_range(
-        data_url, cache_dir, platform, base_release, head_release,
+        data_url, suite, cache_dir, platform, base_release, head_release,
         releases=releases, detector=detector, sample=sample,
         provenance_state=provenance_state, cumulative=bool(span),
     )
@@ -491,16 +500,16 @@ def _regressions_in_range(
 
 
 def _reports_since(
-    data_url: str, dates: list[str], base_release: str,
+    data_url: str, suite: str, dates: list[str], base_release: str,
 ) -> list[NightlyReport]:
     """Batch-fetch the parseable reports at/after *base_release*."""
     report_dates = tuple(date for date in dates if date >= base_release)
-    report_map = cached_fetch_reports(data_url, SIM, report_dates)
+    report_map = cached_fetch_reports(data_url, suite, report_dates)
     return [report_map[date] for date in report_dates if date in report_map]
 
 
 def _render_regressions_in_range(
-    data_url: str, cache_dir: str, platform: str,
+    data_url: str, suite: str, cache_dir: str, platform: str,
     base_release: str, head_release: str,
     *, releases: list[str], detector: str, sample: str,
     provenance_state: _ProvenanceState,
@@ -524,7 +533,7 @@ def _render_regressions_in_range(
     package range is never mistaken for that metric's attribution interval.
     """
     try:
-        dates = cached_list_report_dates(data_url, SIM)
+        dates = cached_list_report_dates(data_url, suite)
     except Exception as err:
         st.markdown("##### Regressions in this range")
         st.warning(
@@ -536,7 +545,7 @@ def _render_regressions_in_range(
     # on/after the older end can carry one whose onset is in range. Fetch the
     # cold window in parallel; one serial HTTP round-trip per historical night
     # made old cumulative comparisons needlessly slow.
-    reports = _reports_since(data_url, dates, base_release)
+    reports = _reports_since(data_url, suite, dates, base_release)
     all_hits = _regressions_in_range(reports, platform, base_release, head_release)
     scoped_hits = [
         v for v in all_hits if v.detector == detector and v.sample == sample
@@ -689,7 +698,7 @@ def _render_regressions_in_range(
         return show_all
 
     render_metric_trend(
-        selected, data_url, cache_dir,
+        selected, data_url, suite, cache_dir,
         list_run_dates=cached_list_run_dates,
         fetch_runs_windowed=cached_fetch_runs_windowed,
         widget_namespace=f"stack_regr_{base_release}_{head_release}",
@@ -701,7 +710,7 @@ def _render_regressions_in_range(
         head_release=head_release,
     )
     render_candidate_ranking(
-        selected, _blame_for_verdict(data_url, selected), show_empty=True,
+        selected, _blame_for_verdict(data_url, suite, selected), show_empty=True,
     )
     return show_all
 
@@ -738,7 +747,7 @@ def _render_focus_action(
 
 
 def _blame_for_verdict(
-    data_url: str, verdict: MetricVerdict,
+    data_url: str, suite: str, verdict: MetricVerdict,
 ) -> BlameReport | None:
     """Load the sidecar that ranked *verdict*, if one is still available.
 
@@ -751,7 +760,7 @@ def _blame_for_verdict(
         verdict.first_confirmed_run_id, verdict.run_id,
     )))
     for night in nights:
-        raw = cached_fetch_blame(data_url, SIM, night)
+        raw = cached_fetch_blame(data_url, suite, night)
         if not raw:
             continue
         try:

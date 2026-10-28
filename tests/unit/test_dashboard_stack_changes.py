@@ -111,7 +111,7 @@ def _app(dashboard_dir, stack_names, packages, from_release, to_release,
     # declaration stands). Parked in session state so a test can read it without
     # adding an element the other tests' assertions would see.
     _st.session_state["_scope_override"] = _tab.render(
-        "https://example.invalid", "/tmp/cache",
+        "https://example.invalid", "sim", "/tmp/cache",
         "x86_64-almalinux9-gcc14.2.0-opt",
         detector, sample, selected_stack,
     )
@@ -289,7 +289,7 @@ def test_reports_since_fetches_the_historical_window_in_one_batch(monkeypatch):
 
     monkeypatch.setattr(stack_changes, "cached_fetch_reports", _batch)
     reports = stack_changes._reports_since(
-        "url",
+        "url", "sim",
         ["2026-07-08", "2026-07-09", "2026-07-10"],
         "2026-07-09",
     )
@@ -300,8 +300,8 @@ def test_reports_since_fetches_the_historical_window_in_one_batch(monkeypatch):
 def test_packages_for_release_prefixes_the_release_tag(monkeypatch):
     seen = {}
     monkeypatch.setattr(stack_changes, "_packages",
-                        lambda url, plat, stack: seen.setdefault("stack", stack))
-    stack_changes.packages_for_release("url", PLAT, "2026-07-10")
+                        lambda url, suite, plat, stack: seen.setdefault("stack", stack))
+    stack_changes.packages_for_release("url", "sim", PLAT, "2026-07-10")
     assert seen["stack"] == "key4hep-2026-07-10"
 
 
@@ -563,7 +563,7 @@ def test_unknown_sidebar_stack_falls_back_to_the_newest_pair():
 
 def test_sidebar_stack_change_clears_the_previous_comparison(monkeypatch):
     state = {
-        "stack_change_scope": (PLAT, "key4hep-2026-07-10"),
+        "stack_change_scope": ("sim", PLAT, "key4hep-2026-07-10"),
         "stack_from": "2026-07-09",
         "stack_to": "2026-07-10",
     }
@@ -571,10 +571,10 @@ def test_sidebar_stack_change_clears_the_previous_comparison(monkeypatch):
     monkeypatch.setattr(stack_changes.st, "session_state", state)
     monkeypatch.setattr(stack_changes.st, "query_params", query)
 
-    stack_changes._forget_stale_stack_scope(PLAT, "key4hep-2026-07-05")
+    stack_changes._forget_stale_stack_scope("sim", PLAT, "key4hep-2026-07-05")
 
     assert state == {
-        "stack_change_scope": (PLAT, "key4hep-2026-07-05"),
+        "stack_change_scope": ("sim", PLAT, "key4hep-2026-07-05"),
     }
     assert query == {}
 
@@ -585,7 +585,7 @@ def test_first_stack_changes_render_preserves_deep_link_dates(monkeypatch):
     monkeypatch.setattr(stack_changes.st, "session_state", state)
     monkeypatch.setattr(stack_changes.st, "query_params", query)
 
-    stack_changes._forget_stale_stack_scope(PLAT, "key4hep-2026-07-05")
+    stack_changes._forget_stale_stack_scope("sim", PLAT, "key4hep-2026-07-05")
 
     assert query == {"from": "2026-06-20", "to": "2026-06-25"}
 
@@ -598,7 +598,7 @@ def test_packages_fall_back_to_another_detector(monkeypatch):
 
     monkeypatch.setattr(stack_changes, "cached_list_detectors", lambda url, suite: ["IDEA", "SiD"])
     monkeypatch.setattr(stack_changes, "cached_fetch_stack_packages", _fetch)
-    assert stack_changes._packages("u", PLAT, "key4hep-2026-07-10") == _STACKS["key4hep-2026-07-10"]
+    assert stack_changes._packages("u", "sim", PLAT, "key4hep-2026-07-10") == _STACKS["key4hep-2026-07-10"]
 
 
 def test_packages_none_when_no_detector_has_it(monkeypatch):
@@ -607,7 +607,7 @@ def test_packages_none_when_no_detector_has_it(monkeypatch):
         stack_changes, "cached_fetch_stack_packages", lambda *a: None,
     )
     # Unknown must never read as "an empty stack".
-    assert stack_changes._packages("u", PLAT, "key4hep-2026-07-10") is None
+    assert stack_changes._packages("u", "sim", PLAT, "key4hep-2026-07-10") is None
 
 
 # ── how far apart the releases are ───────────────────────────────────────────
@@ -1036,7 +1036,7 @@ def test_metric_history_keeps_failed_value_and_healthy_sibling(monkeypatch):
 
     def _history(verdict):
         return trend._metric_history(
-            verdict, "url", "cache",
+            verdict, "url", "sim", "cache",
             list_run_dates=lambda *_args: {
                 "key4hep-2026-06-26": ["2026-06-26"],
                 "key4hep-2026-06-27": ["2026-06-27"],
@@ -1083,7 +1083,7 @@ def test_metric_history_keeps_failed_event_value_for_failure_marker(monkeypatch)
     )
 
     history = trend._metric_history(
-        _confirmed(metric="mean_time_s"), "url", "cache",
+        _confirmed(metric="mean_time_s"), "url", "sim", "cache",
         list_run_dates=lambda *_args: {
             "key4hep-2026-06-26": ["2026-06-26"],
             "key4hep-2026-06-27": ["2026-06-27"],
@@ -1116,7 +1116,7 @@ def test_failure_only_metric_history_keeps_reason_metadata(monkeypatch):
     )
 
     history = trend._metric_history(
-        _confirmed(), "url", "cache",
+        _confirmed(), "url", "sim", "cache",
         list_run_dates=lambda *_args: {
             "key4hep-2026-06-27": ["2026-06-27"],
         },
@@ -1138,7 +1138,7 @@ def test_failure_only_metric_history_keeps_reason_metadata(monkeypatch):
     monkeypatch.setattr(trend.st, "caption", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(trend, "_metric_history", lambda *_args, **_kwargs: history)
     trend.render_metric_trend(
-        _confirmed(), "url", "cache",
+        _confirmed(), "url", "sim", "cache",
         list_run_dates=lambda *_args: {},
         fetch_runs_windowed=lambda *_args: (),
         widget_namespace="test",
@@ -1186,7 +1186,7 @@ def test_orphan_event_history_reports_missing_result_record(monkeypatch):
     )
 
     history = trend._metric_history(
-        _confirmed(metric="mean_time_s"), "url", "cache",
+        _confirmed(metric="mean_time_s"), "url", "sim", "cache",
         list_run_dates=lambda *_args: {
             "key4hep-2026-06-27": ["2026-06-27"],
         },
@@ -1205,6 +1205,74 @@ def test_orphan_event_history_reports_missing_result_record(monkeypatch):
         orphan_configs,
     )
     assert "no matching result record" in reason and "not judged" in reason
+
+
+def test_a_components_history_is_its_rows_of_the_reco_component_costs(monkeypatch):
+    import numpy as np
+    import pandas as pd
+
+    from tabs import _regression_trend as trend
+
+    days = ["2026-10-26", "2026-10-27"]
+    results = pd.DataFrame({
+        "run_id": days, "x_date": pd.to_datetime(days), "label": "baseline",
+        "returncode": 0, "wall_time_s": [480.0, 470.0],
+    })
+    costs = pd.DataFrame({
+        "run_id": days * 3, "x_date": pd.to_datetime(days * 3), "label": "baseline",
+        "component": [None, None, "SimulateSiPMwithEdep", "SimulateSiPMwithEdep",
+                      "GeoSvc", "GeoSvc"],
+        "seconds_per_event": [np.nan, np.nan, 3.89, 1.53, np.nan, np.nan],
+        "initialize_s": [40.0, 41.0, 0.1, 0.1, 30.0, 31.0],
+    })
+    monkeypatch.setattr(trend, "cached_load_trend_results", lambda _dirs: results)
+    monkeypatch.setattr(trend, "cached_load_trend_component_cost", lambda _dirs: costs)
+    monkeypatch.setattr(trend, "cached_load_trend_machine_info", lambda _dirs: None)
+    downloaded = []
+
+    def _history(**kw):
+        verdict = _confirmed(
+            run_id=days[1], run_date=days[1], onset_run_id=days[1], onset_run_date=days[1],
+            last_accepted_run_id=days[0], last_accepted_run_date=days[0], **kw,
+        )
+
+        def fetch(*args):
+            downloaded.append(args[-1])
+            return ("run-dir",)
+
+        frame, *_ = trend._metric_history(
+            verdict, "url", "reco", "cache",
+            list_run_dates=lambda *_args: {f"key4hep-{day}": [day] for day in days},
+            fetch_runs_windowed=fetch,
+        )
+        return frame
+
+    frame = _history(
+        metric="seconds_per_event", metric_family="component_time",
+        sub_detector="SimulateSiPMwithEdep",
+    )
+    assert list(frame["seconds_per_event"]) == [3.89, 1.53]
+    assert downloaded[-1][-1] == "baseline_components.json"
+    # The job's own initialize, not a component's.
+    assert list(_history(metric="initialize_s")["initialize_s"]) == [40.0, 41.0]
+    assert list(_history(
+        metric="initialize_s", metric_family="component_init", sub_detector="GeoSvc",
+    )["initialize_s"]) == [30.0, 31.0]
+
+
+def test_every_suites_sources_have_a_frame_to_draw_from(monkeypatch):
+    import pandas as pd
+
+    from k4bench.layout import SUITES
+    from k4bench.regression.catalog import sources
+    from tabs import _regression_trend as trend
+
+    for name in ("cached_load_trend_event_timing", "cached_load_trend_component_cost"):
+        monkeypatch.setattr(trend, name, lambda _dirs: pd.DataFrame())
+    for suite in SUITES:
+        for source in sources(suite):
+            # A source it has no loader for raises KeyError.
+            trend.source_frame(source.name, None, ("run-dir",))
 
 
 def test_hidden_marker_note_names_the_actual_reason():

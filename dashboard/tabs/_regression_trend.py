@@ -21,6 +21,7 @@ import streamlit as st
 
 from data import (
     RUN_BASE,
+    cached_load_trend_component_cost,
     cached_load_trend_event_timing,
     cached_load_trend_machine_info,
     cached_load_trend_results,
@@ -32,14 +33,13 @@ from k4bench.analysis.loader import (
     with_cpu_efficiency,
 )
 from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
-from k4bench.artifacts import EVENTS_SUFFIX
+from k4bench.artifacts import RESULTS_SUFFIX
 from k4bench.regression.engine import Z_THRESHOLD
 from k4bench.regression.models import MetricVerdict, Severity
 from k4bench.labels import pretty_sample
-from k4bench.layout import SIM
 from k4bench.metrics import metric_title
 from k4bench.regression.render import metric_name
-from k4bench.regression.catalog import EVENT_VALUE_METRICS, RUN_VALUE_METRICS
+from k4bench.regression.catalog import RESULTS, source_of, sources
 from k4bench.results.reliability_evidence import run_reliability_map
 from tabs import _blame
 from tabs._regression_flags import add_severity_markers, metric_option
@@ -135,6 +135,7 @@ def _series_key(verdict: MetricVerdict) -> str:
     """Stable per-series suffix shared by filter and chart widget keys."""
     return "_".join(filter(None, (
         verdict.detector, verdict.sample, verdict.label, verdict.metric,
+        verdict.sub_detector,
     )))
 
 
@@ -184,7 +185,7 @@ def _release_window_pairs(
 
 
 def _metric_history(
-    verdict: MetricVerdict, data_url: str, cache_dir: str, *,
+    verdict: MetricVerdict, data_url: str, suite: str, cache_dir: str, *,
     list_run_dates: Callable,
     fetch_runs_windowed: Callable,
 ) -> tuple[
@@ -193,9 +194,19 @@ def _metric_history(
     set[tuple[str, str]],
     set[tuple[str, str]],
 ] | None:
-    """Fetch the shared release-budgeted history for one verdict series."""
+    """Fetch the shared release-budgeted history for one verdict series of
+    *suite*: its config's rows, and its component's for a component's verdict,
+    of the frame the catalog reads the metric from
+    (:func:`~k4bench.regression.catalog.source_of`)."""
+    source = source_of(suite, verdict.metric, verdict.sub_detector)
+    if source is None and verdict.sub_detector is None:
+        # A results column the report records without judging, such as a
+        # failed config's returncode.
+        source = next(s for s in sources(suite) if s.name == RESULTS)
+    if source is None:
+        return None
     stacks_dates = list_run_dates(
-        data_url, SIM, verdict.detector, verdict.platform, verdict.sample
+        data_url, suite, verdict.detector, verdict.platform, verdict.sample
     )
     all_pairs = sorted(
         (date, stack) for stack, dates in stacks_dates.items() for date in dates
@@ -207,14 +218,14 @@ def _metric_history(
     windowed_items = tuple(sorted(
         (stack, tuple(dates)) for stack, dates in window.items()
     ))
-    # Of each run, what the chart reads: its results and machine info, and an
-    # event metric's events of the verdict's configuration alone.
+    # Of each run, what the chart reads: its results and machine info, and the
+    # file the metric's frame is built from, of the verdict's configuration alone.
     files = RUN_BASE + (
-        (f"{glob.escape(verdict.label)}{EVENTS_SUFFIX}",)
-        if verdict.metric in EVENT_VALUE_METRICS else ()
+        (f"{glob.escape(verdict.label)}{source.suffix}",)
+        if source.suffix != RESULTS_SUFFIX else ()
     )
     run_dirs = fetch_runs_windowed(
-        data_url, SIM, verdict.detector, verdict.platform, verdict.sample,
+        data_url, suite, verdict.detector, verdict.platform, verdict.sample,
         cache_dir, windowed_items, files,
     )
     if not run_dirs:
@@ -226,16 +237,13 @@ def _metric_history(
         results_df, cached_load_trend_machine_info(run_dirs),
     )
 
-    if verdict.metric in EVENT_VALUE_METRICS:
-        df = cached_load_trend_event_timing(run_dirs)
-        if not is_valid_df(df):
-            return None
-    else:
-        df = results_df
-        if not is_valid_df(df):
-            return None
-        if verdict.metric in RUN_VALUE_METRICS:
-            df = with_cpu_efficiency(df)
+    df = source_frame(source.name, results_df, run_dirs)
+    if not is_valid_df(df):
+        return None
+    df = (
+        source.component_rows(df).loc[lambda rows: rows["component"] == verdict.sub_detector]
+        if verdict.sub_detector is not None else source.job_rows(df)
+    )
 
     # A failed config can leave plausible partial run metrics and event data;
     # keep those values for an explicit FAILURE marker, but reject an event
@@ -250,6 +258,21 @@ def _metric_history(
         df[df["label"] == verdict.label]
     )
     return df.sort_values("x_date"), reliability, failed_configs, orphan_configs
+
+
+def source_frame(
+    name: str, results: pd.DataFrame | None, run_dirs: tuple[str, ...],
+) -> pd.DataFrame | None:
+    """The frame of the catalog source named *name*
+    (:data:`k4bench.regression.catalog.CATALOGS`) over *run_dirs*, whose
+    *results* are read already."""
+    if name == RESULTS:
+        return with_cpu_efficiency(results) if is_valid_df(results) else results
+    loaders = {
+        "events": cached_load_trend_event_timing,
+        "components": cached_load_trend_component_cost,
+    }
+    return loaders[name](run_dirs)
 
 
 def _missing_run_reason(
@@ -296,15 +319,16 @@ def _missing_run_reason(
 
 
 def render_metric_trend(
-    verdict: MetricVerdict, data_url: str, cache_dir: str, *,
+    verdict: MetricVerdict, data_url: str, suite: str, cache_dir: str, *,
     list_run_dates: Callable, fetch_runs_windowed: Callable,
     widget_namespace: str, include_scope: bool = False,
     reliability_slot=None,
 ) -> None:
-    """Render the canonical one-metric regression evidence chart."""
+    """Render the canonical one-metric regression evidence chart of *suite*'s
+    *verdict*."""
     try:
         history = _metric_history(
-            verdict, data_url, cache_dir,
+            verdict, data_url, suite, cache_dir,
             list_run_dates=list_run_dates,
             fetch_runs_windowed=fetch_runs_windowed,
         )

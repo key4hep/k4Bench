@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 from base64 import urlsafe_b64encode
 from dataclasses import replace
 from urllib.parse import parse_qs, quote, urlsplit
@@ -4713,9 +4714,11 @@ def test_a_reco_comment_is_keyed_worded_and_reviewed_as_a_reconstruction():
     assert request.regressions[0].components == v.component_deltas
     body = draft.render().body
     assert "k4Bench's nightly reconstruction benchmarks confirmed" in body
-    # The Reconstruction page has none of the views a comment links into yet,
-    # so a reco comment carries no dashboard link.
-    assert _DASH not in body
+    # Every link lands on the Reconstruction page's own report views.
+    links = re.findall(rf"{re.escape(_DASH)}[^)\s\"]*", body)
+    assert any("tab=Stack+Changes" in link for link in links)
+    assert any("view=Nightly+Report" in link for link in links)
+    assert all(link.startswith(f"{_DASH}/reconstruction?") for link in links)
 
 
 def test_a_sim_comment_keeps_its_wording_and_its_links():

@@ -58,6 +58,8 @@ def _store() -> dict[str, object]:
         f"{BASE}/runs/reco/CLD": [f"{DET}/"],
         f"{BASE}/runs/reco/CLD/{DET}": [f"{PLAT}/"],
         platform: [f"key4hep-{rel}/" for rel in RUNS],
+        # A report a night, which the trend window is bounded by.
+        f"{BASE}/reports/reco": [f"{night}/" for nights in RUNS.values() for night in nights],
     }
     for rel, nights in RUNS.items():
         tree[f"{platform}/key4hep-{rel}"] = [f"{SAMPLE}/"]

@@ -33,10 +33,15 @@ from k4bench.regression.models import (
     UNRELIABLE_HOST_REASON,
     unjudged_cause,
 )
-from k4bench.layout import RECO, SIM
+from k4bench.layout import RECO, SIM, SUITES
 from k4bench.regression.render import (
+    SUITE_PAGE_PATHS,
+    SUITE_PROGRAMS,
+    SUITE_REPORT_VIEWS,
+    SUITE_TITLES,
     detector_badge,
     from_json,
+    report_views_url,
     suite_page_url,
     to_json,
 )
@@ -262,6 +267,13 @@ def test_each_suite_links_to_its_own_dashboard_page():
     assert suite_page_url(base, SIM) == base
     assert suite_page_url(f"{base}/", RECO) == f"{base}/reconstruction"
     assert suite_page_url(f"{base}/?tab=Overview", RECO) == f"{base}/reconstruction?tab=Overview"
+    assert report_views_url(base, RECO) == f"{base}/reconstruction"
+    assert report_views_url(None, RECO) is None
+
+
+def test_every_suite_is_named_paged_and_linked_into():
+    for table in (SUITE_TITLES, SUITE_PAGE_PATHS, SUITE_PROGRAMS, SUITE_REPORT_VIEWS):
+        assert set(table) == set(SUITES)
 
 
 def test_summary_splits_new_and_reconfirmed():

@@ -1,10 +1,9 @@
 """The Overview tab's data, shaped from the nightly reports — no rendering.
 
-Everything here turns the precomputed ``reports/sim/{date}/report.json`` files
-into the frames, rosters and styles the tab's views draw (:func:`overview_inputs`),
-and is the tab's unit-test surface. A suite no report judges shapes the same
-frames from its runs instead (:func:`run_overview_inputs`), for the two figure
-views alone. The figures and the render flow live in
+Everything here turns a suite's precomputed ``reports/{suite}/{date}/report.json``
+files into the frames, rosters and styles the tab's views draw
+(:func:`overview_inputs`), and is the tab's unit-test surface. The figures and
+the render flow live in
 :mod:`tabs.detectors_overview`, the Regression Status view in
 :mod:`tabs._regression_status`.
 """
@@ -19,7 +18,6 @@ from urllib.parse import urlencode
 
 import pandas as pd
 
-from k4bench.analysis.loader import failed_config_mask, recorded_config_rows
 from k4bench.labels import BASELINE_LABEL
 from k4bench.regression.models import NightlyReport, RunGroupReport, Severity
 from k4bench.regression.render import detector_badge
@@ -755,109 +753,3 @@ def overview_inputs(
         scope_empty=scoped_wide.empty and hist.empty and not scoped_groups,
     )
 
-
-#: The run-trend frame each Overview metric is read from: the whole job's
-#: (``build_results_trend``) or its events' (``build_event_timing_trend``).
-_RESULT_METRICS = ["wall_time_s", "user_cpu_s", "peak_vmem_mb", "peak_rss_mb"]
-_EVENT_METRICS = [m for m in METRIC_ORDER if m not in _RESULT_METRICS]
-
-
-def _night(run_date) -> str:
-    return pd.Timestamp(run_date).strftime("%Y-%m-%d")
-
-
-def run_history_rows(
-    detector: str,
-    results: pd.DataFrame | None,
-    events: pd.DataFrame | None,
-    reliability: dict[str, bool | None],
-) -> pd.DataFrame:
-    """*detector*'s :data:`BASELINE_LABEL` runs as :func:`history_rows` rows,
-    read from its run trends rather than from reports.
-
-    *results* and *events* are the detector's ``build_results_trend`` and
-    ``build_event_timing_trend`` frames, *reliability* its runs'
-    ``{run_id: reliable}``. No report judged these values, so a healthy run's
-    severity is ``UNKNOWN`` (never a flag); a failed run's is ``FAILURE``, so
-    the views keep its partial values apart as they do for the reports.
-    Event values whose config wrote no result row (a partial file left by a
-    crash) are dropped.
-    """
-    if results is None or results.empty:
-        return pd.DataFrame(columns=["night", "run_night", *_HIST_COLS])
-    results = results[results["label"] == _BASELINE_LABEL]
-    failed = set(results.loc[failed_config_mask(results), "run_id"])
-    events = recorded_config_rows(events, results)
-    parts = []
-    for frame, metrics in ((results, _RESULT_METRICS), (events, _EVENT_METRICS)):
-        if frame is None or frame.empty:
-            continue
-        frame = frame[frame["label"] == _BASELINE_LABEL]
-        present = [m for m in metrics if m in frame.columns]
-        long = frame.melt(
-            id_vars=["run_id", "run_date", "k4h_release"], value_vars=present,
-            var_name="metric", value_name="value",
-        )
-        parts.append(long.dropna(subset=["value"]))
-    if not parts:
-        return pd.DataFrame(columns=["night", "run_night", *_HIST_COLS])
-    rows = pd.concat(parts, ignore_index=True)
-    rows["detector"] = detector
-    rows["run_night"] = [_night(d) for d in rows["run_date"]]
-    rows["night"] = [_tag_date(rel, rn) for rel, rn in zip(rows["k4h_release"], rows["run_night"])]
-    rows["severity"] = [
-        Severity.FAILURE.value if run_id in failed else Severity.UNKNOWN.value
-        for run_id in rows["run_id"]
-    ]
-    rows["reliable"] = [reliability.get(run_id) for run_id in rows["run_id"]]
-    return rows[["night", "run_night", *_HIST_COLS]].reset_index(drop=True)
-
-
-def run_reliability_rows(
-    detector: str, results: pd.DataFrame | None, reliability: dict[str, bool | None],
-) -> pd.DataFrame:
-    """*detector*'s runs as :func:`reliability_history` rows: one per run,
-    failed ones included."""
-    if results is None or results.empty:
-        return pd.DataFrame(columns=["night", "run_night", "detector", "reliable"])
-    runs = results.drop_duplicates("run_id")
-    run_nights = [_night(d) for d in runs["run_date"]]
-    return pd.DataFrame({
-        "night": [_tag_date(rel, rn) for rel, rn in zip(runs["k4h_release"], run_nights)],
-        "run_night": run_nights,
-        "detector": detector,
-        "reliable": [reliability.get(run_id) for run_id in runs["run_id"]],
-    })
-
-
-def run_overview_inputs(
-    hist_rows: pd.DataFrame, rel_hist: pd.DataFrame, *, platform: str, sample: str,
-) -> OverviewInputs:
-    """The two figure views' inputs from the window's runs: *hist_rows* and
-    *rel_hist* of every detector (:func:`run_history_rows`,
-    :func:`run_reliability_rows`). The report-only inputs stay empty."""
-    detectors = sorted(set(rel_hist["detector"]) | set(hist_rows["detector"]))
-    n_families = len({detector_family(d)[0] for d in detectors})
-    palette = PALETTES[PALETTE_NAMES[auto_palette_index(n_families)]]
-    nights = sorted(rel_hist["run_night"]) if not rel_hist.empty else []
-    return OverviewInputs(
-        platform=platform,
-        sample=sample,
-        latest_night=nights[-1] if nights else "",
-        hist_rows=hist_rows,
-        # The window is every run there is to read: the landscape takes each
-        # detector's newest run in it.
-        snap_rows=hist_rows,
-        rel_hist=rel_hist,
-        window_nights=sorted(set(nights), reverse=True),
-        status_frames=[],
-        scoped_groups={},
-        mail_reports={},
-        detectors=detectors,
-        styles=detector_styles(detectors, palette),
-        scoped_detectors=detectors,
-        window_roster=detectors,
-        excluded=[],
-        last_run=last_run_nights(rel_hist),
-        scope_empty=hist_rows.empty,
-    )

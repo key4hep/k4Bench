@@ -200,8 +200,9 @@ def build_comments(
             attribution=attribution,
             facts_payload=_facts_payload(plan, request, reproduce),
             reproduce=reproduce,
-            # Every link a comment carries is into a report view, so a suite
-            # whose page has none gets no links at all.
+            # Every link a comment carries is into a report view that every
+            # suite's page with any has (Regressions, Stack Changes, the
+            # Nightly Report), so a suite whose page has none gets no links.
             dashboard_url=report_views_url(dashboard_url, plan.suite),
             min_score=min_score,
         ))

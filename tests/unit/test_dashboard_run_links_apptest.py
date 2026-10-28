@@ -86,6 +86,10 @@ def _remote_reco_app(dashboard_dir, dirs, runs, det, plat, sample) -> None:
     sidebar.forget = lambda cached, *args: None
     sidebar.cached_list_run_dates = lambda url, suite, d, p, s: listed
     sidebar.list_platform_stacks = lambda url, suite, p: sorted(runs, reverse=True)
+    # A report a night, which the trend window is bounded by.
+    sidebar.cached_list_report_dates = lambda url, suite: sorted(
+        {day for days in listed.values() for day in days}, reverse=True,
+    )
     sidebar.cached_fetch_runs_windowed = lambda url, suite, d, p, s, cache, items, files: tuple(
         dirs[f"{stack}/{day}"] for stack, days in items for day in days
         if f"{stack}/{day}" in dirs

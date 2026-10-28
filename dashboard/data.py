@@ -251,6 +251,14 @@ def cached_load_trend_component_summary(run_dirs: tuple[str, ...]) -> pd.DataFra
     return _trend.build_component_summary_trend(run_dirs)
 
 
+@st.cache_data(
+    show_spinner="Loading component costs...", ttl=3600, hash_funcs=_keyed_on(COMPONENTS),
+)
+def cached_load_trend_component_cost(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
+    """Cached :func:`k4bench.analysis.trend.build_component_cost_trend`."""
+    return _trend.build_component_cost_trend(run_dirs)
+
+
 @st.cache_data(show_spinner="Loading heap trends...", ttl=3600, hash_funcs=_keyed_on(HEAP))
 def cached_load_trend_heap(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
     """Cached :func:`k4bench.analysis.trend.build_heap_trend`."""

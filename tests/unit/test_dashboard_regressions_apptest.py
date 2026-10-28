@@ -107,10 +107,10 @@ def _app(dashboard_dir, reports_map, blame_map, dates, stacks_dates,
     _tab.cached_fetch_runs_windowed = lambda *a, **k: ()
     # The forward blame card's live provenance lookup; stubbed to avoid the
     # network so a windowed verdict's card renders without a real EOS fetch.
-    _tab.packages_for_release = lambda data_url, platform, release: None
+    _tab.packages_for_release = lambda data_url, suite, platform, release: None
     import streamlit as _st
     _st.session_state["_scope_override"] = _tab.render(
-        "https://example.invalid", "/tmp/cache", detector, platform, sample, stack,
+        "https://example.invalid", "sim", "/tmp/cache", detector, platform, sample, stack,
     )
 
 
@@ -508,7 +508,7 @@ def _scope_app(dashboard_dir, platform, scenarios, reports_map, dates):
     _tab.cached_list_run_dates = lambda url, suite, det, plat, samp: {
         k: list(v) for k, v in run_dates.items()
     }
-    _tab.render("https://example.invalid", "/tmp/cache", detector, platform, "single_e", stack)
+    _tab.render("https://example.invalid", "sim", "/tmp/cache", detector, platform, "single_e", stack)
 
 
 def _quiet_verdict():
@@ -651,7 +651,7 @@ def _listing_failure_app(dashboard_dir, report_json, night, platform, stack):
     _tab.packages_for_release = lambda *a, **k: None
     import streamlit as _st
     _st.session_state["_scope_override"] = _tab.render(
-        "https://example.invalid", "/tmp/cache", "CLD", platform, "single_e",
+        "https://example.invalid", "sim", "/tmp/cache", "CLD", platform, "single_e",
         stack,
     )
 

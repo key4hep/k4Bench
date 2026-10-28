@@ -59,6 +59,7 @@ from k4bench.labels import pretty_platform, pretty_release, pretty_sample
 from k4bench.layout import SIM
 from k4bench.metrics import METRICS, metric_label, pretty_metric
 from k4bench.regression.render import (
+    SUITE_REPORT_VIEWS,
     SUITE_TITLES,
     dashboard_link,
     detector_badge,
@@ -1090,7 +1091,10 @@ def _attention_card(
     regressions = _regressions_href(dashboard_url, group, report.report_night)
     if regressions:
         actions.append(_Link("Review regressions", regressions, bold=True))
-    trends = _trends_href(dashboard_url, group)
+    trends = (
+        _trends_href(dashboard_url, group)
+        if "Run Trends" in SUITE_REPORT_VIEWS[report.suite] else None
+    )
     if trends:
         actions.append(_Link("Run trends", trends))
     group_run_url = group.github_run_url or actions_url
