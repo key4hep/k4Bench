@@ -13,13 +13,16 @@ import pytest
 from k4bench.layout import RECO, SIM
 from k4bench.regression.catalog import COMPONENT_METRICS, JOB_COST_METRICS, sources
 from k4bench.analysis.components import ComponentTiming
+from k4bench.analysis.heap import MB, NO_COMPONENT
 from k4bench.regression.components import (
     DECOMPOSED_AS,
     EVENT,
+    HEAP,
     JOB,
     MAX_COMPONENTS,
     TYPICAL_EVENT,
     _timed,
+    component_deltas,
 )
 from k4bench.regression.models import Direction, Severity
 from k4bench.regression.report_builder import group_report_from_run_dirs
@@ -184,3 +187,58 @@ def test_a_service_initialized_during_an_event_is_not_summed_into_one_component(
     # Every entry is one phase of one component, never a sum over phases.
     assert not {"A", "B", "Svc"} & set(cost.index)
     assert work is None  # initialize counted no instructions
+
+
+def _write_heap(run: Path, held_mb: dict[str, float]) -> None:
+    """The memory pass's ``baseline_heap.json`` for *run*: each component of
+    *held_mb* holding that much at the start and end of each of three events."""
+    names = list(held_mb)
+    held = [int(held_mb[name] * MB) for name in names]
+    events = [0, 1, 2]
+    (run / "baseline_heap.json").write_text(json.dumps({
+        "schema_version": 1,
+        "producer": "k4BenchAuditor",
+        "components": names,
+        "before_first_event": {
+            "held_bytes": held, "peak_held_bytes": held,
+            "malloc_in_use_bytes": sum(held), "rss_anon_mb": 400.0,
+        },
+        "event_numbers": events,
+        "execute": {
+            "start_held_bytes": [held for _ in events],
+            "held_bytes": [held for _ in events],
+            "peak_held_bytes": [held for _ in events],
+            "malloc_in_use_bytes": [sum(held) for _ in events],
+            "rss_anon_mb": [400.0 for _ in events],
+        },
+        "at_end": {"held_bytes": held, "malloc_in_use_bytes": sum(held), "rss_anon_mb": 400.0},
+        "table": {"peak_entries": 1000, "mapped_bytes": 1 << 20},
+    }))
+
+
+def test_an_anonymous_memory_step_is_taken_apart_into_the_heap_each_component_holds(tmp_path):
+    assert DECOMPOSED_AS["mean_rss_anon_mb"] == HEAP
+    base, onset = (Path(d) for d in _history(tmp_path)[:2])
+    _write_heap(base, {NO_COMPONENT: 50.0, "GeoSvc": 300.0, _STEPPED: 5.0, "OldReader": 2.0})
+    _write_heap(onset, {NO_COMPONENT: 50.0, "GeoSvc": 300.0, _STEPPED: 25.0, "NewReader": 4.0})
+
+    def deltas():
+        return component_deltas(
+            [str(base), str(onset)], label="baseline", quantity=HEAP,
+            base_release=_NIGHTS[0], onset_release=_NIGHTS[1],
+        )
+
+    by_name = {d.component: d for d in deltas()}
+    lead = deltas()[0]
+    assert (lead.component, lead.base, lead.onset) == (_STEPPED, 5.0, 25.0)
+    assert lead.delta == pytest.approx(20.0)
+    # The heap says nothing of instructions.
+    assert lead.instructions_change is None
+    # What one end did not hold is absent there, never zero.
+    assert (by_name["NewReader"].base, by_name["NewReader"].onset) == (None, 4.0)
+    assert (by_name["OldReader"].base, by_name["OldReader"].onset) == (2.0, None)
+    # What no component allocated is a holder too, and here it stood still.
+    assert by_name[NO_COMPONENT].delta == 0.0 and by_name["GeoSvc"].delta == 0.0
+    # An end without a memory pass leaves nothing to compare.
+    (onset / "baseline_heap.json").unlink()
+    assert deltas() == ()
