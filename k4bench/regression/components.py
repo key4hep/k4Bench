@@ -192,8 +192,11 @@ def _read_night(run_dir: Path, label: str, quantity: str) -> _Night | None:
         packages = _packages(run_dir, timing)
         if quantity == HEAP:
             heap = load_component_heap(run_dir, labels=[label])[label]
-            summary = heap.summary()
-            return _Night(cost=summary.loc[heap.holders(), "typical_mb"], packages=packages)
+            typical = heap.summary()["typical_mb"]
+            # A working component the file lists that held nothing is a zero,
+            # not absent: it ran, and starting to hold memory is a movement.
+            kept = heap.holders().union(typical.index.intersection(_working(timing)), sort=False)
+            return _Night(cost=typical.loc[kept], packages=packages)
         cost, work = _timed(timing, quantity)
         if quantity == JOB and cost is not None:
             packages = {

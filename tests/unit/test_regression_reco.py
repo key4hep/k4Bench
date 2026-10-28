@@ -219,8 +219,9 @@ def _write_heap(run: Path, held_mb: dict[str, float]) -> None:
 def test_an_anonymous_memory_step_is_taken_apart_into_the_heap_each_component_holds(tmp_path):
     assert DECOMPOSED_AS["mean_rss_anon_mb"] == HEAP
     base, onset = (Path(d) for d in _history(tmp_path)[:2])
-    _write_heap(base, {NO_COMPONENT: 50.0, "GeoSvc": 300.0, _STEPPED: 5.0, "OldReader": 2.0})
-    _write_heap(onset, {NO_COMPONENT: 50.0, "GeoSvc": 300.0, _STEPPED: 25.0, "NewReader": 4.0})
+    held = {NO_COMPONENT: 50.0, "GeoSvc": 300.0, "k4FWCore__Sequencer": 0.0}
+    _write_heap(base, {**held, _STEPPED: 5.0, "MyAIDAProcessor": 0.0, "OldReader": 2.0})
+    _write_heap(onset, {**held, _STEPPED: 25.0, "MyAIDAProcessor": 3.0, "NewReader": 4.0})
 
     def deltas():
         return component_deltas(
@@ -237,6 +238,11 @@ def test_an_anonymous_memory_step_is_taken_apart_into_the_heap_each_component_ho
     # What one end did not hold is absent there, never zero.
     assert (by_name["NewReader"].base, by_name["NewReader"].onset) == (None, 4.0)
     assert (by_name["OldReader"].base, by_name["OldReader"].onset) == (2.0, None)
+    # A component that ran at both ends but held nothing at one is a zero
+    # there: it started holding memory, it was not added.
+    assert (by_name["MyAIDAProcessor"].base, by_name["MyAIDAProcessor"].onset) == (0.0, 3.0)
+    # A sequencer that held nothing is no evidence at all.
+    assert "k4FWCore__Sequencer" not in by_name
     # What no component allocated is a holder too, and here it stood still.
     assert by_name[NO_COMPONENT].delta == 0.0 and by_name["GeoSvc"].delta == 0.0
     # An end without a memory pass leaves nothing to compare.
