@@ -17,10 +17,15 @@ cross-configuration review behind the claim) and
 by `.github/scripts/blame_comment.py` in step 5c of the nightly
 `regression-report` job.
 
-Comments are posted for the simulation suite's regressions alone. The
-reconstruction suite's confirmed steps are ranked like the simulation's, into
-its own `blame.json`, and reach its e-group mail, but no pull request is
-commented on for them yet.
+Each suite comments on its own regressions, in the repositories its own list
+names (see [Configuration](#configuration)). The reconstruction suite's list is
+empty for now: its confirmed steps are ranked like the simulation's, into its
+own `blame.json`, and reach its e-group mail, but no pull request is commented
+on for them yet. When one is, the comment names the reconstruction benchmarks
+as what measured it, is reviewed in a reconstruction's terms (a frozen input,
+the components each step moved), and carries no dashboard links until the
+Reconstruction page has the views they lead to, nor a recipe, which the
+simulation's alone has so far.
 
 ## Two passes
 
@@ -206,7 +211,7 @@ being wrong about far less often than it is worth being silent.
 
 | Gate | Rule |
 |:---|:---|
-| Repository | The candidate's repo is listed in `.github/blame-comments.yml`. An empty list makes the bot inert. |
+| Repository | The candidate's repo is listed in `.github/blame-comments.yml` under the suite whose regression it is. A suite with an empty list, or none, comments nowhere. |
 | Judged | The ranker actually scored the candidate. An unranked one carries no opinion, and no threshold — not even `min_score: 0` — is cleared by a missing judgement. |
 | Likelihood | The ranker's score is at or above `min_score` (default 80). |
 | Merged | The PR is merged — an open PR cannot have shipped in a release. |
@@ -231,11 +236,16 @@ CI setting:
 min_score: 80
 max_comments: 10
 repos:
-  - key4hep/k4geo
+  sim:
+    - key4hep/k4geo
+  reco: []
 ```
 
-The file is strict: an unknown key, a wrong type, or an out-of-range value stops
-the step instead of defaulting. Every field here decides whether — and where —
+`repos` lists each suite's repositories under its name; `min_score` and
+`max_comments` hold for every suite, and each suite's night is capped on its
+own. The file is strict: an unknown key, an unknown suite, a wrong type, or an
+out-of-range value stops the step instead of defaulting — whichever suite is
+commenting, since a typo in another suite's list is no less a typo. Every field here decides whether — and where —
 the bot writes, so a typo must never silently widen or narrow its reach.
 
 Writing also needs `K4BENCH_PR_COMMENT_TOKEN`, a token carrying
@@ -547,9 +557,12 @@ Two rules run through the rendering:
 
 ## Lifecycle of a comment
 
-Each comment carries a hidden marker naming its current change window. The
+Each comment carries a hidden marker naming its current change window — and,
+for any suite but the simulation one, the suite (`suite=reco`), so a
+simulation comment written before there were other suites keeps matching. The
 publisher upserts on that marker and can migrate its nearest predecessor or
-successor:
+successor of the same suite; another suite's comment on the same pull request
+is a separate finding and is never adopted, however its window compares:
 
 - **Same window, materially different evidence** — the existing comment is
   edited in place, so a regression standing for a week is one comment, not

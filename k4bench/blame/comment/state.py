@@ -24,6 +24,7 @@ from datetime import date
 from urllib.parse import urlsplit
 
 from k4bench.blame.prompt import movement
+from k4bench.layout import SIM, SUITES
 from k4bench.regression.models import MetricVerdict
 from k4bench.regression.render import window_token
 
@@ -210,18 +211,25 @@ class LineageState:
         )
 
 
-def marker_for(base_release: str | None, onset_release: str | None) -> str:
-    """The hidden HTML key naming a comment's current change window.
+def marker_for(
+    base_release: str | None, onset_release: str | None, suite: str = SIM,
+) -> str:
+    """The hidden HTML key naming a comment's suite and current change window.
 
     A re-confirmation matches this exact key; a strictly expanding or contracting
-    window adopts and rewrites the nearest comparable key at publish time.
-    Non-containing windows stay separate. Reuses
+    window of the same suite adopts and rewrites the nearest comparable key at
+    publish time. Non-containing windows stay separate, and so do two suites'
+    comments on one pull request: a reco step and a sim step attributed to one
+    change are two findings, whatever their windows. The sim suite's key names
+    no suite — every comment posted before there were others is its — and any
+    other's says which it is. Reuses
     :func:`~k4bench.regression.render.window_token` so the key and the dashboard
     link it carries name the window identically.
     """
+    named = "" if suite == SIM else f"suite={suite} "
     return (
         f"<!-- k4bench-blame-comment:{MARKER_VERSION} "
-        f"window={window_token(base_release, onset_release)} -->"
+        f"{named}window={window_token(base_release, onset_release)} -->"
     )
 
 
@@ -243,9 +251,11 @@ def window_contains(outer: ChangeWindow, inner: ChangeWindow) -> bool:
     return base_contains and outer_onset >= inner_onset
 
 
-def window_from_marker(marker: str) -> ChangeWindow | None:
-    """Parse one current-version marker, rejecting anything not emitted here."""
-    prefix = f"<!-- k4bench-blame-comment:{MARKER_VERSION} window="
+def window_from_marker(marker: str, suite: str = SIM) -> ChangeWindow | None:
+    """Parse one current-version marker of *suite* (:func:`marker_for`),
+    rejecting anything not emitted here, and every other suite's."""
+    named = "" if suite == SIM else f"suite={suite} "
+    prefix = f"<!-- k4bench-blame-comment:{MARKER_VERSION} {named}window="
     suffix = " -->"
     if "\n" in marker or not marker.startswith(prefix) or not marker.endswith(suffix):
         return None
@@ -254,6 +264,15 @@ def window_from_marker(marker: str) -> ChangeWindow | None:
     if not separator or not onset or ".." in onset or any(c.isspace() for c in token):
         return None
     return (base or None, onset)
+
+
+def parse_marker(marker: str) -> tuple[str, ChangeWindow] | None:
+    """The suite and window one current-version marker names
+    (:func:`marker_for`), or ``None`` for anything not emitted here."""
+    for suite in SUITES:
+        if (window := window_from_marker(marker, suite)) is not None:
+            return suite, window
+    return None
 
 
 #: Prefix of the second hidden line — see :func:`_digest_from` and

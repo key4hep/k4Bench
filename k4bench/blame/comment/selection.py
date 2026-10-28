@@ -39,6 +39,7 @@ from k4bench.blame.models import (
     HistoricalRef,
 )
 from k4bench.blame.sweep import ScopeSweep, window_sweeps
+from k4bench.layout import SIM, SUITES
 from k4bench.regression.models import MetricVerdict, NightlyReport
 
 _log = logging.getLogger(__name__)
@@ -77,12 +78,13 @@ class CommentStormError(RuntimeError):
 
 @dataclass(frozen=True)
 class CommentPolicy:
-    """Who may be commented on, and how confidently.
+    """Who may be commented on for one suite's regressions, and how
+    confidently.
 
     ``repos`` holds lowercase ``owner/repo`` slugs; GitHub slugs are
     case-insensitive, so matching is done on the lowered form while the
     candidate's own spelling is what gets displayed. An empty ``repos`` disables
-    the bot entirely.
+    the bot for the suite.
     """
 
     min_score: float = _DEFAULT_MIN_SCORE
@@ -122,12 +124,16 @@ class CommentPolicy:
         )
 
     @classmethod
-    def from_config(cls, data: dict[str, Any] | None) -> CommentPolicy:
-        """Build a policy from the parsed ``.github/blame-comments.yml``.
+    def from_config(cls, data: dict[str, Any] | None, suite: str) -> CommentPolicy:
+        """Build *suite*'s policy from the parsed ``.github/blame-comments.yml``.
 
-        Unknown keys, wrong types and out-of-range values raise
-        :class:`CommentConfigError` — see the class docstring for why this one
-        config is strict where the report schemas are forgiving.
+        ``repos`` lists each suite's repositories under its name; a suite it
+        does not name has none. The score threshold and the comment cap are
+        every suite's. Unknown keys, unknown suites, wrong types and
+        out-of-range values raise :class:`CommentConfigError` — whichever
+        suite's policy is built, since a typo in another suite's list is as
+        wrong as one in this — see the class docstring for why this one config
+        is strict where the report schemas are forgiving.
         """
         if data is None:
             data = {}
@@ -148,22 +154,41 @@ class CommentPolicy:
             data.get("max_comments", _DEFAULT_MAX_COMMENTS), "max_comments"
         )
 
-        raw_repos = data.get("repos", [])
-        if raw_repos is None:  # `repos:` with no value is an empty allowlist
-            raw_repos = []
-        if not isinstance(raw_repos, list):
-            # ``repos: false`` / ``repos: k4geo`` — a scalar is not an allowlist.
-            raise CommentConfigError("repos must be a list of owner/repo slugs")
-        repos = set()
-        for slug in raw_repos:
-            # Validate the *stripped* slug: ``"owner/ "`` must not slip through
-            # the slash check and then be stored as the truncated ``"owner/"``.
-            cleaned = slug.strip() if isinstance(slug, str) else slug
-            if not isinstance(cleaned, str) or cleaned.count("/") != 1 \
-                    or cleaned.startswith("/") or cleaned.endswith("/"):
-                raise CommentConfigError(f"not an owner/repo slug: {slug!r}")
-            repos.add(cleaned.lower())
-        return cls(min_score=min_score, repos=frozenset(repos), max_comments=max_comments)
+        if suite not in SUITES:
+            raise CommentConfigError(f"unknown suite {suite!r}")
+        by_suite = data.get("repos", {})
+        if by_suite is None:  # `repos:` with no value is no allowlist at all
+            by_suite = {}
+        if not isinstance(by_suite, dict):
+            # A bare list names no suite, and a scalar is not an allowlist.
+            raise CommentConfigError("repos must map each suite to a list of owner/repo slugs")
+        unknown = set(by_suite) - set(SUITES)
+        if unknown:
+            raise CommentConfigError(f"unknown suite(s) in repos: {', '.join(sorted(map(str, unknown)))}")
+        allowlists = {name: _allowlist(raw) for name, raw in by_suite.items()}
+        return cls(
+            min_score=min_score, repos=allowlists.get(suite, frozenset()),
+            max_comments=max_comments,
+        )
+
+
+def _allowlist(raw_repos: object) -> frozenset[str]:
+    """One suite's ``repos`` list as lowercase ``owner/repo`` slugs."""
+    if raw_repos is None:  # `sim:` with no value is an empty allowlist
+        raw_repos = []
+    if not isinstance(raw_repos, list):
+        # ``sim: false`` / ``sim: k4geo`` — a scalar is not an allowlist.
+        raise CommentConfigError("each suite's repos must be a list of owner/repo slugs")
+    repos = set()
+    for slug in raw_repos:
+        # Validate the *stripped* slug: ``"owner/ "`` must not slip through
+        # the slash check and then be stored as the truncated ``"owner/"``.
+        cleaned = slug.strip() if isinstance(slug, str) else slug
+        if not isinstance(cleaned, str) or cleaned.count("/") != 1 \
+                or cleaned.startswith("/") or cleaned.endswith("/"):
+            raise CommentConfigError(f"not an owner/repo slug: {slug!r}")
+        repos.add(cleaned.lower())
+    return frozenset(repos)
 
 
 def _positive_number(value: object, name: str) -> float:
@@ -257,6 +282,9 @@ class CommentPlan:
     base_release: str | None
     onset_release: str
     report_night: str = ""
+    #: The suite whose report the rows are from: what the benchmark runs, and
+    #: which comment lineage on the pull request this one continues.
+    suite: str = SIM
     rows: list[RegressionRow] = field(default_factory=list)
     #: ``(repo, number) -> (candidate, scope label)`` — the strongest sighting
     #: of each competing pull request, and which run scope judged it that way.
@@ -454,6 +482,7 @@ def select(
     geometry = benchmarked_geometry(report)
     for plan in plans:
         plan.report_night = report.report_night
+        plan.suite = report.suite
         _collect_window(confirmed, plan)
         plan.outcomes = _outcomes_for(report, plan)
         plan.geometry_paths = _geometry_paths_for(report, plan)

@@ -60,12 +60,12 @@ from k4bench.layout import SIM
 from k4bench.metrics import METRICS, metric_label, pretty_metric
 from k4bench.regression.render import (
     SUITE_TITLES,
-    SUITES_WITH_REPORT_VIEWS,
     dashboard_link,
     detector_badge,
     format_value,
     format_pct,
     group_title,
+    report_views_url,
     stack_changes_href,
     suite_page_url,
     window_href,
@@ -360,14 +360,6 @@ def preheader(report: NightlyReport) -> str:
 
 
 # ── Deep links ────────────────────────────────────────────────────────────────
-
-def _views_url(dashboard_url: str | None, report: NightlyReport) -> str | None:
-    """*dashboard_url* to build the report's deep links into Regressions, Run
-    Trends and Stack Changes on, or ``None`` when its suite's page has none of
-    them (:data:`~k4bench.regression.render.SUITES_WITH_REPORT_VIEWS`): a link
-    named for a view the page lacks would open its first section instead."""
-    return dashboard_url if report.suite in SUITES_WITH_REPORT_VIEWS else None
-
 
 def _regressions_href(
     dashboard_url: str | None, group: RunGroupReport, report_night: str
@@ -1687,9 +1679,9 @@ def to_html(
 
     Every link is built on the report's suite's page below *dashboard_url*.
     """
+    views_url = report_views_url(dashboard_url, report.suite)
     if dashboard_url:
         dashboard_url = suite_page_url(dashboard_url, report.suite)
-    views_url = _views_url(dashboard_url, report)
     index = _BlameIndex(blame, historical_blame)
     attention = _needs_attention(report)
     if attention:
@@ -1875,9 +1867,9 @@ def to_markdown(
     """Plain-text/Markdown MIME alternative — the same important content as the
     HTML body, useful on its own in a text-only client, its links built the
     same way."""
+    views_url = report_views_url(dashboard_url, report.suite)
     if dashboard_url:
         dashboard_url = suite_page_url(dashboard_url, report.suite)
-    views_url = _views_url(dashboard_url, report)
     index = _BlameIndex(blame, historical_blame)
     s = EmailSummary.of(report)
     lines = [

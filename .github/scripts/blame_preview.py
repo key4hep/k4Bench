@@ -244,7 +244,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         policy = blame_comment.load_policy(
-            Path(args.config), {"min_score": args.min_score, "max_comments": None}
+            Path(args.config), {"min_score": args.min_score, "max_comments": None},
+            args.suite,
         )
     except CommentConfigError as exc:
         print(f"ERROR: bad comment config {args.config}: {exc}", file=sys.stderr)

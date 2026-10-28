@@ -883,8 +883,8 @@ are the evidence instead: every confirmed step is taken apart into the
 components whose own cost moved, with the package each is defined in and how
 the instructions it retired moved (`component_deltas`, see
 [File formats](../../reference/file-formats.md)), and the blame ranker reads
-that breakdown when it attributes the step. Pull-request comments cover the
-simulation suite alone. This page does not read the reports yet, so it has no
+that breakdown when it attributes the step. No pull request is commented on
+for the reco suite yet: its list in `.github/blame-comments.yml` is empty. This page does not read the reports yet, so it has no
 Regressions or Stack Changes section and its views carry no verdicts: every
 value is the measurement as uploaded.
 

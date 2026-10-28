@@ -177,6 +177,10 @@ def facts_from(
     """
     if not isinstance(base_info, dict) or not isinstance(onset_info, dict):
         return None
+    # The recipe reruns ddsim: a k4run job's record holds no ddsim command, and
+    # a recipe built from it would benchmark a simulation nobody ran.
+    if any(info.get("tool", "ddsim") != "ddsim" for info in (base_info, onset_info)):
+        return None
     verdict = getattr(row, "verdict", row)
     inversion = sweep_flag(str(getattr(verdict, "label", "")))
     if inversion is None:

@@ -199,8 +199,8 @@ def _eos_path(url: str) -> str:
     return "/" + rest.partition("/")[2].lstrip("/")
 
 
-def load_policy(path: Path, overrides: dict):
-    """The comment policy from *path*, with any CLI *overrides* applied.
+def load_policy(path: Path, overrides: dict, suite: str):
+    """*suite*'s comment policy from *path*, with any CLI *overrides* applied.
 
     A missing file is an empty policy — the bot is off; a malformed or unreadable
     one raises :class:`~k4bench.blame.comment.CommentConfigError`, because a
@@ -228,7 +228,7 @@ def load_policy(path: Path, overrides: dict):
         _log.info("blame_comment: no config at %s — the bot is off", path)
     if isinstance(data, dict):
         data.update({k: v for k, v in overrides.items() if v is not None})
-    return CommentPolicy.from_config(data)
+    return CommentPolicy.from_config(data, suite)
 
 
 def _text_source(token: str | None):
@@ -381,17 +381,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"No blame sidecar at {blame_path}: nothing to comment on")
         return 0
 
-    try:
-        policy = load_policy(Path(args.config), {
-            "min_score": args.min_score, "max_comments": args.max_comments,
-        })
-    except CommentConfigError as exc:
-        print(f"ERROR: bad comment config {args.config}: {exc}", file=sys.stderr)
-        return 1
-    if not policy.enabled:
-        print(f"No repositories enabled in {args.config}: nothing to comment on")
-        return 0
-
     # Both files are read at a boundary this script does not control: they are
     # produced by earlier steps that are themselves best-effort. A truncated
     # upload or a half-written file is an expected failure of *this* step, so it
@@ -401,6 +390,23 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, UnicodeDecodeError, ValueError, TypeError, KeyError) as exc:
         print(f"ERROR: unreadable report {report_path}: {exc}", file=sys.stderr)
         return 1
+
+    # Which repositories may be written to depends on whose regressions these
+    # are, which the report says.
+    try:
+        policy = load_policy(Path(args.config), {
+            "min_score": args.min_score, "max_comments": args.max_comments,
+        }, report.suite)
+    except CommentConfigError as exc:
+        print(f"ERROR: bad comment config {args.config}: {exc}", file=sys.stderr)
+        return 1
+    if not policy.enabled:
+        print(
+            f"No repositories enabled for the {report.suite} suite in {args.config}: "
+            "nothing to comment on"
+        )
+        return 0
+
     try:
         blame = BlameReport.from_json(json.loads(blame_path.read_text()))
     except (BlameSchemaError, OSError, UnicodeDecodeError, ValueError) as exc:

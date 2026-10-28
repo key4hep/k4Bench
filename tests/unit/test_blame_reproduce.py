@@ -472,3 +472,12 @@ def test_artifact_name_never_leaves_the_published_directory():
     assert facts is not None
     hostile = artifact_name(replace(facts, label="../../etc/passwd", detector="a b"))
     assert "/" not in hostile and " " not in hostile
+
+
+def test_a_k4run_job_gets_no_ddsim_recipe():
+    # Its record has a geometry and no ddsim arguments, which a ddsim recipe
+    # would read as a plain ddsim run of that geometry.
+    assert _facts() is not None
+    assert facts_from(
+        _row(), _info("2026-08-27", "1", tool="k4run"), _info("2026-08-28", "2", tool="k4run"),
+    ) is None

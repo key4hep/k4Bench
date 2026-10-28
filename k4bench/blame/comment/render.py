@@ -65,7 +65,9 @@ from k4bench.blame.models import (
 )
 from k4bench.blame.prompt import movement
 from k4bench.labels import compact_sample, pretty_platform
+from k4bench.layout import SIM
 from k4bench.regression.render import (
+    SUITE_TITLES,
     nightly_report_href,
     regression_href,
     stack_changes_href,
@@ -808,6 +810,12 @@ def _window_cell(base: str, onset: str) -> str:
     return f"`{_cell(base)}` → {onset_text}" if base else f"≤ {onset_text}"
 
 
+def _benchmarks(suite: str) -> str:
+    """What a comment calls the benchmarks that measured its rows: the sim
+    suite's as its comments always read, any other's by its name."""
+    return "benchmarks" if suite == SIM else f"{SUITE_TITLES[suite].lower()} benchmarks"
+
+
 def _alert(
     plan: CommentPlan,
     rows: list[RegressionRow],
@@ -881,7 +889,7 @@ def _alert(
             f"{_count(n_regressions, 'regression')} across "
             f"{_count(n_scopes, 'detector/platform/sample scope')} {where}"
         )
-    measured = f"k4Bench's nightly benchmarks confirmed {what}."
+    measured = f"k4Bench's nightly {_benchmarks(plan.suite)} confirmed {what}."
     reviewed, carried = scores or _scored(rows, attribution)
     if not reviewed and not carried:
         return f"> [!WARNING]\n> {measured}"

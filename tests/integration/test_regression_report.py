@@ -731,7 +731,7 @@ def test_the_whole_evidence_chain_reaches_the_cross_configuration_review(
     round_tripped = type(blame).from_json(json.loads(json.dumps(blame.to_json())))
     plans = select(
         report, round_tripped,
-        CommentPolicy.from_config({"repos": ["key4hep/k4geo"], "min_score": 80}),
+        CommentPolicy.from_config({"repos": {"sim": ["key4hep/k4geo"]}, "min_score": 80}, "sim"),
     )
     assert plans, "the window should warrant a comment"
 
@@ -952,7 +952,7 @@ def test_historical_evidence_travels_from_provenance_to_the_public_review(
     # ── And the outward-facing review is handed the same evidence ────────────
     plans = select(
         report, round_tripped,
-        CommentPolicy.from_config({"repos": ["key4hep/k4geo"], "min_score": 80}),
+        CommentPolicy.from_config({"repos": {"sim": ["key4hep/k4geo"]}, "min_score": 80}, "sim"),
     )
     assert plans, "the window should warrant a comment"
     assert plans[0].historical_refs == (ref,)

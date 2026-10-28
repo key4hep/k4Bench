@@ -116,6 +116,7 @@ def _fact(row_id="r1", detector="ALLEGRO_o1_v03", metric="wall_time_s",
         scope_reason=kw.pop("scope_reason", "raises the step count"),
         scope_state=kw.pop("scope_state", "ranked"),
         history=kw.pop("history", None),
+        components=kw.pop("components", ()),
     )
 
 
@@ -289,7 +290,7 @@ def test_a_very_wide_window_keeps_the_largest_movements():
 
 
 def test_the_system_prompt_names_the_cross_configuration_rules():
-    system = attr_mod._SYSTEM_PROMPT
+    system = attr_mod._SYSTEM_PROMPTS["sim"]
     assert "Reason across scopes" in system
     assert "no_" in system          # the detector-removal sweep's meaning
     assert "owner/repo#number" in system  # how an alternative may be named
@@ -676,7 +677,7 @@ def test_analogue_prose_and_diffs_are_fenced_as_untrusted():
     )))
     assert "----- BEGIN PR DESCRIPTION -----" in prompt
     assert "----- BEGIN DIFF -----" in prompt
-    assert attr_mod.UNTRUSTED_EVIDENCE_RULE in attr_mod._SYSTEM_PROMPT
+    assert attr_mod.UNTRUSTED_EVIDENCE_RULE in attr_mod._SYSTEM_PROMPTS["sim"]
 
 
 def test_the_analogue_rule_rides_only_on_a_review_that_carries_analogues():
@@ -684,7 +685,7 @@ def test_the_analogue_rule_rides_only_on_a_review_that_carries_analogues():
     assert "HISTORICAL ANALOGUES" in attr_mod._system_prompt(with_history)
     # A review with none is asked in exactly the words it was asked in before
     # this feature existed.
-    assert attr_mod._system_prompt(_request()) == attr_mod._SYSTEM_PROMPT
+    assert attr_mod._system_prompt(_request()) == attr_mod._SYSTEM_PROMPTS["sim"]
 
 
 def test_a_review_without_analogues_renders_no_historical_section():
@@ -806,3 +807,30 @@ def test_a_scope_without_a_sweep_is_named_as_the_summary_names_it():
     name = f"ALLEGRO_o1_v03 · p8_ee_Zbb_ecm91 · {_PLATFORM}"
     assert f"[S1] {name} — 1 confirmed regression(s)" in prompt
     assert f"[S1] {name}:" in prompt
+
+
+def test_a_reco_review_is_asked_in_the_words_of_a_reconstruction():
+    from k4bench.blame.prompt import RECO_ATTRIBUTOR_EVIDENCE, RECO_NOISE_RULE, RECO_WEIGHING_RULE
+
+    reco = attr_mod._system_prompt(_request(suite="reco"))
+    for rule in (RECO_ATTRIBUTOR_EVIDENCE, RECO_NOISE_RULE, RECO_WEIGHING_RULE):
+        assert rule in reco and rule not in attr_mod._SYSTEM_PROMPTS["sim"]
+    assert "detector-removal sweep" not in reco
+    for rule in (attr_mod.SCORE_BAND_RULE, attr_mod.UNTRUSTED_EVIDENCE_RULE):
+        assert rule in reco
+
+
+def test_a_reco_rows_components_reach_the_review():
+    from k4bench.regression.models import ComponentDelta
+
+    prompt = build_user_prompt(_request(suite="reco", regressions=(
+        _fact(metric="mean_time_s", history=_history(), components=(
+            ComponentDelta("MyConformalTracking", 2.25, 3.37, 1.12, package="conformaltracking",
+                           instructions_change=0.48),
+        )),
+    )))
+    assert "Which of the job's components moved" in prompt
+    assert (
+        "MyConformalTracking [conformaltracking]: 2.25 -> 3.37 s/event (+1.12), "
+        "instructions +48.0%"
+    ) in prompt

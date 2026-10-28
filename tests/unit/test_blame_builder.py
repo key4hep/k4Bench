@@ -1732,7 +1732,7 @@ def test_an_lcg_window_reaches_the_comment_policy(monkeypatch):
     # …and the candidate that came back clears the repository allowlist, which
     # is written in GitHub's spelling and matched case-insensitively, so the
     # LCG package name never has to agree with it.
-    policy = CommentPolicy.from_config(_LCG_ALLOWLIST)
+    policy = CommentPolicy.from_config(_LCG_ALLOWLIST, "sim")
     candidate, = entry.candidates
     assert policy.allows(candidate)
 

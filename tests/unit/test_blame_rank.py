@@ -746,7 +746,7 @@ def test_the_rules_the_second_pass_is_judged_under_are_the_same_ones():
     from k4bench.blame import attribute as attribute_mod
     for rule in (SCORE_BAND_RULE, NOISE_RULE, ASSESSMENT_RULE, UNTRUSTED_EVIDENCE_RULE):
         assert rule in rank_mod._SYSTEM_PROMPTS[SIM]
-        assert rule in attribute_mod._SYSTEM_PROMPT
+        assert rule in attribute_mod._SYSTEM_PROMPTS[SIM]
 
 
 # ── Every metric carries its evidence, not just the ones with a table ─────────
