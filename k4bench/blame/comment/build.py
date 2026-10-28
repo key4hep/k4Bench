@@ -40,6 +40,7 @@ from k4bench.blame.comment.selection import (
     _sorted_others,
 )
 from k4bench.blame.comment.state import marker_for
+from k4bench.regression.render import report_views_url
 from k4bench.blame.evidence import history_from_verdict
 from k4bench.blame.geometry import compact_dir, detector_touches, geometry_tree
 from k4bench.blame.github import FilePatch, diff_sample
@@ -194,12 +195,14 @@ def build_comments(
         comments.append(CommentDraft(
             repo=plan.repo,
             number=plan.number,
-            marker=marker_for(plan.base_release, plan.onset_release),
+            marker=marker_for(plan.base_release, plan.onset_release, plan.suite),
             plan=plan,
             attribution=attribution,
             facts_payload=_facts_payload(plan, request, reproduce),
             reproduce=reproduce,
-            dashboard_url=dashboard_url,
+            # Every link a comment carries is into a report view, so a suite
+            # whose page has none gets no links at all.
+            dashboard_url=report_views_url(dashboard_url, plan.suite),
             min_score=min_score,
         ))
     return comments
@@ -504,6 +507,7 @@ def _attribution_request(
         title=plan.subject.title,
         base_release=plan.base_release,
         onset_release=plan.onset_release,
+        suite=plan.suite,
         files=plan.subject.files,
         patch=sampled(plan.repo, plan.number),
         body=body_fetch(plan.repo, plan.number),
@@ -555,4 +559,5 @@ def _fact(row: RegressionRow) -> RegressionFact:
         # for stay unread, which is what the prompt then says about them.
         history=history_from_verdict(v, packages_changed=row.boundary_changes),
         regions=v.region_deltas,
+        components=v.component_deltas,
     )

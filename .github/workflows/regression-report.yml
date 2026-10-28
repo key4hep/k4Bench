@@ -40,9 +40,10 @@ on:
 # dispatch alike). The pull-request comment step reads a PR's comments and then
 # posts if it sees none of its own; two overlapping runs could both pass that
 # read before either posts, and duplicate a comment into a repository k4Bench
-# does not own. A lane per suite makes the read-then-write safe: only the sim
-# suite comments (see regression_report.sh). `cancel-in-progress: false` lets
-# an in-flight run finish its writes rather than being killed mid-post.
+# does not own. A lane per suite makes the read-then-write safe: each suite's
+# comments carry markers of their own, so two suites never write the same
+# comment. `cancel-in-progress: false` lets an in-flight run finish its writes
+# rather than being killed mid-post.
 concurrency:
   group: regression-report-${{ inputs.suite }}
   cancel-in-progress: false

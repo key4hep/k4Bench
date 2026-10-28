@@ -30,6 +30,7 @@ from k4bench.blame.comment import render as render_mod
 from k4bench.blame.comment import state as state_mod
 from k4bench.blame.comment.state import _decoded_cumulative
 from k4bench.blame.comment import (
+    parse_marker,
     CommentConfigError,
     CommentPolicy,
     CommentStormError,
@@ -52,6 +53,7 @@ from k4bench.blame.models import (
 )
 from k4bench.blame.reproduce import artifact_name
 from k4bench.regression.models import (
+    ComponentDelta,
     Direction,
     ReleasePoint,
     MetricVerdict,
@@ -70,7 +72,7 @@ _ZWSP = "​"
 
 
 def _policy(**kw) -> CommentPolicy:
-    return CommentPolicy.from_config({"repos": ["key4hep/k4geo"], **kw})
+    return CommentPolicy.from_config({"repos": {"sim": ["key4hep/k4geo"]}, **kw}, "sim")
 
 
 def _verdict(*, metric="wall_time_s", label="baseline", onset="2026-07-04",
@@ -303,14 +305,19 @@ def _run_info_for(*, args="--random.seed 42 --enableGun", missing=False):
 
 def test_policy_defaults_to_inert():
     # An empty allowlist: no repository enabled, so nothing is ever written.
-    policy = CommentPolicy.from_config({"min_score": 80, "max_comments": 10, "repos": []})
+    policy = CommentPolicy.from_config(
+        {"min_score": 80, "max_comments": 10, "repos": {"sim": []}}, "sim",
+    )
     assert policy.enabled is False
     assert policy.min_score == 80.0
 
 
 @pytest.mark.parametrize("bad", [
-    {"repos": ["k4geo"]},                     # not owner/repo
-    {"repos": "key4hep/k4geo"},               # not a list
+    {"repos": {"sim": ["k4geo"]}},            # not owner/repo
+    {"repos": {"sim": "key4hep/k4geo"}},      # not a list
+    {"repos": ["key4hep/k4geo"]},             # a bare list names no suite
+    {"repos": {"physics": ["key4hep/k4geo"]}},  # no such suite
+    {"repos": {"reco": ["k4geo"]}},           # another suite's typo is still a typo
     {"min_score": "eighty"},                  # not a number
     {"min_score": 140},                       # out of range
     {"max_comments": -1},                     # negative
@@ -320,24 +327,46 @@ def test_policy_defaults_to_inert():
     {"treshold": 80},                         # typo'd key, silently narrowing
     False,                                     # a falsey document is not "no config"
     {"repos": False},                         # a scalar is not an allowlist
-    {"repos": ["owner/ "]},                   # slug is "owner/" once stripped
+    {"repos": {"sim": ["owner/ "]}},          # slug is "owner/" once stripped
 ])
 def test_policy_rejects_malformed_config(bad):
     # A config that decides where the bot writes must fail loudly, never default.
     with pytest.raises(CommentConfigError):
-        CommentPolicy.from_config(bad)
+        CommentPolicy.from_config(bad, "sim")
 
 
 def test_policy_matches_repo_case_insensitively():
-    policy = CommentPolicy.from_config({"repos": ["Key4hep/K4geo"]})
+    policy = CommentPolicy.from_config({"repos": {"sim": ["Key4hep/K4geo"]}}, "sim")
     assert policy.allows(_candidate(repo="key4hep/k4geo")) is True
 
 
-@pytest.mark.parametrize("absent", [None, {}, {"repos": None}])
+@pytest.mark.parametrize("absent", [None, {}, {"repos": None}, {"repos": {"sim": None}}])
 def test_absent_or_empty_config_is_inert_not_an_error(absent):
     # Only a *present but malformed* document raises; a missing one, an empty
     # mapping, or an explicitly empty `repos:` all mean "the bot is off".
-    assert CommentPolicy.from_config(absent).enabled is False
+    assert CommentPolicy.from_config(absent, "sim").enabled is False
+
+
+def test_each_suite_comments_only_where_its_own_list_says():
+    config = {"repos": {"sim": ["key4hep/k4geo"], "reco": ["key4hep/k4RecTracker"]}}
+    sim, reco = (CommentPolicy.from_config(config, suite) for suite in ("sim", "reco"))
+    assert sim.repos == {"key4hep/k4geo"} and reco.repos == {"key4hep/k4rectracker"}
+    # A suite the config does not name comments nowhere.
+    assert not CommentPolicy.from_config({"repos": {"sim": ["key4hep/k4geo"]}}, "reco").enabled
+    with pytest.raises(CommentConfigError, match="unknown suite"):
+        CommentPolicy.from_config(config, "physics")
+
+
+def test_the_repositorys_config_keeps_reco_comments_off():
+    from pathlib import Path
+
+    import yaml
+
+    config = yaml.safe_load(
+        (Path(__file__).resolve().parents[2] / ".github/blame-comments.yml").read_text()
+    )
+    assert CommentPolicy.from_config(config, "sim").enabled
+    assert not CommentPolicy.from_config(config, "reco").enabled
 
 
 # ── Selection gates ───────────────────────────────────────────────────────────
@@ -4650,3 +4679,48 @@ def test_external_facts_reach_review_and_digest_without_becoming_targets():
     assert build_user_prompt(old) == build_user_prompt(absent)
     assert _system_prompt(old) == _system_prompt(absent)
     assert _comments(report, blame)[0] == _comments(report, replace(blame, entries=tuple(replace(e, external_changes=()) for e in blame.entries)))[0]
+
+
+# ── Suites ───────────────────────────────────────────────────────────────────
+
+def test_a_sim_marker_reads_as_it_always_has_and_another_suite_names_itself():
+    from k4bench.blame.comment import parse_marker, window_from_marker
+
+    sim = marker_for("2026-07-01", "2026-07-04")
+    reco = marker_for("2026-07-01", "2026-07-04", "reco")
+    # Every sim comment already posted keeps matching.
+    assert sim == "<!-- k4bench-blame-comment:v1 window=2026-07-01..2026-07-04 -->"
+    assert reco == "<!-- k4bench-blame-comment:v1 suite=reco window=2026-07-01..2026-07-04 -->"
+    assert parse_marker(sim) == ("sim", ("2026-07-01", "2026-07-04"))
+    assert parse_marker(reco) == ("reco", ("2026-07-01", "2026-07-04"))
+    # Each suite reads its own markers only.
+    assert window_from_marker(reco) is None
+    assert window_from_marker(sim, "reco") is None
+    assert parse_marker("<!-- k4bench-blame-comment:v1 suite=physics window=..2026-07-04 -->") is None
+
+
+def test_a_reco_comment_is_keyed_worded_and_reviewed_as_a_reconstruction():
+    v = dataclasses.replace(_verdict(), component_deltas=(
+        ComponentDelta("MyConformalTracking", 2.25, 3.37, 1.12, package="conformaltracking"),
+    ))
+    report = dataclasses.replace(_report(v), suite="reco")
+    attributor = _FakeAttributor()
+    (draft,) = _drafts(report, _blame([v], [_candidate()]), attributor=attributor)
+
+    assert parse_marker(draft.marker)[0] == "reco"
+    (request,) = attributor.requests
+    assert request.suite == "reco"
+    assert request.regressions[0].components == v.component_deltas
+    body = draft.render().body
+    assert "k4Bench's nightly reconstruction benchmarks confirmed" in body
+    # The Reconstruction page has none of the views a comment links into yet,
+    # so a reco comment carries no dashboard link.
+    assert _DASH not in body
+
+
+def test_a_sim_comment_keeps_its_wording_and_its_links():
+    v = _verdict()
+    (draft,) = _drafts(_report(v), _blame([v], [_candidate()]))
+    body = draft.render().body
+    assert "k4Bench's nightly benchmarks confirmed" in body
+    assert _DASH in body

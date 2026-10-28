@@ -200,12 +200,11 @@ echo "::endgroup::"
 # script logs the comments it would post and writes nothing. Isolated exactly
 # like 5b: writing into someone else's repository must never be able to fail the
 # report or hold up the e-group email below.
-# Comments cover the sim suite alone: their markers and recipes describe ddsim
-# runs, so another suite's sidecar is published and mailed, never posted.
+# Each suite comments only in the repositories its own list in
+# .github/blame-comments.yml names, under markers of its own, so one suite's
+# comment never takes over another's on the same pull request.
 echo "::group::5c. Pull-request comments"
-if [[ "${K4BENCH_SUITE}" != sim ]]; then
-    echo "No pull-request comments for the ${K4BENCH_SUITE} suite: they cover the sim suite alone."
-elif [[ -f report/blame.json ]]; then
+if [[ -f report/blame.json ]]; then
     {
         # The write token enters exactly one process, here, and only for the
         # length of this call: its dependencies were installed in step 3, with

@@ -92,6 +92,7 @@ from k4bench.blame.comment.state import (
     RetainedRow,
     facts_digest_of,
     marker_for,
+    parse_marker,
     window_contains,
     window_from_marker,
 )
@@ -119,6 +120,7 @@ __all__ = [
     "build_comments",
     "facts_digest_of",
     "marker_for",
+    "parse_marker",
     "select",
     "window_contains",
     "window_from_marker",

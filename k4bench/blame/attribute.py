@@ -79,14 +79,13 @@ from k4bench.blame.llm import (
 from k4bench.blame.evidence import ExternalChange
 from k4bench.blame.summary import external_change_lines
 from k4bench.blame.prompt import (
-    EXTERNAL_CHANGE_RULE,
     ASSESSMENT_RULE,
     HISTORICAL_ANALOGUE_RULE,
-    NOISE_RULE,
     SCORE_BAND_RULE,
+    WORKLOADS,
     StepAssessment,
     UNTRUSTED_EVIDENCE_RULE,
-    WEIGHING_RULE,
+    Workload,
     allocate_diff_budget,
     body_block,
     detector_switch_lines,
@@ -105,6 +104,7 @@ from k4bench.blame.prompt import (
     parse_assessment,
     platform_line,
     platform_switch_lines,
+    component_lines,
     region_lines,
     sample_line,
     window_phrase,
@@ -120,7 +120,8 @@ from k4bench.blame.summary import (
     touch_lines,
 )
 from k4bench.blame.sweep import ScopeSweep
-from k4bench.regression.models import RegionDelta
+from k4bench.layout import SIM
+from k4bench.regression.models import ComponentDelta, RegionDelta
 
 _log = logging.getLogger(__name__)
 
@@ -201,6 +202,9 @@ class RegressionFact:
     #: diff can be checked against. Empty for a memory row, or a run with no
     #: region timing recorded.
     regions: tuple[RegionDelta, ...] = ()
+    #: Which of a reco job's components this step moved, largest movement
+    #: first; empty for a simulated detector's row.
+    components: tuple[ComponentDelta, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -277,6 +281,9 @@ class AttributionRequest:
     title: str
     base_release: str | None
     onset_release: str
+    #: The suite whose report the rows are from, which says what the benchmark
+    #: runs (:data:`~k4bench.blame.prompt.WORKLOADS`).
+    suite: str = SIM
     files: tuple[str, ...] = ()
     patch: str = ""
     #: The reviewed pull request's own description. The one place its author
@@ -402,44 +409,46 @@ class Attributor(Protocol):
 
 # ── The OpenAI-compatible adapter ─────────────────────────────────────────────
 
-_SYSTEM_PROMPT = (
-    "You review whether one merged pull request caused a set of software "
-    "performance regressions measured by a nightly benchmark suite. You are given "
-    "an evidence summary computed from the measurements — for every benchmark "
-    "scope (detector, physics sample, build platform) with confirmed regressions "
-    "in the release window the pull request shipped in: its whole "
-    "detector-removal sweep, what moved and in what shape, the metrics' own "
-    "history and the machines that measured them; what the pull request's diff "
-    "changes in each benchmarked detector it reaches, and what those detectors "
-    "measured; and what every other benchmark did in the same window. Then the "
-    "details, the packages that changed in the release, the pull request's diff, "
-    "and every other pull request that landed in the same window, with its diff. "
-    "Judge each scope as a whole, 0-100 for how likely THIS pull request caused "
-    "its regressions, and give a row its own likelihood only where the evidence "
-    "for that row differs from the rest of its scope. Then write a short summary "
-    "explaining the pattern behind your scores. "
-    "Reason across scopes — that is the point of this review. A change to one "
-    "detector's geometry or reconstruction should move that detector and not the "
-    "others; a change to shared infrastructure (framework, allocation, I/O, "
-    "logging, build flags) should move many of them at once. A step present in "
-    "one detector but absent in another that ran the same sample on the same "
-    "platform argues against a shared-infrastructure cause, and if the diff "
-    "touches nothing specific to the affected detector it argues against this "
-    "pull request entirely. A configuration that moved without confirming is "
-    "weak agreement, not disagreement. "
-    "Prefer a coherent story — the affected set matching what the diff can "
-    "actually reach — over scoring each row in isolation, and judge each scope on "
-    "its own evidence: what holds for one detector is not evidence about "
-    "another. If another pull request in the window fits the evidence better, "
-    "say so in the summary and name it as owner/repo#number. Never write a URL. "
-    + NOISE_RULE
-    + WEIGHING_RULE
-    + SCORE_BAND_RULE
-    + ASSESSMENT_RULE
-    + UNTRUSTED_EVIDENCE_RULE
-    + "Do not invent scopes or regressions: answer only the scope and row ids "
-    "you were given. Output JSON only."
-)
+def _base_prompt(workload: Workload) -> str:
+    """The second pass's system prompt for a suite's benchmark (*workload*),
+    before the rules a request adds (:func:`_system_prompt`)."""
+    return (
+        "You review whether one merged pull request caused a set of software "
+        "performance regressions measured by a nightly benchmark suite. "
+        + workload.attributor_evidence
+        + "Then the "
+        "details, the packages that changed in the release, the pull request's diff, "
+        "and every other pull request that landed in the same window, with its diff. "
+        "Judge each scope as a whole, 0-100 for how likely THIS pull request caused "
+        "its regressions, and give a row its own likelihood only where the evidence "
+        "for that row differs from the rest of its scope. Then write a short summary "
+        "explaining the pattern behind your scores. "
+        "Reason across scopes — that is the point of this review. A change to one "
+        "detector's geometry or reconstruction should move that detector and not the "
+        "others; a change to shared infrastructure (framework, allocation, I/O, "
+        "logging, build flags) should move many of them at once. A step present in "
+        "one detector but absent in another that ran the same sample on the same "
+        "platform argues against a shared-infrastructure cause, and if the diff "
+        "touches nothing specific to the affected detector it argues against this "
+        "pull request entirely. A configuration that moved without confirming is "
+        "weak agreement, not disagreement. "
+        "Prefer a coherent story — the affected set matching what the diff can "
+        "actually reach — over scoring each row in isolation, and judge each scope on "
+        "its own evidence: what holds for one detector is not evidence about "
+        "another. If another pull request in the window fits the evidence better, "
+        "say so in the summary and name it as owner/repo#number. Never write a URL. "
+        + workload.noise_rule
+        + workload.weighing_rule
+        + SCORE_BAND_RULE
+        + ASSESSMENT_RULE
+        + UNTRUSTED_EVIDENCE_RULE
+        + "Do not invent scopes or regressions: answer only the scope and row ids "
+        "you were given. Output JSON only."
+    )
+
+
+#: :func:`_base_prompt` for each suite.
+_SYSTEM_PROMPTS = {suite: _base_prompt(workload) for suite, workload in WORKLOADS.items()}
 
 #: Total *diff* budget (chars) across the reviewed PR and every competitor. Wider
 #: than the ranker's, because this prompt carries the whole window's diffs rather
@@ -643,9 +652,9 @@ def _system_prompt(request: AttributionRequest) -> str:
     Composed rather than constant so a review that carries no historical evidence
     is asked without the rule at all. A standing rule about material the prompt does not contain is at best noise and
     at worst an invitation to hunt for it."""
-    return (_SYSTEM_PROMPT
+    return (_SYSTEM_PROMPTS[request.suite]
             + (HISTORICAL_ANALOGUE_RULE if request.historical else "")
-            + (EXTERNAL_CHANGE_RULE if request.external_changes else ""))
+            + (WORKLOADS[request.suite].external_change_rule if request.external_changes else ""))
 
 
 def attributor_from_env() -> Attributor | None:
@@ -769,7 +778,9 @@ def _history_lines(request: AttributionRequest) -> list[str]:
     at least once. Capped hard — a wide window holds hundreds of rows and their
     histories repeat — and the cap is stated, because silently showing three of
     two hundred would read as a window where only three rows have a past."""
-    facts = [f for f in _attributed_facts(request) if f.history or f.regions]
+    facts = [
+        f for f in _attributed_facts(request) if f.history or f.regions or f.components
+    ]
     if not facts:
         return []
     shown = facts[:_MAX_HISTORY_BLOCKS]
@@ -798,6 +809,7 @@ def _history_lines(request: AttributionRequest) -> list[str]:
             stated=stated.setdefault(scope, set()),
         )
         lines += region_lines(fact.regions)
+        lines += component_lines(fact.metric, fact.components)
     remaining = len(facts) - len(shown)
     if remaining > 0:
         lines.append(

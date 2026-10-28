@@ -698,7 +698,8 @@ This is the integration contract between CI and the dashboard
 ([data flow](../architecture/data-flow.md#nightly-eos-dashboard)). A
 regression report judges one suite's runs and no other's; the nightly builds
 one for each suite it benchmarked, blame attributes every suite's
-confirmed steps, and the pull-request comments cover the `sim` suite alone. The dashboard reads both suites, one page per
+confirmed steps, and each suite comments in the repositories its own list in
+`.github/blame-comments.yml` names. The dashboard reads both suites, one page per
 suite; the Reconstruction page reads its runs directly, not `reports/reco/`.
 A reco report's verdicts include one series per component of a job, named in
 the verdict's `sub_detector`, which for a sim report is always `null`.

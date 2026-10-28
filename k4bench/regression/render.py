@@ -112,6 +112,17 @@ SUITE_PAGE_PATHS = {SIM: "", RECO: "reconstruction"}
 SUITES_WITH_REPORT_VIEWS = frozenset({SIM})
 
 
+def report_views_url(dashboard_url: str | None, suite: str) -> str | None:
+    """*suite*'s dashboard page below *dashboard_url*, to build a report's deep
+    links into its views on — Regressions, Run Trends, Stack Changes, the
+    Nightly Report — or ``None`` when that page has none of them
+    (:data:`SUITES_WITH_REPORT_VIEWS`): a link named for a view the page lacks
+    would open its first section instead."""
+    if not dashboard_url or suite not in SUITES_WITH_REPORT_VIEWS:
+        return None
+    return suite_page_url(dashboard_url, suite)
+
+
 def suite_page_url(dashboard_url: str, suite: str) -> str:
     """*suite*'s dashboard page below *dashboard_url*, its query kept: the base
     every deep link about one of the suite's reports is built on."""

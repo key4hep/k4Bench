@@ -51,6 +51,7 @@ from k4bench.blame.comment import (
     CommentDraft,
     facts_digest_of,
     window_contains,
+    parse_marker,
     window_from_marker,
 )
 from k4bench.blame.github import (
@@ -173,8 +174,9 @@ def _upsert(
     (the shape :func:`~k4bench.blame.comment.render._render` always produces) **and** it
     was written by *login* — a marker quoted inside someone else's comment
     matches neither test, so it cannot divert the edit. An exact marker wins;
-    otherwise the nearest containing or contained window is migrated by replacing
-    its body, including its first-line marker. If formerly separate lineages are
+    otherwise the nearest containing or contained window of the same suite is
+    migrated by replacing its body, including its first-line marker — another
+    suite's comment is never adopted, however its window compares. If formerly separate lineages are
     equally near, the most recently updated is the deterministic survivor; the
     others remain as dated historical comments. Duplicate exact markers still
     fail closed because they already violate the marker's uniqueness invariant,
@@ -225,12 +227,15 @@ def _upsert(
     existing_comment = exact[0] if exact else None
     migrating = False
     lineage_bodies: list[str] = []
-    current_window = window_from_marker(draft.marker)
-    if existing_comment is None and current_window is not None:
+    # Only the draft's own suite's comments form its lineage: another suite's
+    # marker parses as no window here.
+    parsed = parse_marker(draft.marker)
+    if existing_comment is None and parsed is not None:
+        suite, current_window = parsed
         lineage = [
             (c, window)
             for c in owned
-            if (window := window_from_marker(c.body.partition("\n")[0])) is not None
+            if (window := window_from_marker(c.body.partition("\n")[0], suite)) is not None
             and window != current_window
             and (
                 window_contains(current_window, window)

@@ -304,6 +304,36 @@ RECO_RANKER_EVIDENCE = (
     "benchmark did in the same window. "
 )
 
+#: What the second pass — the review behind a pull-request comment — is given
+#: for simulated detectors: the sentence its system prompt opens the evidence
+#: with.
+SIM_ATTRIBUTOR_EVIDENCE = (
+    "You are given "
+    "an evidence summary computed from the measurements — for every benchmark "
+    "scope (detector, physics sample, build platform) with confirmed regressions "
+    "in the release window the pull request shipped in: its whole "
+    "detector-removal sweep, what moved and in what shape, the metrics' own "
+    "history and the machines that measured them; what the pull request's diff "
+    "changes in each benchmarked detector it reaches, and what those detectors "
+    "measured; and what every other benchmark did in the same window. "
+)
+
+#: The same for reco jobs, whose configurations are a baseline and its
+#: variants and whose steps are taken apart by component.
+RECO_ATTRIBUTOR_EVIDENCE = (
+    "You are given "
+    "an evidence summary computed from the measurements — for every benchmark "
+    "scope (detector, physics sample, build platform) of a reconstruction run "
+    "with k4run on a frozen simulated input, with confirmed regressions in the "
+    "release window the pull request shipped in: every configuration of its "
+    "job, what moved and in what shape, which of the job's components — its "
+    "algorithms and services — the step moved and the package each is defined "
+    "in, the metrics' own history and the machines that measured them; what the "
+    "pull request's diff changes in each benchmarked detector it reaches, and "
+    "what those detectors measured; and what every other benchmark did in the "
+    "same window. "
+)
+
 #: :data:`NOISE_RULE` for a reco job, whose input is frozen: its events never
 #: re-roll, so the simulation's long-event trap gives way to what a component's
 #: instructions say about its time.
@@ -409,6 +439,8 @@ class Workload:
 
     #: What the first pass is given, as its system prompt says.
     ranker_evidence: str
+    #: What the second pass is given, as its system prompt says.
+    attributor_evidence: str
     noise_rule: str
     weighing_rule: str
     external_change_rule: str
@@ -420,6 +452,7 @@ class Workload:
 WORKLOADS: dict[str, Workload] = {
     SIM: Workload(
         ranker_evidence=SIM_RANKER_EVIDENCE,
+        attributor_evidence=SIM_ATTRIBUTOR_EVIDENCE,
         noise_rule=NOISE_RULE,
         weighing_rule=WEIGHING_RULE,
         external_change_rule=EXTERNAL_CHANGE_RULE,
@@ -427,6 +460,7 @@ WORKLOADS: dict[str, Workload] = {
     ),
     RECO: Workload(
         ranker_evidence=RECO_RANKER_EVIDENCE,
+        attributor_evidence=RECO_ATTRIBUTOR_EVIDENCE,
         noise_rule=RECO_NOISE_RULE,
         weighing_rule=RECO_WEIGHING_RULE,
         external_change_rule=RECO_EXTERNAL_CHANGE_RULE,

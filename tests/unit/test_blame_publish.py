@@ -63,8 +63,10 @@ def _comment(body: str = f"{_MARKER}\nbody text", number: int = 7) -> _Fixed:
     return _Fixed(repo="key4hep/k4geo", number=number, marker=_MARKER, body=body)
 
 
-def _window_comment(base: str | None, onset: str, *, number: int = 7) -> _Fixed:
-    marker = marker_for(base, onset)
+def _window_comment(
+    base: str | None, onset: str, *, number: int = 7, suite: str = "sim",
+) -> _Fixed:
+    marker = marker_for(base, onset, suite)
     return _Fixed(
         repo="key4hep/k4geo", number=number, marker=marker, body=f"{marker}\nnew body",
     )
@@ -178,6 +180,32 @@ def test_an_expanding_window_adopts_and_rewrites_its_predecessor():
     assert result.updated == ["key4hep/k4geo#7"]
     assert gh.updated == [(42, current.body)]
     assert gh.updated[0][1].splitlines()[0] == current.marker
+    assert not gh.created
+
+
+def test_a_reco_comment_never_takes_over_a_sim_comment_on_the_same_pull_request():
+    # The sim comment's window contains the reco one, which for one suite would
+    # make it the lineage to rewrite. Two suites' findings are two comments.
+    sim = marker_for("2026-07-01", "2026-07-04")
+    gh = _FakeGitHub({7: [_mine(42, f"{sim}\nthe sim finding")]})
+    reco = _window_comment("2026-07-02", "2026-07-04", suite="reco")
+
+    result = publish(gh, [reco])
+
+    assert result.created == ["key4hep/k4geo#7"]
+    assert not gh.updated
+    assert gh.created[0][1].splitlines()[0] == reco.marker
+
+
+def test_a_reco_comment_continues_its_own_lineage():
+    previous = marker_for("2026-07-01", "2026-07-03", "reco")
+    sim = marker_for("2026-07-01", "2026-07-03")
+    gh = _FakeGitHub({7: [_mine(41, f"{sim}\nsim"), _mine(42, f"{previous}\nreco")]})
+    reco = _window_comment("2026-07-01", "2026-07-04", suite="reco")
+
+    publish(gh, [reco])
+
+    assert gh.updated == [(42, reco.body)]
     assert not gh.created
 
 
@@ -868,7 +896,7 @@ def _rendered(verdicts, scores, *, night="2026-07-05"):
     blame = BlameReport(
         generated_at="x", report_night=night, entries=entries,
     )
-    policy = CommentPolicy.from_config({"repos": ["key4hep/k4geo"]})
+    policy = CommentPolicy.from_config({"repos": {"sim": ["key4hep/k4geo"]}}, "sim")
     return build_comments(
         select(report, blame, policy), dashboard_url=_DASH,
         min_score=policy.min_score,
