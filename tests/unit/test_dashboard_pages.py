@@ -70,7 +70,7 @@ def test_a_suites_report_links_into_exactly_the_views_its_page_has(page):
     # A link to a view the page lacks would open its first section instead,
     # and a view left out of the set would never be linked to.
     from k4bench.regression.render import SUITE_REPORT_VIEWS
-    from tabs.detectors_overview import _VIEWS
+    from tabs.reports.overview import _VIEWS
 
     views = SUITE_REPORT_VIEWS[page.suite]
     assert page.reports is True
@@ -82,14 +82,47 @@ def test_a_suites_report_links_into_exactly_the_views_its_page_has(page):
     assert "Overview" in page.sections
 
 
-def test_the_reco_report_views_are_the_simulations_under_its_own_keys():
-    reco, sim = reco_page.RECO_PAGE, sim_page.SIM_PAGE
-    for name in ("Regressions", "Stack Changes"):
-        assert reco.renderers[name] is sim.renderers[name]
-        assert reco.scopes[name] == sim.scopes[name]
-    overview = reco.renderers["Overview"]
-    assert overview.func is sim.renderers["Overview"]
-    assert overview.keywords == {"key_prefix": reco.key_prefix}
+@pytest.mark.parametrize("page", PAGES, ids=lambda p: p.suite)
+def test_a_shared_section_is_drawn_alike_on_every_page_that_has_it(page):
+    from section_dispatch import SHARED_RENDERERS
+    from sections import SHARED_SCOPES
+
+    shared = set(SHARED_RENDERERS) & set(page.sections)
+    # The report views are on every page.
+    assert {"Overview", "Regressions", "Stack Changes"} <= shared
+    for name in shared:
+        assert page.renderers[name] is SHARED_RENDERERS[name]
+        assert page.scopes[name] is SHARED_SCOPES[name]
+        assert (name in page.remote_only) == (name in sim_page.SIM_PAGE.remote_only)
+
+
+def _recording_app(dashboard_dir) -> None:
+    """The reco page with its Logs drawn by a renderer that records its context."""
+    import sys as _sys
+    if dashboard_dir not in _sys.path:
+        _sys.path.insert(0, dashboard_dir)
+    import dataclasses
+
+    import streamlit as st
+
+    from reco.page import RECO_PAGE
+    from suite_page import render_page
+
+    def record(ctx):
+        st.session_state["_key_prefix"] = ctx.key_prefix
+
+    render_page(dataclasses.replace(RECO_PAGE, renderers={**RECO_PAGE.renderers, "Logs": record}))
+
+
+def test_a_page_hands_its_key_prefix_to_its_sections(monkeypatch, tmp_path):
+    _local_env(monkeypatch, RECO_RUN, tmp_path / "cache")
+    at = AppTest.from_function(
+        _recording_app, args=(str(_DASHBOARD_DIR),), default_timeout=60,
+    )
+    at.query_params["tab"] = "Logs"
+    at.run()
+    assert not at.exception, at.exception
+    assert at.session_state["_key_prefix"] == reco_page.RECO_PAGE.key_prefix == "reco_"
 
 
 def test_only_the_reco_page_loads_component_costs():

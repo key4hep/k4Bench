@@ -4,8 +4,8 @@ Everything here turns a suite's precomputed ``reports/{suite}/{date}/report.json
 files into the frames, rosters and styles the tab's views draw
 (:func:`overview_inputs`), and is the tab's unit-test surface. The figures and
 the render flow live in
-:mod:`tabs.detectors_overview`, the Regression Status view in
-:mod:`tabs._regression_status`.
+:mod:`tabs.reports.overview`, the Regression Status view in
+:mod:`tabs.reports.overview.status`.
 """
 
 from __future__ import annotations

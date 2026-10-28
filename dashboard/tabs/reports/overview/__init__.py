@@ -9,13 +9,13 @@ report night's verdict banner, the per-detector roster, and the worst flag's
 trend — the Regressions tab itself is scoped to one detector, so this is where
 the cross-detector regression picture lives; the night is selectable and
 defaults to the newest), and **Nightly Report** (that night's e-group mail
-itself, see :mod:`tabs._nightly_email`).
+itself, see :mod:`tabs.reports.overview.mail`).
 The data comes from the precomputed ``_reports/{date}/report.json`` files on
 EOS, whose verdicts carry the raw nightly value of every run/event metric for
 **all** detectors — one small cached JSON fetch per night, no per-detector run
-downloads. It is shaped into the views' inputs by :mod:`tabs._overview_data`;
+downloads. It is shaped into the views' inputs by :mod:`tabs.reports.overview._data`;
 this module holds the two figure views and the render flow, and the Regression
-Status view is :mod:`tabs._regression_status`.
+Status view is :mod:`tabs.reports.overview.status`.
 
 Only the first three views are scoped to the sidebar's platform/sample; the mail
 is the whole night, across every scope, so it stays readable even when the
@@ -38,8 +38,8 @@ from k4bench.labels import BASELINE_LABEL
 from k4bench.metrics import is_megabytes, metric_label, metric_title
 from k4bench.regression.models import Severity
 from remote_cache import cached_fetch_reports, cached_list_report_dates
-from tabs import _nightly_email, _regression_status
-from tabs._overview_data import (
+from tabs.reports.overview import mail, status
+from tabs.reports.overview._data import (
     MEMORY_METRICS,
     METRIC_ORDER,
     TIME_METRICS,
@@ -595,7 +595,7 @@ def render(
     nights of any detector whose last run predates the window's end (see
     :func:`stale_run_nights`). *dashboard_url* is this deployment's own public
     URL, which only the Nightly Report view needs (see
-    :mod:`tabs._nightly_email`).
+    :mod:`tabs.reports.overview.mail`).
 
     The selected view is itself deep-linkable through ``?view=``, so a copied
     URL reopens the view it was copied from rather than the default one — the
@@ -652,7 +652,7 @@ def render(
                 f"Could not load the latest report ({latest_night}) from EOS — "
                 f"showing the requested {pinned_report} report on its own."
             )
-            _nightly_email.render(data_url, suite, dashboard_url, reports, latest_night)
+            mail.render(data_url, suite, dashboard_url, reports, latest_night)
             return
         st.warning(f"Could not load the latest report ({latest_night}) from EOS.")
         return
@@ -709,7 +709,7 @@ def _views(
     ) or _VIEWS[0]
     st.query_params["view"] = view
     if view == "Nightly Report":
-        _nightly_email.render(
+        mail.render(
             data_url, suite, dashboard_url, inputs.mail_reports, inputs.latest_night,
         )
         return
@@ -723,7 +723,7 @@ def _views(
         )
         return
     if view == "Regression Status":
-        _regression_status.render(
+        status.render(
             inputs.scoped_groups, inputs.status_frames, inputs.window_nights,
             inputs.latest_night, inputs.platform, inputs.sample, inputs.rel_hist,
             key_prefix=key_prefix,

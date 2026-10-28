@@ -47,7 +47,17 @@ from ui_chrome import (
 
 @dataclass(frozen=True)
 class SuitePage:
-    """What one suite's page offers, and how the store is read for it."""
+    """What one suite's page offers, and how the store is read for it.
+
+    Its sections, which of them need remote data, the scope each honours and
+    how each is drawn are four declarations, deliberately. The order is a
+    presentation choice, remote-only a fact about data sources, the scope a
+    fact about scoping, the renderer how the section is drawn. Deriving one
+    from another — hiding a positional prefix, say, or assuming every section
+    reads the whole sidebar — would couple them, so reordering the bar or
+    inserting a section could silently strand a tab with no data behind it,
+    hide a working one, or label it with a scope it never applies.
+    """
 
     #: The suite whose run tree the sidebar walks (``k4bench.layout.SUITES``).
     suite: str
@@ -55,11 +65,13 @@ class SuitePage:
     sections: tuple[str, ...]
     #: Sections that need the run store's history and are hidden in local mode.
     remote_only: frozenset[str]
-    #: The slice of the sidebar each section honours (see :data:`sections.SECTION_SCOPE`).
+    #: The slice of the sidebar each section honours, on entry (see :mod:`sections`).
     scopes: dict[str, SectionScope]
-    #: How each section is drawn (see :data:`section_dispatch.RENDERERS`).
+    #: How each section is drawn (see :mod:`section_dispatch`).
     renderers: dict[str, Renderer]
-    #: Prefix of the page's own widget keys, so two pages never share a selection.
+    #: Prefix of the page's own widget keys, so two pages never share a
+    #: selection: its sidebar's, and those of the sections every page draws
+    #: (:attr:`section_dispatch.PageContext.key_prefix`).
     key_prefix: str = ""
     #: Whether the suite has nightly reports, which bound the trend window.
     reports: bool = True
@@ -164,6 +176,7 @@ def render_page(page: SuitePage) -> None:
                 run_meta=run_meta,
                 run=run,
                 window=window,
+                key_prefix=page.key_prefix,
             )
             # Remote mode shows the run-quality card under the Stack selector.
             if not config.data_url:

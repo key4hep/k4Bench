@@ -17,9 +17,9 @@ from k4bench.metrics import metric_title
 from k4bench.regression.engine import Z_THRESHOLD
 from k4bench.regression.models import RunGroupReport, Severity
 from k4bench.regression.render import detector_badge
-from tabs import _blame
-from tabs._night_picker import render_night_picker
-from tabs._overview_data import (
+from tabs.reports import _blame
+from tabs.reports._night_picker import render_night_picker
+from tabs.reports.overview._data import (
     METRIC_ORDER,
     collapse_history,
     detector_status_rows,
@@ -32,7 +32,7 @@ from tabs._regression_flags import (
     failed_config_labels,
     failed_metric_options,
 )
-from tabs._regression_trend import render_metric_picker
+from tabs.reports._metric_trend import render_metric_picker
 from tabs._reliability import render_run_reliability_filter
 from ui_utils import reset_widget_on_scope, to_rgba
 
@@ -335,7 +335,7 @@ def _select_report_night(
     The options are the nights this tab has loaded anyway (the sidebar's trend
     window plus the newest report), so picking one costs no download. The
     picker re-defaults when the sidebar scope changes (see
-    :func:`tabs._night_picker.render_night_picker` for why a carried-over
+    :func:`tabs.reports._night_picker.render_night_picker` for why a carried-over
     night must not survive one).
     """
     nights = sorted(scoped_groups, reverse=True)

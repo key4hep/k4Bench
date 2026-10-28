@@ -46,9 +46,9 @@ from remote_cache import (
     cached_list_run_dates,
     list_platform_stacks,
 )
-from tabs import _blame
+from tabs.reports import _blame
 from tabs._regression_flags import attention_key, render_candidate_ranking
-from tabs._regression_trend import (
+from tabs.reports._metric_trend import (
     render_metric_picker,
     render_metric_trend,
 )

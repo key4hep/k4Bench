@@ -1,17 +1,17 @@
-"""The section bar, and how each section is drawn from what the sidebar loaded.
+"""The section bar, and how a section is drawn from what the sidebar loaded.
 
-:data:`RENDERERS` maps every :data:`sections.SECTION_NAMES` entry to a function
-of one :class:`PageContext`. The tabs keep their own signatures; each entry
-only says which part of the context its tab takes. Only the active section is
+A page draws each section with a :data:`Renderer`: a function of one
+:class:`PageContext`. The tabs keep their own signatures; each renderer only
+says which part of the context its tab takes. Only the active section is
 drawn, and the context loads nothing up front beyond the selected run's
-results: each entry asks for the files its tab reads (:meth:`PageContext.run_dir`,
-the :class:`data.RunData` attributes), and hands a history view a loader
-called only once that view is open, so in remote mode a section downloads
-what it draws and no more.
+results: each renderer asks for the files its tab reads
+(:meth:`PageContext.run_dir`, the :class:`data.RunData` attributes), and hands
+a history view a loader called only once that view is open, so in remote mode
+a section downloads what it draws and no more.
 
-A fourth registry next to the three in :mod:`sections`, and kept apart from
-them for the same reason: how a section is drawn is a separate fact from where
-it sits in the bar, which data source it needs and what scope it honours.
+The renderers here are those of the sections every page that has them draws
+alike (:data:`SHARED_RENDERERS`), and the helpers a page's own renderers are
+built from; each page defines the rest (:mod:`sim_page`, :mod:`reco.page`).
 """
 from __future__ import annotations
 
@@ -25,16 +25,13 @@ import streamlit as st
 from config import Config
 from data import (
     EVENT_SIZE,
-    EVENT_SOURCE_FILES,
     EVENTS,
-    REGIONS,
     RUN_BASE,
     Artifacts,
     RunData,
     cached_load_trend_event_size,
     cached_load_trend_event_timing,
     cached_load_trend_machine_info,
-    cached_load_trend_region_timing,
     cached_load_trend_results,
     load_machine_info,
 )
@@ -42,20 +39,9 @@ from k4bench.analysis.loader import judgeable_config_rows
 from k4bench.results.reliability_evidence import run_reliability_map
 from sections import SectionScope
 from sidebar import RunSelection, TrendWindow
-from tabs import (
-    correlations,
-    detectors_overview,
-    event_memory,
-    event_size,
-    event_timing,
-    impact,
-    logs,
-    machine_info,
-    region_timing,
-    regressions,
-    stack_changes,
-    trends,
-)
+from tabs import event_memory as event_memory_tab
+from tabs import event_size, machine_info
+from tabs.reports import overview, regressions, stack_changes
 
 
 @dataclass(frozen=True)
@@ -74,6 +60,10 @@ class PageContext:
     run_meta: dict | None
     run: RunData
     window: TrendWindow
+    #: The prefix of the page's widget keys (:attr:`suite_page.SuitePage.key_prefix`),
+    #: which a section every page draws puts on its own, so that each page
+    #: keeps its choices.
+    key_prefix: str = ""
 
     def run_dir(self, artifacts: Artifacts) -> str:
         """The run's directory once it holds the files *artifacts* match
@@ -194,26 +184,15 @@ def pick_section(
     return active
 
 
-def _overview(ctx: PageContext, *, key_prefix: str = "") -> None:
+def _overview(ctx: PageContext) -> None:
     """Cross-detector comparison built from the nightly reports, scoped by the
     sidebar's platform, sample and trend window. Its Nightly Report view
     re-renders the e-group mail, whose deep links must be absolute — hence
-    the dashboard's own URL. *key_prefix* keeps a page's figure choices its
-    own."""
+    the dashboard's own URL."""
     sel = ctx.remote
-    detectors_overview.render(
+    overview.render(
         ctx.config.data_url, sel.ref.suite, ctx.config.dashboard_url,
-        sel.platform, sel.sample, ctx.window.dates, key_prefix=key_prefix,
-    )
-
-
-def _run_trends(ctx: PageContext) -> None:
-    """The sidebar triple's history across every release in the window."""
-    sel = ctx.remote
-    trends.render(
-        ctx.trend_results, ctx.reliability,
-        data_url=ctx.config.data_url, detector=sel.detector,
-        platform=sel.platform, sample=sel.sample,
+        sel.platform, sel.sample, ctx.window.dates, key_prefix=ctx.key_prefix,
     )
 
 
@@ -237,10 +216,6 @@ def _stack_changes(ctx: PageContext) -> SectionScope | None:
         ctx.config.data_url, sel.ref.suite, ctx.config.cache_dir,
         sel.platform, sel.detector, sel.sample, sel.stack,
     )
-
-
-def _config_impact(ctx: PageContext) -> None:
-    impact.render(ctx.run.results)
 
 
 def judgeable_trend(
@@ -288,36 +263,13 @@ def no_components_reason(ctx: PageContext) -> str:
     return "no configuration that succeeded left a `_components.json`."
 
 
-def _region_timing(ctx: PageContext) -> SectionScope | None:
-    return region_timing.render(
-        ctx.run.region_data,
-        history(ctx, cached_load_trend_region_timing, REGIONS),
-        ctx.trends_enabled,
-    )
-
-
-def _event_timing(ctx: PageContext) -> SectionScope | None:
-    return event_timing.render(
+def event_memory(ctx: PageContext) -> SectionScope | None:
+    """The process's memory event by event: the Simulation page's Event Memory
+    section, and the Reconstruction page's Memory looked at per event."""
+    return event_memory_tab.render(
         ctx.run.event_data,
         history(ctx, cached_load_trend_event_timing, EVENTS),
         ctx.trends_enabled, all_runs=ctx.window.all_runs,
-    )
-
-
-def _event_memory(ctx: PageContext) -> SectionScope | None:
-    return event_memory.render(
-        ctx.run.event_data,
-        history(ctx, cached_load_trend_event_timing, EVENTS),
-        ctx.trends_enabled, all_runs=ctx.window.all_runs,
-    )
-
-
-def _correlations(ctx: PageContext) -> SectionScope | None:
-    """The run's per-event costs, its event time and each detector's time and
-    steps, against what each event holds."""
-    return correlations.render(
-        ctx.run_dir(EVENT_SOURCE_FILES + EVENT_SIZE), ctx.run.results, ctx.run.event_data,
-        region_data=ctx.run.region_data,
     )
 
 
@@ -343,24 +295,14 @@ def _machine_info(ctx: PageContext) -> SectionScope | None:
     )
 
 
-def _logs(ctx: PageContext) -> None:
-    """Per-config status and the log explorer."""
-    logs.render(ctx.run.results, ctx.run_dir, ctx.run_meta)
-
-
-#: How each section is drawn. A section that offers a control over its own
-#: scope returns the scope it rendered, for the note under the section bar.
-RENDERERS: dict[str, Renderer] = {
+#: How each section every page that has it draws alike is drawn, by its name
+#: there (their scopes are :data:`sections.SHARED_SCOPES`). A section that
+#: offers a control over its own scope returns the scope it rendered, for the
+#: note under the section bar.
+SHARED_RENDERERS: dict[str, Renderer] = {
     "Overview": _overview,
-    "Run Trends": _run_trends,
     "Regressions": _regressions,
     "Stack Changes": _stack_changes,
-    "Config Impact": _config_impact,
-    "Region Timing": _region_timing,
-    "Event Timing": _event_timing,
-    "Event Memory": _event_memory,
-    "Correlations": _correlations,
     "Event Size": _event_size,
     "Machine Info": _machine_info,
-    "Logs": _logs,
 }

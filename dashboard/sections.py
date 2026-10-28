@@ -1,19 +1,27 @@
-"""The dashboard's section bar: which sections exist, in what order, which
-need remote data, and which slice of the sidebar each one actually honours.
+"""Which slice of the sidebar a section honours, in the words every page's
+scope note uses.
 
-Three independent registries, deliberately. :data:`SECTION_NAMES` is a
-presentation choice — broadest first (across detectors, over time), then
-narrowing into one run's internals, then the forensics for judging a number,
-which is the order the questions are actually asked in. :data:`REMOTE_ONLY` is
-a statement of fact about data sources. :data:`SECTION_SCOPE` is a statement of
-fact about scoping. Deriving one from another — hiding a positional prefix,
-say, or assuming every section reads the whole sidebar — would couple them, so
-reordering the bar or inserting a section could silently strand a tab with no
-data behind it, hide a working one, or label it with a scope it never applies.
+A page declares, per section, the scope it shows *on entry*
+(:attr:`suite_page.SuitePage.scopes`), out of the named scopes below.
+:func:`ui_chrome.render_scope_note` renders it as the single muted line under
+the section bar. Several sections carry a control that changes their scope — a
+historical sub-view, a "Whole platform" toggle — and a static registry cannot
+see those, so each such ``render()`` returns the scope it actually rendered
+(one of the overrides below) and the page hands that to the note. Only the
+section itself knows which branch it took.
 
-Kept out of ``app.py`` because that module ends in a bare ``main()`` call (a
-Streamlit script is exec'd, not imported), so reading the registry from there
-would run the entire app — including its network fetches — as a side effect.
+No scope declares a *time* reference, on purpose: every section that has one
+already prints it in its own words and in the right place, and a second copy in
+the chrome line would either duplicate it or — on the tabs whose sub-views
+switch between the latest run and the trend window — contradict it. Run Trends
+and Machine Info print a "Data range"; Overview prints "Latest night · Data
+range" and, off the newest night, "Historical view · report night";
+Regressions prints the night on its picker and blame cards; Logs prints the
+run's release, date and commit. The sidebar itself captions the trend window.
+So the note carries the hierarchy and nothing else.
+
+:data:`SHARED_SCOPES` holds the scopes of the sections every page that has them
+draws alike (:data:`section_dispatch.SHARED_RENDERERS`).
 """
 
 from __future__ import annotations
@@ -21,33 +29,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from k4bench.labels import pretty_release
-
-#: Every section, in display order.
-SECTION_NAMES = [
-    "Overview",
-    "Run Trends",
-    "Regressions",
-    "Stack Changes",
-    "Config Impact",
-    "Region Timing",
-    "Event Timing",
-    "Event Memory",
-    "Correlations",
-    "Event Size",
-    "Machine Info",
-    "Logs",
-]
-
-#: Sections that need multi-run (remote) data and cannot work against a single
-#: local run directory: the trend views, the report-backed views (Overview,
-#: Regressions), and Stack Changes, which compares two Key4hep releases. Config
-#: Impact is a selected-run comparison and therefore also works locally.
-REMOTE_ONLY = frozenset({
-    "Overview",
-    "Run Trends",
-    "Regressions",
-    "Stack Changes",
-})
 
 
 class _Scoped:
@@ -90,99 +71,63 @@ class SectionScope:
     run:      "_Scoped | None" = None
 
 
-#: The sidebar slice each section honours, one entry per :data:`SECTION_NAMES`
-#: name. Read by :func:`ui_chrome.render_scope_note`, which renders the single
-#: muted line under the section bar.
-#:
-#: What a section declares here is its scope *on entry*. Several sections carry
-#: a control that changes it — a historical sub-view, a "Whole platform" toggle
-#: — and a static registry cannot see those, so each such ``render()`` returns
-#: the scope it actually rendered (one of the overrides below) and ``app.py``
-#: hands that to the note. Only the section itself knows which branch it took.
-#:
-#: No section declares a *time* reference here, on purpose: every section that
-#: has one already prints it in its own words and in the right place, and a
-#: second copy in the chrome line would either duplicate it or — on the tabs
-#: whose sub-views switch between the latest run and the trend window — contradict
-#: it. Run Trends and Machine Info print a "Data range"; Overview prints "Latest
-#: night · Data range" and, off the newest night, "Historical view · report
-#: night"; Regressions prints the night on its picker and blame cards; Logs
-#: prints the run's release, date and commit. The sidebar itself captions the
-#: trend window. So the note carries the hierarchy and nothing else.
-SECTION_SCOPE: dict[str, SectionScope] = {
-    # Cross-detector by construction: it compares every detector benchmarked
-    # for the selected platform/sample on a nightly report, and reports are
-    # per-night rather than per-release, so the sidebar release does not apply.
-    "Overview": SectionScope(
-        detector="all detectors", platform=SCOPED, sample=SCOPED, release=None,
-    ),
-    # Plots the history of the sidebar triple across every release the trend
-    # window covers — the sidebar release picks the single-run tabs' run only.
-    # The window is named, not dated: the run history is not unbounded, and the
-    # sidebar's own caption carries the dates.
-    "Run Trends": SectionScope(
-        detector=SCOPED, platform=SCOPED, sample=SCOPED,
-        release="all releases in the trend window",
-    ),
-    # The release selects which report nights are on offer; the tab's picker
-    # then chooses one of them, so the sidebar's run is not what it shows. When the night on screen was benchmarked by a
-    # different release (the fallback when EOS cannot tie any night to the
-    # sidebar's), the tab says which by returning
-    # :func:`regressions_derived_release`.
-    "Regressions": SectionScope(
-        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
-    ),
-    # Two halves with different scopes. A Key4hep release is one stack whatever
-    # benchmarked it, so the package diff is scoped by the platform alone — said
-    # in the release dimension, because that pair is what produces the diff. The
-    # regressions-in-range view below it *is* scoped to the sidebar's detector
-    # and sample, until its "Whole platform" toggle widens it; see
-    # :data:`STACK_CHANGES_PLATFORM_WIDE`.
-    "Stack Changes": SectionScope(
-        detector=SCOPED,
-        platform=SCOPED,
-        sample=SCOPED,
-        release="platform-wide package diff for the release pair chosen below",
-    ),
-    # The sections built on the sidebar's own selection: all four dimensions
-    # come straight from it. Config Impact and Logs read that one run and
-    # nothing else; the five below them open on it too, and their historical
-    # sub-views widen across the trend window's releases, which they report by
-    # returning :data:`TREND_WINDOW_SCOPE`.
-    "Config Impact": SectionScope(
-        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED, run=SCOPED,
-    ),
-    "Region Timing": SectionScope(
-        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED, run=SCOPED,
-    ),
-    "Event Timing": SectionScope(
-        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED, run=SCOPED,
-    ),
-    "Event Memory": SectionScope(
-        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED, run=SCOPED,
-    ),
-    "Correlations": SectionScope(
-        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED, run=SCOPED,
-    ),
-    "Event Size": SectionScope(
-        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED, run=SCOPED,
-    ),
-    "Machine Info": SectionScope(
-        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED, run=SCOPED,
-    ),
-    "Logs": SectionScope(
-        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED, run=SCOPED,
-    ),
-}
+#: The Overview's: cross-detector by construction, it compares every detector
+#: benchmarked for the selected platform/sample on a nightly report, and reports
+#: are per-night rather than per-release, so the sidebar release does not apply.
+ACROSS_DETECTORS = SectionScope(
+    detector="all detectors", platform=SCOPED, sample=SCOPED, release=None,
+)
 
-#: What a historical sub-view shows: the same sidebar triple, but every release
-#: the trend window covers rather than the selected one. Returned by the
-#: sections that offer such a view, so the note stops naming a release the plot
-#: below it does not single out.
+#: The history of the sidebar triple across every release the trend window
+#: covers — the sidebar release picks the single-run sections' run only. The
+#: window is named, not dated: the run history is not unbounded, and the
+#: sidebar's own caption carries the dates. Run Trends' scope on entry, and what
+#: a historical sub-view of a single-run section returns, so the note stops
+#: naming a release the plot below it does not single out.
 TREND_WINDOW_SCOPE = SectionScope(
     detector=SCOPED, platform=SCOPED, sample=SCOPED,
     release="all releases in the trend window",
 )
+
+#: Regressions': the release selects which report nights are on offer and the
+#: section's picker then chooses one of them, so the sidebar's run is not what
+#: it shows. When the night on screen was benchmarked by a different release
+#: (the fallback when EOS cannot tie any night to the sidebar's), the section
+#: says which by returning :func:`regressions_derived_release`.
+ONE_RELEASE = SectionScope(
+    detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
+)
+
+#: Stack Changes': two halves with different scopes. A Key4hep release is one
+#: stack whatever benchmarked it, so the package diff is scoped by the platform
+#: alone — said in the release dimension, because that pair is what produces
+#: the diff. The regressions-in-range view below it *is* scoped to the
+#: sidebar's detector and sample, until its "Whole platform" toggle widens it;
+#: see :data:`STACK_CHANGES_PLATFORM_WIDE`.
+RELEASE_PAIR = SectionScope(
+    detector=SCOPED,
+    platform=SCOPED,
+    sample=SCOPED,
+    release="platform-wide package diff for the release pair chosen below",
+)
+
+#: The sections built on the sidebar's own selection: all four dimensions come
+#: straight from it, and they draw its run. Those with a historical sub-view
+#: widen across the trend window's releases, which they report by returning
+#: :data:`TREND_WINDOW_SCOPE`.
+ONE_RUN = SectionScope(
+    detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED, run=SCOPED,
+)
+
+#: The scope of each section every page that has it draws alike.
+SHARED_SCOPES: dict[str, SectionScope] = {
+    "Overview": ACROSS_DETECTORS,
+    "Regressions": ONE_RELEASE,
+    "Stack Changes": RELEASE_PAIR,
+    "Event Size": ONE_RUN,
+    "Machine Info": ONE_RUN,
+}
+
 
 def regressions_derived_release(release: str) -> SectionScope:
     """Regressions when the night on screen belongs to a release other than the
@@ -203,6 +148,5 @@ STACK_CHANGES_PLATFORM_WIDE = SectionScope(
     detector="all detectors",
     platform=SCOPED,
     sample="all samples",
-    release=SECTION_SCOPE["Stack Changes"].release,
+    release=RELEASE_PAIR.release,
 )
-

@@ -1,5 +1,5 @@
 """Unit tests for the Overview tab's Nightly Report view
-(:mod:`dashboard.tabs._nightly_email`).
+(:mod:`dashboard.tabs.reports.overview.mail`).
 
 Covers the pure surface — the document the mail is embedded in, the dashboard
 URL the deep links need, and the best-effort blame inputs — with no Streamlit
@@ -20,7 +20,7 @@ _DASHBOARD_DIR = Path(__file__).resolve().parents[2] / "dashboard"
 if str(_DASHBOARD_DIR) not in sys.path:
     sys.path.insert(0, str(_DASHBOARD_DIR))
 
-from tabs._nightly_email import (  # noqa: E402
+from tabs.reports.overview.mail import (  # noqa: E402
     email_document,
     historical_nights,
 )

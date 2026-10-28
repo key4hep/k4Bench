@@ -234,7 +234,7 @@ def render_run_reliability_filter(
 
     The Overview tab's variant of :func:`render_reliability_filter`.
     *rel_hist* has columns ``night, run_night, detector, reliable`` (see
-    :func:`tabs._overview_data.reliability_history` — built per run group
+    :func:`tabs.reports.overview._data.reliability_history` — built per run group
     precisely because the flag belongs to the group and to no metric verdict);
     :func:`render_reliability_filter` keys on a global ``{run_id: verdict}``
     map, which cannot express a cross-detector frame where the same night is

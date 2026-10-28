@@ -1,11 +1,7 @@
-"""The section renderer table: one entry per section, in bar order, and the
-context it draws from refusing a remote-only read in local mode and reading
-the window's history only when a view asks. Also the active section, which
-the sidebar reads before the bar is drawn.
-
-The table is a hand-maintained registry next to the three in ``sections.py``,
-so it can drift the same way: a section added to the bar but not here would
-raise on selection, one left here after a rename would never be drawn.
+"""The sections every page draws alike, and the context a section draws from:
+refusing a remote-only read in local mode and reading the window's history
+only when a view asks. Also the active section, which the sidebar reads before
+the bar is drawn.
 """
 
 from __future__ import annotations
@@ -30,8 +26,8 @@ from sidebar import TrendWindow  # noqa: E402
 RECO_RUN = str(Path(__file__).resolve().parents[1] / "fixtures" / "reco_run")
 
 
-def test_every_section_has_a_renderer_in_bar_order():
-    assert list(section_dispatch.RENDERERS) == sections.SECTION_NAMES
+def test_every_shared_section_has_a_shared_renderer_and_scope():
+    assert set(section_dispatch.SHARED_RENDERERS) == set(sections.SHARED_SCOPES)
 
 
 def _local_context() -> section_dispatch.PageContext:

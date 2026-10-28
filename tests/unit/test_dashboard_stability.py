@@ -220,6 +220,7 @@ def _trends_app(dashboard_dir, with_vmem):
         df,
         reliability={},
         data_url="https://x.invalid",
+        suite="sim",
         detector="CLD",
         platform="PLAT",
         sample="single_e",

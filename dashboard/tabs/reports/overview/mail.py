@@ -47,7 +47,7 @@ from k4bench.regression.email import to_html
 from k4bench.regression.models import NightlyReport
 from k4bench.regression.render import detector_badge
 from remote_cache import cached_fetch_blame
-from tabs._night_picker import render_night_picker
+from tabs.reports._night_picker import render_night_picker
 
 _log = logging.getLogger(__name__)
 

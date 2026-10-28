@@ -44,11 +44,11 @@ k4Bench/
 ├── dashboard/                # Streamlit app (separate from the package)
 │   ├── app.py                #   entry point: the top bar's pages, one per suite
 │   ├── suite_page.py         #   a suite's page: sidebar, then the active section
-│   ├── sim_page.py           #   the Simulation page (default, served at /)
-│   ├── reco/                 #   the Reconstruction page (/reconstruction)
+│   ├── sim_page.py           #   the Simulation page (default, served at /): its sections, their scopes, how each is drawn
+│   ├── reco/                 #   the Reconstruction page (/reconstruction) and its own sections
 │   ├── sidebar.py            #   remote-mode run picker + trend window, per suite
-│   ├── section_dispatch.py   #   section bar + how each section is drawn
-│   ├── sections.py           #   Simulation's section order, data source and scope registries
+│   ├── section_dispatch.py   #   section bar, the context a section draws from, the sections every page draws alike
+│   ├── sections.py           #   the scopes a section declares for the note under the bar
 │   ├── config.py             #   Config.from_env (K4BENCH_DATA_DIR/_URL/_CACHE_DIR)
 │   ├── data.py               #   @st.cache_data loaders + the selected run's RunData
 │   ├── remote_cache.py       #   Streamlit-cached wrappers around k4bench.remote
@@ -56,7 +56,8 @@ k4Bench/
 │   ├── trend_window.py       #   pure window-resolution logic (unit-tested)
 │   ├── url_params.py         #   the page URL's parameter names, parsed and built
 │   ├── ui_chrome.py / ui_utils.py
-│   ├── tabs/                 #   one module per dashboard tab
+│   ├── tabs/                 #   one module per dashboard tab; reports/ holds the views of the nightly
+│   │                         #   reports (Overview, Regressions, Stack Changes) every page draws
 │   ├── Dockerfile
 │   └── requirements.txt
 │
