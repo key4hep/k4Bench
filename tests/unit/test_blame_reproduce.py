@@ -8,8 +8,12 @@ import subprocess
 from dataclasses import replace
 from types import SimpleNamespace
 
+import pytest
+
+from k4bench import staging
 from k4bench.blame import reproduce
 from k4bench.blame.reproduce import (
+    K4runReproducerFacts,
     artifact_name,
     facts_from,
     render_text,
@@ -369,7 +373,7 @@ def test_a_failed_before_half_fails_the_whole_recipe(tmp_path, monkeypatch):
     # fails on its own first line rather than on whatever this machine has
     # mounted under /cvmfs.
     absent = tmp_path / "absent-nightlies"
-    monkeypatch.setattr(reproduce, "_NIGHTLY_REPO", str(absent))
+    monkeypatch.setattr(reproduce.shell, "_NIGHTLY_REPO", str(absent))
     recipe = tmp_path / "recipe.txt"
     recipe.write_text(render_text(facts))
 
@@ -474,10 +478,218 @@ def test_artifact_name_never_leaves_the_published_directory():
     assert "/" not in hostile and " " not in hostile
 
 
-def test_a_k4run_job_gets_no_ddsim_recipe():
-    # Its record has a geometry and no ddsim arguments, which a ddsim recipe
-    # would read as a plain ddsim run of that geometry.
-    assert _facts() is not None
-    assert facts_from(
-        _row(), _info("2026-08-27", "1", tool="k4run"), _info("2026-08-28", "2", tool="k4run"),
-    ) is None
+_INPUT = (
+    "https://k4bench-data.web.cern.ch/inputs/reco/CLD/CLD_o2_v09/"
+    "p8_ee_Zbb_ecm91_100ev_seed42.edm4hep.root"
+)
+
+
+def _slot(day: str, package: str) -> str:
+    """A package's install in one LCG weekday slot, as the nightly resolved it."""
+    return (
+        f"/cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/{day}/{package}"
+        "/HEAD/x86_64-el9-gcc16-opt"
+    )
+
+
+def _local_input(source: str) -> str:
+    return str(staging.LOCAL_INPUT_DIR / staging.input_key(source) / source.rsplit("/", 1)[-1])
+
+
+def _k4run_row(**overrides):
+    return _row(**{
+        "detector": "CLD_o2_v09", "platform": "x86_64-el9-gcc16-opt",
+        "sample": "p8_ee_Zbb_ecm91", "label": "baseline",
+        "metric": "seconds_per_event", "sub_detector": "ConformalTracking",
+        "pct_change": 0.12,
+        "last_accepted_run_date": "2026-10-19", "onset_run_date": "2026-10-26",
+        **overrides,
+    })
+
+
+def _k4run_info(release: str, run: str, day: str, **overrides):
+    """A CLD reco run_info.json as the 2026-10 nightlies write it, in *day*'s slot."""
+    geometry = (
+        f"{_slot(day, 'k4geo')}/share/k4geo/FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml"
+    )
+    values = {
+        "suite": "reco", "tool": "k4run",
+        "detector": "CLD_o2_v09", "platform": "x86_64-el9-gcc16-opt",
+        "sample": "p8_ee_Zbb_ecm91", "k4h_release_date": release,
+        "k4h_stack_setup": (
+            f"/cvmfs/sft-nightlies.cern.ch/lcg/views/devkey-head/{day}"
+            "/x86_64-el9-gcc16-opt/setup.sh"
+        ),
+        "xml_path": "FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml",
+        "configured_xml_path": "FCCee/CLD/compact/CLD_o2_v09/CLD_o2_v09.xml",
+        "github_run_url": f"https://github.test/actions/runs/{run}",
+        "commit_sha": "4c40c67" * 5 + "4c40c",
+        "n_events": 100, "ddsim_args": "", "random_seed": None,
+        "verbose": False, "runner_cpu_set": "24-31",
+        "input_files": [_INPUT], "steering_file": "", "resolved_steering_file": "",
+        "options": ["CLDReconstruction.py"],
+        "stage_dir": "$CLDCONFIG/share/CLDConfig",
+        "resolved_stage_dir": f"{_slot(day, 'cldconfig')}/share/CLDConfig",
+        "k4run_args": (
+            f"--compactFile {geometry} --inputFiles {_local_input(_INPUT)} "
+            "--outputBasename reco --cms 91"
+        ),
+        "variants": {"truth_tracking": "--truthTracking", "other": "--other"},
+        "data_files": [], "memory_events": 100,
+    }
+    values.update(overrides)
+    return values
+
+
+def _k4run_facts(row=None, **after_overrides):
+    return facts_from(
+        row or _k4run_row(),
+        _k4run_info("2026-10-19", "1", "Sun"),
+        _k4run_info("2026-10-26", "2", "Mon", **after_overrides),
+    )
+
+
+def _option(half: str, option: str) -> str:
+    """The one shell word *option* is given in *half*'s command."""
+    return shlex.split(half.split(f"{option}", 1)[1].split(" \\\n", 1)[0])[0]
+
+
+def test_a_k4run_job_reruns_its_recorded_command_in_each_half():
+    facts = _k4run_facts()
+    assert isinstance(facts, K4runReproducerFacts)
+    # Each half reads its own weekday slot's geometry and configuration, which
+    # is the stack changing, not the workload.
+    assert facts.parity_diffs == ()
+    body = render_text(facts)
+    assert body.count("k4bench k4run CLDReconstruction.py") == 2
+    assert "k4bench --xml" not in body
+    for half, day in zip(_halves(body), ("Sun", "Mon")):
+        info = _k4run_info("", "", day)
+        assert _option(half, "--k4run-args=") == info["k4run_args"]
+        assert _option(half, "--stage-dir ") == info["resolved_stage_dir"]
+        assert f"views/devkey-head/{day}/" in half
+    # The baseline alone, and no memory pass: no judged metric comes from it.
+    assert "--variant" not in body and "--memory-events" not in body
+    assert "# Metric:            seconds_per_event (ConformalTracking)" in body
+    assert "same workload: 100 events of the same frozen input" in _prose(body)
+
+
+def test_a_variant_row_reruns_the_baseline_and_that_variant_alone():
+    facts = _k4run_facts(_k4run_row(label="variant_truth_tracking"))
+    assert facts is not None and facts.variant == "truth_tracking"
+    body = render_text(facts)
+    for half in _halves(body):
+        assert _option(half, "--variant ") == "truth_tracking=--truthTracking"
+    assert "--other" not in body
+
+
+@pytest.mark.parametrize(
+    "row, after",
+    [
+        # Labels a k4run benchmark cannot produce, or a variant one run lacks.
+        ({"label": "no_TPC"}, {}),
+        ({"label": "variant_truth_tracking"}, {"variants": {}}),
+        # A record without its command, or with a source the recipe cannot fetch.
+        ({}, {"options": []}),
+        ({}, {"resolved_stage_dir": ""}),
+        ({}, {"input_files": ["/data/sim.root"]}),
+        # A window across a change of tool has no one command to give.
+        ({}, {"tool": "ddsim"}),
+    ],
+)
+def test_k4run_records_without_a_rerunnable_command_get_no_recipe(row, after):
+    assert _k4run_facts() is not None
+    assert _k4run_facts(_k4run_row(**row), **after) is None
+
+
+@pytest.mark.parametrize(
+    "row, after, diffs",
+    [
+        ({}, {"n_events": 50}, ("n_events",)),
+        ({}, {"stage_dir": "$CLDCONFIG/share/Other"}, ("stage_dir",)),
+        (
+            {},
+            {"k4run_args": _k4run_info("", "", "Mon")["k4run_args"].replace(
+                "--cms 91", "--cms 240"
+            )},
+            ("k4run_args",),
+        ),
+        (
+            {"label": "variant_truth_tracking"},
+            {"variants": {"truth_tracking": "--truthTracking --extra"}},
+            ("variant_args",),
+        ),
+        ({}, {"data_files": ["https://a.cern.ch/noise.root"]}, ("data_files",)),
+    ],
+)
+def test_k4run_parity_names_what_was_configured_differently(row, after, diffs):
+    facts = _k4run_facts(_k4run_row(**row), **after)
+    assert facts is not None and facts.parity_diffs == diffs
+    assert "did NOT measure the same workload" in render_text(facts)
+
+
+def test_a_moved_input_is_an_input_difference_not_an_argument_one():
+    moved = _INPUT.replace("k4bench-data.web.cern.ch", "mirror.example")
+    args = _k4run_info("", "", "Mon")["k4run_args"].replace(
+        _local_input(_INPUT), _local_input(moved)
+    )
+    facts = _k4run_facts(input_files=[moved], k4run_args=args)
+    assert facts is not None and facts.parity_diffs == ("input_files",)
+
+
+def test_every_k4run_source_is_fetched_once_to_where_its_nightly_read_it():
+    data = ("https://a.cern.ch/noise.root", "https://b.cern.ch/Config-abc.tar.gz")
+    moved = "root://eosuser.cern.ch//eos/inputs/other.edm4hep.root"
+    before = _k4run_info("2026-10-19", "1", "Sun", data_files=list(data))
+    after = _k4run_info(
+        "2026-10-26", "2", "Mon", data_files=list(data), input_files=[_INPUT, moved],
+    )
+    facts = facts_from(_k4run_row(), before, after)
+    assert facts is not None
+    body = render_text(facts)
+    # Ahead of both halves, in a subshell sourcing the BEFORE release first.
+    fetch = body.split("\n(\n")[2].split("\n)\n", 1)[0]
+    assert fetch.index("views/devkey-head/Sun/") < fetch.index("curl ")
+    assert all("curl " not in half and "xrdcp " not in half for half in _halves(body))
+    # Each input in its own directory, as the recorded arguments read it.
+    assert fetch.count(f"-o {_local_input(_INPUT)} {_INPUT}") == 1
+    assert f"xrdcp --force {moved} {_local_input(moved)}" in fetch
+    # The data files share one directory; an archive is unpacked there.
+    folder = staging.LOCAL_DATA_DIR / staging.data_key(list(data))
+    # Emptied first, as the nightly does, so nothing left there joins the job.
+    assert f"rm -rf {folder}\n  mkdir -p {folder}" in fetch
+    assert f"-o {folder}/noise.root https://a.cern.ch/noise.root" in fetch
+    assert f"tar -xzf {folder}/Config-abc.tar.gz -C {folder}" in fetch
+    assert f"rm -f {folder}/Config-abc.tar.gz" in fetch
+
+
+def test_k4run_recipe_quotes_recorded_arguments_and_parses_as_bash(tmp_path):
+    hostile = "--cms 91 'two words'\necho injected; rm -rf ~"
+    facts = _k4run_facts(k4run_args=hostile)
+    assert facts is not None
+    body = render_text(facts)
+    assert _option(_halves(body)[1], "--k4run-args=") == hostile
+    recipe = tmp_path / "recipe.txt"
+    recipe.write_text(body)
+    assert subprocess.run(["bash", "-n", str(recipe)]).returncode == 0
+
+
+def test_k4run_artifact_name_tells_components_apart():
+    facts = _k4run_facts()
+    assert facts is not None
+    assert artifact_name(facts) == artifact_name(_k4run_facts())
+    assert artifact_name(facts) != artifact_name(replace(facts, sub_detector="GeoSvc"))
+    # Readably too: a window confirms many components under one metric.
+    assert "ConformalTracking" in artifact_name(facts)
+    # A measurement of no component keeps the name it always had.
+    assert artifact_name(replace(facts, sub_detector=None)).startswith(
+        "CLD_o2_v09-p8_ee_Zbb_ecm91-baseline-seconds_per_event-"
+    )
+
+
+def test_a_recipe_says_how_long_its_stacks_stay():
+    lcg = render_text(_k4run_facts())
+    assert "LCG reuses each weekday's nightly view after about a week" in lcg
+    assert "three weeks" not in lcg
+    spack = render_text(replace(_k4run_facts(), base_stack_setup="", onset_stack_setup=""))
+    assert "Key4hep nightlies are kept on CVMFS for about three weeks" in spack

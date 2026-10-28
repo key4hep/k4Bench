@@ -30,7 +30,7 @@ from k4bench.blame.comment.state import (
     _retained_identity,
     _retained_window,
 )
-from k4bench.blame.reproduce import ReproducerFacts
+from k4bench.blame.reproduce import RecipeFacts
 
 
 @dataclass(frozen=True)
@@ -57,7 +57,7 @@ class Reproducers:
 
     urls: dict[tuple, str]
     hashed: tuple[tuple, ...]
-    facts: tuple[ReproducerFacts, ...]
+    facts: tuple[RecipeFacts, ...]
 
 
 def _digest_from(

@@ -707,8 +707,8 @@ the verdict's `sub_detector`, which for a sim report is always `null`.
 by the `regression-report` CI job, rendered by the dashboard's Regressions tab),
 whose top-level `suite` key names the suite it judged — a report without one
 predates suites and judged the `sim` suite's runs —
-and `reproducers/sim/` holds the runnable recipes the blame pull-request
-comments link to (written by the same job's comment step, read directly by
+and `reproducers/{suite}/` holds the runnable recipes the suite's blame
+pull-request comments link to (written by the same job's comment step, read directly by
 whoever follows the link). A recipe is named for the measurement and change
 window it reproduces rather than for a night, so re-publishing the same window
 replaces the same file and a standing comment's link keeps working — see
