@@ -14,6 +14,7 @@ import json
 import math
 
 from k4bench.regression.models import (
+    ComponentDelta,
     Direction,
     EventProfile,
     EventSample,
@@ -334,9 +335,9 @@ _WINDOW_FIELDS = {
 _REPEAT_FIELDS = {"first_confirmed_run_id"}
 #: The release-level history tail carried on confirmed verdicts, so a reader can
 #: weigh a step against the series it stepped out of, the region breakdown
-#: saying where inside the detector a timing step landed, and the per-event
-#: times at both ends of its window.
-_HISTORY_FIELDS = {"history", "region_deltas", "event_profile"}
+#: saying where inside the detector a timing step landed, the per-event times
+#: at both ends of its window, and which components of a reco job it moved.
+_HISTORY_FIELDS = {"history", "region_deltas", "event_profile", "component_deltas"}
 #: Machine-readable reason an UNKNOWN verdict was not judged.
 _UNJUDGED_FIELDS = {"unjudged"}
 #: The release a still-provisional baseline is re-anchoring onto, so a reader
@@ -638,6 +639,34 @@ def test_unreadable_evidence_costs_the_evidence_and_never_the_report():
     assert restored.region_deltas == ()
     # The verdict itself is untouched: this is context for a step, not the step.
     assert restored.severity is Severity.CONFIRMED and restored.pct_change == 0.21
+
+
+def test_a_component_decomposition_survives_the_round_trip_and_its_bad_entries_do_not():
+    deltas = (
+        ComponentDelta("SimulateSiPMwithEdep", 3.885, 1.526, -2.359,
+                       package="k4reccalorimeter", instructions_change=-0.659),
+        ComponentDelta("NewAlg", None, 0.2, 0.2),
+    )
+    verdict = dataclasses.replace(_confirmed_with_evidence(), component_deltas=deltas)
+    data = to_json(NightlyReport(
+        generated_at="x",
+        groups=[RunGroupReport(
+            detector="D", platform="P", sample="S", k4h_release="k",
+            run_date="2026-07-22", run_id="2026-07-22", verdicts=[verdict],
+        )],
+    ))
+    raw = json.loads(json.dumps(data))
+    assert from_json(raw).groups[0].verdicts[0].component_deltas == deltas
+    raw["groups"][0]["verdicts"][0]["component_deltas"] = [
+        {"component": "A", "delta": "lots"}, "not an object",
+        {"component": "B", "delta": 0.5, "base": "x", "onset": 0.5, "instructions_change": None},
+        # With neither end there is nothing to say how the component moved.
+        {"component": "C", "delta": 0.5, "base": "x"},
+    ]
+    restored = from_json(raw).groups[0].verdicts[0].component_deltas
+    assert restored == (ComponentDelta("B", None, 0.5, 0.5),)
+    from k4bench.blame.prompt import component_lines
+    assert component_lines("mean_time_s", restored)[1] == "      B: newly present at 0.5 s/event"
 
 
 def test_a_version_switch_survives_the_round_trip():

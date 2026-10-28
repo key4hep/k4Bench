@@ -36,7 +36,9 @@ import statistics
 from dataclasses import dataclass
 
 from k4bench.blame.evidence import steps_in_window
+from k4bench.regression.catalog import COMPONENT_METRICS
 from k4bench.regression.models import (
+    ComponentDelta,
     EventProfile,
     MetricVerdict,
     NightlyReport,
@@ -136,6 +138,11 @@ class SweepRow:
     #: How the typical event's time moved per detector region, from the same
     #: verdict, largest movement first; empty when unknown.
     regions: tuple[RegionDelta, ...] = ()
+    #: Which of a reco job's components this configuration's step moved,
+    #: largest movement first, and the metric of the stepped verdict they were
+    #: taken from (:func:`_component_evidence`); empty for a simulated detector.
+    components: tuple[ComponentDelta, ...] = ()
+    components_metric: str = ""
 
     def cell(self, metric: str) -> SweepCell | None:
         return next((c for c in self.cells if c.metric == metric), None)
@@ -583,6 +590,47 @@ def _time_evidence(
     return None, ()
 
 
+#: The job verdicts a configuration's component movements are read from, in
+#: order: the event time's, which the components' own times add up to, then
+#: the whole job's, its initialize, and its memory.
+_DECOMPOSED_METRICS = (
+    "mean_time_s", "median_time_s", "trimmed_mean_time_s", "wall_time_s",
+    "initialize_s", "mean_rss_anon_mb",
+)
+
+
+def _component_evidence(
+    verdicts: list[MetricVerdict], window: SweepWindow,
+) -> tuple[str, tuple[ComponentDelta, ...]]:
+    """``(metric, components)`` of the first of a configuration's stepped job
+    verdicts, in :data:`_DECOMPOSED_METRICS` order, that names the components
+    it moved.
+
+    Without one, the components that stepped on their own, largest movement
+    first, in the first of :data:`~k4bench.regression.catalog.COMPONENT_METRICS`
+    any did: an algorithm whose step its job's metrics are too large to show is
+    what a reco job is judged per component for, and the summary would
+    otherwise read that configuration as flat. ``("", ())`` when neither."""
+    for metric in _DECOMPOSED_METRICS:
+        for v in verdicts:
+            if (
+                v.metric == metric and v.sub_detector is None
+                and v.component_deltas and _steps_in(v, window)
+            ):
+                return metric, tuple(v.component_deltas)
+    for metric in COMPONENT_METRICS:
+        own = [
+            delta
+            for v in verdicts
+            if v.metric == metric and v.sub_detector is not None
+            and v.component_deltas and _steps_in(v, window)
+            for delta in v.component_deltas
+        ]
+        if own:
+            return metric, tuple(sorted(own, key=lambda d: (-abs(d.delta), d.component)))
+    return "", ()
+
+
 def scope_sweep(
     group: RunGroupReport, *, base_release: str | None, onset_release: str,
     base_run: str | None = None, onset_run: str | None = None,
@@ -613,7 +661,11 @@ def scope_sweep(
                 if v.metric in shown and v.sub_detector is None
             )
         profile, regions = _time_evidence(verdicts, window)
-        rows.append(SweepRow(label=label, cells=cells, profile=profile, regions=regions))
+        components_metric, components = _component_evidence(verdicts, window)
+        rows.append(SweepRow(
+            label=label, cells=cells, profile=profile, regions=regions,
+            components=components, components_metric=components_metric,
+        ))
     return ScopeSweep(
         detector=group.detector, platform=group.platform, sample=group.sample,
         rows=tuple(rows), unread=unread, failures=tuple(group.job_failures),

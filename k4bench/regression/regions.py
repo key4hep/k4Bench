@@ -262,6 +262,38 @@ def _run_dir_named(run_dirs: Sequence[Path], run_id: str | None) -> Path | None:
     return next((d for d in run_dirs if d.name == str(run_id)), None)
 
 
+def window_end_dirs(
+    run_dirs: Sequence[str],
+    *,
+    base_release: str,
+    onset_release: str,
+    base_run_id: str | None = None,
+    onset_run_id: str | None = None,
+) -> tuple[list[Path], list[Path]] | None:
+    """The run directories of each end of the window ``(base, onset]``, or
+    ``None`` when either end has none.
+
+    An end is every night of its release, the nights being repeat measurements
+    of one software state. A window whose ends name one release is two runs of
+    it, and *base_run_id* / *onset_run_id* are what tell them apart — the same
+    pair the verdict, the email's window token and the blame range are
+    identified by. The ends are then those two runs rather than the release's
+    pool, because one pool measured against itself is not a comparison. Without
+    a resolvable run on each side there is again nothing to compare.
+    """
+    grouped = dirs_by_release(run_dirs)
+    base_dirs, onset_dirs = grouped.get(base_release, []), grouped.get(onset_release, [])
+    if not base_dirs or not onset_dirs:
+        return None
+    if base_release == onset_release:
+        base_dir = _run_dir_named(base_dirs, base_run_id)
+        onset_dir = _run_dir_named(onset_dirs, onset_run_id)
+        if base_dir is None or onset_dir is None or base_dir == onset_dir:
+            return None
+        return [base_dir], [onset_dir]
+    return base_dirs, onset_dirs
+
+
 def region_evidence(
     run_dirs: Sequence[str],
     *,
@@ -285,25 +317,17 @@ def region_evidence(
     failed or orphaned config-nights absent from that set are gaps and do not
     enter either end.
 
-    A window whose ends name one release is two runs of that release, and
-    *base_run_id* / *onset_run_id* are what tell them apart — the same pair the
-    verdict, the email's window token and the blame range are identified by. The
-    ends are then those two runs rather than the release's pool, because one
-    pool measured against itself is not a comparison and would report every
-    region as having stood still. Without a resolvable run on each side there is
-    again nothing to compare.
+    The ends are those of :func:`window_end_dirs`: for a window inside one
+    release its two runs, whose pool measured against itself would report every
+    region as having stood still.
     """
-    grouped = dirs_by_release(run_dirs)
-    base_dirs, onset_dirs = grouped.get(base_release, []), grouped.get(onset_release, [])
-    if not base_dirs or not onset_dirs:
+    ends = window_end_dirs(
+        run_dirs, base_release=base_release, onset_release=onset_release,
+        base_run_id=base_run_id, onset_run_id=onset_run_id,
+    )
+    if ends is None:
         return (), None
-
-    if base_release == onset_release:
-        base_dir = _run_dir_named(base_dirs, base_run_id)
-        onset_dir = _run_dir_named(onset_dirs, onset_run_id)
-        if base_dir is None or onset_dir is None or base_dir == onset_dir:
-            return (), None
-        base_dirs, onset_dirs = [base_dir], [onset_dir]
+    base_dirs, onset_dirs = ends
 
     base_nights = _read_nights(base_dirs, label, judgeable_configs)
     onset_nights = _read_nights(onset_dirs, label, judgeable_configs)

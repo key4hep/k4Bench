@@ -29,6 +29,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from k4bench.labels import pretty_platform, pretty_sample
 from k4bench.layout import RECO, SIM
 from k4bench.regression.models import (
+    ComponentDelta,
     Direction,
     EventProfile,
     EventSample,
@@ -459,6 +460,30 @@ def _region_deltas(raw: object) -> tuple[RegionDelta, ...]:
     return tuple(deltas)
 
 
+def _component_deltas(raw: object) -> tuple[ComponentDelta, ...]:
+    """A verdict's component decomposition, rebuilt from JSON with the
+    tolerance of :func:`_region_deltas`: an entry that cannot be read is left
+    out, as is one with neither end, and a field that cannot is unknown."""
+    if not isinstance(raw, list):
+        return ()
+    deltas = []
+    for item in raw:
+        if not isinstance(item, dict) or (delta := _finite(item.get("delta"))) is None:
+            continue
+        base, onset = _finite(item.get("base")), _finite(item.get("onset"))
+        if base is None and onset is None:
+            continue
+        deltas.append(ComponentDelta(
+            component=str(item.get("component", "")),
+            base=base,
+            onset=onset,
+            delta=delta,
+            package=str(item.get("package") or ""),
+            instructions_change=_finite(item.get("instructions_change")),
+        ))
+    return tuple(deltas)
+
+
 def _finite(raw: object) -> float | None:
     """*raw* as a finite float, or ``None``."""
     if raw is None or isinstance(raw, bool):
@@ -554,6 +579,7 @@ def from_json(data: dict) -> NightlyReport:
                 "history": _history(v.get("history")),
                 "region_deltas": _region_deltas(v.get("region_deltas")),
                 "event_profile": _event_profile(v.get("event_profile")),
+                "component_deltas": _component_deltas(v.get("component_deltas")),
                 "unjudged": _unjudged(v.get("unjudged")),
             })
             for v in g.get("verdicts", [])

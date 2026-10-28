@@ -548,6 +548,7 @@ class _NightBlame:
                 sweeps=_sweeps(self.report, v, self.sweep_cache),
                 geometry=self.geometry,
                 externals=externals,
+                suite=self.report.suite,
             )
             if result.rankings:
                 repos = [_apply_rankings(r, result.rankings) for r in repos]

@@ -187,6 +187,41 @@ class RegionDelta:
 
 
 @dataclass(frozen=True)
+class ComponentDelta:
+    """How one component of a reco job — an algorithm or a service — moved
+    across a change window.
+
+    A confirmed step is one number for the whole job, or for one of its
+    components; this is the job taken apart. The k4Bench auditor records each
+    component's own cost (``_components.json``) and the memory pass the heap
+    each one holds (``_heap.json``), so the decomposition names the algorithm
+    whose own cost moved and the stack package it is defined in.
+
+    ``base``/``onset`` are the component's cost at each end of the window — in
+    what the verdict's metric measures: its own time per event, in initialize,
+    over the whole job, or the heap it holds — each the median of that end's
+    nights, and ``None`` where that end did not record the component. ``delta``
+    is the signed move, and is what the components are ranked by.
+
+    ``package`` is the stack package whose install holds the component's
+    library, empty when it could not be placed. It is where the component is
+    *defined*, not necessarily the code its time is spent in: a service
+    building the geometry spends it in DD4hep, a reader in podio and ROOT.
+    ``instructions_change`` is the relative change of the instructions the
+    component retired over the same span — the work it did, which the host does
+    not move — and ``None`` where they were not counted at both ends, and for a
+    memory step.
+    """
+
+    component: str
+    base: float | None
+    onset: float | None
+    delta: float
+    package: str = ""
+    instructions_change: float | None = None
+
+
+@dataclass(frozen=True)
 class LongEvent:
     """One of the longest events at one end of a change window.
 
@@ -390,6 +425,12 @@ class MetricVerdict:
     #: region timing — and ``None`` everywhere else, including every report
     #: written before the field existed.
     event_profile: EventProfile | None = None
+    #: Which components of a reco job this step moved (see
+    #: :class:`ComponentDelta`), largest movement first — only the verdict's own
+    #: component for a component's verdict. Carried on ``CONFIRMED`` verdicts of
+    #: a job that recorded its components at both ends of the window, and empty
+    #: everywhere else, including every report written before the field existed.
+    component_deltas: tuple[ComponentDelta, ...] = ()
     #: Why this verdict is ``UNKNOWN`` — ``None`` on every judged severity, and
     #: on reports that predate the field. Read it through
     #: :func:`unjudged_cause`, never directly: the reader has to cope with

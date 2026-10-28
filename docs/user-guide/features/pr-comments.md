@@ -17,6 +17,11 @@ cross-configuration review behind the claim) and
 by `.github/scripts/blame_comment.py` in step 5c of the nightly
 `regression-report` job.
 
+Comments are posted for the simulation suite's regressions alone. The
+reconstruction suite's confirmed steps are ranked like the simulation's, into
+its own `blame.json`, and reach its e-group mail, but no pull request is
+commented on for them yet.
+
 ## Two passes
 
 The nightly ranker ([`k4bench.blame.rank`](../../reference/api/blame/rank.md))
