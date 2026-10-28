@@ -41,7 +41,14 @@ from k4bench.blame.history import (
 from k4bench.blame.llm import one_line
 from k4bench.labels import describe_platform, pretty_sample
 from k4bench.layout import RECO, SIM
-from k4bench.regression.components import DECOMPOSED_AS, EVENT, HEAP, INITIALIZE, JOB
+from k4bench.regression.components import (
+    DECOMPOSED_AS,
+    EVENT,
+    HEAP,
+    INITIALIZE,
+    JOB,
+    TYPICAL_EVENT,
+)
 from k4bench.regression.models import ComponentDelta, RegionDelta
 
 _log = logging.getLogger(__name__)
@@ -315,9 +322,12 @@ RECO_NOISE_RULE = (
     "and a step in an event's time is a change in what the reconstruction does "
     "with those same events — in a component's own code, in a library it calls, "
     "or in what an algorithm upstream of it hands it. A component's time that "
-    "moved while the instructions it retired held is the same work running "
-    "faster or slower — the machine, memory or cache behaviour, how a library "
-    "or the compiler built it — not more or less work. "
+    "moved while the instructions it retired held points to the same work "
+    "running faster or slower — the machine, memory or cache behaviour, how a "
+    "library or the compiler built it — rather than more or less work. Those "
+    "instructions are counted on the calling thread only, though: work a "
+    "library hands to threads of its own, as ONNX Runtime does, is not in "
+    "them, so for such a component held instructions do not rule out more work. "
     "A harness change is not noise, though — when the harness's own pull "
     "requests are among the candidates, weigh them like any other. 'None of "
     "these' is a correct and useful answer, and a confident wrong culprit is "
@@ -928,8 +938,14 @@ def region_lines(deltas: tuple[RegionDelta, ...]) -> list[str]:
 #: and its unit.
 _COMPONENT_COSTS = {
     EVENT: ("own time per event", "s/event"),
+    TYPICAL_EVENT: ("own time per event over the typical events, the slowest 5% left out", "s/event"),
     INITIALIZE: ("own time in initialize", "s"),
-    JOB: ("own time over the whole job", "s"),
+    JOB: (
+        "own time in each phase of the job, apart; a service initialized during "
+        "an event is listed in initialize and also counted in that event's "
+        "algorithm's execute",
+        "s",
+    ),
     HEAP: ("heap held at an event's end, typically", "MB"),
 }
 

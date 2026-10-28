@@ -34,7 +34,7 @@ from k4bench.analysis.components import (
     without_warm_up,
 )
 from k4bench.analysis.loader import load_component_heap, load_component_timing
-from k4bench.analysis.trend import EXPECTED_LOAD_ERRORS
+from k4bench.analysis.trend import EXPECTED_LOAD_ERRORS, MIN_TRIM_EVENTS, TRIM_FRACTION
 from k4bench.artifacts import COMPONENTS_SUFFIX, HEAP_SUFFIX, label_path
 from k4bench.provenance.sources import load_run_packages, package_of
 from k4bench.regression.models import ComponentDelta, MetricVerdict
@@ -48,24 +48,33 @@ _log = logging.getLogger(__name__)
 MAX_COMPONENTS = 6
 
 #: The component costs a step is taken apart into: each component's own time
-#: per event of the event loop, in initialize, over the whole job, and the heap
-#: it holds.
-EVENT, INITIALIZE, JOB, HEAP = "event", "initialize", "job", "heap"
+#: per event of the event loop, the same over its typical events, its own time
+#: in initialize, in each phase of the whole job, and the heap it holds.
+EVENT, TYPICAL_EVENT, INITIALIZE, JOB, HEAP = "event", "typical_event", "initialize", "job", "heap"
 
-#: What each judged metric is taken apart into. A time metric of the event loop
-#: into each algorithm's own time per event, which add up to the event; the
-#: job's wall time into each component's own time over the whole job; a memory
-#: metric into the heap each component holds at an event's end, typically.
+#: What each judged metric is taken apart into. The mean event time into each
+#: algorithm's own time per event, which add up to the event. The trimmed mean
+#: and the median, which the slow tail does not move, into the same over the
+#: events left once the slowest are dropped (:func:`_typical_events`): a median
+#: does not decompose, and this is the closest view of the typical event that
+#: does. The job's wall time into each component's own time in each phase,
+#: kept apart (:func:`_job_phases`). The anonymous RSS into the heap each
+#: component holds at an event's end, typically. The peak virtual memory is not
+#: taken apart: no component cost measures the address space, so a breakdown of
+#: the heap would name components that did not cause its step.
 DECOMPOSED_AS: dict[str, str] = {
     "mean_time_s": EVENT,
-    "median_time_s": EVENT,
-    "trimmed_mean_time_s": EVENT,
+    "median_time_s": TYPICAL_EVENT,
+    "trimmed_mean_time_s": TYPICAL_EVENT,
     "seconds_per_event": EVENT,
     "initialize_s": INITIALIZE,
     "wall_time_s": JOB,
-    "peak_vmem_mb": HEAP,
     "mean_rss_anon_mb": HEAP,
 }
+
+#: Joins a component and a phase into the name of one of :func:`_job_phases`'
+#: entries: ``"GeoSvc in initialize"``.
+_IN_PHASE = " in "
 
 
 def decomposed_as(verdict: MetricVerdict) -> str | None:
@@ -111,24 +120,56 @@ def _per_event(frame: pd.DataFrame) -> pd.Series:
     return frame.sum(min_count=1) / len(frame) if len(frame) else frame.sum(min_count=1)
 
 
+def _typical_events(wall: pd.DataFrame) -> pd.Index:
+    """The events of *wall* left once the slowest are dropped, as
+    :func:`~k4bench.analysis.trend.upper_trimmed_mean` drops them, ranked by
+    the components' summed own time; every event where too few are left to
+    trim."""
+    totals = wall.sum(axis=1)
+    n_drop = int(len(totals) * TRIM_FRACTION) if len(totals) >= MIN_TRIM_EVENTS else 0
+    return totals.sort_values(kind="stable").index[: len(totals) - n_drop]
+
+
+def _job_phases(timing: ComponentTiming, metric: str) -> pd.Series | None:
+    """Each working component's own *metric* in each phase of the job, one
+    entry per component and phase (``"GeoSvc in initialize"``), the event loop
+    as ``execute``. Kept apart rather than summed per component: a service
+    initialized during an event is listed under initialize and also stays in
+    that event's algorithm's execute cost, and the auditor does not record
+    which calls were made so, so one component's sum would count them twice."""
+    parts = {phase: table.get(metric) for phase, table in timing.lifecycle.items()}
+    parts["execute"] = timing.execute[metric].sum(min_count=1) if metric in timing.execute else None
+    if any(part is None for part in parts.values()):
+        return None
+    working = _working(timing)
+    return pd.Series({
+        f"{component}{_IN_PHASE}{phase}": value
+        for phase, part in parts.items()
+        for component, value in part.reindex(working).items()
+        if pd.notna(value)
+    }, dtype=float)
+
+
 def _timed(timing: ComponentTiming, quantity: str) -> tuple[pd.Series, pd.Series | None]:
     """Each working component's own time in *quantity*, and the instructions
     it retired there where the job counted them."""
-    if quantity == EVENT:
+    if quantity in (EVENT, TYPICAL_EVENT):
         algorithms = timing.algorithms()
-        cost = event_loop_time(timing.execute["wall_s"])["seconds_per_event"].reindex(algorithms)
+        wall = without_warm_up(timing.execute["wall_s"])
+        if quantity == TYPICAL_EVENT:
+            wall = wall.loc[_typical_events(wall)]
+        cost = event_loop_time(wall, warm_up=None)["seconds_per_event"].reindex(algorithms)
         work = (
-            _per_event(timing.execute["instructions"]).reindex(algorithms)
+            _per_event(timing.execute["instructions"].loc[wall.index]).reindex(algorithms)
             if "instructions" in timing.execute else None
         )
         return cost, work
-    phases = ("initialize",) if quantity == INITIALIZE else tuple(timing.lifecycle)
-    tables = [timing.lifecycle[phase] for phase in phases if phase in timing.lifecycle]
+    if quantity == JOB:
+        return _job_phases(timing, "wall_s"), _job_phases(timing, "instructions")
+    tables = [timing.lifecycle["initialize"]] if "initialize" in timing.lifecycle else []
 
     def total(metric: str) -> pd.Series | None:
         parts = [table.get(metric) for table in tables]
-        if quantity == JOB:
-            parts.append(timing.execute[metric].sum(min_count=1) if metric in timing.execute else None)
         if not parts or any(part is None for part in parts):
             return None
         summed = pd.concat(parts, axis=1).sum(axis=1, min_count=1)
@@ -154,6 +195,12 @@ def _read_night(run_dir: Path, label: str, quantity: str) -> _Night | None:
             summary = heap.summary()
             return _Night(cost=summary.loc[heap.holders(), "typical_mb"], packages=packages)
         cost, work = _timed(timing, quantity)
+        if quantity == JOB and cost is not None:
+            packages = {
+                entry: packages[owner]
+                for entry in cost.index
+                if (owner := entry.rsplit(_IN_PHASE, 1)[0]) in packages
+            }
     except (*EXPECTED_LOAD_ERRORS, KeyError) as exc:
         _log.debug("components: unreadable component costs in %s — %s", run_dir, exc)
         return None

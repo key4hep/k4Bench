@@ -463,17 +463,20 @@ def _region_deltas(raw: object) -> tuple[RegionDelta, ...]:
 def _component_deltas(raw: object) -> tuple[ComponentDelta, ...]:
     """A verdict's component decomposition, rebuilt from JSON with the
     tolerance of :func:`_region_deltas`: an entry that cannot be read is left
-    out, and a field that cannot is unknown."""
+    out, as is one with neither end, and a field that cannot is unknown."""
     if not isinstance(raw, list):
         return ()
     deltas = []
     for item in raw:
         if not isinstance(item, dict) or (delta := _finite(item.get("delta"))) is None:
             continue
+        base, onset = _finite(item.get("base")), _finite(item.get("onset"))
+        if base is None and onset is None:
+            continue
         deltas.append(ComponentDelta(
             component=str(item.get("component", "")),
-            base=_finite(item.get("base")),
-            onset=_finite(item.get("onset")),
+            base=base,
+            onset=onset,
             delta=delta,
             package=str(item.get("package") or ""),
             instructions_change=_finite(item.get("instructions_change")),

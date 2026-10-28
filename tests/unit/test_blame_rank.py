@@ -881,6 +881,8 @@ def test_a_reco_job_is_judged_in_the_words_of_a_reconstruction():
     # A frozen input never re-rolls, and a reco job has no removal sweep.
     assert "fixed random seed" not in reco and "detector-removal sweep" not in reco
     assert "frozen simulated input" in reco
+    # Held instructions do not rule out work handed to a library's own threads.
+    assert "calling thread only" in RECO_NOISE_RULE
 
 
 def test_a_reco_request_is_sent_with_the_reco_system_prompt():

@@ -845,18 +845,26 @@ step, the memory pass's `{config}_heap.json`:
 ```
 
 The cost is whatever the verdict's metric measures of a component: its own time
-per event of the event loop for an event-time metric (the warm-up event left
-out, the events it was skipped in counted, so the algorithms' add up to the
-event), its own time in initialize for `initialize_s`, its own time over the
-whole job for `wall_time_s`, and the heap it typically held at an event's end
-for a memory metric. Each end is the median of its nights, and `null` where
-that end did not record the component: it was added to or removed from the
-job. `package` is the stack package defining the component — not necessarily
-the code its time is spent in, as a service building the geometry spends it in
-DD4hep. `instructions_change` is how the instructions it retired moved over
-the same span, `null` where they were not counted at both ends and for a memory
-step: time that moved with them is more or less work, time that moved while
-they held is the same work running at another speed. A job's verdict carries
+per event of the event loop for `mean_time_s` and a component's
+`seconds_per_event` (the warm-up event left out, the events it was skipped in
+counted, so the algorithms' add up to the event), the same over the events left
+once the slowest 5% are dropped for `trimmed_mean_time_s` and `median_time_s`,
+its own time in initialize for `initialize_s`, and the heap it typically held
+at an event's end for `mean_rss_anon_mb`. For `wall_time_s` each entry is one
+component's own time in one phase, named `"GeoSvc in initialize"` or
+`"VTXBdigitizer in execute"`: a service initialized during an event is listed
+in initialize and also stays in that event's algorithm's execute time, so the
+phases are kept apart rather than summed per component. `peak_vmem_mb` is not
+taken apart, as no component cost measures the address space. Each end is the
+median of its nights, and `null` where that end did not record the component:
+it was added to or removed from the job. `package` is the stack package
+defining the component — not necessarily the code its time is spent in, as a
+service building the geometry spends it in DD4hep. `instructions_change` is how
+the instructions it retired moved over the same span, `null` where they were
+not counted at both ends and for a memory step: time that moved with them is
+more or less work, time that moved while they held points to the same work
+running at another speed. They are counted on the calling thread only, so work
+a library hands to threads of its own is not in them. A job's verdict carries
 its six largest movements, a component's verdict its own. The field rides only
 on confirmed verdicts of a reco report, and reports written before it existed
 carry none.

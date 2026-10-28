@@ -539,6 +539,9 @@ def test_component_lines_name_each_cost_in_its_unit():
     ]
     assert "heap held at an event's end" in component_lines("mean_rss_anon_mb", moved)[0]
     assert "MB" in component_lines("mean_rss_anon_mb", moved)[1]
+    assert "slowest 5% left out" in component_lines("trimmed_mean_time_s", moved)[0]
+    assert "each phase of the job, apart" in component_lines("wall_time_s", moved)[0]
+    assert component_lines("peak_vmem_mb", moved) == []
     # Nothing to say for a metric that is not taken apart, or with no movement.
     assert component_lines("user_cpu_s", moved) == []
     assert component_lines("mean_time_s", ()) == []

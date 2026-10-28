@@ -12,7 +12,15 @@ import pytest
 
 from k4bench.layout import RECO, SIM
 from k4bench.regression.catalog import COMPONENT_METRICS, JOB_COST_METRICS, sources
-from k4bench.regression.components import DECOMPOSED_AS, MAX_COMPONENTS
+from k4bench.analysis.components import ComponentTiming
+from k4bench.regression.components import (
+    DECOMPOSED_AS,
+    EVENT,
+    JOB,
+    MAX_COMPONENTS,
+    TYPICAL_EVENT,
+    _timed,
+)
 from k4bench.regression.models import Direction, Severity
 from k4bench.regression.report_builder import group_report_from_run_dirs
 
@@ -121,4 +129,58 @@ def test_every_judged_reco_metric_is_taken_apart_by_component():
         metric for source in sources(RECO)
         for metric in (*source.judged, *source.component_judged)
     }
+    # The peak virtual memory alone is not: no component cost measures the
+    # address space, and the heap held would name components that did not
+    # cause its step.
+    assert "peak_vmem_mb" in judged and "peak_vmem_mb" not in DECOMPOSED_AS
+    judged.discard("peak_vmem_mb")
     assert judged <= set(DECOMPOSED_AS), sorted(judged - set(DECOMPOSED_AS))
+
+
+def _timing(wall: list[list[float | None]], *, initialize: list[float]) -> ComponentTiming:
+    """Algorithms ``A`` and ``B`` and the service ``Svc``, each event's own
+    times *wall* (instructions the same), and their own times in initialize."""
+    names = [("A", "algorithm"), ("B", "algorithm"), ("Svc", "service")]
+    zeros = [[0.0] * len(names) for _ in wall]
+    return ComponentTiming.from_json({
+        "components": [{"name": n, "category": c} for n, c in names],
+        "event_numbers": list(range(len(wall))),
+        "execute": {
+            "wall_s": wall, "cpu_s": wall, "peak_rss_increase_mb": zeros, "instructions": wall,
+        },
+        "lifecycle": {"initialize": {
+            "wall_s": initialize, "cpu_s": initialize,
+            "peak_rss_increase_mb": [0.0] * len(names),
+        }},
+        "phases": {},
+    })
+
+
+def test_the_typical_event_time_is_taken_apart_over_the_typical_events():
+    # B costs 0.1 s in every event but the two slowest of 40, where it takes
+    # 50 s: a tail the trimmed mean and the median do not see.
+    wall = [[1.0, 0.1, None] for _ in range(41)]
+    wall[7][1] = wall[20][1] = 50.0
+    timing = _timing(wall, initialize=[0.0, 0.0, 0.0])
+    assert DECOMPOSED_AS["mean_time_s"] == EVENT
+    assert DECOMPOSED_AS["median_time_s"] == DECOMPOSED_AS["trimmed_mean_time_s"] == TYPICAL_EVENT
+    mean, mean_work = _timed(timing, EVENT)
+    assert mean["B"] == pytest.approx((38 * 0.1 + 100.0) / 40)
+    typical, typical_work = _timed(timing, TYPICAL_EVENT)
+    assert typical.to_dict() == pytest.approx({"A": 1.0, "B": 0.1})
+    assert typical_work.to_dict() == pytest.approx({"A": 1.0, "B": 0.1})
+
+
+def test_a_service_initialized_during_an_event_is_not_summed_into_one_component():
+    # Svc initializes on first use, in event 3: the auditor lists its 5 s under
+    # initialize and leaves them in A's execute time too.
+    wall = [[1.0, 0.5, None] for _ in range(6)]
+    wall[3][0] += 5.0
+    cost, work = _timed(_timing(wall, initialize=[0.2, 0.1, 5.0]), JOB)
+    assert cost.to_dict() == pytest.approx({
+        "A in initialize": 0.2, "B in initialize": 0.1, "Svc in initialize": 5.0,
+        "A in execute": 11.0, "B in execute": 3.0,
+    })
+    # Every entry is one phase of one component, never a sum over phases.
+    assert not {"A", "B", "Svc"} & set(cost.index)
+    assert work is None  # initialize counted no instructions

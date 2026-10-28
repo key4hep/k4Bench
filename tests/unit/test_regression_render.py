@@ -659,11 +659,14 @@ def test_a_component_decomposition_survives_the_round_trip_and_its_bad_entries_d
     assert from_json(raw).groups[0].verdicts[0].component_deltas == deltas
     raw["groups"][0]["verdicts"][0]["component_deltas"] = [
         {"component": "A", "delta": "lots"}, "not an object",
-        {"component": "B", "delta": 0.5, "base": "x", "instructions_change": None},
+        {"component": "B", "delta": 0.5, "base": "x", "onset": 0.5, "instructions_change": None},
+        # With neither end there is nothing to say how the component moved.
+        {"component": "C", "delta": 0.5, "base": "x"},
     ]
-    assert from_json(raw).groups[0].verdicts[0].component_deltas == (
-        ComponentDelta("B", None, None, 0.5),
-    )
+    restored = from_json(raw).groups[0].verdicts[0].component_deltas
+    assert restored == (ComponentDelta("B", None, 0.5, 0.5),)
+    from k4bench.blame.prompt import component_lines
+    assert component_lines("mean_time_s", restored)[1] == "      B: newly present at 0.5 s/event"
 
 
 def test_a_version_switch_survives_the_round_trip():
