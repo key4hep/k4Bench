@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tarfile
@@ -414,6 +415,40 @@ def test_unusable_k4run_data_files_are_a_job_error(job_module, k4geo, data_dir, 
     monkeypatch.setattr(job_module.subprocess, "run", Processes())
     with pytest.raises(job_module.JobError, match=error):
         job_module.resolve(_k4run_record(data_files=data_files), dict(os.environ))
+
+
+def test_a_k4run_recipe_fetches_every_source_to_where_the_job_read_it(
+    job_module, k4geo, input_dir, data_dir, monkeypatch,
+):
+    # The recipe passes a run's recorded k4run_args on as they are, so it
+    # reproduces the run only if it downloads each source exactly as this job
+    # did, to the path those arguments name.
+    from k4bench.blame.reproduce import k4run as recipe
+
+    monkeypatch.setattr(recipe, "LOCAL_INPUT_DIR", input_dir)
+    monkeypatch.setattr(recipe, "LOCAL_DATA_DIR", data_dir)
+    processes = Processes()
+    monkeypatch.setattr(job_module.subprocess, "run", processes)
+    inputs = ("https://k4bench-data.web.cern.ch/inputs/sim.root",)
+    data = ("https://a.cern.ch/noise.root", "root://eosuser.cern.ch//eos/model.onnx")
+    job_module.resolve(
+        _k4run_record(
+            input_files=" ".join(inputs),
+            data_files=" ".join(data),
+            k4run_args="--inputFiles $LOCAL_INPUT_FILES --dataFolder $LOCAL_DATA_DIR/",
+        ),
+        dict(os.environ),
+    )
+    facts = SimpleNamespace(
+        base_input_files=inputs, onset_input_files=inputs,
+        base_data_files=data, onset_data_files=data,
+        base_release="2026-10-26", base_stack_setup=CI["K4H_STACK_SETUP"],
+    )
+    _, fetch = recipe.fetch_stage(facts)
+    downloads = [command for command, _ in processes.calls]
+    assert sorted(command[0] for command in downloads) == ["curl", "curl", "xrdcp"]
+    for command in downloads:
+        assert " ".join(shlex.quote(word) for word in command) in fetch
 
 
 def test_k4bench_k4run_command(job_module, k4geo, tmp_path, monkeypatch):

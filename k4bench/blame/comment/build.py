@@ -47,7 +47,7 @@ from k4bench.blame.github import FilePatch, diff_sample
 from k4bench.blame.history import MAX_COMMENT_ANALOGUES, HistoricalPR
 from k4bench.blame.models import CandidatePR
 from k4bench.blame.prompt import movement
-from k4bench.blame.reproduce import ReproducerFacts
+from k4bench.blame.reproduce import RecipeFacts
 from k4bench.blame.reproduce import facts_from as reproducer_facts_from
 from k4bench.layout import stack_dir
 
@@ -81,7 +81,7 @@ RunInfoFor = Callable[[str, str, str, str, str], dict | None]
 #: or ``None`` when it could not be published. Called *before* the comment is
 #: rendered, so the table only ever links a recipe that is already readable —
 #: a comment must not carry a link that 404s while a reader is looking at it.
-ReproducerUrlFor = Callable[[ReproducerFacts], str | None]
+ReproducerUrlFor = Callable[[RecipeFacts], str | None]
 
 
 def build_comments(
@@ -276,7 +276,7 @@ def _publish_reproducers(
         ordered.setdefault(_row_identity(row), row)
 
     urls: dict[tuple, str] = {}
-    facts: list[ReproducerFacts] = []
+    facts: list[RecipeFacts] = []
     for identity, row in ordered.items():
         recipe = _reproducer_for(plan, row, run_info_for=run_info_for)
         if recipe is None:
@@ -310,7 +310,7 @@ def _reproducer_for(
     row: RegressionRow,
     *,
     run_info_for: RunInfoFor,
-) -> ReproducerFacts | None:
+) -> RecipeFacts | None:
     """Best-effort reproducer facts for one row."""
     verdict = row.verdict
     if not verdict.last_accepted_run_id or not verdict.last_accepted_run_date \

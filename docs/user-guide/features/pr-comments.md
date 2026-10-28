@@ -23,9 +23,9 @@ empty for now: its confirmed steps are ranked like the simulation's, into its
 own `blame.json`, and reach its e-group mail, but no pull request is commented
 on for them yet. When one is, the comment names the reconstruction benchmarks
 as what measured it, is reviewed in a reconstruction's terms (a frozen input,
-the components each step moved), and carries no dashboard links until the
-Reconstruction page has the views they lead to, nor a recipe, which the
-simulation's alone has so far.
+the components each step moved), links a recipe that reruns the job (see
+[Reproducing the measurement](#reproducing-the-measurement)), and carries no
+dashboard links until the Reconstruction page has the views they lead to.
 
 ## Two passes
 
@@ -311,7 +311,7 @@ five-row table can show.
 
 The table's **Reproduce** column links a runnable recipe: a plain-text file
 published beside the nightly data at
-`{K4BENCH_DATA_URL}/reproducers/sim/{name}.txt`, holding the two shell commands
+`{K4BENCH_DATA_URL}/reproducers/{suite}/{name}.txt`, holding the two shell commands
 that re-measure that row's before and after. It is a link rather than a
 fold-out block because the commands are a page of shell script that almost no
 reader of the comment wants inline, and because a `.txt` file is read, copied
@@ -375,6 +375,22 @@ whose steering file imports a sibling module. LCG reuses weekday slots after
 roughly a week; each recipe verifies the setup's generated date and stops
 instead of silently reproducing with a newer stack after its slot rotates.
 Legacy Spack nightlies have their longer dated-release retention.
+
+A reconstruction row's recipe reruns `k4bench k4run` instead: the job's
+options files, resolved stage directory, event count and recorded
+`k4run_args`, plus `--variant` for a variant's row (the baseline always runs
+first, as in the nightly; no other variant is rerun). The recorded arguments
+already name the local copies the nightly read its frozen input and data files
+from (`/tmp/k4bench-inputs/{hash}/`, `/tmp/k4bench-data/{hash}/`), so the recipe
+fetches every source of both runs to those same paths once, ahead of both
+halves, unpacks archives as the nightly does, and passes the arguments on
+unchanged. A run whose input was a path on the runner gets no recipe. The
+untimed memory pass is not rerun, since no judged metric comes from it. The
+file compares event count, options, configured stage directory, the job's and
+the variant's arguments, input and data files, logical geometry and harness
+commit; absolute paths in the arguments are compared by file name only, so each
+half reading its own weekday slot's geometry and configuration is not reported
+as a difference.
 
 Recipes require a Linux host with CVMFS and GNU coreutils, matching the
 platforms on which the Key4hep LCG views are published.

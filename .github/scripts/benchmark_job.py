@@ -21,7 +21,6 @@ and records no run_info.json.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -35,14 +34,16 @@ from pathlib import Path
 
 import machine_info
 import run_info
-
-
-#: Where a k4run job's inputs are copied, so the job never times a network read.
-LOCAL_INPUT_DIR = Path("/tmp/k4bench-inputs")
-#: Where a k4run job's data files are gathered, all in one directory.
-LOCAL_DATA_DIR = Path("/tmp/k4bench-data")
-#: Data files with these suffixes are archives, unpacked where they land.
-_ARCHIVE_SUFFIXES = (".tar.gz", ".tgz")
+# After run_info, which puts this checkout first on sys.path.
+from k4bench.staging import (
+    ARCHIVE_SUFFIXES,
+    LOCAL_DATA_DIR,
+    LOCAL_INPUT_DIR,
+    REMOTE_PREFIXES,
+    data_key,
+    download_argv,
+    input_key,
+)
 
 _VARIABLE = re.compile(r"\$(\w+)|\$\{(\w+)\}")
 
@@ -222,11 +223,11 @@ def _fetch(source: str) -> str:
 
     Each URL gets its own directory, named by a hash of the URL, so two inputs
     that share a file name never overwrite each other."""
-    if not source.startswith(("root://", "http://", "https://")):
+    if not source.startswith(REMOTE_PREFIXES):
         if not Path(source).is_file():
             raise JobError(f"input not found: {source}")
         return str(Path(source).resolve())
-    directory = LOCAL_INPUT_DIR / hashlib.sha256(source.encode()).hexdigest()[:16]
+    directory = LOCAL_INPUT_DIR / input_key(source)
     directory.mkdir(parents=True, exist_ok=True)
     local = str(directory / os.path.basename(source))
     _download(source, local)
@@ -236,9 +237,10 @@ def _fetch(source: str) -> str:
 def _fetch_data(sources: list[str]) -> str:
     """The local directory holding a k4run job's data files, or ``""`` when it
     has none: each of *sources* fetched into it like an input (a local path is
-    copied), and an archive (:data:`_ARCHIVE_SUFFIXES`) unpacked there instead
-    of kept. All files share the one directory, for jobs that read their data
-    from a single folder, so two sources must not share a file name.
+    copied), and an archive (:data:`~k4bench.staging.ARCHIVE_SUFFIXES`)
+    unpacked there instead of kept. All files share the one directory, for
+    jobs that read their data from a single folder, so two sources must not
+    share a file name.
 
     The directory is named by a hash of the sources and emptied first, so it
     holds exactly what this job configures."""
@@ -246,18 +248,18 @@ def _fetch_data(sources: list[str]) -> str:
         return ""
     if len(names := [os.path.basename(s) for s in sources]) != len(set(names)):
         raise JobError(f"data files share a file name: {' '.join(sources)}")
-    directory = LOCAL_DATA_DIR / hashlib.sha256(" ".join(sources).encode()).hexdigest()[:16]
+    directory = LOCAL_DATA_DIR / data_key(sources)
     shutil.rmtree(directory, ignore_errors=True)
     directory.mkdir(parents=True)
     for source in sources:
         local = directory / os.path.basename(source)
-        if source.startswith(("root://", "http://", "https://")):
+        if source.startswith(REMOTE_PREFIXES):
             _download(source, str(local))
         elif Path(source).is_file():
             shutil.copy(source, local)
         else:
             raise JobError(f"data file not found: {source}")
-        if local.name.endswith(_ARCHIVE_SUFFIXES):
+        if local.name.endswith(ARCHIVE_SUFFIXES):
             subprocess.run(["tar", "-xzf", str(local), "-C", str(directory)], check=True)
             local.unlink()
     return str(directory)
@@ -265,13 +267,7 @@ def _fetch_data(sources: list[str]) -> str:
 
 def _download(source: str, local: str) -> None:
     """Copy the ``root://`` (xrdcp) or ``http(s)://`` (curl) *source* to *local*."""
-    if source.startswith("root://"):
-        subprocess.run(["xrdcp", "--force", source, local], check=True)
-    else:
-        subprocess.run(
-            ["curl", "-fsSL", "--retry", "3", "--retry-delay", "10", "-o", local, source],
-            check=True,
-        )
+    subprocess.run(download_argv(source, local), check=True)
 
 
 def _expand(value: str, names: Mapping[str, str]) -> str:
