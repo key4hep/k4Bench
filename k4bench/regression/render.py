@@ -105,6 +105,11 @@ SUITE_TITLES = {SIM: "Simulation", RECO: "Reconstruction"}
 #: root itself, which is where every link written before suites existed points.
 SUITE_PAGE_PATHS = {SIM: "", RECO: "reconstruction"}
 
+#: The suites whose dashboard page has the views a report links into —
+#: Regressions, Run Trends and Stack Changes. Another suite's page would open
+#: such a link on its first section, so its reports link to the page alone.
+SUITES_WITH_REPORT_VIEWS = frozenset({SIM})
+
 
 def suite_page_url(dashboard_url: str, suite: str) -> str:
     """*suite*'s dashboard page below *dashboard_url*, its query kept: the base
