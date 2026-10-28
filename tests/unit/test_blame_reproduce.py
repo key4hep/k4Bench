@@ -678,3 +678,17 @@ def test_k4run_artifact_name_tells_components_apart():
     assert facts is not None
     assert artifact_name(facts) == artifact_name(_k4run_facts())
     assert artifact_name(facts) != artifact_name(replace(facts, sub_detector="GeoSvc"))
+    # Readably too: a window confirms many components under one metric.
+    assert "ConformalTracking" in artifact_name(facts)
+    # A measurement of no component keeps the name it always had.
+    assert artifact_name(replace(facts, sub_detector=None)).startswith(
+        "CLD_o2_v09-p8_ee_Zbb_ecm91-baseline-seconds_per_event-"
+    )
+
+
+def test_a_recipe_says_how_long_its_stacks_stay():
+    lcg = render_text(_k4run_facts())
+    assert "LCG reuses each weekday's nightly view after about a week" in lcg
+    assert "three weeks" not in lcg
+    spack = render_text(replace(_k4run_facts(), base_stack_setup="", onset_stack_setup=""))
+    assert "Key4hep nightlies are kept on CVMFS for about three weeks" in spack

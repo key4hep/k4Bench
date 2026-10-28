@@ -46,6 +46,24 @@ def facts_from(
     return None
 
 
+def _availability(facts: RecipeFacts) -> str:
+    """How long the window can be re-run, as its stacks allow. A recorded LCG
+    view is a weekday slot, reused after about a week, and the recipe checks
+    it still holds its release (:func:`~k4bench.blame.reproduce.shell._stack_source`);
+    a run that recorded none sourced a dated legacy Spack release, which is
+    kept longer."""
+    if facts.base_stack_setup or facts.onset_stack_setup:
+        return (
+            "LCG reuses each weekday's nightly view after about a week; once a "
+            "half's view no longer holds its release, that half stops rather "
+            "than run a newer stack, and this window cannot be re-run."
+        )
+    return (
+        "Key4hep nightlies are kept on CVMFS for about three weeks; past that "
+        "this window cannot be re-run."
+    )
+
+
 def artifact_name(facts: RecipeFacts) -> str:
     """The published recipe's file name — stable for one measurement in one
     change window, and unique across every other.
@@ -69,8 +87,11 @@ def artifact_name(facts: RecipeFacts) -> str:
         facts.base_run_id, facts.onset_run_id,
     ))
     digest = hashlib.sha256(identity.encode()).hexdigest()[:12]
+    # A component's recipe names it: a reco window confirms many components
+    # under one metric, and their files would otherwise read alike.
     stem = _slug("-".join(
         (facts.detector, facts.sample, facts.label, facts.metric)
+        + ((facts.sub_detector,) if facts.sub_detector else ())
     ))[:96].strip("-")
     return f"{stem}-{_slug(facts.base_release)}-{_slug(facts.onset_release)}-{digest}.txt"
 
@@ -212,10 +233,7 @@ def render_text(facts: RecipeFacts) -> str:
             "reproduces the direction, not the percentage."
         ),
         "#",
-        _note(
-            "Key4hep nightlies are kept on CVMFS for about three weeks; past "
-            "that this window cannot be re-run."
-        ),
+        _note(_availability(facts)),
         "#",
         "# Nightly runs this recipe was derived from:",
         f"#   {facts.base_run_id}  {facts.base_actions_url}",
