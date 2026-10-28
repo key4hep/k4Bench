@@ -43,7 +43,6 @@ import logging
 import streamlit as st
 
 from k4bench.blame.models import BlameReport, BlameSchemaError
-from k4bench.layout import SIM
 from k4bench.regression.email import to_html
 from k4bench.regression.models import NightlyReport
 from k4bench.regression.render import detector_badge
@@ -140,10 +139,11 @@ def email_document(
 
 
 def render(
-    data_url: str, dashboard_url: str, reports: dict[str, NightlyReport],
+    data_url: str, suite: str, dashboard_url: str, reports: dict[str, NightlyReport],
     latest_night: str,
 ) -> None:
-    """The Nightly Report view: a night picker and that night's mail.
+    """The Nightly Report view: a night picker and that night's mail, of
+    *suite*'s reports.
 
     *reports* are the nights the tab has already fetched and parsed, keyed by
     report night — the picker's options, deliberately **not** filtered by the
@@ -173,12 +173,12 @@ def render(
     report = reports[night]
     historical_blame_raw = {}
     for first_night in historical_nights(report):
-        raw = cached_fetch_blame(data_url, SIM, first_night)
+        raw = cached_fetch_blame(data_url, suite, first_night)
         if raw:
             historical_blame_raw[first_night] = raw
 
     document = email_document(
-        report, cached_fetch_blame(data_url, SIM, night), historical_blame_raw,
+        report, cached_fetch_blame(data_url, suite, night), historical_blame_raw,
         dashboard_url, night,
     )
     # An iframe, not st.markdown: the mail's own inline styles then render

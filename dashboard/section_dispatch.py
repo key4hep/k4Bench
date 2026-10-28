@@ -194,15 +194,16 @@ def pick_section(
     return active
 
 
-def _overview(ctx: PageContext) -> None:
+def _overview(ctx: PageContext, *, key_prefix: str = "") -> None:
     """Cross-detector comparison built from the nightly reports, scoped by the
     sidebar's platform, sample and trend window. Its Nightly Report view
     re-renders the e-group mail, whose deep links must be absolute — hence
-    the dashboard's own URL."""
+    the dashboard's own URL. *key_prefix* keeps a page's figure choices its
+    own."""
     sel = ctx.remote
     detectors_overview.render(
-        ctx.config.data_url, ctx.config.dashboard_url,
-        sel.platform, sel.sample, ctx.window.dates,
+        ctx.config.data_url, sel.ref.suite, ctx.config.dashboard_url,
+        sel.platform, sel.sample, ctx.window.dates, key_prefix=key_prefix,
     )
 
 
@@ -222,7 +223,7 @@ def _regressions(ctx: PageContext) -> SectionScope | None:
     attention-worthy night, a picker exposes the rest and ``?report=`` pins one."""
     sel = ctx.remote
     return regressions.render(
-        ctx.config.data_url, ctx.config.cache_dir,
+        ctx.config.data_url, sel.ref.suite, ctx.config.cache_dir,
         sel.detector, sel.platform, sel.sample, sel.stack,
     )
 
@@ -233,7 +234,7 @@ def _stack_changes(ctx: PageContext) -> SectionScope | None:
     sidebar stack seeds the comparison's newer end."""
     sel = ctx.remote
     return stack_changes.render(
-        ctx.config.data_url, ctx.config.cache_dir,
+        ctx.config.data_url, sel.ref.suite, ctx.config.cache_dir,
         sel.platform, sel.detector, sel.sample, sel.stack,
     )
 

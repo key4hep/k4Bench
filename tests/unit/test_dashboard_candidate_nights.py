@@ -42,7 +42,7 @@ def _no_network(monkeypatch):
 
 def _nights(platform, dates, stack=_NEWEST_STACK):
     nights, is_release, _ = regressions._candidate_nights(
-        "https://example.invalid", "CLD", platform, "single_e", stack, list(dates),
+        "https://example.invalid", "sim", "CLD", platform, "single_e", stack, list(dates),
     )
     assert is_release
     return nights
@@ -89,7 +89,7 @@ def test_a_listing_missing_the_newest_release_falls_back_to_the_latest_report(mo
     warned = []
     monkeypatch.setattr(regressions.st, "warning", lambda text, **_kw: warned.append(text))
     nights, is_release, stacks_dates = regressions._candidate_nights(
-        "https://example.invalid", "CLD", _REPLACED, "single_e",
+        "https://example.invalid", "sim", "CLD", _REPLACED, "single_e",
         f"key4hep-{_RUNS[-2]}", list(_REPORTS),
     )
     assert (nights, is_release, stacks_dates) == ([max(_REPORTS)], False, None)
@@ -115,7 +115,7 @@ def test_a_migration_cards_package_changes_read_each_end_on_its_own_platform(mon
     }
     monkeypatch.setattr(
         regressions, "packages_for_release",
-        lambda url, platform, release: provenance.get((platform, release)),
+        lambda url, suite, platform, release: provenance.get((platform, release)),
     )
-    changes = regressions._window_changes("https://example.invalid", verdict)
+    changes = regressions._window_changes("https://example.invalid", "sim", verdict)
     assert [(c.name, c.status) for c in changes] == [("DD4hep", "changed")]

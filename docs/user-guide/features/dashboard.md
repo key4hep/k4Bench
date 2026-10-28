@@ -884,16 +884,24 @@ components whose own cost moved, with the package each is defined in and how
 the instructions it retired moved (`component_deltas`, see
 [File formats](../../reference/file-formats.md)), and the blame ranker reads
 that breakdown when it attributes the step. No pull request is commented on
-for the reco suite yet: its list in `.github/blame-comments.yml` is empty. This page does not read the reports yet, so it has no
-Regressions or Stack Changes section and its views carry no verdicts: every
-value is the measurement as uploaded.
+for the reco suite yet: its list in `.github/blame-comments.yml` is empty.
+
+The page reads the reco reports as the Simulation page reads the sim ones: its
+**Overview**, **Regressions** and **Stack Changes** are the Simulation page's
+sections, reading `reports/reco/` and the reco runs. A component's verdict
+draws that component's own history, read from the configuration's
+`{config}_components.json`. The page has no Run Trends — its Time and Memory
+sections draw a configuration's history instead — so the reco mail links into
+its Regressions, Stack Changes and Nightly Report views alone.
 
 Each section answers one question. Where it can be looked at two ways, a
 choice at its top (in the URL too) says which:
 
 | Section | The question | What it shows | Backed by |
 | --- | --- | --- | --- |
-| **Overview** | How do the detectors compare? | every reco detector's baseline time and memory side by side, over the trend window | `*_results.csv`, `machine_info.json`, `baseline_events.json` of every detector's runs |
+| **Overview** | How do the detectors compare? | every reco detector's baseline time and memory side by side over the trend window, what the newest report flags, and the night's mail, as on the Simulation page | `reports/reco/{night}/report.json` |
+| **Regressions** | What did a night's report find? | one configuration's verdicts, their history and the pull requests behind them, as on the Simulation page | `reports/reco/{night}/report.json`, `blame.json`, the verdict's history |
+| **Stack Changes** | What changed between two releases? | the packages that changed, and the reco regressions whose step entered in between, as on the Simulation page | `run_info.json`, `reports/reco/` |
 | **Time** | Where does the time go? | **Phases and components**: the job's phases and each component's share of them; **Per event**: the time of each event, and of any algorithm in it | `*_components.json`, `*_events.json` |
 | **Memory** | Where does the memory go? | **Heap by component**: what each component holds, and what grows or steps up without being released; **Per event**: the process's RSS event by event | `*_heap.json`, `*_components.json`, `*_events.json` |
 | **Components** | What is this component doing? | one algorithm or service in charts: its time, IPC, allocations and heap, where it stands among the others, its data flow, and their history | `*_components.json`, `*_heap.json`, `*_dataflow.json` |

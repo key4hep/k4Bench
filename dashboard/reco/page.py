@@ -3,8 +3,11 @@
 Each section answers one question, and where it can be looked at two ways a
 lens at its top chooses which (:func:`_lenses`):
 
-- **Overview**: how the reco detectors compare over the window, as the
-  Simulation Overview compares the simulated ones;
+- **Overview**, **Regressions** and **Stack Changes**: the Simulation page's
+  views of the nightly regression reports, reading the reco suite's — how the
+  reco detectors compare over the window and what the newest report flags,
+  one configuration's verdicts and the pull requests behind them, and what
+  changed between two releases;
 - **Time**: where the job's time goes, by phase and component (Breakdown), or
   event by event, as the Simulation page's Event Timing draws it, with any
   algorithm's own time beside the event's;
@@ -26,6 +29,7 @@ format, so the shared per-event tabs draw a reco run as they draw a sim run.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from functools import partial
 
 import streamlit as st
 
@@ -38,7 +42,7 @@ from data import (
     cached_load_trend_event_timing,
 )
 from k4bench.layout import RECO
-from reco import _inspect, breakdown, component, dataflow, memory, overview
+from reco import _inspect, breakdown, component, dataflow, memory
 from section_dispatch import (
     RENDERERS,
     PageContext,
@@ -127,23 +131,28 @@ def _logs(ctx: PageContext) -> None:
     logs.render(ctx.run.results, ctx.run_dir, ctx.run_meta, log_format=logs.GAUDI)
 
 
+#: The prefix of the page's widget keys, its sidebar's and its Overview's.
+KEY_PREFIX = "reco_"
+
 RECO_PAGE = SuitePage(
     suite=RECO,
     sections=(
-        "Overview", "Time", "Memory", "Components", "Data Flow", "Correlations",
-        "Event Size", "Machine Info", "Logs",
+        "Overview", "Regressions", "Stack Changes", "Time", "Memory", "Components",
+        "Data Flow", "Correlations", "Event Size", "Machine Info", "Logs",
     ),
-    # Like the Simulation Overview, it compares detectors across the window.
-    remote_only=frozenset({"Overview"}),
+    # The report views read the store, which local mode has none of.
+    remote_only=frozenset({"Overview", "Regressions", "Stack Changes"}),
     scopes={
-        "Overview": SECTION_SCOPE["Overview"],
+        **{name: SECTION_SCOPE[name] for name in ("Overview", "Regressions", "Stack Changes")},
         **{name: SECTION_SCOPE["Region Timing"]
            for name in ("Time", "Memory", "Components", "Data Flow")},
         **{name: SECTION_SCOPE[name]
            for name in ("Correlations", "Event Size", "Machine Info", "Logs")},
     },
     renderers={
-        "Overview": overview.render,
+        "Overview": partial(RENDERERS["Overview"], key_prefix=KEY_PREFIX),
+        "Regressions": RENDERERS["Regressions"],
+        "Stack Changes": RENDERERS["Stack Changes"],
         "Time": _warning_unreadable_components(_lenses(TIME_LENS, dict(zip(TIME_LENSES, (
             breakdown.render, _event_timing,
         ))))),
@@ -157,9 +166,7 @@ RECO_PAGE = SuitePage(
         "Machine Info": RENDERERS["Machine Info"],
         "Logs": _logs,
     },
-    key_prefix="reco_",
-    # Its sections read no nightly report yet, so its runs alone bound the window.
-    reports=False,
+    key_prefix=KEY_PREFIX,
     components=True,
     all_runs_sections=frozenset({"Time", "Memory", "Components", "Event Size"}),
     # The sections the page had before its sections were grouped by question,

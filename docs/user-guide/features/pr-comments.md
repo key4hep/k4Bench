@@ -24,8 +24,8 @@ own `blame.json`, and reach its e-group mail, but no pull request is commented
 on for them yet. When one is, the comment names the reconstruction benchmarks
 as what measured it, is reviewed in a reconstruction's terms (a frozen input,
 the components each step moved), links a recipe that reruns the job (see
-[Reproducing the measurement](#reproducing-the-measurement)), and carries no
-dashboard links until the Reconstruction page has the views they lead to.
+[Reproducing the measurement](#reproducing-the-measurement)), and links into
+the Reconstruction page's Stack Changes and Nightly Report views.
 
 ## Two passes
 

@@ -122,7 +122,7 @@ def _app(dashboard_dir, dates, reports, window) -> None:
     # which is what most nights actually look like.
     ov._nightly_email.cached_fetch_blame = lambda url, suite, night: None
     ov.render(
-        "https://example.invalid", "https://dash.invalid",
+        "https://example.invalid", "sim", "https://dash.invalid",
         "PLAT", "single_e_10GeV", window,
     )
 
@@ -312,9 +312,64 @@ def _status_scope_app(dashboard_dir, dates, scenarios, window) -> None:
     }
     ov._nightly_email.cached_fetch_blame = lambda url, suite, night: None
     ov.render(
-        "https://example.invalid", "https://dash.invalid",
+        "https://example.invalid", "sim", "https://dash.invalid",
         "PLAT", "single_e_10GeV", window,
     )
+
+
+def _reco_app(dashboard_dir, dates, reports, window) -> None:
+    """The Reconstruction page's Overview, every report read recording the
+    suite it was read for."""
+    import sys as _sys
+    if dashboard_dir not in _sys.path:
+        _sys.path.insert(0, dashboard_dir)
+    from types import SimpleNamespace
+
+    import streamlit as _st
+
+    from k4bench.regression.render import from_json
+    from reco.page import RECO_PAGE
+    from tabs import detectors_overview as ov
+
+    read = _st.session_state.setdefault("_suites_read", set())
+
+    def _dates(url, suite):
+        read.add(suite)
+        return dates
+
+    def _reports(url, suite, nights):
+        read.add(suite)
+        return {n: from_json(reports[n]) for n in nights if n in reports}
+
+    ov.cached_list_report_dates = _dates
+    ov.cached_fetch_reports = _reports
+    ov._nightly_email.cached_fetch_blame = lambda url, suite, night: read.add(suite)
+    RECO_PAGE.renderers["Overview"](SimpleNamespace(
+        config=SimpleNamespace(
+            data_url="https://example.invalid", dashboard_url="https://dash.invalid",
+        ),
+        remote=SimpleNamespace(
+            ref=SimpleNamespace(suite="reco"), platform="PLAT", sample="single_e_10GeV",
+        ),
+        window=SimpleNamespace(dates=window),
+    ))
+
+
+def test_the_reco_overview_reads_the_reco_reports_under_its_own_keys():
+    reports = {night: {**report, "suite": "reco"} for night, report in REPORTS.items()}
+    at = AppTest.from_function(
+        _reco_app, args=(str(_DASHBOARD_DIR), DATES, reports, _WINDOW), default_timeout=30,
+    ).run()
+    assert not at.exception, at.exception
+    view = at.radio(key="reco_det_ov_view_mode")
+    assert view.options == [
+        "Performance Trends", "Performance Landscape", "Regression Status", "Nightly Report",
+    ]
+    assert at.selectbox(key="reco_det_ov_time_metric")
+    for name in ("Regression Status", "Nightly Report"):
+        at.radio(key="reco_det_ov_view_mode").set_value(name).run()
+        assert not at.exception, at.exception
+    assert at.session_state["_suites_read"] == {"reco"}
 
 
 def test_status_view_renders_banner_and_roster():
@@ -439,7 +494,7 @@ def _status_sample_app(dashboard_dir, dates, reports, window) -> None:
         n: from_json(reports[n]) for n in nights if n in reports
     }
     ov._nightly_email.cached_fetch_blame = lambda url, suite, night: None
-    ov.render("https://example.invalid", "https://dash.invalid", "PLAT",
+    ov.render("https://example.invalid", "sim", "https://dash.invalid", "PLAT",
               _st.session_state.get("_sample", "single_e_10GeV"), window)
 
 
@@ -1017,7 +1072,7 @@ def test_email_view_renders_when_the_scope_has_no_benchmarks():
         }
         ov._nightly_email.cached_fetch_blame = lambda url, suite, night: None
         ov.render(
-            "https://example.invalid", "https://dash.invalid",
+            "https://example.invalid", "sim", "https://dash.invalid",
             "OTHER_PLAT", "single_e_10GeV", window,
         )
 
@@ -1075,12 +1130,12 @@ def test_a_listing_that_did_not_answer_is_not_reported_as_no_reports():
 
         from tabs import detectors_overview as ov
 
-        def _listing(url):
+        def _listing(url, suite):
             raise TimeoutError("read timed out")
 
         ov.cached_list_report_dates = _listing
         ov.render(
-            "https://example.invalid", "https://dash.invalid",
+            "https://example.invalid", "sim", "https://dash.invalid",
             "PLAT", "single_e_10GeV", window,
         )
 

@@ -35,7 +35,6 @@ from k4bench.regression.models import (
     unjudged_cause,
 )
 from k4bench.labels import pretty_sample
-from k4bench.layout import SIM
 from sections import SectionScope, regressions_derived_release
 from k4bench.regression.render import (
     WINDOW_WATCH_TOKEN,
@@ -70,10 +69,11 @@ from ui_chrome import drop_stale_selection, seed_query_param
 
 
 def render(
-    data_url: str, cache_dir: str, detector: str, platform: str, sample: str,
+    data_url: str, suite: str, cache_dir: str, detector: str, platform: str, sample: str,
     stack: str,
 ) -> SectionScope | None:
-    """Render the tab; return the scope note's override when one applies.
+    """Render the tab for *suite*'s reports; return the scope note's override
+    when one applies.
 
     The override applies when the selected night's run group belongs to a
     release other than the sidebar's — the fallback nights are the latest
@@ -82,7 +82,7 @@ def render(
     :func:`sections.regressions_derived_release`).
     """
     try:
-        dates = cached_list_report_dates(data_url, SIM)
+        dates = cached_list_report_dates(data_url, suite)
     except Exception as err:
         st.warning(
             f"Could not list the nightly reports on EOS: {err}. "
@@ -97,7 +97,7 @@ def render(
         return None
 
     nights, is_release, stacks_dates = _candidate_nights(
-        data_url, detector, platform, sample, stack, dates,
+        data_url, suite, detector, platform, sample, stack, dates,
     )
     if nights is None:
         st.info(
@@ -105,7 +105,7 @@ def render(
             f"reports begin on {min(dates)}. Pick a newer release in the sidebar."
         )
         return None
-    reports, unavailable = _load_reports(data_url, nights)
+    reports, unavailable = _load_reports(data_url, suite, nights)
     if not reports:
         st.warning(
             f"Could not load release **{_release(stack)}**'s report(s) from EOS."
@@ -140,7 +140,7 @@ def render(
             f"Report night · release {_release(stack)}" if is_release
             else "Report night"
         ),
-        reset_scope=(detector, platform, sample, stack),
+        reset_scope=(suite, detector, platform, sample, stack),
         caption_release=lambda n: _night_release(
             reports[n], detector, platform, sample, stack,
         ),
@@ -175,15 +175,15 @@ def render(
         complete = True
     else:
         attr_reports, complete = _attribution_reports(
-            data_url, reports, effective, stacks_dates, dates,
+            data_url, suite, reports, effective, stacks_dates, dates,
         )
         attributions = _window_attributions(
-            attr_reports, detector, platform, sample, effective, group, data_url,
+            attr_reports, detector, platform, sample, effective, group, data_url, suite,
         )
 
     _render_banner(group)
     _render_group(
-        group, data_url, cache_dir, attributions=attributions,
+        group, data_url, suite, cache_dir, attributions=attributions,
         key=f"{detector}_{platform}_{sample}",
         scope=(effective or stack, night),
     )
@@ -206,16 +206,16 @@ def render(
 
 
 def _load_reports(
-    data_url: str, nights: list[str]
+    data_url: str, suite: str, nights: list[str]
 ) -> tuple[dict[str, NightlyReport], list[str]]:
     """The parseable reports of *nights*, and the nights that could not be
     loaded."""
-    reports = cached_fetch_reports(data_url, SIM, tuple(nights))
+    reports = cached_fetch_reports(data_url, suite, tuple(nights))
     return reports, [n for n in nights if n not in reports]
 
 
 def _candidate_nights(
-    data_url: str, detector: str, platform: str, sample: str, stack: str,
+    data_url: str, suite: str, detector: str, platform: str, sample: str, stack: str,
     dates: list[str],
 ) -> tuple[list[str] | None, bool, dict[str, list[str]] | None]:
     """Report nights on offer for the sidebar's release, newest first.
@@ -229,7 +229,7 @@ def _candidate_nights(
     belongs to the release — the tab then reports the release the rendered
     night actually carries.
 
-    A report is written per *run*, under ``reports/sim/{run_date}`` — so several
+    A report is written per *run*, under ``reports/{suite}/{run_date}`` — so several
     nights routinely re-benchmark one fixed release, and while the engine
     judges them all against the same frozen baseline, their reports can still
     differ (a WATCH night preceding the confirming one, a marginal OK night,
@@ -246,7 +246,7 @@ def _candidate_nights(
     empty listing — the only sensible fallback left.
     """
     try:
-        stacks_dates = cached_list_run_dates(data_url, SIM, detector, platform, sample)
+        stacks_dates = cached_list_run_dates(data_url, suite, detector, platform, sample)
     except requests.RequestException:
         # Only a listing failure falls back silently-to-the-reader-but-not-to-us:
         # the sidebar may have an old release selected, so showing the latest
@@ -269,7 +269,7 @@ def _candidate_nights(
     newest_any = max(d for ds in stacks_dates.values() for d in ds)
     latest = max(dates)
     if max(run_dates) == newest_any and not _replaced_by(
-        data_url, detector, platform, sample, latest,
+        data_url, suite, detector, platform, sample, latest,
     ):
         # Active release: also offer the latest report, so a night that
         # benchmarked nothing for this release (a missing-run failure) stays
@@ -281,7 +281,7 @@ def _candidate_nights(
 
 
 def _replaced_by(
-    data_url: str, detector: str, platform: str, sample: str, night: str,
+    data_url: str, suite: str, detector: str, platform: str, sample: str, night: str,
 ) -> bool:
     """Whether a platform or detector config that replaced this series had run
     *sample* by *night* — the condition under which the report stops expecting
@@ -291,10 +291,10 @@ def _replaced_by(
     that turns out to hold nothing for this platform costs less than hiding a
     missing-run failure.
     """
-    for successor_detector, successor_platform in successor_series(detector, platform, SIM):
+    for successor_detector, successor_platform in successor_series(detector, platform, suite):
         try:
             listing = cached_list_run_dates(
-                data_url, SIM, successor_detector, successor_platform, sample,
+                data_url, suite, successor_detector, successor_platform, sample,
             )
         except requests.RequestException:
             continue
@@ -304,7 +304,7 @@ def _replaced_by(
 
 
 def _attribution_reports(
-    data_url: str, loaded: dict[str, NightlyReport], release: str,
+    data_url: str, suite: str, loaded: dict[str, NightlyReport], release: str,
     stacks_dates: dict[str, list[str]] | None, dates: list[str],
 ) -> tuple[dict[str, NightlyReport], bool]:
     """Every already-loaded report plus the rest of *release*'s report nights,
@@ -324,7 +324,7 @@ def _attribution_reports(
     missing = [n for n in wanted if n not in loaded]
     if not missing:
         return loaded, True
-    fetched, unavailable = _load_reports(data_url, missing)
+    fetched, unavailable = _load_reports(data_url, suite, missing)
     return {**loaded, **fetched}, not unavailable
 
 
@@ -385,10 +385,10 @@ class _WindowAttribution:
         return len(self.verdicts)
 
 
-def _blame_for_night(data_url: str, night: str) -> BlameReport | None:
+def _blame_for_night(data_url: str, suite: str, night: str) -> BlameReport | None:
     """The night's sidecar, or ``None`` — absent and malformed are both normal
     (blame is best-effort and most nights have none)."""
-    raw = cached_fetch_blame(data_url, SIM, night)
+    raw = cached_fetch_blame(data_url, suite, night)
     if not raw:
         return None
     try:
@@ -399,7 +399,7 @@ def _blame_for_night(data_url: str, night: str) -> BlameReport | None:
 
 def _window_attributions(
     reports: dict[str, NightlyReport], detector: str, platform: str,
-    sample: str, release: str, group: RunGroupReport, data_url: str,
+    sample: str, release: str, group: RunGroupReport, data_url: str, suite: str,
 ) -> list[_WindowAttribution]:
     """One attribution per distinct change window on the selected night.
 
@@ -443,7 +443,7 @@ def _window_attributions(
     attributions: list[_WindowAttribution] = []
     for key, seen in by_window.items():
         night = first_night[key]
-        blame = _blame_for_night(data_url, night)
+        blame = _blame_for_night(data_url, suite, night)
         # Prefer the selected night's metrics for the count and representative;
         # a window the selected rerun did not confirm still describes this
         # release, and falls back to the metrics of the nights that did.
@@ -577,23 +577,23 @@ def _render_banner(group: RunGroupReport) -> None:
         )
 
 
-def _window_changes(data_url: str, verdict: MetricVerdict) -> list | None:
+def _window_changes(data_url: str, suite: str, verdict: MetricVerdict) -> list | None:
     """Changed packages across a confirmed regression's bounded blame window,
     or ``None`` when either release's provenance is missing (aged off CVMFS, or
     a release benchmarked before capture). Each end is read under the platform
     it ran on, which differs across a platform migration."""
     base = packages_for_release(
-        data_url, verdict.base_platform, verdict.last_accepted_run_date,
+        data_url, suite, verdict.base_platform, verdict.last_accepted_run_date,
     )
     head = packages_for_release(
-        data_url, verdict.onset_run_platform, verdict.onset_run_date,
+        data_url, suite, verdict.onset_run_platform, verdict.onset_run_date,
     )
     if not base or not head:
         return None
     return diff_packages(base, head)
 
 
-def _render_blame_card(data_url: str, attribution: _WindowAttribution) -> None:
+def _render_blame_card(data_url: str, suite: str, attribution: _WindowAttribution) -> None:
     """One window's forward attribution: the upstream packages that moved in the
     blame window, each linking to its commit range, plus the ranked candidate
     PRs from the blame sidecar when present — so the reader reaches the likely
@@ -637,7 +637,7 @@ def _render_blame_card(data_url: str, attribution: _WindowAttribution) -> None:
             f"Change entered: {span} · {scope} · first confirmed on report "
             f"night **{attribution.night}**"
         )
-        changes = _window_changes(data_url, v) if baseline else None
+        changes = _window_changes(data_url, suite, v) if baseline else None
         if changes is None:
             st.caption(
                 "Stack provenance unavailable for these releases."
@@ -833,7 +833,7 @@ def _select_window(
 
 
 def _render_group(
-    group: RunGroupReport, data_url: str, cache_dir: str, *,
+    group: RunGroupReport, data_url: str, suite: str, cache_dir: str, *,
     attributions: list[_WindowAttribution],
     key: str, scope: tuple[str, str],
 ) -> None:
@@ -924,7 +924,7 @@ def _render_group(
                 reliability_slot = actions.empty()
             if selected is not None:
                 render_metric_trend(
-                    selected, data_url, cache_dir,
+                    selected, data_url, suite, cache_dir,
                     list_run_dates=cached_list_run_dates,
                     fetch_runs_windowed=cached_fetch_runs_windowed,
                     widget_namespace="regr",
@@ -932,4 +932,4 @@ def _render_group(
                 )
     if window is not None:
         st.markdown("###### What changed upstream")
-        _render_blame_card(data_url, window)
+        _render_blame_card(data_url, suite, window)

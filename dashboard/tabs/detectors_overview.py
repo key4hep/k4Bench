@@ -35,7 +35,6 @@ from plotly.subplots import make_subplots
 
 from k4bench.analysis.plots._theme import _TEMPLATE
 from k4bench.labels import BASELINE_LABEL
-from k4bench.layout import SIM
 from k4bench.metrics import is_megabytes, metric_label, metric_title
 from k4bench.regression.models import Severity
 from remote_cache import cached_fetch_reports, cached_list_report_dates
@@ -575,11 +574,12 @@ def _trend_notes(
 
 
 def render(
-    data_url: str, dashboard_url: str, platform: str, sample: str,
-    window: tuple[date, date] | None,
+    data_url: str, suite: str, dashboard_url: str, platform: str, sample: str,
+    window: tuple[date, date] | None, *, key_prefix: str = "",
 ) -> None:
-    """The tab's four views (:data:`_VIEWS`), dispatched by a View switcher like
-    the other multi-view tabs. *platform* and *sample* are the sidebar's
+    """The tab's four views (:data:`_VIEWS`) of *suite*'s nightly reports,
+    dispatched by a View switcher like the other multi-view tabs. *key_prefix*
+    prefixes the views' widget keys, so each page keeps its own choice. *platform* and *sample* are the sidebar's
     selections, the same scoping as Run Trends. *window* is the sidebar's
     shared Trend window, as the report nights that judged its releases
     (``None`` only when the store has no release yet) — in that case
@@ -608,7 +608,7 @@ def render(
     reachable — a scope with no data is often exactly when it is worth
     reading."""
     try:
-        dates = cached_list_report_dates(data_url, SIM)
+        dates = cached_list_report_dates(data_url, suite)
     except Exception as err:
         st.warning(
             f"Could not list the nightly reports on EOS: {err}. "
@@ -636,7 +636,7 @@ def render(
             return
         # A PR comment's archived report can lie outside the sidebar trend range.
         fetch_nights = tuple(dict.fromkeys([*fetch_nights, pinned_report]))
-    reports = cached_fetch_reports(data_url, SIM, fetch_nights)
+    reports = cached_fetch_reports(data_url, suite, fetch_nights)
     if pinned_mail and pinned_report not in reports:
         st.error(f"Could not load the requested report ({pinned_report}) from EOS.")
         return
@@ -652,7 +652,7 @@ def render(
                 f"Could not load the latest report ({latest_night}) from EOS — "
                 f"showing the requested {pinned_report} report on its own."
             )
-            _nightly_email.render(data_url, dashboard_url, reports, latest_night)
+            _nightly_email.render(data_url, suite, dashboard_url, reports, latest_night)
             return
         st.warning(f"Could not load the latest report ({latest_night}) from EOS.")
         return
@@ -668,9 +668,9 @@ def render(
         if n in dates and n not in reports
     )
     if stragglers:
-        reports.update(cached_fetch_reports(data_url, SIM, stragglers))
+        reports.update(cached_fetch_reports(data_url, suite, stragglers))
 
-    _views(data_url, dashboard_url, overview_inputs(
+    _views(data_url, suite, dashboard_url, key_prefix, overview_inputs(
         reports,
         platform=platform,
         sample=sample,
@@ -689,25 +689,28 @@ def render(
 # deployment, where a burst of full reruns can starve the /_stcore/health probe
 # and bounce the pod (surfacing as a 503).
 @st.fragment
-def _views(data_url: str, dashboard_url: str, inputs: OverviewInputs) -> None:
+def _views(
+    data_url: str, suite: str, dashboard_url: str, key_prefix: str, inputs: OverviewInputs,
+) -> None:
     # The chosen view is part of the URL, so a copied link reopens the one
     # being read. Without it every Overview link lands on the default view,
     # and the parameters the *other* views own — ``?report=`` above all,
     # which both Regression Status and Nightly Report speak — would be
     # carried in the URL with no picker on screen to seed from them.
-    seed_query_param(_VIEW_KEY, "view", _VIEWS)
+    view_key = f"{key_prefix}{_VIEW_KEY}"
+    seed_query_param(view_key, "view", _VIEWS)
     # Seeding through session_state rules out an explicit default, so the
     # opening view is written the same way. Same pattern as the Regressions
     # night picker.
-    if _VIEW_KEY not in st.session_state:
-        st.session_state[_VIEW_KEY] = _VIEWS[0]
+    if view_key not in st.session_state:
+        st.session_state[view_key] = _VIEWS[0]
     view = st.radio(
-        "**View**", _VIEWS, horizontal=True, key=_VIEW_KEY,
+        "**View**", _VIEWS, horizontal=True, key=view_key,
     ) or _VIEWS[0]
     st.query_params["view"] = view
     if view == "Nightly Report":
         _nightly_email.render(
-            data_url, dashboard_url, inputs.mail_reports, inputs.latest_night,
+            data_url, suite, dashboard_url, inputs.mail_reports, inputs.latest_night,
         )
         return
     # Below the mail, so an empty scope can still read the night's report.
@@ -725,37 +728,7 @@ def _views(data_url: str, dashboard_url: str, inputs: OverviewInputs) -> None:
             inputs.latest_night, inputs.platform, inputs.sample, inputs.rel_hist,
         )
         return
-    choice = _figure_toolbar(view, inputs)
-    if view == "Performance Trends":
-        _render_trends(inputs, choice)
-    else:
-        _render_landscape(inputs, choice)
-
-
-#: The views of a suite without nightly reports: the two figure views alone.
-FIGURE_VIEWS = _VIEWS[:2]
-
-
-@st.fragment
-def render_figures(inputs: OverviewInputs, *, key_prefix: str) -> None:
-    """The Performance Trends and Landscape views for a suite no nightly
-    report judges: *inputs* are built from its runs, whose values carry no
-    verdict, so the Regressions flags are left out. *key_prefix* keeps the
-    page's own selection, as for the sidebar."""
-    view_key = f"{key_prefix}{_VIEW_KEY}"
-    seed_query_param(view_key, "view", FIGURE_VIEWS)
-    if view_key not in st.session_state:
-        st.session_state[view_key] = FIGURE_VIEWS[0]
-    view = st.radio("**View**", FIGURE_VIEWS, horizontal=True, key=view_key) or FIGURE_VIEWS[0]
-    st.query_params["view"] = view
-    if inputs.scope_empty:
-        st.info(
-            f"No detector has {BASELINE_LABEL} results for "
-            f"**{inputs.sample}** on **{inputs.platform}** in the trend window — "
-            "pick another sample or platform, or widen the window in the sidebar."
-        )
-        return
-    choice = _figure_toolbar(view, inputs, key_prefix=key_prefix, flags=False)
+    choice = _figure_toolbar(view, inputs, key_prefix=key_prefix)
     if view == "Performance Trends":
         _render_trends(inputs, choice, key_prefix)
     else:
@@ -779,13 +752,12 @@ class _FigureChoice:
 
 
 def _figure_toolbar(
-    view: str, inputs: OverviewInputs, *, key_prefix: str = "", flags: bool = True,
+    view: str, inputs: OverviewInputs, *, key_prefix: str = "",
 ) -> _FigureChoice:
     """The shaping controls shared by the two figure views. Same widget keys in
     both, so the chosen metrics survive a view switch; only Scale differs
     (Relative % only makes sense for a time series). *key_prefix* prefixes
-    every key, so each page keeps its own choice; without *flags* the history
-    carries no regression verdicts to mark."""
+    every key, so each page keeps its own choice."""
     trends = view == "Performance Trends"
     show_confirmed = show_watch = False
     toolbar = st.container(
@@ -847,7 +819,7 @@ def _figure_toolbar(
             horizontal_alignment="right", gap="small",
         )
         with overlays:
-            if trends and flags:
+            if trends:
                 show_confirmed, show_watch = render_flag_pills(
                     f"{key_prefix}det_ov_flags", label="Regressions",
                 )

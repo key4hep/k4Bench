@@ -23,6 +23,7 @@ from k4bench.analysis.trend import (
     build_event_timing_trend,
     build_results_trend,
 )
+from k4bench.artifacts import COMPONENTS_SUFFIX, EVENTS_SUFFIX, RESULTS_SUFFIX
 from k4bench.layout import RECO, SIM
 
 #: Run-level metrics evaluated per config: ``{metric: family}``. Deliberately
@@ -132,6 +133,9 @@ class MetricSource:
     name: str
     #: Builds the frame from a group's run directories.
     build: Callable[[tuple[str, ...]], pd.DataFrame | None]
+    #: The per-config file (:mod:`k4bench.artifacts`) the frame is built from,
+    #: which a reader fetching one config's history downloads.
+    suffix: str
     #: ``{metric: family}`` judged per config, on the frame's rows for a whole
     #: job: every row, unless the frame has a :data:`COMPONENT` column.
     judged: Mapping[str, str]
@@ -157,10 +161,14 @@ class MetricSource:
 #: which host — so every suite reads it.
 RESULTS = "results"
 
-_RESULTS = MetricSource(RESULTS, build_results_trend, RUN_METRICS, REPORTED_ONLY_METRICS)
-_EVENTS = MetricSource("events", build_event_timing_trend, EVENT_METRICS, EVENT_REPORTED_ONLY_METRICS)
+_RESULTS = MetricSource(
+    RESULTS, build_results_trend, RESULTS_SUFFIX, RUN_METRICS, REPORTED_ONLY_METRICS,
+)
+_EVENTS = MetricSource(
+    "events", build_event_timing_trend, EVENTS_SUFFIX, EVENT_METRICS, EVENT_REPORTED_ONLY_METRICS,
+)
 _COMPONENTS = MetricSource(
-    "components", build_component_cost_trend, JOB_COST_METRICS,
+    "components", build_component_cost_trend, COMPONENTS_SUFFIX, JOB_COST_METRICS,
     component_judged=COMPONENT_METRICS,
 )
 
@@ -177,3 +185,16 @@ def sources(suite: str) -> tuple[MetricSource, ...]:
         return CATALOGS[suite]
     except KeyError:
         raise ValueError(f"unknown suite {suite!r}") from None
+
+
+def source_of(suite: str, metric: str, component: str | None) -> MetricSource | None:
+    """The source of *suite* *metric* is read from — of the whole job, or of
+    one *component* — or ``None`` for a metric no source records."""
+    for source in sources(suite):
+        recorded = (
+            source.component_judged if component is not None
+            else {**source.judged, **source.reported_only}
+        )
+        if metric in recorded:
+            return source
+    return None

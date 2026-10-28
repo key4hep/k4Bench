@@ -102,23 +102,31 @@ def group_title(group: RunGroupReport) -> str:
 #: Each suite's name, as the dashboard's top bar and the email title it.
 SUITE_TITLES = {SIM: "Simulation", RECO: "Reconstruction"}
 
+#: The program each suite benchmarks, which a view names as what loaded a
+#: package.
+SUITE_PROGRAMS = {SIM: "ddsim", RECO: "k4run"}
+
 #: Each suite's dashboard page, below the dashboard's root. The sim page is the
 #: root itself, which is where every link written before suites existed points.
 SUITE_PAGE_PATHS = {SIM: "", RECO: "reconstruction"}
 
-#: The suites whose dashboard page has the views a report links into —
-#: Regressions, Run Trends and Stack Changes. Another suite's page would open
-#: such a link on its first section, so its reports link to the page alone.
-SUITES_WITH_REPORT_VIEWS = frozenset({SIM})
+#: The views a report's deep links lead into that each suite's dashboard page
+#: has. A page would open a link to a view it lacks on its first section, so a
+#: report links into the views of its own suite's page alone. The
+#: Reconstruction page has no Run Trends: its Time and Memory sections draw a
+#: configuration's history instead.
+SUITE_REPORT_VIEWS: dict[str, frozenset[str]] = {
+    SIM: frozenset({"Regressions", "Run Trends", "Stack Changes", "Nightly Report"}),
+    RECO: frozenset({"Regressions", "Stack Changes", "Nightly Report"}),
+}
 
 
 def report_views_url(dashboard_url: str | None, suite: str) -> str | None:
     """*suite*'s dashboard page below *dashboard_url*, to build a report's deep
-    links into its views on — Regressions, Run Trends, Stack Changes, the
-    Nightly Report — or ``None`` when that page has none of them
-    (:data:`SUITES_WITH_REPORT_VIEWS`): a link named for a view the page lacks
-    would open its first section instead."""
-    if not dashboard_url or suite not in SUITES_WITH_REPORT_VIEWS:
+    links into its views on (:data:`SUITE_REPORT_VIEWS`), or ``None`` when that
+    page has none of them. A link to one view the page lacks is the caller's
+    to leave out."""
+    if not dashboard_url or not SUITE_REPORT_VIEWS.get(suite):
         return None
     return suite_page_url(dashboard_url, suite)
 

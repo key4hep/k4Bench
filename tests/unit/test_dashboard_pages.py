@@ -65,12 +65,31 @@ def test_pages_walk_their_own_suite_under_their_own_keys():
     assert sim_page.SIM_PAGE.key_prefix == ""
 
 
-def test_reco_page_has_no_report_backed_section():
-    # Nothing judges the reco suite, so its trend window must not wait for reports.
-    assert reco_page.RECO_PAGE.reports is False
-    assert not {"Regressions", "Run Trends", "Stack Changes"} & set(reco_page.RECO_PAGE.sections)
-    # Its Overview is its own, drawn from the runs rather than the nightly reports.
-    assert reco_page.RECO_PAGE.renderers["Overview"] is not sim_page.SIM_PAGE.renderers["Overview"]
+@pytest.mark.parametrize("page", PAGES, ids=lambda p: p.suite)
+def test_a_suites_report_links_into_exactly_the_views_its_page_has(page):
+    # A link to a view the page lacks would open its first section instead,
+    # and a view left out of the set would never be linked to.
+    from k4bench.regression.render import SUITE_REPORT_VIEWS
+    from tabs.detectors_overview import _VIEWS
+
+    views = SUITE_REPORT_VIEWS[page.suite]
+    assert page.reports is True
+    assert views - {"Nightly Report"} == (
+        {"Regressions", "Run Trends", "Stack Changes"} & set(page.sections)
+    )
+    # The Nightly Report is a view of the Overview.
+    assert "Nightly Report" in views and "Nightly Report" in _VIEWS
+    assert "Overview" in page.sections
+
+
+def test_the_reco_report_views_are_the_simulations_under_its_own_keys():
+    reco, sim = reco_page.RECO_PAGE, sim_page.SIM_PAGE
+    for name in ("Regressions", "Stack Changes"):
+        assert reco.renderers[name] is sim.renderers[name]
+        assert reco.scopes[name] == sim.scopes[name]
+    overview = reco.renderers["Overview"]
+    assert overview.func is sim.renderers["Overview"]
+    assert overview.keywords == {"key_prefix": reco.key_prefix}
 
 
 def test_only_the_reco_page_loads_component_costs():

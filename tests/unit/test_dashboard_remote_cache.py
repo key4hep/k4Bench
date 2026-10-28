@@ -238,7 +238,7 @@ def test_metric_drill_down_warns_when_its_run_history_stopped_short(monkeypatch)
     warnings = []
     monkeypatch.setattr(trend.st, "warning", lambda text, **_kw: warnings.append(text))
     trend.render_metric_trend(
-        verdict, BASE, "/cache",
+        verdict, BASE, "sim", "/cache",
         list_run_dates=listing, fetch_runs_windowed=downloads, widget_namespace="t",
     )
     assert len(warnings) == 1
@@ -262,7 +262,7 @@ def test_metric_drill_down_warns_when_the_local_cache_fails(monkeypatch):
     warnings = []
     monkeypatch.setattr(trend.st, "warning", lambda text, **_kw: warnings.append(text))
     trend.render_metric_trend(
-        _drill_down_verdict(), BASE, "/cache",
+        _drill_down_verdict(), BASE, "sim", "/cache",
         list_run_dates=listing, fetch_runs_windowed=downloads, widget_namespace="t",
     )
     assert len(warnings) == 1
