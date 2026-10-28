@@ -247,6 +247,7 @@ def _render_flag_trend(
     platform: str,
     sample: str,
     status_rel_hist: pd.DataFrame,
+    key_prefix: str = "",
 ) -> None:
     """The Regression Status view's trend preview — the shared worst-first
     picker, leading with the detector because this view spans them, above a
@@ -264,7 +265,9 @@ def _render_flag_trend(
     # The picker re-defaults by itself whenever the stored verdict leaves the
     # option model, but “—” survives every model: without this, a hidden chart
     # would stay hidden through a scope change that surfaced a worse flag.
-    reset_widget_on_scope("det_ov_flag_trend", (platform, sample, tuple(choices)))
+    reset_widget_on_scope(
+        f"{key_prefix}det_ov_flag_trend", (platform, sample, tuple(choices)),
+    )
     controls = st.container(
         horizontal=True, vertical_alignment="bottom", width="stretch", gap="medium",
     )
@@ -272,7 +275,7 @@ def _render_flag_trend(
         picker = st.container(width="stretch")
         with picker:
             v = render_metric_picker(
-                choices, key="det_ov_flag_trend", include_detector=True,
+                choices, key=f"{key_prefix}det_ov_flag_trend", include_detector=True,
                 help="The flagged metric's history over the trend window, with the "
                      "baseline band its verdict was judged against — opens on the "
                      "worst flag; pick another or “—” to hide it. Built from the "
@@ -286,7 +289,8 @@ def _render_flag_trend(
     if v is None:
         return
     unreliable_pairs, exclude_unreliable = render_run_reliability_filter(
-        status_rel_hist, key="det_ov_exclude_unreliable", slot=reliability_slot,
+        status_rel_hist, key=f"{key_prefix}det_ov_exclude_unreliable",
+        slot=reliability_slot,
     )
     rows = history_rows(status_frames, platform, sample, v.label)
     failed_rows = rows[rows["severity"] == Severity.FAILURE.value]
@@ -306,7 +310,7 @@ def _render_flag_trend(
         return
     st.plotly_chart(
         _flag_trend_figure(series, v, failures),
-        width="stretch", key="det_ov_flag_chart",
+        width="stretch", key=f"{key_prefix}det_ov_flag_chart",
     )
     st.caption(f"**{v.reason}** — {v.detector} · {v.label}")
 
@@ -323,6 +327,7 @@ def _select_report_night(
     latest_night: str,
     platform: str,
     sample: str,
+    key_prefix: str = "",
 ) -> str:
     """The report night the status view describes — newest by default, with
     every already-fetched night that covers the scope on offer.
@@ -336,7 +341,7 @@ def _select_report_night(
     nights = sorted(scoped_groups, reverse=True)
     return render_night_picker(
         nights,
-        key=_NIGHT_KEY,
+        key=f"{key_prefix}{_NIGHT_KEY}",
         badge=lambda n: detector_badge(scoped_groups[n]),
         default=nights[0],
         latest=latest_night,
@@ -356,11 +361,13 @@ def render(
     platform: str,
     sample: str,
     rel_hist: pd.DataFrame,
+    key_prefix: str = "",
 ) -> None:
     """The Regression Status view: the report-night picker, that night's
     verdict banner and per-detector roster, and its worst flag's trend — the
     cross-detector regression picture the (detector-scoped) Regressions tab no
-    longer carries.
+    longer carries. *key_prefix* prefixes every widget key, as the Overview's
+    figure toolbar does, so each page keeps its own choices.
 
     *night_frames* spans the nights the picker offers (the trend window plus
     the newest report); *window_nights* names the window within them, which is
@@ -376,11 +383,13 @@ def render(
             f"in the reports in view (newest: {latest_night})."
         )
         return
-    night = _select_report_night(scoped_groups, latest_night, platform, sample)
+    night = _select_report_night(
+        scoped_groups, latest_night, platform, sample, key_prefix,
+    )
     groups = scoped_groups[night]
     _render_regression_banner(groups, night)
     _render_detector_status(groups, night, platform, sample)
     _render_flag_trend(
         groups, _flag_trend_frames(night_frames, window_nights, night),
-        platform, sample, rel_hist,
+        platform, sample, rel_hist, key_prefix,
     )

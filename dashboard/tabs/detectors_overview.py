@@ -726,6 +726,7 @@ def _views(
         _regression_status.render(
             inputs.scoped_groups, inputs.status_frames, inputs.window_nights,
             inputs.latest_night, inputs.platform, inputs.sample, inputs.rel_hist,
+            key_prefix=key_prefix,
         )
         return
     choice = _figure_toolbar(view, inputs, key_prefix=key_prefix)

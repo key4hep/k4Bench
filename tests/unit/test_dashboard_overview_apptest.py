@@ -372,6 +372,24 @@ def test_the_reco_overview_reads_the_reco_reports_under_its_own_keys():
     assert at.session_state["_suites_read"] == {"reco"}
 
 
+def test_the_reco_overview_shares_its_run_choice_across_views():
+    # The Trends toolbar and the Regression Status flag trend read one run
+    # choice, under the page's prefix, so switching views keeps "All runs".
+    reports = {night: {**report, "suite": "reco"} for night, report in REPORTS.items()}
+    reports["2026-07-11"] = _with_confirmed_flag(reports["2026-07-11"])
+    at = AppTest.from_function(
+        _reco_app, args=(str(_DASHBOARD_DIR), DATES, reports, _WINDOW), default_timeout=30,
+    ).run()
+    at.segmented_control(key="reco_det_ov_exclude_unreliable").set_value("All runs").run()
+    at.radio(key="reco_det_ov_view_mode").set_value("Regression Status").run()
+    assert not at.exception, at.exception
+    assert at.selectbox(key="reco_det_ov_report_night")
+    assert at.selectbox(key="reco_det_ov_flag_trend")
+    runs = at.segmented_control(key="reco_det_ov_exclude_unreliable")
+    assert runs.value == "All runs"
+    assert "det_ov_exclude_unreliable" not in at.session_state
+
+
 def test_status_view_renders_banner_and_roster():
     at = _status_view(_run())
     by_label = {m.label: m.value for m in at.metric}
