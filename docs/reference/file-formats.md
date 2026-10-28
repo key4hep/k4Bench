@@ -697,10 +697,11 @@ to the first underscore (`ALLEGRO_o1_v04` → `ALLEGRO`, `ILD_FCCee_v01` →
 This is the integration contract between CI and the dashboard
 ([data flow](../architecture/data-flow.md#nightly-eos-dashboard)). A
 regression report judges one suite's runs and no other's; the nightly builds
-the `sim` suite's, and blame and the pull-request comments cover the `sim`
-suite alone. The dashboard reads both suites, one page per suite. No nightly
-report judges the `reco` suite yet, so there is no `reports/reco/` and the
-Reconstruction page reads its runs directly.
+one for each suite it benchmarked, and blame and the pull-request comments
+cover the `sim` suite alone. The dashboard reads both suites, one page per
+suite; the Reconstruction page reads its runs directly, not `reports/reco/`.
+A reco report's verdicts include one series per component of a job, named in
+the verdict's `sub_detector`, which for a sim report is always `null`.
 `reports/{suite}/` holds the suite's nightly regression report (written
 by the `regression-report` CI job, rendered by the dashboard's Regressions tab),
 whose top-level `suite` key names the suite it judged — a report without one

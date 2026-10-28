@@ -46,7 +46,7 @@ _STABILITY_METRICS = ["peak_vmem_mb", "peak_rss_mb"]
 #: Plotted panels that carry a regression flag, mapped to the metric whose
 #: verdict supplies it. Throughput has none of
 #: its own — it is exactly ``n_events / wall_time_s`` (see the note on
-#: ``report_builder.RUN_METRICS``), so a throughput regression *is* a wall-time
+#: ``catalog.RUN_METRICS``), so a throughput regression *is* a wall-time
 #: regression inverted, and it borrows ``wall_time_s``'s verdict. CPU efficiency
 #: and context switches aren't judged nightly, so they never ring a point.
 _FLAG_SOURCE_METRIC = {

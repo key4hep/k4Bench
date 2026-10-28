@@ -174,22 +174,38 @@ def test_unreliable_runs_excluded_from_baseline():
     assert verdicts[-1].baseline_median == pytest.approx(100.0, abs=0.5)
 
 
-def test_tiny_region_wobble_blocked_by_absolute_delta_floor():
-    # A 50 µs region jumping +50% is timer noise (Δ ≪ 10 ms), even though both
-    # the z-gate and the relative floor trip …
-    region = SeriesId(
+def test_tiny_component_wobble_blocked_by_absolute_delta_floor():
+    # A 50 µs component jumping +50% is timer noise (Δ ≪ 10 ms), even though
+    # both the z-gate and the relative floor trip …
+    component = SeriesId(
         detector="DET", platform="PLAT", sample="single_e",
-        label="baseline", metric_family="region_time", metric="median_time_s",
-        sub_detector="BeamPipe",
+        label="baseline", metric_family="component_time", metric="seconds_per_event",
+        sub_detector="LumiCalReco",
     )
     tiny = [5.0e-5] * 10
-    ok = evaluate_series(_history(tiny + [7.5e-5]), series=region)
+    ok = evaluate_series(_history(tiny + [7.5e-5]), series=component)
     assert ok[-1].severity is Severity.OK
-    # … while the same tiny region genuinely blowing up (Δ ≫ 10 ms) still flags:
-    # the floor is on the change, not on the baseline size.
-    watch = evaluate_series(_history(tiny + [0.5]), series=region)
+    # … while the same tiny component genuinely blowing up (Δ ≫ 10 ms) still
+    # flags: the floor is on the change, not on the baseline size.
+    watch = evaluate_series(_history(tiny + [0.5]), series=component)
     assert watch[-1].severity is Severity.WATCH
     assert watch[-1].direction is Direction.UP
+
+
+@pytest.mark.parametrize(("step", "severity"), [
+    (0.9, Severity.OK),    # +45%, but under a second: a one-off cost too small to act on
+    (2.5, Severity.OK),    # over a second, but +8% of a 30 s initialize
+    (4.0, Severity.WATCH),
+])
+def test_a_components_initialize_needs_a_tenth_and_a_second(step, severity):
+    component = SeriesId(
+        detector="DET", platform="PLAT", sample="single_e",
+        label="baseline", metric_family="component_init", metric="initialize_s",
+        sub_detector="GeoSvc",
+    )
+    base = 2.0 if step < 1 else 30.0
+    verdicts = evaluate_series(_history([base] * 10 + [base + step]), series=component)
+    assert verdicts[-1].severity is severity
 
 
 def test_nan_values_are_skipped():

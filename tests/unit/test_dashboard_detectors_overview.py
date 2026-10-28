@@ -28,7 +28,7 @@ from k4bench.regression.models import (  # noqa: E402
     RunGroupReport,
     Severity,
 )
-from k4bench.regression.report_builder import (  # noqa: E402
+from k4bench.regression.catalog import (  # noqa: E402
     EVENT_VALUE_METRICS,
     RUN_VALUE_METRICS,
 )

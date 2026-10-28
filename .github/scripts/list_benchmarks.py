@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
 Expand the benchmark configs below .github/benchmarks/ into benchmark jobs and
-print them as JSON on stdout. Two output shapes:
+print them as JSON on stdout. Three output shapes:
 
   default  — flat list, one record per (config, sample)
   --grouped — list of {config, samples: [...]} so the nightly workflow can
               fan out one reusable-workflow call per config and nest the
               sample matrix beneath it in the Actions UI
+  --suites — the suites those jobs belong to, in layout.SUITES order, so the
+              nightly reports on each suite it benchmarked and no other
 
 A config lives at {suite}/{concept}/{detector}.yml, the path of the run tree
 its jobs upload to (see k4bench/layout.py): the suite is one of
@@ -295,7 +297,9 @@ def config_paths(bench_dir: Path) -> list[Path]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--grouped", action="store_true")
+    shape = parser.add_mutually_exclusive_group()
+    shape.add_argument("--grouped", action="store_true")
+    shape.add_argument("--suites", action="store_true")
     parser.add_argument(
         "--only", default="",
         help='space-separated path prefixes of {suite}/{concept}/{detector}/{sample}, '
@@ -308,7 +312,10 @@ def main() -> None:
     items = [r for p in paths for r in expand(p)]
     _check_unique_destinations(items)
     items = _select(items, args.only)
-    print(json.dumps(_group_by_config(items) if args.grouped else items))
+    if args.suites:
+        print(json.dumps([suite for suite in SUITES if any(r["suite"] == suite for r in items)]))
+    else:
+        print(json.dumps(_group_by_config(items) if args.grouped else items))
 
 
 if __name__ == "__main__":

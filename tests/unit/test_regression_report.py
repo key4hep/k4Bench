@@ -24,11 +24,13 @@ from k4bench.regression.models import (
     Severity,
     Unjudged,
 )
-from k4bench.regression.report_builder import (
+from k4bench.regression.catalog import (
     EVENT_METRICS,
     EVENT_REPORTED_ONLY_METRICS,
     RUN_METRICS,
     RUN_VALUE_METRICS,
+)
+from k4bench.regression.report_builder import (
     _failed_config_verdicts,
     _fetch_predecessor,
     _region_window,
@@ -49,9 +51,9 @@ def test_unjudged_value_verdicts_fills_only_missing_metrics():
         "peak_rss_mb": [1500.0],
     })
     out = unjudged_value_verdicts(
-        detector="DET", platform=_PLAT, sample="single_e",
-        results_df=results, event_df=None, tonight="2026-01-12",
-        already={("baseline", "wall_time_s")},  # already judged → skipped
+        suite=SIM, detector="DET", platform=_PLAT, sample="single_e",
+        frames={"results": results, "events": None}, tonight="2026-01-12",
+        already={("baseline", "wall_time_s", None)},  # already judged → skipped
     )
     by_metric = {v.metric: v for v in out}
     assert "wall_time_s" not in by_metric
@@ -186,7 +188,7 @@ def test_persisting_step_confirms_in_group_report(tmp_path):
              120.0, 120.5]
     run_dirs = _make_history(tmp_path, walls)
     group = group_report_from_run_dirs(
-        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+        SIM, "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
     )
     assert group is not None
     confirmed = {(v.metric, v.severity, v.direction) for v in group.regressions}
@@ -210,7 +212,7 @@ def test_group_report_carries_tonights_github_run_url(tmp_path):
         for n, w in zip(nights, walls)
     ]
     group = group_report_from_run_dirs(
-        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+        SIM, "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
     )
     assert group is not None
     assert group.github_run_url == f"https://ci.example/runs/{nights[-1]}"
@@ -220,7 +222,7 @@ def test_group_report_github_run_url_none_when_absent(tmp_path):
     walls = [100.0, 100.4, 99.6]
     run_dirs = _make_history(tmp_path, walls)
     group = group_report_from_run_dirs(
-        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+        SIM, "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
     )
     assert group is not None
     assert group.github_run_url is None
@@ -233,7 +235,7 @@ def test_unreliable_night_never_evaluated_nor_in_baseline(tmp_path):
              500.0, 100.0, 100.2]
     run_dirs = _make_history(tmp_path, walls, {9: {"contended": True}})
     group = group_report_from_run_dirs(
-        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+        SIM, "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
     )
     flagged = [v for v in group.verdicts if v.flagged]
     assert flagged == []
@@ -246,7 +248,7 @@ def test_unreliable_tonight_yields_note_and_unjudged_values(tmp_path):
     walls = [100.0] * 11 + [100.2]
     run_dirs = _make_history(tmp_path, walls, {11: {"contended": True}})
     group = group_report_from_run_dirs(
-        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+        SIM, "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
     )
     assert any("reliability" in note for note in group.notes)
     # Nothing is judged (no flag, no baseline verdict) …
@@ -267,7 +269,7 @@ def test_failed_config_is_failure_verdict(tmp_path):
     walls = [100.0] * 12
     run_dirs = _make_history(tmp_path, walls, {11: {"returncode": 1}})
     group = group_report_from_run_dirs(
-        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+        SIM, "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
     )
     failures = group.failures
     assert len(failures) == 1
@@ -300,7 +302,7 @@ def test_failed_config_metrics_are_not_judged(tmp_path):
     )
 
     group = group_report_from_run_dirs(
-        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+        SIM, "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
     )
 
     assert group is not None
@@ -326,7 +328,7 @@ def test_failed_warmup_metrics_do_not_keep_an_unjudged_cause(tmp_path):
     )
 
     group = group_report_from_run_dirs(
-        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+        SIM, "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
     )
 
     assert group is not None
@@ -344,7 +346,7 @@ def test_historical_failures_do_not_poison_recovery_baseline(tmp_path):
     )
 
     group = group_report_from_run_dirs(
-        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+        SIM, "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
     )
 
     assert group is not None
@@ -374,7 +376,7 @@ def test_failed_config_does_not_suppress_healthy_sibling(tmp_path):
     run_dirs = _make_history(tmp_path, [100.0] * 12, per_night)
 
     group = group_report_from_run_dirs(
-        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+        SIM, "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
     )
 
     assert group is not None
@@ -403,7 +405,7 @@ def test_failed_config_partial_event_metrics_are_not_judged(tmp_path):
     run_dirs = _make_history(tmp_path, [100.0] * 11 + [5.0], per_night)
 
     group = group_report_from_run_dirs(
-        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+        SIM, "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
     )
 
     assert group is not None
@@ -429,7 +431,7 @@ def test_event_file_without_result_row_is_failure_only(tmp_path):
     _write_event_timing(run_dirs[-1], "orphan", 0.05)
 
     group = group_report_from_run_dirs(
-        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+        SIM, "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
     )
 
     assert group is not None
@@ -443,7 +445,7 @@ def test_config_missing_tonight_is_job_failure(tmp_path):
     per_night[11] = {"labels": ("baseline",)}  # variant vanished tonight
     run_dirs = _make_history(tmp_path, walls, per_night)
     group = group_report_from_run_dirs(
-        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+        SIM, "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
     )
     assert any("variant" in msg for msg in group.job_failures)
 
@@ -457,7 +459,7 @@ def test_deliberately_removed_config_is_not_a_job_failure(tmp_path):
     }
     run_dirs = _make_history(tmp_path, walls, per_night)
     group = group_report_from_run_dirs(
-        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+        SIM, "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
     )
     assert group is not None
     assert group.job_failures == []
@@ -473,7 +475,7 @@ def test_configured_label_missing_tonight_is_a_job_failure(tmp_path):
         }},
     )
     group = group_report_from_run_dirs(
-        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+        SIM, "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
     )
     assert group is not None
     assert group.job_failures == [
@@ -494,7 +496,7 @@ def test_night_with_no_results_at_all_fails_every_configured_label(tmp_path):
         }},
     )
     group = group_report_from_run_dirs(
-        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+        SIM, "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
     )
     assert group is not None
     assert group.job_failures == [
@@ -515,7 +517,7 @@ def test_first_ever_night_with_no_results_is_still_reported(tmp_path):
         }},
     )
     group = group_report_from_run_dirs(
-        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+        SIM, "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
     )
     assert group is not None
     assert group.k4h_release == "key4hep-2026-01-01"
@@ -531,7 +533,7 @@ def test_first_ever_night_with_no_results_and_no_roster_is_not_reported(tmp_path
     report — unchanged from before the roster existed."""
     run_dirs = _make_history(tmp_path, [100.0], {0: {"labels": ()}})
     assert group_report_from_run_dirs(
-        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+        SIM, "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
     ) is None
 
 
@@ -870,7 +872,7 @@ def _write_event_timing_series(run_dir: Path, label: str, times: list[float]) ->
 
 
 def _report_for(run_dirs: tuple[str, ...]):
-    return group_report_from_run_dirs("DET", _PLAT, "single_e", run_dirs)
+    return group_report_from_run_dirs(SIM, "DET", _PLAT, "single_e", run_dirs)
 
 
 def test_whole_group_moving_together_is_reported_per_config(tmp_path):
@@ -1083,7 +1085,7 @@ def _new_platform_runs(root: Path) -> tuple[str, ...]:
 def _old_platform_runs(root: Path):
     sample_root = root / run_path(SIM, "DET") / _OLD_PLAT / _STACK / "single_e"
     return predecessor_runs(
-        "DET", _OLD_PLAT, tuple(str(p) for p in sorted(sample_root.iterdir()))
+        SIM, "DET", _OLD_PLAT, tuple(str(p) for p in sorted(sample_root.iterdir()))
     )
 
 
@@ -1092,7 +1094,7 @@ def test_successor_judges_its_first_night_as_its_own_platform(tmp_path):
     # this platform's own: its report, its date, its release, its runs.
     _migration_tree(tmp_path, new_walls=[100.2])
     group = group_report_from_run_dirs(
-        "DET", _NEW_PLAT, "single_e", _new_platform_runs(tmp_path),
+        SIM, "DET", _NEW_PLAT, "single_e", _new_platform_runs(tmp_path),
         predecessor=lambda: _old_platform_runs(tmp_path),
     )
     assert group is not None
@@ -1110,7 +1112,7 @@ def test_a_migration_step_is_bounded_by_the_predecessors_last_night(tmp_path):
     # it, so the change can be attributed to whatever moved in between.
     _migration_tree(tmp_path, new_walls=[120.0, 120.5])
     group = group_report_from_run_dirs(
-        "DET", _NEW_PLAT, "single_e", _new_platform_runs(tmp_path),
+        SIM, "DET", _NEW_PLAT, "single_e", _new_platform_runs(tmp_path),
         predecessor=lambda: _old_platform_runs(tmp_path),
     )
     assert group is not None
@@ -1135,7 +1137,7 @@ def test_a_watch_on_the_replaced_platforms_last_night_does_not_open_the_window(t
     results.to_csv(last_old / "baseline_results.csv", index=False)
 
     group = group_report_from_run_dirs(
-        "DET", _NEW_PLAT, "single_e", _new_platform_runs(tmp_path),
+        SIM, "DET", _NEW_PLAT, "single_e", _new_platform_runs(tmp_path),
         predecessor=lambda: _old_platform_runs(tmp_path),
     )
     wall = next(v for v in group.regressions if v.metric == "wall_time_s")
@@ -1149,7 +1151,7 @@ def test_a_new_platform_without_its_predecessor_is_still_cold(tmp_path):
     # nights are unjudged, which is what a cold platform switch costs.
     _migration_tree(tmp_path, new_walls=[120.0, 120.5])
     group = group_report_from_run_dirs(
-        "DET", _NEW_PLAT, "single_e", _new_platform_runs(tmp_path),
+        SIM, "DET", _NEW_PLAT, "single_e", _new_platform_runs(tmp_path),
     )
     assert group is not None
     assert group.regressions == []
@@ -1169,7 +1171,7 @@ def test_a_predecessor_release_dated_like_the_successors_first_is_left_out(tmp_p
     (last_old / "run_info.json").write_text(json.dumps(info))
 
     group = group_report_from_run_dirs(
-        "DET", _NEW_PLAT, "single_e", _new_platform_runs(tmp_path),
+        SIM, "DET", _NEW_PLAT, "single_e", _new_platform_runs(tmp_path),
         predecessor=lambda: _old_platform_runs(tmp_path),
     )
     wall = next(v for v in group.regressions if v.metric == "wall_time_s")
@@ -1183,7 +1185,7 @@ def test_a_later_rerun_on_the_replaced_platform_cannot_change_successor_verdicts
 
     def judged():
         group = group_report_from_run_dirs(
-            "DET", _NEW_PLAT, "single_e", _new_platform_runs(tmp_path),
+            SIM, "DET", _NEW_PLAT, "single_e", _new_platform_runs(tmp_path),
             predecessor=lambda: _old_platform_runs(tmp_path),
         )
         return [(v.metric, v.severity, v.last_accepted_run_id) for v in group.verdicts]
@@ -1208,7 +1210,7 @@ def test_predecessor_is_consulted_while_reliable_history_is_short(tmp_path):
     )
     consulted = []
     group_report_from_run_dirs(
-        "DET", _NEW_PLAT, "single_e", tuple(str(d) for d in run_dirs),
+        SIM, "DET", _NEW_PLAT, "single_e", tuple(str(d) for d in run_dirs),
         predecessor=lambda: consulted.append(True),
     )
     assert consulted
@@ -1225,7 +1227,7 @@ def test_confirmation_survives_fourteen_runs_of_two_releases(tmp_path):
 
     for count in (13, 14):
         group = group_report_from_run_dirs(
-            "DET", _NEW_PLAT, "single_e", run_dirs[:count],
+            SIM, "DET", _NEW_PLAT, "single_e", run_dirs[:count],
             predecessor=lambda: _old_platform_runs(tmp_path),
         )
         wall = next(v for v in group.verdicts if v.metric == "wall_time_s")
@@ -1247,7 +1249,7 @@ def test_a_sparse_successor_series_is_still_judged(tmp_path, gap):
             results["peak_vmem_mb"] = float("nan")
         results.to_csv(results_path, index=False)
     group = group_report_from_run_dirs(
-        "DET", _NEW_PLAT, "single_e", run_dirs,
+        SIM, "DET", _NEW_PLAT, "single_e", run_dirs,
         predecessor=lambda: _old_platform_runs(tmp_path),
     )
     memory = next(v for v in group.verdicts if v.metric == "peak_vmem_mb")
@@ -1321,9 +1323,9 @@ def _detector_runs(root: Path, detector: str) -> tuple[str, ...]:
 def test_a_version_switch_step_is_a_regression_across_the_switch(tmp_path):
     _version_switch_tree(tmp_path, new_walls=[120.0, 120.5])
     group = group_report_from_run_dirs(
-        _NEW_DET, _PLAT, "single_e", _detector_runs(tmp_path, _NEW_DET),
+        SIM, _NEW_DET, _PLAT, "single_e", _detector_runs(tmp_path, _NEW_DET),
         predecessor=lambda: predecessor_runs(
-            _OLD_DET, _PLAT, _detector_runs(tmp_path, _OLD_DET),
+            SIM, _OLD_DET, _PLAT, _detector_runs(tmp_path, _OLD_DET),
         ),
     )
     wall = next(v for v in group.regressions if v.metric == "wall_time_s")
@@ -1370,9 +1372,9 @@ def test_a_version_switch_within_one_release_is_judged_across_the_switch(tmp_pat
 
     def report(run_dirs):
         return group_report_from_run_dirs(
-            _NEW_DET, _PLAT, "single_e", run_dirs,
+            SIM, _NEW_DET, _PLAT, "single_e", run_dirs,
             predecessor=lambda: predecessor_runs(
-                _OLD_DET, _PLAT, _detector_runs(tmp_path, _OLD_DET),
+                SIM, _OLD_DET, _PLAT, _detector_runs(tmp_path, _OLD_DET),
             ),
         )
 
@@ -1619,8 +1621,8 @@ def test_a_window_opening_on_the_replaced_platform_keeps_its_region_deltas(tmp_p
         run_id="2026-07-15", verdicts=[verdict],
     )
     predecessor = PredecessorRuns(
-        detector="DET", platform=_OLD_PLAT, results_df=None, event_df=None, reliability={},
-        run_dirs=old_dirs,
+        detector="DET", platform=_OLD_PLAT, frames={"results": None, "events": None},
+        reliability={}, run_dirs=old_dirs,
     )
 
     without = _with_region_deltas(dataclasses.replace(group), new_dirs).verdicts[0]
@@ -1639,7 +1641,7 @@ def test_a_seed_change_across_the_migration_is_noted(tmp_path):
         info["random_seed"] = 42
         info_path.write_text(json.dumps(info))
     group = group_report_from_run_dirs(
-        "DET", _NEW_PLAT, "single_e", _new_platform_runs(tmp_path),
+        SIM, "DET", _NEW_PLAT, "single_e", _new_platform_runs(tmp_path),
         predecessor=lambda: _old_platform_runs(tmp_path),
     )
     assert any(
@@ -1690,7 +1692,7 @@ def test_new_memory_judging_warms_up_automatically(tmp_path, new_runs, contended
         frame.to_csv(csv_path, index=False)
 
     paths = tuple(str(d) for d in run_dirs)
-    group = group_report_from_run_dirs("DET", _PLAT, "single_e", paths)
+    group = group_report_from_run_dirs(SIM, "DET", _PLAT, "single_e", paths)
     report_path = tmp_path / "report.json"
     report_path.write_text(json.dumps(to_json(NightlyReport(generated_at="now", groups=[group]))))
     report = from_json(json.loads(report_path.read_text()))
@@ -1710,11 +1712,14 @@ def test_new_memory_judging_warms_up_automatically(tmp_path, new_runs, contended
         else:
             assert verdict.baseline_median == (1000.0 if metric == "peak_vmem_mb" else 100.0)
     judged = evaluate_group_series(
+        suite=SIM,
         detector="DET",
         platform=_PLAT,
         sample="single_e",
-        results_df=build_results_trend(paths),
-        event_df=build_event_timing_trend(paths),
+        frames={
+            "results": build_results_trend(paths),
+            "events": build_event_timing_trend(paths),
+        },
         reliability={d.name: True for d in run_dirs},
     )
     metrics = {sid.metric for sid in judged}
@@ -1747,7 +1752,7 @@ def test_anon_rss_growth_is_recorded_but_never_judged(tmp_path):
         }))
 
     paths = tuple(str(d) for d in run_dirs)
-    group = group_report_from_run_dirs("DET", _PLAT, "single_e", paths)
+    group = group_report_from_run_dirs(SIM, "DET", _PLAT, "single_e", paths)
     report = from_json(to_json(NightlyReport(generated_at="now", groups=[group])))
     verdict = next(v for v in report.groups[0].verdicts if v.metric == slope)
     assert verdict.value == pytest.approx(50.0)
@@ -1757,11 +1762,14 @@ def test_anon_rss_growth_is_recorded_but_never_judged(tmp_path):
     assert not any(v.metric == slope for v in report.groups[0].regressions)
 
     judged = evaluate_group_series(
+        suite=SIM,
         detector="DET",
         platform=_PLAT,
         sample="single_e",
-        results_df=build_results_trend(paths),
-        event_df=build_event_timing_trend(paths),
+        frames={
+            "results": build_results_trend(paths),
+            "events": build_event_timing_trend(paths),
+        },
         reliability={d.name: True for d in run_dirs},
     )
     assert slope not in {sid.metric for sid in judged}

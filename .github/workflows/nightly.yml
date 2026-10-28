@@ -31,6 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       configs: ${{ steps.list.outputs.configs }}
+      suites:  ${{ steps.list.outputs.suites }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -43,7 +44,9 @@ jobs:
         run: |
           pip3 install --quiet 'pyyaml>=6.0,<6.1'
           configs=$(python3 .github/scripts/list_benchmarks.py --grouped --only "${ONLY}")
+          suites=$(python3 .github/scripts/list_benchmarks.py --suites --only "${ONLY}")
           echo "configs=${configs}" >> "$GITHUB_OUTPUT"
+          echo "suites=${suites}" >> "$GITHUB_OUTPUT"
 
   # ── Resolve the Key4hep release once for the whole night ──────────────────
   # Every benchmark job below sources the release named here, so one night's 18
@@ -102,11 +105,20 @@ jobs:
   # silent rather than mailing the e-group an outage. The job body lives in the
   # reusable regression-report.yml, which is also workflow_dispatch-able for a
   # manual, on-demand send.
+  #
+  # Each suite the fan-out benchmarked gets a report of its own, and no other
+  # suite does: a dispatch of sim configs alone uploads no reco run, and a reco
+  # report would read that as tonight's reco outage. A scheduled night whose
+  # discovery failed benchmarked nothing at all, which every suite reports.
   regression-report:
-    needs: benchmark
+    needs: [discover, benchmark]
     if: ${{ !cancelled() && (github.event_name == 'schedule' || needs.benchmark.result != 'skipped') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJson(needs.discover.outputs.suites || '["sim", "reco"]') }}
     uses: ./.github/workflows/regression-report.yml
     with:
-      suite: sim
+      suite: ${{ matrix.suite }}
       fanout_run_id: ${{ github.run_id }}
     secrets: inherit

@@ -153,6 +153,13 @@ def test_another_suites_mail_names_it_and_links_to_its_page():
     assert md.startswith("# k4Bench nightly reconstruction report — ")
     assert "](https://dash.example/reconstruction?" in md
     assert "](https://dash.example/?" not in md
+    # The reco page has no Regressions, Run Trends or Stack Changes view, which
+    # it would open on its first section, so its mail links to the page alone.
+    for body in (html, md):
+        tabs = set(re.findall(r"[?&;]tab=([^&\")]*)", body))
+        assert tabs == {"Overview"}
+    sim = to_html(_report(_group(v)), dashboard_url="https://dash.example/")
+    assert "tab=Regressions" in sim
 
 
 def test_subject_distinguishes_no_data_and_unjudged_coverage():

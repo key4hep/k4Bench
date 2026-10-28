@@ -26,6 +26,7 @@ from k4bench.analysis.loader import (
     load_results,
 )
 from k4bench.analysis.component_detail import component_summary
+from k4bench.analysis.components import event_loop_time
 from k4bench.analysis.event_size import KB, read_event_size
 from k4bench.analysis.heap import SUMMARY_COLUMNS
 from k4bench.analysis.robust import MAX_SLOPE_EVENTS, MIN_SLOPE_EVENTS, theil_sen_slope  # noqa: F401 (re-exported)
@@ -599,6 +600,77 @@ def build_algorithm_timing_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | No
     if not rows:
         return None
     return _finalize_dates(pd.DataFrame(rows))
+
+
+#: The columns of :func:`build_component_cost_trend`.
+COMPONENT_COST_COLUMNS = (
+    "run_id", "run_date", "k4h_release_date", "k4h_release", "label", "component",
+    "seconds_per_event", "initialize_s",
+)
+
+
+def build_component_cost_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
+    """Load what each k4run job and its components cost across *run_dirs*:
+    the costs the nightly regression report judges a reco job on.
+
+    One row per run, config and component doing work of its own — an algorithm
+    (:meth:`~k4bench.analysis.components.ComponentTiming.algorithms`) or a
+    service — and one per run and config with ``component`` ``NaN`` for the
+    whole job. ``seconds_per_event`` is an algorithm's own time per event of
+    the event loop, the warm-up event left out and the events it was skipped in
+    counted (:func:`~k4bench.analysis.components.event_loop_time`), so the
+    algorithms' add up to the event. ``initialize_s`` is a component's own
+    time in initialize, and the job's initialize phase for the whole job. Where
+    neither means anything they are ``NaN``: a service runs in no event, the
+    whole job has no own time per event, and a component not called in
+    initialize spent nothing there. Sequencers are left out: their own cost is
+    the bookkeeping, and the auditor's overhead, of the calls they run.
+
+    Columns :data:`COMPONENT_COST_COLUMNS` and ``x_date``. Each component file
+    is read on its own, so one that is malformed drops no other config of its
+    run. ``None`` when no run has component files (ddsim runs have none).
+    """
+    if not run_dirs:
+        return None
+
+    rows: list[dict] = []
+    for d in run_dirs:
+        run_dir = Path(d)
+        if not run_dir.is_dir():
+            continue
+        meta = parse_run_dir(run_dir)
+        timings, unreadable = load_each_component_timing(run_dir)
+        for label, reason in unreadable.items():
+            _log.debug("build_component_cost_trend: skipping '%s' of '%s': %s", label, run_dir, reason)
+
+        run = {
+            "run_id":           run_dir.name,
+            "run_date":         meta["run_date"],
+            "k4h_release_date": meta["k4h_release_date"],
+            "k4h_release":      meta["k4h_release"],
+        }
+        for label, timing in timings.items():
+            rows.append({
+                **run, "label": label, "component": None,
+                "initialize_s": timing.phase_seconds().get("initialize", np.nan),
+            })
+            per_event = event_loop_time(timing.execute["wall_s"])["seconds_per_event"]
+            initialize = timing.phase_component_seconds("initialize")
+            algorithms = timing.algorithms()
+            services = timing.components.index[timing.components["category"] == "service"]
+            rows.extend(
+                {
+                    **run, "label": label, "component": component,
+                    "seconds_per_event": per_event.get(component, np.nan)
+                    if component in algorithms else np.nan,
+                    "initialize_s": initialize.get(component, np.nan),
+                }
+                for component in (*algorithms, *services)
+            )
+
+    if not rows:
+        return None
+    return _finalize_dates(pd.DataFrame(rows, columns=list(COMPONENT_COST_COLUMNS)))
 
 
 def build_event_timing_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:

@@ -97,7 +97,8 @@ The `regression-report` job (`.github/scripts/regression_report.{py,sh}`) runs
 after the benchmark fan-out, so a crashed detector job still surfaces in the
 report — its missing upload *is* the failure signal. It judges the suite its
 `suite` input names, reading that suite's run tree alone and writing that
-suite's report; the nightly runs it for the `sim` suite. A fan-out where *every*
+suite's report; the nightly runs it once for each suite its fan-out
+benchmarked. A fan-out where *every*
 job failed, or that never started, uploads nothing at all and would otherwise
 republish the previous night, so `nightly.yml` passes its own Actions run id:
 a report naming none of that run's measurements is reported as tonight's

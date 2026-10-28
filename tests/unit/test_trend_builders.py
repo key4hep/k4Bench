@@ -173,6 +173,35 @@ def test_build_algorithm_timing_trend_gives_each_algorithms_event_time_statistic
     assert "MyConformalTracking" not in set(variant["component"])
 
 
+def test_build_component_cost_trend_gives_what_each_component_and_the_job_cost():
+    df = trend.build_component_cost_trend((str(_RECO_RUN),))
+    baseline = df[df["label"] == "baseline"]
+    (job,) = (row for _, row in baseline[baseline["component"].isna()].iterrows())
+    costs = baseline[baseline["component"].notna()].set_index("component")
+    phases = trend.build_phase_trend((str(_RECO_RUN),))
+    span = phases[phases["component"].isna() & (phases["label"] == "baseline")
+                  & (phases["phase"] == "initialize")]["seconds"].item()
+    assert job["initialize_s"] == pytest.approx(span)
+    assert pd.isna(job["seconds_per_event"])
+    # An algorithm costs per event and in initialize; a service only there.
+    assert costs.loc["MyConformalTracking", "seconds_per_event"] > 1.0
+    assert pd.isna(costs.loc["GeoSvc", "seconds_per_event"])
+    assert costs.loc["GeoSvc", "initialize_s"] > 0
+    # Sequencers' own costs are bookkeeping, so they are not listed.
+    assert not {"k4FWCore__Sequencer", "k4FWCore__Algs"} & set(costs.index)
+    # Self costs: the algorithms' per-event times add up to the event loop's.
+    loop = trend.build_algorithm_timing_trend((str(_RECO_RUN),))
+    loop = loop[loop["label"] == "baseline"].set_index("component")
+    assert costs.loc[loop.index, "seconds_per_event"].sum() == pytest.approx(
+        (loop["mean_time_s"] * loop["n_events"]).sum() / loop["n_events"].max(),
+    )
+
+
+def test_build_component_cost_trend_skips_runs_without_component_files(tmp_path):
+    sim = _make_run(tmp_path, "2026-10-01", "key4hep-2026-10-01", 50.0)
+    assert trend.build_component_cost_trend((str(sim),)) is None
+
+
 def test_build_algorithm_timing_trend_skips_runs_without_component_files(tmp_path):
     sim = _make_run(tmp_path, "2026-10-01", "key4hep-2026-10-01", 50.0)
     assert trend.build_algorithm_timing_trend((str(sim),)) is None
@@ -185,8 +214,8 @@ def test_build_phase_trend_skips_runs_without_component_files(tmp_path):
 
 @pytest.mark.parametrize("build", [
     trend.build_phase_trend, trend.build_component_summary_trend,
-    trend.build_algorithm_timing_trend,
-], ids=["phase", "component_summary", "algorithm_timing"])
+    trend.build_algorithm_timing_trend, trend.build_component_cost_trend,
+], ids=["phase", "component_summary", "algorithm_timing", "component_cost"])
 def test_component_trends_keep_a_runs_other_configs_beside_a_malformed_file(tmp_path, build):
     broken, valid = (tmp_path / "broken", tmp_path / "valid")
     for run in (broken, valid):

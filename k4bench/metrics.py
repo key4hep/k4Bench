@@ -64,6 +64,8 @@ METRICS: dict[str, MetricSpec] = {
     "mean_time_s": MetricSpec("Mean event time", "s"),
     "median_time_s": MetricSpec("Median event time", "s"),
     "trimmed_mean_time_s": MetricSpec("Trimmed mean event time", "s"),
+    "initialize_s": MetricSpec("Initialisation time", "s"),
+    "seconds_per_event": MetricSpec("Own time per event", "s"),
     "output_size_mb": MetricSpec("Output size", "MB", "megabytes"),
     "events_per_sec": MetricSpec("Throughput", "ev/s", lower_is_better=False),
     "involuntary_ctx_switches": MetricSpec("Involuntary context switches", kind="count"),
@@ -101,12 +103,13 @@ def is_megabytes(metric: str) -> bool:
 
 
 def pretty_metric(metric: str, sub_detector: str | None = None) -> str:
-    """Human-readable metric name, suffixed with the sub-detector for a
-    region-level row, e.g. ``("mean_rss_mb", "EMEC_turbine")`` ->
-    ``Mean event RSS · EMEC_turbine``.
+    """Human-readable metric name, suffixed with the part of the job a
+    component-level row measures, e.g. ``("seconds_per_event",
+    "ConformalTracking")`` -> ``Own time per event · ConformalTracking``.
 
-    The sub-detector keeps its raw name: it is a DD4hep DetElement identifier,
+    The part keeps its raw name — a DD4hep DetElement for a simulated
+    detector region, a Gaudi component's name for a reco algorithm or service —
     which is what the dashboard labels the series with and what someone
-    searching the geometry types."""
+    searching the geometry or the job options types."""
     name = metric_label(metric)
     return f"{name} · {sub_detector}" if sub_detector else name

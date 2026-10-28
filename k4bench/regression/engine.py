@@ -126,12 +126,16 @@ Z_THRESHOLD = 3.5
 MAD_NORMAL_CONSISTENCY = 1.4826
 
 #: Minimum practical effect per metric family, ANDed with the z-gate. Values
-#: are fractions of the baseline median. Region metrics get a wider floor —
-#: smaller absolute numbers, noisier.
+#: are fractions of the baseline median. A component's metrics — one part of
+#: a job, such as one reco algorithm — get a wider floor: smaller numbers,
+#: noisier. Its initialisation wider still: a component's own initialize spread
+#: 2–3% night to night on the reco runs of 2026-10-18..24, against 0.3–1.7% for
+#: its time per event.
 EFFECT_FLOOR: dict[str, float] = {
-    "time":        0.05,
-    "memory":      0.05,
-    "region_time": 0.08,
+    "time":           0.05,
+    "memory":         0.05,
+    "component_time": 0.08,
+    "component_init": 0.10,
 }
 
 #: Additional *absolute* change floor per family, ANDed with the relative
@@ -139,15 +143,19 @@ EFFECT_FLOOR: dict[str, float] = {
 #: (2026-05-23 → 2026-07-10): sub-detector regions with median times of tens
 #: of microseconds routinely wobble ±30–50 % from timer granularity alone,
 #: and dominated the false flags. Requiring the *change itself* to exceed
-#: 10 ms/event keeps those quiet while still catching a tiny region that
+#: 10 ms/event keeps those quiet while still catching a tiny component that
 #: genuinely blows up (unlike a gate on the baseline median, which would
-#: blind the detector to exactly that case). The time/memory entries are
-#: prophylactic no-ops at current scales (run/event times ≫ 10 ms, RSS
-#: baselines ≈ 6 GB), guarding hypothetical micro-configs.
+#: blind the detector to exactly that case). On the reco runs the same floor
+#: leaves about 180 of 850 algorithms judgeable at all; most take under a
+#: millisecond per event. A component's initialisation is a one-off cost, so
+#: its floor is a second. The time/memory entries are prophylactic no-ops at
+#: current scales (run/event times ≫ 10 ms, RSS baselines ≈ 6 GB), guarding
+#: hypothetical micro-configs.
 ABS_DELTA_FLOOR: dict[str, float] = {
-    "region_time": 0.010,   # seconds/event
-    "time":        0.010,   # seconds
-    "memory":      16.0,    # MB
+    "component_time": 0.010,   # seconds/event
+    "component_init": 1.0,     # seconds
+    "time":           0.010,   # seconds
+    "memory":         16.0,    # MB
 }
 
 

@@ -19,7 +19,7 @@ from k4bench.metrics import (
     metric_unit,
     pretty_metric,
 )
-from k4bench.regression.report_builder import EVENT_VALUE_METRICS, RUN_VALUE_METRICS
+from k4bench.regression.catalog import EVENT_VALUE_METRICS, RUN_VALUE_METRICS
 
 _DASHBOARD_DIR = Path(__file__).resolve().parents[2] / "dashboard"
 

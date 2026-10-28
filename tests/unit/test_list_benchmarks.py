@@ -166,6 +166,22 @@ def test_only_groups_the_selected_jobs(list_benchmarks, tmp_path, monkeypatch, c
     ]
 
 
+@pytest.mark.parametrize(
+    "only, expected",
+    [("", ["sim", "reco"]), ("sim/B", ["sim"]), ("reco sim/A/A/s2", ["sim", "reco"]), ("reco", ["reco"])],
+)
+def test_suites_names_each_suite_the_selected_jobs_benchmark(
+    list_benchmarks, tmp_path, monkeypatch, capsys, only, expected,
+):
+    # The nightly reports on these suites, so a suite none of its jobs
+    # benchmarked must not be named: its report would read as an outage.
+    _write(tmp_path, "A", "FCCee/A/A.xml", "s1", "s2")
+    _write(tmp_path, "B", "FCCee/B/B.xml", "s1")
+    path = _write(tmp_path, "A", "FCCee/A/A.xml", "s1", suite="reco")
+    path.write_text("options: Reco.py\n" + path.read_text())
+    assert _main(list_benchmarks, tmp_path, monkeypatch, capsys, "--suites", "--only", only) == expected
+
+
 @pytest.mark.parametrize("only", ["sim/C", "sim/A/A/s3", "s1", "A", "sim/A/A/s1/x"])
 def test_only_refuses_a_selector_matching_no_job(list_benchmarks, tmp_path, monkeypatch, capsys, only):
     _write(tmp_path, "A", "FCCee/A/A.xml", "s1")

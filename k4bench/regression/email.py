@@ -60,6 +60,7 @@ from k4bench.layout import SIM
 from k4bench.metrics import METRICS, metric_label, pretty_metric
 from k4bench.regression.render import (
     SUITE_TITLES,
+    SUITES_WITH_REPORT_VIEWS,
     dashboard_link,
     detector_badge,
     format_value,
@@ -359,6 +360,14 @@ def preheader(report: NightlyReport) -> str:
 
 
 # ── Deep links ────────────────────────────────────────────────────────────────
+
+def _views_url(dashboard_url: str | None, report: NightlyReport) -> str | None:
+    """*dashboard_url* to build the report's deep links into Regressions, Run
+    Trends and Stack Changes on, or ``None`` when its suite's page has none of
+    them (:data:`~k4bench.regression.render.SUITES_WITH_REPORT_VIEWS`): a link
+    named for a view the page lacks would open its first section instead."""
+    return dashboard_url if report.suite in SUITES_WITH_REPORT_VIEWS else None
+
 
 def _regressions_href(
     dashboard_url: str | None, group: RunGroupReport, report_night: str
@@ -1680,6 +1689,7 @@ def to_html(
     """
     if dashboard_url:
         dashboard_url = suite_page_url(dashboard_url, report.suite)
+    views_url = _views_url(dashboard_url, report)
     index = _BlameIndex(blame, historical_blame)
     attention = _needs_attention(report)
     if attention:
@@ -1687,7 +1697,7 @@ def to_html(
             '<h2 style="font-size:18px;margin:20px 0 2px;">Needs attention</h2>'
             + "".join(
                 _html_attention_card(
-                    _attention_card(g, report, dashboard_url, actions_url, index),
+                    _attention_card(g, report, views_url, actions_url, index),
                     report.report_night,
                 )
                 for g in attention
@@ -1709,7 +1719,7 @@ def to_html(
         _html_header(report, dashboard_url, actions_url),
         _html_summary(report),
         attention_html,
-        _html_detail(report, dashboard_url),
+        _html_detail(report, views_url),
         *([_html_footer(report)] if footer else []),
         "</td></tr></table>",
         "</td></tr></table>",
@@ -1867,6 +1877,7 @@ def to_markdown(
     same way."""
     if dashboard_url:
         dashboard_url = suite_page_url(dashboard_url, report.suite)
+    views_url = _views_url(dashboard_url, report)
     index = _BlameIndex(blame, historical_blame)
     s = EmailSummary.of(report)
     lines = [
@@ -1900,7 +1911,7 @@ def to_markdown(
         for group in attention:
             lines.extend(
                 _md_attention_card(
-                    _attention_card(group, report, dashboard_url, actions_url, index)
+                    _attention_card(group, report, views_url, actions_url, index)
                 )
             )
     else:
@@ -1914,7 +1925,7 @@ def to_markdown(
         lines.append(f"### {detector_badge(groups)} {detector}")
         lines.append("")
         for group in groups:
-            lines.extend(_md_detail_group(group, plan[id(group)], report, dashboard_url))
+            lines.extend(_md_detail_group(group, plan[id(group)], report, views_url))
 
     lines.append(_md_footer(report))
     return "\n".join(lines)

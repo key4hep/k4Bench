@@ -39,7 +39,7 @@ from k4bench.labels import pretty_sample
 from k4bench.layout import SIM
 from k4bench.metrics import metric_title
 from k4bench.regression.render import metric_name
-from k4bench.regression.report_builder import EVENT_VALUE_METRICS, RUN_VALUE_METRICS
+from k4bench.regression.catalog import EVENT_VALUE_METRICS, RUN_VALUE_METRICS
 from k4bench.results.reliability_evidence import run_reliability_map
 from tabs import _blame
 from tabs._regression_flags import add_severity_markers, metric_option
