@@ -259,6 +259,8 @@ def fetch_stage(facts: K4runReproducerFacts) -> tuple[str, str] | None:
         if not data:
             continue
         directory = LOCAL_DATA_DIR / data_key(list(data))
+        # Emptied first, as the nightly does, so it holds only these files.
+        lines.append(f"rm -rf {_safe(directory)}")
         lines.append(f"mkdir -p {_safe(directory)}")
         for source in data:
             local = str(directory / _name(source))

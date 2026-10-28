@@ -656,7 +656,8 @@ def test_every_k4run_source_is_fetched_once_to_where_its_nightly_read_it():
     assert f"xrdcp --force {moved} {_local_input(moved)}" in fetch
     # The data files share one directory; an archive is unpacked there.
     folder = staging.LOCAL_DATA_DIR / staging.data_key(list(data))
-    assert f"mkdir -p {folder}" in fetch
+    # Emptied first, as the nightly does, so nothing left there joins the job.
+    assert f"rm -rf {folder}\n  mkdir -p {folder}" in fetch
     assert f"-o {folder}/noise.root https://a.cern.ch/noise.root" in fetch
     assert f"tar -xzf {folder}/Config-abc.tar.gz -C {folder}" in fetch
     assert f"rm -f {folder}/Config-abc.tar.gz" in fetch
