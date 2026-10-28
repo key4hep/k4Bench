@@ -186,7 +186,8 @@ def test_a_service_initialized_during_an_event_is_not_summed_into_one_component(
     })
     # Every entry is one phase of one component, never a sum over phases.
     assert not {"A", "B", "Svc"} & set(cost.index)
-    assert work is None  # initialize counted no instructions
+    # Initialize counted no instructions, which costs its own entries alone.
+    assert set(work.index) == {"A in execute", "B in execute"}
 
 
 def _write_heap(run: Path, held_mb: dict[str, float]) -> None:
@@ -248,3 +249,16 @@ def test_an_anonymous_memory_step_is_taken_apart_into_the_heap_each_component_ho
     # An end without a memory pass leaves nothing to compare.
     (onset / "baseline_heap.json").unlink()
     assert deltas() == ()
+
+
+def test_a_phase_without_instruction_counts_costs_only_its_own_entries():
+    from k4bench.analysis.loader import load_component_timing
+    from k4bench.regression.components import _job_phases
+
+    timing = load_component_timing(_RECO_RUN, labels=["baseline"])["baseline"]
+    timing.lifecycle["initialize"] = timing.lifecycle["initialize"].drop(columns="instructions")
+    work = _job_phases(timing, "instructions")
+    assert f"{_STEPPED} in execute" in work.index
+    assert not any(entry.endswith(" in initialize") for entry in work.index)
+    # The time of every phase is still there.
+    assert "GeoSvc in initialize" in _job_phases(timing, "wall_s").index

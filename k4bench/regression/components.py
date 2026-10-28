@@ -139,7 +139,9 @@ def _job_phases(timing: ComponentTiming, metric: str) -> pd.Series | None:
     which calls were made so, so one component's sum would count them twice."""
     parts = {phase: table.get(metric) for phase, table in timing.lifecycle.items()}
     parts["execute"] = timing.execute[metric].sum(min_count=1) if metric in timing.execute else None
-    if any(part is None for part in parts.values()):
+    # A phase that did not count *metric* costs its own entries alone.
+    parts = {phase: part for phase, part in parts.items() if part is not None}
+    if not parts:
         return None
     working = _working(timing)
     return pd.Series({

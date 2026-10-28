@@ -41,6 +41,7 @@ from k4bench.blame.sweep import (
     TimeShape,
 )
 from k4bench.labels import pretty_sample
+from k4bench.regression.catalog import COMPONENT_METRICS
 from k4bench.regression.models import ComponentDelta, RegionDelta
 
 #: How each metric is named to the model.
@@ -672,7 +673,8 @@ def component_summary_lines(
     that stepped — the baseline first — or nothing for a scope not taken apart
     by component, as a simulated detector's is not.
 
-    Each configuration's are those of its stepped job verdict
+    Each configuration's are those of its stepped job verdict, or of the
+    components that stepped while no job metric did
     (:attr:`~k4bench.blame.sweep.SweepRow.components`), in that metric's unit.
     The instructions beside a move say whether the component did more or less
     work, or the same work at another speed."""
@@ -688,7 +690,12 @@ def component_summary_lines(
     ]
     out += [
         f"{indent}    {row.label}, "
-        f"{METRIC_NAMES.get(row.components_metric, row.components_metric)}: "
+        f"{METRIC_NAMES.get(row.components_metric, row.components_metric)}"
+        + (
+            " of the components that stepped while the job's own metrics did not"
+            if row.components_metric in COMPONENT_METRICS else ""
+        )
+        + ": "
         + "; ".join(_component_move(d) for d in row.components[:_MAX_SUMMARY_COMPONENTS])
         + "."
         for row in rows[:limit]

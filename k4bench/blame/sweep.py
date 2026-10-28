@@ -36,6 +36,7 @@ import statistics
 from dataclasses import dataclass
 
 from k4bench.blame.evidence import steps_in_window
+from k4bench.regression.catalog import COMPONENT_METRICS
 from k4bench.regression.models import (
     ComponentDelta,
     EventProfile,
@@ -594,7 +595,7 @@ def _time_evidence(
 #: the whole job's, its initialize, and its memory.
 _DECOMPOSED_METRICS = (
     "mean_time_s", "median_time_s", "trimmed_mean_time_s", "wall_time_s",
-    "initialize_s", "mean_rss_anon_mb", "peak_vmem_mb",
+    "initialize_s", "mean_rss_anon_mb",
 )
 
 
@@ -603,7 +604,13 @@ def _component_evidence(
 ) -> tuple[str, tuple[ComponentDelta, ...]]:
     """``(metric, components)`` of the first of a configuration's stepped job
     verdicts, in :data:`_DECOMPOSED_METRICS` order, that names the components
-    it moved; ``("", ())`` when none does."""
+    it moved.
+
+    Without one, the components that stepped on their own, largest movement
+    first, in the first of :data:`~k4bench.regression.catalog.COMPONENT_METRICS`
+    any did: an algorithm whose step its job's metrics are too large to show is
+    what a reco job is judged per component for, and the summary would
+    otherwise read that configuration as flat. ``("", ())`` when neither."""
     for metric in _DECOMPOSED_METRICS:
         for v in verdicts:
             if (
@@ -611,6 +618,16 @@ def _component_evidence(
                 and v.component_deltas and _steps_in(v, window)
             ):
                 return metric, tuple(v.component_deltas)
+    for metric in COMPONENT_METRICS:
+        own = [
+            delta
+            for v in verdicts
+            if v.metric == metric and v.sub_detector is not None
+            and v.component_deltas and _steps_in(v, window)
+            for delta in v.component_deltas
+        ]
+        if own:
+            return metric, tuple(sorted(own, key=lambda d: (-abs(d.delta), d.component)))
     return "", ()
 
 
