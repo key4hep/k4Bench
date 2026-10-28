@@ -7,7 +7,8 @@
 # sample below as one job and uploads it to EOS under
 # runs/reco/{concept}/{detector}/, the run tree this file's path names
 # (.github/benchmarks/reco/{concept}/{detector}.yml). The dashboard's
-# Reconstruction page reads that tree; no nightly report judges it yet.
+# Reconstruction page reads that tree, and the nightly reco regression report
+# judges it.
 # Keys: docs/reference/configuration-reference.md#nightly-benchmark-yaml-keys
 #
 # The inputs are frozen ILD_FCCee_v01 simulations, one per sample: 100

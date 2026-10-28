@@ -442,7 +442,8 @@ step-change detector (`k4bench/regression/`):
 - **What trips a flag.** The value has to clear *two* gates at once: a robust
   **z-score above 3.5** (a statistical outlier) **and** a **practical-effect
   floor** — at least 5 % for time and memory, 3 percentage points for CPU
-  efficiency, and a wider floor for the noisier region metrics. Requiring both
+  efficiency, and a wider floor for the noisier metrics of one component of a
+  job (see [Reconstruction page](#reconstruction-page)). Requiring both
   keeps a very steady metric (tiny MAD) from flagging on a change too small to
   care about.
 - **The workload is pinned and recorded.** Timing measures software only if both
@@ -864,9 +865,23 @@ every phase of the job (`{config}_components.json`, see
 as on the Simulation page but offers only the reco tree's detectors, platforms
 and samples. A configuration is `baseline` or a `variant_<name>` of the job.
 
-No nightly report judges the reco suite yet, so this page has no Regressions or
-Stack Changes section and its views carry no verdicts: every value is the
-measurement as uploaded.
+The nightly judges the reco suite as it judges the sim suite, in a report and
+an email of its own (`reports/reco/{night}/report.json`, subject
+`[k4Bench][reco][…]`). Each configuration is judged on the sim suite's metrics
+and on its job's initialize time, and each of its components on its own:
+
+- every **algorithm** on its own time per event, the events it was skipped in
+  counted, so the algorithms' times add up to the event's; a change has to be
+  at least **8 % and 10 ms per event**;
+- every algorithm and **service** on its own time in initialize, where a change
+  has to be at least **10 % and 1 s**.
+
+Sequencers are not judged: their own cost is the bookkeeping of the calls they
+run. Nor are a component's instructions, allocations or heap: they say what it
+did, not what it cost, and would count one step twice beside its time. This
+page does not read the reports yet, so it has no Regressions or Stack Changes
+section and its views carry no verdicts: every value is the measurement as
+uploaded.
 
 Each section answers one question. Where it can be looked at two ways, a
 choice at its top (in the URL too) says which:

@@ -158,7 +158,7 @@ RECO_PAGE = SuitePage(
         "Logs": _logs,
     },
     key_prefix="reco_",
-    # No nightly report judges the reco suite yet.
+    # Its sections read no nightly report yet, so its runs alone bound the window.
     reports=False,
     components=True,
     all_runs_sections=frozenset({"Time", "Memory", "Components", "Event Size"}),

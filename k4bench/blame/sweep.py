@@ -56,7 +56,7 @@ SWEEP_METRICS: dict[str, tuple[str, ...]] = {
 }
 
 #: The views of the typical event a time step is checked against. Both are
-#: judged metrics of every configuration (``report_builder.EVENT_METRICS``).
+#: judged metrics of every configuration (``catalog.EVENT_METRICS``).
 TYPICAL_TIME_METRICS = ("median_time_s", "trimmed_mean_time_s")
 
 #: Metrics that measure a whole job rather than an event: their step includes

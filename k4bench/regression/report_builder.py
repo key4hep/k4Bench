@@ -30,14 +30,16 @@ from k4bench.analysis.loader import (
     judgeable_config_keys,
     judgeable_config_rows,
 )
-from k4bench.analysis.trend import (
-    build_event_timing_trend,
-    build_machine_info_trend,
-    build_results_trend,
-    parse_run_dir,
-)
+from k4bench.analysis.trend import build_machine_info_trend, parse_run_dir
 from k4bench.blame.models import rank_group_key
 from k4bench.layout import iter_run_dirs
+from k4bench.regression.catalog import (
+    COMPONENT,
+    REPORTED_ONLY_REASONS,
+    RESULTS,
+    MetricSource,
+    sources,
+)
 from k4bench.regression.engine import (
     BASELINE_WINDOW_RUNS,
     evaluate_series,
@@ -95,78 +97,6 @@ SAME_BATCH_LAG_DAYS = 1
 #: the benchmark matrix.
 MISSING_RUN_GRACE_DAYS = 7
 
-#: Run-level metrics evaluated per config: ``{metric: family}``. Deliberately
-#: narrow: ``events_per_sec`` is dropped as it is exactly
-#: ``n_events / wall_time_s`` (see ``k4bench/runner/result.py``) — tracking
-#: it alongside ``wall_time_s`` would flag the same measurement twice with
-#: the sign flipped. ``cpu_efficiency`` is host-reliability evidence (see
-#: :mod:`k4bench.results.reliability`) rather than a benchmark regression
-#: metric, so it is neither judged nor recorded in the nightly report.
-RUN_METRICS: dict[str, str] = {
-    "wall_time_s": "time",
-    "peak_vmem_mb": "memory",
-}
-
-#: Per-event summary metrics evaluated per config. ``p95_time_s``,
-#: ``p95_rss_mb`` and ``max_rss_mb`` are dropped: noisy tail order-statistics
-#: over a few hundred events that add detection overhead without much signal
-#: beyond ``mean``/``median`` (time). Total RSS remains a residency diagnostic;
-#: anonymous RSS tracks event memory without CVMFS file-cache evictions.
-#:
-#: ``trimmed_mean_time_s`` is the mean of the events left after the slowest 5%
-#: are dropped (:func:`k4bench.analysis.trend.upper_trimmed_mean`) — a view of
-#: the typical event, judged *alongside* the untrimmed mean rather than
-#: replacing it, because the tail it drops is where a tail-confined regression
-#: would appear first.
-EVENT_METRICS: dict[str, str] = {
-    "mean_time_s": "time",
-    "median_time_s": "time",
-    "trimmed_mean_time_s": "time",
-    "mean_rss_anon_mb": "memory",
-}
-
-#: Metrics recorded in the report but never judged. ``user_cpu_s`` tracks
-#: ``wall_time_s`` almost exactly — CPU efficiency on these runs is close
-#: enough to 1 that the two flag together on the same events — so judging both
-#: is one test counted twice. It stays in the report because a night where the
-#: two *stop* agreeing is worth being able to look up.
-REPORTED_ONLY_METRICS: dict[str, str] = {
-    "user_cpu_s": "time",
-    "peak_rss_mb": "memory",
-}
-
-#: Event metrics recorded without entering the regression engine. Total and
-#: file-backed RSS are residency diagnostics: CVMFS publishes can evict the
-#: file-backed pages mid-run. ``rss_anon_slope_mb_per_event`` is a memory-growth
-#: indicator collecting history before a judgement policy is chosen for it.
-EVENT_REPORTED_ONLY_METRICS: dict[str, str] = {
-    "mean_rss_mb": "memory",
-    "mean_rss_file_mb": "memory",
-    "rss_anon_slope_mb_per_event": "memory",
-}
-
-#: Every run-level metric whose value is recorded, judged or not.
-RUN_VALUE_METRICS: dict[str, str] = {**RUN_METRICS, **REPORTED_ONLY_METRICS}
-
-#: Every event-level metric whose value is recorded, judged or not.
-EVENT_VALUE_METRICS: dict[str, str] = {**EVENT_METRICS, **EVENT_REPORTED_ONLY_METRICS}
-
-_REPORTED_ONLY_REASONS = {
-    "peak_rss_mb": (
-        "recorded but not judged — includes file-backed pages that CVMFS publishes can evict"
-    ),
-    "mean_rss_mb": (
-        "recorded but not judged — includes file-backed pages that CVMFS publishes can evict"
-    ),
-    "mean_rss_file_mb": (
-        "recorded but not judged — CVMFS publishes can evict file-backed pages mid-run"
-    ),
-    "rss_anon_slope_mb_per_event": (
-        "recorded but not judged — growth indicator gathering history before a "
-        "judgement policy is set"
-    ),
-}
-
 
 def _reliable_column(run_ids: pd.Series, reliability: dict[str, bool | None]) -> list:
     """Per-row tri-state reliability, kept as Python objects (no NaN coercion)."""
@@ -206,8 +136,8 @@ class PredecessorRuns:
 
     detector: str
     platform: str
-    results_df: pd.DataFrame | None
-    event_df: pd.DataFrame | None
+    #: Each source's frame (see :func:`_frames`), failed configs left out.
+    frames: dict[str, pd.DataFrame | None]
     reliability: dict[str, bool | None]
     hosts: dict[str, HostFact] = dataclasses.field(default_factory=dict)
     #: The run directories the frames were built from, for evidence read per
@@ -243,25 +173,38 @@ def _preceding_rows(
     ]
 
 
+def _frames(suite: str, run_dirs: tuple[str, ...]) -> dict[str, pd.DataFrame | None]:
+    """The frame of each of *suite*'s sources (:mod:`k4bench.regression.catalog`),
+    built from *run_dirs*, by source name."""
+    return {source.name: source.build(run_dirs) for source in sources(suite)}
+
+
+def _judgeable(frames: dict[str, pd.DataFrame | None]) -> dict[str, pd.DataFrame | None]:
+    """*frames* without the rows of failed configs (see
+    :func:`~k4bench.analysis.loader.judgeable_config_rows`), which the results
+    frame names."""
+    results_df = frames[RESULTS]
+    return {name: judgeable_config_rows(df, results_df) for name, df in frames.items()}
+
+
 def predecessor_runs(
-    detector: str, platform: str, run_dirs: tuple[str, ...],
+    suite: str, detector: str, platform: str, run_dirs: tuple[str, ...],
 ) -> PredecessorRuns | None:
-    """Build :class:`PredecessorRuns` from the predecessor's run directories.
+    """Build :class:`PredecessorRuns` from the predecessor's run directories in
+    *suite*.
 
     Failed configs are dropped as they are for the group's own runs: a gap must
     not enter a continued series any more than the group's own.
     """
     if not run_dirs:
         return None
-    results_df = build_results_trend(run_dirs)
-    event_df = build_event_timing_trend(run_dirs)
+    frames = _frames(suite, run_dirs)
     machine_df = build_machine_info_trend(run_dirs)
     return PredecessorRuns(
         detector=detector,
         platform=platform,
-        results_df=judgeable_config_rows(results_df, results_df),
-        event_df=judgeable_config_rows(event_df, results_df),
-        reliability=run_reliability_map(results_df, machine_df),
+        frames=_judgeable(frames),
+        reliability=run_reliability_map(frames[RESULTS], machine_df),
         hosts=host_facts(machine_df),
         run_dirs=tuple(run_dirs),
     )
@@ -342,13 +285,13 @@ def _with_endpoint_series(
 
 def unjudged_value_verdicts(
     *,
+    suite: str,
     detector: str,
     platform: str,
     sample: str,
-    results_df: pd.DataFrame | None,
-    event_df: pd.DataFrame | None,
+    frames: dict[str, pd.DataFrame | None],
     tonight: str,
-    already: set[tuple[str, str]],
+    already: set[tuple[str, str, str | None]],
 ) -> list[MetricVerdict]:
     """Raw metric values for *tonight*'s run as unjudged ``UNKNOWN`` verdicts.
 
@@ -356,31 +299,35 @@ def unjudged_value_verdicts(
     must not pollute baselines or flags), so their metrics get no verdict and
     their values would never reach the report the dashboard's Overview tab
     reads — leaving that tab unable to plot them even with "Exclude unreliable
-    runs" off. And :data:`REPORTED_ONLY_METRICS` and
-    :data:`EVENT_REPORTED_ONLY_METRICS` are never judged on any night
-    by design, but are still worth being able to look up.
+    runs" off. And each source's
+    :attr:`~k4bench.regression.catalog.MetricSource.reported_only` metrics are
+    never judged on any night by design, but are still worth being able to
+    look up.
 
-    Either way this records tonight's raw value for every ``(label, metric)``
-    not *already* judged, marked ``UNKNOWN`` (never a flag), so the value is
-    preserved for display. A normally-judged run is already covered.
+    Either way this records tonight's raw value for every config's metric of
+    *suite*'s sources (*frames*, by source name) not *already* judged —
+    ``(label, metric, sub_detector)`` — marked ``UNKNOWN`` (never a flag), so
+    the value is preserved for display. A normally-judged run is already
+    covered. Only whole-job metrics are recorded: a component's history is read
+    from the runs by every view that draws it.
     """
     out: list[MetricVerdict] = []
 
-    def _emit(df: pd.DataFrame | None, metrics: dict[str, str]) -> None:
+    def _emit(df: pd.DataFrame | None, source: MetricSource) -> None:
         if df is None or df.empty:
             return
+        df = source.job_rows(df)
         tonight_rows = df[df["run_id"] == tonight]
+        metrics = {**source.judged, **source.reported_only}
         for label in sorted(tonight_rows["label"].dropna().unique()):
             row = tonight_rows[tonight_rows["label"] == label]
             for metric, family in metrics.items():
-                if metric not in row.columns or (str(label), metric) in already:
+                if metric not in row.columns or (str(label), metric, None) in already:
                     continue
                 val = row[metric].iloc[0]
                 if pd.isna(val) or not math.isfinite(float(val)):
                     continue
-                reported_only = (
-                    metric in REPORTED_ONLY_METRICS or metric in EVENT_REPORTED_ONLY_METRICS
-                )
+                reported_only = metric in source.reported_only
                 out.append(
                     MetricVerdict(
                         detector=detector,
@@ -403,15 +350,15 @@ def unjudged_value_verdicts(
                             Unjudged.REPORTED_ONLY if reported_only else Unjudged.UNRELIABLE_HOST
                         ),
                         reason=(
-                            _REPORTED_ONLY_REASONS.get(metric, REPORTED_ONLY_REASON)
+                            REPORTED_ONLY_REASONS.get(metric, REPORTED_ONLY_REASON)
                             if reported_only
                             else UNRELIABLE_HOST_REASON
                         ),
                     )
                 )
 
-    _emit(results_df, RUN_VALUE_METRICS)
-    _emit(event_df, EVENT_VALUE_METRICS)
+    for source in sources(suite):
+        _emit(frames.get(source.name), source)
     return out
 
 
@@ -452,17 +399,20 @@ def _with_history(
 
 def evaluate_group_series(
     *,
+    suite: str,
     detector: str,
     platform: str,
     sample: str,
-    results_df: pd.DataFrame | None,
-    event_df: pd.DataFrame | None,
+    frames: dict[str, pd.DataFrame | None],
     reliability: dict[str, bool | None],
     hosts: dict[str, HostFact] | None = None,
     predecessor: PredecessorRuns | None = None,
 ) -> dict[SeriesId, list[MetricVerdict]]:
-    """Run the step detector over every run/event metric series of one run
-    group. Region timings are not walked.
+    """Run the step detector over every judged metric series of one run group
+    of *suite*: each of its sources' (:func:`~k4bench.regression.catalog.sources`)
+    judged metrics, per config, and per config and component where the source
+    lists components. *frames* holds each source's frame by name. Region
+    timings are not walked.
 
     Returns the **full verdict series** per :class:`SeriesId` — the nightly
     report takes each series' verdict for the report night, while the
@@ -491,6 +441,7 @@ def evaluate_group_series(
 
     def _walk(
         df: pd.DataFrame, metrics: dict[str, str], before_df: pd.DataFrame | None,
+        component: str | None,
     ) -> None:
         labels = sorted(df["label"].dropna().unique())
 
@@ -499,7 +450,7 @@ def evaluate_group_series(
                 continue
             for label in labels:
                 name = str(label)
-                sid = SeriesId(detector, platform, sample, name, family, metric)
+                sid = SeriesId(detector, platform, sample, name, family, metric, component)
                 own = _series_history(df, df["label"] == label, metric, reliability)
                 history = _continued_history(own, predecessor, before_df, name, metric, sid)
                 verdicts = _with_history(
@@ -513,17 +464,27 @@ def evaluate_group_series(
                 if verdicts:
                     out[sid] = verdicts
 
-    if results_df is not None and not results_df.empty:
+    for source in sources(suite):
+        df = frames.get(source.name)
+        if df is None or df.empty:
+            continue
+        before_df = predecessor.frames.get(source.name) if predecessor is not None else None
         _walk(
-            results_df, RUN_METRICS,
-            predecessor.results_df if predecessor is not None else None,
+            source.job_rows(df), source.judged,
+            source.job_rows(before_df) if before_df is not None else None, None,
         )
-
-    if event_df is not None and not event_df.empty:
-        _walk(
-            event_df, EVENT_METRICS,
-            predecessor.event_df if predecessor is not None else None,
+        if not source.component_judged:
+            continue
+        before_components = (
+            source.component_rows(before_df) if before_df is not None else None
         )
+        for component, rows in source.component_rows(df).groupby(COMPONENT, sort=False):
+            _walk(
+                rows, source.component_judged,
+                before_components[before_components[COMPONENT] == component]
+                if before_components is not None else None,
+                str(component),
+            )
 
     return out
 
@@ -764,7 +725,7 @@ def _fetch_predecessor(
             if exc.response is None or exc.response.status_code != 404:
                 raise
             continue
-        if (runs := predecessor_runs(detector, platform, run_dirs)) is not None:
+        if (runs := predecessor_runs(suite, detector, platform, run_dirs)) is not None:
             return runs
     return None
 
@@ -796,7 +757,7 @@ def build_group_report(
         return None
     candidates = predecessor_series(detector, platform, suite)
     return group_report_from_run_dirs(
-        detector, platform, sample, run_dirs,
+        suite, detector, platform, sample, run_dirs,
         predecessor=partial(
             _fetch_predecessor, data_url, suite, cache_dir, candidates, sample,
             fetch_window_runs=fetch_window_runs, as_of=as_of,
@@ -805,12 +766,12 @@ def build_group_report(
 
 
 def _group_report_from_frames(
+    suite: str,
     detector: str,
     platform: str,
     sample: str,
     *,
-    results_df: pd.DataFrame | None,
-    event_df: pd.DataFrame | None,
+    frames: dict[str, pd.DataFrame | None],
     reliability: dict[str, bool | None],
     tonight: str,
     hosts: dict[str, HostFact] | None = None,
@@ -818,8 +779,9 @@ def _group_report_from_frames(
     predecessor: PredecessorRuns | None = None,
 ) -> RunGroupReport | None:
     """Build one triple's report for *tonight* from already-parsed trend
-    frames (already windowed to whatever trailing span "tonight" should be
-    judged against) and a reliability map covering at least that window.
+    frames of *suite*'s sources, by name (already windowed to whatever trailing
+    span "tonight" should be judged against), and a reliability map covering
+    at least that window.
 
     Split out of :func:`group_report_from_run_dirs` so a triple's frames can be
     built once and judged for a given night: reliability is a per-run property
@@ -827,12 +789,12 @@ def _group_report_from_frames(
     :func:`k4bench.results.reliability_evidence.run_reliability_map`) and the
     trend builders are pure per-run-dir functions.
     """
+    results_df = frames[RESULTS]
     no_results = results_df is None or results_df.empty
-    no_events = event_df is None or event_df.empty
     # With nothing loaded and no roster there is nothing to say about the
     # triple. A roster changes that: it names configs that were supposed to
     # produce results, so a night that produced none is a reportable failure.
-    if no_results and no_events and not configured_labels:
+    if all(df is None or df.empty for df in frames.values()) and not configured_labels:
         return None
 
     k4h_release = ""
@@ -855,18 +817,18 @@ def _group_report_from_frames(
         geometry_path=geometry_path,
     )
 
-    # A failed process can leave plausible partial metrics in both its result
-    # CSV and event file; an event file can even outlive a missing result CSV.
-    # Treat either config-night as a gap throughout the fetched history: it must
-    # neither earn a verdict nor age into a baseline. The raw frames remain the
-    # source for metadata and failure/missing-config reporting below.
-    judgeable_results_df = judgeable_config_rows(results_df, results_df)
-    judgeable_event_df = judgeable_config_rows(event_df, results_df)
+    # A failed process can leave plausible partial metrics in its result CSV
+    # and every other file it wrote; an event file can even outlive a missing
+    # result CSV. Treat either config-night as a gap throughout the fetched
+    # history: it must neither earn a verdict nor age into a baseline. The raw
+    # frames remain the source for metadata and failure/missing-config
+    # reporting below.
+    judgeable = _judgeable(frames)
 
     series = evaluate_group_series(
-        detector=detector, platform=platform, sample=sample,
-        results_df=judgeable_results_df, event_df=judgeable_event_df,
-        reliability=reliability, hosts=hosts, predecessor=predecessor,
+        suite=suite, detector=detector, platform=platform, sample=sample,
+        frames=judgeable, reliability=reliability, hosts=hosts,
+        predecessor=predecessor,
     )
     # Only verdicts issued *for tonight's run* belong in tonight's report; a
     # series with no verdict for tonight simply was not judged tonight.
@@ -889,20 +851,17 @@ def _group_report_from_frames(
     )
 
     group.verdicts.extend(_failed_display_verdicts(
-        detector=detector, platform=platform, sample=sample,
-        results_df=results_df, event_df=event_df,
-        judgeable_results_df=judgeable_results_df,
-        judgeable_event_df=judgeable_event_df,
+        suite=suite, detector=detector, platform=platform, sample=sample,
+        frames=frames, judgeable=judgeable,
         reliability=reliability, tonight=tonight, hosts=hosts,
         predecessor=predecessor, config_failures=config_failures,
     ))
 
     # Record values the normal engine skipped because the host was unreliable.
-    already = {(v.label, v.metric) for v in group.verdicts}
+    already = {(v.label, v.metric, v.sub_detector) for v in group.verdicts}
     group.verdicts.extend(unjudged_value_verdicts(
-        detector=detector, platform=platform, sample=sample,
-        results_df=judgeable_results_df, event_df=judgeable_event_df,
-        tonight=tonight, already=already,
+        suite=suite, detector=detector, platform=platform, sample=sample,
+        frames=judgeable, tonight=tonight, already=already,
     ))
 
     if reliability.get(tonight) is False:
@@ -916,7 +875,7 @@ def _group_report_from_frames(
     # A window continuing a replaced platform's or detector's history opens on
     # one of its runs, so its seeds have to be read alongside this group's.
     preceding = _preceding_rows(
-        predecessor.results_df if predecessor is not None else None, "x_date",
+        predecessor.frames.get(RESULTS) if predecessor is not None else None, "x_date",
         results_df, "x_date",
         same_platform=predecessor is not None and predecessor.platform == platform,
     )
@@ -937,13 +896,12 @@ def _group_report_from_frames(
 
 def _failed_display_verdicts(
     *,
+    suite: str,
     detector: str,
     platform: str,
     sample: str,
-    results_df: pd.DataFrame | None,
-    event_df: pd.DataFrame | None,
-    judgeable_results_df: pd.DataFrame | None,
-    judgeable_event_df: pd.DataFrame | None,
+    frames: dict[str, pd.DataFrame | None],
+    judgeable: dict[str, pd.DataFrame | None],
     reliability: dict[str, bool | None],
     tonight: str,
     hosts: dict[str, HostFact] | None,
@@ -954,31 +912,27 @@ def _failed_display_verdicts(
 
     Reuses the normal detector walk to attach the healthy-only baseline band
     and Δ to a failed measurement. This is a separate walk over judgeable
-    history plus only tonight's failed rows: the raw value gets the same chart
+    history (*judgeable*, each source's frame without failed configs) plus only
+    tonight's failed rows of *frames*: the raw value gets the same chart
     geometry as a healthy run but never enters real detector state,
-    confirmation, or a later baseline.
+    confirmation, or a later baseline. Only whole-job metrics get one: what a
+    failed job's components recorded is a partial run's.
     """
-    failed_configs = failed_config_keys(results_df)
+    failed_configs = failed_config_keys(frames[RESULTS])
     tonight_failed = {key for key in failed_configs if key[0] == str(tonight)}
     if not tonight_failed:
         return []
-    failed_results = config_rows_for_keys(results_df, tonight_failed)
-    failed_events = config_rows_for_keys(event_df, tonight_failed)
-    display_results = pd.concat(
-        [judgeable_results_df, failed_results], ignore_index=True,
-    )
-    event_frames = [
-        frame for frame in (judgeable_event_df, failed_events)
-        if frame is not None and not frame.empty
-    ]
-    display_events = (
-        pd.concat(event_frames, ignore_index=True) if event_frames else None
-    )
+    display_frames = {}
+    for name, frame in frames.items():
+        parts = [
+            part for part in (judgeable[name], config_rows_for_keys(frame, tonight_failed))
+            if part is not None and not part.empty
+        ]
+        display_frames[name] = pd.concat(parts, ignore_index=True) if parts else None
     display_reliability = {**reliability, tonight: True}
     display_series = evaluate_group_series(
-        detector=detector, platform=platform, sample=sample,
-        results_df=display_results, event_df=display_events,
-        reliability=display_reliability, hosts=hosts,
+        suite=suite, detector=detector, platform=platform, sample=sample,
+        frames=display_frames, reliability=display_reliability, hosts=hosts,
         predecessor=predecessor,
     )
     failure_reason = {v.label: v.reason for v in config_failures}
@@ -999,7 +953,7 @@ def _failed_display_verdicts(
         )
         for verdicts in display_series.values()
         for verdict in verdicts
-        if verdict.run_id == tonight
+        if verdict.run_id == tonight and verdict.sub_detector is None
         and (str(verdict.run_id), verdict.label) in tonight_failed
     ]
 
@@ -1068,7 +1022,7 @@ def _with_region_deltas(
         first_run = min((Path(d).name for d in run_dirs), default="")
         if judgeable_configs is not None:
             judgeable_configs = judgeable_configs | judgeable_config_keys(
-                predecessor.results_df
+                predecessor.frames.get(RESULTS)
             )
 
     def dirs_for(window: tuple, crosses: bool) -> Sequence[str]:
@@ -1104,6 +1058,7 @@ def _with_region_deltas(
 
 
 def group_report_from_run_dirs(
+    suite: str,
     detector: str,
     platform: str,
     sample: str,
@@ -1111,8 +1066,9 @@ def group_report_from_run_dirs(
     *,
     predecessor: Callable[[], PredecessorRuns | None] | None = None,
 ) -> RunGroupReport | None:
-    """Build one triple's report from already-local run directories (ordered
-    oldest → newest; each directory's name is its nightly date).
+    """Build one triple's report from already-local run directories of
+    *suite* (ordered oldest → newest; each directory's name is its nightly
+    date), judging what the suite's sources say it is judged on.
 
     *predecessor* loads the platform or detector config this one replaced,
     whose series this group's continue; it never contributes a verdict, a
@@ -1125,15 +1081,14 @@ def group_report_from_run_dirs(
     tonight_meta = parse_run_dir(
         next(Path(d) for d in run_dirs if Path(d).name == tonight)
     )
-    results_df = build_results_trend(run_dirs)
-    event_df = build_event_timing_trend(run_dirs)
+    frames = _frames(suite, run_dirs)
+    results_df = frames[RESULTS]
     machine_df = build_machine_info_trend(run_dirs)
     reliability = run_reliability_map(results_df, machine_df)
     before = predecessor() if predecessor is not None else None
     group = _group_report_from_frames(
-        detector, platform, sample,
-        results_df=results_df, event_df=event_df,
-        reliability=reliability, tonight=tonight,
+        suite, detector, platform, sample,
+        frames=frames, reliability=reliability, tonight=tonight,
         hosts=host_facts(machine_df),
         configured_labels=tonight_meta["configured_labels"],
         predecessor=before,
@@ -1232,14 +1187,14 @@ def build_nightly_report_local(
     def _predecessor(detector: str, platform: str, sample: str) -> PredecessorRuns | None:
         for candidate in predecessor_series(detector, platform, suite):
             run_dirs = _window(per_series.get(candidate, {}).get(sample, []))
-            if (runs := predecessor_runs(*candidate, run_dirs)) is not None:
+            if (runs := predecessor_runs(suite, *candidate, run_dirs)) is not None:
                 return runs
         return None
 
     for (detector, platform), per_sample in per_series.items():
         for sample, run_paths in sorted(per_sample.items()):
             group = group_report_from_run_dirs(
-                detector, platform, sample, _window(run_paths),
+                suite, detector, platform, sample, _window(run_paths),
                 predecessor=partial(_predecessor, detector, platform, sample)
                 if predecessor_series(detector, platform, suite) else None,
             )
