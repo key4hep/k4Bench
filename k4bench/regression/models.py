@@ -13,6 +13,8 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 
+from k4bench.layout import SIM
+
 #: Opening words of the job failure a report records for a triple that uploaded
 #: no run for the report night. Part of the report's wire format — reports are
 #: read back by whatever dashboard is deployed, so the writer
@@ -594,7 +596,7 @@ class RunGroupReport:
 
 @dataclass
 class NightlyReport:
-    """One night's verdicts across every run group found on EOS."""
+    """One night's verdicts across every run group of one suite's run tree."""
 
     generated_at: str
     groups: list[RunGroupReport] = field(default_factory=list)
@@ -603,6 +605,9 @@ class NightlyReport:
     #: missing run per triple. Empty on every report whose night is its own
     #: newest run, which is every healthy night.
     night: str = ""
+    #: The suite whose runs were judged (:data:`k4bench.layout.SUITES`). Every
+    #: report written before suites existed judged the sim suite's.
+    suite: str = SIM
 
     @property
     def regressions(self) -> list[MetricVerdict]:

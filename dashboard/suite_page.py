@@ -25,7 +25,7 @@ from data import (
     run_metadata,
 )
 from k4bench.analysis.loader import run_suite
-from k4bench.layout import RECO, SIM
+from k4bench.regression.render import SUITE_TITLES
 from remote_cache import FilesUnavailable
 from section_dispatch import Aliases, Renderer, PageContext, current_section, pick_section
 from sections import SCOPED, SectionScope
@@ -43,10 +43,6 @@ from ui_chrome import (
     render_scope_note,
     render_sidebar_footer,
 )
-
-
-#: Each suite's page title, as the top bar names it.
-SUITE_TITLES = {SIM: "Simulation", RECO: "Reconstruction"}
 
 
 @dataclass(frozen=True)

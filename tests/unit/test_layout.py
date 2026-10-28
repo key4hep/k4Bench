@@ -183,7 +183,10 @@ def test_nightly_upload_writes_the_layout():
 
 def test_report_upload_writes_the_layout():
     script = (ROOT / ".github" / "scripts" / "regression_report.sh").read_text()
-    assert "from k4bench.layout import SIM, report_path, reproducer_path" in script
+    assert "from k4bench.layout import report_path, reproducer_path" in script
+    # Both directories are the judged suite's, never a hard-coded one.
+    assert '"${K4BENCH_SUITE}" "${NIGHT}")"' in script
+    assert '--suite "${K4BENCH_SUITE}"' in script
     # Split from an assignment, so a failed lookup aborts under `set -e`
     # instead of leaving both paths empty.
     assert 'read -r REPORT_DIR REPRODUCER_DIR <<< "${LAYOUT_DIRS}"' in script

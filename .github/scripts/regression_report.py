@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Build the nightly regression report and write it to an output directory.
+Build one suite's nightly regression report and write it to an output directory.
 
 Thin CLI over :func:`k4bench.regression.report_builder.build_nightly_report`:
-walks the EOS run history (or a local tree with the same layout), runs the
-step detector over every (detector, platform, sample, config, metric) series,
-and writes
+walks the ``--suite`` run tree of the EOS run history (or of a local tree with
+the same layout), runs the step detector over every (detector, platform,
+sample, config, metric) series, and writes
 
     {output-dir}/report.json   — machine-readable (dashboard + email gating)
     {output-dir}/report.md     — human-readable summary (Actions artifact)
@@ -50,6 +50,10 @@ try:
 except ValueError:
     pass
 sys.path.insert(0, str(_REPO_ROOT))
+
+# A leaf module importing only the standard library, so the parser can name
+# the suites before anything that could fail on a broken dependency loads.
+from k4bench.layout import SUITES  # noqa: E402
 
 if TYPE_CHECKING:
     from k4bench.regression.models import NightlyReport
@@ -126,6 +130,10 @@ def outage_report(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--suite", required=True, choices=SUITES,
+        help="The suite whose run tree is judged; the report covers it alone",
+    )
     source = parser.add_mutually_exclusive_group()
     source.add_argument(
         "--data-url",
@@ -193,10 +201,13 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.data_dir:
-        build = partial(build_nightly_report_local, args.data_dir, as_of=args.as_of)
+        build = partial(
+            build_nightly_report_local, args.data_dir, args.suite, as_of=args.as_of,
+        )
     elif args.data_url:
         build = partial(
-            build_nightly_report, args.data_url, args.cache_dir, as_of=args.as_of,
+            build_nightly_report, args.data_url, args.suite, args.cache_dir,
+            as_of=args.as_of,
         )
     else:
         parser.error("either --data-url (or $K4BENCH_DATA_URL) or --data-dir is required")
@@ -213,7 +224,7 @@ def main(argv: list[str] | None = None) -> int:
 
     s = data["summary"]
     print(
-        f"report for {s['report_night'] or 'no data'}: "
+        f"{args.suite} report for {s['report_night'] or 'no data'}: "
         f"{s['n_detectors']} detector(s), {s['n_regressions']} regression(s), "
         f"{s['n_failures']} failure(s), "
         f"{s['n_watches']} on watch -> {out / 'report.json'}"

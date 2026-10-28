@@ -32,7 +32,13 @@ from k4bench.regression.models import (
     UNRELIABLE_HOST_REASON,
     unjudged_cause,
 )
-from k4bench.regression.render import detector_badge, from_json, to_json
+from k4bench.layout import RECO, SIM
+from k4bench.regression.render import (
+    detector_badge,
+    from_json,
+    suite_page_url,
+    to_json,
+)
 
 
 def test_nightly_report_link_names_the_existing_view_without_single_scope_filters():
@@ -239,6 +245,22 @@ def test_a_healthy_nights_report_carries_no_night_key():
     assert "night" not in data
     assert data["summary"]["report_night"] == "2026-01-13"
     assert from_json(json.loads(json.dumps(data))).report_night == "2026-01-13"
+
+
+def test_a_report_names_its_suite_and_one_written_before_suites_is_sims():
+    report = NightlyReport(generated_at="2026-10-28T06:00:00+00:00", suite=RECO)
+    data = to_json(report)
+    assert data["suite"] == RECO
+    assert from_json(json.loads(json.dumps(data))).suite == RECO
+    del data["suite"]
+    assert from_json(data).suite == SIM
+
+
+def test_each_suite_links_to_its_own_dashboard_page():
+    base = "https://k4bench-dashboard.app.cern.ch"
+    assert suite_page_url(base, SIM) == base
+    assert suite_page_url(f"{base}/", RECO) == f"{base}/reconstruction"
+    assert suite_page_url(f"{base}/?tab=Overview", RECO) == f"{base}/reconstruction?tab=Overview"
 
 
 def test_summary_splits_new_and_reconfirmed():

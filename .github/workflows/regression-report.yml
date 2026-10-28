@@ -1,8 +1,10 @@
 name: Regression Report
 
-# Builds the regression report from the EOS run history, uploads report.json to
-# EOS (read back by the dashboard's Regressions tab) and emails the CERN
-# e-group with the report — every run, regardless of content.
+# Builds one suite's regression report from the EOS run history, uploads
+# report.json to EOS (read back by the dashboard's Regressions tab) and emails
+# the CERN e-group with the report — every run, regardless of content. Each
+# suite (k4bench/layout.py SUITES) is its own run of this workflow, with its
+# own report, email and lane below.
 #
 # Two triggers:
 #   • workflow_call    — invoked by the nightly workflow after the benchmarks.
@@ -12,6 +14,10 @@ name: Regression Report
 on:
   workflow_call:
     inputs:
+      suite:
+        description: The suite whose run tree is judged (sim or reco).
+        required: true
+        type: string
       fanout_run_id:
         description: >-
           CI run of the benchmark fan-out this report must cover. A run that
@@ -22,15 +28,23 @@ on:
         type: string
         default: ''
   workflow_dispatch:
+    inputs:
+      suite:
+        description: The suite whose run tree is judged.
+        required: true
+        type: choice
+        options: [sim, reco]
+        default: sim
 
-# Serialise every run of this workflow (nightly call and manual dispatch alike).
-# The pull-request comment step reads a PR's comments and then posts if it sees
-# none of its own; two overlapping runs could both pass that read before either
-# posts, and duplicate a comment into a repository k4Bench does not own. A single
-# lane makes the read-then-write safe. `cancel-in-progress: false` lets an
-# in-flight run finish its writes rather than being killed mid-post.
+# Serialise every run of this workflow for one suite (nightly call and manual
+# dispatch alike). The pull-request comment step reads a PR's comments and then
+# posts if it sees none of its own; two overlapping runs could both pass that
+# read before either posts, and duplicate a comment into a repository k4Bench
+# does not own. A lane per suite makes the read-then-write safe: only the sim
+# suite comments (see regression_report.sh). `cancel-in-progress: false` lets
+# an in-flight run finish its writes rather than being killed mid-post.
 concurrency:
-  group: regression-report
+  group: regression-report-${{ inputs.suite }}
   cancel-in-progress: false
 
 permissions:
@@ -74,8 +88,12 @@ jobs:
 
       - name: Build report, upload to EOS, notify e-group
         env:
+          K4BENCH_SUITE:             ${{ inputs.suite }}
           K4BENCH_DATA_URL:          ${{ vars.K4BENCH_DATA_URL || 'https://k4bench-data.web.cern.ch' }}
-          K4BENCH_REGRESSION_EGROUP: ${{ vars.K4BENCH_REGRESSION_EGROUP }}
+          # Each suite mails its own report. The reco report goes to
+          # K4BENCH_REGRESSION_EGROUP_RECO when that variable is set, and to
+          # the same e-group as the sim report otherwise.
+          K4BENCH_REGRESSION_EGROUP: ${{ inputs.suite == 'reco' && vars.K4BENCH_REGRESSION_EGROUP_RECO || vars.K4BENCH_REGRESSION_EGROUP }}
           K4BENCH_REGRESSION_FROM:   ${{ vars.K4BENCH_REGRESSION_FROM }}
           K4BENCH_DASHBOARD_URL:     ${{ vars.K4BENCH_DASHBOARD_URL }}
           GITHUB_RUN_URL:            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -139,6 +157,7 @@ jobs:
             --workdir /workspace \
             -e X509_USER_CERT=/tmp/eos-auth/usercert.pem \
             -e X509_USER_KEY=/tmp/eos-auth/userkey.pem \
+            -e K4BENCH_SUITE \
             -e K4BENCH_DATA_URL -e K4BENCH_REGRESSION_EGROUP \
             -e K4BENCH_REGRESSION_FROM -e K4BENCH_DASHBOARD_URL \
             -e GITHUB_RUN_URL -e GITHUB_TOKEN \
@@ -156,7 +175,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: regression-report
+          name: regression-report-${{ inputs.suite }}
           path: |
             report/report.json
             report/report.md

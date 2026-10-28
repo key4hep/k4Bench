@@ -695,12 +695,16 @@ to the first underscore (`ALLEGRO_o1_v04` → `ALLEGRO`, `ILD_FCCee_v01` →
 `ILD`, `SiD` → `SiD`) — so the versions of one detector sit side by side.
 
 This is the integration contract between CI and the dashboard
-([data flow](../architecture/data-flow.md#nightly-eos-dashboard)). The
-regression report and blame read the `sim` suite; the dashboard reads both, one
-page per suite. No report judges the `reco` suite yet, so there is no
-`reports/reco/` and the Reconstruction page reads its runs directly.
-`reports/sim/` holds the nightly regression report (written
+([data flow](../architecture/data-flow.md#nightly-eos-dashboard)). A
+regression report judges one suite's runs and no other's; the nightly builds
+the `sim` suite's, and blame and the pull-request comments cover the `sim`
+suite alone. The dashboard reads both suites, one page per suite. No nightly
+report judges the `reco` suite yet, so there is no `reports/reco/` and the
+Reconstruction page reads its runs directly.
+`reports/{suite}/` holds the suite's nightly regression report (written
 by the `regression-report` CI job, rendered by the dashboard's Regressions tab),
+whose top-level `suite` key names the suite it judged — a report without one
+predates suites and judged the `sim` suite's runs —
 and `reproducers/sim/` holds the runnable recipes the blame pull-request
 comments link to (written by the same job's comment step, read directly by
 whoever follows the link). A recipe is named for the measurement and change
@@ -710,7 +714,7 @@ replaces the same file and a standing comment's link keeps working — see
 
 ### The night a report covers (`report.json`)
 
-`reports/sim/{YYYY-MM-DD}/` is named for the night the report covers, and
+`reports/{suite}/{YYYY-MM-DD}/` is named for the night the report covers, and
 `summary.report_night` repeats it. That is normally the newest run date the
 report holds. A night whose benchmarking uploaded *nothing* — every job of the
 fan-out failed — has no run to be named after, so its report carries the night

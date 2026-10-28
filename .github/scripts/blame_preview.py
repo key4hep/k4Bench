@@ -73,6 +73,10 @@ sys.path.insert(0, str(_REPO_ROOT))
 # first on sys.path, so the sibling imports by module name.
 blame_comment = importlib.import_module("blame_comment")
 
+# A leaf module importing only the standard library, so the parser can name
+# the suites before anything that could fail on a broken dependency loads.
+from k4bench.layout import SIM, SUITES  # noqa: E402
+
 _log = logging.getLogger(__name__)
 
 _DEFAULT_DATA_URL = "https://k4bench-data.web.cern.ch"
@@ -130,6 +134,11 @@ def _redirect(draft, repo: str, number: int):
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--suite", choices=SUITES, default=SIM,
+        help="Suite whose report and sidecar to read (default: sim, the suite "
+             "the --night and --only defaults come from)",
     )
     parser.add_argument(
         "--night", default="2026-06-27",
@@ -227,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
     from k4bench.blame.models import BlameReport, BlameSchemaError
     from k4bench.blame.publish import publish
     from k4bench.regression.render import from_json
-    from k4bench.layout import SIM, report_path, store_url
+    from k4bench.layout import report_path, store_url
     from k4bench.remote import fetch_blame, fetch_report
 
     only_repo, only_number = args.only
@@ -254,15 +263,15 @@ def main(argv: list[str] | None = None) -> int:
     # Read the report and its sidecar straight from EOS: this is the same data
     # the dashboard and the nightly commenter see, so the preview rests on real
     # measurements rather than a hand-built fixture.
-    raw_report = fetch_report(args.data_url, SIM, args.night)
+    raw_report = fetch_report(args.data_url, args.suite, args.night)
     if raw_report is None:
         print(
             "ERROR: no report at "
-            f"{store_url(args.data_url, report_path(SIM, args.night))}/report.json",
+            f"{store_url(args.data_url, report_path(args.suite, args.night))}/report.json",
             file=sys.stderr,
         )
         return 1
-    raw_blame = fetch_blame(args.data_url, SIM, args.night)
+    raw_blame = fetch_blame(args.data_url, args.suite, args.night)
     if raw_blame is None:
         print(
             f"ERROR: no blame sidecar for {args.night} — that night attributed no "
@@ -315,12 +324,12 @@ def main(argv: list[str] | None = None) -> int:
         plans,
         attributor=attributor,
         **blame_comment.review_inputs(args.read_token, attributor),
-        run_info_for=blame_comment.run_info_source(args.data_url),
+        run_info_for=blame_comment.run_info_source(args.data_url, report.suite),
         # Publishing is gated on --post for the same reason posting is: a run
         # that writes nothing must write nothing here either, and it still
         # renders the link so the preview is a preview of the real comment.
         reproducer_url_for=blame_comment.reproducer_publisher(
-            args.reproducer_dir, args.data_url, dry_run=not args.post,
+            args.reproducer_dir, args.data_url, report.suite, dry_run=not args.post,
         ),
         dashboard_url=args.dashboard_url,
         min_score=policy.min_score,

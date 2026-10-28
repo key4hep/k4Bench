@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from k4bench.layout import RECO, SIM
 from k4bench.regression import lineage
 from k4bench.regression.lineage import (
     DETECTOR_SUCCESSORS,
@@ -52,46 +53,65 @@ def detector_map(monkeypatch):
 
 
 def test_a_geometry_version_continues_the_version_it_replaced(detector_map):
-    assert detector_predecessor_of("ALLEGRO_o1_v04") == "ALLEGRO_o1_v03"
-    assert detector_successors_of("ALLEGRO_o1_v03") == ("ALLEGRO_o1_v04",)
-    assert is_detector_replaced("ALLEGRO_o1_v03")
-    assert not is_detector_replaced("ALLEGRO_o1_v04")
+    assert detector_predecessor_of("ALLEGRO_o1_v04", SIM) == "ALLEGRO_o1_v03"
+    assert detector_successors_of("ALLEGRO_o1_v03", SIM) == ("ALLEGRO_o1_v04",)
+    assert is_detector_replaced("ALLEGRO_o1_v03", SIM)
+    assert not is_detector_replaced("ALLEGRO_o1_v04", SIM)
     # Another option of the same concept is an independent series.
-    assert detector_predecessor_of("ALLEGRO_o2_v01") is None
+    assert detector_predecessor_of("ALLEGRO_o2_v01", SIM) is None
 
 
 def test_a_retired_detector_stays_replaced_without_a_successor_entry(monkeypatch):
     monkeypatch.setattr(lineage, "DETECTOR_SUCCESSORS", {"ALLEGRO_o1_v05": "ALLEGRO_o1_v04"})
     monkeypatch.setattr(lineage, "RETIRED_DETECTORS", {"ALLEGRO_o1_v03": "ALLEGRO_o1_v04"})
-    assert is_detector_replaced("ALLEGRO_o1_v03")
+    assert is_detector_replaced("ALLEGRO_o1_v03", SIM)
     # v05 counts too, so v03 stops being expected even if v04 never ran.
-    assert detector_successors_of("ALLEGRO_o1_v03") == ("ALLEGRO_o1_v04", "ALLEGRO_o1_v05")
-    assert successor_series("ALLEGRO_o1_v03", _LCG) == (
+    assert detector_successors_of("ALLEGRO_o1_v03", SIM) == ("ALLEGRO_o1_v04", "ALLEGRO_o1_v05")
+    assert successor_series("ALLEGRO_o1_v03", _LCG, SIM) == (
         ("ALLEGRO_o1_v04", _LCG), ("ALLEGRO_o1_v05", _LCG),
     )
     # Retirement never continues a history: v04's own entry is gone.
-    assert detector_predecessor_of("ALLEGRO_o1_v04") is None
-    assert predecessor_series("ALLEGRO_o1_v04", _LCG) == (("ALLEGRO_o1_v04", _SPACK),)
-    assert not is_detector_replaced("ALLEGRO_o1_v05")
+    assert detector_predecessor_of("ALLEGRO_o1_v04", SIM) is None
+    assert predecessor_series("ALLEGRO_o1_v04", _LCG, SIM) == (("ALLEGRO_o1_v04", _SPACK),)
+    assert not is_detector_replaced("ALLEGRO_o1_v05", SIM)
 
 
 def test_the_replaced_detector_is_the_nearest_predecessor_series(detector_map):
     # A version bump after the platform migration: the new version only ever
     # ran on the new platform, so its own predecessor on that platform comes
     # first, and the platform's predecessor is the fallback.
-    assert predecessor_series("ALLEGRO_o1_v04", _LCG) == (
+    assert predecessor_series("ALLEGRO_o1_v04", _LCG, SIM) == (
         ("ALLEGRO_o1_v03", _LCG), ("ALLEGRO_o1_v04", _SPACK),
     )
-    assert predecessor_series("ALLEGRO_o1_v03", _LCG) == (("ALLEGRO_o1_v03", _SPACK),)
-    assert predecessor_series("ALLEGRO_o1_v03", _SPACK) == ()
+    assert predecessor_series("ALLEGRO_o1_v03", _LCG, SIM) == (("ALLEGRO_o1_v03", _SPACK),)
+    assert predecessor_series("ALLEGRO_o1_v03", _SPACK, SIM) == ()
 
 
 def test_successor_series_inverts_predecessor_series(detector_map):
-    assert successor_series("ALLEGRO_o1_v03", _LCG) == (("ALLEGRO_o1_v04", _LCG),)
-    assert successor_series("ALLEGRO_o1_v03", _SPACK) == (
+    assert successor_series("ALLEGRO_o1_v03", _LCG, SIM) == (("ALLEGRO_o1_v04", _LCG),)
+    assert successor_series("ALLEGRO_o1_v03", _SPACK, SIM) == (
         ("ALLEGRO_o1_v04", _SPACK), ("ALLEGRO_o1_v03", _LCG),
     )
-    assert successor_series("ALLEGRO_o1_v04", _LCG) == ()
+    assert successor_series("ALLEGRO_o1_v04", _LCG, SIM) == ()
+
+
+def test_the_reco_suite_has_no_detector_succession(monkeypatch):
+    # A reco benchmark stays on the geometry its frozen input was simulated
+    # with, so a sim bump must leave its reco namesake expected and uncontinued.
+    monkeypatch.setattr(lineage, "DETECTOR_SUCCESSORS", {"CLD_o2_v10": "CLD_o2_v09"})
+    monkeypatch.setattr(lineage, "RETIRED_DETECTORS", {"CLD_o2_v08": "CLD_o2_v09"})
+    assert is_detector_replaced("CLD_o2_v09", SIM)
+    assert not is_detector_replaced("CLD_o2_v09", RECO)
+    assert not is_detector_replaced("CLD_o2_v08", RECO)
+    assert detector_predecessor_of("CLD_o2_v10", RECO) is None
+    assert successor_series("CLD_o2_v09", _LCG, RECO) == ()
+    # Platforms are replaced for every suite at once.
+    assert predecessor_series("CLD_o2_v10", _LCG, RECO) == (("CLD_o2_v10", _SPACK),)
+
+
+def test_an_unknown_suite_is_refused():
+    with pytest.raises(ValueError, match="unknown suite"):
+        is_detector_replaced("CLD_o2_v09", "physics")
 
 
 def test_detector_succession_does_not_chain():

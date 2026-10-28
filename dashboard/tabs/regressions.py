@@ -291,7 +291,7 @@ def _replaced_by(
     that turns out to hold nothing for this platform costs less than hiding a
     missing-run failure.
     """
-    for successor_detector, successor_platform in successor_series(detector, platform):
+    for successor_detector, successor_platform in successor_series(detector, platform, SIM):
         try:
             listing = cached_list_run_dates(
                 data_url, SIM, successor_detector, successor_platform, sample,

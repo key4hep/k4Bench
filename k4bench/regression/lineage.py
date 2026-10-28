@@ -6,7 +6,10 @@ filed per detector config and platform, and each is an identity, not a label for
 by side are therefore independent series, and need nothing from this module.
 
 A platform that *replaces* another names it here, and so does a detector config
-that replaces another (a geometry version bump). The successor's series then
+that replaces another (a geometry version bump). Platforms are replaced for
+every suite at once, as the whole nightly moves; detector configs are replaced
+within one suite, since each suite chooses its own (see
+:func:`_detector_succession`). The successor's series then
 continue the predecessor's: the predecessor's nights come first in the history
 the engine walks, as ordinary baseline points, so a shift caused by the switch
 is judged like any other step — watch, then regression, with a window bounded
@@ -30,6 +33,10 @@ replaced it, has — without its history being continued.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
+from k4bench.layout import RECO, SIM
+
 #: ``{platform: the platform it replaced}``. Retain entries for historical
 #: replay: a successor's early verdicts were judged against its predecessor's
 #: nights.
@@ -39,8 +46,9 @@ PLATFORM_SUCCESSORS: dict[str, str] = {
     "x86_64-el9-gcc16-opt": "x86_64-almalinux9-gcc14.2.0-opt",
 }
 
-#: ``{detector config: the detector config it replaced}``, on the same
-#: platform. Retained for historical replay, like :data:`PLATFORM_SUCCESSORS`.
+#: ``{detector config: the detector config it replaced}`` in the sim suite, on
+#: the same platform. Retained for historical replay, like
+#: :data:`PLATFORM_SUCCESSORS`.
 DETECTOR_SUCCESSORS: dict[str, str] = {
     "ALLEGRO_o1_v04": "ALLEGRO_o1_v03",
     "CLD_o2_v09":     "CLD_o2_v08",
@@ -52,6 +60,20 @@ DETECTOR_SUCCESSORS: dict[str, str] = {
 #: is gone to keep succession one hop, but they are still replaced; this map
 #: answers only that, never whose history a series continues.
 RETIRED_DETECTORS: dict[str, str] = {}
+
+
+def _detector_succession(suite: str) -> tuple[Mapping[str, str], Mapping[str, str]]:
+    """*suite*'s ``(successors, retired)`` detector configs.
+
+    The sim suite's are the tables above. The reco suite has none: each reco
+    benchmark stays on the geometry its frozen input was simulated with, so a
+    detector bump in the sim suite leaves its reco namesake running.
+    """
+    if suite == SIM:
+        return DETECTOR_SUCCESSORS, RETIRED_DETECTORS
+    if suite == RECO:
+        return {}, {}
+    raise ValueError(f"unknown suite {suite!r}")
 
 
 def predecessor_of(platform: str) -> str | None:
@@ -73,49 +95,53 @@ def is_replaced(platform: str) -> bool:
     return bool(successors_of(platform))
 
 
-def detector_predecessor_of(detector: str) -> str | None:
-    """The detector config *detector* replaced, or ``None``."""
-    predecessor = DETECTOR_SUCCESSORS.get(detector)
+def detector_predecessor_of(detector: str, suite: str) -> str | None:
+    """The detector config *detector* replaced in *suite*, or ``None``."""
+    predecessor = _detector_succession(suite)[0].get(detector)
     return None if predecessor == detector else predecessor
 
 
-def _direct_detector_successors(detector: str) -> set[str]:
+def _direct_detector_successors(detector: str, suite: str) -> set[str]:
+    successors, retired_configs = _detector_succession(suite)
     return {
         *(
-            successor for successor, predecessor in DETECTOR_SUCCESSORS.items()
+            successor for successor, predecessor in successors.items()
             if predecessor == detector
         ),
         *(
-            successor for retired, successor in RETIRED_DETECTORS.items()
+            successor for retired, successor in retired_configs.items()
             if retired == detector
         ),
     } - {detector}
 
 
-def detector_successors_of(detector: str) -> tuple[str, ...]:
-    """The detector configs that replaced *detector*, name-ascending: the one
-    that replaced it, and whatever replaced that one in turn. A retired config
-    is thus no longer expected once any later version has run, even one whose
-    direct successor never produced a run."""
+def detector_successors_of(detector: str, suite: str) -> tuple[str, ...]:
+    """The detector configs that replaced *detector* in *suite*,
+    name-ascending: the one that replaced it, and whatever replaced that one
+    in turn. A retired config is thus no longer expected once any later
+    version has run, even one whose direct successor never produced a run."""
     found: set[str] = set()
     frontier = [detector]
     while frontier:
-        for successor in _direct_detector_successors(frontier.pop()):
+        for successor in _direct_detector_successors(frontier.pop(), suite):
             if successor != detector and successor not in found:
                 found.add(successor)
                 frontier.append(successor)
     return tuple(sorted(found))
 
 
-def is_detector_replaced(detector: str) -> bool:
-    """Whether some detector config has replaced *detector*."""
-    return bool(detector_successors_of(detector))
+def is_detector_replaced(detector: str, suite: str) -> bool:
+    """Whether some detector config has replaced *detector* in *suite*."""
+    return bool(detector_successors_of(detector, suite))
 
 
-def predecessor_series(detector: str, platform: str) -> tuple[tuple[str, str], ...]:
-    """The ``(detector, platform)`` series the *detector* / *platform* series
-    may continue, nearest first: the detector config it replaced on this
-    platform, then this detector config on the platform this one replaced.
+def predecessor_series(
+    detector: str, platform: str, suite: str,
+) -> tuple[tuple[str, str], ...]:
+    """The ``(detector, platform)`` series of *suite* the *detector* /
+    *platform* series may continue, nearest first: the detector config it
+    replaced on this platform, then this detector config on the platform this
+    one replaced.
 
     A series continues the first candidate that has runs. Both can exist at
     once — a version bump made after a platform migration, say — and then
@@ -123,19 +149,21 @@ def predecessor_series(detector: str, platform: str) -> tuple[tuple[str, str], .
     retired before it existed.
     """
     candidates = []
-    if (previous := detector_predecessor_of(detector)) is not None:
+    if (previous := detector_predecessor_of(detector, suite)) is not None:
         candidates.append((previous, platform))
     if (previous := predecessor_of(platform)) is not None:
         candidates.append((detector, previous))
     return tuple(candidates)
 
 
-def successor_series(detector: str, platform: str) -> tuple[tuple[str, str], ...]:
-    """The ``(detector, platform)`` series whose runs mean the *detector* /
-    *platform* series is no longer expected: the inverse of
+def successor_series(
+    detector: str, platform: str, suite: str,
+) -> tuple[tuple[str, str], ...]:
+    """The ``(detector, platform)`` series of *suite* whose runs mean the
+    *detector* / *platform* series is no longer expected: the inverse of
     :func:`predecessor_series`, plus later detector configs that replaced a
     retired one."""
     return (
-        *((successor, platform) for successor in detector_successors_of(detector)),
+        *((successor, platform) for successor in detector_successors_of(detector, suite)),
         *((detector, successor) for successor in successors_of(platform)),
     )
