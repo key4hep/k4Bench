@@ -519,3 +519,36 @@ def test_a_same_release_window_states_that_the_stack_cannot_have_moved():
     # A genuine interval and an open window keep their existing wording.
     assert window_phrase("2026-07-03", "2026-07-04") == "2026-07-03 → 2026-07-04"
     assert window_phrase(None, "2026-07-04") == "2026-07-04"
+
+
+def test_component_lines_name_each_cost_in_its_unit():
+    from k4bench.blame.prompt import component_lines
+    from k4bench.regression.models import ComponentDelta
+
+    moved = (
+        ComponentDelta("GeoSvc", 40.1, 52.3, 12.2, package="k4simgeant4", instructions_change=0.31),
+        ComponentDelta("NewDigitiser", None, 3.0, 3.0),
+        ComponentDelta("OldDigitiser", 2.0, None, -2.0),
+    )
+    lines = component_lines("initialize_s", moved)
+    assert "each one's own time in initialize" in lines[0]
+    assert lines[1:] == [
+        "      GeoSvc [k4simgeant4]: 40.1 -> 52.3 s (+12.2), instructions +31.0%",
+        "      NewDigitiser: newly present at 3 s",
+        "      OldDigitiser: no longer run (was 2 s)",
+    ]
+    assert "heap held at an event's end" in component_lines("mean_rss_anon_mb", moved)[0]
+    assert "MB" in component_lines("mean_rss_anon_mb", moved)[1]
+    # Nothing to say for a metric that is not taken apart, or with no movement.
+    assert component_lines("user_cpu_s", moved) == []
+    assert component_lines("mean_time_s", ()) == []
+
+
+def test_each_suite_explains_the_harness_as_what_it_runs():
+    from k4bench.blame.prompt import HARNESS_PACKAGE_NOTE, WORKLOADS
+    from k4bench.layout import RECO, SIM
+
+    assert WORKLOADS[SIM].harness_note == HARNESS_PACKAGE_NOTE
+    reco = WORKLOADS[RECO].harness_note
+    assert "does not run inside the reconstruction" in reco
+    assert "auditor" in reco and "simulat" not in reco

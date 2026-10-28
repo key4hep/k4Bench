@@ -32,7 +32,7 @@ from k4bench.analysis.loader import (
 )
 from k4bench.analysis.trend import build_machine_info_trend, parse_run_dir
 from k4bench.blame.models import rank_group_key
-from k4bench.layout import iter_run_dirs
+from k4bench.layout import RECO, SIM, iter_run_dirs
 from k4bench.regression.catalog import (
     COMPONENT,
     REPORTED_ONLY_REASONS,
@@ -60,6 +60,7 @@ from k4bench.regression.models import (
     Severity,
     Unjudged,
 )
+from k4bench.regression.components import MAX_COMPONENTS, component_deltas, decomposed_as
 from k4bench.regression.regions import dirs_by_release, region_evidence
 from k4bench.remote import (
     fetch_runs_windowed,
@@ -949,6 +950,7 @@ def _failed_display_verdicts(
             first_confirmed_run_id=None,
             history=(),
             region_deltas=(),
+            component_deltas=(),
             unjudged=None,
         )
         for verdicts in display_series.values()
@@ -958,8 +960,9 @@ def _failed_display_verdicts(
     ]
 
 
-def _region_window(verdict: MetricVerdict) -> tuple:
-    """The window a region decomposition is computed and cached under.
+def _decomposition_window(verdict: MetricVerdict) -> tuple:
+    """The window a decomposition of a step — by region or by component — is
+    computed and cached under.
 
     The configuration, then the window identity the whole attribution system
     shares (:func:`k4bench.blame.models.rank_group_key`): run ids join the key
@@ -971,6 +974,50 @@ def _region_window(verdict: MetricVerdict) -> tuple:
     within one run group.
     """
     return (verdict.label, *rank_group_key(verdict).window)
+
+
+def _crosses_into_predecessor(verdict: MetricVerdict) -> bool:
+    """Whether *verdict*'s window opens on a run of the platform or detector
+    config its series continues (see :mod:`k4bench.regression.lineage`)."""
+    return verdict.base_platform != verdict.onset_run_platform or verdict.spans_detector_switch
+
+
+def _window_ends(
+    run_dirs: tuple[str, ...],
+    predecessor: PredecessorRuns | None,
+    judgeable_configs: set[tuple[str, str]] | None,
+    crossing: bool,
+) -> tuple[Callable[[tuple, bool], Sequence[str]], set[tuple[str, str]] | None]:
+    """Where a decomposition reads the two ends of a window
+    (:func:`_decomposition_window`) of a group with *run_dirs*, and which
+    config-nights are judgeable there.
+
+    A window crossing into the *predecessor* platform or detector config (a
+    series continuing its history; *crossing* says whether any does) reads its
+    base end from the predecessor's run directories. Each end contributes only
+    its own release's directories, so a release date both published under
+    never pools two builds.
+    """
+    if predecessor is None or not crossing:
+        return (lambda window, crosses: run_dirs), judgeable_configs
+    own_by_release = dirs_by_release(run_dirs)
+    predecessor_by_release = dirs_by_release(predecessor.run_dirs)
+    first_run = min((Path(d).name for d in run_dirs), default="")
+    if judgeable_configs is not None:
+        judgeable_configs = judgeable_configs | judgeable_config_keys(
+            predecessor.frames.get(RESULTS)
+        )
+
+    def dirs_for(window: tuple, crosses: bool) -> Sequence[str]:
+        if not crosses:
+            return run_dirs
+        base_dirs = [
+            str(d) for d in predecessor_by_release.get(window[1], [])
+            if d.name < first_run
+        ]
+        return base_dirs + [str(d) for d in own_by_release.get(window[2], [])]
+
+    return dirs_for, judgeable_configs
 
 
 def _with_region_deltas(
@@ -997,43 +1044,21 @@ def _with_region_deltas(
     (:attr:`~k4bench.regression.models.MetricVerdict.event_profile`), which say
     whether the step is in the typical event or in a few long ones.
 
-    Windows are identified by :func:`_region_window`, so two of them inside one
-    release keep their own decompositions instead of one answering for the other.
-
-    A window whose base run was measured on the *predecessor* platform or
-    detector config (a series continuing its history) reads that end from the
-    predecessor's run directories. Each end contributes only its own release's
-    directories, so a release date both published under never pools two builds.
+    Windows are identified by :func:`_decomposition_window`, so two of them
+    inside one release keep their own decompositions instead of one answering
+    for the other, and their ends are found by :func:`_window_ends`.
     """
-    crossing: dict[tuple, bool] = {}
-    for v in group.verdicts:
-        if (
-            v.severity is Severity.CONFIRMED and v.metric_family == "time"
-            and v.last_accepted_run_date and v.onset_run_date
-        ):
-            crossing[_region_window(v)] = (
-                v.base_platform != v.onset_run_platform or v.spans_detector_switch
-            )
+    crossing: dict[tuple, bool] = {
+        _decomposition_window(v): _crosses_into_predecessor(v)
+        for v in group.verdicts
+        if v.severity is Severity.CONFIRMED and v.metric_family == "time"
+        and v.last_accepted_run_date and v.onset_run_date
+    }
     if not crossing:
         return group
-    if predecessor is not None and any(crossing.values()):
-        own_by_release = dirs_by_release(run_dirs)
-        predecessor_by_release = dirs_by_release(predecessor.run_dirs)
-        first_run = min((Path(d).name for d in run_dirs), default="")
-        if judgeable_configs is not None:
-            judgeable_configs = judgeable_configs | judgeable_config_keys(
-                predecessor.frames.get(RESULTS)
-            )
-
-    def dirs_for(window: tuple, crosses: bool) -> Sequence[str]:
-        if not crosses or predecessor is None:
-            return run_dirs
-        base_dirs = [
-            str(d) for d in predecessor_by_release.get(window[1], [])
-            if d.name < first_run
-        ]
-        return base_dirs + [str(d) for d in own_by_release.get(window[2], [])]
-
+    dirs_for, judgeable_configs = _window_ends(
+        run_dirs, predecessor, judgeable_configs, any(crossing.values()),
+    )
     computed = {
         window: region_evidence(
             dirs_for(window, crosses), label=window[0],
@@ -1046,7 +1071,7 @@ def _with_region_deltas(
     verdicts = []
     for v in group.verdicts:
         deltas, profile = (
-            computed.get(_region_window(v), ((), None))
+            computed.get(_decomposition_window(v), ((), None))
             if v.severity is Severity.CONFIRMED and v.metric_family == "time"
             else ((), None)
         )
@@ -1055,6 +1080,65 @@ def _with_region_deltas(
         verdicts.append(v)
     group.verdicts = verdicts
     return group
+
+
+def _with_component_deltas(
+    group: RunGroupReport,
+    run_dirs: tuple[str, ...],
+    judgeable_configs: set[tuple[str, str]] | None = None,
+    predecessor: PredecessorRuns | None = None,
+) -> RunGroupReport:
+    """*group* with each confirmed verdict of a reco job told which of its
+    components the step moved (:mod:`k4bench.regression.components`).
+
+    Narrow for the same reasons as :func:`_with_region_deltas`: only
+    ``CONFIRMED`` verdicts of a metric that decomposes
+    (:data:`~k4bench.regression.components.DECOMPOSED_AS`), only the two ends of
+    the verdict's own window, found the same way, and one computation per cost
+    and window however many verdicts share it. A job's verdict carries the
+    largest :data:`~k4bench.regression.components.MAX_COMPONENTS` movements,
+    and a component's verdict its own.
+    """
+    wanted: dict[tuple, bool] = {
+        (quantity, *_decomposition_window(v)): _crosses_into_predecessor(v)
+        for v in group.verdicts
+        if v.severity is Severity.CONFIRMED and (quantity := decomposed_as(v))
+        and v.last_accepted_run_date and v.onset_run_date
+    }
+    if not wanted:
+        return group
+    dirs_for, judgeable_configs = _window_ends(
+        run_dirs, predecessor, judgeable_configs, any(wanted.values()),
+    )
+    computed = {
+        key: component_deltas(
+            dirs_for(key[1:], crosses), label=key[1], quantity=key[0],
+            base_release=key[2], onset_release=key[3],
+            base_run_id=key[4], onset_run_id=key[5],
+            judgeable_configs=judgeable_configs,
+        )
+        for key, crosses in wanted.items()
+    }
+    verdicts = []
+    for v in group.verdicts:
+        deltas = (
+            computed.get((decomposed_as(v), *_decomposition_window(v)), ())
+            if v.severity is Severity.CONFIRMED else ()
+        )
+        deltas = (
+            tuple(d for d in deltas if d.component == v.sub_detector)
+            if v.sub_detector is not None else deltas[:MAX_COMPONENTS]
+        )
+        if deltas:
+            v = dataclasses.replace(v, component_deltas=deltas)
+        verdicts.append(v)
+    group.verdicts = verdicts
+    return group
+
+
+#: How each suite's confirmed steps are taken apart: a simulated detector's by
+#: region, a reco job's by component.
+_DECOMPOSITIONS = {SIM: _with_region_deltas, RECO: _with_component_deltas}
 
 
 def group_report_from_run_dirs(
@@ -1099,7 +1183,7 @@ def group_report_from_run_dirs(
     # run_info still names the stack that failed.
     if not group.k4h_release:
         group.k4h_release = tonight_meta["k4h_release"] or ""
-    return _with_region_deltas(
+    return _DECOMPOSITIONS[suite](
         group, run_dirs, judgeable_config_keys(results_df), predecessor=before,
     )
 

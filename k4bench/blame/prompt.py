@@ -40,7 +40,9 @@ from k4bench.blame.history import (
 )
 from k4bench.blame.llm import one_line
 from k4bench.labels import describe_platform, pretty_sample
-from k4bench.regression.models import RegionDelta
+from k4bench.layout import RECO, SIM
+from k4bench.regression.components import DECOMPOSED_AS, EVENT, HEAP, INITIALIZE, JOB
+from k4bench.regression.models import ComponentDelta, RegionDelta
 
 _log = logging.getLogger(__name__)
 
@@ -263,6 +265,164 @@ WEIGHING_RULE = (
     "metrics depend on both. Whether a metric depends on the machine that ran "
     "it is read from the measured host evidence, not assumed. "
 )
+
+
+# ── What each suite's benchmark runs ─────────────────────────────────────────
+
+#: What the first pass is given for a simulated detector: the sentence its
+#: system prompt opens the evidence with.
+SIM_RANKER_EVIDENCE = (
+    "You are given the run context the regression was measured in — one "
+    "detector, one physics sample, one build platform — and an evidence summary "
+    "computed from the measurements: every configuration of that run's "
+    "detector-removal sweep across the same release window, what moved and in "
+    "what shape, the metrics' own history and the machines that measured them, "
+    "which candidates change this detector's geometry and what the other "
+    "benchmarked detectors they change did, and what every other benchmark did "
+    "in the same window. "
+)
+
+#: The same for a reco job. Its configurations are a baseline and its variants,
+#: and the evidence names which of its components moved.
+RECO_RANKER_EVIDENCE = (
+    "You are given the run context the regression was measured in — one "
+    "detector's reconstruction, run with k4run on a frozen simulated input of "
+    "one physics sample, on one build platform — and an evidence summary "
+    "computed from the measurements: every configuration of that job across the "
+    "same release window, what moved and in what shape, which of the job's "
+    "components — its algorithms and services — the step moved and the package "
+    "each is defined in, the metrics' own history and the machines that "
+    "measured them, which candidates change this detector's geometry and what "
+    "the other benchmarked detectors they change did, and what every other "
+    "benchmark did in the same window. "
+)
+
+#: :data:`NOISE_RULE` for a reco job, whose input is frozen: its events never
+#: re-roll, so the simulation's long-event trap gives way to what a component's
+#: instructions say about its time.
+RECO_NOISE_RULE = (
+    "Weigh every step against the history of the metric it belongs to before "
+    "attributing it to anyone. A benchmark series has its own noise: a step no "
+    "larger than what that series does on its own — most sharply, across a "
+    "release boundary where no tracked package changed at all — is not evidence "
+    "that any code changed. A level that came back to baseline in later "
+    "releases, a series flagged every few releases, a step no larger than what "
+    "switching machines does to the series, a step landing where the benchmark "
+    "harness itself changed: each is a reason the true answer may be that "
+    "nothing in the reconstruction stack caused this. "
+    "The job reconstructs a frozen simulated input, so every night processes "
+    "the same events: unlike a simulation's, its event sample never re-rolls, "
+    "and a step in an event's time is a change in what the reconstruction does "
+    "with those same events — in a component's own code, in a library it calls, "
+    "or in what an algorithm upstream of it hands it. A component's time that "
+    "moved while the instructions it retired held is the same work running "
+    "faster or slower — the machine, memory or cache behaviour, how a library "
+    "or the compiler built it — not more or less work. "
+    "A harness change is not noise, though — when the harness's own pull "
+    "requests are among the candidates, weigh them like any other. 'None of "
+    "these' is a correct and useful answer, and a confident wrong culprit is "
+    "worse than no culprit. "
+)
+
+#: :data:`WEIGHING_RULE` for a reco job: its configurations are variants of one
+#: job rather than a removal sweep, and its components' costs include the
+#: libraries they call.
+RECO_WEIGHING_RULE = (
+    "Weigh the cross-configuration evidence by these rules. "
+    "(1) Same change, different outcome: when a candidate makes the same change "
+    "to another benchmarked detector that was measured and did not move, that "
+    "detector contradicts the candidate here unless something specific to this "
+    "detector explains the difference. "
+    "(2) Configurations: 'baseline' runs the full reconstruction, and "
+    "'variant_<name>' the same job with one option changed, such as truth "
+    "tracking in place of pattern recognition. A step in the baseline that a "
+    "variant not running the moved component did not show places it in that "
+    "component. "
+    "(3) Configurations stepping in opposite directions, or a few isolated "
+    "configurations on a baseline that did not move, are not one cost. "
+    "(4) A wall-time step the mean event time did not follow happened outside "
+    "the event loop: in initialisation — the geometry, the conditions, detector "
+    "surfaces, models — or in teardown. "
+    "(5) The component breakdown names the algorithms and services whose own "
+    "cost moved and the package each is defined in, but a component's own time "
+    "includes the libraries it calls: GeoSvc's initialisation is DD4hep "
+    "building the geometry from k4geo's detector constructors, a digitiser's "
+    "can be DD4hep building its detector surfaces, a reader's and a writer's "
+    "time is podio and ROOT input and output, and an algorithm running a neural "
+    "network spends its time in ONNX Runtime. The package defining a moved "
+    "component is a lead, not a verdict: a change in a library it calls can be "
+    "the cause. "
+    "(6) Memory metrics (VmPeak, anonymous RSS) are determined primarily by what "
+    "the job loads and keeps — geometry, conditions, models, the heap its "
+    "components hold — and the breakdown of a memory step names the components "
+    "holding more or less heap. Whether a metric depends on the machine that ran "
+    "it is read from the measured host evidence, not assumed. "
+)
+
+#: :data:`EXTERNAL_CHANGE_RULE` for a reco job, whose frozen input no
+#: simulation library or physics data reaches.
+RECO_EXTERNAL_CHANGE_RULE = (
+    "The recorded external changes are facts, never PR candidates. You may name "
+    "one as the explanation in step_assessment.reason and decline all PRs. A "
+    "reconstruction job's input is frozen, so a simulation-library or "
+    "physics-data change does not reach its events; a change to ROOT, the "
+    "compiler or another library it links can change its input and output, its "
+    "code generation or its numerics. A version bump by itself does not "
+    "establish causality or implicate any bundled fix. Never score an external "
+    "change or recommend commenting on it. "
+)
+
+#: :data:`HARNESS_PACKAGE_NOTE` for a reco job.
+RECO_HARNESS_PACKAGE_NOTE = (
+    "  This repository is the benchmark harness itself — it does not run "
+    "inside the reconstruction; it decides how the job is invoked and measured. "
+    "A change here can alter how each component is timed (the auditor), how "
+    "the job is run or its metrics are collected (the runner and benchmark "
+    "drivers), or the benchmark configuration itself — the input file, the "
+    "options, how many events are processed — which can make run-total metrics "
+    "not comparable across the window at all, rather than merely moving them. "
+    "Judge its pull requests through those mechanisms, not as reconstruction "
+    "code."
+)
+
+
+@dataclass(frozen=True)
+class Workload:
+    """What one suite's benchmark runs, in the words the prompts judge it in.
+
+    The rules every suite shares — the score bands, the trust boundary, the
+    step assessment — are written once above. These are the parts that depend
+    on what the benchmark does: a simulation re-rolls its events with every
+    change to what they meet, a reconstruction of a frozen input never does,
+    and only a reconstruction is taken apart into the components it runs.
+    """
+
+    #: What the first pass is given, as its system prompt says.
+    ranker_evidence: str
+    noise_rule: str
+    weighing_rule: str
+    external_change_rule: str
+    #: What the benchmark harness is, under its candidates.
+    harness_note: str
+
+
+#: Each suite's :class:`Workload`.
+WORKLOADS: dict[str, Workload] = {
+    SIM: Workload(
+        ranker_evidence=SIM_RANKER_EVIDENCE,
+        noise_rule=NOISE_RULE,
+        weighing_rule=WEIGHING_RULE,
+        external_change_rule=EXTERNAL_CHANGE_RULE,
+        harness_note=HARNESS_PACKAGE_NOTE,
+    ),
+    RECO: Workload(
+        ranker_evidence=RECO_RANKER_EVIDENCE,
+        noise_rule=RECO_NOISE_RULE,
+        weighing_rule=RECO_WEIGHING_RULE,
+        external_change_rule=RECO_EXTERNAL_CHANGE_RULE,
+        harness_note=RECO_HARNESS_PACKAGE_NOTE,
+    ),
+}
 
 
 # ── Measurements ──────────────────────────────────────────────────────────────
@@ -761,6 +921,51 @@ def region_lines(deltas: tuple[RegionDelta, ...]) -> list[str]:
                 f"      {delta.region}: {delta.base:.4g} -> {delta.onset:.4g} "
                 f"s/event ({delta.delta:+.4g})"
             )
+    return lines
+
+
+#: How :func:`component_lines` names each cost a step is taken apart into,
+#: and its unit.
+_COMPONENT_COSTS = {
+    EVENT: ("own time per event", "s/event"),
+    INITIALIZE: ("own time in initialize", "s"),
+    JOB: ("own time over the whole job", "s"),
+    HEAP: ("heap held at an event's end, typically", "MB"),
+}
+
+
+def component_lines(metric: str, deltas: tuple[ComponentDelta, ...]) -> list[str]:
+    """Which of a reco job's components a step of *metric* moved, largest
+    movement first.
+
+    Each line names the component, the package it is defined in, its cost at
+    both ends of the window and, where counted, how the instructions it retired
+    moved: time that moved with them is more or less work, time that moved
+    while they held is the same work running differently. A component one end
+    did not record says so in words, as :func:`region_lines` does."""
+    cost = _COMPONENT_COSTS.get(DECOMPOSED_AS.get(metric, ""))
+    if not deltas or cost is None:
+        return []
+    what, unit = cost
+    lines = [
+        f"    Which of the job's components moved (each one's {what}, the median "
+        "of each end's nights, with the package it is defined in), largest "
+        "movement first:",
+    ]
+    for delta in deltas:
+        name = f"{delta.component} [{delta.package}]" if delta.package else delta.component
+        if delta.base is None:
+            line = f"      {name}: newly present at {delta.onset:.4g} {unit}"
+        elif delta.onset is None:
+            line = f"      {name}: no longer run (was {delta.base:.4g} {unit})"
+        else:
+            line = (
+                f"      {name}: {delta.base:.4g} -> {delta.onset:.4g} {unit} "
+                f"({delta.delta:+.4g})"
+            )
+        if delta.instructions_change is not None:
+            line += f", instructions {pct_phrase(delta.instructions_change)}"
+        lines.append(line)
     return lines
 
 

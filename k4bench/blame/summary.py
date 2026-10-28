@@ -41,7 +41,7 @@ from k4bench.blame.sweep import (
     TimeShape,
 )
 from k4bench.labels import pretty_sample
-from k4bench.regression.models import RegionDelta
+from k4bench.regression.models import ComponentDelta, RegionDelta
 
 #: How each metric is named to the model.
 METRIC_NAMES = {
@@ -51,6 +51,8 @@ METRIC_NAMES = {
     "wall_time_s": "wall time",
     "peak_vmem_mb": "VmPeak",
     "mean_rss_anon_mb": "anonymous RSS",
+    "initialize_s": "initialize time",
+    "seconds_per_event": "own time per event",
 }
 
 #: Column headings in a sweep table.
@@ -643,6 +645,60 @@ def region_summary_lines(
     return out
 
 
+#: Components named per configuration in the summary; the details carry each
+#: stepped metric's full list.
+_MAX_SUMMARY_COMPONENTS = 3
+
+
+def _component_move(delta: ComponentDelta) -> str:
+    """``"SimulateSiPMwithEdep [k4reccalorimeter] -2.36, instructions -65.9%"``;
+    a component one end did not run says so in words."""
+    name = f"{delta.component} [{delta.package}]" if delta.package else delta.component
+    if delta.base is None:
+        move = f"{name} newly run ({delta.onset:.3g})"
+    elif delta.onset is None:
+        move = f"{name} no longer run (was {delta.base:.3g})"
+    else:
+        move = f"{name} {delta.delta:+.3g}"
+    if delta.instructions_change is not None:
+        move += f", instructions {pct_phrase(delta.instructions_change)}"
+    return move
+
+
+def component_summary_lines(
+    sweep: ScopeSweep, *, indent: str = "  ", limit: int = MAX_EVENT_RECORDS,
+) -> list[str]:
+    """The largest component movements of each configuration of a reco job
+    that stepped — the baseline first — or nothing for a scope not taken apart
+    by component, as a simulated detector's is not.
+
+    Each configuration's are those of its stepped job verdict
+    (:attr:`~k4bench.blame.sweep.SweepRow.components`), in that metric's unit.
+    The instructions beside a move say whether the component did more or less
+    work, or the same work at another speed."""
+    rows = sorted(
+        (row for row in sweep.rows if row.components),
+        key=lambda row: row.label != "baseline",
+    )
+    if not rows:
+        return []
+    out = [
+        f"{indent}- Largest component movements (own cost of each algorithm or "
+        f"service, base → onset, the package it is defined in bracketed):"
+    ]
+    out += [
+        f"{indent}    {row.label}, "
+        f"{METRIC_NAMES.get(row.components_metric, row.components_metric)}: "
+        + "; ".join(_component_move(d) for d in row.components[:_MAX_SUMMARY_COMPONENTS])
+        + "."
+        for row in rows[:limit]
+    ]
+    rest = len(rows) - min(len(rows), limit)
+    if rest > 0:
+        out.append(f"{indent}    (+{rest} more stepped configuration(s) taken apart by component)")
+    return out
+
+
 # ── One line per scope ────────────────────────────────────────────────────────
 
 def scope_state(sweep: ScopeSweep) -> str:
@@ -889,7 +945,8 @@ def scope_evidence_lines(
 ) -> list[str]:
     """Everything the summary says about one scope under judgement: each
     family's reading, the event records and region movements behind a time
-    step, and the history and machines of its representative metric."""
+    step, the component movements behind a reco job's step, and the history
+    and machines of its representative metric."""
     if sweep.unread:
         return [f"{indent}- No reading: {sweep.unread}; unknown, not flat."]
     lines = []
@@ -902,6 +959,7 @@ def scope_evidence_lines(
         lines.append(f"{indent}- Job failure: {failure} — no reading for it, not flat.")
     lines += event_record_lines(sweep, indent=indent)
     lines += region_summary_lines(sweep, indent=indent)
+    lines += component_summary_lines(sweep, indent=indent)
     lines += [
         f"{indent}- {line}"
         for line in history_summary(history, history_metric, history_label)

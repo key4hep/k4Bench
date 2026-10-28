@@ -62,18 +62,17 @@ from k4bench.blame.llm import (
 from k4bench.blame.evidence import ExternalChange
 from k4bench.blame.summary import external_change_lines
 from k4bench.blame.prompt import (
-    EXTERNAL_CHANGE_RULE,
     ASSESSMENT_RULE,
-    HARNESS_PACKAGE_NOTE,
     HISTORICAL_ANALOGUE_RULE,
-    NOISE_RULE,
     SCORE_BAND_RULE,
+    WORKLOADS,
     StepAssessment,
     UNTRUSTED_EVIDENCE_RULE,
-    WEIGHING_RULE,
+    Workload,
     allocate_favoured_diff_budget,
     body_block,
     compact_dir,
+    component_lines,
     detector_switch_lines,
     diff_block,
     direction_phrase,
@@ -108,7 +107,8 @@ from k4bench.blame.summary import (
     touch_lines,
 )
 from k4bench.blame.sweep import ScopeSweep
-from k4bench.regression.models import RegionDelta
+from k4bench.layout import SIM
+from k4bench.regression.models import ComponentDelta, RegionDelta
 
 _log = logging.getLogger(__name__)
 
@@ -178,6 +178,10 @@ class MetricStep:
     #: mechanism the model can match a diff against before it reads any code —
     #: empty for a memory metric, or a run that recorded no region timing.
     regions: tuple[RegionDelta, ...] = ()
+    #: Which of a reco job's components this step moved, largest movement
+    #: first (:class:`~k4bench.regression.models.ComponentDelta`); empty for a
+    #: simulated detector's step.
+    components: tuple[ComponentDelta, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -194,6 +198,9 @@ class RankRequest:
     base_release: str | None
     onset_release: str
     candidates: tuple[RankCandidate, ...] = ()
+    #: The suite whose report the steps are from, which says what the benchmark
+    #: runs (:data:`~k4bench.blame.prompt.WORKLOADS`).
+    suite: str = SIM
     #: The build platforms the window's base and onset runs were measured on,
     #: when either is not ``platform`` — a series continuing a replaced
     #: platform's history. ``None`` means ``platform``.
@@ -312,37 +319,38 @@ class Ranker(Protocol):
 
 # ── The OpenAI-compatible adapter ─────────────────────────────────────────────
 
-_SYSTEM_PROMPT = (
-    "You attribute a software performance regression to the pull request most "
-    "likely responsible — or to none of them, when that is what the evidence "
-    "says. You are given the run context the regression was measured in — one "
-    "detector, one physics sample, one build platform — and an evidence summary "
-    "computed from the measurements: every configuration of that run's "
-    "detector-removal sweep across the same release window, what moved and in "
-    "what shape, the metrics' own history and the machines that measured them, "
-    "which candidates change this detector's geometry and what the other "
-    "benchmarked detectors they change did, and what every other benchmark did "
-    "in the same window. Then the details, and for each package that changed "
-    "the pull requests in its commit range with their code diffs. "
-    "Score each PR independently 0-100 for how likely it caused the regressions "
-    "as a whole, give a one-sentence reason grounded in the diff, and state what "
-    "argues against it. "
-    "For every candidate, ask whether it makes sense that this change affected "
-    "the metrics of the run in the context — its detector, its sample, its "
-    "build, or the shared infrastructure that run goes through (framework, "
-    "allocation, I/O, logging, build flags). A shared-infrastructure cause is a "
-    "perfectly good answer: say so at that level rather than inventing a "
-    "detector- or sample-specific mechanism the diff does not show. A "
-    "configuration that ran the same window and stayed flat bounds what any "
-    "cause can reach: a step in one detector and not another that ran the same "
-    "sample on the same platform argues against a shared-infrastructure cause. "
-    + NOISE_RULE
-    + WEIGHING_RULE
-    + SCORE_BAND_RULE
-    + ASSESSMENT_RULE
-    + UNTRUSTED_EVIDENCE_RULE
-    + "Do not invent PRs. Output JSON only."
-)
+def _system_prompt(workload: Workload) -> str:
+    """The first pass's system prompt for a suite's benchmark (*workload*)."""
+    return (
+        "You attribute a software performance regression to the pull request most "
+        "likely responsible — or to none of them, when that is what the evidence "
+        "says. "
+        + workload.ranker_evidence
+        + "Then the details, and for each package that changed "
+        "the pull requests in its commit range with their code diffs. "
+        "Score each PR independently 0-100 for how likely it caused the regressions "
+        "as a whole, give a one-sentence reason grounded in the diff, and state what "
+        "argues against it. "
+        "For every candidate, ask whether it makes sense that this change affected "
+        "the metrics of the run in the context — its detector, its sample, its "
+        "build, or the shared infrastructure that run goes through (framework, "
+        "allocation, I/O, logging, build flags). A shared-infrastructure cause is a "
+        "perfectly good answer: say so at that level rather than inventing a "
+        "detector- or sample-specific mechanism the diff does not show. A "
+        "configuration that ran the same window and stayed flat bounds what any "
+        "cause can reach: a step in one detector and not another that ran the same "
+        "sample on the same platform argues against a shared-infrastructure cause. "
+        + workload.noise_rule
+        + workload.weighing_rule
+        + SCORE_BAND_RULE
+        + ASSESSMENT_RULE
+        + UNTRUSTED_EVIDENCE_RULE
+        + "Do not invent PRs. Output JSON only."
+    )
+
+
+#: :func:`_system_prompt` for each suite.
+_SYSTEM_PROMPTS = {suite: _system_prompt(workload) for suite, workload in WORKLOADS.items()}
 
 #: Total *diff* budget (chars) across all candidates. Per-PR patches are
 #: already bounded in :mod:`k4bench.blame.github`; this is the backstop that
@@ -618,10 +626,11 @@ class OpenAICompatRanker:
         belongs to the first call and the evidence to the one that answers it,
         and a prompt carrying both would let a model that has already been given
         what it asked for ask again."""
+        workload = WORKLOADS[request.suite]
         return self.client.complete(
-            _SYSTEM_PROMPT + (
+            _SYSTEM_PROMPTS[request.suite] + (
                 HISTORICAL_ANALOGUE_RULE if evidence is not None else ""
-            ) + (EXTERNAL_CHANGE_RULE if request.external_changes else ""),
+            ) + (workload.external_change_rule if request.external_changes else ""),
             _build_user_prompt(
                 request, offer=offer, offer_omitted=offer_omitted, evidence=evidence,
             ),
@@ -729,6 +738,7 @@ def _history_lines(request: RankRequest) -> list[str]:
             readings=step is not summarised, stated=stated,
         )
         lines += region_lines(step.regions)
+        lines += component_lines(step.metric, step.components)
     remaining = sum(1 for step in ranked if step.history) - len(shown)
     if remaining > 0:
         # Never "with a similar history": nothing checks that, and the model
@@ -980,7 +990,7 @@ def _build_user_prompt(
         parts.append("")
         parts.append(f"## {repo}")
         if repo == request.harness_repo:
-            parts.append(HARNESS_PACKAGE_NOTE)
+            parts.append(WORKLOADS[request.suite].harness_note)
         for candidate in candidates:
             parts.append(_render_candidate(
                 candidate, budget_for[candidate],

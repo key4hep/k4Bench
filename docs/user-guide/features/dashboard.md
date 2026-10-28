@@ -878,10 +878,15 @@ and on its job's initialize time, and each of its components on its own:
 
 Sequencers are not judged: their own cost is the bookkeeping of the calls they
 run. Nor are a component's instructions, allocations or heap: they say what it
-did, not what it cost, and would count one step twice beside its time. This
-page does not read the reports yet, so it has no Regressions or Stack Changes
-section and its views carry no verdicts: every value is the measurement as
-uploaded.
+did, not what it cost, and would count one step twice beside its time. They
+are the evidence instead: every confirmed step is taken apart into the
+components whose own cost moved, with the package each is defined in and how
+the instructions it retired moved (`component_deltas`, see
+[File formats](../../reference/file-formats.md)), and the blame ranker reads
+that breakdown when it attributes the step. Pull-request comments cover the
+simulation suite alone. This page does not read the reports yet, so it has no
+Regressions or Stack Changes section and its views carry no verdicts: every
+value is the measurement as uploaded.
 
 Each section answers one question. Where it can be looked at two ways, a
 choice at its top (in the URL too) says which:

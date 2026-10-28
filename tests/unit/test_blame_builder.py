@@ -23,6 +23,7 @@ from k4bench.blame.models import CandidatePR, StepAssessment
 from k4bench.blame.rank import Ranking, RankResult
 from k4bench.blame.rank import StepAssessment as RankStepAssessment
 from k4bench.regression.models import (
+    ComponentDelta,
     Direction,
     MetricVerdict,
     NightlyReport,
@@ -334,6 +335,20 @@ def _two_candidates(monkeypatch):
             patches={10: "diff for 10", 11: "diff for 11"},
         )
     _stub_resolve(monkeypatch, fake_resolve)
+
+
+def test_a_reco_report_is_ranked_as_a_reco_job_with_its_component_movements(monkeypatch):
+    _two_candidates(monkeypatch)
+    moved = (ComponentDelta("MyConformalTracking", 2.25, 3.37, 1.12, package="conformaltracking"),)
+    verdict = dataclasses.replace(_verdict(metric="mean_time_s"), component_deltas=moved)
+    ranker = _FakeRanker()
+    build_blame_report(
+        dataclasses.replace(_report([verdict]), suite="reco"),
+        packages_for_release=_MOVED, github=GitHubClient(), ranker=ranker,
+    )
+    (request,) = ranker.requests
+    assert request.suite == "reco"
+    assert request.metrics[0].components == moved
 
 
 def test_truncation_reason_reaches_sidecar_and_suppresses_ranking(monkeypatch):

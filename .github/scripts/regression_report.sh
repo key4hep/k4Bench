@@ -160,22 +160,15 @@ echo "::endgroup::"
 # which would contend for CPU. blame_report.py reads all of these straight from
 # the environment. A hard wall-clock limit also covers a provider that accepts
 # connections but never makes useful progress.
-# Attribution covers the sim suite alone: the ranker's prompts, the comment
-# markers and the recipes describe ddsim runs. Another suite's report is built,
-# uploaded and mailed without a sidecar, and so without comments (5c).
 echo "::group::5b. Blame sidecar"
 {
-    if [[ "${K4BENCH_SUITE}" == sim ]]; then
-        timeout --signal=TERM --kill-after=30s "${K4BENCH_BLAME_TIMEOUT:-1h}" \
-          python .github/scripts/blame_report.py \
-            --report report/report.json \
-            --output-dir report \
-            --cache-dir "${RUNNER_TEMP:-/tmp}/k4bench_cache" \
-            --data-url "${K4BENCH_DATA_URL}" \
-          || echo "No blame sidecar this night (nothing to attribute, incomplete ranking, timeout, or another best-effort failure)." >&2
-    else
-        echo "No blame sidecar for the ${K4BENCH_SUITE} suite: attribution covers the sim suite alone."
-    fi
+    timeout --signal=TERM --kill-after=30s "${K4BENCH_BLAME_TIMEOUT:-1h}" \
+      python .github/scripts/blame_report.py \
+        --report report/report.json \
+        --output-dir report \
+        --cache-dir "${RUNNER_TEMP:-/tmp}/k4bench_cache" \
+        --data-url "${K4BENCH_DATA_URL}" \
+      || echo "No blame sidecar this night (nothing to attribute, incomplete ranking, timeout, or another best-effort failure)." >&2
     if [[ -f report/blame.json ]]; then
         # Remove the previous sidecar before uploading: if the upload then
         # fails, the night is left with *no* sidecar — absence is the safe
@@ -207,8 +200,12 @@ echo "::endgroup::"
 # script logs the comments it would post and writes nothing. Isolated exactly
 # like 5b: writing into someone else's repository must never be able to fail the
 # report or hold up the e-group email below.
+# Comments cover the sim suite alone: their markers and recipes describe ddsim
+# runs, so another suite's sidecar is published and mailed, never posted.
 echo "::group::5c. Pull-request comments"
-if [[ -f report/blame.json ]]; then
+if [[ "${K4BENCH_SUITE}" != sim ]]; then
+    echo "No pull-request comments for the ${K4BENCH_SUITE} suite: they cover the sim suite alone."
+elif [[ -f report/blame.json ]]; then
     {
         # The write token enters exactly one process, here, and only for the
         # length of this call: its dependencies were installed in step 3, with

@@ -26,7 +26,8 @@ from k4bench.blame import rank as rank_mod
 from k4bench.blame.llm import ChatClient
 from k4bench.labels import pretty_sample
 from k4bench.blame.evidence import HistoryPoint, MetricHistory, ScopeOutcome
-from k4bench.regression.models import RegionDelta
+from k4bench.layout import RECO, SIM
+from k4bench.regression.models import ComponentDelta, RegionDelta
 from k4bench.blame.prompt import (
     ASSESSMENT_RULE,
     NOISE_RULE,
@@ -101,7 +102,7 @@ def _calls(ranker: OpenAICompatRanker) -> list:
 
 
 def _request(candidates=None, metrics=None, detector="IDEA_o1_v03",
-             sample="single_mu-") -> RankRequest:
+             sample="single_mu-", suite=SIM) -> RankRequest:
     if candidates is None:
         candidates = (
             RankCandidate(repo="key4hep/k4geo", number=10, title="Lower the step limit",
@@ -120,6 +121,7 @@ def _request(candidates=None, metrics=None, detector="IDEA_o1_v03",
         sample=sample,
         base_release="2026-07-03", onset_release="2026-07-04",
         candidates=candidates,
+        suite=suite,
     )
 
 
@@ -179,7 +181,7 @@ def test_prompt_allows_a_shared_infrastructure_answer():
     # framework, allocation or build-flag change moves the metrics without one.
     # Demanding a context-specific story would make the model invent it.
     prompt = _build_user_prompt(_request())
-    assert "shared infrastructure" in rank_mod._SYSTEM_PROMPT
+    assert "shared infrastructure" in rank_mod._SYSTEM_PROMPTS[SIM]
     assert "shared code the run goes through" in prompt
 
 
@@ -247,7 +249,7 @@ def test_system_message_travels_with_every_call():
     ))])
     ranker.rank(_request())
     messages = _calls(ranker)[0].json["messages"]
-    assert messages[0] == {"role": "system", "content": rank_mod._SYSTEM_PROMPT}
+    assert messages[0] == {"role": "system", "content": rank_mod._SYSTEM_PROMPTS[SIM]}
     assert "- Detector: IDEA_o1_v03" in messages[1]["content"]
 
 
@@ -743,7 +745,7 @@ def test_the_rules_the_second_pass_is_judged_under_are_the_same_ones():
     # what 70 means would make that revision meaningless.
     from k4bench.blame import attribute as attribute_mod
     for rule in (SCORE_BAND_RULE, NOISE_RULE, ASSESSMENT_RULE, UNTRUSTED_EVIDENCE_RULE):
-        assert rule in rank_mod._SYSTEM_PROMPT
+        assert rule in rank_mod._SYSTEM_PROMPTS[SIM]
         assert rule in attribute_mod._SYSTEM_PROMPT
 
 
@@ -846,11 +848,58 @@ def test_the_prompt_carries_the_region_breakdown_of_the_largest_movers():
     assert "HCAL_barrel: 0.31 -> 4.52 s/event (+4.21)" in prompt
 
 
+def test_the_prompt_carries_which_components_of_a_reco_job_moved():
+    prompt = rank_mod._build_user_prompt(_request(suite=RECO, metrics=(
+        MetricStep(metric="mean_time_s", metric_family="time", direction="DOWN",
+                   pct_change=-0.15, label="baseline", history=_history(),
+                   components=(
+                       ComponentDelta("SimulateSiPMwithEdep", 3.885, 1.526, -2.359,
+                                      package="k4reccalorimeter", instructions_change=-0.659),
+                       ComponentDelta("GGTFTrackFinder", 14.01, 14.11, 0.1),
+                   )),
+    )))
+    assert "Which of the job's components moved (each one's own time per event" in prompt
+    assert (
+        "SimulateSiPMwithEdep [k4reccalorimeter]: 3.885 -> 1.526 s/event (-2.359), "
+        "instructions -65.9%"
+    ) in prompt
+    assert "GGTFTrackFinder: 14.01 -> 14.11 s/event (+0.1)\n" in prompt
+
+
+def test_a_reco_job_is_judged_in_the_words_of_a_reconstruction():
+    from k4bench.blame.prompt import (
+        RECO_NOISE_RULE,
+        RECO_RANKER_EVIDENCE,
+        RECO_WEIGHING_RULE,
+    )
+    reco, sim = rank_mod._SYSTEM_PROMPTS[RECO], rank_mod._SYSTEM_PROMPTS[SIM]
+    for rule in (RECO_RANKER_EVIDENCE, RECO_NOISE_RULE, RECO_WEIGHING_RULE):
+        assert rule in reco and rule not in sim
+    # The rules every suite is scored under are the same words.
+    for rule in (SCORE_BAND_RULE, ASSESSMENT_RULE, UNTRUSTED_EVIDENCE_RULE):
+        assert rule in reco
+    # A frozen input never re-rolls, and a reco job has no removal sweep.
+    assert "fixed random seed" not in reco and "detector-removal sweep" not in reco
+    assert "frozen simulated input" in reco
+
+
+def test_a_reco_request_is_sent_with_the_reco_system_prompt():
+    ranker = _ranker([_completion(_rankings_json(
+        {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 1, "reason": "x"},
+        {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 1, "reason": "y"},
+    ))])
+    ranker.rank(_request(suite=RECO))
+    assert _calls(ranker)[0].json["messages"][0] == {
+        "role": "system", "content": rank_mod._SYSTEM_PROMPTS[RECO],
+    }
+
+
 # ── The harness in the prompt ─────────────────────────────────────────────────
 
 def test_the_system_prompt_names_the_harness_alternative():
-    from k4bench.blame.rank import _SYSTEM_PROMPT
-    assert "benchmark harness itself changed" in _SYSTEM_PROMPT
+    from k4bench.blame.rank import _SYSTEM_PROMPTS
+    for prompt in _SYSTEM_PROMPTS.values():
+        assert "benchmark harness itself changed" in prompt
 
 
 def test_the_harness_group_is_explained_and_kept_out_of_the_stack_count():
@@ -1056,7 +1105,7 @@ def test_the_evidence_reading_is_logged_and_never_stored(caplog):
 
 def test_the_system_prompt_carries_the_weighing_rules():
     from k4bench.blame.prompt import WEIGHING_RULE
-    assert WEIGHING_RULE in rank_mod._SYSTEM_PROMPT
+    assert WEIGHING_RULE in rank_mod._SYSTEM_PROMPTS[SIM]
     assert "Same change, different outcome" in WEIGHING_RULE
     assert "only for a step in the typical event or in memory" in WEIGHING_RULE
 

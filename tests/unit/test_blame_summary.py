@@ -19,6 +19,7 @@ from k4bench.blame.summary import (
     family_reading_lines,
     file_change_phrase,
     history_summary,
+    component_summary_lines,
     region_summary_lines,
     scope_evidence_lines,
     scope_line,
@@ -27,6 +28,7 @@ from k4bench.blame.summary import (
 )
 from k4bench.blame.sweep import scope_sweep, time_shape
 from k4bench.regression.models import (
+    ComponentDelta,
     Direction,
     EventProfile,
     EventSample,
@@ -464,6 +466,39 @@ def test_the_summary_carries_the_largest_region_movements_of_each_timing_step():
     # Medians do not add up, so no region is given a share of the step.
     assert "%" not in "\n".join(region_summary_lines(sweep))
     assert region_summary_lines(sweep)[1] in scope_evidence_lines(sweep)
+
+
+def test_the_summary_names_the_largest_component_movements_of_a_reco_job():
+    moved = (
+        ComponentDelta("SimulateSiPMwithEdep", 3.885, 1.526, -2.359,
+                       package="k4reccalorimeter", instructions_change=-0.659),
+        ComponentDelta("TopoClusterGrower", 2.1, 2.08, -0.02, instructions_change=0.0),
+        ComponentDelta("NewAlg", None, 0.01, 0.01),
+        ComponentDelta("Reader", 0.5, 0.501, 0.001),
+    )
+    sweep = _sweep([
+        _v("variant_x", "mean_time_s", -0.120, Severity.CONFIRMED, component_deltas=moved[1:]),
+        _v("baseline", "mean_time_s", -0.150, Severity.CONFIRMED, component_deltas=moved),
+        dataclasses.replace(
+            _v("baseline", "seconds_per_event", -0.6, Severity.CONFIRMED,
+               component_deltas=moved[:1]),
+            sub_detector="SimulateSiPMwithEdep",
+        ),
+    ])
+    assert component_summary_lines(sweep) == [
+        "  - Largest component movements (own cost of each algorithm or service, "
+        "base → onset, the package it is defined in bracketed):",
+        "      baseline, mean event time: SimulateSiPMwithEdep [k4reccalorimeter] -2.36, "
+        "instructions -65.9%; TopoClusterGrower -0.02, instructions +0.0%; "
+        "NewAlg newly run (0.01).",
+        "      variant_x, mean event time: TopoClusterGrower -0.02, instructions +0.0%; "
+        "NewAlg newly run (0.01); Reader +0.001.",
+    ]
+    assert component_summary_lines(sweep)[1] in scope_evidence_lines(sweep)
+    # A simulated detector is not taken apart by component.
+    assert component_summary_lines(_sweep([
+        _v("baseline", "mean_time_s", +0.100, Severity.CONFIRMED, region_deltas=_REGIONS),
+    ])) == []
 
 
 def test_each_shape_in_the_scope_line_carries_its_own_example():

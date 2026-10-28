@@ -35,6 +35,7 @@ from k4bench.blame.rank import (
     RankResult,
 )
 from k4bench.blame.sweep import ScopeSweep, window_sweeps
+from k4bench.layout import SIM
 from k4bench.regression.models import MetricVerdict, NightlyReport
 
 _log = logging.getLogger(__name__)
@@ -164,6 +165,7 @@ def _rank_group(
     sweeps: tuple[ScopeSweep, ...] = (),
     geometry: dict[str, str] | None = None,
     externals: tuple[ExternalChange, ...] = (),
+    suite: str = SIM,
 ) -> RankResult:
     """The ranker's judgement of one rank group: a score per candidate, and its
     read of the step itself.
@@ -215,6 +217,7 @@ def _rank_group(
             outcomes=outcomes, changed_count=changed_count,
             n_unchanged=n_unchanged, geometry_path=geometry_path,
             history=history, sweeps=sweeps, geometry=geometry, externals=externals,
+            suite=suite,
         )
     return rank_cache[rank_group]
 
@@ -233,6 +236,7 @@ def _run_ranker(
     sweeps: tuple[ScopeSweep, ...] = (),
     geometry: dict[str, str] | None = None,
     externals: tuple[ExternalChange, ...] = (),
+    suite: str = SIM,
 ) -> RankResult:
     """One guarded rank call. Any exception degrades to an empty result and is
     cached as such, so a broken ranker is asked at most once per detector/
@@ -244,6 +248,7 @@ def _run_ranker(
             outcomes=outcomes, changed_count=changed_count,
             n_unchanged=n_unchanged, geometry_path=geometry_path,
             history=history, sweeps=sweeps, geometry=geometry, externals=externals,
+            suite=suite,
         )
         if not request.candidates and not request.external_changes:
             return RankResult()
@@ -302,6 +307,7 @@ def _rank_request(
     sweeps: tuple[ScopeSweep, ...] = (),
     geometry: dict[str, str] | None = None,
     externals: tuple[ExternalChange, ...] = (),
+    suite: str = SIM,
 ) -> RankRequest:
     """Assemble the ranker's input: every metric that stepped across the shared
     window with its own recent history, the configurations that measured the
@@ -337,6 +343,7 @@ def _rank_request(
                 m, packages_changed=_packages_changed(m, changed_count)
             ),
             regions=m.region_deltas,
+            components=m.component_deltas,
         )
         for m in verdicts
     )
@@ -366,6 +373,7 @@ def _rank_request(
     scope = (v.detector, v.platform, v.sample)
     return RankRequest(
         metrics=metrics,
+        suite=suite,
         detector=v.detector, platform=v.platform, sample=v.sample,
         base_release=v.last_accepted_run_date,
         onset_release=v.onset_run_date,
