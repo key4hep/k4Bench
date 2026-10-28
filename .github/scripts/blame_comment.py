@@ -60,15 +60,15 @@ sys.path.insert(0, str(_REPO_ROOT))
 _log = logging.getLogger(__name__)
 
 
-def _benchmark_inputs(root: Path = _REPO_ROOT / ".github" / "benchmarks") -> dict:
-    """Legacy run-info supplements keyed by ``(detector, sample)``, from the sim
-    suite's benchmark configs."""
+def _benchmark_inputs(
+    suite: str, root: Path = _REPO_ROOT / ".github" / "benchmarks",
+) -> dict:
+    """Legacy run-info supplements keyed by ``(detector, sample)``, from
+    *suite*'s benchmark configs."""
     import yaml
 
-    from k4bench.layout import SIM
-
     inputs = {}
-    for path in sorted(root.glob(f"{SIM}/*/*.yml")):
+    for path in sorted(root.glob(f"{suite}/*/*.yml")):
         try:
             data = yaml.safe_load(path.read_text()) or {}
         except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
@@ -86,14 +86,14 @@ def _benchmark_inputs(root: Path = _REPO_ROOT / ".github" / "benchmarks") -> dic
     return inputs
 
 
-def run_info_source(data_url: str | None):
-    """Memoized exact-run reader, enriched for pre-metadata HepMC runs."""
+def run_info_source(data_url: str | None, suite: str):
+    """Memoized exact-run reader over *suite*'s runs, enriched for
+    pre-metadata HepMC runs."""
     if not data_url:
         return None
-    from k4bench.layout import SIM
     from k4bench.remote import fetch_run_info
 
-    fallback = _benchmark_inputs()
+    fallback = _benchmark_inputs(suite)
     cache: dict[tuple[str, str, str, str, str], dict | None] = {}
 
     def run_info_for(
@@ -101,7 +101,7 @@ def run_info_source(data_url: str | None):
     ) -> dict | None:
         key = (detector, platform, stack, sample, run_id)
         if key not in cache:
-            info = fetch_run_info(data_url, SIM, *key)
+            info = fetch_run_info(data_url, suite, *key)
             if info is not None:
                 info = dict(info)
                 legacy = fallback.get((detector, sample), {})
@@ -117,11 +117,11 @@ def run_info_source(data_url: str | None):
 
 
 def reproducer_publisher(
-    eos_dir: str | None, data_url: str | None, *, dry_run: bool = False
+    eos_dir: str | None, data_url: str | None, suite: str, *, dry_run: bool = False
 ):
     """``(facts) -> url`` that publishes one recipe beside the nightly data.
 
-    The recipe is a plain-text file under ``{EOS_ROOT}/reproducers/sim/``, named
+    The recipe is a plain-text file under ``{EOS_ROOT}/reproducers/{suite}/``, named
     for the measurement and window it reproduces, and read back over the same
     WebEOS host the dashboard uses. Both ends are needed: without a write
     target there is nowhere to put it, and without a read base there is no link
@@ -140,7 +140,7 @@ def reproducer_publisher(
     if not eos_dir or not data_url:
         return None
     from k4bench.blame.reproduce import artifact_name, render_text
-    from k4bench.layout import SIM, reproducer_path, store_url
+    from k4bench.layout import reproducer_path, store_url
 
     made = {"dir": False}
 
@@ -151,7 +151,7 @@ def reproducer_publisher(
                       facts.label)
             return None
         name = artifact_name(facts)
-        target = store_url(data_url, f"{reproducer_path(SIM)}/{name}")
+        target = store_url(data_url, f"{reproducer_path(suite)}/{name}")
         if dry_run:
             _log.info("blame_comment: dry run — would publish %s", target)
             return target
@@ -458,9 +458,10 @@ def main(argv: list[str] | None = None) -> int:
         plans,
         attributor=attributor,
         **review_inputs(args.read_token, attributor),
-        run_info_for=run_info_source(args.data_url),
+        # The runs behind a report are its own suite's: it judged no other.
+        run_info_for=run_info_source(args.data_url, report.suite),
         reproducer_url_for=reproducer_publisher(
-            args.reproducer_dir, args.data_url, dry_run=dry_run
+            args.reproducer_dir, args.data_url, report.suite, dry_run=dry_run
         ),
         dashboard_url=args.dashboard_url,
         min_score=policy.min_score,

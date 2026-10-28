@@ -145,16 +145,18 @@ def test_repository_lineage_retires_on_a_second_bump():
     lineage = Path(__file__).parents[2] / "k4bench/regression/lineage.py"
     namespace = {}
     exec(bump.edit_lineage(lineage.read_text(), "ALLEGRO_o1_v04", "ALLEGRO_o1_v05"), namespace)
-    assert namespace["is_detector_replaced"]("ALLEGRO_o1_v03")
-    assert namespace["is_detector_replaced"]("ALLEGRO_o1_v04")
-    assert not namespace["is_detector_replaced"]("ALLEGRO_o1_v05")
+    assert namespace["is_detector_replaced"]("ALLEGRO_o1_v03", "sim")
+    assert namespace["is_detector_replaced"]("ALLEGRO_o1_v04", "sim")
+    assert not namespace["is_detector_replaced"]("ALLEGRO_o1_v05", "sim")
     # Reports and the dashboard stop expecting v03 once v04 or v05 has run.
-    assert namespace["successor_series"]("ALLEGRO_o1_v03", "p") == (
+    assert namespace["successor_series"]("ALLEGRO_o1_v03", "p", "sim") == (
         ("ALLEGRO_o1_v04", "p"), ("ALLEGRO_o1_v05", "p"),
     )
     # Its history is not continued: v04 is judged cold, v05 continues v04.
-    assert namespace["detector_predecessor_of"]("ALLEGRO_o1_v04") is None
-    assert namespace["detector_predecessor_of"]("ALLEGRO_o1_v05") == "ALLEGRO_o1_v04"
+    assert namespace["detector_predecessor_of"]("ALLEGRO_o1_v04", "sim") is None
+    assert namespace["detector_predecessor_of"]("ALLEGRO_o1_v05", "sim") == "ALLEGRO_o1_v04"
+    # The bump is the sim suite's: the reco benchmark of v04 still runs.
+    assert not namespace["is_detector_replaced"]("ALLEGRO_o1_v04", "reco")
 
 
 def test_a_rejected_version_lets_the_next_family_through(tree, monkeypatch, capsys, tmp_path):

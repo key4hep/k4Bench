@@ -9,6 +9,8 @@ from __future__ import annotations
 import streamlit as st
 
 import sim_page
+from k4bench.layout import RECO
+from k4bench.regression.render import SUITE_PAGE_PATHS
 from reco import page as reco_page
 from ui_chrome import configure_page
 
@@ -20,7 +22,7 @@ PAGES = [
     ),
     st.Page(
         reco_page.main, title=reco_page.RECO_PAGE.title, icon=":material/account_tree:",
-        url_path="reconstruction",
+        url_path=SUITE_PAGE_PATHS[RECO],
     ),
 ]
 

@@ -1,15 +1,16 @@
 #!/bin/bash
 #
-# Builds the sim suite's nightly regression report from the EOS run history,
-# uploads it to EOS ({EOS_ROOT}/reports/sim/{YYYY-MM-DD}/report.json, read back
-# by the dashboard's Regressions tab) and emails the CERN e-group when the report is
-# alertable. Runs after every benchmark job of the nightly workflow — also on
-# partial failures, so a crashed detector job surfaces as a FAILURE verdict
-# (via its missing run) instead of vanishing, and also on a fan-out that
-# uploaded nothing at all, which the report script turns into an outage report
-# for tonight rather than a second copy of last night's.
+# Builds one suite's nightly regression report from the EOS run history,
+# uploads it to EOS ({EOS_ROOT}/reports/{suite}/{YYYY-MM-DD}/report.json, read
+# back by the dashboard's Regressions tab) and emails the CERN e-group when the
+# report is alertable. Runs after every benchmark job of the nightly workflow —
+# also on partial failures, so a crashed detector job surfaces as a FAILURE
+# verdict (via its missing run) instead of vanishing, and also on a fan-out
+# that uploaded nothing at all, which the report script turns into an outage
+# report for tonight rather than a second copy of last night's.
 #
 # Required env vars (set by the workflow):
+#   K4BENCH_SUITE                 — the suite to judge (k4bench/layout.py SUITES)
 #   K4BENCH_DATA_URL              — WebEOS base URL of the benchmark data (also
 #                                   the read base for the published recipes)
 #   X509_USER_CERT, X509_USER_KEY — EOS service certificate paths
@@ -59,6 +60,9 @@ set -euo pipefail
 PR_COMMENT_TOKEN="${K4BENCH_PR_COMMENT_TOKEN:-}"
 unset K4BENCH_PR_COMMENT_TOKEN
 
+# Checked before anything is installed: every path below is the suite's.
+: "${K4BENCH_SUITE:?K4BENCH_SUITE must name the suite to judge}"
+
 # Personal EOS area (same as nightly_benchmark.sh).
 EOS_FQDN="eosuser.cern.ch"
 EOS_ROOT="/eos/user/j/jbeirer/k4bench"
@@ -104,6 +108,7 @@ echo "::endgroup::"
 # so nothing below publishes.
 echo "::group::4. Build the report"
 python .github/scripts/regression_report.py \
+    --suite "${K4BENCH_SUITE}" \
     --data-url "${K4BENCH_DATA_URL}" \
     --cache-dir "${RUNNER_TEMP:-/tmp}/k4bench_cache" \
     --output-dir report
@@ -124,13 +129,13 @@ voms-proxy-init \
 unset X509_USER_CERT
 unset X509_USER_KEY
 
-# The report and recipe directories k4bench/layout.py defines for the sim suite.
+# The report and recipe directories k4bench/layout.py defines for the suite.
 # Assigned before `read` splits them: a failure inside a here-string's command
 # substitution would not trip `set -e`, and empty paths would publish at the
 # store root.
 LAYOUT_DIRS="$(python -c \
-    'import sys; from k4bench.layout import SIM, report_path, reproducer_path; print(report_path(SIM, sys.argv[1]), reproducer_path(SIM))' \
-    "${NIGHT}")"
+    'import sys; from k4bench.layout import report_path, reproducer_path; print(report_path(sys.argv[1], sys.argv[2]), reproducer_path(sys.argv[1]))' \
+    "${K4BENCH_SUITE}" "${NIGHT}")"
 read -r REPORT_DIR REPRODUCER_DIR <<< "${LAYOUT_DIRS}"
 [[ -n "${REPORT_DIR}" && -n "${REPRODUCER_DIR}" ]] \
     || { echo "ERROR: could not resolve the report and reproducer directories" >&2; exit 1; }
@@ -155,15 +160,22 @@ echo "::endgroup::"
 # which would contend for CPU. blame_report.py reads all of these straight from
 # the environment. A hard wall-clock limit also covers a provider that accepts
 # connections but never makes useful progress.
+# Attribution covers the sim suite alone: the ranker's prompts, the comment
+# markers and the recipes describe ddsim runs. Another suite's report is built,
+# uploaded and mailed without a sidecar, and so without comments (5c).
 echo "::group::5b. Blame sidecar"
 {
-    timeout --signal=TERM --kill-after=30s "${K4BENCH_BLAME_TIMEOUT:-1h}" \
-      python .github/scripts/blame_report.py \
-        --report report/report.json \
-        --output-dir report \
-        --cache-dir "${RUNNER_TEMP:-/tmp}/k4bench_cache" \
-        --data-url "${K4BENCH_DATA_URL}" \
-      || echo "No blame sidecar this night (nothing to attribute, incomplete ranking, timeout, or another best-effort failure)." >&2
+    if [[ "${K4BENCH_SUITE}" == sim ]]; then
+        timeout --signal=TERM --kill-after=30s "${K4BENCH_BLAME_TIMEOUT:-1h}" \
+          python .github/scripts/blame_report.py \
+            --report report/report.json \
+            --output-dir report \
+            --cache-dir "${RUNNER_TEMP:-/tmp}/k4bench_cache" \
+            --data-url "${K4BENCH_DATA_URL}" \
+          || echo "No blame sidecar this night (nothing to attribute, incomplete ranking, timeout, or another best-effort failure)." >&2
+    else
+        echo "No blame sidecar for the ${K4BENCH_SUITE} suite: attribution covers the sim suite alone."
+    fi
     if [[ -f report/blame.json ]]; then
         # Remove the previous sidecar before uploading: if the upload then
         # fails, the night is left with *no* sidecar — absence is the safe
@@ -184,7 +196,7 @@ echo "::endgroup::"
 # why this step reads K4BENCH_LLM_* and GITHUB_TOKEN as well; with no model
 # configured the comments render from the sidecar's per-configuration scores.
 # It also publishes each comment's runnable recipe as a plain-text file under
-# {EOS_ROOT}/reproducers/sim/ — named for the measurement and window it
+# {EOS_ROOT}/reproducers/{suite}/ — named for the measurement and window it
 # reproduces, so a re-run replaces the file a standing comment already links —
 # and it does so *before* posting, so a comment never carries a link that 404s.
 # The proxy from step 5 is still valid here; a failed upload costs the link

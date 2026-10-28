@@ -13,7 +13,7 @@ import requests
 
 import pandas as pd
 
-from k4bench.layout import SIM, run_path
+from k4bench.layout import RECO, SIM, run_path
 from k4bench.regression.engine import BASELINE_WINDOW_RUNS
 from k4bench.regression.lineage import DETECTOR_SUCCESSORS, PLATFORM_SUCCESSORS
 from k4bench.regression.models import (
@@ -539,6 +539,23 @@ def _local_tree(root: Path, detector: str, sample: str) -> Path:
     return root / run_path(SIM, detector) / _PLAT / _STACK / sample
 
 
+def test_each_suite_reports_its_own_run_tree_alone(tmp_path):
+    # A sim and a reco benchmark of one detector share its name and nothing
+    # else: each report judges its own suite's runs and says which suite it is.
+    _make_history(_local_tree(tmp_path, "DET", "single_e"), [100.0] * 12)
+    reco_root = tmp_path / run_path(RECO, "DET") / _PLAT / _STACK / "p8_ee_Zbb_ecm91"
+    _make_history(reco_root, [40.0] * 12)
+
+    sim = build_nightly_report_local(str(tmp_path), SIM)
+    reco = build_nightly_report_local(str(tmp_path), RECO)
+
+    assert (sim.suite, reco.suite) == (SIM, RECO)
+    assert [g.sample for g in sim.groups] == ["single_e"]
+    assert [g.sample for g in reco.groups] == ["p8_ee_Zbb_ecm91"]
+    walls = {v.value for v in reco.groups[0].verdicts if v.metric == "wall_time_s"}
+    assert walls == {40.0}
+
+
 def test_local_report_flags_missing_run_and_drops_retired(tmp_path):
     # DET_A ran through 2026-01-12 (report night). DET_B stopped 3 days short
     # (missing run → failure); DET_C stopped 3 weeks ago (retired → dropped).
@@ -550,7 +567,7 @@ def test_local_report_flags_missing_run_and_drops_retired(tmp_path):
             _local_tree(tmp_path, "DET_C", "single_e") / night,
             night=night,
         )
-    report = build_nightly_report_local(str(tmp_path))
+    report = build_nightly_report_local(str(tmp_path), SIM)
 
     assert report.report_night == "2026-01-12"
     by_det = report.by_detector()
@@ -570,7 +587,7 @@ def test_local_report_keeps_a_triple_one_night_behind(tmp_path):
     _make_history(_local_tree(tmp_path, "DET_A", "single_e"), [100.0] * 13)
     walls = [100.0] * 10 + [120.0, 120.5]  # a step DET_B must still report
     _make_history(_local_tree(tmp_path, "DET_B", "single_e"), walls)
-    report = build_nightly_report_local(str(tmp_path))
+    report = build_nightly_report_local(str(tmp_path), SIM)
 
     assert report.report_night == "2026-01-13"
     late = next(g for g in report.groups if g.detector == "DET_B")
@@ -593,7 +610,7 @@ def test_ci_run_id_keeps_a_triple_that_ran_in_this_batch(tmp_path):
                   per_night={12: {"github_run_url": f"{_RUN}/900"}})
     _make_history(_local_tree(tmp_path, "DET_B", "single_e"), [100.0] * 12,
                   per_night={11: {"github_run_url": f"{_RUN}/900"}})
-    report = build_nightly_report_local(str(tmp_path))
+    report = build_nightly_report_local(str(tmp_path), SIM)
 
     late = next(g for g in report.groups if g.detector == "DET_B")
     assert late.run_date == "2026-01-12"
@@ -608,7 +625,7 @@ def test_ci_run_id_still_flags_a_triple_that_never_ran_tonight(tmp_path):
                   per_night={12: {"github_run_url": f"{_RUN}/900"}})
     _make_history(_local_tree(tmp_path, "DET_B", "single_e"), [100.0] * 12,
                   per_night={11: {"github_run_url": f"{_RUN}/899"}})
-    report = build_nightly_report_local(str(tmp_path))
+    report = build_nightly_report_local(str(tmp_path), SIM)
 
     late = next(g for g in report.groups if g.detector == "DET_B")
     assert late.verdicts == []
@@ -623,7 +640,7 @@ def test_known_ci_batch_does_not_fall_back_for_a_run_without_one(tmp_path):
     _make_history(_local_tree(tmp_path, "DET_A", "single_e"), [100.0] * 13,
                   per_night={12: {"github_run_url": f"{_RUN}/900"}})
     _make_history(_local_tree(tmp_path, "DET_B", "single_e"), [100.0] * 12)
-    report = build_nightly_report_local(str(tmp_path))
+    report = build_nightly_report_local(str(tmp_path), SIM)
 
     late = next(g for g in report.groups if g.detector == "DET_B")
     assert "no run uploaded for 2026-01-13" in late.job_failures[0]
@@ -636,7 +653,7 @@ def test_date_fallback_applies_when_the_report_night_has_no_ci_run(tmp_path):
     _make_history(_local_tree(tmp_path, "DET_A", "single_e"), [100.0] * 13)
     _make_history(_local_tree(tmp_path, "DET_B", "single_e"), [100.0] * 12,
                   per_night={11: {"github_run_url": f"{_RUN}/900"}})
-    report = build_nightly_report_local(str(tmp_path))
+    report = build_nightly_report_local(str(tmp_path), SIM)
 
     late = next(g for g in report.groups if g.detector == "DET_B")
     assert late.job_failures == []
@@ -651,7 +668,7 @@ def test_ci_run_id_outranks_the_date_lag(tmp_path):
                   per_night={12: {"github_run_url": f"{_RUN}/900"}})
     _make_history(_local_tree(tmp_path, "DET_B", "single_e"), [100.0] * 11,
                   per_night={10: {"github_run_url": f"{_RUN}/900"}})
-    report = build_nightly_report_local(str(tmp_path))
+    report = build_nightly_report_local(str(tmp_path), SIM)
 
     late = next(g for g in report.groups if g.detector == "DET_B")
     assert late.run_date == "2026-01-11"  # two nights behind 2026-01-13
@@ -666,7 +683,7 @@ def test_ci_run_url_matches_across_presentation_differences(tmp_path):
                   per_night={12: {"github_run_url": f"{_RUN}/900/attempts/2"}})
     _make_history(_local_tree(tmp_path, "DET_B", "single_e"), [100.0] * 12,
                   per_night={11: {"github_run_url": f"{_RUN}/900/"}})
-    report = build_nightly_report_local(str(tmp_path))
+    report = build_nightly_report_local(str(tmp_path), SIM)
 
     late = next(g for g in report.groups if g.detector == "DET_B")
     assert late.job_failures == []
@@ -680,7 +697,7 @@ def test_a_different_ci_batch_past_the_grace_period_is_retired(tmp_path):
     for night in _nights(2, start="2025-12-01"):
         _write_run(_local_tree(tmp_path, "DET_B", "single_e") / night,
                    night=night, github_run_url=f"{_RUN}/700")
-    report = build_nightly_report_local(str(tmp_path))
+    report = build_nightly_report_local(str(tmp_path), SIM)
 
     assert set(report.by_detector()) == {"DET_A"}
 
@@ -727,7 +744,7 @@ def test_an_outage_night_reports_every_triple_as_a_missing_run(tmp_path):
                   per_night={12: {"github_run_url": f"{_RUN}/900"}})
     _make_history(_local_tree(tmp_path, "DET_B", "single_e"), [100.0] * 13,
                   per_night={12: {"github_run_url": f"{_RUN}/900"}})
-    report = build_nightly_report_local(str(tmp_path), night="2026-01-14")
+    report = build_nightly_report_local(str(tmp_path), SIM, night="2026-01-14")
 
     assert report.report_night == "2026-01-14"
     assert len(report.groups) == 2
@@ -743,7 +760,7 @@ def test_an_outage_night_does_not_adopt_last_nights_runs(tmp_path):
     # mail those verdicts a second time under tonight's date.
     walls = [100.0] * 11 + [120.0, 120.5]
     _make_history(_local_tree(tmp_path, "DET_A", "single_e"), walls)
-    report = build_nightly_report_local(str(tmp_path), night="2026-01-14")
+    report = build_nightly_report_local(str(tmp_path), SIM, night="2026-01-14")
 
     group, = report.groups
     assert group.run_date == "2026-01-13"
@@ -760,7 +777,7 @@ def test_a_night_no_newer_than_the_newest_run_is_ignored(tmp_path, night):
     # night's own verdicts by mislabelling it.
     walls = [100.0] * 11 + [120.0, 120.5]
     _make_history(_local_tree(tmp_path, "DET_A", "single_e"), walls)
-    report = build_nightly_report_local(str(tmp_path), night=night)
+    report = build_nightly_report_local(str(tmp_path), SIM, night=night)
 
     assert report.report_night == "2026-01-13"
     group, = report.groups
@@ -774,14 +791,14 @@ def test_an_outage_night_still_retires_a_long_dead_triple(tmp_path):
     _make_history(_local_tree(tmp_path, "DET_A", "single_e"), [100.0] * 13)
     for night in _nights(2, start="2025-12-01"):
         _write_run(_local_tree(tmp_path, "DET_C", "single_e") / night, night=night)
-    report = build_nightly_report_local(str(tmp_path), night="2026-01-14")
+    report = build_nightly_report_local(str(tmp_path), SIM, night="2026-01-14")
 
     assert set(report.by_detector()) == {"DET_A"}
 
 
 def test_local_report_quiet_night_not_alertable(tmp_path):
     _make_history(_local_tree(tmp_path, "DET_A", "single_e"), [100.0] * 12)
-    report = build_nightly_report_local(str(tmp_path))
+    report = build_nightly_report_local(str(tmp_path), SIM)
     assert not report.has_alertable
     assert report.regressions == []
     group = report.groups[0]
@@ -792,7 +809,7 @@ def test_local_report_quiet_night_not_alertable(tmp_path):
 def test_local_report_refuses_a_missing_data_dir(tmp_path):
     # A mistyped --data-dir must fail, not pass as a report of zero regressions.
     with pytest.raises(NotADirectoryError):
-        build_nightly_report_local(str(tmp_path / "missing"))
+        build_nightly_report_local(str(tmp_path / "missing"), SIM)
 
 
 # ── Sweep-shaped run groups ───────────────────────────────────────────────────
@@ -1242,7 +1259,7 @@ def test_a_replaced_platform_is_not_reported_as_missing(tmp_path):
     # run nothing expects it, so it is dropped rather than flagged ❌ every
     # night for a week — which would have made the migration read as an outage.
     _migration_tree(tmp_path, new_walls=[100.0] * 3)
-    report = build_nightly_report_local(str(tmp_path))
+    report = build_nightly_report_local(str(tmp_path), SIM)
 
     assert {g.platform for g in report.groups} == {_NEW_PLAT}
     assert report.job_failures == []
@@ -1253,7 +1270,7 @@ def test_a_night_the_replaced_platform_missed_before_its_successor_ran_is_report
     # platform's first still says the old platform did not run.
     _migration_tree(tmp_path, new_walls=[100.0] * 3)
     report = build_nightly_report_local(
-        str(tmp_path), as_of="2026-01-10", night="2026-01-11",
+        str(tmp_path), SIM, as_of="2026-01-10", night="2026-01-11",
     )
     old = next(g for g in report.groups if g.platform == _OLD_PLAT)
     assert old.job_failures
@@ -1263,7 +1280,7 @@ def test_local_report_continues_the_successor_platform(tmp_path):
     # End to end over the run tree: the predecessor is found by platform name
     # under the same detector.
     _migration_tree(tmp_path, new_walls=[120.0, 120.5])
-    report = build_nightly_report_local(str(tmp_path))
+    report = build_nightly_report_local(str(tmp_path), SIM)
 
     new = next(g for g in report.groups if g.platform == _NEW_PLAT)
     assert [(v.metric, v.direction) for v in new.regressions] == [
@@ -1388,7 +1405,7 @@ def test_local_report_continues_the_replaced_detector_and_drops_it(tmp_path):
     # detector directory, and once its successor has run the replaced version
     # is not reported as a missing run.
     _version_switch_tree(tmp_path, new_walls=[120.0, 120.5])
-    report = build_nightly_report_local(str(tmp_path))
+    report = build_nightly_report_local(str(tmp_path), SIM)
 
     assert {g.detector for g in report.groups} == {_NEW_DET}
     assert report.job_failures == []
@@ -1416,11 +1433,11 @@ def test_a_retired_detector_is_not_reported_as_missing_after_two_bumps(tmp_path,
         for night in nights:
             _write_run(tmp_path / run_path(SIM, detector) / _PLAT / _STACK / "single_e" / night, night=night)
 
-    report = build_nightly_report_local(str(tmp_path))
+    report = build_nightly_report_local(str(tmp_path), SIM)
     assert {g.detector for g in report.groups} == {v05}
     assert report.job_failures == []
 
-    backfill = build_nightly_report_local(str(tmp_path), as_of="2026-01-10", night="2026-01-11")
+    backfill = build_nightly_report_local(str(tmp_path), SIM, as_of="2026-01-10", night="2026-01-11")
     assert next(g for g in backfill.groups if g.detector == v03).job_failures
 
 
@@ -1441,7 +1458,7 @@ def test_a_retired_detector_is_not_reported_as_missing_when_its_successor_never_
         for night in nights:
             _write_run(tmp_path / run_path(SIM, detector) / _PLAT / _STACK / "single_e" / night, night=night)
 
-    report = build_nightly_report_local(str(tmp_path))
+    report = build_nightly_report_local(str(tmp_path), SIM)
     assert {g.detector for g in report.groups} == {v05}
     assert report.job_failures == []
 
@@ -1453,7 +1470,7 @@ def test_a_predecessor_candidate_without_a_tree_is_skipped(tmp_path, monkeypatch
     missing = requests.Response()
     missing.status_code = 404
 
-    def fetch(data_url, cache_dir, detector, platform, sample, **_):
+    def fetch(data_url, suite, cache_dir, detector, platform, sample, **_):
         if detector == _NEW_DET:
             raise requests.HTTPError(response=missing)
         return _detector_runs(tmp_path, detector)
@@ -1462,7 +1479,7 @@ def test_a_predecessor_candidate_without_a_tree_is_skipped(tmp_path, monkeypatch
         "k4bench.regression.report_builder._fetch_run_dirs", fetch,
     )
     runs = _fetch_predecessor(
-        "https://eos.invalid", None,
+        "https://eos.invalid", SIM, None,
         ((_NEW_DET, "x86_64-other-opt"), (_OLD_DET, _PLAT)), "single_e",
         fetch_window_runs=20, as_of=None,
     )

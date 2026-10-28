@@ -107,5 +107,6 @@ jobs:
     if: ${{ !cancelled() && (github.event_name == 'schedule' || needs.benchmark.result != 'skipped') }}
     uses: ./.github/workflows/regression-report.yml
     with:
+      suite: sim
       fanout_run_id: ${{ github.run_id }}
     secrets: inherit

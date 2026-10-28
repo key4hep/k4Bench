@@ -56,14 +56,17 @@ from k4bench.regression.models import (
     unjudged_cause,
 )
 from k4bench.labels import pretty_platform, pretty_release, pretty_sample
+from k4bench.layout import SIM
 from k4bench.metrics import METRICS, metric_label, pretty_metric
 from k4bench.regression.render import (
+    SUITE_TITLES,
     dashboard_link,
     detector_badge,
     format_value,
     format_pct,
     group_title,
     stack_changes_href,
+    suite_page_url,
     window_href,
 )
 
@@ -291,6 +294,21 @@ class EmailSummary:
 
 # ── Subject and preheader ─────────────────────────────────────────────────────
 
+def _suite_tag(report: NightlyReport) -> str:
+    """The subject's suite tag, ``[reco]`` for the reco suite. Sim's mail has
+    none: it predates the other suites, and its subject keeps reading the same
+    to every filter on it."""
+    return "" if report.suite == SIM else f"[{report.suite}]"
+
+
+def _title(report: NightlyReport) -> str:
+    """The mail's heading, naming the suite the same way :func:`_suite_tag`
+    does: sim's as it always read, any other by its name."""
+    if report.suite == SIM:
+        return "k4Bench nightly report"
+    return f"k4Bench nightly {SUITE_TITLES[report.suite].lower()} report"
+
+
 def subject(report: NightlyReport) -> str:
     """State-aware, grammatically correct subject.
 
@@ -327,7 +345,7 @@ def subject(report: NightlyReport) -> str:
     else:
         tag = "OK"
         desc = "all judged metrics within baseline"
-    return f"[k4Bench][{tag}] {s.night} — {desc}"
+    return f"[k4Bench]{_suite_tag(report)}[{tag}] {s.night} — {desc}"
 
 
 def preheader(report: NightlyReport) -> str:
@@ -1266,7 +1284,7 @@ def _html_header(
     )
     return (
         f'<h1 style="font-size:22px;margin:20px 0 2px;color:{_C_TEXT};">'
-        "k4Bench nightly report</h1>"
+        f"{_esc(_title(report))}</h1>"
         f'<p style="margin:0;font-size:16px;color:{_C_MUTED};">Report night '
         f"<strong>{_esc(night)}</strong>{release_suffix}</p>"
         f'<p style="margin:2px 0 0;font-size:13px;color:{_C_FAINT};">Generated '
@@ -1657,7 +1675,11 @@ def to_html(
     embedding that already carries one does not — the dashboard's Nightly
     Report view renders this body inside a page whose own chrome ends in the
     very same banner (see ``ui_chrome``), so keeping it would print it twice.
+
+    Every link is built on the report's suite's page below *dashboard_url*.
     """
+    if dashboard_url:
+        dashboard_url = suite_page_url(dashboard_url, report.suite)
     index = _BlameIndex(blame, historical_blame)
     attention = _needs_attention(report)
     if attention:
@@ -1841,11 +1863,14 @@ def to_markdown(
     historical_blame: dict[str, BlameReport] | None = None,
 ) -> str:
     """Plain-text/Markdown MIME alternative — the same important content as the
-    HTML body, useful on its own in a text-only client."""
+    HTML body, useful on its own in a text-only client, its links built the
+    same way."""
+    if dashboard_url:
+        dashboard_url = suite_page_url(dashboard_url, report.suite)
     index = _BlameIndex(blame, historical_blame)
     s = EmailSummary.of(report)
     lines = [
-        f"# k4Bench nightly report — {_human_date(s.night) if s.night != 'no data' else s.night}",
+        f"# {_title(report)} — {_human_date(s.night) if s.night != 'no data' else s.night}",
         "",
     ]
     release_line = _release_line(report)

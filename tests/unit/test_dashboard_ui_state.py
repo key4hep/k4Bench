@@ -157,5 +157,9 @@ def test_a_replaced_detector_version_does_not_become_the_default(monkeypatch):
     )
     monkeypatch.setattr(lineage, "RETIRED_DETECTORS", {})
     assert ui_chrome.order_detectors(
-        ["ALLEGRO_o1_v03", "ALLEGRO_o1_v04", "ALLEGRO_o2_v01", "CLD_o2_v08", "CLD_o2_v09"]
+        ["ALLEGRO_o1_v03", "ALLEGRO_o1_v04", "ALLEGRO_o2_v01", "CLD_o2_v08", "CLD_o2_v09"], "sim",
     ) == ["ALLEGRO_o1_v04", "ALLEGRO_o2_v01", "CLD_o2_v09", "ALLEGRO_o1_v03", "CLD_o2_v08"]
+    # The reco page's detectors are never replaced by a sim bump.
+    assert ui_chrome.order_detectors(["CLD_o2_v09", "CLD_o2_v08"], "reco") == [
+        "CLD_o2_v08", "CLD_o2_v09",
+    ]

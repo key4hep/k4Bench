@@ -132,6 +132,29 @@ def test_subject_ok_when_all_within_baseline():
     assert subject(r) == "[k4Bench][OK] 2026-07-01 — all judged metrics within baseline"
 
 
+def test_another_suites_mail_names_it_and_links_to_its_page():
+    # Sim's subject and title read as they did before there were suites, so
+    # existing mail filters keep matching; any other suite says which it is,
+    # and every dashboard link lands on that suite's page.
+    import dataclasses
+    import re
+
+    v = _windowed(first_confirmed_run_id="2026-06-27")
+    r = dataclasses.replace(_report(_group(v)), suite="reco")
+    assert subject(r) == "[k4Bench][reco][ACTION] 2026-06-27 — 1 new regression"
+    html = to_html(r, dashboard_url="https://dash.example/")
+    assert "k4Bench nightly reconstruction report</h1>" in html
+    hrefs = re.findall(r'<a href="([^"]*)"', html)
+    assert hrefs and all(
+        h.startswith("https://dash.example/reconstruction?") for h in hrefs
+        if h.startswith("https://dash.example")
+    )
+    md = to_markdown(r, dashboard_url="https://dash.example/")
+    assert md.startswith("# k4Bench nightly reconstruction report — ")
+    assert "](https://dash.example/reconstruction?" in md
+    assert "](https://dash.example/?" not in md
+
+
 def test_subject_distinguishes_no_data_and_unjudged_coverage():
     assert subject(_report()) == "[k4Bench][NO DATA] no data — no run groups reported"
     unknown = _v(Severity.UNKNOWN, pct_change=None, baseline_median=None)

@@ -66,7 +66,7 @@ def test_regression_report_cli_reports_an_outage_night(tmp_path):
 
     out_dir = tmp_path / "out"
     result = subprocess.run(
-        [sys.executable, str(_SCRIPT),
+        [sys.executable, str(_SCRIPT), "--suite", SIM,
          "--data-dir", str(tmp_path / "data"), "--output-dir", str(out_dir),
          "--night", "2026-01-13"],
         capture_output=True, text=True,
@@ -101,7 +101,7 @@ def _write_history(
 
 def _run_cli(tmp_path: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, str(_SCRIPT),
+        [sys.executable, str(_SCRIPT), "--suite", SIM,
          "--data-dir", str(tmp_path / "data"), "--output-dir", str(tmp_path / "out"),
          *args],
         capture_output=True, text=True,
@@ -179,7 +179,7 @@ def test_regression_report_cli_refuses_a_fanout_id_from_the_environment_with_as_
     _write_history(tmp_path / "data", [100.0] * 12, date.fromisoformat("2026-01-12"),
                    run_url=f"{_RUN}/900")
     result = subprocess.run(
-        [sys.executable, str(_SCRIPT),
+        [sys.executable, str(_SCRIPT), "--suite", SIM,
          "--data-dir", str(tmp_path / "data"), "--output-dir", str(tmp_path / "out"),
          "--as-of", "2026-01-10"],
         capture_output=True, text=True,
@@ -204,7 +204,7 @@ def test_regression_report_cli_local_mode(tmp_path):
 
     out_dir = tmp_path / "out"
     result = subprocess.run(
-        [sys.executable, str(_SCRIPT),
+        [sys.executable, str(_SCRIPT), "--suite", SIM,
          "--data-dir", str(tmp_path / "data"), "--output-dir", str(out_dir)],
         capture_output=True, text=True,
     )
@@ -261,9 +261,9 @@ def test_as_of_reproduces_each_night_of_a_rebenchmarked_release(tmp_path):
                120.5, stack=rerun_stack)
 
     data_dir = str(tmp_path / "data")
-    first = to_json(build_nightly_report_local(data_dir, as_of="2026-01-11"))
-    second = to_json(build_nightly_report_local(data_dir, as_of="2026-01-12"))
-    full = to_json(build_nightly_report_local(data_dir))
+    first = to_json(build_nightly_report_local(data_dir, SIM, as_of="2026-01-11"))
+    second = to_json(build_nightly_report_local(data_dir, SIM, as_of="2026-01-12"))
+    full = to_json(build_nightly_report_local(data_dir, SIM))
 
     assert first["summary"]["report_night"] == "2026-01-11"
     watch = _wall_time_verdict(first)
@@ -304,7 +304,7 @@ def test_rerun_of_an_older_release_still_gets_tonights_verdict(tmp_path):
     _write_run(root / "key4hep-2026-01-08" / "single_e" / "2026-01-16",
                "2026-01-16", 100.1, stack="key4hep-2026-01-08")
 
-    report = to_json(build_nightly_report_local(str(tmp_path / "data")))
+    report = to_json(build_nightly_report_local(str(tmp_path / "data"), SIM))
     assert report["summary"]["report_night"] == "2026-01-16"
     verdict = _wall_time_verdict(report)
     assert verdict["run_id"] == "2026-01-16"
@@ -385,7 +385,7 @@ def test_blame_report_cli_local_mode(tmp_path):
 
     out_dir = tmp_path / "out"
     assert subprocess.run(
-        [sys.executable, str(_SCRIPT), "--data-dir", str(data_dir),
+        [sys.executable, str(_SCRIPT), "--suite", SIM, "--data-dir", str(data_dir),
          "--output-dir", str(out_dir)],
         capture_output=True, text=True,
     ).returncode == 0
@@ -533,7 +533,7 @@ def test_blame_report_with_ranker_over_local_tree(tmp_path, monkeypatch):
 
     out_dir = tmp_path / "out"
     assert subprocess.run(
-        [sys.executable, str(_SCRIPT), "--data-dir", str(data_dir),
+        [sys.executable, str(_SCRIPT), "--suite", SIM, "--data-dir", str(data_dir),
          "--output-dir", str(out_dir)],
         capture_output=True, text=True,
     ).returncode == 0
@@ -550,10 +550,10 @@ def test_blame_report_with_ranker_over_local_tree(tmp_path, monkeypatch):
     # exactly like the not-injected one.
     blame_cli = _load_script(_BLAME_SCRIPT)
     packages_for_release = blame_cli._make_packages_for_release(
-        [str(data_dir)], None, {_PLAT: ["DET"]}
+        [str(data_dir)], SIM, None, {_PLAT: ["DET"]}
     )
     k4bench_commit_for_run = blame_cli._make_k4bench_commit_for_run(
-        [str(data_dir)], None
+        [str(data_dir)], SIM, None
     )
 
     def fake_resolve(client, slug, base, head):
@@ -618,15 +618,15 @@ def test_local_run_commit_reads_the_exact_run_and_nothing_else(tmp_path):
     (sibling / "run_info.json").write_text(json.dumps({"commit_sha": "b" * 40}))
 
     assert blame_cli._local_run_commit(
-        [str(tmp_path)], "DET", _PLAT, "2026-01-01", "single_e", "2026-01-02"
+        [str(tmp_path)], SIM, "DET", _PLAT, "2026-01-01", "single_e", "2026-01-02"
     ) == ("a" * 40, run_url)
     # An absent run, and a run that predates commit capture, both answer None.
     assert blame_cli._local_run_commit(
-        [str(tmp_path)], "DET", _PLAT, "2026-01-01", "single_e", "2026-01-03"
+        [str(tmp_path)], SIM, "DET", _PLAT, "2026-01-01", "single_e", "2026-01-03"
     ) is None
     (mine / "run_info.json").write_text(json.dumps({"date": "2026-01-02"}))
     assert blame_cli._local_run_commit(
-        [str(tmp_path)], "DET", _PLAT, "2026-01-01", "single_e", "2026-01-02"
+        [str(tmp_path)], SIM, "DET", _PLAT, "2026-01-01", "single_e", "2026-01-02"
     ) is None
 
 
@@ -662,7 +662,7 @@ def test_the_whole_evidence_chain_reaches_the_cross_configuration_review(
 
     out_dir = tmp_path / "out"
     assert subprocess.run(
-        [sys.executable, str(_SCRIPT), "--data-dir", str(data_dir),
+        [sys.executable, str(_SCRIPT), "--suite", SIM, "--data-dir", str(data_dir),
          "--output-dir", str(out_dir)],
         capture_output=True, text=True,
     ).returncode == 0
@@ -688,7 +688,7 @@ def test_the_whole_evidence_chain_reaches_the_cross_configuration_review(
 
     blame_cli = _load_script(_BLAME_SCRIPT)
     packages_for_release = blame_cli._make_packages_for_release(
-        [str(data_dir)], None, {_PLAT: ["DET"]}
+        [str(data_dir)], SIM, None, {_PLAT: ["DET"]}
     )
     monkeypatch.setattr(night, "resolve_repo_prs", lambda *a, **k: RepoResolution(
         candidates=[CandidatePR(
@@ -846,7 +846,7 @@ def test_historical_evidence_travels_from_provenance_to_the_public_review(
 
     out_dir = tmp_path / "out"
     assert subprocess.run(
-        [sys.executable, str(_SCRIPT), "--data-dir", str(data_dir),
+        [sys.executable, str(_SCRIPT), "--suite", SIM, "--data-dir", str(data_dir),
          "--output-dir", str(out_dir)],
         capture_output=True, text=True,
     ).returncode == 0
@@ -895,7 +895,7 @@ def test_historical_evidence_travels_from_provenance_to_the_public_review(
 
     blame_cli = _load_script(_BLAME_SCRIPT)
     packages_for_release = blame_cli._make_packages_for_release(
-        [str(data_dir)], None, {_PLAT: ["DET"]}
+        [str(data_dir)], SIM, None, {_PLAT: ["DET"]}
     )
     llm = _ScriptedLLM(want="2026-01-05 → 2026-01-06")
     blame = build_blame_report(

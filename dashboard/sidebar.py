@@ -232,7 +232,7 @@ def pick_run(
         st.error("No detectors found at the configured WebEOS URL.")
         return None
     detector = _url_synced_selectbox(
-        "Detector", order_detectors(detectors), f"{key_prefix}sb_detector", DETECTOR,
+        "Detector", order_detectors(detectors, suite), f"{key_prefix}sb_detector", DETECTOR,
         "isn't benchmarked here",
     )
     if not detector:

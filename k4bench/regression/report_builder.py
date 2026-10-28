@@ -1,8 +1,9 @@
-"""Assemble the sim suite's nightly regression report from the EOS run history.
+"""Assemble one suite's nightly regression report from the EOS run history.
 
-Walks every ``(detector, platform, sample)`` triple of the sim run tree below
-the WebEOS data URL (the same hierarchy the dashboard's sidebar cascades through — these
-triples have independent baselines and are never pooled), pulls a trailing
+Walks every ``(detector, platform, sample)`` triple of the suite's run tree
+below the WebEOS data URL (the same hierarchy the dashboard's sidebar cascades
+through — these triples have independent baselines and are never pooled), and
+never another suite's (see :mod:`k4bench.layout`). Pulls a trailing
 window of runs into the local cache, rebuilds the trend frames with
 :mod:`k4bench.analysis.trend`, attaches per-run reliability verdicts with
 :mod:`k4bench.results.reliability_evidence`, and runs the step detector in
@@ -36,7 +37,7 @@ from k4bench.analysis.trend import (
     parse_run_dir,
 )
 from k4bench.blame.models import rank_group_key
-from k4bench.layout import SIM, iter_run_dirs
+from k4bench.layout import iter_run_dirs
 from k4bench.regression.engine import (
     BASELINE_WINDOW_RUNS,
     evaluate_series,
@@ -713,6 +714,7 @@ def _missing_config_failures(
 
 def _fetch_run_dirs(
     data_url: str,
+    suite: str,
     cache_dir: str | None,
     detector: str,
     platform: str,
@@ -723,7 +725,7 @@ def _fetch_run_dirs(
 ) -> tuple[str, ...]:
     """One triple's trailing run window, cached locally, oldest → newest.
     Empty when it has no runs, or none could be downloaded."""
-    stacks_dates = list_run_dates_all_stacks(data_url, SIM, detector, platform, sample)
+    stacks_dates = list_run_dates_all_stacks(data_url, suite, detector, platform, sample)
     pairs = sorted(
         (date, stack) for stack, dates in stacks_dates.items() for date in dates
         if as_of is None or date <= as_of
@@ -734,13 +736,14 @@ def _fetch_run_dirs(
     for date, stack in pairs:
         window.setdefault(stack, []).append(date)
     runs = fetch_runs_windowed(
-        data_url, SIM, detector, platform, sample, window, cache_root=cache_dir,
+        data_url, suite, detector, platform, sample, window, cache_root=cache_dir,
     )
     return tuple(r["run_dir"] for r in sorted(runs, key=lambda r: r["date"]))
 
 
 def _fetch_predecessor(
     data_url: str,
+    suite: str,
     cache_dir: str | None,
     candidates: tuple[tuple[str, str], ...],
     sample: str,
@@ -754,7 +757,7 @@ def _fetch_predecessor(
     for detector, platform in candidates:
         try:
             run_dirs = _fetch_run_dirs(
-                data_url, cache_dir, detector, platform, sample,
+                data_url, suite, cache_dir, detector, platform, sample,
                 fetch_window_runs=fetch_window_runs, as_of=as_of,
             )
         except requests.HTTPError as exc:
@@ -768,6 +771,7 @@ def _fetch_predecessor(
 
 def build_group_report(
     data_url: str,
+    suite: str,
     cache_dir: str | None,
     detector: str,
     platform: str,
@@ -776,8 +780,8 @@ def build_group_report(
     fetch_window_runs: int = FETCH_WINDOW_RUNS,
     as_of: str | None = None,
 ) -> RunGroupReport | None:
-    """Build one triple's report from its trailing run window, or ``None``
-    when the triple has no fetchable runs at all.
+    """Build one triple of *suite*'s report from its trailing run window, or
+    ``None`` when the triple has no fetchable runs at all.
 
     *as_of* (a ``YYYY-MM-DD`` night) truncates the run history to runs on or
     before that night before the trailing window is taken, reproducing the
@@ -785,16 +789,16 @@ def build_group_report(
     backfill drives. ``None`` judges the full history (the nightly CI case).
     """
     run_dirs = _fetch_run_dirs(
-        data_url, cache_dir, detector, platform, sample,
+        data_url, suite, cache_dir, detector, platform, sample,
         fetch_window_runs=fetch_window_runs, as_of=as_of,
     )
     if not run_dirs:
         return None
-    candidates = predecessor_series(detector, platform)
+    candidates = predecessor_series(detector, platform, suite)
     return group_report_from_run_dirs(
         detector, platform, sample, run_dirs,
         predecessor=partial(
-            _fetch_predecessor, data_url, cache_dir, candidates, sample,
+            _fetch_predecessor, data_url, suite, cache_dir, candidates, sample,
             fetch_window_runs=fetch_window_runs, as_of=as_of,
         ) if candidates else None,
     )
@@ -1147,13 +1151,14 @@ def group_report_from_run_dirs(
 
 def build_nightly_report(
     data_url: str,
+    suite: str,
     cache_dir: str | None = None,
     *,
     fetch_window_runs: int = FETCH_WINDOW_RUNS,
     as_of: str | None = None,
     night: str | None = None,
 ) -> NightlyReport:
-    """Build the cross-detector report for the most recent nightly.
+    """Build *suite*'s cross-detector report for the most recent nightly.
 
     The report night is the newest run date seen across all triples. A triple
     dated earlier is still reported normally when its CI run says it came from
@@ -1172,14 +1177,14 @@ def build_nightly_report(
     :func:`_finalize_report`) — the outage seam.
     """
     groups: list[RunGroupReport] = []
-    for detector in list_detectors(data_url, SIM):
-        for platform in list_platforms(data_url, SIM, detector):
-            stack_samples = scan_stack_samples(data_url, SIM, detector, platform)
+    for detector in list_detectors(data_url, suite):
+        for platform in list_platforms(data_url, suite, detector):
+            stack_samples = scan_stack_samples(data_url, suite, detector, platform)
             samples = sorted({s for ss in stack_samples.values() for s in ss})
             for sample in samples:
                 try:
                     group = build_group_report(
-                        data_url, cache_dir, detector, platform, sample,
+                        data_url, suite, cache_dir, detector, platform, sample,
                         fetch_window_runs=fetch_window_runs, as_of=as_of,
                     )
                 except Exception:
@@ -1191,11 +1196,12 @@ def build_nightly_report(
                 if group is not None:
                     groups.append(group)
 
-    return _finalize_report(groups, night=night)
+    return _finalize_report(groups, suite, night=night)
 
 
 def build_nightly_report_local(
     data_dir: str,
+    suite: str,
     *,
     fetch_window_runs: int = FETCH_WINDOW_RUNS,
     as_of: str | None = None,
@@ -1219,12 +1225,12 @@ def build_nightly_report_local(
     # can live under another platform or another detector config.
     # Each sample's run dirs are collected across all stacks.
     per_series: dict[tuple[str, str], dict[str, list[Path]]] = {}
-    for run in iter_run_dirs(root, SIM):
+    for run in iter_run_dirs(root, suite):
         per_sample = per_series.setdefault((run.detector, run.platform), {})
         per_sample.setdefault(run.sample, []).append(run.path)
 
     def _predecessor(detector: str, platform: str, sample: str) -> PredecessorRuns | None:
-        for candidate in predecessor_series(detector, platform):
+        for candidate in predecessor_series(detector, platform, suite):
             run_dirs = _window(per_series.get(candidate, {}).get(sample, []))
             if (runs := predecessor_runs(*candidate, run_dirs)) is not None:
                 return runs
@@ -1235,11 +1241,11 @@ def build_nightly_report_local(
             group = group_report_from_run_dirs(
                 detector, platform, sample, _window(run_paths),
                 predecessor=partial(_predecessor, detector, platform, sample)
-                if predecessor_series(detector, platform) else None,
+                if predecessor_series(detector, platform, suite) else None,
             )
             if group is not None:
                 groups.append(group)
-    return _finalize_report(groups, night=night)
+    return _finalize_report(groups, suite, night=night)
 
 
 def _batch_key(run_url: str) -> str:
@@ -1315,7 +1321,7 @@ def report_covers_run(report: NightlyReport, run_id: str) -> bool:
 
 
 def _finalize_report(
-    groups: list[RunGroupReport], *, night: str | None = None,
+    groups: list[RunGroupReport], suite: str, *, night: str | None = None,
 ) -> NightlyReport:
     """Resolve the report night and turn stale triples into missing-run
     failures (or drop them as retired past the grace period).
@@ -1365,7 +1371,7 @@ def _finalize_report(
                 continue
             if any(
                 (detector, platform, g.sample) in reported
-                for detector, platform in successor_series(g.detector, g.platform)
+                for detector, platform in successor_series(g.detector, g.platform, suite)
             ):
                 # Its successor has run, so nothing expects this series to.
                 # Before that night a backfill still reports a night it missed.
@@ -1397,4 +1403,5 @@ def _finalize_report(
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         groups=groups,
         night=night if forced else "",
+        suite=suite,
     )

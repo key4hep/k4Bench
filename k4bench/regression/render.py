@@ -1,11 +1,11 @@
 """Shared rendering primitives for the nightly regression report and the JSON
-artifact the dashboard reads back (``_reports/{date}/report.json``).
+artifact the dashboard reads back (``reports/{suite}/{night}/report.json``).
 
 This module owns two things:
 
 * the human-label helpers the dashboard *and* the email both draw with —
-  severity badges, metric/sample/platform prettifiers, the dashboard deep-link
-  builder;
+  severity badges, metric/sample/platform prettifiers, each suite's name and
+  dashboard page, the dashboard deep-link builder;
 * the ``to_json``/``from_json`` round-trip for the EOS artifact.
 
 The e-group email body (subject, "Needs attention", ranked candidate cards and
@@ -27,6 +27,7 @@ import math
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from k4bench.labels import pretty_platform, pretty_sample
+from k4bench.layout import RECO, SIM
 from k4bench.regression.models import (
     Direction,
     EventProfile,
@@ -95,6 +96,24 @@ def detector_badge(groups: list[RunGroupReport]) -> str:
 
 def group_title(group: RunGroupReport) -> str:
     return f"{pretty_sample(group.sample)} · {pretty_platform(group.platform)}"
+
+
+#: Each suite's name, as the dashboard's top bar and the email title it.
+SUITE_TITLES = {SIM: "Simulation", RECO: "Reconstruction"}
+
+#: Each suite's dashboard page, below the dashboard's root. The sim page is the
+#: root itself, which is where every link written before suites existed points.
+SUITE_PAGE_PATHS = {SIM: "", RECO: "reconstruction"}
+
+
+def suite_page_url(dashboard_url: str, suite: str) -> str:
+    """*suite*'s dashboard page below *dashboard_url*, its query kept: the base
+    every deep link about one of the suite's reports is built on."""
+    page = SUITE_PAGE_PATHS[suite]
+    if not page:
+        return dashboard_url
+    split = urlsplit(dashboard_url)
+    return urlunsplit(split._replace(path=f"{split.path.rstrip('/')}/{page}"))
 
 
 def dashboard_link(dashboard_url: str, **params: str) -> str:
@@ -518,7 +537,8 @@ def _unjudged(raw: object) -> Unjudged | None:
 
 def from_json(data: dict) -> NightlyReport:
     """Rebuild a :class:`NightlyReport` from :func:`to_json` output (used by
-    the dashboard when reading ``_reports/{date}/report.json`` off EOS)."""
+    the dashboard when reading ``reports/{suite}/{night}/report.json`` off
+    EOS)."""
     groups = []
     for g in data.get("groups", []):
         verdicts = [
@@ -546,4 +566,5 @@ def from_json(data: dict) -> NightlyReport:
     return NightlyReport(
         generated_at=data.get("generated_at", ""), groups=groups,
         night=str(data.get("night") or ""),
+        suite=str(data.get("suite") or SIM),
     )

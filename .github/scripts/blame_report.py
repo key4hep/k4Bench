@@ -70,19 +70,21 @@ sys.path.insert(0, str(_REPO_ROOT))
 # Leaf modules that import only the standard library, so these imports cannot
 # fail on a broken dependency the way the blame modules imported below could.
 from k4bench.artifacts import RUN_INFO  # noqa: E402
-from k4bench.layout import SIM, run_path, stack_dir  # noqa: E402
+from k4bench.layout import run_path, stack_dir  # noqa: E402
 
 _log = logging.getLogger(__name__)
 
 
-def _local_packages(roots: list[str], platform: str, release: str) -> dict | None:
-    """A release's ``k4h_packages`` from a local run tree, or ``None``.
+def _local_packages(
+    roots: list[str], suite: str, platform: str, release: str,
+) -> dict | None:
+    """A release's ``k4h_packages`` from *suite*'s local run tree, or ``None``.
 
     Both the CI run cache and the integration test's data tree share the EOS
     layout (:mod:`k4bench.layout`). Every run under one release recorded the
     same stack, so the first readable one answers the question."""
     for root in roots:
-        pattern = f"{root}/{run_path(SIM, '*', platform, stack_dir(release), '*', '*')}/{RUN_INFO}"
+        pattern = f"{root}/{run_path(suite, '*', platform, stack_dir(release), '*', '*')}/{RUN_INFO}"
         for path in sorted(glob.glob(pattern)):
             try:
                 packages = json.loads(Path(path).read_text()).get("k4h_packages")
@@ -94,19 +96,21 @@ def _local_packages(roots: list[str], platform: str, release: str) -> dict | Non
 
 
 def _make_packages_for_release(
-    roots: list[str], data_url: str | None, detectors_by_platform: dict[str, list[str]]
+    roots: list[str], suite: str, data_url: str | None,
+    detectors_by_platform: dict[str, list[str]],
 ):
-    """A ``(platform, release) -> packages`` lookup: local cache first, then an
-    optional remote WebEOS fallback for a release the cache doesn't hold."""
+    """A ``(platform, release) -> packages`` lookup over *suite*'s runs: local
+    cache first, then an optional remote WebEOS fallback for a release the
+    cache doesn't hold."""
     def packages_for_release(platform: str, release: str) -> dict | None:
-        local = _local_packages(roots, platform, release)
+        local = _local_packages(roots, suite, platform, release)
         if local:
             return local
         if data_url:
             from k4bench.remote import fetch_stack_packages
             for detector in detectors_by_platform.get(platform, ()):
                 packages = fetch_stack_packages(
-                    data_url, SIM, detector, platform, stack_dir(release)
+                    data_url, suite, detector, platform, stack_dir(release)
                 )
                 if packages:
                     return packages
@@ -116,8 +120,8 @@ def _make_packages_for_release(
 
 
 def _local_run_commit(
-    roots: list[str], detector: str, platform: str, release: str, sample: str,
-    run_id: str,
+    roots: list[str], suite: str, detector: str, platform: str, release: str,
+    sample: str, run_id: str,
 ) -> tuple[str, str | None] | None:
     """k4Bench's own ``(commit_sha, github_run_url)`` at one exact run, or
     ``None``.
@@ -128,7 +132,7 @@ def _local_run_commit(
     sibling groups carrying different commits, so "any run of that night" is
     not a safe stand-in for this group's own run."""
     for root in roots:
-        run_dir = run_path(SIM, detector, platform, stack_dir(release), sample, run_id)
+        run_dir = run_path(suite, detector, platform, stack_dir(release), sample, run_id)
         path = Path(root) / run_dir / RUN_INFO
         try:
             info = json.loads(path.read_text())
@@ -140,28 +144,30 @@ def _local_run_commit(
     return None
 
 
-def _make_k4bench_commit_for_run(roots: list[str], data_url: str | None):
+def _make_k4bench_commit_for_run(roots: list[str], suite: str, data_url: str | None):
     """A ``(detector, platform, release, sample, run_id) -> (commit_sha,
-    github_run_url)`` lookup for the harness itself: local trees first, then
-    the same WebEOS fallback shape as :func:`_make_packages_for_release`."""
+    github_run_url)`` lookup for the harness itself in *suite*'s runs: local
+    trees first, then the same WebEOS fallback shape as
+    :func:`_make_packages_for_release`."""
     def k4bench_commit_for_run(
         detector: str, platform: str, release: str, sample: str, run_id: str
     ) -> tuple[str, str | None] | None:
-        local = _local_run_commit(roots, detector, platform, release, sample, run_id)
+        local = _local_run_commit(roots, suite, detector, platform, release, sample, run_id)
         if local:
             return local
         if data_url:
             from k4bench.remote import fetch_run_commit
             return fetch_run_commit(
-                data_url, SIM, detector, platform, stack_dir(release), sample, run_id
+                data_url, suite, detector, platform, stack_dir(release), sample, run_id
             )
         return None
 
     return k4bench_commit_for_run
 
 
-def _make_provenance_for_run(roots: list[str], data_url: str | None):
-    """Loaded environment of the verdict's exact run, without full manifests."""
+def _make_provenance_for_run(roots: list[str], suite: str, data_url: str | None):
+    """Loaded environment of the verdict's exact run in *suite*, without full
+    manifests."""
     from k4bench.provenance.stack import stack_snapshot
 
     def provenance_for_run(detector, platform, release, sample, run_id):
@@ -169,7 +175,7 @@ def _make_provenance_for_run(roots: list[str], data_url: str | None):
             return None
         for root in roots:
             directory = Path(root) / run_path(
-                SIM, detector, platform, stack_dir(release), sample, run_id
+                suite, detector, platform, stack_dir(release), sample, run_id
             )
             try:
                 info = json.loads((directory / RUN_INFO).read_text())
@@ -185,7 +191,7 @@ def _make_provenance_for_run(roots: list[str], data_url: str | None):
         if data_url:
             from k4bench.remote import fetch_run_provenance
             return fetch_run_provenance(
-                data_url, SIM, detector, platform, stack_dir(release), sample, run_id
+                data_url, suite, detector, platform, stack_dir(release), sample, run_id
             )
         return None
 
@@ -293,8 +299,9 @@ def main(argv: list[str] | None = None) -> int:
             detectors_by_platform[g.platform].append(g.detector)
 
     roots = [r for r in (args.data_dir, args.cache_dir) if r]
+    # The runs behind a report are its own suite's: it judged no other.
     packages_for_release = _make_packages_for_release(
-        roots, args.data_url, detectors_by_platform
+        roots, report.suite, args.data_url, detectors_by_platform
     )
     github = GitHubClient(token=args.github_token) if args.github_token else None
     if github is None:
@@ -318,8 +325,10 @@ def main(argv: list[str] | None = None) -> int:
 
     blame = build_blame_report(
         report, packages_for_release=packages_for_release,
-        provenance_for_run=_make_provenance_for_run(roots, args.data_url),
-        k4bench_commit_for_run=_make_k4bench_commit_for_run(roots, args.data_url),
+        provenance_for_run=_make_provenance_for_run(roots, report.suite, args.data_url),
+        k4bench_commit_for_run=_make_k4bench_commit_for_run(
+            roots, report.suite, args.data_url,
+        ),
         github=github,
         ranker=ranker,
         historical_diffs=_historical_diffs(

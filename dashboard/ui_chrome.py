@@ -29,11 +29,12 @@ def order_platforms(platforms: list[str]) -> list[str]:
     return sorted(platforms, key=lambda p: (is_replaced(p), p))
 
 
-def order_detectors(detectors: list[str]) -> list[str]:
-    """Detector configs with replaced versions last, name-ascending within each
-    group — the same reasoning as :func:`order_platforms`: alphabetically, a
-    retired ``…_v03`` would otherwise be the default ahead of its ``…_v04``."""
-    return sorted(detectors, key=lambda d: (is_detector_replaced(d), d))
+def order_detectors(detectors: list[str], suite: str) -> list[str]:
+    """*suite*'s detector configs with replaced versions last, name-ascending
+    within each group — the same reasoning as :func:`order_platforms`:
+    alphabetically, a retired ``…_v03`` would otherwise be the default ahead of
+    its ``…_v04``."""
+    return sorted(detectors, key=lambda d: (is_detector_replaced(d, suite), d))
 
 
 def failed_labels(results: "pd.DataFrame") -> list[str]:
