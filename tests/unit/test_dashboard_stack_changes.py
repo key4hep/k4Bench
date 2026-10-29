@@ -30,7 +30,7 @@ def _load_module():
     if str(_DASHBOARD_DIR) not in sys.path:
         sys.path.insert(0, str(_DASHBOARD_DIR))
     spec = importlib.util.spec_from_file_location(
-        "k4bench_dashboard_stack_changes", _DASHBOARD_DIR / "tabs" / "stack_changes.py"
+        "k4bench_dashboard_stack_changes", _DASHBOARD_DIR / "tabs" / "reports" / "stack_changes.py"
     )
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
@@ -62,7 +62,7 @@ def _app(dashboard_dir, stack_names, packages, from_release, to_release,
     ``AppTest.from_function`` re-executes this source in its own script
     context, so it can close over nothing: the imports, the stubs, and the
     platform literal all have to live inside it. The stubs are set on the
-    ``tabs.stack_changes`` module the script itself imports — patching any
+    ``tabs.reports.stack_changes`` module the script itself imports — patching any
     other instance of it would not be seen from here.
     """
     import sys as _sys
@@ -70,7 +70,7 @@ def _app(dashboard_dir, stack_names, packages, from_release, to_release,
         _sys.path.insert(0, dashboard_dir)
     import streamlit as _st
 
-    from tabs import stack_changes as _tab
+    from tabs.reports import stack_changes as _tab
 
     _tab.cached_fetch_stack_snapshot = lambda url, suite, detector, platform, stack, sample: (snapshots or {}).get(stack)
     _tab.cached_list_detectors = lambda url, suite: ["IDEA"]
@@ -722,51 +722,34 @@ def test_missing_provenance_is_reported_not_diffed():
 
 # ── app registration ─────────────────────────────────────────────────────────
 
-def _sections():
-    """The section registry.
+def _sim_page(section_names=None):
+    """The Simulation page's declaration, over *section_names* when given.
 
-    Imported from ``sections.py`` rather than ``app.py`` on purpose: app.py
+    Imported from ``sim_page.py`` rather than ``app.py`` on purpose: app.py
     ends in a bare ``main()``, so importing it would run the whole dashboard —
     and, if ``K4BENCH_DATA_URL`` happens to be set, fetch over the network from
     inside a unit test.
     """
+    import dataclasses
+
     if str(_DASHBOARD_DIR) not in sys.path:
         sys.path.insert(0, str(_DASHBOARD_DIR))
-    spec = importlib.util.spec_from_file_location(
-        "k4bench_dashboard_sections", _DASHBOARD_DIR / "sections.py"
-    )
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = mod
-    spec.loader.exec_module(mod)
-    return mod
+    from sim_page import SIM_PAGE
+
+    if section_names is None:
+        return SIM_PAGE
+    return dataclasses.replace(SIM_PAGE, sections=tuple(section_names))
 
 
 def test_stack_changes_is_registered_and_remote_only():
-    sections = _sections()
+    page = _sim_page()
     # It compares two releases off EOS, so it cannot work without a data_url.
-    assert "Stack Changes" in sections.SECTION_NAMES
-    assert "Stack Changes" in sections.REMOTE_ONLY
-
-
-def test_every_remote_only_section_is_a_real_section():
-    sections = _sections()
-    # A typo would silently fail to hide a section rather than erroring.
-    assert sections.REMOTE_ONLY <= set(sections.SECTION_NAMES)
-
-
-def _sim_page(section_names):
-    """The Simulation page's spec over *section_names*, drawing nothing."""
-    from suite_page import SuitePage
-
-    sections = _sections()
-    return SuitePage(
-        suite="sim", sections=tuple(section_names), remote_only=sections.REMOTE_ONLY,
-        scopes=sections.SECTION_SCOPE, renderers={},
-    )
+    assert "Stack Changes" in page.sections
+    assert "Stack Changes" in page.remote_only
 
 
 def test_local_mode_keeps_exactly_the_sections_that_work_without_a_data_url():
-    page = _sim_page(_sections().SECTION_NAMES)
+    page = _sim_page()
     assert page.visible_sections(trends_enabled=False) == [
         "Config Impact", "Region Timing", "Event Timing", "Event Memory",
         "Correlations", "Event Size", "Machine Info", "Logs",
@@ -774,9 +757,8 @@ def test_local_mode_keeps_exactly_the_sections_that_work_without_a_data_url():
 
 
 def test_remote_mode_keeps_every_section_in_display_order():
-    sections = _sections()
-    page = _sim_page(sections.SECTION_NAMES)
-    assert page.visible_sections(trends_enabled=True) == sections.SECTION_NAMES
+    page = _sim_page()
+    assert page.visible_sections(trends_enabled=True) == list(page.sections)
 
 
 def test_section_order_is_independent_of_data_requirements():
@@ -786,7 +768,7 @@ def test_section_order_is_independent_of_data_requirements():
     sources; deriving one from the other would let a reorder strand a tab with
     nothing behind it.
     """
-    page = _sim_page(reversed(_sections().SECTION_NAMES))
+    page = _sim_page(reversed(_sim_page().sections))
     assert set(page.visible_sections(trends_enabled=False)) == {
         "Config Impact", "Region Timing", "Event Timing", "Event Memory",
         "Correlations", "Event Size", "Machine Info", "Logs",
@@ -1003,7 +985,7 @@ def test_requested_regression_below_picker_cap_remains_selectable():
 
 
 def test_whole_platform_trend_caption_names_the_detector():
-    from tabs._regression_trend import _drilldown_caption
+    from tabs.reports._metric_trend import _drilldown_caption
 
     verdict = _confirmed(detector="IDEA", sample="p8_ee_Zbb_ecm91")
     scoped = _drilldown_caption(verdict, include_scope=True)
@@ -1016,7 +998,7 @@ def test_whole_platform_trend_caption_names_the_detector():
 def test_metric_history_keeps_failed_value_and_healthy_sibling(monkeypatch):
     import pandas as pd
 
-    from tabs import _regression_trend as trend
+    from tabs.reports import _metric_trend as trend
 
     results = pd.DataFrame({
         "run_id": [
@@ -1059,7 +1041,7 @@ def test_metric_history_keeps_failed_value_and_healthy_sibling(monkeypatch):
 def test_metric_history_keeps_failed_event_value_for_failure_marker(monkeypatch):
     import pandas as pd
 
-    from tabs import _regression_trend as trend
+    from tabs.reports import _metric_trend as trend
 
     results = pd.DataFrame({
         "run_id": ["2026-06-26", "2026-06-27"],
@@ -1101,7 +1083,7 @@ def test_metric_history_keeps_failed_event_value_for_failure_marker(monkeypatch)
 def test_failure_only_metric_history_keeps_reason_metadata(monkeypatch):
     import pandas as pd
 
-    from tabs import _regression_trend as trend
+    from tabs.reports import _metric_trend as trend
 
     results = pd.DataFrame({
         "run_id": ["2026-06-27"],
@@ -1162,7 +1144,7 @@ def test_failure_only_metric_history_keeps_reason_metadata(monkeypatch):
 def test_orphan_event_history_reports_missing_result_record(monkeypatch):
     import pandas as pd
 
-    from tabs import _regression_trend as trend
+    from tabs.reports import _metric_trend as trend
 
     results = pd.DataFrame({
         "run_id": ["2026-06-27"],
@@ -1211,7 +1193,7 @@ def test_a_components_history_is_its_rows_of_the_reco_component_costs(monkeypatc
     import numpy as np
     import pandas as pd
 
-    from tabs import _regression_trend as trend
+    from tabs.reports import _metric_trend as trend
 
     days = ["2026-10-26", "2026-10-27"]
     results = pd.DataFrame({
@@ -1265,7 +1247,7 @@ def test_every_suites_sources_have_a_frame_to_draw_from(monkeypatch):
 
     from k4bench.layout import SUITES
     from k4bench.regression.catalog import sources
-    from tabs import _regression_trend as trend
+    from tabs.reports import _metric_trend as trend
 
     for name in ("cached_load_trend_event_timing", "cached_load_trend_component_cost"):
         monkeypatch.setattr(trend, name, lambda _dirs: pd.DataFrame())
@@ -1278,7 +1260,7 @@ def test_every_suites_sources_have_a_frame_to_draw_from(monkeypatch):
 def test_hidden_marker_note_names_the_actual_reason():
     import pandas as pd
 
-    from tabs._regression_trend import _missing_run_reason
+    from tabs.reports._metric_trend import _missing_run_reason
 
     verdict = _confirmed()
     fetched = pd.DataFrame({
@@ -1354,7 +1336,7 @@ def _snapshot_app(dashboard_dir, base, head):
     import sys
     if dashboard_dir not in sys.path:
         sys.path.insert(0, dashboard_dir)
-    from tabs.stack_changes import _render_snapshot_diff
+    from tabs.reports.stack_changes import _render_snapshot_diff
     _render_snapshot_diff(base, head, "2026-10-02", "2026-10-03", "",
                           scope="ddsim · ILD_FCCee_v02 · Z→bb")
 

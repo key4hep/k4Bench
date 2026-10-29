@@ -7,7 +7,6 @@ from plotly.subplots import make_subplots
 
 from k4bench.analysis.loader import failed_config_mask, with_cpu_efficiency
 from k4bench.analysis.plots._theme import _TEMPLATE
-from k4bench.layout import SIM
 from k4bench.metrics import metric_title
 from remote_cache import cached_fetch_reports
 from tabs._historical_trends import render_stability_expander
@@ -59,6 +58,7 @@ _FLAG_SOURCE_METRIC = {
 
 def _severity_lookup(
     data_url: str | None,
+    suite: str | None,
     detector: str | None,
     platform: str | None,
     sample: str | None,
@@ -66,7 +66,7 @@ def _severity_lookup(
 ) -> dict[tuple[str, str, str], str]:
     """``{(label, run_id, metric): severity}`` for the selected detector.
 
-    Reads the precomputed nightly reports for *run_ids* (report dates — a run
+    Reads *suite*'s precomputed nightly reports for *run_ids* (report dates — a run
     dir's name is its report date) and keeps the run-level verdicts scoped to
     this detector/platform/sample. Keyed on the **run** that earned the verdict,
     because that run is what the reliability filter drops: a flag is evidence
@@ -79,9 +79,9 @@ def _severity_lookup(
     same-tag dedup keeps, so the reduction can see a flag the dedup drops. Empty
     when remote data is unavailable, so the caller draws no flags.
     """
-    if not (data_url and detector and platform and sample and run_ids):
+    if not (data_url and suite and detector and platform and sample and run_ids):
         return {}
-    reports = cached_fetch_reports(data_url, SIM, run_ids)
+    reports = cached_fetch_reports(data_url, suite, run_ids)
     lookup: dict[tuple[str, str, str], str] = {}
     for report in reports.values():
         for g in report.groups:
@@ -117,7 +117,7 @@ def _tag_severity(
     ``k4bench.regression.history`` makes when it summarises a release — value
     from one reduction over the release's runs, severity from another. Anchoring
     the marker to a single run instead would need a per-run x-axis, which is what
-    the regression drill-down is for (see ``tabs._blame.run_point``).
+    the regression drill-down is for (see ``tabs.reports._blame.run_point``).
 
     *runs* is the window's runs **after** the reliability filter and **before**
     the same-tag dedup — every measurement still standing, including the ones
@@ -317,6 +317,7 @@ def render(
     reliability: dict[str, bool | None] | None = None,
     *,
     data_url: str | None = None,
+    suite: str | None = None,
     detector: str | None = None,
     platform: str | None = None,
     sample: str | None = None,
@@ -327,7 +328,7 @@ def render(
 
     _trends_body(
         trend_df, reliability,
-        data_url=data_url, detector=detector, platform=platform, sample=sample,
+        data_url=data_url, suite=suite, detector=detector, platform=platform, sample=sample,
     )
 
 
@@ -337,6 +338,7 @@ def _trends_body(
     reliability: dict[str, bool | None] | None,
     *,
     data_url: str | None,
+    suite: str | None,
     detector: str | None,
     platform: str | None,
     sample: str | None,
@@ -464,7 +466,7 @@ def _trends_body(
     severity: dict[tuple[str, str, str], str] = {}
     if (show_confirmed or show_watch) and all_run_ids:
         severity = _tag_severity(
-            _severity_lookup(data_url, detector, platform, sample, all_run_ids),
+            _severity_lookup(data_url, suite, detector, platform, sample, all_run_ids),
             healthy_runs,
         )
 

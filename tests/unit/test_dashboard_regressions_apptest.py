@@ -80,13 +80,13 @@ def _app(dashboard_dir, reports_map, blame_map, dates, stacks_dates,
 
     ``AppTest.from_function`` re-executes this source in its own script
     context, so it can close over nothing: imports and stubs all live inside
-    it, set on the ``tabs.regressions`` module the script itself imports.
+    it, set on the ``tabs.reports.regressions`` module the script itself imports.
     """
     import sys as _sys
     if dashboard_dir not in _sys.path:
         _sys.path.insert(0, dashboard_dir)
 
-    from tabs import regressions as _tab
+    from tabs.reports import regressions as _tab
 
     _tab.cached_list_report_dates = lambda url, suite: list(dates)
     # The tab batch-fetches the release's candidate nights; a night absent from
@@ -493,7 +493,7 @@ def _scope_app(dashboard_dir, platform, scenarios, reports_map, dates):
     if dashboard_dir not in _sys.path:
         _sys.path.insert(0, dashboard_dir)
     import streamlit as st
-    from tabs import regressions as _tab
+    from tabs.reports import regressions as _tab
 
     _tab.cached_list_report_dates = lambda url, suite: list(dates)
     from k4bench.regression.render import from_json
@@ -628,7 +628,7 @@ def _listing_failure_app(dashboard_dir, report_json, night, platform, stack):
     if dashboard_dir not in _sys.path:
         _sys.path.insert(0, dashboard_dir)
     import requests as _requests
-    from tabs import regressions as _tab
+    from tabs.reports import regressions as _tab
 
     _tab.cached_list_report_dates = lambda url, suite: [night]
     # Production batch-fetches candidate nights; patch that path, not the
@@ -1302,7 +1302,7 @@ def test_trend_window_has_14_history_releases_and_7_future_releases():
 
     if str(_DASHBOARD_DIR) not in sys.path:
         sys.path.insert(0, str(_DASHBOARD_DIR))
-    from tabs._regression_trend import _release_window_pairs
+    from tabs.reports._metric_trend import _release_window_pairs
 
     d0 = date(2026, 1, 1)
     pairs = [

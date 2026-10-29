@@ -1,12 +1,10 @@
 """The one-line scope note rendered under the section bar.
 
-Two concerns. First, the registry pair: ``SECTION_SCOPE`` and ``SECTION_NAMES``
-are maintained by hand and describe the same ten sections, so they are exactly
-the kind of thing that drifts when a section is added or renamed — the note
-would then either vanish on the new tab or keep describing a tab that no longer
-exists. Second, the rendering itself, which must state a section's real scope:
-Overview spans every detector, Stack Changes' package diff is platform-wide,
-and local mode has no hierarchy at all.
+Two concerns. First, each page's declared scopes, which every one of its
+sections needs and which must be usable declarations. Second, the rendering
+itself, which must state a section's real scope: Overview spans every
+detector, Stack Changes' package diff is platform-wide, and local mode has no
+hierarchy at all.
 """
 
 from __future__ import annotations
@@ -25,19 +23,20 @@ if str(_DASHBOARD_DIR) not in sys.path:
     sys.path.insert(0, str(_DASHBOARD_DIR))
 
 import sections  # noqa: E402
+from reco.page import RECO_PAGE  # noqa: E402
+from sim_page import SIM_PAGE  # noqa: E402
+
+PAGES = [SIM_PAGE, RECO_PAGE]
 
 PLAT = "x86_64-almalinux9-gcc14.2.0-opt"
 STACK = "key4hep-2026-07-10"
 
 
-# ── the registry pair ────────────────────────────────────────────────────────
+# ── the declared scopes ──────────────────────────────────────────────────────
 
-def test_every_section_declares_a_scope_and_nothing_else_does():
-    assert set(sections.SECTION_SCOPE) == set(sections.SECTION_NAMES)
-
-
-def test_every_declared_dimension_is_a_sentinel_a_phrase_or_absent():
-    for name, scope in sections.SECTION_SCOPE.items():
+@pytest.mark.parametrize("page", PAGES, ids=lambda p: p.suite)
+def test_every_declared_dimension_is_a_sentinel_a_phrase_or_absent(page):
+    for name, scope in page.scopes.items():
         for field in ("detector", "platform", "sample", "release"):
             value = getattr(scope, field)
             assert value is sections.SCOPED or value is None or (
@@ -48,7 +47,7 @@ def test_every_declared_dimension_is_a_sentinel_a_phrase_or_absent():
 # ── the rendered line ────────────────────────────────────────────────────────
 
 def _note(dashboard_dir, section, detector, platform, sample, release, data_dir,
-          platform_wide, use_slot, run=None):
+          platform_wide, use_slot, run=None, suite="sim"):
     """``render_scope_note`` alone, re-executed as its own Streamlit script.
 
     ``AppTest.from_function`` execs this source in a fresh script context, so it
@@ -60,7 +59,9 @@ def _note(dashboard_dir, section, detector, platform, sample, release, data_dir,
 
     import streamlit as st
 
+    from reco.page import RECO_PAGE
     from sections import STACK_CHANGES_PLATFORM_WIDE
+    from sim_page import SIM_PAGE
     from ui_chrome import render_scope_note
 
     render_scope_note(
@@ -69,16 +70,17 @@ def _note(dashboard_dir, section, detector, platform, sample, release, data_dir,
         run=run, data_dir=data_dir,
         override=STACK_CHANGES_PLATFORM_WIDE if platform_wide else None,
         slot=st.empty() if use_slot else None,
+        scopes={"sim": SIM_PAGE, "reco": RECO_PAGE}[suite].scopes,
     )
 
 
 def _run(section, *, detector="CLD", platform=PLAT, sample="single_e",
          release=STACK, data_dir="/cache/CLD/.../2026-07-10",
-         platform_wide=False, use_slot=False, run=None) -> AppTest:
+         platform_wide=False, use_slot=False, run=None, suite="sim") -> AppTest:
     at = AppTest.from_function(
         _note,
         args=(str(_DASHBOARD_DIR), section, detector, platform, sample,
-              release, data_dir, platform_wide, use_slot, run),
+              release, data_dir, platform_wide, use_slot, run, suite),
         default_timeout=30,
     )
     at.run()
@@ -162,11 +164,12 @@ def test_a_reserved_slot_renders_the_same_line_in_place():
     assert _line(_run("Config Impact", use_slot=True)) == _line(_run("Config Impact"))
 
 
-def test_the_note_never_carries_a_time_reference():
+@pytest.mark.parametrize("page", PAGES, ids=lambda p: p.suite)
+def test_the_note_never_carries_a_time_reference(page):
     # Each tab prints its own ("Data range", the report night, the run date);
     # a second copy in the chrome line would duplicate or contradict it.
-    for name in sections.SECTION_NAMES:
-        line = _line(_run(name))
+    for name in page.sections:
+        line = _line(_run(name, suite=page.suite))
         assert "Data range" not in line
         assert "night" not in line
 
@@ -199,6 +202,7 @@ def _tab_note(dashboard_dir, section, platform, release):
     if dashboard_dir not in _sys.path:
         _sys.path.insert(0, dashboard_dir)
 
+    from sim_page import SIM_PAGE
     from tabs import event_timing, machine_info
     from ui_chrome import render_scope_note
 
@@ -213,6 +217,7 @@ def _tab_note(dashboard_dir, section, platform, release):
     render_scope_note(
         section, detector="CLD", platform=platform,
         sample="single_e-_10GeV", release=release, override=override,
+        scopes=SIM_PAGE.scopes,
     )
 
 
@@ -244,6 +249,6 @@ def test_a_historical_sub_view_stops_the_note_naming_one_release(section):
 
 
 def test_an_unregistered_section_renders_nothing():
-    # A new section that forgot its SECTION_SCOPE entry gets no note at all,
+    # A new section that forgot its scope gets no note at all,
     # rather than a guessed one that may claim the wrong scope.
     assert not _run("Not A Section").caption

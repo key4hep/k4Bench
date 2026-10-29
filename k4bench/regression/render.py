@@ -248,7 +248,7 @@ def stack_changes_href(
 
     The param names ``to``/``from`` must match what the dashboard's Stack
     Changes tab reads back (``PARAM_TO``/``PARAM_FROM`` in
-    dashboard/tabs/stack_changes.py) — a literal mismatch here silently
+    dashboard/tabs/reports/stack_changes.py) — a literal mismatch here silently
     breaks the deep link instead of raising.
     """
     if not dashboard_url or not onset_release:
@@ -280,7 +280,7 @@ def regression_href(
     second click, so it is what the pull-request comments point every row at.
     Where :func:`stack_changes_href` opens the range and leaves the reader to
     find their metric, this pins it: the ``reg_*`` params name a verdict
-    exactly (see ``_query_verdict`` in dashboard/tabs/stack_changes.py), and a
+    exactly (see ``_query_verdict`` in dashboard/tabs/reports/stack_changes.py), and a
     verdict the tab cannot match falls back to the same unpinned range.
 
     Like :func:`stack_changes_href`, the param names are literals the dashboard

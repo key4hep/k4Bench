@@ -41,7 +41,7 @@ from k4bench.metrics import metric_title
 from k4bench.regression.render import metric_name
 from k4bench.regression.catalog import RESULTS, source_of, sources
 from k4bench.results.reliability_evidence import run_reliability_map
-from tabs import _blame
+from tabs.reports import _blame
 from tabs._regression_flags import add_severity_markers, metric_option
 from tabs._reliability import resolve_reliability_filter
 from ui_utils import is_valid_df, to_rgba

@@ -83,11 +83,15 @@ def test_severity_lookup_scopes_and_keys(monkeypatch):
         _group("2026-05-21", [_verdict("wall_time_s", Severity.CONFIRMED)],
                detector="IDEA"),
     ])
+    # The suite's own reports, and no other's.
     monkeypatch.setattr(tr, "cached_fetch_reports",
-                        lambda url, suite, ids: {"2026-05-21": report})
+                        lambda url, suite, ids: {"2026-05-21": report} if suite == "sim" else {})
+    assert tr._severity_lookup(
+        "https://x.invalid", "reco", "CLD", "PLAT", "single_e", ("2026-05-21",)
+    ) == {}
 
     lookup = tr._severity_lookup(
-        "https://x.invalid", "CLD", "PLAT", "single_e", ("2026-05-21",)
+        "https://x.invalid", "sim", "CLD", "PLAT", "single_e", ("2026-05-21",)
     )
     # Keyed on the run that earned the verdict — the unit the reliability
     # filter drops — not on the nightly tag it shares with its reruns.
@@ -99,7 +103,7 @@ def test_severity_lookup_scopes_and_keys(monkeypatch):
 
 def test_severity_lookup_empty_without_remote_context():
     # No data_url / detector / run_ids → no fetch, empty map (local mode).
-    assert tr._severity_lookup(None, None, None, None, ()) == {}
+    assert tr._severity_lookup(None, None, None, None, None, ()) == {}
 
 
 # ── _tag_severity ─────────────────────────────────────────────────────────────
@@ -314,7 +318,7 @@ def _app(
     )
     _trends.render(
         df, reliability=reliability or {},
-        data_url="https://x.invalid", detector="CLD",
+        data_url="https://x.invalid", suite="sim", detector="CLD",
         platform="PLAT", sample="single_e",
     )
 

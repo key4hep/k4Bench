@@ -52,19 +52,19 @@ from remote_cache import (
 from k4bench.blame.models import BlameReport, BlameSchemaError, rank_group_key
 from k4bench.provenance.diff import diff_packages
 from k4bench.regression.lineage import successor_series
-from tabs import _blame
-from tabs._night_picker import render_night_picker
+from tabs.reports import _blame
+from tabs.reports._night_picker import render_night_picker
 from tabs._regression_flags import (
     attention_key,
     failed_config_labels,
     failed_metric_options,
     render_candidate_ranking,
 )
-from tabs._regression_trend import (
+from tabs.reports._metric_trend import (
     render_metric_picker,
     render_metric_trend,
 )
-from tabs.stack_changes import _release, deep_link, packages_for_release
+from tabs.reports.stack_changes import _release, deep_link, packages_for_release
 from ui_chrome import drop_stale_selection, seed_query_param
 
 

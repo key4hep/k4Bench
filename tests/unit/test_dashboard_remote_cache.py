@@ -225,7 +225,7 @@ def _drill_down_verdict():
 def test_metric_drill_down_warns_when_its_run_history_stopped_short(monkeypatch):
     # The chart's window is placed around the flagged run from this listing, so
     # it must not be drawn from part of the releases.
-    from tabs import _regression_trend as trend
+    from tabs.reports import _metric_trend as trend
 
     verdict = _drill_down_verdict()
 
@@ -251,7 +251,7 @@ def test_metric_drill_down_warns_when_the_local_cache_fails(monkeypatch):
     # must not blame EOS for it.
     import errno
 
-    from tabs import _regression_trend as trend
+    from tabs.reports import _metric_trend as trend
 
     def listing(*_args):
         return {"key4hep-2026-09-24": ["2026-09-24"]}

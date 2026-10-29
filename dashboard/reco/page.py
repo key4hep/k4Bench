@@ -29,7 +29,6 @@ format, so the shared per-event tabs draw a reco run as they draw a sim run.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from functools import partial
 
 import streamlit as st
 
@@ -44,14 +43,15 @@ from data import (
 from k4bench.layout import RECO
 from reco import _inspect, breakdown, component, dataflow, memory
 from section_dispatch import (
-    RENDERERS,
+    SHARED_RENDERERS,
     PageContext,
     Renderer,
+    event_memory,
     history,
     judgeable_trend,
     warn_unreadable_components,
 )
-from sections import SECTION_SCOPE, SectionScope
+from sections import ONE_RUN, SHARED_SCOPES, SectionScope
 from suite_page import SuitePage, render_page
 from tabs import correlations, event_timing, logs
 from ui_chrome import drop_stale_selection
@@ -131,9 +131,6 @@ def _logs(ctx: PageContext) -> None:
     logs.render(ctx.run.results, ctx.run_dir, ctx.run_meta, log_format=logs.GAUDI)
 
 
-#: The prefix of the page's widget keys, its sidebar's and its Overview's.
-KEY_PREFIX = "reco_"
-
 RECO_PAGE = SuitePage(
     suite=RECO,
     sections=(
@@ -143,30 +140,25 @@ RECO_PAGE = SuitePage(
     # The report views read the store, which local mode has none of.
     remote_only=frozenset({"Overview", "Regressions", "Stack Changes"}),
     scopes={
-        **{name: SECTION_SCOPE[name] for name in ("Overview", "Regressions", "Stack Changes")},
-        **{name: SECTION_SCOPE["Region Timing"]
-           for name in ("Time", "Memory", "Components", "Data Flow")},
-        **{name: SECTION_SCOPE[name]
-           for name in ("Correlations", "Event Size", "Machine Info", "Logs")},
+        **SHARED_SCOPES,
+        **dict.fromkeys(
+            ("Time", "Memory", "Components", "Data Flow", "Correlations", "Logs"), ONE_RUN,
+        ),
     },
     renderers={
-        "Overview": partial(RENDERERS["Overview"], key_prefix=KEY_PREFIX),
-        "Regressions": RENDERERS["Regressions"],
-        "Stack Changes": RENDERERS["Stack Changes"],
+        **SHARED_RENDERERS,
         "Time": _warning_unreadable_components(_lenses(TIME_LENS, dict(zip(TIME_LENSES, (
             breakdown.render, _event_timing,
         ))))),
         "Memory": _lenses(MEMORY_LENS, dict(zip(MEMORY_LENSES, (
-            _warning_unreadable_components(memory.render), RENDERERS["Event Memory"],
+            _warning_unreadable_components(memory.render), event_memory,
         )))),
         "Components": _warning_unreadable_components(component.render),
         "Data Flow": _warning_unreadable_components(dataflow.render),
         "Correlations": _warning_unreadable_components(_correlations),
-        "Event Size": RENDERERS["Event Size"],
-        "Machine Info": RENDERERS["Machine Info"],
         "Logs": _logs,
     },
-    key_prefix=KEY_PREFIX,
+    key_prefix="reco_",
     components=True,
     all_runs_sections=frozenset({"Time", "Memory", "Components", "Event Size"}),
     # The sections the page had before its sections were grouped by question,

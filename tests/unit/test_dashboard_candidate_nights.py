@@ -1,5 +1,5 @@
 """Which report nights the Regressions tab offers for the sidebar's release
-(:func:`dashboard.tabs.regressions._candidate_nights`)."""
+(:func:`dashboard.tabs.reports.regressions._candidate_nights`)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ _DASHBOARD_DIR = Path(__file__).resolve().parents[2] / "dashboard"
 if str(_DASHBOARD_DIR) not in sys.path:
     sys.path.insert(0, str(_DASHBOARD_DIR))
 
-from tabs import regressions  # noqa: E402
+from tabs.reports import regressions  # noqa: E402
 
 from k4bench.regression.lineage import PLATFORM_SUCCESSORS  # noqa: E402
 

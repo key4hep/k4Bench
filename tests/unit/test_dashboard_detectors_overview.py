@@ -1,6 +1,6 @@
 """Unit tests for the Overview tab's pure data-shaping helpers.
 
-``dashboard/tabs/detectors_overview.py`` imports Streamlit (via the shared
+``dashboard/tabs/reports/overview/`` imports Streamlit (via the shared
 dashboard modules), so the whole module is skipped when Streamlit is
 unavailable. The tab's report-to-frame helpers and chart builders are pure
 functions over :class:`~k4bench.regression.models.NightlyReport` fixtures.
@@ -42,8 +42,8 @@ def _load_module():
     if str(_DASHBOARD_DIR) not in sys.path:
         sys.path.insert(0, str(_DASHBOARD_DIR))
     spec = importlib.util.spec_from_file_location(
-        "k4bench_dashboard_detectors_overview",
-        _DASHBOARD_DIR / "tabs" / "detectors_overview.py",
+        "k4bench_dashboard_overview",
+        _DASHBOARD_DIR / "tabs" / "reports" / "overview" / "__init__.py",
     )
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
@@ -54,8 +54,8 @@ def _load_module():
 ov = _load_module()
 
 # Imported after the dashboard directory is on sys.path (see _load_module).
-from tabs import _overview_data as data  # noqa: E402
-from tabs import _regression_status as status  # noqa: E402
+from tabs.reports.overview import _data as data  # noqa: E402
+from tabs.reports.overview import status  # noqa: E402
 from tabs import _reliability as reliability  # noqa: E402
 
 

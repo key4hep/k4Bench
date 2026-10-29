@@ -14,7 +14,7 @@ import streamlit as st
 from k4bench.analysis.loader import failed_config_mask
 from k4bench.labels import pretty_platform, pretty_release, pretty_sample
 from k4bench.regression.lineage import is_detector_replaced, is_replaced
-from sections import SCOPED, SECTION_SCOPE, SectionScope
+from sections import SCOPED, SectionScope
 
 
 def order_platforms(platforms: list[str]) -> list[str]:
@@ -84,7 +84,7 @@ def render_scope_note(
     data_dir: str | None = None,
     override: "SectionScope | None" = None,
     slot: "st.delta_generator.DeltaGenerator | None" = None,
-    scopes: Mapping[str, SectionScope] = SECTION_SCOPE,
+    scopes: Mapping[str, SectionScope],
 ) -> None:
     """One muted line under the section bar naming what *section* is showing.
 
@@ -93,11 +93,11 @@ def render_scope_note(
     an ``st.caption``, so it takes the theme's small muted text colour, on one
     line, with no box, background or icon.
 
-    What it may claim comes entirely from the page's *scopes* registry
-    (:data:`sections.SECTION_SCOPE` for the Simulation page), never from the
-    arguments: the sections honour genuinely different slices of the
-    sidebar, so a uniform breadcrumb would misdescribe several of them. A
-    section the registry does not know renders nothing rather than a guess.
+    What it may claim comes entirely from the page's *scopes*
+    (:attr:`suite_page.SuitePage.scopes`), never from the other arguments:
+    the sections honour genuinely different slices of the sidebar, so a
+    uniform breadcrumb would misdescribe several of them. A section *scopes*
+    does not know renders nothing rather than a guess.
     *override* replaces that declaration for the one section whose scope a
     control inside it can change (Stack Changes' "Whole platform" toggle); the
     caller supplies it, because the chrome must not read a tab's widget keys.

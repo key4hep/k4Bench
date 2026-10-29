@@ -1,4 +1,4 @@
-"""Tests for the Regressions drill-down blame overlay (:mod:`tabs._blame`).
+"""Tests for the Regressions drill-down blame overlay (:mod:`tabs.reports._blame`).
 
 Covers the pure pieces — which verdicts get a window, where the onset marker
 lands, and the shaded release band.
@@ -19,7 +19,7 @@ _DASHBOARD_DIR = Path(__file__).resolve().parents[2] / "dashboard"
 if str(_DASHBOARD_DIR) not in sys.path:
     sys.path.insert(0, str(_DASHBOARD_DIR))
 
-from tabs import _blame  # noqa: E402
+from tabs.reports import _blame  # noqa: E402
 
 from k4bench.regression.models import (  # noqa: E402
     Direction,
