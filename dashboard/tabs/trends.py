@@ -16,6 +16,8 @@ from ui_utils import (
     DASHES,
     PALETTES,
     SYMBOLS,
+    control_group,
+    control_row,
     display_options,
     legend_below,
     opacity_control,
@@ -361,24 +363,18 @@ def _trends_body(
     # order.
     labels = sorted(trend_df["label"].dropna().unique()) if "label" in trend_df.columns else []
 
-    # ── Control row: regression pills left, run scope and display right ────
-    # The pills stay on the page because they change *which* nights are marked;
-    # everything that only changes how the lines are drawn lives in the popover,
-    # in the same right-hand position every other view puts it.
-    controls = st.container(
-        border=True, horizontal=True, vertical_alignment="bottom",
-        width="stretch", gap="medium",
-    )
-    with controls:
-        flags = st.container(width="content")
-        with flags:
+    # ── Control row: regression pills, run scope and display, on the right ─
+    # Nothing here picks what is looked at, so the row's left stays empty. The
+    # pills stay on the page because they change *which* nights are marked,
+    # beside the run scope as on the Overview; everything that only changes how
+    # the lines are drawn lives in the popover.
+    _, actions = control_row(border=True)
+    with actions:
+        overlays = control_group()
+        with overlays:
             show_confirmed, show_watch = render_flag_pills("trends_flags")
-        actions = st.container(
-            horizontal=True, horizontal_alignment="right",
-            vertical_alignment="bottom", width="stretch", gap="small",
-        )
-        reliability_slot = actions.container(width="content").empty()
-        display_options_slot = actions.container(width="content").empty()
+            reliability_slot = st.empty()
+        display_options_slot = st.empty()
     display = display_options(
         palette_control("trends_palette", len(labels)),
         style_cycling_control("trends_style"),

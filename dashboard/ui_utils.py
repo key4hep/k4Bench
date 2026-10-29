@@ -308,38 +308,68 @@ def _validate_bin_count(
     st.session_state[custom_key] = bins != int(st.session_state[auto_key])
 
 
+def control_group() -> Any:
+    """Controls side by side, sized to their content and wrapped as one unit:
+    a line too narrow for the group moves it whole to a line of its own."""
+    return st.container(
+        horizontal=True, vertical_alignment="bottom", width="content", gap="xsmall",
+    )
+
+
+def control_row(*, border: bool = False, stretch_left: bool = False) -> tuple[Any, Any]:
+    """Render the dashboard's control row and return its two groups: on the
+    left the controls that choose *what* is looked at, on the right those that
+    change *how it is drawn* — the run-quality scope, overlays, Display options.
+
+    Both are control groups (:func:`control_group`), so a row too narrow for
+    both wraps the right group onto a line of its own whole, rather than
+    squeezing it beside the left and splitting it. While they share a line, a stretching space
+    holds the right group at the row's end, even with nothing on the left.
+    Controls that must stay together when the right group itself wraps go in a
+    :func:`control_group` nested in it.
+
+    *stretch_left* hands the spare width to the left instead, for a lone
+    control too wide to size to its content, such as a metric picker; it then
+    shares its line with the right group until squeezed to Streamlit's 8rem.
+    """
+    row = st.container(
+        border=border, horizontal=True, vertical_alignment="bottom",
+        width="stretch", gap="xsmall",
+    )
+    with row:
+        if stretch_left:
+            left = st.container(
+                horizontal=True, vertical_alignment="bottom", width="stretch",
+                gap="xsmall",
+            )
+        else:
+            left = control_group()
+            st.space("stretch")
+        right = control_group()
+    return left, right
+
+
 def view_control_row(
     options: list[str], *, key: str,
 ) -> tuple[str, Any, Any]:
     """Render the dashboard's canonical tab-local view header.
 
-    The view radio occupies the left; two deferred right-hand slots hold the
-    run-quality scope and Display options respectively. Returning placeholders
-    lets callers compute their data before deciding whether either control is
-    needed without changing the row where it appears. The view is bound to
-    ``?{key}=``, so a copied link reopens it.
+    A :func:`control_row` with the view radio on the left and two deferred
+    slots on the right, for the run-quality scope and Display options.
+    Returning placeholders lets callers compute their data before deciding
+    whether either control is needed without changing the row where it
+    appears. The view is bound to ``?{key}=``, so a copied link reopens it.
     """
-    view_col, options_col = st.columns(
-        [5, 3], gap="medium", vertical_alignment="bottom",
-    )
-    with view_col:
+    views, actions = control_row()
+    with views:
         view = (
             st.radio("**View**", options=options, horizontal=True, key=key,
                      bind="query-params")
             if len(options) > 1
             else options[0]
         )
-    with options_col:
-        option_alignment = st.container(
-            horizontal=True, horizontal_alignment="right",
-            vertical_alignment="bottom", width="stretch",
-        )
-        actions = option_alignment.container(
-            border=False, horizontal=True, vertical_alignment="bottom",
-            width="content", gap="small",
-        )
-        reliability_slot = actions.container(width="content").empty()
-        display_options_slot = actions.container(width="content").empty()
+    reliability_slot = actions.empty()
+    display_options_slot = actions.empty()
     return view, reliability_slot, display_options_slot
 
 

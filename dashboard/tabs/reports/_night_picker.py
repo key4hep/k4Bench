@@ -17,7 +17,7 @@ from collections.abc import Callable
 
 import streamlit as st
 
-from ui_chrome import drop_stale_selection, seed_query_param
+from ui_chrome import drop_stale_selection, fitted_selectbox, seed_query_param
 from ui_utils import reset_widget_on_scope
 
 
@@ -66,12 +66,11 @@ def render_night_picker(
     drop_stale_selection(key, nights)          # stale night → re-default
     seed_query_param(key, "report", nights)     # ?report= wins when it's valid
     st.session_state.setdefault(key, default)
-    night = st.selectbox(
+    night = fitted_selectbox(
         label,
         nights,
         format_func=lambda n: f"{badge(n)} {n}",
         key=key,
-        width=260,
         help=help,
     ) or default
     st.query_params["report"] = night

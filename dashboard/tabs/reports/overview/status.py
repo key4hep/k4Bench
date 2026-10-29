@@ -34,7 +34,7 @@ from tabs._regression_flags import (
 )
 from tabs.reports._metric_trend import render_metric_picker
 from tabs._reliability import render_run_reliability_filter
-from ui_utils import reset_widget_on_scope, to_rgba
+from ui_utils import control_row, reset_widget_on_scope, to_rgba
 
 #: Fill for the accepted-baseline band on the flag-trend chart — the same
 #: visual device as the Regressions tab's drill-down.
@@ -268,24 +268,16 @@ def _render_flag_trend(
     reset_widget_on_scope(
         f"{key_prefix}det_ov_flag_trend", (platform, sample, tuple(choices)),
     )
-    controls = st.container(
-        horizontal=True, vertical_alignment="bottom", width="stretch", gap="medium",
-    )
-    with controls:
-        picker = st.container(width="stretch")
-        with picker:
-            v = render_metric_picker(
-                choices, key=f"{key_prefix}det_ov_flag_trend", include_detector=True,
-                help="The flagged metric's history over the trend window, with the "
-                     "baseline band its verdict was judged against — opens on the "
-                     "worst flag; pick another or “—” to hide it. Built from the "
-                     "nightly reports, no run downloads.",
-            )
-        actions = st.container(
-            horizontal=True, horizontal_alignment="right",
-            vertical_alignment="bottom", width="content",
+    picker, actions = control_row(stretch_left=True)
+    with picker:
+        v = render_metric_picker(
+            choices, key=f"{key_prefix}det_ov_flag_trend", include_detector=True,
+            help="The flagged metric's history over the trend window, with the "
+                 "baseline band its verdict was judged against — opens on the "
+                 "worst flag; pick another or “—” to hide it. Built from the "
+                 "nightly reports, no run downloads.",
         )
-        reliability_slot = actions.empty()
+    reliability_slot = actions.empty()
     if v is None:
         return
     unreliable_pairs, exclude_unreliable = render_run_reliability_filter(

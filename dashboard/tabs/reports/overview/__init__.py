@@ -57,8 +57,8 @@ from tabs.reports.overview._data import (
 )
 from tabs._regression_flags import add_severity_markers, render_flag_pills
 from tabs._reliability import render_run_reliability_filter
-from ui_chrome import EXAMPLE_DETECTORS, seed_query_param, select_width
-from ui_utils import to_rgba
+from ui_chrome import EXAMPLE_DETECTORS, fitted_selectbox, seed_query_param
+from ui_utils import control_group, control_row, to_rgba
 
 #: The tab's views, dispatched by the same View switcher as Region Timing and
 #: Machine Info: the two figure views, then a night's verdicts, then that
@@ -80,11 +80,6 @@ def _metric_title(metric: str) -> str:
     """Human-readable panel/axis title with units, e.g. ``Wall time (s)``.
     Sizes stored in MB are shown in GB (see :func:`_wide_in_display_units`)."""
     return metric_title(metric, "GB" if is_megabytes(metric) else None)
-
-
-def _metric_select_width(metrics: list[str]) -> int:
-    """The toolbar width of a selectbox offering *metrics* by their titles."""
-    return select_width([_metric_title(metric) for metric in metrics])
 
 
 def _trend_y_title(metric: str, relative: bool) -> str:
@@ -830,92 +825,80 @@ def _figure_toolbar(
     trends = view == "Performance Trends"
     show_confirmed = show_watch = False
     size_metric = None
-    # Both groups are sized to their content, so the toolbar wraps the overlays
-    # onto their own line as one unit rather than squeezing them beside the
-    # comparison, which would split them; distributing keeps them right-aligned
-    # while they share its line.
-    toolbar = st.container(
-        border=True, horizontal=True, vertical_alignment="bottom",
-        width="stretch", horizontal_alignment="distribute", gap="small",
-    )
-    with toolbar:
-        comparison = st.container(
-            horizontal=True, vertical_alignment="bottom", width="content",
-            gap="small",
+    comparison, display = control_row(border=True)
+    with comparison:
+        seed_query_param(f"{key_prefix}det_ov_time_metric", "tmetric", TIME_METRICS)
+        time_metric = fitted_selectbox(
+            "Time", TIME_METRICS, key=f"{key_prefix}det_ov_time_metric",
+            format_func=_metric_title,
+            help="Per-event means/medians exclude the warmup event; "
+                 "wall time and user CPU cover the whole run including "
+                 "initialization.",
         )
-        with comparison:
-            seed_query_param(f"{key_prefix}det_ov_time_metric", "tmetric", TIME_METRICS)
-            time_metric = st.selectbox(
-                "Time", TIME_METRICS, key=f"{key_prefix}det_ov_time_metric",
-                format_func=_metric_title, width=_metric_select_width(TIME_METRICS),
-                help="Per-event means/medians exclude the warmup event; "
-                     "wall time and user CPU cover the whole run including "
-                     "initialization.",
+        seed_query_param(f"{key_prefix}det_ov_mem_metric", "mmetric", MEMORY_METRICS)
+        if f"{key_prefix}det_ov_mem_metric" not in st.session_state:
+            memory_rows = inputs.hist_rows if trends else inputs.snap_rows
+            available = set(memory_rows["metric"])
+            st.session_state[f"{key_prefix}det_ov_mem_metric"] = next(
+                (metric for metric in MEMORY_METRICS if metric in available),
+                MEMORY_METRICS[0],
             )
-            seed_query_param(f"{key_prefix}det_ov_mem_metric", "mmetric", MEMORY_METRICS)
-            if f"{key_prefix}det_ov_mem_metric" not in st.session_state:
-                memory_rows = inputs.hist_rows if trends else inputs.snap_rows
-                available = set(memory_rows["metric"])
-                st.session_state[f"{key_prefix}det_ov_mem_metric"] = next(
-                    (metric for metric in MEMORY_METRICS if metric in available),
-                    MEMORY_METRICS[0],
+        mem_metric = fitted_selectbox(
+            "Memory",
+            MEMORY_METRICS,
+            key=f"{key_prefix}det_ov_mem_metric",
+            format_func=_metric_title,
+            help="Anonymous RSS is averaged over events. Virtual peak includes "
+            "initialisation. Total RSS metrics remain residency diagnostics.",
+        )
+        if trends:
+            size_key = f"{key_prefix}det_ov_size_metric"
+            seed_query_param(size_key, "smetric", SIZE_METRICS)
+            if size_key not in st.session_state:
+                available = set(inputs.hist_rows["metric"])
+                st.session_state[size_key] = next(
+                    (metric for metric in SIZE_METRICS if metric in available),
+                    SIZE_METRICS[0],
                 )
-            mem_metric = st.selectbox(
-                "Memory",
-                MEMORY_METRICS,
-                key=f"{key_prefix}det_ov_mem_metric",
+            size_metric = fitted_selectbox(
+                "Event size", SIZE_METRICS, key=size_key,
                 format_func=_metric_title,
-                width=_metric_select_width(MEMORY_METRICS),
-                help="Anonymous RSS is averaged over events. Virtual peak includes "
-                "initialisation. Total RSS metrics remain residency diagnostics.",
+                help="What one event of the job's EDM4hep output takes on disk, "
+                "after ROOT's compression or before it; the file size per event "
+                "counts the file's metadata too. The compression ratio is the "
+                "uncompressed over the compressed size, so higher is smaller "
+                "on disk.",
             )
-            if trends:
-                size_key = f"{key_prefix}det_ov_size_metric"
-                seed_query_param(size_key, "smetric", SIZE_METRICS)
-                if size_key not in st.session_state:
-                    available = set(inputs.hist_rows["metric"])
-                    st.session_state[size_key] = next(
-                        (metric for metric in SIZE_METRICS if metric in available),
-                        SIZE_METRICS[0],
-                    )
-                size_metric = st.selectbox(
-                    "Event size", SIZE_METRICS, key=size_key,
-                    format_func=_metric_title, width=_metric_select_width(SIZE_METRICS),
-                    help="What one event of the job's EDM4hep output takes on disk, "
-                    "after ROOT's compression or before it; the file size per event "
-                    "counts the file's metadata too. The compression ratio is the "
-                    "uncompressed over the compressed size, so higher is smaller "
-                    "on disk.",
-                )
-                scale = st.segmented_control(
-                    "Scale", ["Log", "Linear", "Relative %"],
-                    default="Log", key=f"{key_prefix}det_ov_scale", bind="query-params",
-                    help="Log keeps the detectors' >1-decade spread readable; "
-                         "Linear shows absolute values; Relative % rescales "
-                         "each line to its first plotted night = 100%, so "
-                         "drift is comparable across detectors of very "
-                         "different absolute cost.",
-                ) or "Log"
-            else:
-                scale = st.segmented_control(
-                    "Scale", ["Log", "Linear"],
-                    default="Log", key=f"{key_prefix}det_ov_scale_land",
-                    bind="query-params",
-                    help="Log keeps the detectors' >1-decade spread "
-                         "readable; Linear shows absolute values.",
-                ) or "Log"
-
-        overlays = st.container(
-            horizontal=True, vertical_alignment="bottom", width="content",
-            gap="small",
-        )
+    with display:
+        if trends:
+            scale = st.segmented_control(
+                "Scale", ["Log", "Linear", "Relative %"],
+                default="Log", key=f"{key_prefix}det_ov_scale", bind="query-params",
+                help="Log keeps the detectors' >1-decade spread readable; "
+                     "Linear shows absolute values; Relative % rescales "
+                     "each line to its first plotted night = 100%, so "
+                     "drift is comparable across detectors of very "
+                     "different absolute cost.",
+            ) or "Log"
+        else:
+            scale = st.segmented_control(
+                "Scale", ["Log", "Linear"],
+                default="Log", key=f"{key_prefix}det_ov_scale_land",
+                bind="query-params",
+                help="Log keeps the detectors' >1-decade spread "
+                     "readable; Linear shows absolute values.",
+            ) or "Log"
+        # A unit of their own, so a display group too wide for its line
+        # drops them below the scale together rather than splitting them.
+        overlays = control_group()
         with overlays:
             if trends:
                 show_confirmed, show_watch = render_flag_pills(
                     f"{key_prefix}det_ov_flags", label="Regressions",
                 )
             unreliable, exclude_unreliable = render_run_reliability_filter(
-                inputs.rel_hist, key=f"{key_prefix}det_ov_exclude_unreliable", inline=True,
+                inputs.rel_hist, key=f"{key_prefix}det_ov_exclude_unreliable",
+                inline=True,
             )
     # Make the selected comparison shareable: ?tmetric=...&mmetric=...
     st.query_params["tmetric"] = time_metric

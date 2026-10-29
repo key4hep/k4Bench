@@ -163,3 +163,58 @@ def test_a_replaced_detector_version_does_not_become_the_default(monkeypatch):
     assert ui_chrome.order_detectors(["CLD_o2_v09", "CLD_o2_v08"], "reco") == [
         "CLD_o2_v08", "CLD_o2_v09",
     ]
+
+
+# ── Selectbox width ──────────────────────────────────────────────────────────
+#
+# st.selectbox clips a selected option wider than its box. Chromium draws
+# "Mean event anonymous RSS (GB)" 193 px wide, beside 50 px of padding and
+# chevron; "Mean event file-backed RSS (GB)" has more characters but is narrower.
+
+_ANON, _FILE = "Mean event anonymous RSS (GB)", "Mean event file-backed RSS (GB)"
+
+
+def test_select_width_measures_in_streamlits_own_font():
+    # Without it every box falls back to the wider per-character bound.
+    assert ui_chrome._select_font() is not None
+
+
+def test_select_width_measures_the_label_rather_than_counting_it():
+    assert ui_chrome.select_width(_ANON) >= 50 + 193
+    assert ui_chrome.select_width(_FILE) < ui_chrome.select_width(_ANON)
+
+
+def test_select_width_without_the_font_still_fits_the_label(monkeypatch):
+    measured = ui_chrome.select_width(_ANON)
+    monkeypatch.setattr(ui_chrome, "_select_font", lambda: None)
+    assert ui_chrome.select_width(_ANON) >= measured
+
+
+def test_select_width_counts_an_emoji_badge_at_the_emoji_fonts_width():
+    # Source Sans has no emoji; the browser draws them from the system's emoji
+    # font, and the variation selector that makes ⚠ one takes no width.
+    night = "2026-10-29"
+    assert ui_chrome.select_width(f"🔴 {night}") >= ui_chrome.select_width(f" {night}") + 18
+    assert ui_chrome.select_width(f"⚠️ {night}") == ui_chrome.select_width(f"🔴 {night}")
+
+
+def test_current_option_follows_the_widgets_own_precedence(monkeypatch):
+    options = ["a", "b", "c"]
+    query = {"pick": "b"}
+    monkeypatch.setattr(ui_chrome.st, "query_params", query)
+    monkeypatch.setattr(ui_chrome.st, "session_state", {"pick": "c"})
+    assert ui_chrome.current_option("pick", options) == "c"
+    monkeypatch.setattr(ui_chrome.st, "session_state", {"pick": "gone"})
+    assert ui_chrome.current_option("pick", options) == "b"
+    query["pick"] = "stale"
+    assert ui_chrome.current_option("pick", options) == "a"
+
+
+def test_select_width_keeps_the_label_and_its_help_icon_on_one_line():
+    # The label row is as wide as the box, so a long label widens a box whose
+    # option is short.
+    label = "Report night · release 2026-10-26"
+    bare = ui_chrome.select_width("🔴 2026-10-28")
+    labelled = ui_chrome.select_width("🔴 2026-10-28", label)
+    assert labelled > bare
+    assert ui_chrome.select_width("🔴 2026-10-28", label, help=True) == labelled + 24
