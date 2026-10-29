@@ -732,8 +732,8 @@ along with the parameters only that view reads:
 
 Like every tab-local view selector in the dashboard, the Overview switcher uses
 simple horizontal radio buttons under a bold **View** label. It is visually
-separate from a single bordered comparison toolbar. **Time**, **Memory** and
-**Scale** form its left-hand group; **Regressions** and the explicit
+separate from a single bordered comparison toolbar. **Time**, **Memory**,
+**Event size** (Performance Trends only) and **Scale** form its left-hand group; **Regressions** and the explicit
 **Runs · ⚠ N unreliable** choice form its right-hand group on the same row.
 When unreliable runs are present, that choice offers:
 **Reliable only** (the default) or **All runs**; affected dates and the Machine
@@ -745,8 +745,8 @@ toggleable. Legend columns are centre-anchored and move into additional rows
 when there are many families or unusually long labels, keeping the plot usable
 at narrower dashboard widths.
 
-- **Performance Trends** — the two selected metrics side by side (CPU,
-  Memory), one line per detector across every nightly tag in the sidebar's
+- **Performance Trends** — the three selected metrics side by side (CPU,
+  Memory, Event size), one line per detector across every nightly tag in the sidebar's
   trend window (x-axis: the Key4hep nightly tag, like every other trend
   view; a nightly benchmarked twice collapses to one point, newest run wins),
   so cross-detector gaps can be tracked over time. Nights the
@@ -767,7 +767,18 @@ at narrower dashboard widths.
   not there is a chart, since a window with nothing to draw is when it matters
   most. One gap remains: a detector retired past the engine's seven-day
   missing-run grace period is dropped from the reports entirely and cannot be
-  named — widen the window to a range it still ran in to see it;
+  named — widen the window to a range it still ran in to see it. The **Event
+  size** selector offers what one event of the job's EDM4hep output takes on
+  disk, summed over the files it wrote: the *event size* after ROOT's
+  compression (the default, the Event Size section's tile), the *uncompressed
+  event size*, the *file size per event* (the whole file over its events, its
+  metadata and run trees included) and the *compression ratio* (uncompressed
+  over compressed, so higher is smaller on disk), in kB of 1024 bytes,
+  shareable via `?smetric=`. The nightly reports record them for the baseline
+  configuration without judging them, from the 2026-10-19 nightly on, when the
+  runners started measuring their output files; a window before it has an
+  Event size panel that says so, and a detector with no event size while
+  others have one is named in the caption;
 - **Performance Landscape** — the selected time metric against the selected
   memory metric, one point per detector at its **most recent run** — closer to
   the origin is faster *and* leaner. It follows the runs rather than the
@@ -899,7 +910,7 @@ choice at its top (in the URL too) says which:
 
 | Section | The question | What it shows | Backed by |
 | --- | --- | --- | --- |
-| **Overview** | How do the detectors compare? | every reco detector's baseline time and memory side by side over the trend window, what the newest report flags, and the night's mail, as on the Simulation page | `reports/reco/{night}/report.json` |
+| **Overview** | How do the detectors compare? | every reco detector's baseline time, memory and event size side by side over the trend window, what the newest report flags, and the night's mail, as on the Simulation page | `reports/reco/{night}/report.json` |
 | **Regressions** | What did a night's report find? | one configuration's verdicts, their history and the pull requests behind them, as on the Simulation page | `reports/reco/{night}/report.json`, `blame.json`, the verdict's history |
 | **Stack Changes** | What changed between two releases? | the packages that changed, and the reco regressions whose step entered in between, as on the Simulation page | `run_info.json`, `reports/reco/` |
 | **Time** | Where does the time go? | **Phases and components**: the job's phases and each component's share of them; **Per event**: the time of each event, and of any algorithm in it | `*_components.json`, `*_events.json` |
@@ -925,11 +936,11 @@ file holds, so its file is not warned about. In the history, the run gives no
 point for that configuration, never a zero. **Refresh Data** reads a repaired
 file again.
 
-**Overview** draws the Simulation Overview's Performance Trends and Performance
-Landscape views from the runs themselves, with the same like-for-like rules: one
-platform and sample, the baseline configuration. It is available only against
-the remote store. If a detector's runs could not be listed, a warning names it
-instead of it silently dropping out of the charts.
+**Overview** is the Simulation page's section reading the reco suite's nightly
+reports: its four views, with the same like-for-like rules (one platform and
+sample, the baseline configuration), and its Event size panel showing what one
+event of the EDM4hep files the k4run job wrote takes on disk. It is available
+only against the remote store.
 
 **Time**, looked at by **Phases and components**, has two views:
 

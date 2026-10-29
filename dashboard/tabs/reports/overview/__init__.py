@@ -2,7 +2,7 @@
 
 Compares every detector's baseline benchmark for the sidebar-selected platform
 and sample, over the sidebar's shared Trend window, in four views:
-**Performance Trends** (the two selected metrics' history), **Performance
+**Performance Trends** (the selected time, memory and event-size metrics' history), **Performance
 Landscape** (time against memory, one point per detector at its own most recent
 run — independent of which report night is open), **Regression Status** (one
 report night's verdict banner, the per-detector roster, and the worst flag's
@@ -42,6 +42,7 @@ from tabs.reports.overview import mail, status
 from tabs.reports.overview._data import (
     MEMORY_METRICS,
     METRIC_ORDER,
+    SIZE_METRICS,
     TIME_METRICS,
     OverviewInputs,
     collapse_history,
@@ -237,6 +238,27 @@ def _log_range(values: pd.Series, lo_frac: float, hi_frac: float) -> list[float]
     return [d0 - span * lo_frac, d1 + span * hi_frac]
 
 
+#: Nightly tags the trends' row of panels labels side by side at their tick
+#: angle, shared by its panels.
+_DATE_LABELS_PER_ROW = 18
+
+
+def _spaced_dates(dates: list, max_labels: int) -> list[pd.Timestamp]:
+    """*dates* thinned so that no two are closer than 1/*max_labels* of their
+    span, the newest always kept. A date axis places each nightly tag at its
+    date, so labelling a run of consecutive nights would print one over the
+    next; the hover still names every point's tag."""
+    stamps = [pd.Timestamp(d) for d in dates]
+    if len(stamps) < 2:
+        return stamps
+    gap = (stamps[-1] - stamps[0]) / max_labels
+    kept = [stamps[-1]]
+    for stamp in reversed(stamps[:-1]):
+        if kept[-1] - stamp >= gap:
+            kept.append(stamp)
+    return kept[::-1]
+
+
 def _history_figure(
     hist: pd.DataFrame,
     time_metric: str,
@@ -249,31 +271,43 @@ def _history_figure(
     show_confirmed: bool = True,
     show_watch: bool = False,
     failures: pd.DataFrame | None = None,
+    *,
+    size_metric: str | None = None,
 ) -> go.Figure | None:
-    """The two metrics' history side by side (CPU, Memory), one legend below
-    — the house pattern every other trend view in the dashboard uses (see
-    e.g. ``tabs.trends``). On log scale (*log*) the detectors' >1-decade
-    spread stays readable; linear is a toggle away. *relative* rescales each
-    line to its first plotted night = 100 %. *show_confirmed* flags confirmed
-    regressions (a halo + white-bordered badge, see
-    :data:`_regression_flags.FLAG_MARKS`); *show_watch* additionally flags
-    unconfirmed watch points.
+    """The metrics' history side by side (CPU, Memory and, given
+    *size_metric*, Event size), one legend below — the house pattern every
+    other trend view in the dashboard uses (see e.g. ``tabs.trends``). On log
+    scale (*log*) the detectors' >1-decade spread stays readable; linear is a
+    toggle away. *relative* rescales each line to its first plotted night =
+    100 %. *show_confirmed* flags confirmed regressions (a halo +
+    white-bordered badge, see :data:`_regression_flags.FLAG_MARKS`);
+    *show_watch* additionally flags unconfirmed watch points. An Event size
+    panel with nothing in the window says so in place of its axes, so the
+    panels keep their places.
     """
     if failures is not None and not failures.empty:
         hist = pd.concat([hist, failures], ignore_index=True)
-    metrics = [time_metric, mem_metric]
+    panels = [(time_metric, "CPU"), (mem_metric, "Memory")]
+    if size_metric is not None:
+        panels.append((size_metric, "Event size"))
+    metrics = [metric for metric, _ in panels]
     present = [] if hist.empty else [m for m in metrics if (hist["metric"] == m).any()]
     if not present:
         return None
 
-    fig = make_subplots(rows=1, cols=2, horizontal_spacing=0.08,
-                         subplot_titles=["CPU", "Memory"])
+    # One time axis for every panel, so points side by side are one night
+    # even where a metric's history is shorter than the others'.
+    fig = make_subplots(rows=1, cols=len(panels), shared_xaxes="all",
+                         horizontal_spacing=0.08 if len(panels) == 2 else 0.06,
+                         subplot_titles=[title for _, title in panels])
 
     hover_y = "%{y:.1f} %" if relative else "%{y:.4g}"
     hist = hist.copy()
     hist["night_dt"] = pd.to_datetime(hist["night"])
-    unique_dates = sorted(hist["night_dt"].dropna().unique())
-    tick_labels = [pd.Timestamp(d).strftime("%Y-%m-%d") for d in unique_dates]
+    unique_dates = _spaced_dates(
+        sorted(hist["night_dt"].dropna().unique()), _DATE_LABELS_PER_ROW // len(panels),
+    )
+    tick_labels = [d.strftime("%Y-%m-%d") for d in unique_dates]
     marker_alpha = max(0.1, alpha - 0.2)
     shown: set[str] = set()
     plotted = [
@@ -285,9 +319,17 @@ def _history_figure(
     legend_specs, legends, b_margin = _detector_legend_columns(
         plotted, plot_h=plot_h, t_margin=t_margin, tick_clearance=75,
     )
-    for metric, col in ((time_metric, 1), (mem_metric, 2)):
+    for col, (metric, _) in enumerate(panels, start=1):
         sub_m = hist[hist["metric"] == metric]
         if sub_m.empty:
+            if metric == size_metric:
+                fig.update_xaxes(visible=False, row=1, col=col)
+                fig.update_yaxes(visible=False, row=1, col=col)
+                fig.add_annotation(
+                    text="No event size recorded<br>in this window",
+                    xref=f"x{col} domain", yref=f"y{col} domain", x=0.5, y=0.5,
+                    showarrow=False, font=dict(size=13),
+                )
             continue
         line_m = sub_m[sub_m["severity"] != Severity.FAILURE.value]
         for detector, (legend_ref, legend_name) in legend_specs.items():
@@ -295,8 +337,8 @@ def _history_figure(
             if sub.empty:
                 continue
             color, dash, symbol = styles[detector]
-            # Deduped across the CPU and Memory panels so a detector with
-            # both metrics only gets one legend entry.
+            # Deduped across the panels so a detector with several metrics
+            # only gets one legend entry.
             first = detector not in shown
             shown.add(detector)
             fig.add_trace(
@@ -500,6 +542,8 @@ def _trend_notes(
     window_roster: list[str],
     excluded: list[str],
     last_run: dict[str, str],
+    *,
+    size_metric: str | None = None,
 ) -> list[str]:
     """The caption under the trend chart: every detector in the scope the chart
     has no line for, and why.
@@ -526,8 +570,14 @@ def _trend_notes(
     A detector retired past the engine's missing-run grace period is dropped
     from the reports altogether, so it reaches none of these sources and cannot
     be named; widening the window to a range it still ran in brings it back.
+
+    Given *size_metric*, a detector drawn in the other panels but not in the
+    Event size panel is named too, while another detector has an event size
+    in the window: the runs recorded none before k4Bench measured their
+    output files, and a job that writes no EDM4hep file has none. When no
+    detector has one, the panel itself says so.
     """
-    metrics = (time_metric, mem_metric)
+    metrics = (time_metric, mem_metric, *((size_metric,) if size_metric else ()))
     plotted = _plotted_detectors(hist, metrics)
     missing = [d for d in dict.fromkeys([*detectors, *window_roster])
                if d not in plotted]
@@ -566,6 +616,16 @@ def _trend_notes(
             )
             + "."
         )
+    if size_metric is not None:
+        sized = _plotted_detectors(hist, (size_metric,))
+        unsized = [
+            d for d in dict.fromkeys([*detectors, *window_roster])
+            if d in plotted and d not in sized
+        ]
+        if sized and unsized:
+            notes.append(
+                f"No event size recorded in this window: {', '.join(unsized)}."
+            )
     if excluded:
         notes.append(
             f"Not benchmarked with this sample/platform: {', '.join(excluded)}."
@@ -742,6 +802,8 @@ class _FigureChoice:
 
     time_metric: str
     mem_metric: str
+    #: The Event size panel's metric; ``None`` on the landscape, which has none.
+    size_metric: str | None
     log: bool
     relative: bool
     show_confirmed: bool
@@ -757,10 +819,12 @@ def _figure_toolbar(
 ) -> _FigureChoice:
     """The shaping controls shared by the two figure views. Same widget keys in
     both, so the chosen metrics survive a view switch; only Scale differs
-    (Relative % only makes sense for a time series). *key_prefix* prefixes
-    every key, so each page keeps its own choice."""
+    (Relative % only makes sense for a time series), and Event size is the
+    trends' alone, the landscape plotting time against memory. *key_prefix*
+    prefixes every key, so each page keeps its own choice."""
     trends = view == "Performance Trends"
     show_confirmed = show_watch = False
+    size_metric = None
     toolbar = st.container(
         border=True, horizontal=True, vertical_alignment="bottom",
         width="stretch", gap="small",
@@ -797,6 +861,23 @@ def _figure_toolbar(
                 "initialisation. Total RSS metrics remain residency diagnostics.",
             )
             if trends:
+                size_key = f"{key_prefix}det_ov_size_metric"
+                seed_query_param(size_key, "smetric", SIZE_METRICS)
+                if size_key not in st.session_state:
+                    available = set(inputs.hist_rows["metric"])
+                    st.session_state[size_key] = next(
+                        (metric for metric in SIZE_METRICS if metric in available),
+                        SIZE_METRICS[0],
+                    )
+                size_metric = st.selectbox(
+                    "Event size", SIZE_METRICS, key=size_key,
+                    format_func=_metric_title, width=230,
+                    help="What one event of the job's EDM4hep output takes on disk, "
+                    "after ROOT's compression or before it; the file size per event "
+                    "counts the file's metadata too. The compression ratio is the "
+                    "uncompressed over the compressed size, so higher is smaller "
+                    "on disk.",
+                )
                 scale = st.segmented_control(
                     "Scale", ["Log", "Linear", "Relative %"],
                     default="Log", key=f"{key_prefix}det_ov_scale", bind="query-params",
@@ -830,9 +911,13 @@ def _figure_toolbar(
     # Make the selected comparison shareable: ?tmetric=...&mmetric=...
     st.query_params["tmetric"] = time_metric
     st.query_params["mmetric"] = mem_metric
+    # Left as it is on the landscape, so returning to the trends restores it.
+    if size_metric is not None:
+        st.query_params["smetric"] = size_metric
     return _FigureChoice(
         time_metric=time_metric,
         mem_metric=mem_metric,
+        size_metric=size_metric,
         log=scale == "Log",
         relative=scale == "Relative %",
         show_confirmed=show_confirmed,
@@ -867,13 +952,17 @@ def _render_trends(
     hist = collapse_history(kept)
     plotted = pd.concat([hist, failed_rows], ignore_index=True)
 
+    on_screen = (
+        choice.time_metric, choice.mem_metric,
+        *((choice.size_metric,) if choice.size_metric else ()),
+    )
     shown = _history_in_display_units(plotted)
     if choice.relative:
         shown = relative_history(shown)
     hist_shown = shown[shown["severity"] != Severity.FAILURE.value]
     failed_shown = shown[shown["severity"] == Severity.FAILURE.value]
     undefined_failures = failed_shown[
-        failed_shown["metric"].isin((choice.time_metric, choice.mem_metric))
+        failed_shown["metric"].isin(on_screen)
         & failed_shown["value"].isna()
     ]
     failed_shown = failed_shown.dropna(subset=["value"])
@@ -884,6 +973,7 @@ def _render_trends(
     notes = _trend_notes(
         plotted, rows, choice.time_metric, choice.mem_metric,
         inputs.detectors, inputs.window_roster, inputs.excluded, inputs.last_run,
+        size_metric=choice.size_metric,
     )
     if choice.relative and not undefined_failures.empty:
         names = ", ".join(sorted(undefined_failures["detector"].unique()))
@@ -895,6 +985,7 @@ def _render_trends(
         hist_shown, choice.time_metric, choice.mem_metric, inputs.styles,
         inputs.detectors, 0.75, choice.log, choice.relative,
         choice.show_confirmed, choice.show_watch, failed_shown,
+        size_metric=choice.size_metric,
     )
     if fig is None:
         st.info(" ".join([
@@ -908,7 +999,7 @@ def _render_trends(
     # night re-ran it.
     drawn = pd.concat([hist_shown, failed_shown], ignore_index=True)
     tags = sorted(drawn.loc[
-        drawn["metric"].isin((choice.time_metric, choice.mem_metric)), "night"
+        drawn["metric"].isin(on_screen), "night"
     ].unique())
     span = (
         f"Latest night: **{inputs.latest_night}** · Data range: "

@@ -535,6 +535,50 @@ def build_event_size_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
     return _finalize_dates(pd.DataFrame(rows, columns=list(EVENT_SIZE_TREND_COLUMNS)))
 
 
+#: The metrics of :func:`build_event_size_metrics_trend`.
+EVENT_SIZE_METRIC_COLUMNS = (
+    "event_size_kb", "uncompressed_event_size_kb", "file_size_per_event_kb", "compression_ratio",
+)
+
+
+def build_event_size_metrics_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
+    """What one event of each config's job takes on disk across *run_dirs*, as
+    the metrics a nightly report records (:data:`EVENT_SIZE_METRIC_COLUMNS`).
+
+    One row per run and config, over every podio file the job wrote: its
+    events' compressed (``event_size_kb``) and uncompressed bytes per event,
+    each file's size on disk over its events (``file_size_per_event_kb``, its
+    metadata and run trees included), all summed over the files, and the
+    uncompressed bytes over the compressed (``compression_ratio``). Every job
+    benchmarked writes one podio file, a sim's output or a reco's EDM4hep
+    file; one that wrote several, each holding the same events, takes their
+    sum per event. ``None`` when no run has a podio output file (see
+    :func:`build_event_size_trend`).
+    """
+    sizes = build_event_size_trend(run_dirs)
+    if sizes is None:
+        return None
+    events = sizes[sizes["collection"].isna()]
+    keys = ["run_id", "run_date", "k4h_release_date", "k4h_release", "label"]
+    df = (
+        events.assign(file_kb_per_event=events["file_mb"] * KB / events["events"])
+        .groupby(keys, dropna=False, sort=False)[
+            ["compressed_kb", "uncompressed_kb", "file_kb_per_event"]
+        ]
+        .sum()
+        .reset_index()
+        .rename(columns={
+            "compressed_kb": "event_size_kb",
+            "uncompressed_kb": "uncompressed_event_size_kb",
+            "file_kb_per_event": "file_size_per_event_kb",
+        })
+    )
+    df["compression_ratio"] = (
+        df["uncompressed_event_size_kb"] / df["event_size_kb"].where(df["event_size_kb"] > 0)
+    )
+    return _finalize_dates(df[[*keys, *EVENT_SIZE_METRIC_COLUMNS]])
+
+
 def _time_stats(times: pd.Series) -> dict:
     """The :func:`build_event_timing_trend` statistics of per-event *times*
     (seconds, warm-up already left out); empty when none was measured."""

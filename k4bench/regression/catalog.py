@@ -20,10 +20,12 @@ import pandas as pd
 
 from k4bench.analysis.trend import (
     build_component_cost_trend,
+    build_event_size_metrics_trend,
     build_event_timing_trend,
     build_results_trend,
 )
-from k4bench.artifacts import COMPONENTS_SUFFIX, EVENTS_SUFFIX, RESULTS_SUFFIX
+from k4bench.artifacts import COMPONENTS_SUFFIX, EVENT_SIZE_SUFFIX, EVENTS_SUFFIX, RESULTS_SUFFIX
+from k4bench.labels import BASELINE_LABEL
 from k4bench.layout import RECO, SIM
 
 #: Run-level metrics evaluated per config: ``{metric: family}``. Deliberately
@@ -76,6 +78,21 @@ EVENT_REPORTED_ONLY_METRICS: dict[str, str] = {
     "rss_anon_slope_mb_per_event": "memory",
 }
 
+#: What one event of a job's output takes on disk, recorded without entering
+#: the regression engine (:func:`~k4bench.analysis.trend.build_event_size_metrics_trend`).
+#: A fixed-seed sample writes the same bytes on every night of a release, so
+#: a step is a change in what the job writes, not noise; it is recorded for the
+#: views comparing detectors before a judgement policy is chosen for it. Only
+#: for the baseline config, the one those views compare: a sim sweep's
+#: hundreds of ablation configs would each add a row per metric to every
+#: night's report.
+EVENT_SIZE_METRICS: dict[str, str] = {
+    "event_size_kb": "size",
+    "uncompressed_event_size_kb": "size",
+    "file_size_per_event_kb": "size",
+    "compression_ratio": "size",
+}
+
 #: Every run-level metric whose value is recorded, judged or not.
 RUN_VALUE_METRICS: dict[str, str] = {**RUN_METRICS, **REPORTED_ONLY_METRICS}
 
@@ -97,6 +114,10 @@ REPORTED_ONLY_REASONS: dict[str, str] = {
     "rss_anon_slope_mb_per_event": (
         "recorded but not judged — growth indicator gathering history before a "
         "judgement policy is set"
+    ),
+    **dict.fromkeys(
+        EVENT_SIZE_METRICS,
+        "recorded but not judged — event size is displayed before a judgement policy is set",
     ),
 }
 
@@ -144,15 +165,22 @@ class MetricSource:
     #: ``{metric: family}`` judged per config and component, on the rows
     #: naming one.
     component_judged: Mapping[str, str] = field(default_factory=dict)
+    #: The configs whose rows are read, by label; ``None`` for every config.
+    configs: frozenset[str] | None = None
+
+    def _configs_rows(self, frame: pd.DataFrame) -> pd.DataFrame:
+        return frame if self.configs is None else frame[frame["label"].isin(self.configs)]
 
     def job_rows(self, frame: pd.DataFrame) -> pd.DataFrame:
-        """*frame*'s rows for a whole job."""
+        """*frame*'s rows for a whole job, of the configs read."""
+        frame = self._configs_rows(frame)
         return frame[frame[COMPONENT].isna()] if COMPONENT in frame.columns else frame
 
     def component_rows(self, frame: pd.DataFrame) -> pd.DataFrame:
-        """*frame*'s rows naming a component."""
+        """*frame*'s rows naming a component, of the configs read."""
         if COMPONENT not in frame.columns:
             return frame.iloc[0:0]
+        frame = self._configs_rows(frame)
         return frame[frame[COMPONENT].notna()]
 
 
@@ -171,11 +199,15 @@ _COMPONENTS = MetricSource(
     "components", build_component_cost_trend, COMPONENTS_SUFFIX, JOB_COST_METRICS,
     component_judged=COMPONENT_METRICS,
 )
+_EVENT_SIZE = MetricSource(
+    "event_size", build_event_size_metrics_trend, EVENT_SIZE_SUFFIX, {}, EVENT_SIZE_METRICS,
+    configs=frozenset({BASELINE_LABEL}),
+)
 
 #: Each suite's sources, in the order its report lists the verdicts.
 CATALOGS: dict[str, tuple[MetricSource, ...]] = {
-    SIM: (_RESULTS, _EVENTS),
-    RECO: (_RESULTS, _EVENTS, _COMPONENTS),
+    SIM: (_RESULTS, _EVENTS, _EVENT_SIZE),
+    RECO: (_RESULTS, _EVENTS, _EVENT_SIZE, _COMPONENTS),
 }
 
 

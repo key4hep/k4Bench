@@ -35,13 +35,15 @@ from ui_utils import DASHES, PALETTE_NAMES, PALETTES, SYMBOLS, auto_palette_inde
 #: Impact tab.
 _BASELINE_LABEL = BASELINE_LABEL
 
-#: The two panel families, each with its selectable equivalents (first entry
-#: is the default). All are lower-is-better.
+#: The three panel families, each with its selectable equivalents (first entry
+#: is the default). All are lower-is-better but the compression ratio.
 TIME_METRICS = ["mean_time_s", "median_time_s", "trimmed_mean_time_s",
                 "wall_time_s", "user_cpu_s"]
 MEMORY_METRICS = ["mean_rss_anon_mb", "peak_vmem_mb", "mean_rss_mb", "peak_rss_mb",
                   "mean_rss_file_mb"]
-METRIC_ORDER: list[str] = [*TIME_METRICS, *MEMORY_METRICS]
+SIZE_METRICS = ["event_size_kb", "uncompressed_event_size_kb", "file_size_per_event_kb",
+                "compression_ratio"]
+METRIC_ORDER: list[str] = [*TIME_METRICS, *MEMORY_METRICS, *SIZE_METRICS]
 
 #: Cap on report fetches when the sidebar provides no trend window (the store
 #: has no release yet) — keeps the fallback from downloading years of nights.

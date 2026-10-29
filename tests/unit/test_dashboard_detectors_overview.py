@@ -29,6 +29,7 @@ from k4bench.regression.models import (  # noqa: E402
     Severity,
 )
 from k4bench.regression.catalog import (  # noqa: E402
+    EVENT_SIZE_METRICS,
     EVENT_VALUE_METRICS,
     RUN_VALUE_METRICS,
 )
@@ -904,6 +905,35 @@ def test_history_figure_linear_and_relative_toggles():
     assert list(idea_line.y) == pytest.approx([100.0, 0.9 / 0.8 * 100.0])
 
 
+def test_spaced_dates_label_a_run_of_nights_without_overlap():
+    nights = [*pd.date_range("2026-10-08", "2026-10-17"), pd.Timestamp("2026-10-26")]
+    kept = ov._spaced_dates(nights, 6)
+    # The newest is always labelled; no two labels closer than a sixth of the
+    # 18-day span.
+    assert kept[-1] == pd.Timestamp("2026-10-26")
+    assert all(b - a >= pd.Timedelta(days=3) for a, b in zip(kept, kept[1:]))
+    assert kept == [pd.Timestamp(d) for d in ("2026-10-08", "2026-10-11", "2026-10-14", "2026-10-17", "2026-10-26")]
+    # A short history keeps every night.
+    assert ov._spaced_dates(nights[:2], 6) == nights[:2]
+    assert ov._spaced_dates([pd.Timestamp("2026-10-26")], 6) == [pd.Timestamp("2026-10-26")]
+    assert ov._spaced_dates([], 6) == []
+
+
+def test_history_figure_shares_one_time_axis_across_its_panels():
+    _, hist, _, styles, detectors = _fixture_frames()
+    fig = ov._history_figure(
+        ov._history_in_display_units(hist), "mean_time_s", "peak_rss_mb", styles, detectors,
+        size_metric="event_size_kb",
+    )
+    titles = [a.text for a in fig.layout.annotations]
+    assert titles[:3] == ["CPU", "Memory", "Event size"]
+    assert fig.layout.xaxis2.matches == "x" and fig.layout.xaxis3.matches == "x"
+    # The fixture records no event size: the panel says so instead of drawing
+    # empty axes.
+    assert "No event size recorded<br>in this window" in titles
+    assert fig.layout.xaxis3.visible is False
+
+
 def test_history_figure_handles_partial_data():
     wide, hist, _failures, styles, detectors = _fixture_frames()
     hist_disp = ov._history_in_display_units(hist)
@@ -1065,7 +1095,7 @@ def test_baseline_label_matches_benchmark():
 def test_selectable_metrics_are_recorded_by_the_report():
     # Names and units come from k4bench.metrics (see test_metrics.py); what
     # this tab owns is which recorded metrics it offers.
-    report_metrics = set(RUN_VALUE_METRICS) | set(EVENT_VALUE_METRICS)
+    report_metrics = set(RUN_VALUE_METRICS) | set(EVENT_VALUE_METRICS) | set(EVENT_SIZE_METRICS)
     assert set(data.METRIC_ORDER) <= report_metrics
 
 
