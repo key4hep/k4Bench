@@ -57,7 +57,7 @@ from tabs.reports.overview._data import (
 )
 from tabs._regression_flags import add_severity_markers, render_flag_pills
 from tabs._reliability import render_run_reliability_filter
-from ui_chrome import EXAMPLE_DETECTORS, seed_query_param
+from ui_chrome import EXAMPLE_DETECTORS, seed_query_param, select_width
 from ui_utils import to_rgba
 
 #: The tab's views, dispatched by the same View switcher as Region Timing and
@@ -80,6 +80,11 @@ def _metric_title(metric: str) -> str:
     """Human-readable panel/axis title with units, e.g. ``Wall time (s)``.
     Sizes stored in MB are shown in GB (see :func:`_wide_in_display_units`)."""
     return metric_title(metric, "GB" if is_megabytes(metric) else None)
+
+
+def _metric_select_width(metrics: list[str]) -> int:
+    """The toolbar width of a selectbox offering *metrics* by their titles."""
+    return select_width([_metric_title(metric) for metric in metrics])
 
 
 def _trend_y_title(metric: str, relative: bool) -> str:
@@ -825,9 +830,13 @@ def _figure_toolbar(
     trends = view == "Performance Trends"
     show_confirmed = show_watch = False
     size_metric = None
+    # Both groups are sized to their content, so the toolbar wraps the overlays
+    # onto their own line as one unit rather than squeezing them beside the
+    # comparison, which would split them; distributing keeps them right-aligned
+    # while they share its line.
     toolbar = st.container(
         border=True, horizontal=True, vertical_alignment="bottom",
-        width="stretch", gap="small",
+        width="stretch", horizontal_alignment="distribute", gap="small",
     )
     with toolbar:
         comparison = st.container(
@@ -838,7 +847,7 @@ def _figure_toolbar(
             seed_query_param(f"{key_prefix}det_ov_time_metric", "tmetric", TIME_METRICS)
             time_metric = st.selectbox(
                 "Time", TIME_METRICS, key=f"{key_prefix}det_ov_time_metric",
-                format_func=_metric_title, width=210,
+                format_func=_metric_title, width=_metric_select_width(TIME_METRICS),
                 help="Per-event means/medians exclude the warmup event; "
                      "wall time and user CPU cover the whole run including "
                      "initialization.",
@@ -856,7 +865,7 @@ def _figure_toolbar(
                 MEMORY_METRICS,
                 key=f"{key_prefix}det_ov_mem_metric",
                 format_func=_metric_title,
-                width=210,
+                width=_metric_select_width(MEMORY_METRICS),
                 help="Anonymous RSS is averaged over events. Virtual peak includes "
                 "initialisation. Total RSS metrics remain residency diagnostics.",
             )
@@ -871,7 +880,7 @@ def _figure_toolbar(
                     )
                 size_metric = st.selectbox(
                     "Event size", SIZE_METRICS, key=size_key,
-                    format_func=_metric_title, width=230,
+                    format_func=_metric_title, width=_metric_select_width(SIZE_METRICS),
                     help="What one event of the job's EDM4hep output takes on disk, "
                     "after ROOT's compression or before it; the file size per event "
                     "counts the file's metadata too. The compression ratio is the "
@@ -897,8 +906,8 @@ def _figure_toolbar(
                 ) or "Log"
 
         overlays = st.container(
-            horizontal=True, vertical_alignment="bottom", width="stretch",
-            horizontal_alignment="right", gap="small",
+            horizontal=True, vertical_alignment="bottom", width="content",
+            gap="small",
         )
         with overlays:
             if trends:

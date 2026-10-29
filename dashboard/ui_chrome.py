@@ -441,3 +441,19 @@ def seed_query_param(key: str, param: str, options: list[str]) -> str | None:
         elif wanted:
             return wanted
     return None
+
+
+#: A selectbox's width per character of its option, and for its padding and
+#: chevron, in px — upper bounds for Streamlit's 14 px Source Sans.
+_SELECT_PX_PER_CHAR = 7
+_SELECT_CHROME_PX = 50
+
+
+def select_width(labels: list[str]) -> int:
+    """A fixed selectbox width, in px, that shows the longest of *labels* whole.
+
+    ``st.selectbox`` takes either the parent's width or a pixel count, and clips
+    a selected option wider than its box, so a box sized for its options keeps
+    every choice readable however the option list grows.
+    """
+    return _SELECT_CHROME_PX + _SELECT_PX_PER_CHAR * max(map(len, labels))
