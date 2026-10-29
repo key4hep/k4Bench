@@ -22,6 +22,7 @@ import streamlit as st
 from data import (
     RUN_BASE,
     cached_load_trend_component_cost,
+    cached_load_trend_event_size_metrics,
     cached_load_trend_event_timing,
     cached_load_trend_machine_info,
     cached_load_trend_results,
@@ -271,6 +272,7 @@ def source_frame(
     loaders = {
         "events": cached_load_trend_event_timing,
         "components": cached_load_trend_component_cost,
+        "event_size": cached_load_trend_event_size_metrics,
     }
     return loaders[name](run_dirs)
 

@@ -26,6 +26,7 @@ from k4bench.regression.models import (  # noqa: E402
     NightlyReport,
     RunGroupReport,
     Severity,
+    Unjudged,
 )
 from k4bench.regression.render import to_json  # noqa: E402
 
@@ -44,18 +45,36 @@ def _verdict(det: str, metric: str, value: float, **kw) -> MetricVerdict:
     return MetricVerdict(**base)
 
 
+#: The event-size metrics each fixture night records, before a detector's factor.
+_SIZES = {"event_size_kb": 600.0, "compression_ratio": 2.5}
+
+
+def _size_verdict(det: str, metric: str, value: float) -> MetricVerdict:
+    """An event-size metric as a report records it: never judged."""
+    return _verdict(
+        det, metric, value, metric_family="size", baseline_median=None,
+        baseline_mad=None, pct_change=None, z_score=None, severity=Severity.UNKNOWN,
+        unjudged=Unjudged.REPORTED_ONLY,
+        reason="recorded but not judged — event size is displayed before a judgement policy is set",
+    )
+
+
 def _report(
     night: str, *, scale: float = 1.0, reliable: bool | None = True,
     detectors: tuple[str, ...] | None = None,
     stale: tuple[str, str] | None = None,
+    sizes: dict[str, float] | None = None,
 ) -> dict:
     """A night's report. *detectors* narrows the roster, modelling a detector
-    that wasn't benchmarked that night.
+    that wasn't benchmarked that night. *sizes* are each detector's recorded
+    event-size metrics, :data:`_SIZES` by default; ``{}`` models a night from
+    before event sizes were recorded.
 
     *stale* adds a ``(detector, last_run)`` group shaped the way the engine
     carries one that missed the night: its own older run date, every verdict
     stripped, only the missing-run failure left (see
     ``k4bench.regression.report_builder._finalize_report``)."""
+    sizes = _SIZES if sizes is None else sizes
     groups = []
     for det, f in (("CLD_o2_v08", 1.0), ("IDEA_o1_v03", 1.4), ("SiD", 0.7)):
         if detectors is not None and det not in detectors:
@@ -71,6 +90,7 @@ def _report(
                 _verdict(det, "median_time_s", 0.5 * f * scale),
                 _verdict(det, "mean_time_s", 0.6 * f * scale),
                 _verdict(det, "mean_rss_mb", 1200.0 * f),
+                *(_size_verdict(det, metric, value * f) for metric, value in sizes.items()),
             ],
         ))
     if stale is not None:
@@ -154,7 +174,7 @@ def test_default_view_renders_the_trends_figure_and_controls():
         "Nightly Report",
     ]
     assert len(at.get("plotly_chart")) == 1
-    assert {s.label for s in at.selectbox} == {"Time", "Memory"}
+    assert {s.label for s in at.selectbox} == {"Time", "Memory", "Event size"}
     assert not at.slider
     assert not at.toggle
     assert {p.label for p in at.pills} == {"Regressions"}
@@ -171,6 +191,78 @@ def test_default_view_renders_the_trends_figure_and_controls():
     # as lists).
     assert _query_param(at, "tmetric") == "mean_time_s"
     assert _query_param(at, "mmetric") == "mean_rss_mb"
+    assert _query_param(at, "smetric") == "event_size_kb"
+    # CPU, Memory and Event size side by side, a line per detector in each.
+    spec = _figure(at)
+    assert [a["text"] for a in spec["layout"]["annotations"]] == ["CPU", "Memory", "Event size"]
+    assert {t["legendgroup"] for t in spec["data"] if t.get("xaxis") == "x3"} == {
+        "CLD_o2_v08", "IDEA_o1_v03", "SiD",
+    }
+
+
+def _figure(at: AppTest) -> dict:
+    """The view's figure, as Plotly serialised it."""
+    return json.loads(at.get("plotly_chart")[0].proto.spec)
+
+
+def _values(array) -> list[float]:
+    """A serialised trace's values, which Plotly may write as base64 ``bdata``."""
+    if isinstance(array, dict):
+        import base64
+
+        import numpy as np
+        return np.frombuffer(base64.b64decode(array["bdata"]), dtype=array["dtype"]).tolist()
+    return list(array)
+
+
+def test_the_event_size_panel_draws_the_chosen_measure():
+    at = _deep_linked(smetric="compression_ratio")
+    assert at.selectbox(key="det_ov_size_metric").value == "compression_ratio"
+    spec = _figure(at)
+    ratios = {
+        t["legendgroup"]: _values(t["y"]) for t in spec["data"]
+        if t.get("xaxis") == "x3" and t.get("mode") == "lines+markers"
+    }
+    # A point per nightly tag: the fixture re-ran one of them.
+    assert ratios["CLD_o2_v08"] == pytest.approx([2.5, 2.5])
+    assert ratios["IDEA_o1_v03"] == pytest.approx([3.5, 3.5])
+    assert spec["layout"]["yaxis3"]["title"]["text"] == "Compression ratio"
+    at.selectbox(key="det_ov_size_metric").set_value("event_size_kb").run()
+    assert _query_param(at, "smetric") == "event_size_kb"
+    assert _figure(at)["layout"]["yaxis3"]["title"]["text"] == "Event size (kB)"
+
+
+def test_the_event_size_panel_says_when_no_night_recorded_one():
+    reports = {night: _report(night, sizes={}) for night in DATES}
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), DATES, reports, _WINDOW), default_timeout=30,
+    )
+    at.run()
+    assert not at.exception, at.exception
+    spec = _figure(at)
+    texts = [a["text"] for a in spec["layout"]["annotations"]]
+    assert "No event size recorded<br>in this window" in texts
+    assert spec["layout"]["xaxis3"]["visible"] is False
+    # The panel says it, so the caption does not repeat it per detector.
+    captions = "\n".join(str(c.value) for c in at.caption)
+    assert "No event size recorded" not in captions
+
+
+def test_trends_caption_names_a_detector_without_an_event_size():
+    reports = copy.deepcopy(REPORTS)
+    for report in reports.values():
+        for group in report["groups"]:
+            if group["detector"] == "SiD":
+                group["verdicts"] = [
+                    v for v in group["verdicts"] if v["metric_family"] != "size"
+                ]
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), DATES, reports, _WINDOW), default_timeout=30,
+    )
+    at.run()
+    assert not at.exception, at.exception
+    captions = "\n".join(str(c.value) for c in at.caption)
+    assert "No event size recorded in this window: SiD." in captions
 
 
 def test_landscape_view_renders_its_own_figure():
@@ -178,6 +270,8 @@ def test_landscape_view_renders_its_own_figure():
     at.radio(key="det_ov_view_mode").set_value("Performance Landscape").run()
     assert not at.exception, at.exception
     assert len(at.get("plotly_chart")) == 1
+    # Time against memory: the event size is the trends' alone.
+    assert {s.label for s in at.selectbox} == {"Time", "Memory"}
     # Relative % is a time-series notion; the snapshot offers Log/Linear only.
     scale = at.segmented_control(key="det_ov_scale_land")
     assert scale.value == "Log"

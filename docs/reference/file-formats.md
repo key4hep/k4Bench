@@ -883,7 +883,16 @@ that explains why no judgement was made:
   (`peak_rss_mb`, `mean_rss_mb` and `mean_rss_file_mb` count file-backed pages,
   which a CVMFS publish can evict from a running process), or because it is
   still collecting the history a judgement policy needs
-  (`rss_anon_slope_mb_per_event`).
+  (`rss_anon_slope_mb_per_event`, and the event-size metrics below).
+
+The baseline configuration, when its run left an `_event_size.json` with a
+podio file, also has four `reported_only` verdicts saying what one event of
+its job's output takes on disk, in kB of 1024 bytes, summed over the job's podio files
+(family `size`): `event_size_kb` (its events' bytes after ROOT's compression),
+`uncompressed_event_size_kb` (before it), `file_size_per_event_kb` (each file's
+size on disk over its events, its metadata and run trees included) and
+`compression_ratio` (uncompressed over compressed). Reports from before the
+2026-10-19 nightly have none.
 
 The field is `null` on judged verdicts. Older reports may omit it entirely, and
 readers must also tolerate values introduced by newer writers that they do not

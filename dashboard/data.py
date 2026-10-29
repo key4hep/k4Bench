@@ -274,6 +274,14 @@ def cached_load_trend_event_size(run_dirs: tuple[str, ...]) -> pd.DataFrame | No
 
 
 @st.cache_data(
+    show_spinner="Loading event size trends...", ttl=3600, hash_funcs=_keyed_on(EVENT_SIZE),
+)
+def cached_load_trend_event_size_metrics(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
+    """Cached :func:`k4bench.analysis.trend.build_event_size_metrics_trend`."""
+    return _trend.build_event_size_metrics_trend(run_dirs)
+
+
+@st.cache_data(
     show_spinner="Loading event timing trends...", ttl=3600, hash_funcs=_keyed_on(EVENTS),
 )
 def cached_load_trend_event_timing(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:

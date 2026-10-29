@@ -341,3 +341,75 @@ def test_build_event_size_trend_skips_what_it_cannot_read(tmp_path, event_sizes)
     # A run from before event sizes were recorded has none.
     old = _make_run(tmp_path / "b", "2026-10-01", "key4hep-2026-10-01", 5.0)
     assert trend.build_event_size_trend((str(old),)) is None
+
+
+# ── build_event_size_metrics_trend ────────────────────────────────────────────
+
+def test_build_event_size_metrics_trend_gives_one_row_per_run_and_config(tmp_path, event_sizes):
+    first = _make_run(tmp_path / "a", "2026-10-20", "key4hep-2026-10-20", 5.0)
+    event_sizes.write(first, files=[event_sizes.file("out.root"), {"name": "aida.root", "bytes": 9}])
+    event_sizes.write(first, "variant_a", files=[event_sizes.file("out.root", scale=2.0)])
+    second = _make_run(tmp_path / "b", "2026-10-21", "key4hep-2026-10-21", 5.0)
+    event_sizes.write(second, files=[event_sizes.file("out.root", scale=2.0)])
+
+    df = trend.build_event_size_metrics_trend((str(first), str(second)))
+    assert list(df.columns) == [
+        "run_id", "run_date", "k4h_release_date", "k4h_release", "label",
+        *trend.EVENT_SIZE_METRIC_COLUMNS, "x_date",
+    ]
+    rows = df.set_index(["run_id", "label"])
+    assert len(rows) == 3
+    baseline = rows.loc[("2026-10-20", "baseline")]
+    # The collections' 60.4 kB and the frame parameters' 0.1 kB, per event;
+    # a file without events adds nothing.
+    assert baseline["event_size_kb"] == pytest.approx(60.5)
+    uncompressed = (6_144_000 + 3_276_800 + 2_457_600 + 1_228_800 + 81_920 + 20_480) / 100 / 1024
+    assert baseline["uncompressed_event_size_kb"] == pytest.approx(uncompressed)
+    # The events' 6,195,200 bytes and 50,000 of metadata, over 100 events.
+    assert baseline["file_size_per_event_kb"] == pytest.approx(6_245_200 / 100 / 1024)
+    assert baseline["compression_ratio"] == pytest.approx(uncompressed / 60.5)
+    assert rows.loc[("2026-10-21", "baseline"), "event_size_kb"] == pytest.approx(
+        rows.loc[("2026-10-20", "variant_a"), "event_size_kb"]
+    )
+    assert df["x_date"].notna().all()
+
+
+def test_build_event_size_metrics_trend_sums_a_jobs_podio_files(tmp_path, event_sizes):
+    run = _make_run(tmp_path, "2026-10-20", "key4hep-2026-10-20", 5.0)
+    event_sizes.write(run, files=[
+        event_sizes.file("reco_REC.edm4hep.root"),
+        event_sizes.file("reco_DST.edm4hep.root", scale=0.5),
+    ])
+    (row,) = trend.build_event_size_metrics_trend((str(run),)).to_dict("records")
+    one = trend.build_event_size_trend((str(run),))
+    whole = one[one["collection"].isna()]
+    assert row["event_size_kb"] == pytest.approx(whole["compressed_kb"].sum())
+    assert row["file_size_per_event_kb"] == pytest.approx(
+        (whole["file_mb"] * 1024 / whole["events"]).sum()
+    )
+    assert row["compression_ratio"] == pytest.approx(
+        whole["uncompressed_kb"].sum() / whole["compressed_kb"].sum()
+    )
+
+
+def test_build_event_size_metrics_trend_reads_the_records_of_its_labels_alone(
+    tmp_path, event_sizes, monkeypatch,
+):
+    run = _make_run(tmp_path, "2026-10-20", "key4hep-2026-10-20", 5.0)
+    for label in ("baseline", "no_ECal", "no_HCal"):
+        event_sizes.write(run, label)
+    read = []
+    original = trend.read_event_size
+    monkeypatch.setattr(trend, "read_event_size", lambda path: read.append(path.name) or original(path))
+
+    df = trend.build_event_size_metrics_trend((str(run),), frozenset({"baseline"}))
+    assert df["label"].tolist() == ["baseline"]
+    assert read == ["baseline_event_size.json"]
+    # A run with none of them has no row.
+    assert trend.build_event_size_metrics_trend((str(run),), frozenset({"variant"})) is None
+
+
+def test_build_event_size_metrics_trend_is_none_without_event_sizes(tmp_path):
+    old = _make_run(tmp_path, "2026-10-01", "key4hep-2026-10-01", 5.0)
+    assert trend.build_event_size_metrics_trend((str(old),)) is None
+    assert trend.build_event_size_metrics_trend(()) is None

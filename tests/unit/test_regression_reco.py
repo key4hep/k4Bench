@@ -11,7 +11,12 @@ from pathlib import Path
 import pytest
 
 from k4bench.layout import RECO, SIM
-from k4bench.regression.catalog import COMPONENT_METRICS, JOB_COST_METRICS, sources
+from k4bench.regression.catalog import (
+    COMPONENT_METRICS,
+    EVENT_SIZE_METRICS,
+    JOB_COST_METRICS,
+    sources,
+)
 from k4bench.analysis.components import ComponentTiming
 from k4bench.analysis.heap import MB, NO_COMPONENT
 from k4bench.regression.components import (
@@ -24,7 +29,7 @@ from k4bench.regression.components import (
     _timed,
     component_deltas,
 )
-from k4bench.regression.models import Direction, Severity
+from k4bench.regression.models import Direction, Severity, Unjudged
 from k4bench.regression.report_builder import group_report_from_run_dirs
 
 _RECO_RUN = Path(__file__).resolve().parents[1] / "fixtures" / "reco_run"
@@ -125,6 +130,33 @@ def test_the_sim_suite_judges_no_component(tmp_path):
     assert group.verdicts
     assert all(v.sub_detector is None for v in group.verdicts)
     assert "initialize_s" not in {v.metric for v in group.verdicts}
+
+
+@pytest.mark.parametrize("suite", [SIM, RECO])
+def test_tonights_event_size_is_recorded_without_being_judged(tmp_path, event_sizes, suite):
+    runs = _history(tmp_path)
+    without = group_report_from_run_dirs(suite, *_GROUP, runs)
+    for run in runs:
+        event_sizes.write(Path(run))
+        event_sizes.write(Path(run), "variant_truth_tracking")
+    group = group_report_from_run_dirs(suite, *_GROUP, runs)
+    recorded = {
+        v.metric: v for v in group.verdicts
+        if v.label == "baseline" and v.metric in EVENT_SIZE_METRICS
+    }
+    assert set(recorded) == set(EVENT_SIZE_METRICS)
+    assert all(
+        (v.severity, v.unjudged, v.metric_family, v.run_id)
+        == (Severity.UNKNOWN, Unjudged.REPORTED_ONLY, "size", _NIGHTS[-1])
+        for v in recorded.values()
+    )
+    # The 60.5 kB of :func:`conftest.event_file`'s collections and parameters.
+    assert recorded["event_size_kb"].value == pytest.approx(60.5)
+    # The baseline's alone, the config the Overview compares; nothing else changed.
+    assert not any(
+        v.label != "baseline" and v.metric in EVENT_SIZE_METRICS for v in group.verdicts
+    )
+    assert [v for v in group.verdicts if v.metric not in EVENT_SIZE_METRICS] == without.verdicts
 
 
 def test_every_judged_reco_metric_is_taken_apart_by_component():
