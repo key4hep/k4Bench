@@ -392,6 +392,23 @@ def test_build_event_size_metrics_trend_sums_a_jobs_podio_files(tmp_path, event_
     )
 
 
+def test_build_event_size_metrics_trend_reads_the_records_of_its_labels_alone(
+    tmp_path, event_sizes, monkeypatch,
+):
+    run = _make_run(tmp_path, "2026-10-20", "key4hep-2026-10-20", 5.0)
+    for label in ("baseline", "no_ECal", "no_HCal"):
+        event_sizes.write(run, label)
+    read = []
+    original = trend.read_event_size
+    monkeypatch.setattr(trend, "read_event_size", lambda path: read.append(path.name) or original(path))
+
+    df = trend.build_event_size_metrics_trend((str(run),), frozenset({"baseline"}))
+    assert df["label"].tolist() == ["baseline"]
+    assert read == ["baseline_event_size.json"]
+    # A run with none of them has no row.
+    assert trend.build_event_size_metrics_trend((str(run),), frozenset({"variant"})) is None
+
+
 def test_build_event_size_metrics_trend_is_none_without_event_sizes(tmp_path):
     old = _make_run(tmp_path, "2026-10-01", "key4hep-2026-10-01", 5.0)
     assert trend.build_event_size_metrics_trend((str(old),)) is None

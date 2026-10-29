@@ -477,9 +477,12 @@ EVENT_SIZE_TREND_COLUMNS = (
 )
 
 
-def build_event_size_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
+def build_event_size_trend(
+    run_dirs: tuple[str, ...], labels: frozenset[str] | None = None,
+) -> pd.DataFrame | None:
     """Load what each event of every podio output file takes on disk across
-    *run_dirs*, from the runs' ``_event_size.json``.
+    *run_dirs*, from the runs' ``_event_size.json``: of the configs in
+    *labels* alone, whose records are the only ones read, or of every config.
 
     One row per run, config, file and collection of its events
     (:data:`~k4bench.analysis.event_size.FRAME_PARAMETERS` among them), with
@@ -497,7 +500,13 @@ def build_event_size_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
     rows: list[dict] = []
     for d in run_dirs:
         run_dir = Path(d)
-        if not run_dir.is_dir() or not (paths := labelled_files(run_dir, EVENT_SIZE_SUFFIX)):
+        if not run_dir.is_dir():
+            continue
+        paths = [
+            (path, label) for path, label in labelled_files(run_dir, EVENT_SIZE_SUFFIX)
+            if labels is None or label in labels
+        ]
+        if not paths:
             continue
         meta = parse_run_dir(run_dir)
         run = {
@@ -541,9 +550,12 @@ EVENT_SIZE_METRIC_COLUMNS = (
 )
 
 
-def build_event_size_metrics_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
+def build_event_size_metrics_trend(
+    run_dirs: tuple[str, ...], labels: frozenset[str] | None = None,
+) -> pd.DataFrame | None:
     """What one event of each config's job takes on disk across *run_dirs*, as
-    the metrics a nightly report records (:data:`EVENT_SIZE_METRIC_COLUMNS`).
+    the metrics a nightly report records (:data:`EVENT_SIZE_METRIC_COLUMNS`),
+    for the configs in *labels* alone or for every config.
 
     One row per run and config, over every podio file the job wrote: its
     events' compressed (``event_size_kb``) and uncompressed bytes per event,
@@ -555,7 +567,7 @@ def build_event_size_metrics_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | 
     sum per event. ``None`` when no run has a podio output file (see
     :func:`build_event_size_trend`).
     """
-    sizes = build_event_size_trend(run_dirs)
+    sizes = build_event_size_trend(run_dirs, labels)
     if sizes is None:
         return None
     events = sizes[sizes["collection"].isna()]

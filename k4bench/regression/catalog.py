@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from functools import partial
 
 import pandas as pd
 
@@ -199,9 +200,13 @@ _COMPONENTS = MetricSource(
     "components", build_component_cost_trend, COMPONENTS_SUFFIX, JOB_COST_METRICS,
     component_judged=COMPONENT_METRICS,
 )
+#: The configs :data:`EVENT_SIZE_METRICS` are recorded for, and whose records
+#: alone are read.
+_EVENT_SIZE_CONFIGS = frozenset({BASELINE_LABEL})
+
 _EVENT_SIZE = MetricSource(
-    "event_size", build_event_size_metrics_trend, EVENT_SIZE_SUFFIX, {}, EVENT_SIZE_METRICS,
-    configs=frozenset({BASELINE_LABEL}),
+    "event_size", partial(build_event_size_metrics_trend, labels=_EVENT_SIZE_CONFIGS),
+    EVENT_SIZE_SUFFIX, {}, EVENT_SIZE_METRICS, configs=_EVENT_SIZE_CONFIGS,
 )
 
 #: Each suite's sources, in the order its report lists the verdicts.

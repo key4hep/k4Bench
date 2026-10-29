@@ -44,12 +44,14 @@ def test_the_sim_suite_is_judged_on_its_results_and_events():
         build_event_timing_trend, EVENT_METRICS, EVENT_REPORTED_ONLY_METRICS,
     )
     assert not results.component_judged and not events.component_judged
-    # Recorded without being judged, for the baseline config alone.
-    assert (event_size.build, event_size.judged, event_size.reported_only) == (
+    # Recorded without being judged, for the baseline config alone, whose
+    # records alone are read.
+    assert (event_size.build.func, event_size.judged, event_size.reported_only) == (
         build_event_size_metrics_trend, {}, EVENT_SIZE_METRICS,
     )
     assert not event_size.component_judged
     assert event_size.configs == {BASELINE_LABEL}
+    assert event_size.build.keywords == {"labels": event_size.configs}
     assert results.configs is None and events.configs is None
 
 
