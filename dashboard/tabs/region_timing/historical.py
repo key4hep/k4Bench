@@ -9,8 +9,10 @@ from plotly.subplots import make_subplots
 
 from k4bench.analysis.plots._theme import _TEMPLATE
 from tabs._reliability import render_reliability_filter
+from ui_chrome import fitted_selectbox
 from ui_utils import (
     DASHES,
+    control_row,
     display_options,
     is_valid_df,
     legend_below,
@@ -46,22 +48,14 @@ def _render_historical(
     # reliability and display controls are populated later, after their data is
     # known, so reserve their positions here rather than placing them beside the
     # View selector above this row.
-    config_host, attribution_host, actions_host = st.columns(
-        [1, 1, 1.5], gap="medium", vertical_alignment="bottom",
-    )
-    with actions_host:
-        actions = st.container(
-            horizontal=True, horizontal_alignment="right",
-            vertical_alignment="bottom", width="stretch", gap="small",
-        )
-        reliability_slot = actions.container(width="content").empty()
-        display_options_slot = actions.container(width="content").empty()
+    selectors, actions = control_row()
+    reliability_slot = actions.empty()
+    display_options_slot = actions.empty()
 
-    with config_host:
-        config = st.selectbox(
+    with selectors:
+        config = fitted_selectbox(
             "Configuration", avail_labels, key="region_hist_config", bind="query-params",
         )
-    with attribution_host:
         attribution = st.radio(
             "Attribution",
             options=["at_location", "by_birth"],

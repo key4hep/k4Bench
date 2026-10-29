@@ -5,11 +5,17 @@ plumbing that would otherwise clutter :func:`suite_page.render_page`.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
+import math
+import unicodedata
+from collections.abc import Callable, Mapping
 from datetime import date
+from functools import cache
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import streamlit as st
+from PIL import ImageFont
 
 from k4bench.analysis.loader import failed_config_mask
 from k4bench.labels import pretty_platform, pretty_release, pretty_sample
@@ -441,3 +447,119 @@ def seed_query_param(key: str, param: str, options: list[str]) -> str | None:
         elif wanted:
             return wanted
     return None
+
+
+def current_option(key: str, options: list[str]) -> str:
+    """The option the keyed selectbox *key* shows on this run, read before it
+    is drawn: its stored value, else the ``?key=`` its ``bind="query-params"``
+    opens on, else the first of *options* — the widget's own order of
+    precedence, for a caller that sizes the box to what it shows."""
+    for value in (st.session_state.get(key), st.query_params.get(key)):
+        if value in options:
+            return value
+    return options[0]
+
+
+#: A selectbox's text is Streamlit's bundled Source Sans at 14 px, regular
+#: weight; its padding and chevron take 50 px beside the text.
+_SELECT_FONT_PX = 14
+_SELECT_FONT_WEIGHT = 400
+_SELECT_CHROME_PX = 50
+#: Upper bound of that font's width per character, for when it cannot be read:
+#: one em, which its widest capitals, M and W, stay within.
+_SELECT_PX_PER_CHAR = _SELECT_FONT_PX
+#: A character the font lacks — an emoji badge — is drawn from the system's
+#: emoji font instead, at most this many ems wide.
+_SELECT_FALLBACK_EM = 1.3
+#: Unicode categories drawn with no width of their own: the variation selector
+#: that turns ⚠ into an emoji, joiners, combining marks.
+_ZERO_WIDTH = frozenset({"Mn", "Me", "Cf"})
+#: What a label's help icon takes beside its text: the 16 px icon and a gap.
+_SELECT_HELP_PX = 24
+
+
+@cache
+def _select_font() -> ImageFont.FreeTypeFont | None:
+    """The font Streamlit draws a selectbox's text in, read from the copy it
+    serves, or ``None`` when this Streamlit no longer ships it there."""
+    media = Path(st.__file__).parent / "static" / "static" / "media"
+    try:
+        font = ImageFont.truetype(
+            str(next(media.glob("SourceSansVF-Upright*.woff2"))), _SELECT_FONT_PX,
+        )
+        font.set_variation_by_axes([_SELECT_FONT_WEIGHT])
+    except (StopIteration, OSError):
+        return None
+    return font
+
+
+@cache
+def _in_select_font(char: str) -> bool:
+    """Whether :func:`_select_font` has *char*; one it lacks comes out as its
+    missing-glyph box, a private-use character's outline and advance."""
+    font = _select_font()
+    if font is None:
+        return unicodedata.category(char) != "So"
+    missing = "\U000F0000"
+    return (font.getbbox(char), font.getlength(char)) != (
+        font.getbbox(missing), font.getlength(missing),
+    )
+
+
+def _run_width(run: str) -> float:
+    """The width of *run*, characters all in the font, measured whole so its
+    kerning counts."""
+    font = _select_font()
+    return _SELECT_PX_PER_CHAR * len(run) if font is None else font.getlength(run)
+
+
+def _text_width(text: str) -> float:
+    """*text*'s width in px as a selectbox or its label draws it: in the font
+    where it has the glyphs, an emoji at the emoji font's width."""
+    width, run = 0.0, ""
+    for char in text:
+        if unicodedata.category(char) in _ZERO_WIDTH:
+            continue
+        if _in_select_font(char):
+            run += char
+        else:
+            width += _run_width(run) + _SELECT_FALLBACK_EM * _SELECT_FONT_PX
+            run = ""
+    return width + _run_width(run)
+
+
+def select_width(shown: str, label: str = "", *, help: bool = False) -> int:
+    """A selectbox width, in px, that shows *shown* — its selected option —
+    whole, and its *label* above on one line, with the help icon if it has one.
+
+    ``st.selectbox`` takes either the parent's width or a pixel count; it clips
+    a selected option wider than its box and wraps a label wider than it. Both
+    are measured in the font the browser draws them in, so the box is no wider
+    than it has to be; without the font, a per-character bound keeps them
+    whole at the cost of some width.
+    """
+    return math.ceil(max(
+        _SELECT_CHROME_PX + _text_width(shown),
+        _text_width(label) + (_SELECT_HELP_PX if help else 0),
+    ))
+
+
+def fitted_selectbox(
+    label: str,
+    options: list[str],
+    *,
+    key: str,
+    format_func: Callable[[str], str] = str,
+    help: str | None = None,
+    **kwargs: Any,
+) -> str | None:
+    """``st.selectbox`` sized by :func:`select_width` to the option it shows
+    and its label. A keyed selectbox keeps its value when its width changes,
+    so the box follows its selection from one run to the next (see
+    :func:`current_option`). Its open list is as wide as the box, so an option
+    longer than the one shown is cut short there."""
+    shown = format_func(current_option(key, options))
+    return st.selectbox(
+        label, options, key=key, format_func=format_func, help=help,
+        width=select_width(shown, label, help=help is not None), **kwargs,
+    )

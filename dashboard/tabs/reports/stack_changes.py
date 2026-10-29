@@ -53,6 +53,7 @@ from tabs.reports._metric_trend import (
     render_metric_trend,
 )
 from ui_chrome import seed_query_param
+from ui_utils import control_row
 
 #: This tab's section name and the query-param names its two pickers seed from
 #: (see :func:`_seed`). Kept here, beside the widgets that read them, so a tab
@@ -661,28 +662,20 @@ def _render_regressions_in_range(
         # their URL is synchronized immediately below.
         st.session_state.pop(picker_key, None)
         st.session_state[seed_key] = query_token
-    controls = st.container(
-        horizontal=True, vertical_alignment="bottom", width="stretch", gap="medium",
-    )
-    with controls:
-        picker = st.container(width="stretch")
-        with picker:
-            selected = render_metric_picker(
-                shown,
-                key=picker_key,
-                include_scope=show_all,
-                include_window=True,
-                label="Regression trend",
-                help="Confirmed metrics whose onset lies in the selected release "
-                     "range, worst first. Each option includes its own blame window. "
-                     "Pick “—” to hide the trend.",
-                default=requested,
-            )
-        actions = st.container(
-            horizontal=True, horizontal_alignment="right",
-            vertical_alignment="bottom", width="content",
+    picker, actions = control_row(stretch_left=True)
+    with picker:
+        selected = render_metric_picker(
+            shown,
+            key=picker_key,
+            include_scope=show_all,
+            include_window=True,
+            label="Regression trend",
+            help="Confirmed metrics whose onset lies in the selected release "
+                 "range, worst first. Each option includes its own blame window. "
+                 "Pick “—” to hide the trend.",
+            default=requested,
         )
-        reliability_slot = actions.empty()
+    reliability_slot = actions.empty()
     if len(hits) > _MAX_REGRESSIONS:
         suffix = " plus the linked metric." if requested_below_cap else "."
         st.caption(

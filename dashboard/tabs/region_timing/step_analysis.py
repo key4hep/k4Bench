@@ -7,6 +7,7 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from k4bench.analysis.plots._theme import _TEMPLATE
+from ui_chrome import fitted_selectbox
 from ui_utils import (
     display_options,
     legend_below,
@@ -33,8 +34,8 @@ def _render_step_analysis(region_data: dict, display_options_slot=None) -> None:
         return
 
     # ── Controls — config first, then data, then the popover (palette needs n) ─
-    config = st.selectbox(
-        "Configuration", labels, key="sa_config", width=420, bind="query-params",
+    config = fitted_selectbox(
+        "Configuration", labels, key="sa_config", bind="query-params",
     )
 
     def _display_controls(n_detectors: int | None) -> dict:

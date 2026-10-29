@@ -66,6 +66,7 @@ from tabs.reports._metric_trend import (
 )
 from tabs.reports.stack_changes import _release, deep_link, packages_for_release
 from ui_chrome import drop_stale_selection, seed_query_param
+from ui_utils import control_row
 
 
 def render(
@@ -901,27 +902,18 @@ def _render_group(
             # value always move together.
             window_id = _window_label(window) if window is not None else "none"
             drill_key = f"regr_drill_{key}_{scope[0]}_{scope[1]}_{window_id}"
-            controls = st.container(
-                horizontal=True, vertical_alignment="bottom",
-                width="stretch", gap="medium",
-            )
-            with controls:
-                picker = st.container(width="stretch")
-                with picker:
-                    selected = render_metric_picker(
-                        drillable,
-                        key=drill_key,
-                        help="Recent metric history. Failed measurements remain "
-                             "visible as failure markers but are excluded from "
-                             "baselines and regression judgment. Opens on the most "
-                             "severe item; pick another, or “—” to hide the chart. "
-                             "Downloads data on first use.",
-                    )
-                actions = st.container(
-                    horizontal=True, horizontal_alignment="right",
-                    vertical_alignment="bottom", width="content",
+            picker, actions = control_row(stretch_left=True)
+            with picker:
+                selected = render_metric_picker(
+                    drillable,
+                    key=drill_key,
+                    help="Recent metric history. Failed measurements remain "
+                         "visible as failure markers but are excluded from "
+                         "baselines and regression judgment. Opens on the most "
+                         "severe item; pick another, or “—” to hide the chart. "
+                         "Downloads data on first use.",
                 )
-                reliability_slot = actions.empty()
+            reliability_slot = actions.empty()
             if selected is not None:
                 render_metric_trend(
                     selected, data_url, suite, cache_dir,
