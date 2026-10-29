@@ -190,6 +190,13 @@ def test_select_width_without_the_font_still_fits_the_label(monkeypatch):
     assert ui_chrome.select_width(_ANON) >= measured
 
 
+def test_select_width_without_the_font_still_fits_wide_capitals(monkeypatch):
+    wide = "WWMM MWWM WMWM"
+    measured = ui_chrome.select_width(wide)
+    monkeypatch.setattr(ui_chrome, "_select_font", lambda: None)
+    assert ui_chrome.select_width(wide) >= measured
+
+
 def test_select_width_counts_an_emoji_badge_at_the_emoji_fonts_width():
     # Source Sans has no emoji; the browser draws them from the system's emoji
     # font, and the variation selector that makes ⚠ one takes no width.

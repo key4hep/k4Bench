@@ -465,8 +465,9 @@ def current_option(key: str, options: list[str]) -> str:
 _SELECT_FONT_PX = 14
 _SELECT_FONT_WEIGHT = 400
 _SELECT_CHROME_PX = 50
-#: Upper bound of that font's width per character, for when it cannot be read.
-_SELECT_PX_PER_CHAR = 7
+#: Upper bound of that font's width per character, for when it cannot be read:
+#: one em, which its widest capitals, M and W, stay within.
+_SELECT_PX_PER_CHAR = _SELECT_FONT_PX
 #: A character the font lacks — an emoji badge — is drawn from the system's
 #: emoji font instead, at most this many ems wide.
 _SELECT_FALLBACK_EM = 1.3
