@@ -15,7 +15,7 @@
 # p8_ee_Zbb_ecm91 events, and 800 uniform 10 GeV electrons from ddsim's gun
 # without a crossing-angle boost, as FCC-config's ctests simulate them. Both
 # are ddsim --random.seed 42 --random.enableEventSeed, steered by
-# SteeringFile_ALLEGRO_o1_v03.py, LCG devkey-head 2026-10-17. Their provenance
+# SteeringFile_ALLEGRO_o1_v03.py, LCG devkey-head 2026-10-26. Their provenance
 # and the scripts that produced them sit next to them in
 # inputs/reco/ALLEGRO/ALLEGRO_o1_v04/. Reconstructing a fixed input keeps
 # simulation changes out of the reconstruction numbers. xml: stays pinned to
