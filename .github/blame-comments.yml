@@ -26,5 +26,27 @@ repos:
     - key4hep/k4geo
     - HEP-FCC/FCC-config
     - AIDASoft/DD4hep
-  # Reconstruction regressions are ranked and mailed, but not yet commented on.
-  reco: []
+  reco:
+    # Algorithms
+    - key4hep/k4RecTracker
+    - HEP-FCC/k4RecCalorimeter
+    - key4hep/k4Reco
+    # Steering
+    - key4hep/CLDConfig
+    - HEP-FCC/FCC-config
+    # Geometry and framework
+    - AIDASoft/DD4hep
+    - key4hep/k4geo
+    - key4hep/k4FWCore
+    # iLCSoft processors
+    - iLCSoft/ConformalTracking
+    - iLCSoft/MarlinTrkProcessors
+    - iLCSoft/Clupatra
+    - iLCSoft/MarlinReco
+    - iLCSoft/DDMarlinPandora
+    - lcfiplus/LCFIPlus
+    # Shared plumbing
+    - AIDASoft/podio
+    - key4hep/EDM4hep
+    - key4hep/k4MarlinWrapper
+    - PandoraPFAOrg/lccontent

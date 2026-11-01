@@ -358,7 +358,7 @@ def test_each_suite_comments_only_where_its_own_list_says():
         CommentPolicy.from_config(config, "physics")
 
 
-def test_the_repositorys_config_keeps_reco_comments_off():
+def test_the_repositorys_config_comments_for_every_suite():
     from pathlib import Path
 
     import yaml
@@ -367,7 +367,7 @@ def test_the_repositorys_config_keeps_reco_comments_off():
         (Path(__file__).resolve().parents[2] / ".github/blame-comments.yml").read_text()
     )
     assert CommentPolicy.from_config(config, "sim").enabled
-    assert not CommentPolicy.from_config(config, "reco").enabled
+    assert CommentPolicy.from_config(config, "reco").enabled
 
 
 # ── Selection gates ───────────────────────────────────────────────────────────

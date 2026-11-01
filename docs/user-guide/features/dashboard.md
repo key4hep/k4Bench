@@ -894,8 +894,9 @@ are the evidence instead: every confirmed step is taken apart into the
 components whose own cost moved, with the package each is defined in and how
 the instructions it retired moved (`component_deltas`, see
 [File formats](../../reference/file-formats.md)), and the blame ranker reads
-that breakdown when it attributes the step. No pull request is commented on
-for the reco suite yet: its list in `.github/blame-comments.yml` is empty.
+that breakdown when it attributes the step, and the pull requests it implicates
+are commented on in the repositories the reco list in
+`.github/blame-comments.yml` names (see [PR comments](pr-comments.md)).
 
 The page reads the reco reports as the Simulation page reads the sim ones: its
 **Overview**, **Regressions** and **Stack Changes** are the Simulation page's
