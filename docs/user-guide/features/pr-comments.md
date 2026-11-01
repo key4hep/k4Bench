@@ -18,12 +18,11 @@ by `.github/scripts/blame_comment.py` in step 5c of the nightly
 `regression-report` job.
 
 Each suite comments on its own regressions, in the repositories its own list
-names (see [Configuration](#configuration)). The reconstruction suite's list is
-empty for now: its confirmed steps are ranked like the simulation's, into its
-own `blame.json`, and reach its e-group mail, but no pull request is commented
-on for them yet. When one is, the comment names the reconstruction benchmarks
-as what measured it, is reviewed in a reconstruction's terms (a frozen input,
-the components each step moved), links a recipe that reruns the job (see
+names (see [Configuration](#configuration)). The reconstruction suite's
+confirmed steps are ranked like the simulation's, into its own `blame.json`,
+and reach its e-group mail; a comment on one names the reconstruction
+benchmarks as what measured it, is reviewed in a reconstruction's terms (a
+frozen input, the components each step moved), links a recipe that reruns the job (see
 [Reproducing the measurement](#reproducing-the-measurement)), and links into
 the Reconstruction page's Stack Changes and Nightly Report views.
 
@@ -238,7 +237,8 @@ max_comments: 10
 repos:
   sim:
     - key4hep/k4geo
-  reco: []
+  reco:
+    - key4hep/k4RecTracker
 ```
 
 `repos` lists each suite's repositories under its name; `min_score` and
