@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from k4bench.results.reliability import (
+    MAX_CPU_STEAL_PCT,
     MIN_CPU_EFFICIENCY,
     ReliabilityVerdict,
     Status,
@@ -87,6 +88,23 @@ class TestThermal:
 
     def test_missing_is_unknown(self):
         assert _criterion(evaluate_reliability(thermal_throttle_events=None), "Thermal throttling").status is Status.UNKNOWN
+
+
+class TestSteal:
+    def test_at_the_limit_passes(self):
+        v = evaluate_reliability(cpu_steal_pct=MAX_CPU_STEAL_PCT)
+        assert _criterion(v, "CPU steal").status is Status.PASS
+
+    def test_above_the_limit_rejects(self):
+        # A neighbour on the hypervisor took the run's CPUs: positive evidence.
+        v = evaluate_reliability(cpu_steal_pct=MAX_CPU_STEAL_PCT + 0.5)
+        assert _criterion(v, "CPU steal").status is Status.FAIL
+        assert v.reliable is False
+
+    def test_missing_is_unknown(self):
+        # Bare metal and runs from before steal was recorded are not judged on it.
+        v = evaluate_reliability(cpu_steal_pct=None)
+        assert _criterion(v, "CPU steal").status is Status.UNKNOWN
 
 
 class TestContextSwitches:

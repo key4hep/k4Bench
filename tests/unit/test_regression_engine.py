@@ -995,3 +995,122 @@ def test_recent_movement_needs_three_values_and_uses_the_last_seven():
     assert recent_movement([100.0, 110.0]) is None
     values = [500.0, 900.0] + [100.0] * 7
     assert recent_movement(values) == (0.0, 100.0)
+
+
+# ── A change of machine ─────────────────────────────────────────────────────
+
+_OLD_CPU, _NEW_CPU = "AMD EPYC 7302 16-Core Processor", "AMD EPYC-Genoa Processor"
+
+
+def _moved_history(old, new) -> pd.DataFrame:
+    """*old* nights on one CPU model, then *new* nights on another."""
+    history = _history(list(old) + list(new))
+    history["machine"] = [_OLD_CPU] * len(old) + [_NEW_CPU] * len(new)
+    return history
+
+
+def test_a_change_of_machine_sets_the_new_level_instead_of_confirming_a_step():
+    # The new machine is 30% faster: a step on every metric that the software
+    # did not take, so neither night of it may confirm.
+    new_level = [70.0, 70.3, 69.8, 70.1, 69.9, 70.2]
+    verdicts = evaluate_series(_moved_history(_STEADY, new_level), series=_TIME)
+    post = verdicts[len(_STEADY):]
+    assert post[0].severity is Severity.UNKNOWN
+    assert post[0].unjudged is Unjudged.MACHINE_CHANGE
+    assert _NEW_CPU in post[0].reason and _OLD_CPU in post[0].reason
+    # Judging resumes the next night, against the new level.
+    assert _severities(post[1:]) == [Severity.OK] * 5
+    assert post[1].baseline_median == pytest.approx(70.0)
+    assert post[1].reanchor_run_date == post[0].run_date
+    assert "re-anchoring after the move to" in post[1].reason
+
+
+def test_the_old_spread_is_scaled_to_the_new_level():
+    new_level = [50.0, 50.1, 49.9]
+    verdicts = evaluate_series(_moved_history(_STEADY, new_level), series=_TIME)
+    # The spread the old level was judged with: never narrower than the series
+    # moved night to night.
+    old_mad = max(
+        robust_baseline(np.array(_STEADY))[1],
+        night_to_night_spread(_STEADY[-MIN_BASELINE_RUNS:]),
+    )
+    assert verdicts[len(_STEADY) + 1].baseline_mad == pytest.approx(old_mad * 0.5)
+
+
+def test_a_step_right_after_a_change_of_machine_is_still_caught():
+    # The second night on the new machine already regresses: no blind week.
+    verdicts = evaluate_series(
+        _moved_history(_STEADY, [70.0, 84.0, 84.3]), series=_TIME,
+    )
+    post = verdicts[len(_STEADY):]
+    assert _severities(post) == [Severity.UNKNOWN, Severity.WATCH, Severity.CONFIRMED]
+    # The window never reaches back across the move.
+    assert post[2].last_accepted_run_id == post[0].run_id
+
+
+def test_a_watch_on_the_old_machine_never_confirms_on_the_new_one():
+    verdicts = evaluate_series(
+        _moved_history(_STEADY + [120.0], [140.0, 140.2]), series=_TIME,
+    )
+    assert _severities(verdicts[-3:]) == [Severity.WATCH, Severity.UNKNOWN, Severity.OK]
+
+
+def test_an_unreliable_first_night_leaves_the_anchor_to_the_next_one():
+    history = _moved_history(_STEADY, [500.0, 70.0, 70.2])
+    history.loc[len(_STEADY), "reliable"] = False
+    verdicts = evaluate_series(history, series=_TIME)
+    assert verdicts[-2].unjudged is Unjudged.MACHINE_CHANGE
+    assert verdicts[-1].severity is Severity.OK
+    assert verdicts[-1].baseline_median == pytest.approx(70.0)
+
+
+def test_a_history_still_warming_up_restarts_its_warm_up_on_the_new_machine():
+    verdicts = evaluate_series(_moved_history(_STEADY[:3], [70.0] * 9), series=_TIME)
+    post = verdicts[3:]
+    assert post[0].unjudged is Unjudged.MACHINE_CHANGE
+    assert all(v.unjudged is Unjudged.INSUFFICIENT_HISTORY for v in post[1:MIN_BASELINE_RUNS])
+    assert post[MIN_BASELINE_RUNS].severity is Severity.OK
+
+
+def test_nights_without_a_machine_never_look_like_a_move():
+    history = _moved_history(_STEADY, [100.1, 99.9])
+    history.loc[3, "machine"] = None
+    verdicts = evaluate_series(history, series=_TIME)
+    assert sum(v.unjudged is Unjudged.MACHINE_CHANGE for v in verdicts) == 1
+
+
+def test_a_night_naming_no_model_after_an_unanchored_move_anchors_as_the_new_machine():
+    # The first night on the new machine was unreliable and the next one named
+    # no model: it counts as the new machine, so it anchors under that name.
+    history = _moved_history(_STEADY, [500.0, 70.0, 70.2])
+    history.loc[len(_STEADY), "reliable"] = False
+    history.loc[len(_STEADY) + 1, "machine"] = None
+    verdicts = evaluate_series(history, series=_TIME)
+    assert verdicts[-2].unjudged is Unjudged.MACHINE_CHANGE
+    assert f"measured on {_NEW_CPU}" in verdicts[-2].reason
+    assert verdicts[-1].severity is Severity.OK
+
+
+def test_a_night_naming_no_model_never_splits_its_release():
+    # Two nights of one release, the second without a model: one segment,
+    # judged against one frozen baseline, not a second segment whose baseline
+    # already holds the first night.
+    history = _history(_STEADY + [120.0, 120.4])
+    history.loc[len(_STEADY) + 1, "run_date"] = history.loc[len(_STEADY), "run_date"]
+    history["machine"] = [_OLD_CPU] * (len(_STEADY) + 1) + [None]
+    verdicts = evaluate_series(history, series=_TIME)
+    first, second = verdicts[-2:]
+    assert (second.baseline_median, second.baseline_mad) == (
+        first.baseline_median, first.baseline_mad,
+    )
+    assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
+
+
+def test_alternating_machines_re_anchor_at_every_alternation():
+    # The documented limitation: a move is taken to be lasting, so a series
+    # flipping between CPU models is never judged. The runners one benchmark
+    # can land on must all report one model.
+    history = _history(_STEADY + [70.0, 100.0, 70.0])
+    history["machine"] = [_OLD_CPU] * len(_STEADY) + [_NEW_CPU, _OLD_CPU, _NEW_CPU]
+    verdicts = evaluate_series(history, series=_TIME)
+    assert [v.unjudged for v in verdicts[-3:]] == [Unjudged.MACHINE_CHANGE] * 3

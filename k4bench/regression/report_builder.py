@@ -45,7 +45,7 @@ from k4bench.regression.engine import (
     evaluate_series,
     release_key,
 )
-from k4bench.regression.history import history_tail, host_facts, release_points
+from k4bench.regression.history import cpu_models, history_tail, host_facts, release_points
 from k4bench.regression.lineage import predecessor_series, successor_series
 from k4bench.regression.models import (
     MISSING_RUN_FAILURE,
@@ -109,18 +109,23 @@ def _series_history(
     mask: pd.Series,
     metric: str,
     reliability: dict[str, bool | None],
+    machines: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     """One config's metric history in the shape the engine walks (see
     :func:`~k4bench.regression.engine.evaluate_series`) — the measurement as
     measured, with the per-run reliability the walk needs to skip contended
-    nights."""
+    nights and, given *machines* (from :func:`cpu_models`), the CPU model each
+    night ran on, which the walk re-anchors at when it changes."""
     sub = df.loc[mask, ["run_id", "x_date", metric]]
-    return pd.DataFrame({
+    history = pd.DataFrame({
         "run_id":   sub["run_id"].astype(str).to_numpy(),
         "run_date": sub["x_date"].to_numpy(),
         "value":    sub[metric].to_numpy(),
         "reliable": _reliable_column(sub["run_id"], reliability),
     })
+    if machines:
+        history["machine"] = [machines.get(str(rid)) for rid in sub["run_id"]]
+    return history
 
 
 @dataclasses.dataclass(frozen=True)
@@ -141,6 +146,8 @@ class PredecessorRuns:
     frames: dict[str, pd.DataFrame | None]
     reliability: dict[str, bool | None]
     hosts: dict[str, HostFact] = dataclasses.field(default_factory=dict)
+    #: ``run_id ->`` CPU model (see :func:`cpu_models`).
+    machines: dict[str, str] = dataclasses.field(default_factory=dict)
     #: The run directories the frames were built from, for evidence read per
     #: run rather than from the frames (region timings).
     run_dirs: tuple[str, ...] = ()
@@ -207,6 +214,7 @@ def predecessor_runs(
         frames=_judgeable(frames),
         reliability=run_reliability_map(frames[RESULTS], machine_df),
         hosts=host_facts(machine_df),
+        machines=cpu_models(machine_df),
         run_dirs=tuple(run_dirs),
     )
 
@@ -242,7 +250,8 @@ def _continued_history(
     if not mask.any():
         return own
     before = _preceding_rows(
-        _series_history(df, mask, metric, predecessor.reliability), "run_date",
+        _series_history(df, mask, metric, predecessor.reliability, predecessor.machines),
+        "run_date",
         own, "run_date", same_platform=predecessor.platform == series.platform,
     )
     if before is None or before.empty:
@@ -408,6 +417,7 @@ def evaluate_group_series(
     reliability: dict[str, bool | None],
     hosts: dict[str, HostFact] | None = None,
     predecessor: PredecessorRuns | None = None,
+    machines: dict[str, str] | None = None,
 ) -> dict[SeriesId, list[MetricVerdict]]:
     """Run the step detector over every judged metric series of one run group
     of *suite*: each of its sources' (:func:`~k4bench.regression.catalog.sources`)
@@ -430,7 +440,8 @@ def evaluate_group_series(
     *hosts* (from :func:`~k4bench.regression.history.host_facts`) names the
     machine behind each run, and only reaches the history tails attached to
     confirmed verdicts; it never enters the judgement itself. Omitted, the tails
-    simply carry no host.
+    simply carry no host. *machines* (from :func:`cpu_models`) does: a series
+    re-anchors where its CPU model changes. Omitted, no change is seen.
 
     Every configuration is judged on what it measured. A night where the whole
     run group moved together therefore reports each config's own move, rather
@@ -452,7 +463,7 @@ def evaluate_group_series(
             for label in labels:
                 name = str(label)
                 sid = SeriesId(detector, platform, sample, name, family, metric, component)
-                own = _series_history(df, df["label"] == label, metric, reliability)
+                own = _series_history(df, df["label"] == label, metric, reliability, machines)
                 history = _continued_history(own, predecessor, before_df, name, metric, sid)
                 verdicts = _with_history(
                     history, evaluate_series(history, series=sid), all_hosts,
@@ -778,6 +789,7 @@ def _group_report_from_frames(
     hosts: dict[str, HostFact] | None = None,
     configured_labels: list[str] | None = None,
     predecessor: PredecessorRuns | None = None,
+    machines: dict[str, str] | None = None,
 ) -> RunGroupReport | None:
     """Build one triple's report for *tonight* from already-parsed trend
     frames of *suite*'s sources, by name (already windowed to whatever trailing
@@ -829,7 +841,7 @@ def _group_report_from_frames(
     series = evaluate_group_series(
         suite=suite, detector=detector, platform=platform, sample=sample,
         frames=judgeable, reliability=reliability, hosts=hosts,
-        predecessor=predecessor,
+        predecessor=predecessor, machines=machines,
     )
     # Only verdicts issued *for tonight's run* belong in tonight's report; a
     # series with no verdict for tonight simply was not judged tonight.
@@ -856,6 +868,7 @@ def _group_report_from_frames(
         frames=frames, judgeable=judgeable,
         reliability=reliability, tonight=tonight, hosts=hosts,
         predecessor=predecessor, config_failures=config_failures,
+        machines=machines,
     ))
 
     # Record values the normal engine skipped because the host was unreliable.
@@ -908,6 +921,7 @@ def _failed_display_verdicts(
     hosts: dict[str, HostFact] | None,
     predecessor: PredecessorRuns | None,
     config_failures: list[MetricVerdict],
+    machines: dict[str, str] | None = None,
 ) -> list[MetricVerdict]:
     """Tonight's failed measurements as display-only FAILURE verdicts.
 
@@ -934,7 +948,7 @@ def _failed_display_verdicts(
     display_series = evaluate_group_series(
         suite=suite, detector=detector, platform=platform, sample=sample,
         frames=display_frames, reliability=display_reliability, hosts=hosts,
-        predecessor=predecessor,
+        predecessor=predecessor, machines=machines,
     )
     failure_reason = {v.label: v.reason for v in config_failures}
     return [
@@ -1176,6 +1190,7 @@ def group_report_from_run_dirs(
         hosts=host_facts(machine_df),
         configured_labels=tonight_meta["configured_labels"],
         predecessor=before,
+        machines=cpu_models(machine_df),
     )
     if group is None:
         return None

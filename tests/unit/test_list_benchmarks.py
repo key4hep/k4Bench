@@ -166,6 +166,23 @@ def test_only_groups_the_selected_jobs(list_benchmarks, tmp_path, monkeypatch, c
     ]
 
 
+def test_grouped_puts_the_longest_configs_first(list_benchmarks, tmp_path, monkeypatch, capsys):
+    # GitHub starts the jobs in this order, so the long ones must not queue
+    # behind short ones once every runner is busy.
+    for suite, name, timeout in [("reco", "A", "120"), ("sim", "A", "600"), ("sim", "B", "")]:
+        path = _write(tmp_path, name, f"FCCee/{name}/{name}.xml", "s1", suite=suite)
+        head = "options: Reco.py\n" if suite == "reco" else ""
+        if timeout:
+            head += f"timeout: {timeout}\n"
+        path.write_text(head + path.read_text())
+    _write(tmp_path, "C", "FCCee/C/C.xml", "s1")
+    path = tmp_path / "sim" / "C" / "C.yml"
+    path.write_text("timeout: 600\n" + path.read_text())
+    groups = _main(list_benchmarks, tmp_path, monkeypatch, capsys, "--grouped")
+    # No timeout means GitHub's maximum; equal timeouts keep path order.
+    assert [g["config"] for g in groups] == ["sim/B/B", "sim/A/A", "sim/C/C", "reco/A/A"]
+
+
 @pytest.mark.parametrize(
     "only, expected",
     [("", ["sim", "reco"]), ("sim/B", ["sim"]), ("reco sim/A/A/s2", ["sim", "reco"]), ("reco", ["reco"])],

@@ -1622,6 +1622,7 @@ def _quiet_summary(group: RunGroupReport) -> str:
     ]
     n_insufficient = causes.count(Unjudged.INSUFFICIENT_HISTORY)
     n_unreliable = causes.count(Unjudged.UNRELIABLE_HOST)
+    n_new_machine = causes.count(Unjudged.MACHINE_CHANGE)
     n_unplaced = causes.count(None)
     has_judged = any(v.severity is not Severity.UNKNOWN for v in group.verdicts)
 
@@ -1632,6 +1633,8 @@ def _quiet_summary(group: RunGroupReport) -> str:
         parts.append(f"{n_insufficient} with insufficient history")
     if n_unreliable:
         parts.append(f"{n_unreliable} not judged (unreliable host)")
+    if n_new_machine:
+        parts.append(f"{n_new_machine} setting the level on a new machine")
     if n_unplaced:
         parts.append(f"{n_unplaced} not judged")
     reliability = {True: "reliable", False: "unreliable", None: "reliability unknown"}[group.reliable]

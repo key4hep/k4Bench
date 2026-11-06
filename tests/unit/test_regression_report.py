@@ -110,6 +110,7 @@ def _write_run(
     result_overrides: dict[str, dict] | None = None,
     random_seed: int | None = 4242,
     release: str | None = None,
+    cpu_model: str | None = None,
 ) -> Path:
     """One synthetic nightly run dir: run_info + per-config results + machine info.
 
@@ -159,6 +160,7 @@ def _write_run(
         "swap_in_pages": 0,
         "swap_out_pages": 0,
         "thermal_throttle_events": 0,
+        **({"cpu_model": cpu_model} if cpu_model else {}),
     }))
     return run_dir
 
@@ -199,6 +201,23 @@ def test_persisting_step_confirms_in_group_report(tmp_path):
     assert user_cpu and all(v.severity is Severity.UNKNOWN for v in user_cpu)
     assert not any(v.metric == "user_cpu_s" for v in group.regressions)
     assert not any(v.metric == "cpu_efficiency" for v in group.verdicts)
+
+
+def test_a_move_to_another_cpu_sets_the_level_instead_of_reporting_a_step(tmp_path):
+    # Every timing steps when the benchmarks move to new hardware; tonight's
+    # report must say the history moved, not that the software regressed.
+    walls = [100.0, 100.4, 99.6, 100.2, 99.8, 100.3, 99.7, 100.1, 99.9, 100.0, 70.0]
+    run_dirs = _make_history(tmp_path, walls, {
+        i: {"cpu_model": "AMD EPYC 7302 16-Core Processor" if i < 10 else "AMD EPYC-Genoa Processor"}
+        for i in range(len(walls))
+    })
+    group = group_report_from_run_dirs(
+        SIM, "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+    )
+    assert not group.regressions
+    wall = next(v for v in group.verdicts if v.metric == "wall_time_s")
+    assert wall.unjudged is Unjudged.MACHINE_CHANGE
+    assert "AMD EPYC-Genoa Processor" in wall.reason
 
 
 def test_group_report_carries_tonights_github_run_url(tmp_path):

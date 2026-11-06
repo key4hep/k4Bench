@@ -66,12 +66,16 @@ class Unjudged(str, Enum):
     and the three causes call for different words in the report.
     ``REPORTED_ONLY`` is a property of the metric and is the same number every
     night, while the other two are properties of the night — a summary that
-    adds them together describes neither.
+    adds them together describes neither. ``MACHINE_CHANGE`` is a property of
+    the night too: the series moved to another CPU there.
     """
 
     INSUFFICIENT_HISTORY = "insufficient_history"
     UNRELIABLE_HOST = "unreliable_host"
     REPORTED_ONLY = "reported_only"
+    #: The first release measured on a different CPU model: it sets the level
+    #: the series is judged against from then on.
+    MACHINE_CHANGE = "machine_change"
 
 
 #: Reason text stored by the two report-builder paths. Reports without the

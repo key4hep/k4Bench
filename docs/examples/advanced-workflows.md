@@ -60,7 +60,8 @@ k4bench --xml $K4GEO/FCCee/IDEA/compact/IDEA_o1_v03/IDEA_o1_v03.xml \
 ## Stabilise measurements with CPU pinning
 
 Background processes and CPU migration add noise. Pin the whole run to a fixed
-CPU set with `taskset` (this is exactly what the nightly does via `RUNNER_CPU_SET`):
+CPU set with `taskset` (the nightly pins `k4bench` to the runner's `RUNNER_CPU_SET`
+the same way, and confines the whole container to it with `--cpuset-cpus`):
 
 ```bash
 taskset -c 0-7 k4bench --xml ALLEGRO_o1_v03.xml --sweep \

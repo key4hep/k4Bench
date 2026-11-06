@@ -216,7 +216,11 @@ dashboard.
   CPU model/cores, RAM/swap totals, and `_start`/`_end` snapshots of load,
   available memory, CPU frequency, and thermal throttling. The pairs let the
   dashboard show whether the machine was loaded or throttling — context for
-  trusting a number.
+  trusting a number. `cpu_steal_pct` is the share of the run's CPU time a
+  hypervisor gave to another guest, over the CPUs named in `cpu_steal_cpus`
+  (the runner's `RUNNER_CPU_SET`, or `all`); `null` on runs older than the
+  field. A run above 2 % fails the reliability check. The CPU model is what
+  the regression engine re-anchors on when it changes.
 
 ### Stack provenance (`k4h_packages`)
 
@@ -876,7 +880,10 @@ Every verdict with `severity: "UNKNOWN"` may carry an `unjudged` discriminator
 that explains why no judgement was made:
 
 - `insufficient_history` — too few settled baseline runs were available;
-- `unreliable_host` — the run failed the host-reliability check; or
+- `unreliable_host` — the run failed the host-reliability check;
+- `machine_change` — the first release measured on a different CPU model
+  than the nights before it, which sets the level the series is judged against
+  from then on; or
 - `reported_only` — the metric is never judged by design, either because it
   duplicates a measurement another metric already judges (`user_cpu_s` tracks
   `wall_time_s`) or because its value is not reproducible enough to judge

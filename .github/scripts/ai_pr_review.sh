@@ -6,9 +6,11 @@ trap 'docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Bound streaming and retries, leaving time for the fallback model.
+# Bound streaming and retries, leaving time for the fallback model. The
+# runner's CPU set keeps the review off the CPUs of benchmarks running beside it.
 timeout --foreground --kill-after=10s 25m \
   docker run --rm --init --name "$CONTAINER_NAME" \
+  ${RUNNER_CPU_SET:+"--cpuset-cpus=$RUNNER_CPU_SET"} \
   --security-opt label=disable \
   --volume "$GITHUB_WORKSPACE/.github/scripts/ai_pr_review.py":/tmp/ai_pr_review.py:ro \
   --volume "$GITHUB_EVENT_PATH":/tmp/github-event.json:ro \

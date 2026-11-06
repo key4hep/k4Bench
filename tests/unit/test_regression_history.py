@@ -308,3 +308,24 @@ def test_the_tail_is_bounded_and_keeps_the_newest_releases():
     tail = history_tail(release_points(frame, []))
     assert len(tail) == HISTORY_RELEASES
     assert tail[-1].run_date == "2026-06-20"
+
+
+def test_a_release_measured_on_two_cpu_models_is_a_point_per_model():
+    # The engine judges a release's nights on the old CPU and anchors on its
+    # nights on the new one; one point per segment keeps the tail from showing
+    # the new machine's level under the old one's judged value.
+    frame = _frame([
+        ("2026-07-01", "2026-07-01", 12.0, True),
+        ("2026-07-02", "2026-07-01", 8.0, True),
+        ("2026-07-03", "2026-07-01", 8.1, True),
+    ])
+    frame["machine"] = ["EPYC 7302", "EPYC-Genoa", None]
+    verdicts = [
+        _verdict("2026-07-01", "2026-07-01", 12.0, Severity.OK),
+        _verdict("2026-07-02", "2026-07-01", 8.0, Severity.UNKNOWN),
+        _verdict("2026-07-03", "2026-07-01", 8.1, Severity.UNKNOWN),
+    ]
+    points = release_points(frame, verdicts)
+    assert [(p.run_date, p.value, p.n_runs) for p in points] == [
+        ("2026-07-01", 12.0, 1), ("2026-07-01", 8.05, 2),
+    ]

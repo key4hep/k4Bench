@@ -128,6 +128,7 @@ def reliability_evidence(
         "swap_in_pages":            machine_info.get("swap_in_pages"),
         "swap_out_pages":           machine_info.get("swap_out_pages"),
         "thermal_throttle_events":  machine_info.get("thermal_throttle_events"),
+        "cpu_steal_pct":            machine_info.get("cpu_steal_pct"),
         "ram_used_fraction":        ram_used_fraction,
     }
 

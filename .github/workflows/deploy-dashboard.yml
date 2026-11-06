@@ -22,7 +22,7 @@ permissions:
 jobs:
   build-and-push:
     name: Build & push Docker image
-    runs-on: [self-hosted, fcc-ironic]
+    runs-on: [self-hosted, k4bench, service]
     permissions:
       contents: read
       packages: write   # needed to push to ghcr.io
@@ -47,7 +47,10 @@ jobs:
           image_base="ghcr.io/${{ github.repository_owner }}/k4bench-dashboard"
           sha_tag="${image_base}:${short_sha}"
 
+          # The runner's CPU set keeps the build off the CPUs of benchmarks
+          # running beside it.
           docker build \
+            ${RUNNER_CPU_SET:+"--cpuset-cpus=$RUNNER_CPU_SET"} \
             -t "${sha_tag}" \
             -f dashboard/Dockerfile \
             .
@@ -64,7 +67,7 @@ jobs:
   deploy:
     name: Deploy to CERN PaaS
     needs: build-and-push
-    runs-on: [self-hosted, fcc-ironic]
+    runs-on: [self-hosted, k4bench, service]
     environment: production
     if: >-
       github.event_name == 'workflow_dispatch' ||
