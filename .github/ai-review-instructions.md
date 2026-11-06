@@ -197,9 +197,12 @@ API-compatibility objections without a concrete consumer.
 
 ## CI and self-hosted runner behaviour
 
-Benchmark jobs run on persistent CERN self-hosted runners (`fcc-ironic`) with
-CVMFS pre-mounted, inside the `key4hep-images/alma9` container, and write to
-EOS with a service certificate. `docker` on those runners is rootless Podman.
+Benchmark jobs run on persistent CERN self-hosted runners (label `k4bench`, on
+the OpenStack VMs k4bench-01/02/03) with CVMFS pre-mounted, inside the
+`key4hep-images/alma9` container, and write to EOS with a service certificate.
+`docker` on those runners is rootless Podman. Each VM has seven `bench`
+runners, each pinned to two vCPUs (`RUNNER_CPU_SET`) and running one
+single-threaded benchmark job, and one `service` runner for every other job.
 
 Pay particular attention to:
 

@@ -8,9 +8,10 @@ Collect machine info around a benchmark run.
 The start step writes <output_dir>/_machine_info_start.json with static
 fields (CPU model, RAM total, OS, kernel) and "_start" baselines for the
 dynamic fields (load, free memory, swap, CPU frequency, thermal throttle
-counter). The finalize step reads that file, adds matching "_end" fields,
-computes thermal_throttle_events as the delta over the run, writes
-<output_dir>/machine_info.json, and removes the intermediate start file.
+counter, steal time). The finalize step reads that file, adds matching "_end"
+fields, computes thermal_throttle_events and cpu_steal_pct as deltas over the
+run, writes <output_dir>/machine_info.json, and removes the intermediate start
+file.
 """
 from __future__ import annotations
 
@@ -100,6 +101,48 @@ def _sum_throttle(paths: list[str]) -> int | None:
     return total
 
 
+def _parse_cpu_list(text: str) -> list[int]:
+    """``"2-3,6"`` -> ``[2, 3, 6]``; an empty or malformed list gives ``[]``."""
+    cpus: list[int] = []
+    for part in text.replace(" ", "").split(","):
+        if not part:
+            continue
+        lo, _, hi = part.partition("-")
+        try:
+            cpus.extend(range(int(lo), int(hi or lo) + 1))
+        except ValueError:
+            return []
+    return cpus
+
+
+def _steal_jiffies(cpus: list[int]) -> tuple[int, int] | None:
+    """``(steal, total)`` jiffies since boot, summed over *cpus* (all CPUs when
+    empty), from ``/proc/stat``; ``None`` when the kernel reports no steal field.
+
+    Steal is time a virtual CPU was runnable but the hypervisor ran something
+    else, the only sign inside a VM that a neighbour took the physical core.
+    """
+    wanted = {f"cpu{c}" for c in cpus} if cpus else {"cpu"}
+    steal = total = 0
+    seen = False
+    for line in _read("/proc/stat").splitlines():
+        fields = line.split()
+        if not fields or fields[0] not in wanted:
+            continue
+        try:
+            values = [int(v) for v in fields[1:]]
+        except ValueError:
+            return None
+        # user nice system idle iowait irq softirq steal [guest guest_nice];
+        # guest time is already counted in user and nice.
+        if len(values) < 8:
+            return None
+        steal += values[7]
+        total += sum(values[:8])
+        seen = True
+    return (steal, total) if seen else None
+
+
 def _kib_to_gib(kib: int) -> float:
     return round(kib / 1024**2, 2)
 
@@ -170,6 +213,11 @@ def collect_start() -> dict:
     swap_used_kib = mem.get("SwapTotal", 0) - mem.get("SwapFree", mem.get("SwapTotal", 0))
     swap_in, swap_out = _swap_pages()
 
+    # The benchmark's own CPUs when the runner pins it, so another runner's
+    # neighbours on the same VM do not count against this run.
+    steal_cpus = _parse_cpu_list(os.environ.get("RUNNER_CPU_SET", ""))
+    steal = _steal_jiffies(steal_cpus)
+
     os_name = next(
         (line.split("=", 1)[1].strip('"') for line in _read("/etc/os-release").splitlines()
          if line.startswith("PRETTY_NAME=")),
@@ -192,6 +240,9 @@ def collect_start() -> dict:
         "cpu_governor":                 _read("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor").strip() or None,
         "cpu_freq_mhz_start":           _cpu_freq_mhz(),
         "thermal_throttle_count_start": _sum_throttle(_throttle_paths()),
+        "cpu_steal_cpus":               ",".join(map(str, steal_cpus)) or "all",
+        "cpu_steal_jiffies_start":      steal[0] if steal else None,
+        "cpu_total_jiffies_start":      steal[1] if steal else None,
         "kernel":                       platform.release(),
         "os":                           os_name,
         "hostname":                     _hostname(),
@@ -216,6 +267,22 @@ def finalize(machine_info: dict) -> dict:
     machine_info["thermal_throttle_events"] = (
         max(0, end - start) if (paths and start is not None and end is not None) else None
     )
+
+    # Share of the run's CPU time the hypervisor gave to someone else, over the
+    # CPUs recorded at start.
+    steal_start = machine_info.pop("cpu_steal_jiffies_start", None)
+    total_start = machine_info.pop("cpu_total_jiffies_start", None)
+    cpus_label = machine_info.get("cpu_steal_cpus")
+    steal_end = _steal_jiffies(
+        [] if cpus_label in (None, "all") else _parse_cpu_list(cpus_label)
+    )
+    machine_info["cpu_steal_pct"] = None
+    if steal_end and steal_start is not None and total_start is not None:
+        d_total = steal_end[1] - total_start
+        if d_total > 0:
+            machine_info["cpu_steal_pct"] = round(
+                100 * max(0, steal_end[0] - steal_start) / d_total, 3
+            )
 
     # Swap *activity* over the run: the delta of the cumulative pswpin/pswpout
     # counters. Any non-zero value means the kernel paged to/from disk while the

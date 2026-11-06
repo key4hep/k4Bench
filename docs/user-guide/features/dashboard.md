@@ -501,6 +501,16 @@ step-change detector (`k4bench/regression/`):
   release — and falls quiet from the next release on, instead of alerting every
   night until the window rolls over. A second change right afterwards is still
   caught.
+- **A move to other hardware is a change-point too.** Every run records its CPU
+  model (`machine_info.json`). When a series' CPU model changes — the
+  benchmarks moved to other machines — every timing moves with the hardware,
+  so the first release measured on the new model is **not judged**: it sets the
+  level, the baseline re-anchors on it, and the previous level's spread, scaled
+  to the new level, stands in for the noise. Judging resumes the next release,
+  so a step right after the move is still caught, and its window never reaches
+  back across it. The report counts those metrics as *setting the level on a
+  new machine*. A software change landing in that same release is absorbed into
+  the new level.
 - **Late confirmations keep the right window.** A step too small to clear the
   gates while the baseline still holds an older level can clear them days
   later, once that level has rolled out of the baseline, with nothing new in

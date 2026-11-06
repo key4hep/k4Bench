@@ -53,7 +53,7 @@ permissions:
 
 jobs:
   regression-report:
-    runs-on: [self-hosted, fcc-ironic]
+    runs-on: [self-hosted, k4bench, service]
     # Scopes K4BENCH_PR_COMMENT_TOKEN — the one secret here that can write
     # outside this repository — to an environment rather than leaving it a plain
     # repository secret, so it is reachable only from this job on an allowed
@@ -148,7 +148,9 @@ jobs:
           K4BENCH_PR_COMMENT_TIMEOUT: ${{ vars.K4BENCH_PR_COMMENT_TIMEOUT || '15m' }}
         run: |
           docker pull "${{ env.CONTAINER_IMAGE }}"
+          # Keeps the report on the service runner's CPUs, off the benchmarks'.
           docker run --rm --init \
+            ${RUNNER_CPU_SET:+"--cpuset-cpus=$RUNNER_CPU_SET"} \
             --device /dev/fuse \
             --cap-add SYS_ADMIN \
             --security-opt label=disable \

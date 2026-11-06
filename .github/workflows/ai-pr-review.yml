@@ -44,7 +44,7 @@ jobs:
     name: ${{ matrix.command }}
     needs: request
     if: needs.request.outputs.commands != '[]'
-    runs-on: [self-hosted, fcc-ironic]
+    runs-on: [self-hosted, k4bench, service]
     timeout-minutes: 60
     continue-on-error: true
     strategy:

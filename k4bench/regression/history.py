@@ -92,6 +92,23 @@ def host_facts(machine_df: pd.DataFrame | None) -> dict[str, HostFact]:
     return hosts
 
 
+def cpu_models(machine_df: pd.DataFrame | None) -> dict[str, str]:
+    """``run_id -> `` the CPU model the run recorded, from the machine-info trend.
+
+    Unlike :func:`host_facts` this does enter the judgement: the engine treats
+    a change of CPU model as a change-point (see
+    :func:`~k4bench.regression.engine.evaluate_series`). Runs that recorded no
+    model have no entry, so they never look like a move to another machine.
+    """
+    if machine_df is None or machine_df.empty or "cpu_model" not in machine_df.columns:
+        return {}
+    return {
+        str(run_id): model
+        for run_id, model in zip(machine_df["run_id"], machine_df["cpu_model"])
+        if isinstance(model, str) and model and model != "unknown"
+    }
+
+
 def release_points(
     history: pd.DataFrame,
     verdicts: Sequence[MetricVerdict],

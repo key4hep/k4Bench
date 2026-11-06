@@ -863,12 +863,18 @@ def _render_group(
     ]
     n_insufficient = unjudged_causes.count(Unjudged.INSUFFICIENT_HISTORY)
     n_unreliable = unjudged_causes.count(Unjudged.UNRELIABLE_HOST)
+    n_new_machine = unjudged_causes.count(Unjudged.MACHINE_CHANGE)
     n_unplaced = unjudged_causes.count(None)
     if n_insufficient:
         st.caption(f"❔ {n_insufficient} metric(s) with insufficient history.")
     if n_unreliable:
         st.caption(
             f"❔ {n_unreliable} metric(s) not judged (unreliable host)."
+        )
+    if n_new_machine:
+        st.caption(
+            f"❔ {n_new_machine} metric(s) setting the level on a new machine "
+            "(first release on a different CPU, not judged)."
         )
     if n_unplaced:
         st.caption(f"❔ {n_unplaced} metric(s) not judged.")

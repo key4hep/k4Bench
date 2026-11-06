@@ -858,6 +858,7 @@ def build_machine_info_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
             "k4h_release_date":        meta["k4h_release_date"],
             "k4h_release":             meta["k4h_release"],
             "hostname":                mi.get("hostname"),
+            "cpu_model":               mi.get("cpu_model"),
             "cpu_logical_cores":       mi.get("cpu_logical_cores"),
             "cpu_physical_cores":      mi.get("cpu_physical_cores"),
             "load_avg_1m_start":       mi.get("load_avg_1m_start"),
@@ -872,6 +873,7 @@ def build_machine_info_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
             "swap_out_pages":          mi.get("swap_out_pages"),
             "cpu_freq_mhz_start":      mi.get("cpu_freq_mhz_start"),
             "thermal_throttle_events": mi.get("thermal_throttle_events"),
+            "cpu_steal_pct":           mi.get("cpu_steal_pct"),
         })
 
     if not rows:

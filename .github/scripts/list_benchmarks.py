@@ -6,7 +6,8 @@ print them as JSON on stdout. Three output shapes:
   default  — flat list, one record per (config, sample)
   --grouped — list of {config, samples: [...]} so the nightly workflow can
               fan out one reusable-workflow call per config and nest the
-              sample matrix beneath it in the Actions UI
+              sample matrix beneath it in the Actions UI; configs with the
+              largest timeout come first
   --suites — the suites those jobs belong to, in layout.SUITES order, so the
               nightly reports on each suite it benchmarked and no other
 
@@ -66,6 +67,9 @@ CONFIG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 SAMPLE_RE = re.compile(r"^[A-Za-z0-9_.+-]+$")
 
 TOOLS = ("ddsim", "k4run")
+#: GitHub's job time limit on self-hosted runners, the timeout of a job whose
+#: config sets none (benchmark-detector.yml).
+SELF_HOSTED_MAX_MINUTES = 7200
 #: The tool a config runs when it names none, per suite.
 DEFAULT_TOOL = {"sim": "ddsim", "reco": "k4run"}
 SCALAR_KEYS = (
@@ -280,10 +284,23 @@ def _select(items: list[dict], only: str) -> list[dict]:
 
 
 def _group_by_config(items: list[dict]) -> list[dict]:
+    """Group *items* by config, the configs with the largest ``timeout`` first.
+
+    GitHub queues the nightly's jobs in this order. When there are more jobs
+    than runners, starting the long ones first ends the night sooner (longest
+    processing time first). The timeout is the only duration a config states;
+    a config without one has GitHub's maximum and goes first. Ties keep path
+    order.
+    """
     grouped: dict[str, list[dict]] = {}
     for item in items:
         grouped.setdefault(item["config"], []).append(item)
-    return [{"config": c, "samples": s} for c, s in grouped.items()]
+
+    def budget(samples: list[dict]) -> int:
+        return max(int(s["timeout"]) if s["timeout"] else SELF_HOSTED_MAX_MINUTES for s in samples)
+
+    order = sorted(grouped.items(), key=lambda kv: -budget(kv[1]))
+    return [{"config": c, "samples": s} for c, s in order]
 
 
 def config_paths(bench_dir: Path) -> list[Path]:

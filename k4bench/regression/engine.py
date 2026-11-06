@@ -59,7 +59,15 @@ so every gate errs toward *not* flagging:
    more than slower is "regressed" in the colloquial sense: either can be a
    deliberate change, an optimization, or a bug, and the report leaves that
    call to a human instead of asserting one.
-8. **The event sample is not engine state**: which Monte-Carlo events a run
+8. **A change of machine is a change-point**: an optional ``machine`` column
+   names the CPU model each night ran on. Timings move with the hardware, so
+   the first release measured on a different model is not judged: like a
+   release that confirmed a change, it re-anchors the baseline on its own
+   values, the previous spread (scaled to the new level) stands in for the
+   noise while the new segment is short, and judging resumes with the next
+   release. A step in that one release is absorbed into the new level, the
+   price of not blaming the software for the hardware.
+9. **The event sample is not engine state**: which Monte-Carlo events a run
    simulated — a fresh draw, or a fixed ddsim seed — is recorded on the run
    (and headlined in the report when it changes) but never acts on the walk.
    A history is one continuous series across a seed change: the level it
@@ -495,24 +503,43 @@ def evaluate_series(
     # replaced detector config's nights of a release the successor also
     # measured are another geometry, so they form a segment of their own: the
     # successor's nights neither share their median nor re-anchor on them.
-    def _segment_key(row) -> tuple[str, str | None]:
+    # A change of machine splits a release too: its nights on the new machine
+    # measure a different level.
+    def _segment_key(row) -> tuple[str, str | None, str | None]:
         detector = getattr(row, "detector", None)
+        machine = getattr(row, "machine", None)
         return (
             release_key(row.run_date, row.run_id),
             detector if isinstance(detector, str) and detector else None,
+            machine if isinstance(machine, str) and machine else None,
         )
 
     # Which platform and detector config measured the previous row, for a
     # history that continues a replaced one's (optional ``platform`` and
     # ``detector`` columns; empty on the series' own rows).
     previous_source: object = object()
+    #: The CPU model of the newest segment that named one (optional ``machine``
+    #: column), and whether the series moved off it without a reliable night
+    #: on the new model yet to anchor on.
+    current_machine: str | None = None
+    anchor_due = False
+    #: Wording for the reason of nights judged against a provisional baseline.
+    anchor_cause = ""
+    moved_from: str | None = None
 
-    for (release_date, _), group in groupby(
+    for (release_date, _, machine), group in groupby(
         df.itertuples(index=False), key=_segment_key,
     ):
         # The baseline cannot move inside a release (judged values enter it at
         # the boundary below), so its window is resolved once, here.
         window = np.asarray(baseline, dtype=float)
+        if machine is not None:
+            if current_machine is not None and machine != current_machine:
+                anchor_due = True
+                moved_from = current_machine
+                pending = pending_run = None  # two strikes come from one machine
+            current_machine = machine
+        anchoring = anchor_due
 
         # Per-release state, reset at every boundary.
         # snapshot: (med, mad, reanchoring, n_base)
@@ -547,6 +574,25 @@ def evaluate_series(
             if x is None or (isinstance(x, float) and math.isnan(x)):
                 continue
             x = float(x)
+
+            if anchoring:
+                # The first reliable nights on another machine set its level;
+                # nothing here measures the software against the old one.
+                verdicts.append(_verdict(
+                    row,
+                    value=x, baseline_median=None, baseline_mad=None,
+                    pct_change=None, z_score=None,
+                    severity=Severity.UNKNOWN, direction=Direction.NONE,
+                    unjudged=Unjudged.MACHINE_CHANGE,
+                    reason=(
+                        f"first release measured on {machine} (previously "
+                        f"{moved_from}) — sets the level later nights are "
+                        f"judged against, not judged itself"
+                    ),
+                ))
+                release_values.append(x)
+                release_last_reliable = _identity(row)
+                continue
 
             if warming is None:
                 # Decided once per release, at its first reliable night, from
@@ -637,7 +683,7 @@ def evaluate_series(
                 last_absent[Direction.UP] = last_absent[Direction.DOWN] = _identity(row)
                 reason = "within baseline variation"
                 if reanchoring:
-                    reason += (f" (re-anchoring after confirmed change on "
+                    reason += (f" (re-anchoring after {anchor_cause} on "
                                f"{anchor_date}, {n_base}/{MIN_BASELINE_RUNS} runs "
                                f"at the new level)")
                 if release_windows:
@@ -742,6 +788,32 @@ def evaluate_series(
 
         # Release boundary: the only place baseline state moves for judged
         # nights.
+        if anchoring and release_values:
+            # A machine change-point: the new machine's level is the baseline
+            # from here on. The previous level's spread, relative to it, is the
+            # interim noise estimate. A history still warming up when it moved
+            # simply restarts its warm-up on the new machine.
+            if len(window) >= MIN_BASELINE_RUNS:
+                old_med, old_mad = robust_baseline(window)
+                old_mad = max(old_mad, night_to_night_spread(recent))
+                new_med = float(np.median(np.asarray(release_values)))
+                scale = new_med / old_med if old_med > 0 and new_med > 0 else 1.0
+                anchor_mad = old_mad * scale
+                anchor_date = release_date
+                anchor_cause = f"the move to {machine}"
+            else:
+                anchor_date = None
+            baseline.clear()
+            baseline.extend(release_values)
+            # The noise floor reads successive differences, and the hop between
+            # machines is not noise.
+            recent.clear()
+            recent.extend(release_values)
+            last_absent[Direction.UP] = last_absent[Direction.DOWN] = release_last_reliable
+            segment_base = release_last_reliable
+            judged_nights.clear()
+            anchor_due = False
+            continue
         recent.extend(release_values)
         if release_windows and snapshot is not None:
             # A change-point: the new level is the normal one from here on.
@@ -754,6 +826,7 @@ def evaluate_series(
             baseline.clear()
             baseline.extend(release_values)
             anchor_date = release_date
+            anchor_cause = "confirmed change"
             pending = pending_run = None
             # Re-anchoring redefines the accepted level as the post-change
             # one, so both bounds restart from the newest night measured *at*

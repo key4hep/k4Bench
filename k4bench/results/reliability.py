@@ -22,6 +22,9 @@ Hard criteria (a single ``FAIL`` rejects the run)
       means the host was oversubscribed.
     * **No swap activity** — any swap-in/swap-out *during* the run rejects it.
     * **No thermal throttling** — any throttle event during the run rejects it.
+    * **CPU steal** ≤ 2% of the run's CPU time. Steal is time a virtual CPU was
+      ready to run but the hypervisor ran another guest on it: positive evidence,
+      inside a VM, that a neighbour took the physical core.
 
 Advisory criteria (reported, never reject)
     * **Involuntary context switches** ≤ ``10×`` a baseline established from prior
@@ -51,6 +54,10 @@ CTX_SWITCH_BASELINE_MULTIPLIER = 10.0
 
 #: 1-minute load average must not exceed (this factor × physical cores).
 MAX_LOAD_PER_CORE = 1.0
+
+#: Hypervisor steal, in percent of the run's CPU time on its own CPUs, above
+#: which a virtual machine's run is rejected.
+MAX_CPU_STEAL_PCT = 2.0
 
 #: RAM utilisation above this fraction raises a warning (never a rejection).
 RAM_WARN_FRACTION = 0.90
@@ -255,6 +262,25 @@ def _eval_thermal(thermal_throttle_events: int | None) -> Criterion:
     )
 
 
+def _eval_steal(cpu_steal_pct: float | None) -> Criterion:
+    name = "CPU steal"
+    limit = f"≤ {MAX_CPU_STEAL_PCT:g}%"
+    if cpu_steal_pct is None:
+        return Criterion(name, Status.UNKNOWN, "Steal time not recorded.", limit=limit)
+    measured = f"{cpu_steal_pct:.2f}%"
+    if cpu_steal_pct <= MAX_CPU_STEAL_PCT:
+        return Criterion(
+            name, Status.PASS,
+            "The hypervisor left the run's CPUs to it.",
+            measured=measured, limit=limit,
+        )
+    return Criterion(
+        name, Status.FAIL,
+        "The hypervisor ran another guest on the run's CPUs, inflating timings.",
+        measured=measured, limit=limit,
+    )
+
+
 def _eval_ram(ram_used_fraction: float | None) -> Criterion:
     name = "RAM utilisation"
     limit = f"≤ {RAM_WARN_FRACTION * 100:.0f}%"
@@ -285,6 +311,7 @@ def evaluate_reliability(
     swap_in_pages: int | None = None,
     swap_out_pages: int | None = None,
     thermal_throttle_events: int | None = None,
+    cpu_steal_pct: float | None = None,
     ram_used_fraction: float | None = None,
 ) -> ReliabilityVerdict:
     """Evaluate all reliability criteria and return an aggregate verdict.
@@ -309,6 +336,8 @@ def evaluate_reliability(
         Pages swapped in/out *during* the run (deltas, not absolute levels).
     thermal_throttle_events:
         Throttle events accumulated during the run.
+    cpu_steal_pct:
+        Hypervisor steal during the run, in percent of its CPUs' time.
     ram_used_fraction:
         Fraction of RAM in use (0–1); advisory warning above 90%.
     """
@@ -317,6 +346,7 @@ def evaluate_reliability(
         _eval_load(load_avg_1m_pre, load_avg_1m_post, physical_cores),
         _eval_swap(swap_in_pages, swap_out_pages),
         _eval_thermal(thermal_throttle_events),
+        _eval_steal(cpu_steal_pct),
         _eval_ctx_switches(involuntary_ctx_switches, total_cpu_s, ctx_switch_baseline_per_cpu_s),
         _eval_ram(ram_used_fraction),
     )

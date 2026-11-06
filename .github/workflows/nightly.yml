@@ -57,7 +57,7 @@ jobs:
   # benchmark a release other than this one. Needs a CVMFS-mounted runner; the
   # job itself only lists directories.
   resolve-release:
-    runs-on: [self-hosted, fcc-ironic]
+    runs-on: [self-hosted, k4bench, service]
     timeout-minutes: 150  # covers the ~2 h retry budget with margin
     outputs:
       release:  ${{ steps.resolve.outputs.release }}
