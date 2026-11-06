@@ -66,7 +66,11 @@ so every gate errs toward *not* flagging:
    values, the previous spread (scaled to the new level) stands in for the
    noise while the new segment is short, and judging resumes with the next
    release. A step in that one release is absorbed into the new level, the
-   price of not blaming the software for the hardware.
+   price of not blaming the software for the hardware. A move is taken to be
+   lasting: a series alternating between CPU models would re-anchor at every
+   alternation and never be judged, so the runners one benchmark can land on
+   must all report the same model. A night naming no model counts as the
+   series' current one.
 9. **The event sample is not engine state**: which Monte-Carlo events a run
    simulated — a fresh draw, or a fixed ddsim seed — is recorded on the run
    (and headlined in the report when it changes) but never acts on the walk.
@@ -315,6 +319,20 @@ def release_key(run_date, run_id) -> str:
     return _fmt_date(run_date) or str(run_id)
 
 
+def with_current_machine(history: pd.DataFrame) -> pd.DataFrame:
+    """*history* (sorted in night order) with a night naming no CPU model in
+    its optional ``machine`` column given the model of the night before.
+
+    Absence is no evidence of another machine, so such a night belongs to the
+    segment it sits in rather than splitting its release; nights before the
+    first one naming a model keep none.
+    """
+    if "machine" not in history.columns:
+        return history
+    named = history["machine"].map(lambda m: isinstance(m, str) and bool(m))
+    return history.assign(machine=history["machine"].where(named).ffill())
+
+
 def evaluate_series(
     history: pd.DataFrame,
     *,
@@ -417,7 +435,7 @@ def evaluate_series(
     floor = EFFECT_FLOOR[series.metric_family]
     abs_delta_floor = ABS_DELTA_FLOOR.get(series.metric_family, 0.0)
 
-    df = history.sort_values(["run_date", "run_id"], kind="stable")
+    df = with_current_machine(history.sort_values(["run_date", "run_id"], kind="stable"))
     baseline: deque[float] = deque(maxlen=BASELINE_WINDOW_RUNS)
     #: The newest reliable values in night order, re-anchor or not: what the
     #: noise floor is read from.
@@ -520,7 +538,10 @@ def evaluate_series(
     previous_source: object = object()
     #: The CPU model of the newest segment that named one (optional ``machine``
     #: column), and whether the series moved off it without a reliable night
-    #: on the new model yet to anchor on.
+    #: on the new model yet to anchor on. A segment naming no model ran on this
+    #: one as far as the history knows: absence is no evidence of another
+    #: machine, so it neither starts a move nor is judged against the model
+    #: before a pending one.
     current_machine: str | None = None
     anchor_due = False
     #: Wording for the reason of nights judged against a provisional baseline.
@@ -585,7 +606,7 @@ def evaluate_series(
                     severity=Severity.UNKNOWN, direction=Direction.NONE,
                     unjudged=Unjudged.MACHINE_CHANGE,
                     reason=(
-                        f"first release measured on {machine} (previously "
+                        f"first release measured on {current_machine} (previously "
                         f"{moved_from}) — sets the level later nights are "
                         f"judged against, not judged itself"
                     ),
@@ -800,7 +821,7 @@ def evaluate_series(
                 scale = new_med / old_med if old_med > 0 and new_med > 0 else 1.0
                 anchor_mad = old_mad * scale
                 anchor_date = release_date
-                anchor_cause = f"the move to {machine}"
+                anchor_cause = f"the move to {current_machine}"
             else:
                 anchor_date = None
             baseline.clear()

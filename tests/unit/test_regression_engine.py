@@ -1077,3 +1077,40 @@ def test_nights_without_a_machine_never_look_like_a_move():
     history.loc[3, "machine"] = None
     verdicts = evaluate_series(history, series=_TIME)
     assert sum(v.unjudged is Unjudged.MACHINE_CHANGE for v in verdicts) == 1
+
+
+def test_a_night_naming_no_model_after_an_unanchored_move_anchors_as_the_new_machine():
+    # The first night on the new machine was unreliable and the next one named
+    # no model: it counts as the new machine, so it anchors under that name.
+    history = _moved_history(_STEADY, [500.0, 70.0, 70.2])
+    history.loc[len(_STEADY), "reliable"] = False
+    history.loc[len(_STEADY) + 1, "machine"] = None
+    verdicts = evaluate_series(history, series=_TIME)
+    assert verdicts[-2].unjudged is Unjudged.MACHINE_CHANGE
+    assert f"measured on {_NEW_CPU}" in verdicts[-2].reason
+    assert verdicts[-1].severity is Severity.OK
+
+
+def test_a_night_naming_no_model_never_splits_its_release():
+    # Two nights of one release, the second without a model: one segment,
+    # judged against one frozen baseline, not a second segment whose baseline
+    # already holds the first night.
+    history = _history(_STEADY + [120.0, 120.4])
+    history.loc[len(_STEADY) + 1, "run_date"] = history.loc[len(_STEADY), "run_date"]
+    history["machine"] = [_OLD_CPU] * (len(_STEADY) + 1) + [None]
+    verdicts = evaluate_series(history, series=_TIME)
+    first, second = verdicts[-2:]
+    assert (second.baseline_median, second.baseline_mad) == (
+        first.baseline_median, first.baseline_mad,
+    )
+    assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
+
+
+def test_alternating_machines_re_anchor_at_every_alternation():
+    # The documented limitation: a move is taken to be lasting, so a series
+    # flipping between CPU models is never judged. The runners one benchmark
+    # can land on must all report one model.
+    history = _history(_STEADY + [70.0, 100.0, 70.0])
+    history["machine"] = [_OLD_CPU] * len(_STEADY) + [_NEW_CPU, _OLD_CPU, _NEW_CPU]
+    verdicts = evaluate_series(history, series=_TIME)
+    assert [v.unjudged for v in verdicts[-3:]] == [Unjudged.MACHINE_CHANGE] * 3

@@ -26,7 +26,7 @@ from collections.abc import Sequence
 import numpy as np
 import pandas as pd
 
-from k4bench.regression.engine import release_key
+from k4bench.regression.engine import release_key, with_current_machine
 from k4bench.regression.models import (
     Direction,
     HostFact,
@@ -132,7 +132,8 @@ def release_points(
     config behind rows a series continued from a replaced one; their points
     carry it. A replaced detector config's nights of a release the successor
     also measured form a point of their own, as they form a segment of their
-    own in the walk.
+    own in the walk; so do a release's nights on another CPU model (optional
+    ``machine`` column), which the walk anchors on rather than judges.
 
     *hosts* (from :func:`host_facts`) names the machine behind each ``run_id``,
     so the tail can show a change of benchmark host next to the change in the
@@ -148,28 +149,32 @@ def release_points(
     hosts = hosts or {}
 
     # Keyed like the engine's segments: a replaced detector config's nights of
-    # a release the successor also measured are a point of their own.
-    ordered = history.sort_values(["run_date", "run_id"], kind="stable")
-    keys: dict[str, tuple[str, str | None]] = {}
+    # a release the successor also measured are a point of their own, and so
+    # are a release's nights on each CPU model.
+    ordered = with_current_machine(history.sort_values(["run_date", "run_id"], kind="stable"))
+    keys: dict[str, tuple[str, str | None, str | None]] = {}
     for row in ordered.itertuples(index=False):
         detector = getattr(row, "detector", None)
+        machine = getattr(row, "machine", None)
         keys[str(row.run_id)] = (
             release_key(row.run_date, row.run_id),
             detector if isinstance(detector, str) and detector else None,
+            machine if isinstance(machine, str) and machine else None,
         )
 
-    judged_by_release: dict[tuple[str, str | None], list[MetricVerdict]] = {}
+    judged_by_release: dict[tuple[str, str | None, str | None], list[MetricVerdict]] = {}
     for verdict in verdicts:
         key = keys.get(
-            str(verdict.run_id), (release_key(verdict.run_date, verdict.run_id), None),
+            str(verdict.run_id),
+            (release_key(verdict.run_date, verdict.run_id), None, None),
         )
         judged_by_release.setdefault(key, []).append(verdict)
 
-    recorded: dict[tuple[str, str | None], list[float]] = {}
-    recorded_on: dict[tuple[str, str | None], dict[HostFact, list[float]]] = {}
-    ran_on: dict[tuple[str, str | None], dict[HostFact, None]] = {}
+    recorded: dict[tuple, list[float]] = {}
+    recorded_on: dict[tuple, dict[HostFact, list[float]]] = {}
+    ran_on: dict[tuple, dict[HostFact, None]] = {}
     #: A continued series marks the rows its predecessor measured.
-    platforms: dict[tuple[str, str | None], str] = {}
+    platforms: dict[tuple, str] = {}
     for row in ordered.itertuples(index=False):
         key = keys[str(row.run_id)]
         platform = getattr(row, "platform", None)
