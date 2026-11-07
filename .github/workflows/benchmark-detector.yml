@@ -33,10 +33,10 @@ permissions:
 jobs:
   run:
     name: ${{ matrix.sample }}
-    # A `bench` runner takes one job at a time on vCPUs of its own
-    # (RUNNER_CPU_SET). Every other self-hosted job runs on a `service` runner,
-    # so it never competes with a benchmark for those CPUs.
-    runs-on: [self-hosted, k4bench, bench]
+    # Benchmarks run on the fcc-ironic bare-metal hosts, one job per runner on
+    # CPUs of its own (RUNNER_CPU_SET). Every other self-hosted job runs on a
+    # k4bench `service` runner.
+    runs-on: [self-hosted, fcc-ironic]
     # Per-config `timeout` (minutes) from the benchmark yml, else GitHub's max
     # job runtime for self-hosted runners (7200 min = 5 days). fromJson coerces
     # the matrix string to a number — `timeout-minutes` rejects a string value,
@@ -52,7 +52,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # /cvmfs is pre-mounted on the self-hosted k4bench runners; only GitHub-hosted
+      # /cvmfs is pre-mounted on the self-hosted fcc-ironic runners; only GitHub-hosted
       # runners need the installer (and the installer assumes Ubuntu).
       - name: Install CVMFS (GitHub-hosted runners only)
         if: runner.environment == 'github-hosted'
@@ -104,16 +104,15 @@ jobs:
               summary_mount=(--volume "$GITHUB_STEP_SUMMARY":/tmp/step_summary:z
                              -e GITHUB_STEP_SUMMARY=/tmp/step_summary)
           fi
-          # Every bench runner names its CPUs. Without them the container would
-          # spread over the other benchmarks' CPUs and time their contention, so
-          # a runner set up without one fails the job instead.
+          # Every benchmark runner names its CPUs, which benchmark_job.py pins
+          # k4bench to. Without them k4bench would spread over the other
+          # benchmarks' CPUs and time their contention, so a runner set up
+          # without one fails the job instead. The container itself is not
+          # confined: rootless podman on fcc-ironic has no cpuset controller.
           : "${RUNNER_CPU_SET:?this runner sets no RUNNER_CPU_SET (see the runner setup)}"
           docker pull "${{ env.CONTAINER_IMAGE }}"
           # PERFMON lets the k4run auditor count instructions and cycles.
-          # --cpuset-cpus confines the whole container to the runner's CPUs: the
-          # container runtime resets an inherited CPU affinity to every CPU.
           docker run --rm --init \
-            --cpuset-cpus="$RUNNER_CPU_SET" \
             "${summary_mount[@]}" \
             --device /dev/fuse \
             --cap-add SYS_ADMIN \
