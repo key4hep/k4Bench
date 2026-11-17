@@ -78,10 +78,14 @@ sequenceDiagram
 
 The `resolve-release` job (`.github/scripts/resolve_release.sh`) names one
 Key4hep release per night and the whole fan-out sources exactly that release, so
-samples of the same night can never be filed under two releases. When no stack is
-published for the day it falls back to the newest one and says so in the job
-summary; the night still runs, because a repeat measurement of a release is what
-`k4bench/regression/engine.py` uses to confirm a WATCH.
+samples of the same night can never be filed under two releases. A view counts
+only once its build has finished: LCG can publish a view before the packages it
+links are built, so the gate also requires the slot's
+`nightlies/…/isDone-<platform>` marker, written no later than the view. When no
+complete stack is published for the day it falls back to the newest complete one
+and says so in the job summary; the night still runs, because a repeat
+measurement of a release is what `k4bench/regression/engine.py` uses to confirm a
+WATCH.
 
 The EOS directory layout is the integration contract between CI and the
 dashboard — see [File formats → EOS layout](../reference/file-formats.md#eos-layout).

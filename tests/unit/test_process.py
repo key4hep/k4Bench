@@ -78,3 +78,15 @@ def test_unparsed_time_report_warns_with_the_log_path(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "WARNING [baseline]" in out
     assert str(log) in out
+
+
+def test_output_that_is_not_utf8_is_logged_instead_of_aborting_the_run(tmp_path):
+    log = tmp_path / "run.log"
+    proc = run_timed(
+        timed_shell_command(["printf", r"before \377 after\n"]),
+        env=dict(os.environ),
+        log_path=log,
+    )
+    assert proc.returncode == 0
+    assert "before � after" in log.read_text(encoding="utf-8")
+    assert proc.metrics["wall_time_s"] is not None

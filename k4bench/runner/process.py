@@ -86,7 +86,10 @@ def run_timed(
             executable="/bin/bash",
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
+            # Simulation output carries bytes in no promised encoding (one
+            # invalid byte must not abort a run hours in).
+            encoding="utf-8",
+            errors="replace",
             env=env,
             cwd=cwd,
             start_new_session=True,
@@ -94,7 +97,7 @@ def run_timed(
 
         tail: deque[str] = deque(maxlen=_TAIL_LINES)
 
-        with log_path.open("w") as log_file:
+        with log_path.open("w", encoding="utf-8") as log_file:
 
             if proc.stdout is None:
                 raise RuntimeError(f"Failed to capture the output of {log_path.stem}.")
