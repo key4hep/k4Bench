@@ -17,6 +17,7 @@ LATEST = "latest"
 class Gate:
     def __init__(self, tmp_path: Path):
         self.root = tmp_path / "views/test-view"
+        self.nightlies = tmp_path / "nightlies/test-view"
         now = datetime.now(timezone.utc)
         self.today = now.strftime("%Y-%m-%d")
         self.yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -34,6 +35,10 @@ class Gate:
         stub.write_text(
             "#!/bin/bash\n"
             f'echo "$@" >> "{self.sleep_log}"\n'
+            'if [[ -n "${SLEEP_FINISHES:-}" ]]; then\n'
+            '  mkdir -p "$(dirname "${SLEEP_FINISHES}")"\n'
+            '  touch "${SLEEP_FINISHES}"\n'
+            "fi\n"
             'if [[ -n "${SLEEP_PUBLISHES:-}" ]]; then\n'
             '  mkdir -p "$(dirname "${SLEEP_PUBLISHES}")"\n'
             '  printf "# Generated: %s\\n" "${SLEEP_GENERATED}" > "${SLEEP_PUBLISHES}"\n'
@@ -41,11 +46,25 @@ class Gate:
         )
         stub.chmod(0o755)
 
-    def publish(self, release: str) -> Path:
+    def marker(self, release: str) -> Path:
+        slot = datetime.strptime(release, "%Y-%m-%d").strftime("%a")
+        return self.nightlies / slot / f"isDone-{PLATFORM}"
+
+    def publish(self, release: str, *, finished_before: float | None = 3600) -> Path:
+        """Publish *release*'s view; its build finished *finished_before*
+        seconds earlier (negative: after the view), or not at all (None)."""
         date = datetime.strptime(release, "%Y-%m-%d")
         setup = self.root / date.strftime("%a") / PLATFORM / "setup.sh"
         setup.parent.mkdir(parents=True, exist_ok=True)
         setup.write_text(f"# Generated: {date.strftime('%a %b %d 01:25:04 %Y')}\n")
+        marker = self.marker(release)
+        if finished_before is None:
+            marker.unlink(missing_ok=True)
+        else:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
+            view_time = setup.stat().st_mtime
+            os.utime(marker, (view_time - finished_before,) * 2)
         return setup
 
     def run(self, **env: str) -> subprocess.CompletedProcess:
@@ -57,6 +76,7 @@ class Gate:
                 **os.environ,
                 "PATH": f"{self._bin}:{os.environ['PATH']}",
                 "VIEWS_ROOT": str(self.root),
+                "NIGHTLIES_ROOT": str(self.nightlies),
                 "PLATFORM_DIR": PLATFORM,
                 "LATEST_DIR": LATEST,
                 "GITHUB_OUTPUT": str(self._out),
@@ -101,6 +121,7 @@ def test_release_published_during_the_wait_is_picked_up(gate: Gate):
     date = datetime.strptime(gate.today, "%Y-%m-%d")
     setup = gate.root / date.strftime("%a") / PLATFORM / "setup.sh"
     proc = gate.run(
+        SLEEP_FINISHES=str(gate.marker(gate.today)),
         SLEEP_PUBLISHES=str(setup),
         SLEEP_GENERATED=date.strftime("%a %b %d 01:25:04 %Y"),
     )
@@ -128,11 +149,60 @@ def test_no_release_today_falls_back_to_latest_and_says_so(gate: Gate):
     assert "re-measurement" in gate.summary
 
 
-def test_unresolvable_latest_fails_instead_of_publishing_empty_output(gate: Gate):
-    (gate.root / LATEST / PLATFORM).unlink()
+def test_no_complete_view_fails_instead_of_publishing_empty_output(gate: Gate):
+    gate.publish(gate.yesterday, finished_before=None)
     proc = gate.run(RETRIES="0")
     assert proc.returncode != 0
     assert "::error::" in proc.stdout
+    assert gate.outputs == {}
+
+
+@pytest.mark.parametrize(
+    "finished_before",
+    [None, -3600, 2 * 86400],
+    ids=["build-unfinished", "build-finished-after-view", "stale-marker"],
+)
+def test_view_published_before_its_build_finished_is_not_taken(gate: Gate, finished_before):
+    gate.publish(gate.today, finished_before=finished_before)
+    proc = gate.run(RETRIES="2")
+    assert proc.returncode == 0
+    assert gate.waits == 2
+    assert gate.outputs["release"] == gate.yesterday
+    assert gate.outputs["is_today"] == "false"
+    assert "build has not finished" in proc.stdout
+    assert "before its build finished" in gate.summary
+
+
+def test_view_regenerated_after_its_build_finishes_is_picked_up(gate: Gate):
+    setup = gate.publish(gate.today, finished_before=None)
+    date = datetime.strptime(gate.today, "%Y-%m-%d")
+    proc = gate.run(
+        SLEEP_FINISHES=str(gate.marker(gate.today)),
+        SLEEP_PUBLISHES=str(setup),
+        SLEEP_GENERATED=date.strftime("%a %b %d 01:25:04 %Y"),
+    )
+    assert proc.returncode == 0
+    assert gate.outputs["release"] == gate.today
+    assert gate.waits == 1
+
+
+def test_fallback_takes_the_newest_complete_view_not_latest(gate: Gate):
+    incomplete = gate.publish(gate.today, finished_before=None)
+    (gate.root / LATEST / PLATFORM).unlink()
+    (gate.root / LATEST / PLATFORM).symlink_to(incomplete.parent, target_is_directory=True)
+    older = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%d")
+    stale = gate.publish(older)
+    os.utime(stale, (stale.stat().st_mtime - 2 * 86400,) * 2)
+    os.utime(gate.marker(older), (stale.stat().st_mtime - 3600,) * 2)
+    assert gate.run(RETRIES="0").returncode == 0
+    assert gate.outputs["release"] == gate.yesterday
+
+
+def test_requested_release_whose_build_has_not_finished_fails(gate: Gate):
+    gate.publish(gate.today, finished_before=None)
+    proc = gate.run(RELEASE_REQUESTED=gate.today)
+    assert proc.returncode != 0
+    assert "before its build finished" in proc.stdout
     assert gate.outputs == {}
 
 
