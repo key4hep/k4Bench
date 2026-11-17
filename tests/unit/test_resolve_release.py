@@ -198,6 +198,17 @@ def test_fallback_takes_the_newest_complete_view_not_latest(gate: Gate):
     assert gate.outputs["release"] == gate.yesterday
 
 
+def test_fallback_ranks_views_by_release_not_by_file_time(gate: Gate):
+    gate.publish(gate.today, finished_before=None)
+    older = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%d")
+    rewritten = gate.publish(older)
+    later = gate.publish(gate.yesterday).stat().st_mtime + 600
+    os.utime(rewritten, (later,) * 2)
+    os.utime(gate.marker(older), (later - 3600,) * 2)
+    assert gate.run(RETRIES="0").returncode == 0
+    assert gate.outputs["release"] == gate.yesterday
+
+
 def test_requested_release_whose_build_has_not_finished_fails(gate: Gate):
     gate.publish(gate.today, finished_before=None)
     proc = gate.run(RELEASE_REQUESTED=gate.today)

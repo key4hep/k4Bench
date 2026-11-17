@@ -21,10 +21,14 @@ RETRY_INTERVAL="${RETRY_INTERVAL:-1800}"
 MARKER_MAX_AGE="${MARKER_MAX_AGE:-86400}"
 TODAY="$(date -u +%F)"
 
-release_of() {
+generated_as() {
     local generated
     generated="$(sed -n 's/^# *Generated: *//p' "$1" | head -1)"
-    [[ -n "${generated}" ]] && date -u -d "${generated}" +%F
+    [[ -n "${generated}" ]] && date -u -d "${generated}" "$2"
+}
+
+release_of() {
+    generated_as "$1" +%F
 }
 
 # Every weekday slot's setup.sh; `latest` only links to one of them.
@@ -58,14 +62,17 @@ find_release() {
     return 1
 }
 
+# The complete view generated last, by its Generated stamp (the release
+# identity), not by file time.
 newest_complete() {
-    local setup newest="" newest_time=0 view_time
+    local setup newest="" newest_time=0 generated_time
     while read -r setup; do
         is_complete "${setup}" || continue
-        view_time="$(stat -c %Y "${setup}")"
-        if (( view_time > newest_time )); then
+        generated_time="$(generated_as "${setup}" +%s 2>/dev/null || true)"
+        [[ -n "${generated_time}" ]] || continue
+        if (( generated_time > newest_time )); then
             newest="${setup}"
-            newest_time="${view_time}"
+            newest_time="${generated_time}"
         fi
     done < <(slot_setups)
     [[ -n "${newest}" ]] && readlink -f "${newest}"
