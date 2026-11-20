@@ -70,8 +70,13 @@ jobs:
         # the first time it traverses an unmounted CVMFS path. Missing repos
         # are flagged but don't fail the step — the downstream stage that
         # actually needs the repo will produce a more useful error.
+        # The LCG nightly views also take their compiler runtime from
+        # sft.cern.ch, the Geant4 data from geant4.cern.ch and FCCDICTSDIR from
+        # fcc.cern.ch; a repo mounted only after the container started stays
+        # invisible inside it.
         run: |
-          for repo in sw-nightlies.hsf.org sft-nightlies.cern.ch sw.hsf.org grid.cern.ch; do
+          for repo in sw-nightlies.hsf.org sft-nightlies.cern.ch sw.hsf.org grid.cern.ch \
+                      sft.cern.ch geant4.cern.ch fcc.cern.ch; do
               if ls "/cvmfs/$repo/" > /dev/null 2>&1; then
                   echo "ok       /cvmfs/$repo"
               else
