@@ -25,11 +25,11 @@ from k4bench.blame.comment.plan import (
     _row_identity,
 )
 from k4bench.blame.comment.state import (
-    CumulativeEntry,
     _MARKER_SUFFIX,
     _MAX_RETAINED_ROWS,
     _OMITTED_OBSERVATIONS_PREFIX,
     CommentObservation,
+    CumulativeEntry,
     RetainedRow,
     _iso_date,
     _observation_marker,

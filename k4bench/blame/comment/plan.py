@@ -8,6 +8,7 @@ the pull request against its field in each rank group.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from k4bench.blame.attribute import (
@@ -18,6 +19,7 @@ from k4bench.blame.comment.state import (
     ChangeWindow,
     _verdict_identity,
 )
+from k4bench.blame.comment.supersede import Placement
 from k4bench.blame.evidence import (
     ExternalChange,
     ScopeOutcome,
@@ -186,6 +188,11 @@ class CommentPlan:
     #: digest, which already covers the rows and outcomes they are built from.
     sweeps: tuple[ScopeSweep, ...] = ()
     geometry: dict[str, str] = field(default_factory=dict)
+    #: Where tonight's report places every confirmed step, shared by every plan
+    #: of the night (:func:`~k4bench.blame.comment.supersede.placements`): what
+    #: tells a lineage identity measured outside this window, before this pull
+    #: request shipped, from one that simply stopped being confirmed.
+    placements: Mapping[tuple, Placement] = field(default_factory=dict)
     selected: bool = False
 
     @property

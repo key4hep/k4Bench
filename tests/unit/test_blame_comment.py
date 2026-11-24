@@ -4999,3 +4999,46 @@ def test_a_sim_comment_keeps_its_wording_and_its_links():
     body = draft.render().body
     assert "k4Bench's nightly benchmarks confirmed" in body
     assert _DASH in body
+
+
+# ── A lineage claim tonight's report moved before the window ──────────────────
+
+def _moved_night(new_onset):
+    """Night two of a comment on 2026-07-03 → 2026-07-04: ``b_metric`` still
+    steps there, and ``a_metric`` — attributed at 91% on night one — is placed
+    at *new_onset* by a search that does not list this pull request."""
+    a = _verdict(metric="a_metric", base="2026-07-03", onset="2026-07-04")
+    b = _verdict(metric="b_metric", base="2026-07-03", onset="2026-07-04")
+    first = _drafts(_report(a, b), _blame([a, b], [_candidate()]))[0].render()
+    moved = _verdict(metric="a_metric", base="2026-07-01", onset=new_onset)
+    rival = _candidate(number=77, repo="key4hep/DD4hep", title="Field map")
+    blame = BlameReport("x", "2026-07-06", entries=(
+        _blame([b], [_candidate()]).entries[0],
+        _entry_without(moved, [rival]),
+    ))
+    return _drafts(_report(moved, b, night="2026-07-06"), blame)[0].render([first.body])
+
+
+def test_a_lineage_claim_moved_before_the_window_loses_its_score():
+    comment = _moved_night("2026-07-02")
+    body = comment.body
+    alert = _row(body, "nightly benchmarks confirmed")
+    assert "confirmed a regression in the reports covering this PR's change " \
+           "window that the AI ranker attributes to this PR at 91%." in alert
+    assert "_1 regression this comment attributed to this PR is now placed at " \
+           "or before release `2026-07-03`" in body
+    identity = ("ALLEGRO_o1_v03", _PLAT, "single_e-_10GeV", "baseline", "a_metric", "")
+    assert state_mod._decoded_cumulative(body)[identity].likelihood is None
+    assert not any("a_metric" in row for row in _table_rows(body))
+    # The withdrawal is a change of facts, so the standing comment is edited.
+    unmoved = _moved_night("2026-07-08")
+    assert comment.facts_digest != unmoved.facts_digest
+
+
+def test_a_later_step_on_a_claimed_metric_leaves_the_claim_standing():
+    # Placed after the window, the step is a new one; the claim about the step
+    # in this window is not contradicted, only no longer confirmed.
+    body = _moved_night("2026-07-08").body
+    assert "is now placed at or before" not in body
+    identity = ("ALLEGRO_o1_v03", _PLAT, "single_e-_10GeV", "baseline", "a_metric", "")
+    assert state_mod._decoded_cumulative(body)[identity].likelihood == 91.0

@@ -36,6 +36,11 @@ lives in one readable place:
   one exception is :class:`~k4bench.blame.github.RateLimitError`, which stops
   the run — past that point nothing will succeed anyway.
 
+:func:`supersede` is the one write to a comment the night did not select: it
+withdraws claims tonight's report has moved out of the pull request's reach
+(:mod:`k4bench.blame.comment.supersede`), under the same ownership and
+fail-closed rules, and only ever edits.
+
 ``dry_run`` short-circuits every read and write and logs the standalone body
 instead. Existing observation history is necessarily absent because the thread
 is deliberately untouched; everything newly rendered remains reviewable before
@@ -45,15 +50,17 @@ a repository is added to the allowlist.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from k4bench.blame.comment import (
     CommentDraft,
     facts_digest_of,
-    window_contains,
     parse_marker,
+    window_contains,
     window_from_marker,
 )
+from k4bench.blame.comment.supersede import Placement, superseded_body
 from k4bench.blame.github import (
     GitHubClient,
     RateLimitError,
@@ -88,15 +95,20 @@ class PublishResult:
     #: Targets a dry run *would* have written to — kept apart from the three
     #: real outcomes so a dry run can never be read as having posted anything.
     planned: list[str] = field(default_factory=list)
+    #: Comments :func:`supersede` edited to withdraw moved claims.
+    superseded: list[str] = field(default_factory=list)
 
     @property
     def summary(self) -> str:
         if self.planned:
             return f"{len(self.planned)} comment(s) planned (dry run, nothing written)"
-        return (
+        text = (
             f"{len(self.created)} created, {len(self.updated)} updated, "
             f"{len(self.unchanged)} unchanged, {len(self.failed)} failed"
         )
+        if self.superseded:
+            text += f", {len(self.superseded)} superseded"
+        return text
 
 
 def publish(
@@ -109,36 +121,10 @@ def publish(
     continue.
     """
     result = PublishResult()
-    # Resolved once for the whole run: it identifies the bot across every repo,
-    # so the per-comment upsert edits only a comment this token itself wrote.
-    # Failing to read it is fail-closed — an off-repo write must not guess at
-    # ownership — but it is a soft failure, recorded, never raised.
     login = None
     if not dry_run:
-        try:
-            login = authenticated_login(client)
-        except RateLimitError:
-            # The one failure that aborts the run, here as everywhere else:
-            # nothing after this point can succeed.
-            raise
-        except Exception as exc:  # noqa: BLE001 — identity failures must fail closed
-            # A timeout, a connection reset, a proxy's HTML error page: the
-            # function returns ``None`` for a *read* it understood, and raises
-            # for one it never completed. Both mean the same thing here — the
-            # bot cannot prove what it owns — and neither may escape a publisher
-            # whose contract is that only a rate limit stops the run.
-            _log.error(
-                "publish: could not establish the bot's own login (GET /user "
-                "raised %s: %s) — refusing to edit comments it cannot prove it "
-                "owns; posting nothing", type(exc).__name__, exc,
-            )
-            result.failed.extend(c.target for c in comments)
-            return result
+        login = _own_login(client)
         if login is None:
-            _log.error(
-                "publish: could not establish the bot's own login (GET /user) — "
-                "refusing to edit comments it cannot prove it owns; posting nothing"
-            )
             result.failed.extend(c.target for c in comments)
             return result
     for comment in comments:
@@ -158,6 +144,109 @@ def publish(
             _log.warning("publish: %s failed — %s", comment.target, exc)
             result.failed.append(comment.target)
     _log.info("publish: %s", result.summary)
+    return result
+
+
+def _own_login(client: GitHubClient) -> str | None:
+    """The token's own login, or ``None`` when it cannot be established.
+
+    Resolved once per run: it identifies the bot across every repo, so a write
+    edits only a comment this token itself wrote. Failing to read it is
+    fail-closed — an off-repo write must not guess at ownership — but it is a
+    soft failure, logged, never raised; only a rate limit propagates."""
+    try:
+        login = authenticated_login(client)
+    except RateLimitError:
+        # The one failure that aborts the run, here as everywhere else:
+        # nothing after this point can succeed.
+        raise
+    except Exception as exc:  # noqa: BLE001 — identity failures must fail closed
+        # A timeout, a connection reset, a proxy's HTML error page: the
+        # function returns ``None`` for a *read* it understood, and raises for
+        # one it never completed. Both mean the same thing here — the bot
+        # cannot prove what it owns — and neither may escape a publisher whose
+        # contract is that only a rate limit stops the run.
+        _log.error(
+            "publish: could not establish the bot's own login (GET /user "
+            "raised %s: %s) — refusing to edit comments it cannot prove it "
+            "owns; posting nothing", type(exc).__name__, exc,
+        )
+        return None
+    if login is None:
+        _log.error(
+            "publish: could not establish the bot's own login (GET /user) — "
+            "refusing to edit comments it cannot prove it owns; posting nothing"
+        )
+    return login
+
+
+def supersede(
+    client: GitHubClient,
+    targets: list[tuple[str, int]],
+    *,
+    suite: str,
+    tonight: Mapping[tuple, Placement],
+    min_score: float,
+    report_night: str,
+    dry_run: bool = False,
+) -> PublishResult:
+    """Withdraw the claims tonight's report moved out of each target pull
+    request's reach, in the bot's own *suite* comments there.
+
+    Each comment is judged on its own hidden state
+    (:func:`~k4bench.blame.comment.supersede.superseded_body`); one that makes
+    no superseded claim, or already says so, is not touched. Only edits — a
+    pull request with no such comment gets nothing. Ownership is proven exactly
+    as :func:`publish` proves it, and a dry run reads and writes nothing."""
+    result = PublishResult()
+    if dry_run:
+        for repo, number in targets:
+            _log.info(
+                "supersede: [dry run] would check %s#%s for claims moved out "
+                "of its window", repo, number,
+            )
+            result.planned.append(f"{repo}#{number}")
+        return result
+    login = _own_login(client)
+    if login is None:
+        result.failed.extend(f"{repo}#{number}" for repo, number in targets)
+        return result
+    for repo, number in targets:
+        target = f"{repo}#{number}"
+        try:
+            existing = list_issue_comments(client, repo, number)
+            if existing is None:
+                _log.warning("supersede: could not read %s's comments — skipping", target)
+                result.failed.append(target)
+                continue
+            for comment in existing:
+                if comment.author != login:
+                    continue
+                body = superseded_body(
+                    comment.body, pr=(repo, number), suite=suite, tonight=tonight,
+                    min_score=min_score, report_night=report_night,
+                )
+                if body is None:
+                    continue
+                if len(body.encode()) > _MAX_COMMENT_BYTES:
+                    _log.warning(
+                        "supersede: %s comment %s would be %d bytes — not written",
+                        target, comment.id, len(body.encode()),
+                    )
+                    result.failed.append(target)
+                    continue
+                url = update_issue_comment(client, repo, comment.id, body)
+                if url is None:
+                    result.failed.append(target)
+                    continue
+                _log.info("supersede: withdrew moved claims on %s — %s", target, url)
+                result.superseded.append(target)
+        except RateLimitError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — one PR must not stop the rest
+            _log.warning("supersede: %s failed — %s", target, exc)
+            result.failed.append(target)
+    _log.info("supersede: %s", result.summary)
     return result
 
 

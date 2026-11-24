@@ -20,8 +20,8 @@ import zlib
 from base64 import b64decode, urlsafe_b64encode
 from collections.abc import Iterator, Sequence
 from dataclasses import asdict, dataclass, field
-from typing import NamedTuple
 from datetime import date
+from typing import NamedTuple
 from urllib.parse import urlsplit
 
 from k4bench.blame.prompt import movement

@@ -17,13 +17,22 @@ from k4bench.blame.comment import (
     CommentPolicy,
     PRComment,
     build_comments,
+    facts_digest_of,
     marker_for,
     select,
 )
 from k4bench.blame.comment import digest as digest_mod
+from k4bench.blame.comment import state as state_mod
+from k4bench.blame.comment.supersede import (
+    Placement,
+    moved_before,
+    placements,
+    supersede_targets,
+    superseded_body,
+)
 from k4bench.blame.github import GitHubClient, IssueComment, RateLimitError
 from k4bench.blame.models import BlameEntry, BlameReport, CandidatePR, RepoBlame
-from k4bench.blame.publish import publish
+from k4bench.blame.publish import publish, supersede
 from k4bench.regression.models import (
     Direction,
     MetricVerdict,
@@ -854,10 +863,9 @@ def _verdict(*, metric, onset, pct, severity=Severity.CONFIRMED, base="2026-07-0
     )
 
 
-def _rendered(verdicts, scores, *, night="2026-07-05"):
-    """One really rendered comment for these verdicts — the whole select and
-    build path, so the publisher is exercised against the body and digest the
-    renderer actually produces rather than against a stand-in."""
+def _night(verdicts, scores, *, night="2026-07-05", number=7):
+    """One night's report and sidecar for these verdicts, each attributed to
+    ``key4hep/k4geo#<number>`` at ``scores[metric]``."""
     group = RunGroupReport(
         detector="ALLEGRO_o1_v03", platform=_PLAT, sample="single_e-_10GeV",
         k4h_release="key4hep-2026-07-04", run_date=night, run_id=night,
@@ -878,9 +886,9 @@ def _rendered(verdicts, scores, *, night="2026-07-05"):
                     status="CHANGED",
                     candidates=(
                         CandidatePR(
-                            repo="key4hep/k4geo", number=7,
+                            repo="key4hep/k4geo", number=number,
                             title="Add a per-step material lookup", author="alice",
-                            url="https://github.com/key4hep/k4geo/pull/7",
+                            url=f"https://github.com/key4hep/k4geo/pull/{number}",
                             merged_at="2026-07-04T09:00:00Z",
                             files=("src/a.cpp",), additions=40, deletions=2,
                             score=scores[v.metric], description="A lookup.",
@@ -897,6 +905,14 @@ def _rendered(verdicts, scores, *, night="2026-07-05"):
     blame = BlameReport(
         generated_at="x", report_night=night, entries=entries,
     )
+    return report, blame
+
+
+def _rendered(verdicts, scores, *, night="2026-07-05"):
+    """One really rendered comment for these verdicts — the whole select and
+    build path, so the publisher is exercised against the body and digest the
+    renderer actually produces rather than against a stand-in."""
+    report, blame = _night(verdicts, scores, night=night)
     policy = CommentPolicy.from_config({"repos": {"sim": ["key4hep/k4geo"]}}, "sim")
     return build_comments(
         select(report, blame, policy), dashboard_url=_DASH,
@@ -1098,3 +1114,197 @@ def test_a_retained_rows_date_is_the_night_it_was_last_published():
 
     assert snapshot["last_reported"] == "2026-07-05"  # last *published*
     assert snapshot["last_reported"] != "2026-07-06"  # not last confirmed
+
+
+# ── Superseded claims: a step moved before the window it was claimed in ──────
+
+_PR = ("key4hep/k4geo", 7)
+_ROW = ("ALLEGRO_o1_v03", _PLAT, "single_e-_10GeV", "baseline", "wall_time_s", "")
+_WINDOW = ("2026-07-01", "2026-07-04")
+
+
+def _posted() -> str:
+    """The comment on #7 attributing ``wall_time_s`` at 91% in the window
+    2026-07-01 → 2026-07-04."""
+    row = _verdict(metric="wall_time_s", onset="2026-07-04", pct=0.2)
+    return _rendered([row], {"wall_time_s": 91.0}).render().body
+
+
+def _moved(onset="2026-06-30", candidates=frozenset({("aidasoft/dd4hep", 1715)})):
+    """Tonight places ``wall_time_s``'s step at *onset*, found among *candidates*."""
+    return {_ROW: Placement(onset=onset, candidates=candidates)}
+
+
+def _withdraw(body, tonight, *, suite="sim"):
+    return superseded_body(
+        body, pr=_PR, suite=suite, tonight=tonight, min_score=80,
+        report_night="2026-07-06",
+    )
+
+
+def test_a_claim_is_superseded_only_by_an_earlier_onset_and_a_search_without_the_pr():
+    complete = frozenset({("aidasoft/dd4hep", 1715)})
+    assert moved_before(Placement("2026-07-01", complete), _WINDOW, _PR)  # at the base
+    assert moved_before(Placement("2026-06-30", frozenset()), _WINDOW, _PR)
+    # Inside the window: the claim stands. After it: a new step, not a move.
+    assert not moved_before(Placement("2026-07-02", complete), _WINDOW, _PR)
+    assert not moved_before(Placement("2026-07-05", complete), _WINDOW, _PR)
+    # Incomplete discovery says nothing; listing the PR keeps it a candidate.
+    assert not moved_before(Placement("2026-06-30", None), _WINDOW, _PR)
+    assert not moved_before(
+        Placement("2026-06-30", frozenset({("key4hep/k4geo", 7)})), _WINDOW, _PR,
+    )
+    # An open window has no base to be before; an unplaced onset, no date.
+    assert not moved_before(Placement("2026-06-30", complete), (None, "2026-07-04"), _PR)
+    assert not moved_before(Placement(None, complete), _WINDOW, _PR)
+    assert not moved_before(None, _WINDOW, _PR)
+
+
+def test_a_superseded_body_withdraws_the_claim_and_keeps_the_record():
+    body = _posted()
+    new = _withdraw(body, _moved())
+
+    assert new.splitlines()[0] == body.splitlines()[0]
+    assert "> **Superseded on 2026-07-06.** 1 regression this comment attributed " \
+           "to this PR is now placed at or before release `2026-07-01`" in new
+    assert new.index("> [!NOTE]") < new.index("### ")
+    # The hidden state no longer carries the score, so no later version can
+    # resurface it; the posted text stays as the record it is.
+    assert state_mod._decoded_cumulative(new)[_ROW].likelihood is None
+    assert all(
+        row.state == "not_candidate" and row.likelihood is None
+        for row in state_mod._decoded_retained(new)
+    )
+    assert "91%" in new
+    assert facts_digest_of(new) == facts_digest_of(body)
+    # The same condition edits once.
+    assert _withdraw(new, _moved()) is None
+
+
+def test_a_body_whose_claims_still_stand_is_left_alone():
+    body = _posted()
+    assert _withdraw(body, _moved(onset="2026-07-03")) is None      # inside
+    assert _withdraw(body, _moved(onset="2026-07-08")) is None      # a later step
+    assert _withdraw(body, _moved(candidates=None)) is None         # no conclusion
+    assert _withdraw(body, _moved(candidates=frozenset({("key4hep/k4geo", 7)}))) is None
+    assert _withdraw(body, {}) is None                              # resolved
+    assert _withdraw(body, _moved(), suite="reco") is None          # another suite's
+
+
+def test_supersede_edits_only_the_bots_own_comment_and_only_once():
+    body = _posted()
+    quoted = IssueComment(1, body, author="someone-else")
+    gh = _FakeGitHub({7: [quoted, _mine(2, body)]})
+    result = supersede(
+        gh, [_PR], suite="sim", tonight=_moved(), min_score=80,
+        report_night="2026-07-06",
+    )
+    assert result.superseded == ["key4hep/k4geo#7"]
+    assert [comment_id for comment_id, _ in gh.updated] == [2]
+
+    settled = _FakeGitHub({7: [_mine(2, gh.updated[0][1])]})
+    again = supersede(
+        settled, [_PR], suite="sim", tonight=_moved(), min_score=80,
+        report_night="2026-07-07",
+    )
+    assert not settled.updated and not again.superseded and not again.failed
+
+
+def test_supersede_fails_closed_without_a_login_and_a_dry_run_reads_nothing():
+    gh = _FakeGitHub({7: [_mine(2, _posted())]}, login=None)
+    result = supersede(
+        gh, [_PR], suite="sim", tonight=_moved(), min_score=80,
+        report_night="2026-07-06",
+    )
+    assert result.failed == ["key4hep/k4geo#7"] and not gh.reads and not gh.updated
+
+    dry = _FakeGitHub({7: [_mine(2, _posted())]})
+    planned = supersede(
+        dry, [_PR], suite="sim", tonight=_moved(), min_score=80,
+        report_night="2026-07-06", dry_run=True,
+    )
+    assert planned.planned == ["key4hep/k4geo#7"]
+    assert not dry.reads and not dry.logins and not dry.updated
+
+
+def test_the_threads_to_check_come_from_the_previous_reports_attributions():
+    previous = _night(
+        [_verdict(metric="wall_time_s", onset="2026-07-04", pct=0.2)],
+        {"wall_time_s": 91.0},
+    )
+    policy = CommentPolicy.from_config({"repos": {"sim": ["key4hep/k4geo"]}}, "sim")
+    assert supersede_targets(*previous, _moved(), policy.allows) == [_PR]
+    assert supersede_targets(*previous, _moved(onset="2026-07-03"), policy.allows) == []
+    # Below the threshold last night, it could not have been commented on.
+    weak = _night(
+        [_verdict(metric="wall_time_s", onset="2026-07-04", pct=0.2)],
+        {"wall_time_s": 40.0},
+    )
+    assert supersede_targets(*weak, _moved(), policy.allows) == []
+
+
+def test_tonights_placements_carry_the_candidate_search():
+    report, blame = _night(
+        [_verdict(metric="wall_time_s", onset="2026-06-30", pct=0.2, base="2026-06-29")],
+        {"wall_time_s": 91.0}, number=8,
+    )
+    placed = placements(report, blame)
+    assert placed[_ROW] == Placement("2026-06-30", frozenset({("key4hep/k4geo", 8)}))
+    assert moved_before(placed[_ROW], _WINDOW, _PR)
+
+
+def _load_comment_cli():
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    scripts = Path(__file__).resolve().parents[2] / ".github" / "scripts"
+    spec = importlib.util.spec_from_file_location(
+        "blame_comment_cli", scripts / "blame_comment.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_cli_checks_the_threads_the_previous_report_attributed(monkeypatch, capsys):
+    import argparse
+
+    import k4bench.remote as remote
+    from k4bench.regression.render import to_json
+
+    cli = _load_comment_cli()
+    previous = _night(
+        [_verdict(metric="wall_time_s", onset="2026-07-04", pct=0.2)],
+        {"wall_time_s": 91.0}, night="2026-07-05",
+    )
+    tonight = _night(
+        [_verdict(metric="wall_time_s", onset="2026-06-30", pct=0.2, base="2026-06-29")],
+        {"wall_time_s": 91.0}, night="2026-07-06", number=8,
+    )
+    fetched = []
+    monkeypatch.setattr(
+        remote, "list_report_dates",
+        lambda url, suite: ["2026-07-06", "2026-07-05", "2026-07-04"],
+    )
+
+    def report_for(url, suite, date):
+        fetched.append(("report", date))
+        return to_json(previous[0])
+
+    def blame_for(url, suite, date):
+        fetched.append(("blame", date))
+        return previous[1].to_json()
+
+    monkeypatch.setattr(remote, "fetch_report", report_for)
+    monkeypatch.setattr(remote, "fetch_blame", blame_for)
+    policy = CommentPolicy.from_config({"repos": {"sim": ["key4hep/k4geo"]}}, "sim")
+    args = argparse.Namespace(data_url="https://data.example", token=None)
+
+    status = cli.supersede_moved_claims(args, *tonight, policy, dry_run=True)
+
+    assert status == 0
+    # The report just before tonight's, never tonight's own.
+    assert fetched == [("report", "2026-07-05"), ("blame", "2026-07-05")]
+    assert "superseded claims for 2026-07-06: 1 comment(s) planned" in capsys.readouterr().out

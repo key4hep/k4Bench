@@ -655,6 +655,21 @@ is a separate finding and is never adopted, however its window compares:
   It records what the benchmarks saw at the time, which stays true even once the
   metric recovers; and silently rewriting a comment people have already replied
   to is worse than leaving a dated one standing. Follow-ups belong in the thread.
+- **The step is re-dated before the window** — the one case where a comment's
+  own claim is contradicted rather than merely outlived. A late confirmation can
+  move a step's window back onto an earlier release, so the step is now
+  measured *before* the window the comment was written for, and the pull
+  request cannot have shipped in it. A claim is withdrawn only when tonight's
+  report places the step's onset at or before the comment window's base release
+  **and** tonight's complete candidate search for it does not list the pull
+  request; a step placed *after* the window is a new step, and the claim stands
+  as the record of what was measured then. A comment rendered tonight drops
+  those regressions' scores from its hidden state and says so under its table.
+  A comment *not* rendered tonight — the pull request is no longer selected —
+  is found from the previous report's attributions and edited once: a dated
+  note above the posted text, and the same scores cleared from its hidden state
+  so no later version resurfaces them. Everything else in the body stays as
+  posted, and the same note is never written twice.
 
 History retention is forward-only, and so is row retention. Both the observation
 history and the retained rows are carried in versioned hidden markers; a comment

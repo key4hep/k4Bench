@@ -46,10 +46,10 @@ from k4bench.blame.comment.selection import (
     _DEFAULT_MIN_SCORE,
 )
 from k4bench.blame.comment.state import (
-    CumulativeEntry,
     _FACTS_MARKER_PREFIX,
     _MAX_OBSERVATIONS,
     CommentObservation,
+    CumulativeEntry,
     LineageState,
     RetainedRow,
     _cumulative_marker,
@@ -59,6 +59,7 @@ from k4bench.blame.comment.state import (
     _retained_marker,
     _retained_sort_key,
 )
+from k4bench.blame.comment.supersede import moved_before, superseded_note, withdrawn
 from k4bench.blame.comment.table import (
     _link_definitions,
     _past_links,
@@ -204,8 +205,20 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
     # including a current ``not_candidate`` or unscored standing, which must
     # not be papered over by an old score.
     current = {_row_identity(row) for row in plan.rows}
+    # A lineage identity tonight's report places before this window, outside
+    # this pull request's candidates, loses its old score the same way
+    # (:mod:`.supersede`).
+    moved = _moved_identities(plan, lineage, current)
+    moved_attributed = sorted(
+        identity for identity in moved
+        if _was_attributed(identity, lineage, draft.min_score)
+    )
     historical = sorted(
-        (row for row in lineage.retained if _retained_identity(row) not in current),
+        (
+            replace(row, likelihood=None, source="", state="not_candidate")
+            if _retained_identity(row) in moved else row
+            for row in lineage.retained if _retained_identity(row) not in current
+        ),
         key=_retained_sort_key,
     )
     noun = _comment_noun(plan, historical, observations)
@@ -214,7 +227,9 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
     # Tonight's rows overlay the lineage's: a reconfirmed identity keeps only
     # its newest published attribution. Directions an older marker did not
     # record are filled from the retained snapshots, which carry them.
-    cumulative = _cumulative_with_directions(lineage.cumulative, historical)
+    cumulative = withdrawn(
+        _cumulative_with_directions(lineage.cumulative, historical), moved,
+    )
     tonight = {
         _row_identity(row): CumulativeEntry(
             *_score_source(row, attribution), plan.report_night,
@@ -225,6 +240,8 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
     cumulative.update(tonight)
     cumulative_marker = _cumulative_marker(cumulative)
     payload = dict(draft.facts_payload)
+    if moved_attributed:
+        payload["superseded"] = [list(identity) for identity in moved_attributed]
     if cumulative_marker:
         identities = sorted(cumulative)
         scopes = len({identity[:3] for identity in identities})
@@ -273,6 +290,10 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
         )),
         reproduce=draft.reproduce, observations=observations,
         min_score=draft.min_score, noun=noun,
+        superseded=(
+            superseded_note(len(moved_attributed), plan.window, noun)
+            if moved_attributed else None
+        ),
     )
     digest = _digest_from(payload, [_retained_fact(row) for row in shown_past])
 
@@ -343,6 +364,7 @@ def _details_region(
     observations: Sequence[CommentObservation] = (),
     min_score: float = _DEFAULT_MIN_SCORE,
     noun: str = REGRESSION,
+    superseded: str | None = None,
 ) -> tuple[str, list[RetainedRow]]:
     """The middle of a comment — assessment, regression table and its
     reference links — rendered from structured inputs alone. Returns the region
@@ -372,6 +394,7 @@ def _details_region(
                 dashboard_url=dashboard_url, reproduce=reproduce,
                 observations=observations, min_score=min_score, noun=noun,
             ),
+            f"\n_{superseded}_" if superseded else None,
             _link_definitions(definitions),
         ) if part is not None
     )
@@ -382,6 +405,34 @@ def _direction_of(verdict_or_row) -> str:
     """A verdict's (or retained row's) direction as its plain string value."""
     direction = getattr(verdict_or_row, "direction")
     return str(getattr(direction, "value", direction))
+
+
+def _moved_identities(
+    plan: CommentPlan, lineage: LineageState, current: set[tuple],
+) -> set[tuple]:
+    """The lineage identities not among tonight's rows that tonight's report
+    places before this window, outside this pull request's candidates
+    (:func:`~.supersede.moved_before`)."""
+    pr = (plan.repo.lower(), plan.number)
+    known = set(lineage.cumulative) | {
+        _retained_identity(row) for row in lineage.retained
+    }
+    return {
+        identity for identity in known - current
+        if moved_before(plan.placements.get(identity), plan.window, pr)
+    }
+
+
+def _was_attributed(identity: tuple, lineage: LineageState, min_score: float) -> bool:
+    """Whether the lineage last published *identity* at or above *min_score*."""
+    entry = lineage.cumulative.get(identity)
+    if entry is not None and entry.likelihood is not None:
+        return entry.likelihood >= min_score
+    return any(
+        _retained_identity(row) == identity and row.state != "not_candidate"
+        and row.likelihood is not None and row.likelihood >= min_score
+        for row in lineage.retained
+    )
 
 
 def _comment_noun(
