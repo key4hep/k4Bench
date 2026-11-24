@@ -53,6 +53,24 @@ what the diff changes that the scope loads, and what supports and contradicts
 the pull request — gives each scope one likelihood, overrides it for a row only
 where that row's evidence differs, and writes the narrative the comment quotes.
 
+When **several** pull requests are selected in the same window, they are
+reviewed **together, in one call**, rather than once each. Independent reviews
+of one window can contradict each other — on 2026-11-21 one review explained
+the ILD slowdowns with `AIDASoft/DD4hep#1715` while that pull request's own
+review, the same night, cleared it — and one reading of the evidence cannot
+both blame and clear the same change. The joint review shows the window once,
+every pull request under review with its own first-pass prior, geometry reach,
+description and diff, and the rest of the field as competitors. It scores
+every scope for every pull request under review, each on its own: the scores
+are not shares and need not add up, because several changes can each cause
+part of one regression. Where more than one is likely for a scope, it says
+whether they are **alternative** explanations of the same movement or
+**independent** contributions. When a comment's attributed regressions have an
+alternative explanation that also clears `min_score`, the comment says so under
+its assessment, naming the other pull request inertly. A pull request the joint
+reply does not answer usably, a window with one selected pull request, and any
+failure of the joint call all fall back to the review of one pull request.
+
 "Everything" is meant literally, and both halves of it are load-bearing:
 
 - **Every** confirmed regression whose onset falls inside the window is in the

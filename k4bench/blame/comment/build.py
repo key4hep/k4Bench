@@ -138,15 +138,23 @@ def build_comments(
     withdrawal on the review's scores alone would let one low answer about one
     row acquit a pull request the review never disputed on the others.
 
+    Plans that share a change window are reviewed **together** when the
+    attributor can (:mod:`k4bench.blame.joint_review`): one reading of the
+    window for every pull request selected in it, so the same movement is never
+    blamed on a change in one review and cleared for it in another. A plan the
+    joint review did not answer is reviewed on its own, exactly as a plan alone
+    in its window is.
+
     Each draft is rendered when it is written (:meth:`CommentDraft.render`),
     once the publisher has read the comments already posted in its lineage.
     """
+    reviews = _reviews(
+        plans, attributor=attributor, patch_for=patch_for, body_for=body_for,
+        files_for=files_for,
+    )
     comments = []
     for plan in plans:
-        attribution, request = _review(
-            plan, attributor=attributor, patch_for=patch_for, body_for=body_for,
-            files_for=files_for,
-        )
+        attribution, request = reviews[id(plan)]
         if attributor is not None and attribution is None:
             _log.warning(
                 "build_comments: %s — the cross-configuration review produced "
@@ -343,6 +351,73 @@ def _reproducer_for(
             "missing or incompatible", plan.target, verdict.label,
         )
     return facts
+
+
+def _reviews(
+    plans: list[CommentPlan],
+    *,
+    attributor: Attributor | None,
+    patch_for: PatchFor | None,
+    body_for: BodyFor | None,
+    files_for: FilesFor | None = None,
+) -> dict[int, tuple[Attribution | None, AttributionRequest | None]]:
+    """Every plan's review and request, keyed by ``id(plan)``.
+
+    Plans sharing a suite and window whose requests can be joined
+    (:func:`~k4bench.blame.joint_review.joinable`) go to the attributor's
+    ``attribute_jointly`` in one call; whatever it does not answer, and every
+    other plan, is reviewed on its own (:func:`_review`)."""
+    out: dict[int, tuple[Attribution | None, AttributionRequest | None]] = {}
+    joint = getattr(attributor, "attribute_jointly", None)
+    if attributor is None or joint is None:
+        return {
+            id(plan): _review(
+                plan, attributor=attributor, patch_for=patch_for,
+                body_for=body_for, files_for=files_for,
+            )
+            for plan in plans
+        }
+    from k4bench.blame.joint_review import joinable
+
+    fetch = patch_for or (lambda _repo, _number: "")
+    body_fetch = body_for or (lambda _repo, _number: "")
+    groups: dict[tuple, list[tuple[CommentPlan, AttributionRequest]]] = {}
+    for plan in plans:
+        try:
+            request = _attribution_request(plan, fetch, body_fetch, files_for)
+        except Exception as exc:  # noqa: BLE001 — a diff fetch must not lose the comment
+            _log.warning(
+                "build_comments: %s — could not assemble the review request (%s); "
+                "no review, so no comment tonight", plan.target, exc,
+            )
+            out[id(plan)] = (None, None)
+            continue
+        key = (plan.suite, plan.base_release, plan.onset_release)
+        groups.setdefault(key, []).append((plan, request))
+    for group in groups.values():
+        requests = [request for _plan, request in group]
+        answered: dict[str, Attribution] = {}
+        if joinable(requests):
+            try:
+                answered = joint(requests) or {}
+            except Exception as exc:  # noqa: BLE001 — an adapter that raises is a decline
+                _log.warning(
+                    "build_comments: joint review of %s failed (%s); reviewing "
+                    "each on its own", ", ".join(r.slug for r in requests), exc,
+                )
+        for plan, request in group:
+            if request.slug in answered:
+                out[id(plan)] = (answered[request.slug], request)
+                continue
+            try:
+                out[id(plan)] = (attributor.attribute(request), request)
+            except Exception as exc:  # noqa: BLE001 — an adapter that raises is a decline
+                _log.warning(
+                    "build_comments: %s — the cross-configuration review failed "
+                    "(%s); no review, so no comment tonight", plan.target, exc,
+                )
+                out[id(plan)] = (None, request)
+    return out
 
 
 def _review(

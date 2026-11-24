@@ -18,6 +18,7 @@ from typing import Any
 
 from k4bench.blame.attribute import Attribution
 from k4bench.blame.comment.competitors import (
+    _alternatives_note,
     _crowded_note,
     _others_section,
 )
@@ -396,6 +397,7 @@ def _details_region(
                 plan, by_likelihood, attribution, rendered=shown_current, noun=noun,
             ),
             _crowded_note(plan),
+            _alternatives_note(plan, attribution, min_score),
             _table(
                 plan, by_likelihood, attribution,
                 selection=selection, links=links, past_links=past_links,

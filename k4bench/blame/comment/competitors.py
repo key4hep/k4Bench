@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import math
 
+from k4bench.blame.attribute import Attribution
 from k4bench.blame.comment.markdown import (
     _cell,
     _count,
@@ -26,6 +27,7 @@ from k4bench.blame.comment.state import (
 from k4bench.blame.comment.table import (
     _SHOW_PLATFORM_COLUMN,
     _UNSCORED,
+    _likelihood,
 )
 from k4bench.blame.models import (
     CandidatePR,
@@ -290,3 +292,45 @@ def _crowded_note(plan: CommentPlan) -> str | None:
 def _candidate_score_cell(candidate: CandidatePR) -> str:
     """A competing candidate's likelihood, or that nobody gave it one."""
     return _pct(candidate.score) if candidate.ranked else _UNSCORED
+
+
+def _alternatives_note(
+    plan: CommentPlan, attribution: Attribution | None, min_score: float,
+) -> str | None:
+    """Said when a joint review judged another selected pull request an
+    *alternative* explanation of rows attributed to this one — both at or
+    above *min_score*, for the same movement, of which only one can be the
+    cause (:mod:`k4bench.blame.joint_review`). Several causes of one regression
+    are possible and are not flagged; two competing explanations of one
+    movement are, because the claim above stands on one of them being wrong.
+
+    The other pull request is named inert, like every competitor
+    (:func:`_pr_ref`)."""
+    if attribution is None or not attribution.alternatives:
+        return None
+    rivals: dict[str, int] = {}
+    for row in plan.rows:
+        likelihood = _likelihood(row, attribution)
+        if likelihood is None or likelihood < min_score:
+            continue
+        for slug, score in attribution.alternatives.get(row.fact_id, ()):
+            if score >= min_score:
+                rivals[slug] = rivals.get(slug, 0) + 1
+    if not rivals:
+        return None
+    named = " and ".join(
+        f"{_inert(slug)} ({_count(count, 'regression')})"
+        for slug, count in sorted(rivals.items())
+    )
+    return (
+        f"\n_The AI reviewer judged {named} an alternative explanation of the "
+        f"same movement, also at {_pct(min_score)} or above — for those "
+        "regressions only one of them can be the cause._"
+    )
+
+
+def _inert(slug: str) -> str:
+    """``owner/repo#123`` broken the way :func:`_pr_ref` breaks it."""
+    repo, _, number = slug.rpartition("#")
+    zwsp = "​"  # U+200B zero-width space
+    return _cell(f"{repo}#{zwsp}{number}")
