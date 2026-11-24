@@ -188,6 +188,7 @@ def supersede(
     tonight: Mapping[tuple, Placement],
     min_score: float,
     report_night: str,
+    max_edits: int,
     dry_run: bool = False,
 ) -> PublishResult:
     """Withdraw the claims tonight's report moved out of each target pull
@@ -195,9 +196,14 @@ def supersede(
 
     Each comment is judged on its own hidden state
     (:func:`~k4bench.blame.comment.supersede.superseded_body`); one that makes
-    no superseded claim, or already says so, is not touched. Only edits — a
-    pull request with no such comment gets nothing. Ownership is proven exactly
-    as :func:`publish` proves it, and a dry run reads and writes nothing."""
+    no newly superseded claim is not touched. Only edits — a pull request with
+    no such comment gets nothing. Every thread is read before anything is
+    written, and more edits than *max_edits* write none of them: a night that
+    would withdraw that much is a sign the re-dating itself is wrong. A thread
+    that cannot be read, or an edit that fails, is counted as failed; the next
+    night's pass finds the same claims again, since nothing about them changed.
+    Ownership is proven exactly as :func:`publish` proves it, and a dry run
+    reads and writes nothing."""
     result = PublishResult()
     if dry_run:
         for repo, number in targets:
@@ -211,41 +217,62 @@ def supersede(
     if login is None:
         result.failed.extend(f"{repo}#{number}" for repo, number in targets)
         return result
+
+    edits: list[tuple[str, str, int, str]] = []
     for repo, number in targets:
         target = f"{repo}#{number}"
         try:
             existing = list_issue_comments(client, repo, number)
-            if existing is None:
-                _log.warning("supersede: could not read %s's comments — skipping", target)
+        except RateLimitError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — one PR must not stop the rest
+            _log.warning("supersede: could not read %s — %s", target, exc)
+            result.failed.append(target)
+            continue
+        if existing is None:
+            _log.warning("supersede: could not read %s's comments — skipping", target)
+            result.failed.append(target)
+            continue
+        for comment in existing:
+            if comment.author != login:
+                continue
+            body = superseded_body(
+                comment.body, pr=(repo, number), suite=suite, tonight=tonight,
+                min_score=min_score, report_night=report_night,
+            )
+            if body is None:
+                continue
+            if len(body.encode()) > _MAX_COMMENT_BYTES:
+                _log.warning(
+                    "supersede: %s comment %s would be %d bytes — not written",
+                    target, comment.id, len(body.encode()),
+                )
                 result.failed.append(target)
                 continue
-            for comment in existing:
-                if comment.author != login:
-                    continue
-                body = superseded_body(
-                    comment.body, pr=(repo, number), suite=suite, tonight=tonight,
-                    min_score=min_score, report_night=report_night,
-                )
-                if body is None:
-                    continue
-                if len(body.encode()) > _MAX_COMMENT_BYTES:
-                    _log.warning(
-                        "supersede: %s comment %s would be %d bytes — not written",
-                        target, comment.id, len(body.encode()),
-                    )
-                    result.failed.append(target)
-                    continue
-                url = update_issue_comment(client, repo, comment.id, body)
-                if url is None:
-                    result.failed.append(target)
-                    continue
-                _log.info("supersede: withdrew moved claims on %s — %s", target, url)
-                result.superseded.append(target)
+            edits.append((target, repo, comment.id, body))
+
+    if len(edits) > max_edits:
+        _log.error(
+            "supersede: %d withdrawals exceed the cap of %d — writing none of "
+            "them (%s)", len(edits), max_edits,
+            ", ".join(sorted({target for target, *_ in edits})),
+        )
+        result.failed.extend(sorted({target for target, *_ in edits}))
+        return result
+    for target, repo, comment_id, body in edits:
+        try:
+            url = update_issue_comment(client, repo, comment_id, body)
         except RateLimitError:
             raise
         except Exception as exc:  # noqa: BLE001 — one PR must not stop the rest
             _log.warning("supersede: %s failed — %s", target, exc)
             result.failed.append(target)
+            continue
+        if url is None:
+            result.failed.append(target)
+            continue
+        _log.info("supersede: withdrew moved claims on %s — %s", target, url)
+        result.superseded.append(target)
     _log.info("supersede: %s", result.summary)
     return result
 

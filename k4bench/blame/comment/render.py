@@ -53,13 +53,14 @@ from k4bench.blame.comment.state import (
     LineageState,
     RetainedRow,
     _cumulative_marker,
+    _iso_date,
     _observation_key,
     _observation_marker,
     _retained_identity,
     _retained_marker,
     _retained_sort_key,
 )
-from k4bench.blame.comment.supersede import moved_before, superseded_note, withdrawn
+from k4bench.blame.comment.supersede import moved_before, withdrawal_block, withdrawn
 from k4bench.blame.comment.table import (
     _link_definitions,
     _past_links,
@@ -206,17 +207,24 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
     # not be papered over by an old score.
     current = {_row_identity(row) for row in plan.rows}
     # A lineage identity tonight's report places before this window, outside
-    # this pull request's candidates, loses its old score the same way
+    # this pull request's candidates, loses its old score the same way, and a
+    # claim withdrawn on an earlier night stays withdrawn — unless the step is
+    # back among tonight's rows, where tonight's evidence decides again
     # (:mod:`.supersede`).
     moved = _moved_identities(plan, lineage, current)
-    moved_attributed = sorted(
-        identity for identity in moved
-        if _was_attributed(identity, lineage, draft.min_score)
-    )
+    record = {
+        identity: night for identity, night in lineage.withdrawn.items()
+        if identity not in current
+    }
+    if _iso_date(plan.report_night):
+        for identity in sorted(moved):
+            if _was_attributed(identity, lineage, draft.min_score):
+                record.setdefault(identity, plan.report_night)
+    unscored = moved | set(record)
     historical = sorted(
         (
             replace(row, likelihood=None, source="", state="not_candidate")
-            if _retained_identity(row) in moved else row
+            if _retained_identity(row) in unscored else row
             for row in lineage.retained if _retained_identity(row) not in current
         ),
         key=_retained_sort_key,
@@ -228,7 +236,7 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
     # its newest published attribution. Directions an older marker did not
     # record are filled from the retained snapshots, which carry them.
     cumulative = withdrawn(
-        _cumulative_with_directions(lineage.cumulative, historical), moved,
+        _cumulative_with_directions(lineage.cumulative, historical), unscored,
     )
     tonight = {
         _row_identity(row): CumulativeEntry(
@@ -240,8 +248,8 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
     cumulative.update(tonight)
     cumulative_marker = _cumulative_marker(cumulative)
     payload = dict(draft.facts_payload)
-    if moved_attributed:
-        payload["superseded"] = [list(identity) for identity in moved_attributed]
+    if record:
+        payload["withdrawn"] = [list(identity) for identity in sorted(record)]
     if cumulative_marker:
         identities = sorted(cumulative)
         scopes = len({identity[:3] for identity in identities})
@@ -290,10 +298,6 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
         )),
         reproduce=draft.reproduce, observations=observations,
         min_score=draft.min_score, noun=noun,
-        superseded=(
-            superseded_note(len(moved_attributed), plan.window, noun)
-            if moved_attributed else None
-        ),
     )
     digest = _digest_from(payload, [_retained_fact(row) for row in shown_past])
 
@@ -315,6 +319,7 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
             draft.marker,
             f"{_FACTS_MARKER_PREFIX}{digest} -->",
             cumulative_marker or None,
+            *withdrawal_block(record, plan.window, noun=noun),
             "### 📊 Possible performance change traced to this pull request",
             "",
             alert,
@@ -364,7 +369,6 @@ def _details_region(
     observations: Sequence[CommentObservation] = (),
     min_score: float = _DEFAULT_MIN_SCORE,
     noun: str = REGRESSION,
-    superseded: str | None = None,
 ) -> tuple[str, list[RetainedRow]]:
     """The middle of a comment — assessment, regression table and its
     reference links — rendered from structured inputs alone. Returns the region
@@ -394,7 +398,6 @@ def _details_region(
                 dashboard_url=dashboard_url, reproduce=reproduce,
                 observations=observations, min_score=min_score, noun=noun,
             ),
-            f"\n_{superseded}_" if superseded else None,
             _link_definitions(definitions),
         ) if part is not None
     )

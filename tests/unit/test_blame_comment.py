@@ -5025,14 +5025,49 @@ def test_a_lineage_claim_moved_before_the_window_loses_its_score():
     alert = _row(body, "nightly benchmarks confirmed")
     assert "confirmed a regression in the reports covering this PR's change " \
            "window that the AI ranker attributes to this PR at 91%." in alert
-    assert "_1 regression this comment attributed to this PR is now placed at " \
-           "or before release `2026-07-03`" in body
+    assert "> **Withdrawn on 2026-07-06.** 1 regression this comment attributed " \
+           "to this PR is now placed at or before release `2026-07-03`" in body
+    assert "kept as it was posted" not in body
+    assert body.index("> **Withdrawn") < body.index("### ")
     identity = ("ALLEGRO_o1_v03", _PLAT, "single_e-_10GeV", "baseline", "a_metric", "")
     assert state_mod._decoded_cumulative(body)[identity].likelihood is None
+    assert state_mod._decoded_withdrawn(body) == {identity: "2026-07-06"}
     assert not any("a_metric" in row for row in _table_rows(body))
     # The withdrawal is a change of facts, so the standing comment is edited.
     unmoved = _moved_night("2026-07-08")
     assert comment.facts_digest != unmoved.facts_digest
+
+
+def test_a_withdrawn_step_back_in_the_window_is_judged_again():
+    # Re-dated once more, into this window, the step is tonight's evidence
+    # again and the record no longer withdraws it.
+    night_two = _moved_night("2026-07-02")
+    a = _verdict(metric="a_metric", base="2026-07-03", onset="2026-07-04")
+    b = _verdict(metric="b_metric", base="2026-07-03", onset="2026-07-04")
+    night_three = _drafts(
+        _report(a, b, night="2026-07-07"), _blame([a, b], [_candidate()]),
+    )[0].render([night_two.body]).body
+    assert state_mod._decoded_withdrawn(night_three) == {}
+    assert "> **Withdrawn" not in night_three
+    assert any("a_metric" in row for row in _table_rows(night_three))
+
+
+def test_a_withdrawn_claim_stays_withdrawn_when_the_comment_is_rendered_again():
+    # Night three: the moved step is no longer confirmed at all, and the
+    # comment is re-rendered for its remaining row. The record and the note
+    # carry over, the score does not come back, and the facts are unchanged —
+    # so the standing comment is not edited again.
+    night_two = _moved_night("2026-07-02")
+    b = _verdict(metric="b_metric", base="2026-07-03", onset="2026-07-04")
+    night_three = _drafts(
+        _report(b, night="2026-07-07"), _blame([b], [_candidate()]),
+    )[0].render([night_two.body])
+    identity = ("ALLEGRO_o1_v03", _PLAT, "single_e-_10GeV", "baseline", "a_metric", "")
+    assert state_mod._decoded_withdrawn(night_three.body) == {identity: "2026-07-06"}
+    assert "> **Withdrawn on 2026-07-06.** 1 regression" in night_three.body
+    assert state_mod._decoded_cumulative(night_three.body)[identity].likelihood is None
+    assert "at 91%." in _row(night_three.body, "nightly benchmarks confirmed")
+    assert night_three.facts_digest == night_two.facts_digest
 
 
 def test_a_later_step_on_a_claimed_metric_leaves_the_claim_standing():

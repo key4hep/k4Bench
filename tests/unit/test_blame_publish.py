@@ -1165,8 +1165,9 @@ def test_a_superseded_body_withdraws_the_claim_and_keeps_the_record():
     new = _withdraw(body, _moved())
 
     assert new.splitlines()[0] == body.splitlines()[0]
-    assert "> **Superseded on 2026-07-06.** 1 regression this comment attributed " \
+    assert "> **Withdrawn on 2026-07-06.** 1 regression this comment attributed " \
            "to this PR is now placed at or before release `2026-07-01`" in new
+    assert "The rest of this comment is kept as it was posted." in new
     assert new.index("> [!NOTE]") < new.index("### ")
     # The hidden state no longer carries the score, so no later version can
     # resurface it; the posted text stays as the record it is.
@@ -1175,10 +1176,62 @@ def test_a_superseded_body_withdraws_the_claim_and_keeps_the_record():
         row.state == "not_candidate" and row.likelihood is None
         for row in state_mod._decoded_retained(new)
     )
+    assert state_mod._decoded_withdrawn(new) == {_ROW: "2026-07-06"}
     assert "91%" in new
     assert facts_digest_of(new) == facts_digest_of(body)
     # The same condition edits once.
     assert _withdraw(new, _moved()) is None
+
+
+def test_a_reviewer_score_is_withdrawn_whatever_the_sidecar_said():
+    # What the comment published is what is withdrawn: here a reviewer's 85
+    # over a first-pass score the sidecar may have put anywhere.
+    body = _posted()
+    entries = state_mod._decoded_cumulative(body)
+    entries[_ROW] = entries[_ROW]._replace(likelihood=85.0, source="reviewer")
+    reviewed = "\n".join(
+        state_mod._cumulative_marker(entries)
+        if line.startswith(state_mod._CUMULATIVE_PREFIX) else line
+        for line in body.splitlines()
+    )
+    new = _withdraw(reviewed, _moved())
+    assert state_mod._decoded_cumulative(new)[_ROW].likelihood is None
+
+
+def test_withdrawals_on_different_nights_add_up_in_one_note():
+    rows = [
+        _verdict(metric="wall_time_s", onset="2026-07-04", pct=0.2),
+        _verdict(metric="mean_time_s", onset="2026-07-04", pct=0.2),
+    ]
+    body = _rendered(rows, {"wall_time_s": 91.0, "mean_time_s": 91.0}).render().body
+    mean = (*_ROW[:4], "mean_time_s", "")
+    elsewhere = frozenset({("aidasoft/dd4hep", 1715)})
+
+    night_two = _withdraw(body, _moved())
+    both_moved = {**_moved(), mean: Placement("2026-06-30", elsewhere)}
+    night_three = superseded_body(
+        night_two, pr=_PR, suite="sim", tonight=both_moved, min_score=80,
+        report_night="2026-07-07",
+    )
+
+    assert state_mod._decoded_withdrawn(night_three) == {
+        _ROW: "2026-07-06", mean: "2026-07-07",
+    }
+    assert "> **Withdrawn between 2026-07-06 and 2026-07-07.** 2 regressions " \
+           "this comment attributed to this PR are now placed" in night_three
+    assert night_three.count("> **Withdrawn") == 1
+    assert night_three.count("> [!NOTE]") == night_two.count("> [!NOTE]")
+    assert superseded_body(
+        night_three, pr=_PR, suite="sim", tonight=both_moved, min_score=80,
+        report_night="2026-07-08",
+    ) is None
+
+
+def _supersede(gh, tonight, *, night="2026-07-06", targets=None, max_edits=10):
+    return supersede(
+        gh, targets or [_PR], suite="sim", tonight=tonight, min_score=80,
+        report_night=night, max_edits=max_edits,
+    )
 
 
 def test_a_body_whose_claims_still_stand_is_left_alone():
@@ -1195,52 +1248,79 @@ def test_supersede_edits_only_the_bots_own_comment_and_only_once():
     body = _posted()
     quoted = IssueComment(1, body, author="someone-else")
     gh = _FakeGitHub({7: [quoted, _mine(2, body)]})
-    result = supersede(
-        gh, [_PR], suite="sim", tonight=_moved(), min_score=80,
-        report_night="2026-07-06",
-    )
+    result = _supersede(gh, _moved())
     assert result.superseded == ["key4hep/k4geo#7"]
     assert [comment_id for comment_id, _ in gh.updated] == [2]
 
     settled = _FakeGitHub({7: [_mine(2, gh.updated[0][1])]})
-    again = supersede(
-        settled, [_PR], suite="sim", tonight=_moved(), min_score=80,
-        report_night="2026-07-07",
-    )
+    again = _supersede(settled, _moved(), night="2026-07-07")
     assert not settled.updated and not again.superseded and not again.failed
+
+
+def test_more_withdrawals_than_the_cap_write_none():
+    body = _posted()
+    gh = _FakeGitHub({7: [_mine(2, body)], 8: [_mine(3, body.replace("#7", "#8"))]})
+    targets = [("key4hep/k4geo", 7), ("key4hep/k4geo", 8)]
+    tonight = _moved()
+    result = supersede(
+        gh, targets, suite="sim", tonight=tonight, min_score=80,
+        report_night="2026-07-06", max_edits=1,
+    )
+    assert not gh.updated and not result.superseded
+    assert result.failed
+
+
+def test_a_failed_withdrawal_is_made_on_a_later_night():
+    body = _posted()
+    failing = _FakeGitHub({7: [_mine(2, body)]}, write_fails=True)
+    assert _supersede(failing, _moved()).failed == ["key4hep/k4geo#7"]
+    # Nothing about the claim changed, so the next night finds it again.
+    retry = _FakeGitHub({7: [_mine(2, body)]})
+    assert _supersede(retry, _moved(), night="2026-07-07").superseded == ["key4hep/k4geo#7"]
+    assert state_mod._decoded_withdrawn(retry.updated[0][1]) == {_ROW: "2026-07-07"}
 
 
 def test_supersede_fails_closed_without_a_login_and_a_dry_run_reads_nothing():
     gh = _FakeGitHub({7: [_mine(2, _posted())]}, login=None)
-    result = supersede(
-        gh, [_PR], suite="sim", tonight=_moved(), min_score=80,
-        report_night="2026-07-06",
-    )
+    result = _supersede(gh, _moved())
     assert result.failed == ["key4hep/k4geo#7"] and not gh.reads and not gh.updated
 
     dry = _FakeGitHub({7: [_mine(2, _posted())]})
     planned = supersede(
         dry, [_PR], suite="sim", tonight=_moved(), min_score=80,
-        report_night="2026-07-06", dry_run=True,
+        report_night="2026-07-06", max_edits=10, dry_run=True,
     )
     assert planned.planned == ["key4hep/k4geo#7"]
     assert not dry.reads and not dry.logins and not dry.updated
 
 
-def test_the_threads_to_check_come_from_the_previous_reports_attributions():
-    previous = _night(
+def test_the_threads_to_check_come_from_recent_attributions_whatever_their_score():
+    policy = CommentPolicy.from_config({"repos": {"sim": ["key4hep/k4geo"]}}, "sim")
+    before_move = _night(
         [_verdict(metric="wall_time_s", onset="2026-07-04", pct=0.2)],
         {"wall_time_s": 91.0},
-    )
-    policy = CommentPolicy.from_config({"repos": {"sim": ["key4hep/k4geo"]}}, "sim")
-    assert supersede_targets(*previous, _moved(), policy.allows) == [_PR]
-    assert supersede_targets(*previous, _moved(onset="2026-07-03"), policy.allows) == []
-    # Below the threshold last night, it could not have been commented on.
+    )[1]
+    assert supersede_targets([before_move], _moved(), policy.targets) == [_PR]
+    assert supersede_targets([before_move], _moved(onset="2026-07-03"), policy.targets) == []
+    # A sidecar that scored the PR below the threshold still names its thread:
+    # the comment may stand on a score published on an earlier night.
     weak = _night(
         [_verdict(metric="wall_time_s", onset="2026-07-04", pct=0.2)],
         {"wall_time_s": 40.0},
-    )
-    assert supersede_targets(*weak, _moved(), policy.allows) == []
+    )[1]
+    assert supersede_targets([weak], _moved(), policy.targets) == [_PR]
+    # A newer sidecar that already shows the move does not hide the older one,
+    # which is what lets a failed night be caught up on the next.
+    moved_already = _night(
+        [_verdict(metric="wall_time_s", onset="2026-06-30", pct=0.2, base="2026-06-29")],
+        {"wall_time_s": 91.0}, number=8,
+    )[1]
+    assert supersede_targets(
+        [moved_already, before_move], _moved(), policy.targets,
+    ) == [_PR]
+    # Only repositories the bot may write to are read at all.
+    closed = CommentPolicy.from_config({"repos": {"sim": ["aidasoft/dd4hep"]}}, "sim")
+    assert supersede_targets([before_move], _moved(), closed.targets) == []
 
 
 def test_tonights_placements_carry_the_candidate_search():
@@ -1272,32 +1352,27 @@ def test_the_cli_checks_the_threads_the_previous_report_attributed(monkeypatch, 
     import argparse
 
     import k4bench.remote as remote
-    from k4bench.regression.render import to_json
 
     cli = _load_comment_cli()
-    previous = _night(
+    before_move = _night(
         [_verdict(metric="wall_time_s", onset="2026-07-04", pct=0.2)],
         {"wall_time_s": 91.0}, night="2026-07-05",
-    )
+    )[1]
     tonight = _night(
         [_verdict(metric="wall_time_s", onset="2026-06-30", pct=0.2, base="2026-06-29")],
         {"wall_time_s": 91.0}, night="2026-07-06", number=8,
     )
     fetched = []
+    earlier = [f"2026-06-{day:02d}" for day in range(30, 20, -1)]
     monkeypatch.setattr(
         remote, "list_report_dates",
-        lambda url, suite: ["2026-07-06", "2026-07-05", "2026-07-04"],
+        lambda url, suite: ["2026-07-06", "2026-07-05", *earlier],
     )
 
-    def report_for(url, suite, date):
-        fetched.append(("report", date))
-        return to_json(previous[0])
-
     def blame_for(url, suite, date):
-        fetched.append(("blame", date))
-        return previous[1].to_json()
+        fetched.append(date)
+        return before_move.to_json() if date == "2026-07-05" else None
 
-    monkeypatch.setattr(remote, "fetch_report", report_for)
     monkeypatch.setattr(remote, "fetch_blame", blame_for)
     policy = CommentPolicy.from_config({"repos": {"sim": ["key4hep/k4geo"]}}, "sim")
     args = argparse.Namespace(data_url="https://data.example", token=None)
@@ -1305,6 +1380,6 @@ def test_the_cli_checks_the_threads_the_previous_report_attributed(monkeypatch, 
     status = cli.supersede_moved_claims(args, *tonight, policy, dry_run=True)
 
     assert status == 0
-    # The report just before tonight's, never tonight's own.
-    assert fetched == [("report", "2026-07-05"), ("blame", "2026-07-05")]
+    # The sidecars of the nights before tonight's, never tonight's own, bounded.
+    assert fetched == ["2026-07-05", *earlier[:6]]
     assert "superseded claims for 2026-07-06: 1 comment(s) planned" in capsys.readouterr().out

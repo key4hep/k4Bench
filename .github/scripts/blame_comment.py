@@ -512,59 +512,50 @@ def supersede_moved_claims(args, report, blame, policy, *, dry_run: bool) -> int
     tonight's report moved before their window
     (:mod:`k4bench.blame.comment.supersede`); the exit status.
 
-    The threads worth reading come from the previous report's attributions, so
-    this needs ``--data-url``; without it, or without an earlier report and
-    sidecar, there is nothing to compare against and nothing is done."""
-    from k4bench.blame.comment.supersede import placements, supersede_targets
+    The threads worth reading come from the attributions in the sidecars of
+    the last few earlier nights, so this needs ``--data-url``; without it, or
+    without any earlier sidecar, there is nothing to compare against and
+    nothing is done."""
+    from k4bench.blame.comment.supersede import (
+        HISTORY_NIGHTS,
+        placements,
+        supersede_targets,
+    )
     from k4bench.blame.github import GitHubClient
     from k4bench.blame.models import BlameReport, BlameSchemaError
     from k4bench.blame.publish import supersede
-    from k4bench.regression.render import from_json
-    from k4bench.remote import fetch_blame, fetch_report, list_report_dates
+    from k4bench.remote import fetch_blame, list_report_dates
 
     night = report.report_night
     if not args.data_url or not night:
         _log.info("blame_comment: no data URL or report night — no superseded-claim check")
         return 0
+    history = []
     try:
-        earlier = next(
-            (date for date in list_report_dates(args.data_url, report.suite) if date < night),
-            None,
-        )
-        if earlier is None:
-            return 0
-        previous_report = fetch_report(args.data_url, report.suite, earlier)
-        previous_blame = fetch_blame(args.data_url, report.suite, earlier)
-        if previous_report is None or previous_blame is None:
-            _log.info(
-                "blame_comment: no report and sidecar for %s — no superseded-claim check",
-                earlier,
-            )
-            return 0
-        previous = (
-            from_json(previous_report), BlameReport.from_json(previous_blame),
-        )
+        earlier = [
+            date for date in list_report_dates(args.data_url, report.suite)
+            if date < night
+        ][:HISTORY_NIGHTS]
+        for date in earlier:
+            data = fetch_blame(args.data_url, report.suite, date)
+            if data is not None:
+                history.append(BlameReport.from_json(data))
     except (BlameSchemaError, ValueError, TypeError, KeyError, OSError) as exc:
         _log.warning(
-            "blame_comment: could not read the previous report (%s) — no "
+            "blame_comment: could not read the earlier sidecars (%s) — no "
             "superseded-claim check", exc,
         )
         return 0
-    tonight = placements(report, blame)
-    targets = supersede_targets(*previous, tonight, policy.allows)
-    if not targets:
+    if not history:
         return 0
-    if len(targets) > policy.max_comments:
-        print(
-            f"superseded claims for {night}: SUPPRESSED — {len(targets)} pull "
-            f"requests exceed the max_comments cap of {policy.max_comments}",
-            file=sys.stderr,
-        )
+    tonight = placements(report, blame)
+    targets = supersede_targets(history, tonight, policy.targets)
+    if not targets:
         return 0
     result = supersede(
         GitHubClient(token=args.token), targets, suite=report.suite,
         tonight=tonight, min_score=policy.min_score, report_night=night,
-        dry_run=dry_run,
+        max_edits=policy.max_comments, dry_run=dry_run,
     )
     print(f"superseded claims for {night}: {result.summary}")
     return 1 if result.failed else 0

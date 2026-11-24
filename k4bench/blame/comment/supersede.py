@@ -1,13 +1,13 @@
-"""Claims a posted comment makes that tonight's report has moved out of the pull
+"""Claims a posted comment makes that a later report has moved out of the pull
 request's reach.
 
 A comment attributes regressions to a pull request in one change window. The
 regression engine can later re-date a step: a late confirmation moves its window
 back onto an earlier release (:mod:`k4bench.regression`), and the step is then
 measured *before* the window the comment was written for. The pull request
-shipped inside that window, so it cannot have caused the step, and tonight's
-complete candidate search for the step confirms it by not listing the pull
-request. Everything here is deterministic — no model is asked.
+shipped inside that window, so it cannot have caused the step, and the complete
+candidate search for the step confirms it by not listing the pull request.
+Everything here is deterministic — no model is asked.
 
 A claim is **superseded** when both hold:
 
@@ -17,44 +17,51 @@ A claim is **superseded** when both hold:
 * tonight's sidecar entry for the step has complete candidate discovery, and the
   pull request is not among its candidates.
 
-Two places act on it. A comment rendered tonight drops the superseded
-identities' scores from its lineage state and says so under the table
+A withdrawal is permanent state of the comment's lineage. Every withdrawn
+identity is recorded, with the night it was withdrawn on, in a hidden marker
+(:func:`~k4bench.blame.comment.state._withdrawn_marker`), and one note
+regenerated from that whole record opens the visible text
+(:func:`withdrawal_block`), so withdrawals on different nights add up rather
+than replace each other.
+
+Two places act on it. A comment rendered tonight carries its lineage's record
+forward, adds tonight's withdrawals and leaves their scores out
 (:func:`~k4bench.blame.comment.render._render`). A comment *not* rendered
-tonight — its pull request no longer selected — is found from the previous
-report's attributions (:func:`supersede_targets`) and edited in place
-(:func:`superseded_body`): a dated note above the posted text, and the same
-scores cleared from its hidden state so no later version resurfaces them. The
-rest of the posted body is kept as the record it is.
+tonight — its pull request no longer selected — is found from the recent
+sidecars (:func:`supersede_targets`) and edited in place
+(:func:`superseded_body`): the note above the posted text, and the scores
+cleared from its hidden state, so no later version resurfaces them. The rest of
+the posted body is kept as the record it is.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 
-from k4bench.blame.comment.markdown import _count
+from k4bench.blame.comment.markdown import REGRESSION, _count
 from k4bench.blame.comment.state import (
     _CUMULATIVE_PREFIX,
-    _MARKER_SUFFIX,
     _RETAINED_PREFIX,
+    _WITHDRAWN_PREFIX,
     ChangeWindow,
     CumulativeEntry,
     _cumulative_marker,
     _decoded_cumulative,
     _decoded_retained,
+    _decoded_withdrawn,
     _retained_identity,
     _retained_marker,
     _verdict_identity,
+    _withdrawn_marker,
     window_from_marker,
 )
 from k4bench.blame.models import BlameReport, CandidatePR
 from k4bench.regression.models import NightlyReport
 
-#: The hidden line a superseded body carries, ahead of its note. The payload is
-#: a digest of the superseded identities, so the same set never edits twice.
-_SUPERSEDED_PREFIX = "<!-- k4bench-blame-superseded:v1 "
+#: The first visible line of the withdrawal note — how :func:`superseded_body`
+#: finds the note it replaces.
+_NOTE_LEAD = "> **Withdrawn"
 
 
 @dataclass(frozen=True)
@@ -102,18 +109,39 @@ def moved_before(
     )
 
 
-def superseded_note(count: int, window: ChangeWindow, noun: str = "regression") -> str:
-    """One sentence naming how many attributed steps were moved out of
-    *window*, in the comment's own wording."""
-    base, onset = window
-    verb = "is" if count == 1 else "are"
-    return (
-        f"{_count(count, noun)} this comment attributed to this PR {verb} now "
-        f"placed at or before release `{base}`, before this PR's change window "
-        f"(`{base}` → `{onset}`), and tonight's candidate search for "
-        f"{'it' if count == 1 else 'them'} does not include this PR; "
-        f"{'it is' if count == 1 else 'they are'} no longer attributed to it."
+def withdrawal_block(
+    withdrawn: Mapping[tuple, str],
+    window: ChangeWindow,
+    *,
+    noun: str = REGRESSION,
+    kept_as_posted: bool = False,
+) -> list[str]:
+    """The hidden record and the visible note for every claim *withdrawn*
+    from a comment on *window*, as the lines that open its text — or nothing
+    when none was. *kept_as_posted* says the text below still shows the
+    claims, which is true of a body edited in place and not of one rendered
+    afresh."""
+    marker = _withdrawn_marker(dict(withdrawn))
+    if not withdrawn or not marker:
+        return []
+    nights = sorted(set(withdrawn.values()))
+    when = (
+        f"on {nights[0]}" if len(nights) == 1
+        else f"between {nights[0]} and {nights[-1]}"
     )
+    base, onset = window
+    count = len(withdrawn)
+    one = count == 1
+    text = (
+        f"> **Withdrawn {when}.** {_count(count, noun)} this comment attributed "
+        f"to this PR {'is' if one else 'are'} now placed at or before release "
+        f"`{base}`, before this PR's change window (`{base}` → `{onset}`), and "
+        f"the candidate search for {'it' if one else 'them'} does not include "
+        f"this PR; {'it is' if one else 'they are'} no longer attributed to it."
+    )
+    if kept_as_posted:
+        text += " The rest of this comment is kept as it was posted."
+    return [marker, "> [!NOTE]", text, ""]
 
 
 def superseded_body(
@@ -125,14 +153,15 @@ def superseded_body(
     min_score: float,
     report_night: str,
 ) -> str | None:
-    """*body* rewritten to withdraw its superseded claims, or ``None`` when it
-    makes none (or already says so).
+    """*body* rewritten to withdraw its newly superseded claims, or ``None``
+    when it has none.
 
     Only the bot's own *suite* comment is considered — its first line must be
-    that suite's window marker. The cumulative and retained hidden states lose
-    the superseded identities' scores, and a dated note opens the visible text;
-    everything else is kept as posted. A body already carrying a note for the
-    same identities is left alone, so a standing condition edits once."""
+    that suite's window marker. Newly superseded identities join the body's
+    withdrawal record at *report_night*; the cumulative and retained hidden
+    states lose their scores; and the note is regenerated from the whole
+    record. Everything else is kept as posted. A claim withdrawn once has no
+    score left to withdraw, so the same condition edits only once."""
     lines = body.splitlines()
     if not lines:
         return None
@@ -140,41 +169,38 @@ def superseded_body(
     if window is None:
         return None
     cumulative = _decoded_cumulative(body)
-    moved = sorted(
+    moved = {
         identity for identity, entry in cumulative.items()
         if entry.likelihood is not None and entry.likelihood >= min_score
         and moved_before(tonight.get(identity), window, pr)
-    )
+    }
     if not moved:
         return None
-    digest = _identities_digest(moved)
-    superseded_line = f"{_SUPERSEDED_PREFIX}{digest}{_MARKER_SUFFIX}"
-    if superseded_line in lines:
+    record = dict(_decoded_withdrawn(body))
+    for identity in moved:
+        record.setdefault(identity, report_night)
+    block = withdrawal_block(record, window, kept_as_posted=True)
+    if not block:
         return None
 
-    moved_set = set(moved)
-    cleared = withdrawn(cumulative, moved_set)
+    cleared = withdrawn(cumulative, moved)
     retained = [
         replace(row, likelihood=None, source="", state="not_candidate")
-        if _retained_identity(row) in moved_set else row
+        if _retained_identity(row) in moved else row
         for row in _decoded_retained(body)
     ]
-    note = [
-        superseded_line,
-        "> [!NOTE]",
-        f"> **Superseded on {report_night}.** "
-        + superseded_note(len(moved), window)
-        + " The rest of this comment is kept as it was posted.",
-        "",
-    ]
     out: list[str] = []
-    skipping = False
-    for line in lines:
-        if skipping:
-            skipping = bool(line.strip())
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        index += 1
+        if line.startswith(_WITHDRAWN_PREFIX):
             continue
-        if line.startswith(_SUPERSEDED_PREFIX):
-            skipping = True
+        if line == "> [!NOTE]" and index < len(lines) and lines[index].startswith(_NOTE_LEAD):
+            # The previous note and the blank line closing it.
+            index += 1
+            if index < len(lines) and not lines[index].strip():
+                index += 1
             continue
         if line.startswith(_CUMULATIVE_PREFIX):
             marker = _cumulative_marker(cleared)
@@ -186,19 +212,20 @@ def superseded_body(
             if marker:
                 out.append(marker)
             continue
-        if line.startswith("### ") and note:
-            out += note
-            note = []
+        if line.startswith("### ") and block:
+            out += block
+            block = []
         out.append(line)
-    if note:
+    if block:
         return None
     return "\n".join(out)
 
 
 def withdrawn(
-    cumulative: Mapping[tuple, CumulativeEntry], identities: set[tuple],
+    cumulative: Mapping[tuple, CumulativeEntry], identities: Iterable[tuple],
 ) -> dict[tuple, CumulativeEntry]:
     """*cumulative* with *identities* carrying no attribution."""
+    identities = set(identities)
     return {
         identity: entry._replace(likelihood=None, source="")
         if identity in identities else entry
@@ -206,35 +233,38 @@ def withdrawn(
     }
 
 
+#: How many earlier sidecars :func:`supersede_targets` is given. A claim's old
+#: window stays in every night's sidecar while the step is confirmed there, so
+#: the night before a move holds it; the margin is what lets a night whose
+#: edit failed — or whose pass did not run — be caught up on the next ones.
+HISTORY_NIGHTS = 7
+
+
 def supersede_targets(
-    previous_report: NightlyReport,
-    previous_blame: BlameReport,
+    history: Iterable[BlameReport],
     tonight: Mapping[tuple, Placement],
-    allows: Callable[[CandidatePR], bool],
+    may_write: Callable[[CandidatePR], bool],
 ) -> list[tuple[str, int]]:
-    """The pull requests whose comments may carry a superseded claim tonight:
-    each candidate *allows* accepts (the comment policy's gate) for a step the
-    previous report confirmed, where tonight's placement of that step
-    supersedes the previous window. Their threads are then read and each
-    comment checked on its own state (:func:`superseded_body`); this only
-    bounds which threads are read."""
-    found: set[tuple[str, int]] = set()
-    named: dict[tuple[str, int], tuple[str, int]] = {}
-    for group in previous_report.groups:
-        for verdict in group.regressions:
-            entry = previous_blame.entry_for(verdict)
-            if entry is None or entry.discovery_incomplete:
+    """The pull requests whose comments may carry a superseded claim tonight.
+
+    Every candidate *may_write* accepts (the comment policy's repository and
+    merged gate) for a step an earlier sidecar in *history* attributed, in a
+    window tonight's placement of that step supersedes. No score enters: what a
+    comment actually published — a first-pass score, a reviewer's, or one from
+    a night that has since dropped below the threshold — is read from the
+    comment itself (:func:`superseded_body`). This only bounds which threads
+    are read."""
+    found: dict[tuple[str, int], tuple[str, int]] = {}
+    for blame in history:
+        for entry in blame.entries:
+            if entry.discovery_incomplete or entry.base_release == entry.onset_release:
                 continue
             window = (entry.base_release, entry.onset_release)
-            placement = tonight.get(_verdict_identity(verdict))
+            identity = (*entry.key[:5], entry.key[5] or "")
+            placement = tonight.get(identity)
             for candidate in entry.candidates:
                 key = (candidate.repo.lower(), candidate.number)
-                if allows(candidate) and moved_before(placement, window, key):
-                    found.add(key)
-                    named.setdefault(key, (candidate.repo, candidate.number))
-    return [named[key] for key in sorted(found)]
-
-
-def _identities_digest(identities: list[tuple]) -> str:
-    canonical = json.dumps(identities, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+                if key not in found and may_write(candidate) \
+                        and moved_before(placement, window, key):
+                    found[key] = (candidate.repo, candidate.number)
+    return [found[key] for key in sorted(found)]

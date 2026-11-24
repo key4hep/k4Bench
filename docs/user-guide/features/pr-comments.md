@@ -663,13 +663,21 @@ is a separate finding and is never adopted, however its window compares:
   report places the step's onset at or before the comment window's base release
   **and** tonight's complete candidate search for it does not list the pull
   request; a step placed *after* the window is a new step, and the claim stands
-  as the record of what was measured then. A comment rendered tonight drops
-  those regressions' scores from its hidden state and says so under its table.
-  A comment *not* rendered tonight — the pull request is no longer selected —
-  is found from the previous report's attributions and edited once: a dated
-  note above the posted text, and the same scores cleared from its hidden state
-  so no later version resurfaces them. Everything else in the body stays as
-  posted, and the same note is never written twice.
+  as the record of what was measured then. Every withdrawn regression is
+  recorded in the comment's hidden state with the night it was withdrawn on,
+  and one note above the comment's text, regenerated from that whole record,
+  says how many were withdrawn and when — so withdrawals on different nights
+  add up. A comment rendered tonight carries the record forward and leaves
+  those regressions' scores out (a step re-dated back into the window is judged
+  again). A comment *not* rendered tonight — the pull request is no longer
+  selected — is found from the attributions in the last seven nights'
+  sidecars, whatever score they gave, since what counts is what the comment
+  itself published; it is then edited in place: the note above the posted text,
+  and the scores cleared from its hidden state so no later version resurfaces
+  them. Everything else in the body stays as posted. A claim withdrawn once has
+  no score left, so it is never withdrawn twice; a failed edit is made on a
+  later night, because nothing about the claim changed. More withdrawals in one
+  night than `max_comments` write none of them.
 
 History retention is forward-only, and so is row retention. Both the observation
 history and the retained rows are carried in versioned hidden markers; a comment
