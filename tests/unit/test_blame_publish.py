@@ -1170,7 +1170,7 @@ def test_a_superseded_body_withdraws_the_claim_and_keeps_the_record():
            "to this PR is now placed at or before release `2026-07-01`" in new
     assert "The rest of this comment is kept as it was posted, including its " \
            "score in the table." in new
-    assert "> - `wall_time_s` on ALLEGRO_o1_v03 · e⁻ gun · 10 GeV · `baseline` " \
+    assert "> - `wall_time_s` on ALLEGRO_o1_v03 · e⁻ gun · 10 GeV · `baseline` · AlmaLinux 9 · GCC 14.2.0 (optimized) " \
            "— withdrawn 2026-07-06" in new
     assert new.index("> [!NOTE]") < new.index("### ")
     # The hidden state no longer carries the score, so no later version can
@@ -1230,8 +1230,8 @@ def test_withdrawals_on_different_nights_add_up_in_one_note():
            "this comment attributed to this PR are now placed" in night_three
     listed = [line for line in night_three.splitlines() if line.startswith("> - ")]
     assert listed == [
-        "> - `wall_time_s` on ALLEGRO_o1_v03 · e⁻ gun · 10 GeV · `baseline` — withdrawn 2026-07-06",
-        "> - `mean_time_s` on ALLEGRO_o1_v03 · e⁻ gun · 10 GeV · `baseline` — withdrawn 2026-07-07",
+        "> - `wall_time_s` on ALLEGRO_o1_v03 · e⁻ gun · 10 GeV · `baseline` · AlmaLinux 9 · GCC 14.2.0 (optimized) — withdrawn 2026-07-06",
+        "> - `mean_time_s` on ALLEGRO_o1_v03 · e⁻ gun · 10 GeV · `baseline` · AlmaLinux 9 · GCC 14.2.0 (optimized) — withdrawn 2026-07-07",
     ]
     assert night_three.count("> **Withdrawn") == 1
     assert night_three.count("> [!NOTE]") == night_two.count("> [!NOTE]")
@@ -1252,19 +1252,52 @@ def test_a_claim_is_judged_at_the_threshold_it_was_published_under():
     )
     assert new is not None
     assert state_mod._decoded_withdrawn(new) == {_ROW: "2026-07-06"}
-    # A body from before the threshold was recorded falls back to tonight's.
+
+
+def test_a_withdrawal_names_the_platform_even_when_only_one_is_withdrawn():
+    # The same metric can stand on another platform in the same comment; the
+    # note has to say which one no longer does.
+    identity = (*_ROW[:1], "x86_64-el9-gcc16-opt", *_ROW[2:])
+    block = withdrawal_block({identity: "2026-07-06"}, _WINDOW)
+    assert "> - `wall_time_s` on ALLEGRO_o1_v03 · e⁻ gun · 10 GeV · `baseline` · " \
+           "EL 9 · GCC 16 (optimized) — withdrawn 2026-07-06" in block
+
+
+def test_the_threshold_marker_is_lossless():
+    assert state_mod._published_threshold(state_mod._threshold_marker(72.25)) == 72.25
+    assert state_mod._published_threshold(state_mod._threshold_marker(70)) == 70
+
+
+def test_a_body_without_the_marker_states_its_threshold_in_its_text():
+    # Comments posted before the marker existed — some under the 80% the
+    # policy used until 2026-07-29 — name their threshold in the association
+    # summary's header, which is read before tonight's policy is assumed.
+    body = _posted()
     legacy = "\n".join(
         line for line in body.splitlines()
         if not line.startswith(state_mod._THRESHOLD_PREFIX)
     )
+    assert "| Attribution ≥ 80% |" in legacy
+    assert state_mod._published_threshold(legacy) == 80
     assert superseded_body(
         legacy, pr=_PR, suite="sim", tonight=_moved(), min_score=95,
         report_night="2026-07-06",
-    ) is None
-    assert superseded_body(
-        legacy, pr=_PR, suite="sim", tonight=_moved(), min_score=80,
-        report_night="2026-07-06",
     ) is not None
+    # The caption of the attributed-rows table says it too.
+    caption_only = "\n".join(
+        line for line in legacy.splitlines() if "| Attribution ≥" not in line
+    )
+    assert state_mod._published_threshold(caption_only) == 80
+    # Stating none, the body is judged at tonight's threshold.
+    silent = "\n".join(
+        line for line in caption_only.splitlines()
+        if "attributed to this PR at" not in line
+    )
+    assert state_mod._published_threshold(silent) is None
+    assert superseded_body(
+        silent, pr=_PR, suite="sim", tonight=_moved(), min_score=95,
+        report_night="2026-07-06",
+    ) is None
 
 
 def test_a_long_withdrawal_list_names_ten_and_counts_the_rest():

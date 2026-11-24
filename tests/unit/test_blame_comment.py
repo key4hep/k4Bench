@@ -5028,7 +5028,7 @@ def test_a_lineage_claim_moved_before_the_window_loses_its_score():
     assert "> **Withdrawn on 2026-07-06.** 1 regression this comment attributed " \
            "to this PR is now placed at or before release `2026-07-03`" in body
     assert "kept as it was posted" not in body
-    assert "> - `a_metric` on ALLEGRO_o1_v03 · e⁻ gun · 10 GeV · `baseline` " \
+    assert "> - `a_metric` on ALLEGRO_o1_v03 · e⁻ gun · 10 GeV · `baseline` · AlmaLinux 9 · GCC 14.2.0 (optimized) " \
            "— withdrawn 2026-07-06" in body
     assert body.index("> **Withdrawn") < body.index("### ")
     identity = ("ALLEGRO_o1_v03", _PLAT, "single_e-_10GeV", "baseline", "a_metric", "")

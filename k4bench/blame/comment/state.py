@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import zlib
 from base64 import b64decode, urlsafe_b64encode
 from collections.abc import Iterator, Sequence
@@ -451,14 +452,29 @@ def _decoded_cumulative(body: str) -> dict[tuple, CumulativeEntry]:
 
 
 def _threshold_marker(threshold: float) -> str:
-    """The hidden line recording the threshold a body is rendered under."""
-    return f"{_THRESHOLD_PREFIX}{threshold:g}{_MARKER_SUFFIX}"
+    """The hidden line recording the threshold a body is rendered under,
+    written losslessly."""
+    return f"{_THRESHOLD_PREFIX}{float(threshold)!r}{_MARKER_SUFFIX}"
+
+
+#: Where a body written before the threshold marker states its threshold: the
+#: association summary's column header and the caption of the attributed-rows
+#: table. Read only when the marker is absent — the one place this module
+#: reads visible text, because those bodies carry the fact nowhere else.
+_VISIBLE_THRESHOLD = re.compile(
+    r"\| Attribution ≥ (\d+(?:\.\d+)?)% \||attributed to this PR at (\d+(?:\.\d+)?)% or above"
+)
 
 
 def _published_threshold(body: str) -> float | None:
-    """The threshold *body* records, or ``None`` for one written before the
-    marker existed or carrying anything but a number from 0 to 100."""
+    """The threshold *body* was posted under: its marker, or — for a body
+    written before the marker existed — the threshold its association summary
+    or table caption names; ``None`` when it states none, or anything but a
+    number from 0 to 100."""
     value = next(_marker_values(body, _THRESHOLD_PREFIX), None)
+    if value is None:
+        match = _VISIBLE_THRESHOLD.search(body)
+        value = next((group for group in match.groups() if group), None) if match else None
     try:
         threshold = float(value) if value is not None else None
     except ValueError:

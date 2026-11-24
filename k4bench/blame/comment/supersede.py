@@ -152,10 +152,8 @@ def withdrawal_block(
             f"{'its score' if one else 'their scores'} in the table."
         )
     ordered = sorted(withdrawn, key=lambda identity: (withdrawn[identity], identity))
-    platforms = {identity[1] for identity in withdrawn}
     listed = [
-        f"> - {_identity_text(identity, platform=len(platforms) > 1)} — "
-        f"withdrawn {withdrawn[identity]}"
+        f"> - {_identity_text(identity)} — withdrawn {withdrawn[identity]}"
         for identity in ordered[:_MAX_LISTED]
     ]
     if count > _MAX_LISTED:
@@ -163,15 +161,17 @@ def withdrawal_block(
     return [marker, "> [!NOTE]", text, ">", *listed, ""]
 
 
-def _identity_text(identity: tuple, *, platform: bool) -> str:
-    """One withdrawn regression as the table names it: metric and region,
-    detector, sample and configuration, and the platform when the note spans
-    several."""
-    detector, platform_name, sample, label, metric, sub_detector = identity
+def _identity_text(identity: tuple) -> str:
+    """One withdrawn regression by its whole identity: metric and region,
+    detector, sample, configuration and platform. The platform is always
+    named — the comment can hold the same metric on another platform that
+    still stands, and the note must say which one does not."""
+    detector, platform, sample, label, metric, sub_detector = identity
     name = f"`{_cell(metric)}`" + (f" · {_cell(sub_detector)}" if sub_detector else "")
-    where = [_cell(detector), _cell(compact_sample(sample)), f"`{_cell(label)}`"]
-    if platform:
-        where.append(_cell(pretty_platform(platform_name)))
+    where = [
+        _cell(detector), _cell(compact_sample(sample)), f"`{_cell(label)}`",
+        _cell(pretty_platform(platform)),
+    ]
     return f"{name} on {' · '.join(where)}"
 
 
@@ -189,9 +189,9 @@ def superseded_body(
 
     Only the bot's own *suite* comment is considered — its first line must be
     that suite's window marker. A claim is one the body made at the threshold
-    it records having been rendered under, and only a body written before that
-    was recorded falls back to *min_score*: a later change to the policy does
-    not redefine what was already claimed. Newly superseded identities join
+    it was posted under (:func:`~k4bench.blame.comment.state._published_threshold`),
+    and only a body stating none falls back to *min_score*: a later change to
+    the policy does not redefine what was already claimed. Newly superseded identities join
     the body's withdrawal record at *report_night*; the cumulative and retained
     hidden states lose their scores; and the note is regenerated from the whole
     record. Everything else is kept as posted. A claim withdrawn once has no
