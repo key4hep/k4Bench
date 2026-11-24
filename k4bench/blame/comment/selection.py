@@ -28,6 +28,7 @@ from k4bench.blame.comment.plan import (
 from k4bench.blame.comment.state import (
     window_contains,
 )
+from k4bench.blame.comment.supersede import placements
 from k4bench.blame.evidence import (
     ScopeOutcome,
     outcomes_for_window,
@@ -285,6 +286,7 @@ def select(
     ]
     plans = _targets(confirmed, policy)
     geometry = benchmarked_geometry(report)
+    placed = placements(report, blame)
     for plan in plans:
         plan.report_night = report.report_night
         plan.suite = report.suite
@@ -298,6 +300,7 @@ def select(
             stacks={row.stack for row in plan.rows},
         )
         plan.geometry = dict(geometry)
+        plan.placements = placed
 
     ordered = sorted(plans, key=lambda p: (-p.top_score, p.repo, p.number))
     if len(ordered) > policy.max_comments:

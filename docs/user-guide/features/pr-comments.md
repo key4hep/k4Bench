@@ -655,6 +655,38 @@ is a separate finding and is never adopted, however its window compares:
   It records what the benchmarks saw at the time, which stays true even once the
   metric recovers; and silently rewriting a comment people have already replied
   to is worse than leaving a dated one standing. Follow-ups belong in the thread.
+- **The step is re-dated before the window** — the one case where a comment's
+  own claim is contradicted rather than merely outlived. A late confirmation can
+  move a step's window back onto an earlier release, so the step is now
+  measured *before* the window the comment was written for, and the pull
+  request cannot have shipped in it. A claim is withdrawn only when tonight's
+  report places the step's onset at or before the comment window's base release
+  **and** tonight's complete candidate search for it does not list the pull
+  request; a step placed *after* the window is a new step, and the claim stands
+  as the record of what was measured then. Every withdrawn regression is
+  recorded in the comment's hidden state with the night it was withdrawn on,
+  and one note above the comment's text, regenerated from that whole record,
+  names each withdrawn regression (metric, detector, sample and configuration,
+  the first ten, then a count) with its date — so a reader can tell which of
+  the table's scores no longer stand, and withdrawals on different nights add
+  up. A claim is one the comment made at the threshold it records having been
+  posted under, so raising `min_score` later does not exempt it. A comment rendered tonight carries the record forward and leaves
+  those regressions' scores out (a step re-dated back into the window is judged
+  again). A comment *not* rendered tonight — the pull request is no longer
+  selected — is found from the attributions in the last seven nights'
+  sidecars, whatever score they gave, since what counts is what the comment
+  itself published; it is then edited in place: the note above the posted text,
+  and the scores cleared from its hidden state so no later version resurfaces
+  them. Everything else in the body stays as posted. A claim withdrawn once has
+  no score left, so it is never withdrawn twice. More withdrawals in one night
+  than `max_comments` write none of them.
+
+  Finding these comments is **best-effort**. There is no index of the claims
+  the bot has posted: a comment is found only when one of the last seven
+  nights' sidecars still attributed the step to the pull request in its old
+  window. A failed edit is retried on later nights within that horizon, and a
+  step that stopped being confirmed for longer than that before being re-dated
+  is not found at all; such a comment stays as posted.
 
 History retention is forward-only, and so is row retention. Both the observation
 history and the retained rows are carried in versioned hidden markers; a comment

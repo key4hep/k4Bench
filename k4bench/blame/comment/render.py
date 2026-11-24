@@ -46,19 +46,22 @@ from k4bench.blame.comment.selection import (
     _DEFAULT_MIN_SCORE,
 )
 from k4bench.blame.comment.state import (
-    CumulativeEntry,
     _FACTS_MARKER_PREFIX,
     _MAX_OBSERVATIONS,
     CommentObservation,
+    CumulativeEntry,
     LineageState,
     RetainedRow,
     _cumulative_marker,
+    _iso_date,
     _observation_key,
     _observation_marker,
     _retained_identity,
     _retained_marker,
     _retained_sort_key,
+    _threshold_marker,
 )
+from k4bench.blame.comment.supersede import moved_before, withdrawal_block, withdrawn
 from k4bench.blame.comment.table import (
     _link_definitions,
     _past_links,
@@ -204,8 +207,29 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
     # including a current ``not_candidate`` or unscored standing, which must
     # not be papered over by an old score.
     current = {_row_identity(row) for row in plan.rows}
+    # A lineage identity tonight's report places before this window, outside
+    # this pull request's candidates, loses its old score the same way, and a
+    # claim withdrawn on an earlier night stays withdrawn — unless the step is
+    # back among tonight's rows, where tonight's evidence decides again
+    # (:mod:`.supersede`).
+    moved = _moved_identities(plan, lineage, current)
+    record = {
+        identity: night for identity, night in lineage.withdrawn.items()
+        if identity not in current
+    }
+    if _iso_date(plan.report_night):
+        for identity in sorted(moved):
+            # A claim is judged at the threshold it was published under.
+            published = lineage.threshold if lineage.threshold is not None else draft.min_score
+            if _was_attributed(identity, lineage, published):
+                record.setdefault(identity, plan.report_night)
+    unscored = moved | set(record)
     historical = sorted(
-        (row for row in lineage.retained if _retained_identity(row) not in current),
+        (
+            replace(row, likelihood=None, source="", state="not_candidate")
+            if _retained_identity(row) in unscored else row
+            for row in lineage.retained if _retained_identity(row) not in current
+        ),
         key=_retained_sort_key,
     )
     noun = _comment_noun(plan, historical, observations)
@@ -214,7 +238,9 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
     # Tonight's rows overlay the lineage's: a reconfirmed identity keeps only
     # its newest published attribution. Directions an older marker did not
     # record are filled from the retained snapshots, which carry them.
-    cumulative = _cumulative_with_directions(lineage.cumulative, historical)
+    cumulative = withdrawn(
+        _cumulative_with_directions(lineage.cumulative, historical), unscored,
+    )
     tonight = {
         _row_identity(row): CumulativeEntry(
             *_score_source(row, attribution), plan.report_night,
@@ -225,6 +251,8 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
     cumulative.update(tonight)
     cumulative_marker = _cumulative_marker(cumulative)
     payload = dict(draft.facts_payload)
+    if record:
+        payload["withdrawn"] = [list(identity) for identity in sorted(record)]
     if cumulative_marker:
         identities = sorted(cumulative)
         scopes = len({identity[:3] for identity in identities})
@@ -294,6 +322,8 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
             draft.marker,
             f"{_FACTS_MARKER_PREFIX}{digest} -->",
             cumulative_marker or None,
+            _threshold_marker(draft.min_score),
+            *withdrawal_block(record, plan.window, noun=noun),
             "### 📊 Possible performance change traced to this pull request",
             "",
             alert,
@@ -382,6 +412,34 @@ def _direction_of(verdict_or_row) -> str:
     """A verdict's (or retained row's) direction as its plain string value."""
     direction = getattr(verdict_or_row, "direction")
     return str(getattr(direction, "value", direction))
+
+
+def _moved_identities(
+    plan: CommentPlan, lineage: LineageState, current: set[tuple],
+) -> set[tuple]:
+    """The lineage identities not among tonight's rows that tonight's report
+    places before this window, outside this pull request's candidates
+    (:func:`~.supersede.moved_before`)."""
+    pr = (plan.repo.lower(), plan.number)
+    known = set(lineage.cumulative) | {
+        _retained_identity(row) for row in lineage.retained
+    }
+    return {
+        identity for identity in known - current
+        if moved_before(plan.placements.get(identity), plan.window, pr)
+    }
+
+
+def _was_attributed(identity: tuple, lineage: LineageState, min_score: float) -> bool:
+    """Whether the lineage last published *identity* at or above *min_score*."""
+    entry = lineage.cumulative.get(identity)
+    if entry is not None and entry.likelihood is not None:
+        return entry.likelihood >= min_score
+    return any(
+        _retained_identity(row) == identity and row.state != "not_candidate"
+        and row.likelihood is not None and row.likelihood >= min_score
+        for row in lineage.retained
+    )
 
 
 def _comment_noun(

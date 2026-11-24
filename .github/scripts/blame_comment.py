@@ -359,16 +359,8 @@ def main(argv: list[str] | None = None) -> int:
         force=True,
     )
 
-    from k4bench.blame.attribute import attributor_from_env
-    from k4bench.blame.comment import (
-        CommentConfigError,
-        CommentStormError,
-        build_comments,
-        select,
-    )
-    from k4bench.blame.github import GitHubClient
+    from k4bench.blame.comment import CommentConfigError
     from k4bench.blame.models import BlameReport, BlameSchemaError
-    from k4bench.blame.publish import publish
     from k4bench.regression.render import from_json
 
     report_path, blame_path = Path(args.report), Path(args.blame)
@@ -427,6 +419,25 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     night = blame.report_night or "no data"
+    dry_run = args.dry_run or not args.token
+    if dry_run and not args.dry_run:
+        _log.warning(
+            "blame_comment: no K4BENCH_PR_COMMENT_TOKEN — dry run, nothing posted"
+        )
+    status = comment_tonight(args, report, blame, policy, night=night, dry_run=dry_run)
+    # After tonight's comments, so a comment rendered tonight already carries
+    # its withdrawn claims and needs no second edit.
+    withdrawn = supersede_moved_claims(args, report, blame, policy, dry_run=dry_run)
+    return max(status, withdrawn)
+
+
+def comment_tonight(args, report, blame, policy, *, night: str, dry_run: bool) -> int:
+    """Select, review, render and post tonight's comments; the exit status."""
+    from k4bench.blame.attribute import attributor_from_env
+    from k4bench.blame.comment import CommentStormError, build_comments, select
+    from k4bench.blame.github import GitHubClient
+    from k4bench.blame.publish import publish
+
     try:
         plans = select(report, blame, policy)
     except CommentStormError as exc:
@@ -447,12 +458,6 @@ def main(argv: list[str] | None = None) -> int:
             f"reached {policy.min_score:g}% in an enabled repository"
         )
         return 0
-
-    dry_run = args.dry_run or not args.token
-    if dry_run and not args.dry_run:
-        _log.warning(
-            "blame_comment: no K4BENCH_PR_COMMENT_TOKEN — dry run, nothing posted"
-        )
 
     attributor = attributor_from_env()
     if attributor is None:
@@ -500,6 +505,60 @@ def main(argv: list[str] | None = None) -> int:
     # caller already contains it, and silence would hide a revoked token forever.
     return 1 if result.failed else 0
 
+
+
+def supersede_moved_claims(args, report, blame, policy, *, dry_run: bool) -> int:
+    """Withdraw claims in comments tonight did not select whose regressions
+    tonight's report moved before their window
+    (:mod:`k4bench.blame.comment.supersede`); the exit status.
+
+    The threads worth reading come from the attributions in the sidecars of
+    the last few earlier nights, so this needs ``--data-url``; without it, or
+    without any earlier sidecar, there is nothing to compare against and
+    nothing is done."""
+    from k4bench.blame.comment.supersede import (
+        HISTORY_NIGHTS,
+        placements,
+        supersede_targets,
+    )
+    from k4bench.blame.github import GitHubClient
+    from k4bench.blame.models import BlameReport, BlameSchemaError
+    from k4bench.blame.publish import supersede
+    from k4bench.remote import fetch_blame, list_report_dates
+
+    night = report.report_night
+    if not args.data_url or not night:
+        _log.info("blame_comment: no data URL or report night — no superseded-claim check")
+        return 0
+    history = []
+    try:
+        earlier = [
+            date for date in list_report_dates(args.data_url, report.suite)
+            if date < night
+        ][:HISTORY_NIGHTS]
+        for date in earlier:
+            data = fetch_blame(args.data_url, report.suite, date)
+            if data is not None:
+                history.append(BlameReport.from_json(data))
+    except (BlameSchemaError, ValueError, TypeError, KeyError, OSError) as exc:
+        _log.warning(
+            "blame_comment: could not read the earlier sidecars (%s) — no "
+            "superseded-claim check", exc,
+        )
+        return 0
+    if not history:
+        return 0
+    tonight = placements(report, blame)
+    targets = supersede_targets(history, tonight, policy.targets)
+    if not targets:
+        return 0
+    result = supersede(
+        GitHubClient(token=args.token), targets, suite=report.suite,
+        tonight=tonight, min_score=policy.min_score, report_night=night,
+        max_edits=policy.max_comments, dry_run=dry_run,
+    )
+    print(f"superseded claims for {night}: {result.summary}")
+    return 1 if result.failed else 0
 
 if __name__ == "__main__":
     sys.exit(main())

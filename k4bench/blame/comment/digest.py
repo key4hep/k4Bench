@@ -32,7 +32,6 @@ from k4bench.blame.comment.state import (
 )
 from k4bench.blame.reproduce import RecipeFacts
 
-
 #: Bumped whenever what the rendered body says changes, so a standing comment is
 #: repaired once into the new form even though its benchmark facts did not move.
 #: Report dates stay out of the digest, so later reconfirmations still do not

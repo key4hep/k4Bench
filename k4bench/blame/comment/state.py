@@ -16,12 +16,13 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import zlib
 from base64 import b64decode, urlsafe_b64encode
 from collections.abc import Iterator, Sequence
 from dataclasses import asdict, dataclass, field
-from typing import NamedTuple
 from datetime import date
+from typing import NamedTuple
 from urllib.parse import urlsplit
 
 from k4bench.blame.prompt import movement
@@ -57,6 +58,17 @@ _CUMULATIVE_PREFIX = "<!-- k4bench-blame-cumulative:v2 "
 #: The directions a cumulative entry may record; ``""`` is an entry written
 #: before directions were recorded, whose sign is unknown.
 _CUMULATIVE_DIRECTIONS = frozenset({"UP", "DOWN", "NONE", ""})
+
+#: Every claim withdrawn from this lineage because its step was re-dated
+#: before the window (:mod:`~k4bench.blame.comment.supersede`), with the report
+#: night it was withdrawn on. Kept for the life of the lineage, so the note it
+#: drives always accounts for every withdrawal, however many nights apart.
+_WITHDRAWN_PREFIX = "<!-- k4bench-blame-withdrawn:v1 "
+
+#: The attribution threshold a body was rendered under — what "attributed to
+#: this PR" meant when it was posted, which a later change to ``min_score``
+#: must not redefine for a claim already made.
+_THRESHOLD_PREFIX = "<!-- k4bench-blame-threshold:v1 "
 _MAX_CUMULATIVE_IDENTITIES = 10_000
 _MAX_CUMULATIVE_BYTES = 256_000
 
@@ -190,7 +202,11 @@ class LineageState:
       window, with the survivor winning an exact collision, plus the most any
       one lineage aged out (``omitted``);
     * ``retained`` — one snapshot per row identity, the newest confirmation
-      winning.
+      winning;
+    * ``withdrawn`` — every identity whose claim was withdrawn, with the
+      earliest night any body records for it;
+    * ``threshold`` — the lowest attribution threshold any body was rendered
+      under, or ``None`` when none records one.
     """
 
     cumulative: dict[tuple, CumulativeEntry] = field(default_factory=dict)
@@ -199,6 +215,8 @@ class LineageState:
     )
     omitted: int = 0
     retained: tuple[RetainedRow, ...] = ()
+    withdrawn: dict[tuple, str] = field(default_factory=dict)
+    threshold: float | None = None
 
     @classmethod
     def from_bodies(cls, bodies: Sequence[str]) -> LineageState:
@@ -236,6 +254,11 @@ class LineageState:
             observations=observations,
             omitted=omitted,
             retained=tuple(_merged_retained(bodies)),
+            withdrawn=_merged_withdrawn(bodies),
+            threshold=min(
+                (t for body in bodies if (t := _published_threshold(body)) is not None),
+                default=None,
+            ),
         )
 
 
@@ -426,6 +449,94 @@ def _decoded_cumulative(body: str) -> dict[tuple, CumulativeEntry]:
             likelihood, source, last_reported, direction,
         )
     return state
+
+
+def _threshold_marker(threshold: float) -> str:
+    """The hidden line recording the threshold a body is rendered under,
+    written losslessly."""
+    return f"{_THRESHOLD_PREFIX}{float(threshold)!r}{_MARKER_SUFFIX}"
+
+
+#: Where a body written before the threshold marker states its threshold: the
+#: association summary's column header and the caption of the attributed-rows
+#: table. Read only when the marker is absent — the one place this module
+#: reads visible text, because those bodies carry the fact nowhere else.
+_VISIBLE_THRESHOLD = re.compile(
+    r"\| Attribution ≥ (\d+(?:\.\d+)?)% \||attributed to this PR at (\d+(?:\.\d+)?)% or above"
+)
+
+
+def _published_threshold(body: str) -> float | None:
+    """The threshold *body* was posted under: its marker, or — for a body
+    written before the marker existed — the threshold its association summary
+    or table caption names; ``None`` when it states none, or anything but a
+    number from 0 to 100."""
+    value = next(_marker_values(body, _THRESHOLD_PREFIX), None)
+    if value is None:
+        match = _VISIBLE_THRESHOLD.search(body)
+        value = next((group for group in match.groups() if group), None) if match else None
+    try:
+        threshold = float(value) if value is not None else None
+    except ValueError:
+        return None
+    if threshold is None or not math.isfinite(threshold) or not 0 <= threshold <= 100:
+        return None
+    return threshold
+
+
+def _withdrawn_marker(withdrawn: dict[tuple, str]) -> str:
+    """The withdrawn claims as one compact hidden line, or ``""`` for none or
+    for a set too large to carry."""
+    if not withdrawn or len(withdrawn) > _MAX_CUMULATIVE_IDENTITIES:
+        return ""
+    raw = _canonical_json([[*identity, night] for identity, night in sorted(withdrawn.items())])
+    if len(raw) > _MAX_CUMULATIVE_BYTES:
+        return ""
+    marker = _marker_line(_WITHDRAWN_PREFIX, zlib.compress(raw, level=9))
+    return "" if len(marker.encode()) > _MAX_CUMULATIVE_MARKER_BYTES else marker
+
+
+def _decoded_withdrawn(body: str) -> dict[tuple, str]:
+    """The withdrawn claims a posted body records — or nothing for a marker
+    that fails a single check, with decompression bounded as for the
+    cumulative marker."""
+    encoded = next(_marker_values(body, _WITHDRAWN_PREFIX), None)
+    compressed = _marker_data(encoded) if encoded is not None else None
+    if compressed is None:
+        return {}
+    try:
+        decoder = zlib.decompressobj()
+        raw = decoder.decompress(compressed, _MAX_CUMULATIVE_BYTES + 1)
+        if (
+            len(raw) > _MAX_CUMULATIVE_BYTES or decoder.unconsumed_tail
+            or decoder.unused_data or not decoder.eof
+        ):
+            return {}
+        values = json.loads(raw)
+    except (ValueError, zlib.error):
+        return {}
+    if not isinstance(values, list) or len(values) > _MAX_CUMULATIVE_IDENTITIES:
+        return {}
+    withdrawn = {}
+    for value in values:
+        if (
+            not isinstance(value, list) or len(value) != 7
+            or not all(isinstance(part, str) and len(part) <= 2048 for part in value[:6])
+            or not isinstance(value[6], str) or not _iso_date(value[6])
+        ):
+            return {}
+        withdrawn[tuple(value[:6])] = value[6]
+    return withdrawn
+
+
+def _merged_withdrawn(bodies: Sequence[str]) -> dict[tuple, str]:
+    """Every withdrawn claim across *bodies*, at the earliest night recorded."""
+    merged: dict[tuple, str] = {}
+    for body in bodies:
+        for identity, night in _decoded_withdrawn(body).items():
+            if identity not in merged or night < merged[identity]:
+                merged[identity] = night
+    return merged
 
 
 def _cumulative_identities(body: str) -> set[tuple]:

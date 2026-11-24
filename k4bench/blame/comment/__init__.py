@@ -63,6 +63,11 @@ is left exactly as it stands. That is deliberate. It records what the benchmarks
 saw at the time — which remains true after the metric recovers — and silently
 rewriting or deleting a comment people may have replied to is worse than leaving
 a dated one in place. Follow-ups belong in the thread.
+
+The one exception is a claim the benchmarks themselves now contradict: a step
+re-dated before the comment's window, by a candidate search that no longer
+lists the pull request. Such a claim is withdrawn with a dated note
+(:mod:`.supersede`), and the rest of the comment is kept as posted.
 """
 
 from k4bench.blame.comment.build import (
