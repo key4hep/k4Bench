@@ -908,7 +908,7 @@ def test_an_evidence_rows_onset_moving_updates_the_standing_comment():
     # force this edit — only the digest can. The Onset cell and the row's
     # `reg_onset=` deep link both change, so a stale body must not stand.
     lead = _verdict(metric="wall_time_s", onset="2026-07-05", pct=0.20)
-    scores = {"wall_time_s": 91.0, "mean_time_s": 30.0}
+    scores = {"wall_time_s": 91.0, "mean_time_s": 85.0}
 
     first = _rendered([lead, _verdict(metric="mean_time_s", onset="2026-07-03",
                                       pct=0.14)], scores)

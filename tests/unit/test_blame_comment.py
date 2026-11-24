@@ -27,8 +27,9 @@ from k4bench.blame.attribute import (
 )
 from k4bench.blame.attribute import StepAssessment as AttrStepAssessment
 from k4bench.blame.comment import build as build_mod
-from k4bench.blame.comment import render as render_mod
+from k4bench.blame.comment import lineage as lineage_mod
 from k4bench.blame.comment import state as state_mod
+from k4bench.blame.comment import table as table_mod
 from k4bench.blame.comment.state import _decoded_cumulative
 from k4bench.blame.comment import (
     parse_marker,
@@ -225,11 +226,58 @@ _STATE_PREFIXES = (
 
 
 def _visible(body: str) -> str:
-    """*body* without the hidden state lines it carries for the next version —
-    what a reader sees, plus the marker and digest lines."""
+    """What a reader sees: the body without hidden state or link definitions."""
     return "\n".join(
-        line for line in body.splitlines() if not line.startswith(_STATE_PREFIXES)
+        line for line in body.splitlines()
+        if not line.startswith(("<!-- ", "[r", "[h"))
     )
+
+
+def test_a_rise_only_comment_keeps_calling_them_regressions():
+    rows = [_verdict(metric="wall_time_s"), _verdict(metric="mean_time_s")]
+    body = _comments(_report(*rows), _blame(rows, [_candidate()]))[0].body
+    assert "> [!WARNING]" in body
+    assert "confirmed 2 regressions within one detector/platform/sample scope" in body
+    assert "increase" not in _row(body, "nightly benchmarks confirmed")
+    assert "📊 **Regressions attributed to this PR" in body
+
+
+def test_mixed_directions_are_counted_and_keep_the_warning():
+    up = _verdict(metric="wall_time_s", pct=0.2)
+    down = replace(_verdict(metric="peak_rss_mb", pct=-0.1), direction=Direction.DOWN)
+    body = _comments(_report(up, down), _blame([up, down], [_candidate()]))[0].body
+    alert = _row(body, "nightly benchmarks confirmed")
+    assert body.count("> [!WARNING]") == 1
+    assert "confirmed 2 performance changes (1 decrease, 1 increase) within one " \
+           "detector/platform/sample scope" in alert
+
+
+def test_one_sign_across_many_changes_is_said_once():
+    rows = [
+        replace(_verdict(metric=metric, pct=-0.1), direction=Direction.DOWN)
+        for metric in ("peak_rss_mb", "mean_rss_mb")
+    ]
+    body = _comments(_report(*rows), _blame(rows, [_candidate()]))[0].body
+    assert "confirmed 2 performance changes (all decreases) within one" in body
+
+
+def test_a_comment_on_a_drop_never_calls_it_a_regression():
+    # k4geo#683's shape: the attributed step is a −5.8% drop, beside rises on a
+    # detector the change never reached. A drop is not a regression, and with
+    # nothing attributed going up the alert is a note, not a warning.
+    drop = replace(_verdict(detector="IDEA_o1_v04", pct=-0.058), direction=Direction.DOWN)
+    rise = _verdict(detector="ILD_FCCee_v02", metric="mean_time_s", pct=0.49)
+    blame = _blame_of((drop, [_candidate(score=75.0)]), (rise, [_candidate(score=0.0)]))
+    body = _comments(_report(drop, rise), blame, policy=_policy(min_score=70))[0].body
+    visible = _visible(body)
+
+    assert "regression" not in visible.lower()
+    assert "> [!NOTE]\n> k4Bench's nightly benchmarks confirmed a performance change " \
+           "(a decrease) in the reports covering this PR's change window that the AI " \
+           "ranker attributes to this PR at 75%." in body
+    assert "📊 **Performance changes attributed to this PR at 70% or above**" in body
+    assert "**2 performance changes** in the [2026-07-05 report ↗](" in body
+    assert "A further 1 performance change in 1 scope stayed below 70%" in body
 
 
 def _publish_reproducer(published: list | None = None, url=None):
@@ -790,12 +838,31 @@ def test_the_table_is_ordered_by_the_reviews_likelihood():
     # seen the whole window and disagrees, and its order is what a reader sees.
     allegro = _verdict(detector="ALLEGRO_o1_v03", metric="wall_time_s")
     idea = _verdict(detector="IDEA_o1_v03", metric="wall_time_s")
-    attributor = _FakeAttributor({"r1": 30.0, "r2": 95.0})
+    attributor = _FakeAttributor({"r1": 84.0, "r2": 95.0})
     body = _comments(_report(allegro, idea), _blame([allegro, idea], [_candidate()]),
                      attributor=attributor)[0].body
     rows = _table_rows(body)
     assert "IDEA_o1_v03" in rows[0] and "95%" in rows[0]
-    assert "ALLEGRO_o1_v03" in rows[1] and "30%" in rows[1]
+    assert "ALLEGRO_o1_v03" in rows[1] and "84%" in rows[1]
+
+
+def test_rows_below_the_threshold_stay_off_the_table():
+    # A 30% row under a caption naming this PR reads as part of the claim. It is
+    # counted in the association summary instead, never tabulated.
+    allegro = _verdict(detector="ALLEGRO_o1_v03", metric="wall_time_s")
+    idea = _verdict(detector="IDEA_o1_v03", metric="wall_time_s")
+    attributor = _FakeAttributor({"r1": 30.0, "r2": 95.0})
+    body = _comments(_report(allegro, idea), _blame([allegro, idea], [_candidate()]),
+                     attributor=attributor)[0].body
+    rows = _table_rows(body)
+    assert len(rows) == 1 and "IDEA_o1_v03" in rows[0]
+    assert "📊 **Regressions attributed to this PR at 80% or above**" in body
+    assert (
+        "A further 1 regression in 1 scope stayed below 80% and are not "
+        "attributed to this PR (highest 30%)."
+    ) in body
+    assert "**2 regressions** in the [2026-07-05 report ↗](" in body
+    assert "— the one attributed to this PR at 80% or above is shown above." in body
 
 
 def test_a_row_the_review_skipped_keeps_its_per_configuration_score():
@@ -817,7 +884,10 @@ def test_the_visible_table_shows_its_top_rows_and_links_the_rest():
     assert (
         f"**8 regressions** in the [2026-07-05 report ↗]({_DASH}"
     ) in body
-    assert "— the 5 most likely are shown above." in body
+    assert (
+        "— the strongest 5 of the 8 attributed to this PR at 80% or above "
+        "are shown above."
+    ) in body
 
 
 def test_a_containing_window_represents_each_onset_in_the_table():
@@ -878,6 +948,9 @@ def test_each_row_carries_its_own_tightest_change_window():
             (late, [_candidate(score=10.0)]),
         ),
         policy=_policy(min_score=70),
+        # Identity order: max_rss_kb (late), mean_time_s, wall_time_s. The
+        # review attributes the late row, which the first pass did not.
+        attributor=_FakeAttributor({"r1": 75.0, "r2": 95.0, "r3": 90.0}),
     )[0].body
     rows = _table_rows(body)
 
@@ -946,7 +1019,7 @@ def test_an_open_window_bounds_representative_rows():
         for day in range(1, 9)
     ]
     blame = _blame_of(*(
-        (verdict, [_candidate(score=91.0 if day == 8 else 10.0)])
+        (verdict, [_candidate(score=91.0 if day == 8 else 72.0)])
         for day, verdict in enumerate(verdicts, start=1)
     ))
 
@@ -977,9 +1050,9 @@ def test_undated_onset_is_represented_in_the_detail_table():
         onset_run_date=None,
     )
     blame = _blame_of(
-        *((verdict, [_candidate(score=91.0 if day == 6 else 10.0)])
+        *((verdict, [_candidate(score=91.0 if day == 6 else 72.0)])
           for day, verdict in enumerate(dated, start=1)),
-        (undated, [_candidate(score=10.0)]),
+        (undated, [_candidate(score=72.0)]),
     )
 
     body = _comments(
@@ -987,12 +1060,7 @@ def test_undated_onset_is_represented_in_the_detail_table():
         policy=_policy(min_score=70),
     )[0].body
 
-    detail = body.split("📊 **Regressions in this window", 1)[1]
-    detail = detail.split("<details>", 1)[0]
-    visible = [
-        line for line in detail.splitlines()
-        if line.startswith("| [") or line.startswith("| `")
-    ]
+    visible = _detail_rows(body)
     expected = {"2026-07-03", "2026-07-04", "2026-07-05", "2026-07-06", "unknown"}
     assert len(visible) == 5
     assert _onsets_of(visible) == expected
@@ -1017,7 +1085,7 @@ def test_a_draft_carries_tonights_observation_into_its_hidden_state():
 
 def test_a_row_below_the_cut_is_reachable_even_when_it_moved_furthest():
     # The likelihood table can lead with modest movements the review rated highly
-    # while a far larger step ranks lower and never reaches the visible five. The
+    # while a far larger step ranks lower and never reaches the table. The
     # comment does not paste it — the dashboard link is the whole answer to "what
     # else is in there", and it counts what it is hiding.
     small = [_verdict(metric=f"small{i}", pct=0.05) for i in range(6)]
@@ -1029,7 +1097,10 @@ def test_a_row_below_the_cut_is_reachable_even_when_it_moved_furthest():
                      attributor=_FakeAttributor(scores))[0].body
     assert all("huge_but_unlikely" not in row for row in _table_rows(body))
     assert "**7 regressions** in the [2026-07-05 report ↗](" in body
-    assert "— the 5 most likely are shown above." in body
+    assert (
+        "— the strongest 5 of the 6 attributed to this PR at 80% or above "
+        "are shown above."
+    ) in body
 
 
 def test_no_overflow_line_when_every_regression_is_already_shown():
@@ -1056,7 +1127,10 @@ def test_a_detector_sweeps_worth_of_rows_still_fits_in_a_github_comment():
     assert (
         f"**318 regressions** in the [2026-07-05 report ↗]({_DASH}"
     ) in comment.body
-    assert "— the 5 most likely are shown above." in comment.body
+    assert (
+        "— the strongest 5 of the 318 attributed to this PR at 80% or above "
+        "are shown above."
+    ) in comment.body
 
 
 def test_the_urls_live_in_reference_definitions_not_in_the_rows():
@@ -1236,7 +1310,7 @@ def test_a_regression_with_no_onset_identity_is_not_pinned():
     # Two onsets can measure the same release, so the dashboard needs the onset
     # to know which step is meant: without one there is no link that selects the
     # right regression, and the comment falls back to the window (see
-    # :func:`~k4bench.blame.comment.render._row_links`) rather than pinning the wrong
+    # :func:`~k4bench.blame.comment.table._row_links`) rather than pinning the wrong
     # one.
     v = replace(_verdict(), onset_run_id=None, onset_run_date=None)
     assert regression_href(
@@ -1248,7 +1322,7 @@ def test_the_window_wide_view_is_linked_once_under_the_table():
     verdicts = [_verdict(metric=f"m{i}", pct=(20 - i) / 100) for i in range(8)]
     body = _comments(_report(*verdicts), _blame(verdicts, [_candidate()]))[0].body
     assert body.count("report ↗](") == 1
-    assert body.index("**8 regressions** in the") > body.index("Regressions in this")
+    assert body.index("**8 regressions** in the") > body.index("📊 **Regressions")
     href = _row(body, "**8 regressions** in the").split("](", 1)[1].split(")", 1)[0]
     query = parse_qs(urlsplit(href).query)
     assert query == {
@@ -1283,7 +1357,8 @@ def test_the_line_under_the_table_counts_every_report_in_the_lineage():
             "tab": ["Overview"], "view": ["Nightly Report"], "report": [night],
         }
     assert line.endswith(
-        f"— the {len(_table_rows(body))} most likely are shown above."
+        f"— the strongest {len(_table_rows(body))} of the 11 attributed to this "
+        "PR at 80% or above are shown above."
     )
 
 
@@ -1300,7 +1375,7 @@ def test_a_second_report_earns_the_line_even_when_no_row_was_cut():
     assert len(_table_rows(body)) == 2
     assert "**1 regression** in the [2026-07-06 report ↗](" in body
     assert "**1** in the [2026-07-05 report ↗](" in body
-    assert "— the 2 most likely are shown above." in body
+    assert "— the 2 attributed to this PR at 80% or above are shown above." in body
 
 
 def test_one_reports_regressions_that_all_fit_earn_no_line_at_all():
@@ -1325,7 +1400,7 @@ def test_a_long_lineage_names_three_reports_and_counts_the_rest():
         )
         for day in range(9, 3, -1)
     ]
-    line = render_mod._reports_line(
+    line = table_mod._reports_line(
         9, 5, 5, observations, dashboard_url=_DASH,
     )
     assert line.startswith("**9 regressions** in the [2026-09-09 report ↗](")
@@ -1333,6 +1408,14 @@ def test_a_long_lineage_names_three_reports_and_counts_the_rest():
     assert "**7** in the [2026-09-07 report ↗](" in line
     assert "2026-09-06" not in line
     assert ", and 3 earlier reports — the 5 most likely are shown above." in line
+    # Drawn from the attributed pool, the line says how large that pool was.
+    line = table_mod._reports_line(
+        9, 5, 5, observations, dashboard_url=_DASH, attributed=7, min_score=70,
+    )
+    assert line.endswith(
+        "— the strongest 5 of the 7 attributed to this PR at 70% or above are "
+        "shown above."
+    )
 
 
 def test_a_single_drawn_row_is_named_in_the_singular():
@@ -1343,7 +1426,7 @@ def test_a_single_drawn_row_is_named_in_the_singular():
             up=4, down=0, none=0,
         )
     ]
-    line = render_mod._reports_line(
+    line = table_mod._reports_line(
         4, 1, 1, observations, dashboard_url=None,
     )
     assert line == (
@@ -1358,7 +1441,7 @@ def test_the_old_two_section_layout_is_gone():
     body = _comments(_report(allegro, idea), _blame([allegro, idea], [_candidate()]))[0].body
     assert "Also affected in this window" not in body
     assert "What moved" not in body
-    assert body.count("Regressions in this window") == 1
+    assert body.count("📊 **Regressions") == 1
 
 
 # ── The claim, and the withdrawal gate ────────────────────────────────────────
@@ -1388,7 +1471,8 @@ def test_one_row_above_the_threshold_is_enough_to_keep_the_comment():
     comments = _comments(_report(a, b), _blame([a, b], [_candidate()]),
                          attributor=attributor)
     assert len(comments) == 1
-    assert "12%" in _row(comments[0].body, "a_metric")
+    rows = _table_rows(comments[0].body)
+    assert len(rows) == 1 and "b_metric" in rows[0] and "81%" in rows[0]
 
 
 def test_a_row_the_review_left_alone_can_hold_the_comment_up():
@@ -1401,17 +1485,17 @@ def test_a_row_the_review_left_alone_can_hold_the_comment_up():
     attributor = _FakeAttributor({"r2": 20.0})   # r1 omitted, keeps its 91
     comments = _comments(_report(a, b), blame, attributor=attributor)
     assert len(comments) == 1
-    assert "91%" in _row(comments[0].body, "a_metric")
-    assert "20%" in _row(comments[0].body, "b_metric")
+    rows = _table_rows(comments[0].body)
+    assert len(rows) == 1 and "a_metric" in rows[0] and "91%" in rows[0]
 
 
 def test_a_partial_review_says_how_much_of_the_table_it_speaks_for():
-    # Otherwise a narrative about the one row the reviewer answered reads as the
-    # verdict on the rows above it that it never saw — a summary saying "this PR
-    # does not fit" printed over an untouched 91%.
+    # Otherwise a narrative about the rows the reviewer answered reads as the
+    # verdict on a row beside them that it never saw — a summary printed over
+    # an untouched first-pass 91%.
     a, b = _verdict(metric="a_metric"), _verdict(metric="b_metric")
     blame = _blame_of((a, [_candidate(score=91.0)]), (b, [_candidate(score=88.0)]))
-    attributor = _FakeAttributor({"r2": 20.0}, summary="This PR does not fit.")
+    attributor = _FakeAttributor({"r2": 85.0}, summary="This PR fits.")
     body = _comments(_report(a, b), blame, attributor=attributor)[0].body
     assert "This assessment covers 1 regression of the 2 current regressions shown" in body
     assert "keeps its first-pass state" in body
@@ -1584,13 +1668,14 @@ def test_the_alert_carries_the_strongest_likelihood_and_names_the_model():
         attributor=_FakeAttributor({"r1": 84.0}),
     )[0].body
     alert = _row(body, "nightly benchmarks confirmed")
-    assert "The AI reviewer estimates this PR is a likely contributor" in alert
-    assert "it scored the one regression at 84%" in alert
+    assert (
+        "confirmed a regression in the reports covering this PR's change window "
+        "that the AI reviewer attributes to this PR at 84%."
+    ) in alert
     # With no review configured the number is the ranker's, and says so.
     body = _comments(_report(v), _blame([v], [_candidate()]))[0].body
     alert = _row(body, "nightly benchmarks confirmed")
-    assert "The AI ranker estimates" in alert
-    assert "it scored the one regression at 91%" in alert
+    assert "that the AI ranker attributes to this PR at 91%." in alert
 
 
 def test_the_alert_counts_all_three_run_group_axes_and_reads_grammatically():
@@ -1603,13 +1688,14 @@ def test_the_alert_counts_all_three_run_group_axes_and_reads_grammatically():
     alert = _row(body, "nightly benchmarks confirmed")
     assert (
         "confirmed 2 regressions across 2 detector/platform/sample scopes in "
-        "the reports covering this PR's change window."
+        "the reports covering this PR's change window that the AI ranker "
+        "attributes to this PR at 80% or above (highest 91%)."
     ) in alert
 
 
-def test_the_alert_counts_the_rows_over_the_configured_threshold():
-    # Reach, not just the peak: one row at 95% out of four reads very
-    # differently from all four, and the alert is where that is decided.
+def test_the_alert_counts_only_the_rows_over_the_configured_threshold():
+    # The headline is about this PR: rows the review scored below the
+    # threshold are not in its count, and the association summary counts them.
     over = [_verdict(metric=f"hot{i}") for i in range(2)]
     under = [_verdict(metric=f"cool{i}") for i in range(2)]
     scores = {"r3": 95.0, "r4": 88.0, "r1": 40.0, "r2": 12.0}
@@ -1619,11 +1705,11 @@ def test_the_alert_counts_the_rows_over_the_configured_threshold():
     )[0].body
     alert = _row(body, "nightly benchmarks confirmed")
     assert (
-        "confirmed 4 regressions within one detector/platform/sample scope in "
-        "the reports covering this PR's change window."
+        "confirmed 2 regressions within one detector/platform/sample scope in "
+        "the reports covering this PR's change window that the AI reviewer "
+        "attributes to this PR at 80% or above (highest 95%)."
     ) in alert
-    assert "2 of the 4 regressions it scored are attributed to it at 80% or above" in alert
-    assert "the highest at 95%" in alert
+    assert "4 regressions" not in alert
 
     # The threshold is whatever the config set, never a hardcoded 80.
     body = _comments(
@@ -1631,13 +1717,14 @@ def test_the_alert_counts_the_rows_over_the_configured_threshold():
         policy=_policy(min_score=90), attributor=_FakeAttributor(scores),
     )[0].body
     alert = _row(body, "nightly benchmarks confirmed")
-    assert "1 of the 4 regressions it scored is attributed to it at 90% or above" in alert
+    assert "confirmed a regression in the reports covering this PR's change " \
+           "window that the AI reviewer attributes to this PR at 95%." in alert
 
 
 def test_the_alert_does_not_credit_the_reviewer_with_the_rankers_scores():
-    # A partial reply leaves rows at their per-configuration score. Those rows
-    # still show a percentage in the table, but the headline must not count them
-    # under the reviewer's name — the reviewer never spoke about them.
+    # A partial reply leaves rows at their per-configuration score. The headline
+    # must not count them under the reviewer's name — the reviewer never spoke
+    # about them — so it names both models.
     reviewed = [_verdict(metric=f"seen{i}") for i in range(2)]
     skipped = [_verdict(metric=f"unseen{i}") for i in range(2)]
     body = _comments(
@@ -1645,18 +1732,17 @@ def test_the_alert_does_not_credit_the_reviewer_with_the_rankers_scores():
         attributor=_FakeAttributor({"r1": 95.0, "r2": 88.0}),
     )[0].body
     alert = _row(body, "nightly benchmarks confirmed")
-    assert "The AI reviewer estimates" in alert
-    assert "2 of the 2 regressions it scored" in alert
     assert (
-        "Of the 2 regressions it did not score, 2 keep a first-pass ranker "
-        "score, 2 of them at 80% or above (highest 91%)."
+        "confirmed 4 regressions within one detector/platform/sample scope in "
+        "the reports covering this PR's change window that the AI reviewer "
+        "(or, for regressions it did not score, the first-pass AI ranker) "
+        "attributes to this PR at 80% or above (highest 95%)."
     ) in alert
 
 
-def test_the_ranker_clause_counts_against_every_row_the_review_skipped():
-    # Rows nobody scored belong to neither model, so they cannot be counted into
-    # the ranker's clause — but they *are* rows the review did not answer, so the
-    # denominator it counts against has to include them.
+def test_rows_nobody_scored_stay_out_of_the_headline_count():
+    # A row with no likelihood (here: not a candidate) belongs to neither model
+    # and is not attributed to this PR, so the headline does not count it.
     reviewed = _verdict(metric="aaa")
     carried = _verdict(metric="bbb")
     unscored = _verdict(metric="ccc")
@@ -1670,13 +1756,11 @@ def test_the_ranker_clause_counts_against_every_row_the_review_skipped():
         attributor=_FakeAttributor({"r1": 95.0}),
     )[0].body
     alert = _row(body, "nightly benchmarks confirmed")
-    assert "The AI reviewer estimates this PR is a likely contributor: it " \
-           "scored the one regression at 95%, at or above the 80% threshold." in alert
-    assert "Of the 2 regressions it did not score, 1 keeps a first-pass " \
-           "ranker score of 91%." in alert
+    assert "confirmed 2 regressions within one detector/platform/sample scope" in alert
+    assert "3 regressions" not in alert
 
 
-def test_ranker_reach_uses_the_full_regression_population():
+def test_the_ranker_alone_is_named_when_no_review_ran():
     scored = _verdict(metric="scored")
     unscored = _verdict(metric="unscored")
     rival = _candidate(number=77, repo="key4hep/DD4hep", title="Field map")
@@ -1686,16 +1770,17 @@ def test_ranker_reach_uses_the_full_regression_population():
     ))
     body = _comments(_report(scored, unscored), blame)[0].body
 
-    assert "1 of 2 regressions is attributed to it at 80% or above" in _row(
-        body, "nightly benchmarks confirmed"
-    )
+    assert (
+        "confirmed a regression in the reports covering this PR's change window "
+        "that the AI ranker attributes to this PR at 91%."
+    ) in _row(body, "nightly benchmarks confirmed")
 
 
 def test_a_review_that_clears_a_row_does_not_claim_a_likely_contributor():
     # The partial-disagreement case: the review answered one row and put it at
     # 20%, and the comment survives only because another row still carries the
-    # ranker's 91%. "The AI reviewer estimates this PR is a likely contributor:
-    # 0 of 1 it scored" would contradict itself and credit the wrong model.
+    # ranker's 91%. The claim is the ranker's, and the reviewer's disagreement
+    # is said beside it rather than hidden behind the threshold.
     reviewed = _verdict(metric="reviewed_metric")
     skipped = _verdict(metric="skipped_metric")
     body = _comments(
@@ -1703,11 +1788,10 @@ def test_a_review_that_clears_a_row_does_not_claim_a_likely_contributor():
         attributor=_FakeAttributor({"r2": 20.0}, summary="This PR does not fit."),
     )[0].body
     alert = _row(body, "nightly benchmarks confirmed")
-    assert "likely contributor" not in alert
-    assert "The AI reviewer scored 1 regression and put none at 80% or above " \
-           "(highest 20%)." in alert
-    assert "The one regression it did not score keeps a first-pass ranker " \
-           "score of 91%." in alert
+    assert "the AI reviewer attributes" not in alert
+    assert "that the first-pass AI ranker attributes to this PR at 91%." in alert
+    assert "The AI reviewer scored 1 other regression in this window and put " \
+           "none at 80% or above (highest 20%)." in alert
 
 
 @pytest.mark.parametrize(
@@ -1733,7 +1817,7 @@ def test_the_weak_preference_qualifier_sits_with_the_claim_it_qualifies():
     v = _verdict()
     other = _candidate(number=1180, repo="key4hep/DD4hep", score=86.0)
     body = _comments(_report(v), _blame([v], [_candidate(), other]))[0].body
-    assert body.index("weak preference") < body.index("Regressions in this window")
+    assert body.index("weak preference") < body.index("📊 **Regressions")
 
 
 def test_a_ranking_that_ran_against_this_pr_says_which_way_it_ran():
@@ -1770,6 +1854,57 @@ def test_a_clear_ranking_adds_no_caveat():
     other = _candidate(number=1180, repo="key4hep/DD4hep", score=22.0)
     body = _comments(_report(v), _blame([v], [_candidate(), other]))[0].body
     assert "weak preference" not in body
+
+
+def test_competitors_are_listed_with_the_scope_their_score_came_from():
+    report, blame = _two_detector_window()
+    body = _comments(report, blame, policy=_policy(min_score=70))[0].body
+    assert "| Pull request | Highest likelihood | Scored on |" in body
+    row = _row(body, f"AIDASoft/DD4hep#{_ZWSP}1715")
+    assert "| 94% | ILD_FCCee_v02 · e⁻ gun · 10 GeV |" in row
+    assert "highest 94% on ILD_FCCee_v02 · e⁻ gun · 10 GeV</summary>" in body
+
+
+def test_a_close_rival_in_the_same_ranking_call_still_earns_the_note():
+    report, blame = _two_detector_window()
+    idea, ild = (entry for entry in blame.entries)
+    close = replace(idea, repos=(replace(
+        idea.repos[0], candidates=(
+            idea.repos[0].candidates[0],
+            replace(idea.repos[0].candidates[1], score=80.0),
+        ),
+    ),))
+    body = _comments(
+        report, BlameReport("x", "2026-07-05", entries=(close, ild)),
+        policy=_policy(min_score=70),
+    )[0].body
+    assert "scored 5 points **higher** than this PR" in body
+
+
+def test_a_competitor_scored_on_another_detector_is_not_the_closest_rival():
+    # The DD4hep change's 94 answers which change explains ILD; on IDEA, the
+    # one ranking call that scored both, this PR leads 75 to 3. Comparing the
+    # 94 with the 75 told an author the ranker preferred someone else.
+    report, blame = _two_detector_window()
+    body = _comments(report, blame, policy=_policy(min_score=70))[0].body
+    assert "points **higher**" not in body
+    assert "weak preference" not in body
+    assert "judged this PR the most likely cause" in body
+
+
+def _two_detector_window():
+    """k4geo#683's shape: this PR leads on IDEA, where the DD4hep change scored
+    3, while the DD4hep change leads ILD at 94, where this PR scored 0."""
+    idea = _verdict(detector="IDEA_o1_v04", metric="median_time_s")
+    ild = _verdict(detector="ILD_FCCee_v02", metric="mean_time_s")
+    mine = _candidate(number=683, score=75.0)
+    dd4hep = _candidate(number=1715, repo="AIDASoft/DD4hep", score=94.0,
+                        title="Use std::call_once for MultipoleField")
+    blame = _blame_of(
+        (idea, [mine, replace(dd4hep, score=3.0)]),
+        (ild, [replace(mine, score=0.0), dd4hep]),
+    )
+    return _report(idea, ild), blame
 
 
 def test_body_names_a_human_to_contact():
@@ -1815,8 +1950,8 @@ def test_table_cells_survive_hostile_text():
     headline = replace(_candidate(number=2, score=95.0), description="Line one\nline two")
     body = _comments(_report(v), _blame([v], [headline, hostile]))[0].body
     row = _row(body, f"key4hep/k4geo#{_ZWSP}1 ")
-    # Two columns: the title's pipe is escaped, so it opens no third one.
-    assert row.replace("\\|", "").count("|") == 3
+    # Three columns: the title's pipe is escaped, so it opens no fourth one.
+    assert row.replace("\\|", "").count("|") == 4
     assert "a \\| b second line" in row  # pipe escaped, newline collapsed
     assert "Line one line two" in body  # the same for the quoted reason
 
@@ -1963,7 +2098,7 @@ def test_a_publisher_that_fails_costs_the_link_and_nothing_else():
     )[0].body
 
     assert "| Reproduce |" not in body
-    assert "📊 **Regressions in this window" in body
+    assert "📊 **Regressions attributed to this PR" in body
 
 
 def test_the_recipe_link_survives_the_write_boundary():
@@ -2035,6 +2170,7 @@ def test_every_shown_row_has_a_recipe_even_outside_the_hashed_set():
             (row, [_candidate(score=70.0 + n)])
             for n, row in enumerate(rows)
         )),
+        policy=_policy(min_score=70),
         run_info_for=_run_info_for()[0], reproducer_url_for=publish,
     )[0].body
 
@@ -2077,7 +2213,7 @@ def test_current_and_retained_rows_align_with_the_table_header(
     # k4geo #578 mixed current and retained rows sharing the comment's window.
     # An extra date cell in retained rows shifted changes and scores right,
     # leaving their recipes beyond the table's last column.
-    monkeypatch.setattr(render_mod, "_SHOW_PLATFORM_COLUMN", show_platform)
+    monkeypatch.setattr(table_mod, "_SHOW_PLATFORM_COLUMN", show_platform)
     past = replace(
         _verdict(
             metric="mean_rss_mb", label="baseline",
@@ -2499,7 +2635,9 @@ def test_a_regression_with_no_sidecar_entry_is_not_read_as_absence():
     assert facts["IDEA_o1_v03"].scope_state == "discovery_incomplete"
 
 
-def test_an_unscored_row_renders_as_unscored_rather_than_zero_percent():
+def test_an_unscored_row_stays_off_the_table():
+    # This change is not in the range behind the IDEA regression; the review
+    # is told so, but the table about this PR does not list it.
     allegro = _verdict(detector="ALLEGRO_o1_v03")
     idea = _verdict(detector="IDEA_o1_v03")
     blame = BlameReport("x", "2026-07-05", entries=(
@@ -2507,16 +2645,32 @@ def test_an_unscored_row_renders_as_unscored_rather_than_zero_percent():
         _entry_without(idea, [_candidate(number=77, repo="key4hep/DD4hep")]),
     ))
     body = _comments(_report(allegro, idea), blame)[0].body
-    # The row says *why* there is no number, since that reason argues for the
-    # reader: this change is not in the range behind that regression.
-    # Read from the table itself: the primary dashboard link above it names a
-    # detector in its href too, and it is not what this asserts about.
     rows = _table_rows(body)
-    attribution_cell = _row_of(rows, "IDEA_o1_v03").rsplit("|", 2)[1].strip()
-    assert attribution_cell == "_not a candidate_"
-    assert "92%" in _row_of(rows, "ALLEGRO_o1_v03")
-    # The claim leads the table; the unscored evidence follows it.
-    assert "ALLEGRO_o1_v03" in rows[0] and "IDEA_o1_v03" in rows[1]
+    assert len(rows) == 1
+    assert "ALLEGRO_o1_v03" in rows[0] and "92%" in rows[0]
+    assert "_not a candidate_" not in body
+
+
+def test_the_fallback_table_still_says_why_a_row_has_no_number():
+    # Only a window with nothing attributed shows every row, and then a row the
+    # pull request is not a candidate for says so rather than wearing a 0%.
+    allegro = _verdict(detector="ALLEGRO_o1_v03")
+    idea = _verdict(detector="IDEA_o1_v03")
+    blame = BlameReport("x", "2026-07-05", entries=(
+        _blame([allegro], [_candidate(score=92.0)]).entries[0],
+        _entry_without(idea, [_candidate(number=77, repo="key4hep/DD4hep")]),
+    ))
+    plan = _plans(_report(allegro, idea), blame, _policy())[0]
+    selection = table_mod._selected_rows(
+        sorted(plan.rows, key=lambda row: table_mod._row_sort_key(row, None)),
+        [], None, min_score=99,
+    )
+    assert not selection.attributed and selection.pool == 2
+    idea_row = next(
+        entry.current for entry in selection.rows
+        if entry.current.verdict.detector == "IDEA_o1_v03"
+    )
+    assert table_mod._likelihood_cell(idea_row, None) == "_not a candidate_"
 
 
 # ── The facts digest covers the deterministic evidence ────────────────────────
@@ -3523,7 +3677,7 @@ def _retained_rows_of(body: str) -> list[dict]:
 
 def _detail_rows(body: str) -> list[str]:
     """Only the regression table's rows, excluding later history tables."""
-    detail = body.split("📊 **Regressions in this window", 1)[1]
+    detail = body.split("📊 **Regressions", 1)[1]
     return [
         line for line in detail.splitlines()
         if line.startswith("| `") or line.startswith("| [`")
@@ -3668,7 +3822,8 @@ def test_a_retained_row_confirmed_again_tonight_uses_tonights_evidence():
 def test_a_retained_row_the_pr_is_no_longer_a_candidate_for_loses_its_score():
     # The sharpest supersede case: tonight the pipeline knows this change is not
     # even in the range behind the row. That deterministic fact outranks an old
-    # 88%, and must not be papered over by the snapshot.
+    # 88%, and must not be papered over by the snapshot — the row leaves the
+    # table rather than resurfacing with its old number.
     row_a, night_one = _dd4hep_night_one()
     other = _candidate(number=99, repo="key4hep/DD4hep", score=95.0)
     tonight = _drafts(
@@ -3684,7 +3839,7 @@ def test_a_retained_row_the_pr_is_no_longer_a_candidate_for_loses_its_score():
     body = tonight.render([night_one]).body
 
     assert "88%" not in body
-    assert "_not a candidate_" in _row(body, "mean_time_s")
+    assert not any("mean_time_s" in row for row in _table_rows(body))
 
 
 def test_an_unconfirmed_retained_row_keeps_ranking_below_a_stronger_current_row():
@@ -3772,10 +3927,10 @@ def test_association_summary_separates_likely_idea_rows_from_weak_cld_rows():
     def idea(sample):
         return [
             _verdict(
-                detector="IDEA_o2_v01", sample=sample, metric=metric,
-                label=f"config_{index}", base="2026-09-01", onset="2026-09-02",
+                detector="IDEA_o1_v03", sample=sample, metric=metric, label=label,
+                base="2026-09-01", onset="2026-09-02",
             )
-            for index in range(5)
+            for label in ("baseline", *(f"no_{i}" for i in range(4)))
             for metric in ("mean_rss_mb", "peak_rss_mb", "wall_time_s")
         ]
     pythia = idea("p8_ee_Zbb_ecm91")
@@ -3808,12 +3963,12 @@ def test_association_summary_separates_likely_idea_rows_from_weak_cld_rows():
     assert "mean_time_s" not in summary
     assert all("mean_rss_mb, peak_rss_mb, wall_time_s" in row for row in rows)
     assert "2026-09-04" in next(row for row in rows if "e⁻ gun" in row)
-    # But still counted, because the alert above states the union of all three.
+    # Still counted, here and only here: the alert counts the attributed ones.
     assert (
         "A further 2 regressions in 1 scope stayed below 70% and are not "
         "attributed to this PR (highest 2%)."
     ) in summary
-    assert "confirmed 32 regressions" in body
+    assert "confirmed 30 regressions across 2 detector/platform/sample scopes" in body
 
 
 def test_association_summary_keeps_unscored_scopes_explicit_and_is_bounded():
@@ -3825,8 +3980,8 @@ def test_association_summary_keeps_unscored_scopes_explicit_and_is_bounded():
         (None, "", "2026-09-03")
         for i in range(15)
     }
-    summary = render_mod._association_summary(state, 70, None)
-    assert summary.count("| not scored |") == render_mod._MAX_ASSOCIATION_SCOPES
+    summary = lineage_mod._association_summary(state, 70, None)
+    assert summary.count("| not scored |") == lineage_mod._MAX_ASSOCIATION_SCOPES
     assert "7 further scopes (7 regressions) are not listed above." in summary
     # The cap note must not claim attribution none of these rows has.
     assert "attributed to this PR" not in summary
@@ -3876,9 +4031,9 @@ def test_a_wide_night_caps_the_association_table_and_counts_the_rest():
         for i in range(20)
         for metric in ("mean_rss_mb", "peak_rss_mb")
     }
-    summary = render_mod._association_summary(state, 70, None)
+    summary = lineage_mod._association_summary(state, 70, None)
     rows = [line for line in summary.splitlines() if line.startswith("| detector_")]
-    assert len(rows) == render_mod._MAX_ASSOCIATION_SCOPES
+    assert len(rows) == lineage_mod._MAX_ASSOCIATION_SCOPES
     assert "12 further scopes (24 regressions) are not listed above." in summary
 
 
@@ -3890,17 +4045,14 @@ def test_the_association_summary_reads_after_the_table_it_generalizes():
         body.index("The AI reviewer's assessment")
         if "The AI reviewer's assessment" in body
         else body.index("The AI ranker judged")
-    ) < body.index("Regressions in this window")
-    assert body.index("Regressions in this window") < body.index(
+    ) < body.index("📊 **Regressions")
+    assert body.index("📊 **Regressions") < body.index(
         "Association with this PR"
     )
     # And below the whole details region — the table, the per-report line and
     # its link definitions — so the two "beyond these rows?" elements sit
     # together, with the hidden observation state after both.
     assert body.rindex("\n[r") < body.index("Association with this PR")
-    assert body.index("Report dates open the **full nightly report**") < body.index(
-        state_mod._OBSERVATION_PREFIX
-    )
 
 
 def test_retained_state_survives_a_run_of_material_versions_within_the_limit():
@@ -4137,7 +4289,7 @@ def test_headline_counts_the_unique_cumulative_union_not_snapshot_sums():
 
     alert = _row(second.body, "nightly benchmarks confirmed")
     assert "confirmed 3 regressions across 3 detector/platform/sample scopes" in alert
-    assert "3 of 3 regressions are attributed to it at 80% or above" in alert
+    assert "attributes to this PR at 80% or above (highest 91%)" in alert
     assert len(state_mod._cumulative_identities(second.body)) == 3
 
 
@@ -4156,12 +4308,15 @@ def test_the_alert_and_the_overflow_line_each_name_the_population_they_count():
     alert = _row(body, "nightly benchmarks confirmed")
     assert (
         "confirmed 12 regressions within one detector/platform/sample scope "
-        "in the reports covering this PR's change window."
+        "in the reports covering this PR's change window that"
     ) in alert
     assert "**6 regressions** in the [2026-07-06 report ↗](" in body
     # Every drawn row is counted, current and retained alike — the reader
     # counts lines on the page, not which half of the pool each came from.
-    assert f"— the {len(_table_rows(body))} most likely are shown above." in body
+    assert (
+        f"— the strongest {len(_table_rows(body))} of the 12 attributed to this "
+        "PR at 80% or above are shown above."
+    ) in body
 
 
 def test_converging_comments_union_every_parent_identity_once():
@@ -4202,7 +4357,7 @@ def test_converging_lineages_keep_every_report_that_supplied_a_visible_row():
     line = _row(merged.body, "regression** in the")
     for night in ("2026-09-05", "2026-09-04", "2026-09-03"):
         assert f"[{night} report ↗](" in line
-    assert line.endswith("— the 3 most likely are shown above.")
+    assert line.endswith("— the 3 attributed to this PR at 80% or above are shown above.")
 
 
 def test_the_survivor_wins_a_report_night_two_lineages_both_recorded():
@@ -4328,17 +4483,15 @@ def test_reconfirmed_identity_uses_its_newest_cumulative_attribution():
     )[0].render([first.body])
 
     alert = _row(latest.body, "nightly benchmarks confirmed")
-    assert "2 of 2 regressions are attributed to it at 80% or above" in alert
-    assert "highest at 82%" in alert
+    assert "confirmed 2 regressions" in alert
+    assert "(highest 82%)" in alert
     assert "95%" not in alert
 
 
-def test_the_unreviewed_count_is_taken_from_the_cumulative_population():
+def test_the_reviewer_and_ranker_split_is_taken_from_the_cumulative_population():
     # The reviewed scores come from the whole lineage while plan.rows is only
-    # tonight's; differencing those two populations went negative, and a
-    # negative "regressions it did not score" is read as truthy and rendered.
-    # Two reviewer-scored identities are retired, one ranker-only row is
-    # current, so the naive difference would be 1 - 2 = -1.
+    # tonight's. Two reviewer-scored identities are retired and one ranker-only
+    # row is current: the headline counts all three and names both models.
     a, b = _verdict(metric="a"), _verdict(metric="b")
     reviewer = _FakeAttributor(scores={f"r{n}": 95.0 - n for n in range(4)})
     first = _drafts(
@@ -4353,11 +4506,10 @@ def test_the_unreviewed_count_is_taken_from_the_cumulative_population():
     latest = _drafts(_report(c), _blame([c], [_candidate(score=82.0)]))[0].render([first.body])
 
     alert = _row(latest.body, "nightly benchmarks confirmed")
-    assert "3 regressions" in alert
-    # Three cumulative identities, two of them reviewer-scored, so exactly one
-    # is left for the ranker clause to speak about — never "-1".
+    assert "confirmed 3 regressions" in alert
+    assert "the AI reviewer (or, for regressions it did not score, the " \
+           "first-pass AI ranker) attributes" in alert
     assert "-1" not in alert
-    assert "The one regression it did not score" in alert
 
 
 def test_malformed_cumulative_state_falls_back_to_current_rows():
@@ -4406,7 +4558,7 @@ def test_the_globally_strongest_row_survives_more_onsets_than_the_table_shows():
     # strongest judgement of all sits on the oldest one.
     scores = {1: 95.0, 7: 75.0}
     blame = _blame_of(*(
-        (verdict, [_candidate(score=scores.get(day, 40.0))])
+        (verdict, [_candidate(score=scores.get(day, 72.0))])
         for day, verdict in enumerate(verdicts, start=1)
     ))
 
@@ -4416,7 +4568,7 @@ def test_the_globally_strongest_row_survives_more_onsets_than_the_table_shows():
     rows = _detail_rows(body)
     assert len(rows) == 5
     assert "m1" in rows[0] and "95%" in rows[0]
-    assert "the highest at 95%" in body or "at 95%" in body
+    assert "(highest 95%)" in body
     assert "2026-07-01" in _onsets_of(rows)
 
 
@@ -4438,10 +4590,14 @@ def test_an_undated_onset_never_costs_the_strongest_row_its_place():
           for day, verdict in enumerate(dated, start=1)),
         (undated, [_candidate(score=40.0)]),
     )
+    # Identity order: onset_1 … onset_7, then undated. The review attributes
+    # every row, so the undated one competes for a place.
+    review = {f"r{day}": scores.get(day, 72.0) for day in range(1, 8)}
+    review["r8"] = 72.0
 
     body = _comments(
         _report(*dated, undated, night="2026-07-09"), blame,
-        policy=_policy(min_score=70),
+        policy=_policy(min_score=70), attributor=_FakeAttributor(review),
     )[0].body
     rows = _detail_rows(body)
     assert len(rows) == 5
@@ -4524,8 +4680,7 @@ def test_the_dd4hep_lifecycle_keeps_its_leading_finding_across_three_nights():
     # Both clauses describe the three-identity cumulative union.
     alert = _row(body, "k4Bench's nightly benchmarks confirmed")
     assert "confirmed 3 regressions" in alert
-    assert "3 of 3 regressions are attributed to it at 80% or above" in alert
-    assert "highest at 88%" in alert
+    assert "attributes to this PR at 80% or above (highest 88%)" in alert
 
     # All three material versions are in the observation history, and both
     # bounded states stay inside their caps and GitHub's limit.

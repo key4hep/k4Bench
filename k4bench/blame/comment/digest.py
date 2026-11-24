@@ -21,7 +21,7 @@ from k4bench.blame.comment.markdown import (
     _one_line,
     _pct,
 )
-from k4bench.blame.comment.selection import (
+from k4bench.blame.comment.plan import (
     CommentPlan,
     _row_identity,
 )

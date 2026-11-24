@@ -23,24 +23,25 @@ from k4bench.blame.comment.digest import (
     Reproducers,
     _facts_payload,
 )
-from k4bench.blame.comment.render import (
+from k4bench.blame.comment.plan import (
+    CommentPlan,
+    RegressionRow,
+    _row_identity,
+)
+from k4bench.blame.comment.render import CommentDraft
+from k4bench.blame.comment.selection import (
+    _DEFAULT_MIN_SCORE,
+    _competitor,
+    _sorted_others,
+)
+from k4bench.blame.comment.state import marker_for
+from k4bench.blame.comment.table import (
     _TARGET_TABLE_ROWS,
-    CommentDraft,
     _likelihood,
     _onset_label,
     _row_sort_key,
     _selected_rows,
 )
-from k4bench.blame.comment.selection import (
-    _DEFAULT_MIN_SCORE,
-    CommentPlan,
-    RegressionRow,
-    _competitor,
-    _row_identity,
-    _sorted_others,
-)
-from k4bench.blame.comment.state import marker_for
-from k4bench.regression.render import report_views_url
 from k4bench.blame.evidence import history_from_verdict
 from k4bench.blame.geometry import compact_dir, detector_touches, geometry_tree
 from k4bench.blame.github import FilePatch, diff_sample
@@ -50,6 +51,7 @@ from k4bench.blame.prompt import movement
 from k4bench.blame.reproduce import RecipeFacts
 from k4bench.blame.reproduce import facts_from as reproducer_facts_from
 from k4bench.layout import stack_dir
+from k4bench.regression.render import report_views_url
 
 _log = logging.getLogger(__name__)
 
@@ -191,6 +193,7 @@ def build_comments(
         reproduce = _publish_reproducers(
             plan, attribution=attribution,
             run_info_for=run_info_for, reproducer_url_for=reproducer_url_for,
+            min_score=min_score,
         )
         comments.append(CommentDraft(
             repo=plan.repo,
@@ -247,6 +250,7 @@ def _publish_reproducers(
     attribution: Attribution | None,
     run_info_for: RunInfoFor | None,
     reproducer_url_for: ReproducerUrlFor | None,
+    min_score: float = _DEFAULT_MIN_SCORE,
 ) -> Reproducers | None:
     """Build and publish this comment's recipes.
 
@@ -269,7 +273,7 @@ def _publish_reproducers(
     )
     rendered = [
         entry.current
-        for entry in _selected_rows(by_likelihood, [], attribution)
+        for entry in _selected_rows(by_likelihood, [], attribution, min_score).rows
         if entry.current is not None
     ]
     ordered: dict[tuple, RegressionRow] = {}
