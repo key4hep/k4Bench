@@ -63,6 +63,11 @@ _CUMULATIVE_DIRECTIONS = frozenset({"UP", "DOWN", "NONE", ""})
 #: night it was withdrawn on. Kept for the life of the lineage, so the note it
 #: drives always accounts for every withdrawal, however many nights apart.
 _WITHDRAWN_PREFIX = "<!-- k4bench-blame-withdrawn:v1 "
+
+#: The attribution threshold a body was rendered under — what "attributed to
+#: this PR" meant when it was posted, which a later change to ``min_score``
+#: must not redefine for a claim already made.
+_THRESHOLD_PREFIX = "<!-- k4bench-blame-threshold:v1 "
 _MAX_CUMULATIVE_IDENTITIES = 10_000
 _MAX_CUMULATIVE_BYTES = 256_000
 
@@ -198,7 +203,9 @@ class LineageState:
     * ``retained`` — one snapshot per row identity, the newest confirmation
       winning;
     * ``withdrawn`` — every identity whose claim was withdrawn, with the
-      earliest night any body records for it.
+      earliest night any body records for it;
+    * ``threshold`` — the lowest attribution threshold any body was rendered
+      under, or ``None`` when none records one.
     """
 
     cumulative: dict[tuple, CumulativeEntry] = field(default_factory=dict)
@@ -208,6 +215,7 @@ class LineageState:
     omitted: int = 0
     retained: tuple[RetainedRow, ...] = ()
     withdrawn: dict[tuple, str] = field(default_factory=dict)
+    threshold: float | None = None
 
     @classmethod
     def from_bodies(cls, bodies: Sequence[str]) -> LineageState:
@@ -246,6 +254,10 @@ class LineageState:
             omitted=omitted,
             retained=tuple(_merged_retained(bodies)),
             withdrawn=_merged_withdrawn(bodies),
+            threshold=min(
+                (t for body in bodies if (t := _published_threshold(body)) is not None),
+                default=None,
+            ),
         )
 
 
@@ -436,6 +448,24 @@ def _decoded_cumulative(body: str) -> dict[tuple, CumulativeEntry]:
             likelihood, source, last_reported, direction,
         )
     return state
+
+
+def _threshold_marker(threshold: float) -> str:
+    """The hidden line recording the threshold a body is rendered under."""
+    return f"{_THRESHOLD_PREFIX}{threshold:g}{_MARKER_SUFFIX}"
+
+
+def _published_threshold(body: str) -> float | None:
+    """The threshold *body* records, or ``None`` for one written before the
+    marker existed or carrying anything but a number from 0 to 100."""
+    value = next(_marker_values(body, _THRESHOLD_PREFIX), None)
+    try:
+        threshold = float(value) if value is not None else None
+    except ValueError:
+        return None
+    if threshold is None or not math.isfinite(threshold) or not 0 <= threshold <= 100:
+        return None
+    return threshold
 
 
 def _withdrawn_marker(withdrawn: dict[tuple, str]) -> str:

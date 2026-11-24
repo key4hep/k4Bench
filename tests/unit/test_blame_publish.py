@@ -29,6 +29,7 @@ from k4bench.blame.comment.supersede import (
     placements,
     supersede_targets,
     superseded_body,
+    withdrawal_block,
 )
 from k4bench.blame.github import GitHubClient, IssueComment, RateLimitError
 from k4bench.blame.models import BlameEntry, BlameReport, CandidatePR, RepoBlame
@@ -1167,7 +1168,10 @@ def test_a_superseded_body_withdraws_the_claim_and_keeps_the_record():
     assert new.splitlines()[0] == body.splitlines()[0]
     assert "> **Withdrawn on 2026-07-06.** 1 regression this comment attributed " \
            "to this PR is now placed at or before release `2026-07-01`" in new
-    assert "The rest of this comment is kept as it was posted." in new
+    assert "The rest of this comment is kept as it was posted, including its " \
+           "score in the table." in new
+    assert "> - `wall_time_s` on ALLEGRO_o1_v03 · e⁻ gun · 10 GeV · `baseline` " \
+           "— withdrawn 2026-07-06" in new
     assert new.index("> [!NOTE]") < new.index("### ")
     # The hidden state no longer carries the score, so no later version can
     # resurface it; the posted text stays as the record it is.
@@ -1208,6 +1212,11 @@ def test_withdrawals_on_different_nights_add_up_in_one_note():
     elsewhere = frozenset({("aidasoft/dd4hep", 1715)})
 
     night_two = _withdraw(body, _moved())
+    # Only the moved row is named, so a reader can tell which of the table's
+    # scores no longer stands.
+    assert "> - `wall_time_s` on ALLEGRO_o1_v03" in night_two
+    assert "`mean_time_s` on" not in night_two
+
     both_moved = {**_moved(), mean: Placement("2026-06-30", elsewhere)}
     night_three = superseded_body(
         night_two, pr=_PR, suite="sim", tonight=both_moved, min_score=80,
@@ -1219,12 +1228,52 @@ def test_withdrawals_on_different_nights_add_up_in_one_note():
     }
     assert "> **Withdrawn between 2026-07-06 and 2026-07-07.** 2 regressions " \
            "this comment attributed to this PR are now placed" in night_three
+    listed = [line for line in night_three.splitlines() if line.startswith("> - ")]
+    assert listed == [
+        "> - `wall_time_s` on ALLEGRO_o1_v03 · e⁻ gun · 10 GeV · `baseline` — withdrawn 2026-07-06",
+        "> - `mean_time_s` on ALLEGRO_o1_v03 · e⁻ gun · 10 GeV · `baseline` — withdrawn 2026-07-07",
+    ]
     assert night_three.count("> **Withdrawn") == 1
     assert night_three.count("> [!NOTE]") == night_two.count("> [!NOTE]")
     assert superseded_body(
         night_three, pr=_PR, suite="sim", tonight=both_moved, min_score=80,
         report_night="2026-07-08",
     ) is None
+
+
+def test_a_claim_is_judged_at_the_threshold_it_was_published_under():
+    # Posted at 91% under the 80% threshold the body records. Raising the
+    # policy to 95% must not turn that published claim into a non-claim.
+    body = _posted()
+    assert state_mod._published_threshold(body) == 80
+    new = superseded_body(
+        body, pr=_PR, suite="sim", tonight=_moved(), min_score=95,
+        report_night="2026-07-06",
+    )
+    assert new is not None
+    assert state_mod._decoded_withdrawn(new) == {_ROW: "2026-07-06"}
+    # A body from before the threshold was recorded falls back to tonight's.
+    legacy = "\n".join(
+        line for line in body.splitlines()
+        if not line.startswith(state_mod._THRESHOLD_PREFIX)
+    )
+    assert superseded_body(
+        legacy, pr=_PR, suite="sim", tonight=_moved(), min_score=95,
+        report_night="2026-07-06",
+    ) is None
+    assert superseded_body(
+        legacy, pr=_PR, suite="sim", tonight=_moved(), min_score=80,
+        report_night="2026-07-06",
+    ) is not None
+
+
+def test_a_long_withdrawal_list_names_ten_and_counts_the_rest():
+    identities = {
+        ("D", _PLAT, "s", f"no_{index:02d}", "m", ""): "2026-07-06" for index in range(13)
+    }
+    block = withdrawal_block(identities, _WINDOW)
+    listed = [line for line in block if line.startswith("> - ")]
+    assert len(listed) == 11 and listed[-1] == "> - …and 3 more"
 
 
 def _supersede(gh, tonight, *, night="2026-07-06", targets=None, max_edits=10):

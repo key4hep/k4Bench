@@ -59,6 +59,7 @@ from k4bench.blame.comment.state import (
     _retained_identity,
     _retained_marker,
     _retained_sort_key,
+    _threshold_marker,
 )
 from k4bench.blame.comment.supersede import moved_before, withdrawal_block, withdrawn
 from k4bench.blame.comment.table import (
@@ -218,7 +219,9 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
     }
     if _iso_date(plan.report_night):
         for identity in sorted(moved):
-            if _was_attributed(identity, lineage, draft.min_score):
+            # A claim is judged at the threshold it was published under.
+            published = lineage.threshold if lineage.threshold is not None else draft.min_score
+            if _was_attributed(identity, lineage, published):
                 record.setdefault(identity, plan.report_night)
     unscored = moved | set(record)
     historical = sorted(
@@ -319,6 +322,7 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
             draft.marker,
             f"{_FACTS_MARKER_PREFIX}{digest} -->",
             cumulative_marker or None,
+            _threshold_marker(draft.min_score),
             *withdrawal_block(record, plan.window, noun=noun),
             "### 📊 Possible performance change traced to this pull request",
             "",

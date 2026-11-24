@@ -200,8 +200,9 @@ def supersede(
     no such comment gets nothing. Every thread is read before anything is
     written, and more edits than *max_edits* write none of them: a night that
     would withdraw that much is a sign the re-dating itself is wrong. A thread
-    that cannot be read, or an edit that fails, is counted as failed; the next
-    night's pass finds the same claims again, since nothing about them changed.
+    that cannot be read, or an edit that fails, is counted as failed; a later
+    night's pass finds the same claims again while the attribution is within
+    its sidecar horizon (:data:`~k4bench.blame.comment.supersede.HISTORY_NIGHTS`).
     Ownership is proven exactly as :func:`publish` proves it, and a dry run
     reads and writes nothing."""
     result = PublishResult()

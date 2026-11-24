@@ -2136,10 +2136,10 @@ def test_external_prose_cannot_carry_an_active_link():
     # The bot's *own* links — the dashboard views it renders itself — are
     # untouched: only quoted, externally-authored prose is defanged.
     assert f"]: {_DASH}" in body
-    # The only live HTML comments are the bot's own marker, digest, and the
-    # cumulative, retained-row and observation state; the one smuggled into the
-    # reason is broken by the same zero-width space.
-    assert body.count("<!--") == 5 and body.startswith("<!--")
+    # The only live HTML comments are the bot's own marker, digest, threshold,
+    # and the cumulative, retained-row and observation state; the one smuggled
+    # into the reason is broken by the same zero-width space.
+    assert body.count("<!--") == 6 and body.startswith("<!--")
 
 
 # ── Runnable reproducer ───────────────────────────────────────────────────────
@@ -5028,6 +5028,8 @@ def test_a_lineage_claim_moved_before_the_window_loses_its_score():
     assert "> **Withdrawn on 2026-07-06.** 1 regression this comment attributed " \
            "to this PR is now placed at or before release `2026-07-03`" in body
     assert "kept as it was posted" not in body
+    assert "> - `a_metric` on ALLEGRO_o1_v03 · e⁻ gun · 10 GeV · `baseline` " \
+           "— withdrawn 2026-07-06" in body
     assert body.index("> **Withdrawn") < body.index("### ")
     identity = ("ALLEGRO_o1_v03", _PLAT, "single_e-_10GeV", "baseline", "a_metric", "")
     assert state_mod._decoded_cumulative(body)[identity].likelihood is None

@@ -39,7 +39,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 
-from k4bench.blame.comment.markdown import REGRESSION, _count
+from k4bench.blame.comment.markdown import REGRESSION, _cell, _count
 from k4bench.blame.comment.state import (
     _CUMULATIVE_PREFIX,
     _RETAINED_PREFIX,
@@ -50,6 +50,7 @@ from k4bench.blame.comment.state import (
     _decoded_cumulative,
     _decoded_retained,
     _decoded_withdrawn,
+    _published_threshold,
     _retained_identity,
     _retained_marker,
     _verdict_identity,
@@ -57,11 +58,17 @@ from k4bench.blame.comment.state import (
     window_from_marker,
 )
 from k4bench.blame.models import BlameReport, CandidatePR
+from k4bench.labels import compact_sample, pretty_platform
 from k4bench.regression.models import NightlyReport
 
 #: The first visible line of the withdrawal note — how :func:`superseded_body`
 #: finds the note it replaces.
 _NOTE_LEAD = "> **Withdrawn"
+
+#: Withdrawn regressions the note names one by one before counting the rest —
+#: enough to tell a reader exactly which rows of a typical comment no longer
+#: stand, bounded because a sweep can withdraw hundreds at once.
+_MAX_LISTED = 10
 
 
 @dataclass(frozen=True)
@@ -140,8 +147,32 @@ def withdrawal_block(
         f"this PR; {'it is' if one else 'they are'} no longer attributed to it."
     )
     if kept_as_posted:
-        text += " The rest of this comment is kept as it was posted."
-    return [marker, "> [!NOTE]", text, ""]
+        text += (
+            " The rest of this comment is kept as it was posted, including "
+            f"{'its score' if one else 'their scores'} in the table."
+        )
+    ordered = sorted(withdrawn, key=lambda identity: (withdrawn[identity], identity))
+    platforms = {identity[1] for identity in withdrawn}
+    listed = [
+        f"> - {_identity_text(identity, platform=len(platforms) > 1)} — "
+        f"withdrawn {withdrawn[identity]}"
+        for identity in ordered[:_MAX_LISTED]
+    ]
+    if count > _MAX_LISTED:
+        listed.append(f"> - …and {count - _MAX_LISTED} more")
+    return [marker, "> [!NOTE]", text, ">", *listed, ""]
+
+
+def _identity_text(identity: tuple, *, platform: bool) -> str:
+    """One withdrawn regression as the table names it: metric and region,
+    detector, sample and configuration, and the platform when the note spans
+    several."""
+    detector, platform_name, sample, label, metric, sub_detector = identity
+    name = f"`{_cell(metric)}`" + (f" · {_cell(sub_detector)}" if sub_detector else "")
+    where = [_cell(detector), _cell(compact_sample(sample)), f"`{_cell(label)}`"]
+    if platform:
+        where.append(_cell(pretty_platform(platform_name)))
+    return f"{name} on {' · '.join(where)}"
 
 
 def superseded_body(
@@ -157,9 +188,12 @@ def superseded_body(
     when it has none.
 
     Only the bot's own *suite* comment is considered — its first line must be
-    that suite's window marker. Newly superseded identities join the body's
-    withdrawal record at *report_night*; the cumulative and retained hidden
-    states lose their scores; and the note is regenerated from the whole
+    that suite's window marker. A claim is one the body made at the threshold
+    it records having been rendered under, and only a body written before that
+    was recorded falls back to *min_score*: a later change to the policy does
+    not redefine what was already claimed. Newly superseded identities join
+    the body's withdrawal record at *report_night*; the cumulative and retained
+    hidden states lose their scores; and the note is regenerated from the whole
     record. Everything else is kept as posted. A claim withdrawn once has no
     score left to withdraw, so the same condition edits only once."""
     lines = body.splitlines()
@@ -168,10 +202,12 @@ def superseded_body(
     window = window_from_marker(lines[0], suite)
     if window is None:
         return None
+    published = _published_threshold(body)
+    threshold = published if published is not None else min_score
     cumulative = _decoded_cumulative(body)
     moved = {
         identity for identity, entry in cumulative.items()
-        if entry.likelihood is not None and entry.likelihood >= min_score
+        if entry.likelihood is not None and entry.likelihood >= threshold
         and moved_before(tonight.get(identity), window, pr)
     }
     if not moved:
@@ -197,8 +233,10 @@ def superseded_body(
         if line.startswith(_WITHDRAWN_PREFIX):
             continue
         if line == "> [!NOTE]" and index < len(lines) and lines[index].startswith(_NOTE_LEAD):
-            # The previous note and the blank line closing it.
-            index += 1
+            # The previous note — every quoted line of it — and the blank line
+            # closing it.
+            while index < len(lines) and lines[index].startswith(">"):
+                index += 1
             if index < len(lines) and not lines[index].strip():
                 index += 1
             continue
@@ -237,6 +275,9 @@ def withdrawn(
 #: window stays in every night's sidecar while the step is confirmed there, so
 #: the night before a move holds it; the margin is what lets a night whose
 #: edit failed — or whose pass did not run — be caught up on the next ones.
+#: It is a horizon, not a guarantee: there is no index of posted claims, so a
+#: step that stopped being confirmed for longer than this before it was
+#: re-dated, or a pass failing for longer, leaves its comment as posted.
 HISTORY_NIGHTS = 7
 
 
