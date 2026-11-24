@@ -33,6 +33,14 @@ from k4bench.blame.comment.state import (
 from k4bench.blame.reproduce import RecipeFacts
 
 
+#: Bumped whenever what the rendered body says changes, so a standing comment is
+#: repaired once into the new form even though its benchmark facts did not move.
+#: Report dates stay out of the digest, so later reconfirmations still do not
+#: edit. A comment is only revisited on a night that selects its pull request
+#: again; this cannot reach one whose regressions are no longer confirmed.
+_RENDER_VERSION = 5
+
+
 @dataclass(frozen=True)
 class Reproducers:
     """The recipes published for one comment, keyed by row identity.
@@ -131,10 +139,7 @@ def _facts_payload(
     alike, and identities here are user-supplied names.
     """
     payload = {
-        # Repair existing comments once after a change to what the rendered
-        # body says. Report dates remain excluded, so later reconfirmations do
-        # not edit.
-        "render_version": 4,
+        "render_version": _RENDER_VERSION,
         "window": [plan.base_release or "", plan.onset_release],
         "rows": [
             {

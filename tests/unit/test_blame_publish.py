@@ -20,6 +20,7 @@ from k4bench.blame.comment import (
     marker_for,
     select,
 )
+from k4bench.blame.comment import digest as digest_mod
 from k4bench.blame.github import GitHubClient, IssueComment, RateLimitError
 from k4bench.blame.models import BlameEntry, BlameReport, CandidatePR, RepoBlame
 from k4bench.blame.publish import publish
@@ -935,6 +936,29 @@ def test_an_evidence_rows_onset_moving_updates_the_standing_comment():
         _rendered([lead, _verdict(metric="mean_time_s", onset="2026-07-04",
                                   pct=0.14)], scores),
     ]).unchanged == ["key4hep/k4geo#7"]
+    assert not settled.updated
+
+
+def test_a_render_version_bump_repairs_a_standing_comment_exactly_once(monkeypatch):
+    # A comment posted by the previous renderer, on facts that have not moved
+    # since: the bump is the only thing that can bring it into the new form,
+    # and it must do so once, not on every later night.
+    rows = [_verdict(metric="wall_time_s", onset="2026-07-05", pct=0.20)]
+    scores = {"wall_time_s": 91.0}
+    with monkeypatch.context() as patch:
+        patch.setattr(digest_mod, "_RENDER_VERSION", digest_mod._RENDER_VERSION - 1)
+        old = _rendered(rows, scores).render()
+    current = _rendered(rows, scores)
+    assert old.facts_digest != current.render().facts_digest
+
+    gh = _FakeGitHub({7: [_mine(42, old.body)]})
+    result = publish(gh, [current])
+    assert result.updated == ["key4hep/k4geo#7"]
+    repaired = gh.updated[0][1]
+
+    settled = _FakeGitHub({7: [_mine(42, repaired)]})
+    again = publish(settled, [_rendered(rows, scores, night="2026-07-06")])
+    assert again.unchanged == ["key4hep/k4geo#7"]
     assert not settled.updated
 
 
