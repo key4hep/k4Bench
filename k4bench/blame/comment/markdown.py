@@ -23,6 +23,46 @@ def _pct(score: float) -> str:
     return f"{int(round(score))}%"
 
 
+#: What a comment calls the steps it counts. "Regression" only when every one
+#: of them went up; otherwise the neutral term, because a drop is no more an
+#: improvement than a rise is a regression
+#: (:class:`~k4bench.regression.models.Direction`), and calling a drop a
+#: regression is simply wrong.
+REGRESSION = "regression"
+PERFORMANCE_CHANGE = "performance change"
+
+
+def _noun_for(directions) -> str:
+    """:data:`REGRESSION` when every direction in *directions* is ``UP``, else
+    :data:`PERFORMANCE_CHANGE`."""
+    return REGRESSION if all(d == "UP" for d in directions) else PERFORMANCE_CHANGE
+
+
+def _capitalized(noun: str) -> str:
+    return noun[:1].upper() + noun[1:]
+
+
+#: The sign words :func:`_direction_detail` counts with, and their article.
+_SIGNS = (("decrease", "a"), ("increase", "an"), ("unsigned change", "an"))
+
+
+def _direction_detail(up: int, down: int, none: int = 0) -> str:
+    """``a decrease`` / ``an increase`` / ``all decreases`` /
+    ``221 decreases, 2 increases`` — the signs behind a count of performance
+    changes, largest first."""
+    parts = [
+        (n, word, article)
+        for n, (word, article) in zip((down, up, none), _SIGNS, strict=True) if n
+    ]
+    if sum(n for n, _, _ in parts) == 1:
+        _, word, article = parts[0]
+        return f"{article} {word}"
+    if len(parts) == 1:
+        return f"all {parts[0][1]}s"
+    parts.sort(key=lambda part: -part[0])
+    return ", ".join(_count(n, word) for n, word, _ in parts)
+
+
 def _count(n: int, noun: str) -> str:
     """``3 candidates`` / ``1 candidate`` — every noun this comment counts
     pluralises with a plain ``s``."""

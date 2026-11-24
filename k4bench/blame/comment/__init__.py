@@ -75,13 +75,15 @@ from k4bench.blame.comment.build import (
     build_comments,
 )
 from k4bench.blame.comment.digest import Reproducers
+from k4bench.blame.comment.plan import (
+    CommentPlan,
+    RegressionRow,
+)
 from k4bench.blame.comment.render import CommentDraft, PRComment
 from k4bench.blame.comment.selection import (
     CommentConfigError,
-    CommentPlan,
     CommentPolicy,
     CommentStormError,
-    RegressionRow,
     select,
 )
 from k4bench.blame.comment.state import (

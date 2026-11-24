@@ -267,16 +267,27 @@ that strictly contains an earlier one, or narrows one after evidence is revoked,
 is a newer view of that finding and updates it; non-containing windows remain
 separate findings.
 
-It opens with a warning alert giving both halves of the claim — what the
-runs in this comment lineage have measured, and what a model estimated from
-those rows. The regression and scope totals are exact cumulative unions of their
-identities across overlapping reports, not a sum of nightly counts; a regression
-reconfirmed on three nights is counted once and uses its newest published
-attribution. The attribution clause describes that same cumulative population:
-how many are attributed to this pull request at or above the configured
-`min_score`, and the strongest likelihood. Two numbers
-rather than one, because a single high score says nothing about reach: one row
-at 95% out of forty is a very different claim from thirty-eight of them. The
+It opens with a warning alert stating the claim: how many regressions the
+nightly benchmarks confirmed in this comment lineage's reports that a model
+attributes to this pull request at or above the configured `min_score`, across
+how many detector/platform/sample scopes, and the strongest likelihood. Only
+those are counted. The window's other regressions — on a wide night, hundreds of
+rows on detectors the change never reached — are not claims about this pull
+request; the association summary below counts them. The totals are exact
+cumulative unions of their identities across overlapping reports, not a sum of
+nightly counts; a regression reconfirmed on three nights is counted once and
+uses its newest published attribution. The alert names the model behind the
+scores: the reviewer, the first-pass ranker for rows the review did not answer,
+or both. When the comment stands only on first-pass scores while the review put
+everything it scored below the threshold, a second sentence says so. The steps
+are called **regressions** only when every one of them went up; otherwise the
+comment calls them **performance changes** and counts the increases and
+decreases, since a drop is neither a regression nor necessarily an improvement.
+When nothing attributed went up the alert is a note rather than a warning. Each
+cumulative identity records its step's direction, so the counts cover the whole
+union, not only the rows still on display; an identity recorded before
+directions were kept has an unknown sign, which leaves the signs unspelled and
+keeps the warning unless nothing the lineage observed went up. The
 threshold is named rather than called "certain" — it is the same configured
 number that decided the comment exists at all. Then comes the change window,
 labelled as **Key4hep releases** since the two dates are release dates and not
@@ -284,8 +295,11 @@ the days the benchmark ran.
 
 The reviewer's short account of the pattern follows, cut at a sentence end when
 it runs long. Below it sits a **table**
-of the regressions in that window — metric, detector, sample, benchmark
-configuration, how far it moved, and the attribution likelihood — ordered by
+of the regressions attributed to this pull request at or above the threshold —
+metric, detector, sample, benchmark configuration, how far it moved, and the
+attribution likelihood. A regression scored below it, unscored, or one the pull
+request is not a candidate for is not listed: under a caption naming this pull
+request it would read as part of the claim. Rows are ordered by
 likelihood, then with the `baseline` configuration first and the larger movement
 next where likelihoods tie: the review scores a scope as a whole, so its rows
 tie often, and the full detector is the row the claim is measured against. It
@@ -294,9 +308,10 @@ five rows, reserving in order: the **globally strongest row**, whatever its
 onset; the strongest currently confirmed row; one representative per onset the
 table covers; then the strongest rows remaining. The strongest row is reserved
 first because the alert quotes it — a table that hid the 95% row while the alert
-said "highest at 95%" would contradict itself. A row nobody scored — a
-regression this pull request was not even a candidate for
-— says "not scored" rather than 0%, which would claim a judgement no model made.
+said "highest 95%" would contradict itself. Only in the defensive case where
+no row reaches the threshold does the table fall back to every row of the
+window, and then a row nobody scored says "not scored" (or "not a candidate")
+rather than 0%, which would claim a judgement no model made.
 
 Each row carries its **own tightest change window** rather than the comment's.
 A containing window is the union of several steps, and a metric that settled
@@ -472,9 +487,8 @@ question.
 **Only scopes carrying at least one regression at or above the threshold get a
 row.** A scope the review scored down is not evidence about this pull request,
 and listing it beside the attributed ones invites a reader to weigh it as though
-it were. Those scopes are still counted in one line below the table — the alert
-states a union across every scope, and silently dropping them would leave that
-number unexplained. The table is bounded to eight scopes and four metrics per
+it were. Those scopes are still counted in one line below the table, so the
+window's full extent stays visible next to the attributed part of it. The table is bounded to eight scopes and four metrics per
 scope, with any surplus counted rather than pasted; in the defensive case where
 no scope reached the threshold, the scopes are named rather than leaving an
 empty table.
@@ -486,7 +500,8 @@ windows. The comment's evidence is assembled from several overlapping nightly
 snapshots, and a single total would hide which one each count came from. Three
 reports are named; a longer lineage counts the rest ("and 4 earlier reports"),
 which is what the observation history below is for. The line closes with how
-many rows the table drew, counting current and retained rows alike. It is
+many of the attributed rows the table drew, counting current and retained rows
+alike. It is
 omitted when one report's regressions all reached the table, where it would only
 restate the rows above it.
 
@@ -517,9 +532,12 @@ Report dates open that same full nightly report view; earlier observation links
 are migrated when the comment is next materially updated. A retained row's own
 metric link still opens the archived view for the night that row was last
 confirmed, scoped to its recorded sample, stack and window. Below
-that sit the other candidates in the window with their likelihoods, in a
-disclosure whose summary carries the count and the strongest competing score
-without being opened (capped at five, the rest counted). The candidates are
+that sit the other candidates in the window with their highest likelihood and
+the detector and sample it was scored on, in a disclosure whose summary carries
+the count and the strongest competing score without being opened (capped at
+five, the rest counted). The scope is shown because the first pass ranks each
+rank group on its own: a competitor's 94% on one detector answers which change
+explains *that* detector, not whether it outranks this pull request here. The candidates are
 named but never linked, so that section closes with somewhere to look instead:
 the **package diff for this window**, the Stack Changes view listing every
 tracked package that moved between the two releases — one link per build
@@ -561,8 +579,10 @@ Two rules run through the rendering:
 
 - **The comment never claims more than the models did.** Without a
   cross-configuration review it quotes the per-configuration ranker and says "the
-  most likely cause" only where this PR outranks every other candidate, saying in
-  words when the preference was thin — or ran against this PR.
+  most likely cause" only where this PR outranks every other candidate of the same
+  ranking call. It says in words when the preference was thin — or ran against
+  this PR — comparing only scores that one ranking call produced: the rank group
+  behind this PR's strongest score and the strongest other candidate there.
 - **Nobody is notified who did not need to be.** Competing candidates are named
   as inert `owner/repo#123` text, never as references GitHub would turn into a
   cross-reference on their timeline. Externally-authored prose (PR titles, both
