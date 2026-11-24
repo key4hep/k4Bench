@@ -283,7 +283,11 @@ everything it scored below the threshold, a second sentence says so. The steps
 are called **regressions** only when every one of them went up; otherwise the
 comment calls them **performance changes** and counts the increases and
 decreases, since a drop is neither a regression nor necessarily an improvement.
-When nothing attributed went up the alert is a note rather than a warning. The
+When nothing attributed went up the alert is a note rather than a warning. Each
+cumulative identity records its step's direction, so the counts cover the whole
+union, not only the rows still on display; an identity recorded before
+directions were kept has an unknown sign, which leaves the signs unspelled and
+keeps the warning unless nothing the lineage observed went up. The
 threshold is named rather than called "certain" — it is the same configured
 number that decided the comment exists at all. Then comes the change window,
 labelled as **Key4hep releases** since the two dates are release dates and not

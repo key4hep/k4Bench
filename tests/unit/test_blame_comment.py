@@ -14,6 +14,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
+import zlib
 from base64 import urlsafe_b64encode
 from dataclasses import replace
 from urllib.parse import parse_qs, quote, urlsplit
@@ -28,6 +29,7 @@ from k4bench.blame.attribute import (
 from k4bench.blame.attribute import StepAssessment as AttrStepAssessment
 from k4bench.blame.comment import build as build_mod
 from k4bench.blame.comment import lineage as lineage_mod
+from k4bench.blame.comment import markdown as render_markdown
 from k4bench.blame.comment import state as state_mod
 from k4bench.blame.comment import table as table_mod
 from k4bench.blame.comment.state import _decoded_cumulative
@@ -250,6 +252,121 @@ def test_mixed_directions_are_counted_and_keep_the_warning():
     assert body.count("> [!WARNING]") == 1
     assert "confirmed 2 performance changes (1 decrease, 1 increase) within one " \
            "detector/platform/sample scope" in alert
+
+
+def test_a_cumulative_entry_with_an_unknown_direction_word_voids_the_marker():
+    identity = ["A", _PLAT, "s", "baseline", "m", ""]
+    for direction, readable in (("DOWN", True), ("", True), ("SIDEWAYS", False), (3, False)):
+        raw = state_mod._canonical_json([[*identity, 91.0, "ranker", "2026-07-05", direction]])
+        body = state_mod._marker_line(
+            state_mod._CUMULATIVE_PREFIX, zlib.compress(raw, level=9),
+        )
+        assert bool(state_mod._decoded_cumulative(body)) is readable, direction
+
+
+def test_unrecorded_signs_keep_the_warning_when_the_lineage_saw_a_rise():
+    first = [
+        *_drops(2, night="2026-07-05"),
+        _verdict(metric="rise", label="baseline", pct=0.3),
+    ]
+    blame = _blame_of(*(
+        (row, [_candidate(score=91.0 if row.metric != "rise" else 10.0)])
+        for row in first
+    ))
+    previous = _legacy_cumulative(_drafts(_report(*first), blame)[0].render().body)
+    tonight = replace(_verdict(metric="tonight", pct=-0.2), direction=Direction.DOWN)
+    body = _drafts(
+        _report(tonight, night="2026-07-06"), _blame([tonight], [_candidate()]),
+    )[0].render([previous]).body
+    assert "> [!WARNING]" in body
+    assert "decrease" not in _row(body, "nightly benchmarks confirmed")
+
+
+def test_unrecorded_signs_are_not_read_as_rises_when_nothing_rose():
+    first = _drops(3, night="2026-07-05")
+    previous = _legacy_cumulative(
+        _drafts(_report(*first), _blame(first, [_candidate()]))[0].render().body
+    )
+    assert {e.direction for e in state_mod._decoded_cumulative(previous).values()} == {""}
+    tonight = replace(_verdict(metric="tonight", pct=-0.2), direction=Direction.DOWN)
+    body = _drafts(
+        _report(tonight, night="2026-07-06"), _blame([tonight], [_candidate()]),
+    )[0].render([previous]).body
+    alert = _row(body, "nightly benchmarks confirmed")
+    # Every report this lineage observed recorded only drops, so the unknown
+    # signs cannot be rises — but they are not spelled out either.
+    assert "> [!NOTE]\n> k4Bench's nightly benchmarks confirmed" in body
+    assert "[!WARNING]" not in body
+    assert "confirmed 4 performance changes within one" in alert
+    assert "decrease" not in alert
+
+
+def _legacy_cumulative(body: str) -> str:
+    """*body* with its cumulative marker rewritten in the nine-field form and its
+    retained snapshots dropped, as a comment posted before directions were
+    recorded reads once its rows have aged out."""
+    entries = state_mod._decoded_cumulative(body)
+    payload = [
+        [*identity, entry.likelihood, entry.source, entry.last_reported]
+        for identity, entry in sorted(entries.items())
+    ]
+    legacy = state_mod._marker_line(
+        state_mod._CUMULATIVE_PREFIX,
+        zlib.compress(state_mod._canonical_json(payload), level=9),
+    )
+    lines = []
+    for line in body.splitlines():
+        if line.startswith(state_mod._CUMULATIVE_PREFIX):
+            lines.append(legacy)
+        elif not line.startswith(state_mod._RETAINED_PREFIX):
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def test_drops_beyond_the_retained_cap_keep_their_signs_in_the_alert():
+    # The cumulative marker carries every identity, the retained snapshots only
+    # twenty. Signs read from the snapshots alone would miss five of these
+    # twenty-five drops and turn the note into a warning.
+    first = _drops(25, night="2026-07-05")
+    previous = _drafts(_report(*first), _blame(first, [_candidate()]))[0].render().body
+    assert len(state_mod._decoded_retained(previous)) < 25
+    tonight = replace(
+        _verdict(metric="tonight", label="baseline", pct=-0.2), direction=Direction.DOWN,
+    )
+    body = _drafts(
+        _report(tonight, night="2026-07-06"), _blame([tonight], [_candidate()]),
+    )[0].render([previous]).body
+    alert = _row(body, "nightly benchmarks confirmed")
+    assert "> [!NOTE]\n> k4Bench's nightly benchmarks confirmed" in body
+    assert "[!WARNING]" not in body
+    assert "confirmed 26 performance changes (all decreases)" in alert
+    assert all(
+        entry.direction == "DOWN"
+        for entry in state_mod._decoded_cumulative(body).values()
+    )
+
+
+def _drops(count, *, night):
+    return [
+        replace(
+            _verdict(metric=f"m{i}", label=f"no_Sub{i}", pct=-0.1),
+            direction=Direction.DOWN,
+        )
+        for i in range(count)
+    ]
+
+
+def test_a_single_attributed_rise_beside_a_drop_takes_its_article():
+    # The drop is not attributed, but it makes the comment's word "performance
+    # change", so the one attributed rise is spelled out — with "an".
+    rise = _verdict(metric="wall_time_s", pct=0.2)
+    drop = replace(_verdict(metric="peak_rss_mb", pct=-0.1), direction=Direction.DOWN)
+    blame = _blame_of((rise, [_candidate(score=91.0)]), (drop, [_candidate(score=10.0)]))
+    body = _comments(_report(rise, drop), blame)[0].body
+    assert "> [!WARNING]" in body
+    assert "confirmed a performance change (an increase) in the reports" in body
+    assert render_markdown._direction_detail(0, 0, 1) == "an unsigned change"
+    assert render_markdown._direction_detail(0, 1) == "a decrease"
 
 
 def test_one_sign_across_many_changes_is_said_once():
@@ -3977,7 +4094,7 @@ def test_association_summary_keeps_unscored_scopes_explicit_and_is_bounded():
     # instead, capped, and the surplus counted rather than pasted.
     state = {
         (f"detector_{i}", _PLAT, "sample", "baseline", "wall_time_s", ""):
-        (None, "", "2026-09-03")
+        state_mod.CumulativeEntry(None, "", "2026-09-03")
         for i in range(15)
     }
     summary = lineage_mod._association_summary(state, 70, None)
@@ -4027,7 +4144,7 @@ def test_the_package_diff_is_offered_not_claimed_as_the_candidates_provenance():
 def test_a_wide_night_caps_the_association_table_and_counts_the_rest():
     state = {
         (f"detector_{i}", _PLAT, "sample", "baseline", metric, ""):
-        (95.0, "reviewer", "2026-09-03")
+        state_mod.CumulativeEntry(95.0, "reviewer", "2026-09-03")
         for i in range(20)
         for metric in ("mean_rss_mb", "peak_rss_mb")
     }

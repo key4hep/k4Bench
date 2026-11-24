@@ -51,6 +51,7 @@ def _alert(
     n_attributed_scopes: int | None = None,
     noun: str = REGRESSION,
     directions: Counter[str] | None = None,
+    rises_seen: bool = True,
 ) -> str:
     """The headline claim as a GitHub alert: the regressions the benchmarks
     confirmed in this pull request's change window that a model attributes to
@@ -60,7 +61,10 @@ def _alert(
     When it is not "regression", *directions* — the signs of the attributed
     steps — are spelled out beside the count, and an attribution with no
     increase among them is a note rather than a warning: nothing got slower or
-    larger, and a warning box would say otherwise.
+    larger, and a warning box would say otherwise. *directions* counts entries
+    whose sign was never recorded as ``"unknown"``; those leave the signs
+    unspelled, and keep the warning unless *rises_seen* is false — nothing the
+    comment describes went up, so neither did they.
 
     It counts only those. The window's other regressions are not claims about
     this pull request — on a wide night they are hundreds of rows on detectors
@@ -130,7 +134,8 @@ def _alert(
         else f"at {_pct(min_score)} or above (highest {_pct(max(attributed))})"
     )
     signed = (
-        directions is not None and sum(directions.values()) == len(attributed)
+        directions is not None and not directions["unknown"]
+        and sum(directions.values()) == len(attributed)
     )
     detail = (
         _direction_detail(directions["UP"], directions["DOWN"], directions["NONE"])
@@ -146,7 +151,10 @@ def _alert(
             f"in this window and put none at {_pct(min_score)} or above "
             f"(highest {_pct(max(reviewed))})."
         )
-    kind = "NOTE" if signed and not directions["UP"] else "WARNING"
+    no_rise = directions is not None and not directions["UP"] and (
+        signed or (not rises_seen and sum(directions.values()) == len(attributed))
+    )
+    kind = "NOTE" if no_rise else "WARNING"
     return f"> [!{kind}]\n> " + " ".join(lines)
 
 

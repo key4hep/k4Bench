@@ -46,6 +46,7 @@ from k4bench.blame.comment.selection import (
     _DEFAULT_MIN_SCORE,
 )
 from k4bench.blame.comment.state import (
+    CumulativeEntry,
     _FACTS_MARKER_PREFIX,
     _MAX_OBSERVATIONS,
     CommentObservation,
@@ -59,7 +60,6 @@ from k4bench.blame.comment.state import (
     _retained_sort_key,
 )
 from k4bench.blame.comment.table import (
-    _likelihood,
     _link_definitions,
     _past_links,
     _row_links,
@@ -209,34 +209,39 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
         key=_retained_sort_key,
     )
     noun = _comment_noun(plan, historical, observations)
-    tonight = _attributed_directions(plan, attribution, [], draft.min_score)
-    directions = _attributed_directions(plan, attribution, historical, draft.min_score)
+    rises_seen = _rises_seen(plan, historical, observations)
 
     # Tonight's rows overlay the lineage's: a reconfirmed identity keeps only
-    # its newest published attribution.
-    cumulative = dict(lineage.cumulative)
-    for row in plan.rows:
-        cumulative[_row_identity(row)] = (
+    # its newest published attribution. Directions an older marker did not
+    # record are filled from the retained snapshots, which carry them.
+    cumulative = _cumulative_with_directions(lineage.cumulative, historical)
+    tonight = {
+        _row_identity(row): CumulativeEntry(
             *_score_source(row, attribution), plan.report_night,
+            _direction_of(row.verdict),
         )
+        for row in plan.rows
+    }
+    cumulative.update(tonight)
     cumulative_marker = _cumulative_marker(cumulative)
     payload = dict(draft.facts_payload)
     if cumulative_marker:
         identities = sorted(cumulative)
         scopes = len({identity[:3] for identity in identities})
-        reviewed = [score for score, source, _ in cumulative.values()
-                    if score is not None and source == "reviewer"]
-        carried = [score for score, source, _ in cumulative.values()
-                   if score is not None and source == "ranker"]
+        reviewed = [entry.likelihood for entry in cumulative.values()
+                    if entry.likelihood is not None and entry.source == "reviewer"]
+        carried = [entry.likelihood for entry in cumulative.values()
+                   if entry.likelihood is not None and entry.source == "ranker"]
         attributed_scopes = len({
-            identity[:3] for identity, (score, _source, _night) in cumulative.items()
-            if score is not None and score >= draft.min_score
+            identity[:3] for identity, entry in cumulative.items()
+            if entry.likelihood is not None and entry.likelihood >= draft.min_score
         })
         alert = _alert(
             plan, by_likelihood, attribution, min_score=draft.min_score,
             n_regressions=len(identities), n_scopes=scopes,
             scores=(reviewed, carried), n_attributed_scopes=attributed_scopes,
-            noun=noun, directions=directions,
+            noun=noun, directions=_attributed_directions(cumulative, draft.min_score),
+            rises_seen=rises_seen,
         )
         association = _association_summary(
             cumulative, draft.min_score, draft.dashboard_url, noun=noun,
@@ -253,14 +258,11 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
         # to counting tonight's report alone.
         alert = _alert(
             plan, by_likelihood, attribution, min_score=draft.min_score,
-            noun=noun, directions=tonight,
+            noun=noun, directions=_attributed_directions(tonight, draft.min_score),
+            rises_seen=rises_seen,
         )
         association = _association_summary(
-            {
-                _row_identity(row): (*_score_source(row, attribution), plan.report_night)
-                for row in plan.rows
-            },
-            draft.min_score, draft.dashboard_url, noun=noun,
+            tonight, draft.min_score, draft.dashboard_url, noun=noun,
         )
 
     region, shown_past = _details_region(
@@ -398,26 +400,46 @@ def _comment_noun(
     return _noun_for(directions)
 
 
-def _attributed_directions(
+def _rises_seen(
     plan: CommentPlan,
-    attribution: Attribution | None,
     historical: Sequence[RetainedRow],
-    min_score: float,
+    observations: Sequence[CommentObservation],
+) -> bool:
+    """Whether anything this comment describes went up — tonight's rows, the
+    retained ones, or any report the lineage observed. When nothing did, an
+    attributed step whose direction the marker never recorded cannot have been
+    a rise either."""
+    return (
+        any(_direction_of(row.verdict) == "UP" for row in plan.rows)
+        or any(row.direction == "UP" for row in historical)
+        or any(item.up for item in observations)
+    )
+
+
+def _cumulative_with_directions(
+    cumulative: dict[tuple, CumulativeEntry],
+    historical: Sequence[RetainedRow],
+) -> dict[tuple, CumulativeEntry]:
+    """The lineage's cumulative entries, with a direction the marker did not
+    record taken from the retained snapshot of the same identity."""
+    known = {_retained_identity(row): row.direction for row in historical}
+    return {
+        identity: entry if entry.direction else entry._replace(
+            direction=known.get(identity, ""),
+        )
+        for identity, entry in cumulative.items()
+    }
+
+
+def _attributed_directions(
+    cumulative: dict[tuple, CumulativeEntry], min_score: float,
 ) -> Counter[str]:
-    """The signs of the steps attributed to this pull request at or above
-    *min_score*: tonight's rows at their effective likelihood, and the
-    retained ones at their last published one."""
-    directions: Counter[str] = Counter(
-        _direction_of(row.verdict) for row in plan.rows
-        if (likelihood := _likelihood(row, attribution)) is not None
-        and likelihood >= min_score
+    """The signs of the steps attributed at or above *min_score*, with
+    ``"unknown"`` counting entries whose direction was never recorded."""
+    return Counter(
+        entry.direction or "unknown" for entry in cumulative.values()
+        if entry.likelihood is not None and entry.likelihood >= min_score
     )
-    directions.update(
-        row.direction for row in historical
-        if row.state != "not_candidate" and row.likelihood is not None
-        and row.likelihood >= min_score
-    )
-    return directions
 
 
 def _merged_observations(

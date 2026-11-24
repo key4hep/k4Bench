@@ -25,6 +25,7 @@ from k4bench.blame.comment.plan import (
     _row_identity,
 )
 from k4bench.blame.comment.state import (
+    CumulativeEntry,
     _MARKER_SUFFIX,
     _MAX_RETAINED_ROWS,
     _OMITTED_OBSERVATIONS_PREFIX,
@@ -55,7 +56,7 @@ _MAX_ASSOCIATION_METRICS = 4
 
 
 def _association_summary(
-    state: dict[tuple, tuple[float | None, str, str]],
+    state: dict[tuple, CumulativeEntry],
     min_score: float,
     dashboard_url: str | None,
     *,
@@ -71,8 +72,10 @@ def _association_summary(
     below, because the alert above states a union that has to reconcile.
     """
     grouped: dict[tuple, list[tuple]] = {}
-    for identity, (score, source, night) in state.items():
-        grouped.setdefault(identity[:3], []).append((identity, score, source, night))
+    for identity, entry in state.items():
+        grouped.setdefault(identity[:3], []).append(
+            (identity, entry.likelihood, entry.source, entry.last_reported),
+        )
 
     def attributed_in(entries: list[tuple]) -> int:
         return sum(

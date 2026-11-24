@@ -42,20 +42,25 @@ def _capitalized(noun: str) -> str:
     return noun[:1].upper() + noun[1:]
 
 
+#: The sign words :func:`_direction_detail` counts with, and their article.
+_SIGNS = (("decrease", "a"), ("increase", "an"), ("unsigned change", "an"))
+
+
 def _direction_detail(up: int, down: int, none: int = 0) -> str:
-    """``a decrease`` / ``all decreases`` / ``221 decreases, 2 increases`` — the
-    signs behind a count of performance changes, largest first."""
+    """``a decrease`` / ``an increase`` / ``all decreases`` /
+    ``221 decreases, 2 increases`` — the signs behind a count of performance
+    changes, largest first."""
     parts = [
-        (n, word) for n, word in (
-            (down, "decrease"), (up, "increase"), (none, "unsigned change"),
-        ) if n
+        (n, word, article)
+        for n, (word, article) in zip((down, up, none), _SIGNS, strict=True) if n
     ]
-    if sum(n for n, _ in parts) == 1:
-        return f"a {parts[0][1]}"
+    if sum(n for n, _, _ in parts) == 1:
+        _, word, article = parts[0]
+        return f"{article} {word}"
     if len(parts) == 1:
         return f"all {parts[0][1]}s"
     parts.sort(key=lambda part: -part[0])
-    return ", ".join(_count(n, word) for n, word in parts)
+    return ", ".join(_count(n, word) for n, word, _ in parts)
 
 
 def _count(n: int, noun: str) -> str:

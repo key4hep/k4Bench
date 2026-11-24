@@ -20,6 +20,7 @@ import zlib
 from base64 import b64decode, urlsafe_b64encode
 from collections.abc import Iterator, Sequence
 from dataclasses import asdict, dataclass, field
+from typing import NamedTuple
 from datetime import date
 from urllib.parse import urlsplit
 
@@ -52,6 +53,10 @@ _OMITTED_OBSERVATIONS_PREFIX = "<!-- k4bench-blame-observations-omitted:v1 "
 #: that vocabulary changes — an unreadable marker costs one lineage's merged
 #: state, where a misread one silently doubles every row it carries.
 _CUMULATIVE_PREFIX = "<!-- k4bench-blame-cumulative:v2 "
+
+#: The directions a cumulative entry may record; ``""`` is an entry written
+#: before directions were recorded, whose sign is unknown.
+_CUMULATIVE_DIRECTIONS = frozenset({"UP", "DOWN", "NONE", ""})
 _MAX_CUMULATIVE_IDENTITIES = 10_000
 _MAX_CUMULATIVE_BYTES = 256_000
 
@@ -161,6 +166,18 @@ class RetainedRow:
     recipe: str = ""
 
 
+class CumulativeEntry(NamedTuple):
+    """One regression identity as the cumulative marker records it: its newest
+    published attribution, who produced it, the report it was last published
+    from, and the step's direction (``""`` when the entry predates directions
+    being recorded)."""
+
+    likelihood: float | None
+    source: str
+    last_reported: str
+    direction: str = ""
+
+
 @dataclass(frozen=True)
 class LineageState:
     """The hidden state carried by the comments already posted in one lineage,
@@ -176,7 +193,7 @@ class LineageState:
       winning.
     """
 
-    cumulative: dict[tuple, tuple[float | None, str, str]] = field(default_factory=dict)
+    cumulative: dict[tuple, CumulativeEntry] = field(default_factory=dict)
     observations: dict[tuple[str, ChangeWindow], CommentObservation] = field(
         default_factory=dict
     )
@@ -185,12 +202,23 @@ class LineageState:
 
     @classmethod
     def from_bodies(cls, bodies: Sequence[str]) -> LineageState:
-        cumulative: dict[tuple, tuple[float | None, str, str]] = {}
+        cumulative: dict[tuple, CumulativeEntry] = {}
         for body in bodies:
             for identity, recorded in _decoded_cumulative(body).items():
                 kept = cumulative.get(identity)
-                if kept is None or recorded[2] > kept[2]:
+                if kept is None:
                     cumulative[identity] = recorded
+                    continue
+                newer, older = (
+                    (recorded, kept) if recorded.last_reported > kept.last_reported
+                    else (kept, recorded)
+                )
+                # A direction is a fact about the step, not about the night it
+                # was published, so an older entry's known sign fills a newer
+                # entry that predates directions being recorded.
+                cumulative[identity] = newer._replace(
+                    direction=newer.direction or older.direction,
+                )
         # Absorbed lineages first, so the survivor wins an exact (night, window)
         # collision: that pair really is one finding recorded twice, and the
         # lineage this comment continues is the one to believe.
@@ -323,14 +351,12 @@ def _marker_data(encoded: str) -> bytes | None:
         return None
 
 
-def _cumulative_marker(
-    state: dict[tuple, tuple[float | None, str, str]]
-) -> str:
+def _cumulative_marker(state: dict[tuple, CumulativeEntry]) -> str:
     if len(state) > _MAX_CUMULATIVE_IDENTITIES:
         return ""
     payload = [
-        [*identity, likelihood, source, last_reported]
-        for identity, (likelihood, source, last_reported) in sorted(state.items())
+        [*identity, entry.likelihood, entry.source, entry.last_reported, entry.direction]
+        for identity, entry in sorted(state.items())
     ]
     raw = _canonical_json(payload)
     if len(raw) > _MAX_CUMULATIVE_BYTES:
@@ -344,12 +370,13 @@ def _cumulative_marker(
     return marker
 
 
-def _decoded_cumulative(
-    body: str,
-) -> dict[tuple, tuple[float | None, str, str]]:
+def _decoded_cumulative(body: str) -> dict[tuple, CumulativeEntry]:
     """The identities a posted body carries — or nothing for a marker that fails
     a single check, read from the first cumulative line only. Decompression is
-    bounded, so a hostile marker cannot expand past the cap the writer obeys."""
+    bounded, so a hostile marker cannot expand past the cap the writer obeys.
+
+    An entry is nine fields, or ten with its direction; a nine-field entry was
+    written before directions were recorded and reads with an unknown one."""
     encoded = next(_marker_values(body, _CUMULATIVE_PREFIX), None)
     compressed = _marker_data(encoded) if encoded is not None else None
     if compressed is None:
@@ -373,14 +400,17 @@ def _decoded_cumulative(
     for value in values:
         if (
             not isinstance(value, list)
-            or len(value) != 9
+            or len(value) not in (9, 10)
             or not all(
                 isinstance(part, str) and len(part) <= 2048
                 for part in value[:6]
             )
         ):
             return {}
-        likelihood, source, last_reported = value[6:]
+        likelihood, source, last_reported, *rest = value[6:]
+        direction = rest[0] if rest else ""
+        if not isinstance(direction, str) or direction not in _CUMULATIVE_DIRECTIONS:
+            return {}
         if likelihood is not None and (
             isinstance(likelihood, bool)
             or not isinstance(likelihood, (int, float))
@@ -392,7 +422,9 @@ def _decoded_cumulative(
             last_reported, str
         ) or len(last_reported) > 64:
             return {}
-        state[tuple(value[:6])] = (likelihood, source, last_reported)
+        state[tuple(value[:6])] = CumulativeEntry(
+            likelihood, source, last_reported, direction,
+        )
     return state
 
 
