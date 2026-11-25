@@ -1194,10 +1194,17 @@ def group_report_from_run_dirs(
     )
     if group is None:
         return None
-    # A night that wrote no result CSV has no release in its (absent) rows;
-    # run_info still names the stack that failed.
+    # A night that wrote no result CSV has no provenance in its (absent) rows;
+    # run_info still names the stack that failed, the CI run that ran it and
+    # the geometry it loaded. The CI run is what ties the night to its batch
+    # (_same_batch, report_covers_run): without it a fan-out whose every job
+    # failed before writing a CSV reads as one that uploaded nothing.
     if not group.k4h_release:
         group.k4h_release = tonight_meta["k4h_release"] or ""
+    if not group.github_run_url:
+        group.github_run_url = tonight_meta["github_run_url"] or None
+    if not group.geometry_path:
+        group.geometry_path = tonight_meta["xml_path"] or ""
     return _DECOMPOSITIONS[suite](
         group, run_dirs, judgeable_config_keys(results_df), predecessor=before,
     )
