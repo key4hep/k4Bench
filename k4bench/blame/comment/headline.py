@@ -329,9 +329,25 @@ def _coverage_note(
     unreviewed = sum(1 for row in rows if row.fact_id not in attribution.likelihoods)
     if not unreviewed:
         return ""
+    # A row a joint review left unanswered keeps no score
+    # (:attr:`~k4bench.blame.attribute.Attribution.withheld`), so the caveat
+    # must not promise one for it.
+    withheld = sum(1 for row in rows if row.fact_id in attribution.withheld)
+    if withheld == unreviewed:
+        rest = "anything it did not answer is shown without a score"
+    elif withheld:
+        rest = (
+            "anything it did not answer keeps its first-pass state, and its "
+            "score where there is one, except what it was asked and left "
+            "unanswered, which is shown without one"
+        )
+    else:
+        rest = (
+            "anything it did not answer keeps its first-pass state, and its "
+            "score where there is one"
+        )
     return (
         f"\n>\n> <sub>This assessment covers "
         f"{_count(len(rows) - unreviewed, noun)} of the {len(rows)} "
-        f"current {noun}s shown; anything it did not answer keeps its "
-        "first-pass state, and its score where there is one.</sub>"
+        f"current {noun}s shown; {rest}.</sub>"
     )

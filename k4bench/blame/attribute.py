@@ -385,6 +385,14 @@ class Attribution:
     #: their final likelihoods for that row. Empty from a single review, and
     #: for rows the joint review judged to have several causes.
     alternatives: dict[str, tuple[tuple[str, float], ...]] = field(default_factory=dict)
+    #: Offered rows a joint review left unanswered after its follow-ups. They
+    #: show no likelihood rather than falling back to the first pass's: the
+    #: other pull requests in the window were judged on them jointly, and a
+    #: first-pass score beside those would be two readings of one movement
+    #: (:func:`k4bench.blame.comment.table._likelihood`). Empty from a single
+    #: review, and never the rows past :data:`_MAX_ATTRIBUTED_ROWS`, which no
+    #: review was offered.
+    withheld: frozenset[str] = frozenset()
 
     @property
     def top_score(self) -> float:
@@ -661,6 +669,7 @@ class OpenAICompatAttributor:
             assessment=attribution.assessment,
             scopes=attribution.scopes,
             alternatives=attribution.alternatives,
+            withheld=attribution.withheld,
         )
 
 

@@ -384,20 +384,40 @@ def _reviews(
 
     fetch = patch_for or (lambda _repo, _number: "")
     body_fetch = body_for or (lambda _repo, _number: "")
-    groups: dict[tuple, list[tuple[CommentPlan, AttributionRequest]]] = {}
+    # Grouped by window *before* any request is assembled: a member whose
+    # request cannot be built would otherwise drop out of its group and leave
+    # the rest to be reviewed — and posted — without it, which is the partial
+    # joint review the all-or-nothing rule exists to refuse.
+    windows: dict[tuple, list[CommentPlan]] = {}
     for plan in plans:
-        try:
-            request = _attribution_request(plan, fetch, body_fetch, files_for)
-        except Exception as exc:  # noqa: BLE001 — a diff fetch must not lose the comment
+        windows.setdefault((plan.suite, plan.base_release, plan.onset_release), []).append(plan)
+    groups: list[list[tuple[CommentPlan, AttributionRequest]]] = []
+    for members in windows.values():
+        group: list[tuple[CommentPlan, AttributionRequest | None]] = []
+        for plan in members:
+            try:
+                request = _attribution_request(plan, fetch, body_fetch, files_for)
+            except Exception as exc:  # noqa: BLE001 — a diff fetch must not lose the comment
+                _log.warning(
+                    "build_comments: %s — could not assemble the review request (%s); "
+                    "no review, so no comment tonight", plan.target, exc,
+                )
+                request = None
+            group.append((plan, request))
+        if len(group) > 1 and any(request is None for _plan, request in group):
             _log.warning(
-                "build_comments: %s — could not assemble the review request (%s); "
-                "no review, so no comment tonight", plan.target, exc,
+                "build_comments: %s — a request in this window could not be "
+                "assembled; no review for any of them tonight",
+                ", ".join(plan.target for plan, _request in group),
             )
-            out[id(plan)] = (None, None)
+            for plan, request in group:
+                out[id(plan)] = (None, request)
             continue
-        key = (plan.suite, plan.base_release, plan.onset_release)
-        groups.setdefault(key, []).append((plan, request))
-    for group in groups.values():
+        if group[0][1] is None:
+            out[id(group[0][0])] = (None, None)
+            continue
+        groups.append(group)  # type: ignore[arg-type]
+    for group in groups:
         requests = [request for _plan, request in group]
         if joinable(requests):
             try:

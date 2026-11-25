@@ -69,17 +69,25 @@ can be its cause, and a group is named only when that holds for every row of
 the scope its members are likely for; a likely pull request in no group is an
 **independent** contribution. When a comment's attributed regressions have a
 competing explanation that also clears `min_score`, the comment says so under
-its assessment, naming the other pull request inertly.
+its assessment, naming the other pull request inertly. A pull request that is
+not a candidate for a regression is never named as its competing explanation,
+whatever the reviewer scored it: the complete candidate search outranks the
+model there, as it does in the table.
 
 The joint review is one unit. Verdicts or summaries the reply leaves out are
 re-asked **jointly** — the window again, with the earlier answers as context —
 and the competing explanations are read off the final scores. A joint review
 that still cannot answer every pull request under review, or whose call fails,
 is a review that did not answer: no comment in that window is posted or edited
-that night, exactly as for a single review. Falling back to independent reviews
-would post the very contradiction the joint review exists to prevent. Only a
-window with one selected pull request, or whose pull requests were not offered
-the same rows and sweeps, is reviewed one pull request at a time.
+that night, exactly as for a single review. The same holds when the review
+request of any pull request in the window cannot be assembled. Falling back to
+independent reviews would post the very contradiction the joint review exists
+to prevent. A regression the joint review was offered but still left
+unanswered for one pull request shows no score in that pull request's comment,
+rather than its first-pass score: that would be a second reading of a movement
+the other pull requests were judged on jointly. Only a window with one
+selected pull request, or whose pull requests were not offered the same rows
+and sweeps, is reviewed one pull request at a time.
 
 Which pull requests are reviewed together is not part of a comment's facts
 digest: it follows the night's selection, which moves with first-pass scores.

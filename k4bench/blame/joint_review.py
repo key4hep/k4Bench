@@ -364,11 +364,13 @@ def _earlier_lines(
     """The reply so far, as context a follow-up round must stand by, and what
     it is asked to add."""
     lines = ["", "Your earlier reply already answered part of this window, and those answers stand:"]
+    rows_of = _scope_rows(requests[0])
     for request in requests:
         label = names[request.slug]
         answer = earlier.answers.get(request.slug) if earlier is not None else None
         judged = ", ".join(
-            f"{j.scope_id} {j.likelihood:.0f}" for j in (answer.scopes if answer else ())
+            f"{j.scope_id} {j.likelihood:.0f}" + _override_note(j, rows_of, answer)
+            for j in (answer.scopes if answer else ())
         )
         lines.append(f"  - {label} ({request.slug}): {judged or 'no scope verdicts yet'}")
         if answer is not None and answer.summary:
@@ -401,6 +403,25 @@ def _earlier_lines(
         f"still missing: {'; '.join(wanted)}."
     )
     return lines
+
+
+def _override_note(
+    judgement: ScopeJudgement, rows_of: dict[str, set[str]], answer: _Answer,
+) -> str:
+    """`` (r3 40, r7 12)``: the rows of a judged scope whose answer differs from
+    the scope's own — the earlier reply's overrides, so a follow-up stands by
+    them too."""
+    overrides = sorted(
+        (
+            (row_id, score) for row_id in rows_of.get(judgement.scope_id, ())
+            if (score := answer.likelihoods.get(row_id)) is not None
+            and score != judgement.likelihood
+        ),
+        key=lambda item: _id_order(item[0]),
+    )
+    if not overrides:
+        return ""
+    return " (" + ", ".join(f"{row_id} {score:.0f}" for row_id, score in overrides) + ")"
 
 
 _JOINT_FORMAT = (
@@ -595,21 +616,37 @@ def _missing(
 
 
 def _alternatives(
-    request: AttributionRequest, reply: _JointReply,
+    request: AttributionRequest,
+    reply: _JointReply,
+    requests: Sequence[AttributionRequest],
 ) -> dict[str, tuple[tuple[str, float], ...]]:
     """``row id -> ((slug, likelihood), …)``: for each row *request* was scored
     on, the pull requests named with it in a competing group of the row's scope
-    and their likelihoods for that row — read from the final, merged answers."""
+    and their likelihoods for that row — read from the final, merged answers.
+
+    A pull request that is *not a candidate* for a row is never its competing
+    explanation, whatever the reply scored it: the complete candidate search
+    put it outside the commit range behind that regression, and that outranks a
+    model's opinion here exactly as it does in the table
+    (:func:`k4bench.blame.comment.table._likelihood`). The same holds for
+    *request*'s own rows."""
+    excluded = {
+        r.slug: {f.id for f in _attributed_facts(r) if f.scope_state == "not_candidate"}
+        for r in requests
+    }
     ids = scope_ids(_attributed_facts(request))
     scope_of = {f.id: ids[_fact_scope(f)] for f in _attributed_facts(request)}
     out: dict[str, tuple[tuple[str, float], ...]] = {}
     for row_id in reply.answers[request.slug].likelihoods:
+        if row_id in excluded[request.slug]:
+            continue
         rivals = sorted({
             slug
             for group in reply.competing.get(scope_of.get(row_id, ""), ())
             if request.slug in group
             for slug in group
             if slug != request.slug and row_id in reply.answers[slug].likelihoods
+            and row_id not in excluded[slug]
         })
         if rivals:
             out[row_id] = tuple(
@@ -656,7 +693,10 @@ def _attributions(
         out[request.slug] = Attribution(
             summary=answer.summary, likelihoods=dict(answer.likelihoods),
             assessment=reply.assessment, scopes=tuple(answer.scopes),
-            alternatives=_alternatives(request, reply),
+            alternatives=_alternatives(request, reply, requests),
+            withheld=frozenset(
+                f.id for f in _attributed_facts(request) if f.id not in answer.likelihoods
+            ),
         )
     return out
 
@@ -684,8 +724,10 @@ def review_jointly(
     Every pull request in *requests* answered, or ``{}``: a call that fails, a
     reply without a step assessment, and a pull request still without a verdict
     or a summary after the follow-ups all decline the whole window. Rows still
-    unanswered for a pull request that is otherwise answered keep their
-    first-pass score, exactly as in the single review."""
+    unanswered for a pull request that is otherwise answered are *withheld*
+    (:attr:`~k4bench.blame.attribute.Attribution.withheld`): they show no
+    score at all, rather than a first-pass score that is a different reading
+    of the evidence from the one the other pull requests were judged by."""
     if not joinable(requests):
         return {}
     group = ", ".join(r.slug for r in requests)

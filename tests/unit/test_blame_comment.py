@@ -5088,10 +5088,12 @@ class _FakeJointAttributor(_FakeAttributor):
     slug to the likelihoods its joint answer carries (absent = not answered),
     and ``alternatives`` to the rows' alternative explanations."""
 
-    def __init__(self, joint=None, *, alternatives=None, joint_raises=None, **kw):
+    def __init__(self, joint=None, *, alternatives=None, withheld=None,
+                 joint_raises=None, **kw):
         super().__init__(**kw)
         self.joint = joint or {}
         self.alternatives = alternatives or {}
+        self.withheld = withheld or {}
         self.joint_raises = joint_raises
         self.joint_requests: list = []
 
@@ -5104,6 +5106,7 @@ class _FakeJointAttributor(_FakeAttributor):
                 summary=f"Joint reading number {request.number}.",
                 likelihoods=dict(self.joint[request.slug]),
                 alternatives=self.alternatives.get(request.slug, {}),
+                withheld=frozenset(self.withheld.get(request.slug, ())),
             )
             for request in requests if request.slug in self.joint
         }
@@ -5368,3 +5371,113 @@ def test_a_follow_up_that_adds_nothing_declines_the_joint_review():
     client = _ScriptedClient(_joint_reply(p2=False, p2_summary=False), {"scopes": []})
     assert OpenAICompatAttributor(client=client).attribute_jointly(requests) == {}
     assert len(client.calls) == 2
+
+
+def _two_scopes_one_window(*, second_candidate_on_idea=True):
+    allegro = _verdict()
+    idea = _verdict(detector="IDEA_o1_v03")
+    first, second = _candidate(), _candidate(number=1300, title="Second change")
+    blame = _blame_of(
+        (allegro, [first, second]),
+        (idea, [first, second] if second_candidate_on_idea else [first]),
+    )
+    return _report(allegro, idea), blame
+
+
+def test_a_pull_request_that_is_not_a_candidate_is_never_named_a_competing_explanation():
+    from k4bench.blame.joint_review import parse_joint
+
+    report, blame = _two_scopes_one_window(second_candidate_on_idea=False)
+    requests = [
+        build_mod._attribution_request(plan, lambda r, n: "", lambda r, n: "")
+        for plan in _plans(report, blame)
+    ]
+    excluded = {f.id for f in requests[1].regressions if f.scope_state == "not_candidate"}
+    assert len(excluded) == 1
+    both = {"pr": "P1", "likelihood": 92}, {"pr": "P2", "likelihood": 88}
+    reply = {
+        "step_assessment": {"verdict": "real_change", "reason": "A clear step."},
+        "scopes": [
+            {"scope": sid, "verdicts": list(both), "competing": [["P1", "P2"]]}
+            for sid in ("S1", "S2")
+        ],
+        "summaries": {"P1": "One.", "P2": "Two."},
+    }
+    first = parse_joint(json.dumps(reply), requests)["key4hep/k4geo#1234"]
+    # The complete candidate search outranks the reply's 88 on that row.
+    assert set(first.alternatives) == {f.id for f in requests[0].regressions} - excluded
+    assert all(
+        rivals == (("key4hep/k4geo#1300", 88.0),) for rivals in first.alternatives.values()
+    )
+
+
+def test_a_window_member_whose_request_cannot_be_built_declines_the_whole_window(monkeypatch):
+    report, blame = _two_in_one_window()
+    real = build_mod._attribution_request
+
+    def flaky(plan, *args, **kw):
+        if plan.number == 1300:
+            raise RuntimeError("historical evidence unavailable")
+        return real(plan, *args, **kw)
+
+    monkeypatch.setattr(build_mod, "_attribution_request", flaky)
+    attributor = _FakeJointAttributor(
+        {"key4hep/k4geo#1234": {"r1": 90.0}}, scores={"r1": 88.0},
+    )
+    assert _comments(report, blame, attributor=attributor) == []
+    assert attributor.requests == [] and attributor.joint_requests == []
+
+
+def test_a_row_the_joint_review_left_unanswered_shows_no_first_pass_score():
+    report, blame = _two_scopes_one_window()
+    rows = {r.verdict.detector: r.fact_id for r in _plans(report, blame)[0].rows}
+    allegro, idea = rows["ALLEGRO_o1_v03"], rows["IDEA_o1_v03"]
+    joint = {
+        "key4hep/k4geo#1234": {allegro: 90.0, idea: 90.0},
+        "key4hep/k4geo#1300": {allegro: 85.0},
+    }
+    withheld = _FakeJointAttributor(joint, withheld={"key4hep/k4geo#1300": {idea}})
+    bodies = {c.number: c.body for c in _comments(report, blame, attributor=withheld)}
+    # Only the jointly scored row: the first pass's 91 on IDEA is not set
+    # beside the joint reading that judged the other pull request there.
+    assert len(_table_rows(bodies[1300])) == 1
+    assert "85%" in _table_rows(bodies[1300])[0]
+
+    kept = _FakeJointAttributor(joint)
+    bodies = {c.number: c.body for c in _comments(report, blame, attributor=kept)}
+    assert len(_table_rows(bodies[1300])) == 2
+
+
+def test_the_adapter_withholds_rows_still_unanswered_after_the_follow_ups():
+    from k4bench.blame.attribute import OpenAICompatAttributor
+
+    report, blame = _two_scopes_one_window()
+    requests = [
+        build_mod._attribution_request(plan, lambda r, n: "", lambda r, n: "")
+        for plan in _plans(report, blame)
+    ]
+    reply = {
+        "step_assessment": {"verdict": "real_change", "reason": "A clear step."},
+        "scopes": [
+            {"scope": "S1", "verdicts": [{"pr": "P1", "likelihood": 90},
+                                         {"pr": "P2", "likelihood": 85}]},
+            {"scope": "S2", "verdicts": [{"pr": "P1", "likelihood": 90}]},
+        ],
+        "summaries": {"P1": "One.", "P2": "Two."},
+    }
+    client = _ScriptedClient(reply, {"scopes": []})
+    answered = OpenAICompatAttributor(client=client).attribute_jointly(requests)
+    assert len(client.calls) == 2
+    second = answered["key4hep/k4geo#1300"]
+    assert second.withheld and second.withheld.isdisjoint(second.likelihoods)
+    assert answered["key4hep/k4geo#1234"].withheld == frozenset()
+
+
+def test_a_follow_up_is_shown_the_earlier_row_overrides():
+    from k4bench.blame.joint_review import _missing, _parse_round, build_joint_prompt
+
+    requests = _joint_requests()
+    reply = _parse_round(json.dumps(_joint_reply(p2_summary=False)), requests)
+    prompt = build_joint_prompt(requests, earlier=reply, missing=_missing(reply, requests))
+    assert "  - P2 (key4hep/k4geo#1300): S1 75 (r1 85)" in prompt
+    assert "still missing: P2's summary." in prompt
