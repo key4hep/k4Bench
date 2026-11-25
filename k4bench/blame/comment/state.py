@@ -69,6 +69,18 @@ _WITHDRAWN_PREFIX = "<!-- k4bench-blame-withdrawn:v1 "
 #: this PR" meant when it was posted, which a later change to ``min_score``
 #: must not redefine for a claim already made.
 _THRESHOLD_PREFIX = "<!-- k4bench-blame-threshold:v1 "
+
+#: The pull requests the published assessment was reviewed jointly with
+#: (:mod:`k4bench.blame.joint_review`), as ``owner/repo#n`` — the review context
+#: of *this* body, not of every version before it. Absent for an independent
+#: review. See :func:`k4bench.blame.comment.render._review_context` for how it
+#: decides an edit.
+_REVIEWED_WITH_PREFIX = "<!-- k4bench-blame-reviewed-with:v1 "
+
+#: How many co-reviewed pull requests, and how long a slug, the marker carries —
+#: bounds for a decoder reading a body anyone can edit.
+_MAX_REVIEWED_WITH = 64
+_MAX_SLUG_CHARS = 200
 _MAX_CUMULATIVE_IDENTITIES = 10_000
 _MAX_CUMULATIVE_BYTES = 256_000
 
@@ -206,7 +218,10 @@ class LineageState:
     * ``withdrawn`` — every identity whose claim was withdrawn, with the
       earliest night any body records for it;
     * ``threshold`` — the lowest attribution threshold any body was rendered
-      under, or ``None`` when none records one.
+      under, or ``None`` when none records one;
+    * ``reviewed_with`` — the pull requests the published comment's assessment
+      was reviewed jointly with, read from the comment being edited (the first
+      body) alone, and ``published_digest`` — that comment's facts digest.
     """
 
     cumulative: dict[tuple, CumulativeEntry] = field(default_factory=dict)
@@ -217,6 +232,8 @@ class LineageState:
     retained: tuple[RetainedRow, ...] = ()
     withdrawn: dict[tuple, str] = field(default_factory=dict)
     threshold: float | None = None
+    reviewed_with: frozenset[str] = frozenset()
+    published_digest: str = ""
 
     @classmethod
     def from_bodies(cls, bodies: Sequence[str]) -> LineageState:
@@ -259,6 +276,8 @@ class LineageState:
                 (t for body in bodies if (t := _published_threshold(body)) is not None),
                 default=None,
             ),
+            reviewed_with=_decoded_reviewed_with(bodies[0]) if bodies else frozenset(),
+            published_digest=(facts_digest_of(bodies[0]) or "") if bodies else "",
         )
 
 
@@ -527,6 +546,35 @@ def _decoded_withdrawn(body: str) -> dict[tuple, str]:
             return {}
         withdrawn[tuple(value[:6])] = value[6]
     return withdrawn
+
+
+def _reviewed_with_marker(slugs: frozenset[str] | set[str]) -> str:
+    """The co-reviewed pull requests as one hidden line, or ``""`` for none or
+    for a set past the decoder's bounds."""
+    if not slugs or len(slugs) > _MAX_REVIEWED_WITH or any(
+        len(slug) > _MAX_SLUG_CHARS for slug in slugs
+    ):
+        return ""
+    return _marker_line(_REVIEWED_WITH_PREFIX, _canonical_json(sorted(slugs)))
+
+
+def _decoded_reviewed_with(body: str) -> frozenset[str]:
+    """The co-reviewed pull requests a posted body records — or none for a
+    marker that fails a single check."""
+    encoded = next(_marker_values(body, _REVIEWED_WITH_PREFIX), None)
+    data = _marker_data(encoded) if encoded is not None else None
+    if data is None or len(data) > _MAX_REVIEWED_WITH * (_MAX_SLUG_CHARS + 3) + 2:
+        return frozenset()
+    try:
+        values = json.loads(data)
+    except ValueError:
+        return frozenset()
+    if (
+        not isinstance(values, list) or len(values) > _MAX_REVIEWED_WITH
+        or not all(isinstance(v, str) and 0 < len(v) <= _MAX_SLUG_CHARS for v in values)
+    ):
+        return frozenset()
+    return frozenset(values)
 
 
 def _merged_withdrawn(bodies: Sequence[str]) -> dict[tuple, str]:

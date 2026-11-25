@@ -37,7 +37,7 @@ from k4bench.blame.reproduce import RecipeFacts
 #: Report dates stay out of the digest, so later reconfirmations still do not
 #: edit. A comment is only revisited on a night that selects its pull request
 #: again; this cannot reach one whose regressions are no longer confirmed.
-_RENDER_VERSION = 5
+_RENDER_VERSION = 6
 
 
 @dataclass(frozen=True)
@@ -122,6 +122,17 @@ def _facts_payload(
     re-notifying everyone watching a pull request. (Whether a candidate was
     scored *at all* is a different thing, and is in: it changes the table cell
     and the prompt from a percentage to "not scored".)
+
+    **Which pull requests were reviewed jointly with this one**
+    (:mod:`k4bench.blame.joint_review`) is not in this payload but is added at
+    render time (:func:`k4bench.blame.comment.render._review_context`), against
+    the context the published comment records: a review that adds a pull
+    request the published assessment was not reviewed with edits the comment;
+    one that adds none keeps the published context in the hash. Tonight's set
+    alone would be model drift by another door — it is the night's *selection*,
+    a first-pass score crossing ``min_score``, re-run every night — and a
+    competitor hovering at the threshold would edit the comment each time it
+    joined and left.
 
     **Also out, and less obviously so**: ``value``, ``baseline_median`` and
     ``z_score``. They are deterministic and they do reach the review's prompt,

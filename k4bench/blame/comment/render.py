@@ -18,6 +18,7 @@ from typing import Any
 
 from k4bench.blame.attribute import Attribution
 from k4bench.blame.comment.competitors import (
+    _alternatives_note,
     _crowded_note,
     _others_section,
 )
@@ -59,6 +60,7 @@ from k4bench.blame.comment.state import (
     _retained_identity,
     _retained_marker,
     _retained_sort_key,
+    _reviewed_with_marker,
     _threshold_marker,
 )
 from k4bench.blame.comment.supersede import moved_before, withdrawal_block, withdrawn
@@ -143,6 +145,9 @@ class CommentDraft:
     dashboard_url: str | None = None
     min_score: float = _DEFAULT_MIN_SCORE
     keyed_by_facts: bool = True
+    #: The other pull requests tonight's joint review judged together with
+    #: this one (:mod:`k4bench.blame.joint_review`); empty for a single review.
+    reviewed_with: tuple[str, ...] = ()
 
     @property
     def target(self) -> str:
@@ -166,6 +171,47 @@ class CommentDraft:
         return _render(self, LineageState.from_bodies(previous_bodies))
 
 
+def _review_context(
+    draft: CommentDraft,
+    lineage: LineageState,
+    payload: dict[str, Any],
+    retained: list[dict[str, Any]],
+) -> tuple[frozenset[str], str]:
+    """The review context this body records, and its facts digest.
+
+    The context is the set of pull requests the assessment was reviewed jointly
+    with. A tonight that adds one the published comment's assessment was not
+    reviewed with is a materially different review — its reading can contest
+    the one standing — and edits the comment. One that adds none (the same
+    group, part of it, or an independent review) does not edit on its own:
+    selection follows first-pass scores that are re-run nightly, so a
+    competitor hovering at ``min_score`` would otherwise edit the comment every
+    time it joined and left. The published context is then kept in the hash —
+    unless the comment is edited anyway, for a change in its facts, in which
+    case the new body says tonight's context, the one its assessment was
+    actually reviewed in, so a later joint review can replace it again.
+
+    A context too large for its marker (:func:`_reviewed_with_marker`) is
+    treated as none, in the hash and the body alike, so a marker that cannot be
+    written can never make every later night look like a new context."""
+    def bounded(slugs: frozenset[str]) -> frozenset[str]:
+        return slugs if _reviewed_with_marker(slugs) else frozenset()
+
+    def digest(context: frozenset[str]) -> str:
+        data = dict(payload)
+        if context:
+            data["reviewed_with"] = sorted(context)
+        return _digest_from(data, retained)
+
+    tonight = bounded(frozenset(draft.reviewed_with))
+    standing = bounded(lineage.reviewed_with)
+    if lineage.published_digest and tonight <= standing:
+        kept = digest(standing)
+        if kept == lineage.published_digest:
+            return standing, kept
+    return tonight, digest(tonight)
+
+
 def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
     """One draft as a GitHub-flavoured Markdown comment, given its lineage.
 
@@ -187,7 +233,10 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
       render, their frozen facts and their standing in tonight's report are
       deterministic inputs a reader can see — while a retained row's mere
       heartbeat (tonight's date) is not;
-    * the **observation history** carries every material version forward.
+    * the **observation history** carries every material version forward;
+    * the **review context** — which pull requests the assessment was reviewed
+      jointly with — is hashed as :func:`_review_context` settles it against
+      the published comment's.
 
     Archive links pin the report being rendered. Report dates stay outside the
     digest, so they alone never make an unchanged regression re-notify a pull
@@ -302,7 +351,9 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
         reproduce=draft.reproduce, observations=observations,
         min_score=draft.min_score, noun=noun,
     )
-    digest = _digest_from(payload, [_retained_fact(row) for row in shown_past])
+    reviewed_with, digest = _review_context(
+        draft, lineage, payload, [_retained_fact(row) for row in shown_past],
+    )
 
     history = None
     if draft.observation is not None:
@@ -323,6 +374,7 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
             f"{_FACTS_MARKER_PREFIX}{digest} -->",
             cumulative_marker or None,
             _threshold_marker(draft.min_score),
+            _reviewed_with_marker(reviewed_with) or None,
             *withdrawal_block(record, plan.window, noun=noun),
             "### 📊 Possible performance change traced to this pull request",
             "",
@@ -396,6 +448,7 @@ def _details_region(
                 plan, by_likelihood, attribution, rendered=shown_current, noun=noun,
             ),
             _crowded_note(plan),
+            _alternatives_note(plan, attribution, min_score),
             _table(
                 plan, by_likelihood, attribution,
                 selection=selection, links=links, past_links=past_links,

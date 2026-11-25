@@ -379,6 +379,12 @@ class Attribution:
     likelihoods: dict[str, float]  # RegressionFact.id -> 0-100
     assessment: StepAssessment | None = None
     scopes: tuple[ScopeJudgement, ...] = ()
+    #: ``RegressionFact.id -> ((owner/repo#n, likelihood), …)`` — the other pull
+    #: requests a joint review (:mod:`k4bench.blame.joint_review`) named as
+    #: *competing* explanations of the same movement in the row's scope, with
+    #: their final likelihoods for that row. Empty from a single review, and
+    #: for rows the joint review judged to have several causes.
+    alternatives: dict[str, tuple[tuple[str, float], ...]] = field(default_factory=dict)
 
     @property
     def top_score(self) -> float:
@@ -545,6 +551,21 @@ class OpenAICompatAttributor:
             return None
         return self._complete(request, attribution)
 
+    def attribute_jointly(
+        self, requests: Sequence[AttributionRequest], *, min_score: float | None = None,
+    ) -> dict[str, Attribution]:
+        """Review *requests* — several pull requests selected in one window —
+        together (:func:`k4bench.blame.joint_review.review_jointly`), keyed by
+        slug: every one of them answered, or ``{}``, and the caller then posts
+        nothing for the window tonight. Answers the first reply left out are
+        re-asked jointly, never through one pull request's own review.
+        *min_score*, the comment threshold, lowers the likelihood at which a
+        relation must be stated when it is below the score bands' default."""
+        from k4bench.blame.joint_review import _RELATION_FLOOR, review_jointly
+
+        floor = _RELATION_FLOOR if min_score is None else min(_RELATION_FLOOR, min_score)
+        return review_jointly(self.client, requests, relation_floor=floor)
+
     def _complete(
         self, request: AttributionRequest, attribution: Attribution
     ) -> Attribution:
@@ -642,6 +663,7 @@ class OpenAICompatAttributor:
             likelihoods=likelihoods,
             assessment=attribution.assessment,
             scopes=attribution.scopes,
+            alternatives=attribution.alternatives,
         )
 
 
@@ -1129,8 +1151,11 @@ def _competitor_lines(
     budgets: list[int],
     by_detector: dict[str, list[ScopeSweep]] | None = None,
     described: dict[tuple[str, str, str], str] | None = None,
+    *,
+    joint: bool = False,
 ) -> list[str]:
-    """The rest of the window, each with the first pass's reading of it.
+    """The rest of the window, each with the first pass's reading of it —
+    worded for several pull requests under review when *joint*.
 
     This block is what turns "is this PR guilty?" into a question with an
     alternative answer. The earlier score and reason ride along because they are
@@ -1140,13 +1165,16 @@ def _competitor_lines(
     if not competitors:
         return [
             "",
+            "No other pull request beyond the ones under review was found in any "
+            "package that changed across this window." if joint else
             "No other pull request was found in any package that changed across "
             "this window — this is the only candidate.",
         ]
     lines = [
         "",
         "Other pull requests that landed in the same window — the alternatives "
-        "this one is being weighed against:",
+        + ("the pull requests under review are" if joint else "this one is")
+        + " being weighed against:",
     ]
     for competitor, budget in zip(competitors, budgets):
         size = f"+{competitor.additions}/-{competitor.deletions}"

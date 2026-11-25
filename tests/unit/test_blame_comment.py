@@ -5079,3 +5079,615 @@ def test_a_later_step_on_a_claimed_metric_leaves_the_claim_standing():
     assert "is now placed at or before" not in body
     identity = ("ALLEGRO_o1_v03", _PLAT, "single_e-_10GeV", "baseline", "a_metric", "")
     assert state_mod._decoded_cumulative(body)[identity].likelihood == 91.0
+
+
+# ── Joint review: every pull request selected in one window, in one call ──────
+
+class _FakeJointAttributor(_FakeAttributor):
+    """A review that can answer several pull requests at once. ``joint`` maps a
+    slug to the likelihoods its joint answer carries (absent = not answered),
+    and ``alternatives`` to the rows' alternative explanations."""
+
+    def __init__(self, joint=None, *, alternatives=None, joint_raises=None, **kw):
+        super().__init__(**kw)
+        self.joint = joint or {}
+        self.alternatives = alternatives or {}
+        self.joint_raises = joint_raises
+        self.joint_requests: list = []
+
+    def attribute_jointly(self, requests, *, min_score=None):
+        self.joint_requests.append(list(requests))
+        if self.joint_raises is not None:
+            raise self.joint_raises
+        return {
+            request.slug: Attribution(
+                summary=f"Joint reading number {request.number}.",
+                likelihoods=dict(self.joint[request.slug]),
+                alternatives=self.alternatives.get(request.slug, {}),
+            )
+            for request in requests if request.slug in self.joint
+        }
+
+
+def _two_in_one_window():
+    v = _verdict()
+    blame = _blame([v], [_candidate(), _candidate(number=1300, title="Second change")])
+    return _report(v), blame
+
+
+def test_pull_requests_sharing_a_window_are_reviewed_in_one_call():
+    report, blame = _two_in_one_window()
+    attributor = _FakeJointAttributor({
+        "key4hep/k4geo#1234": {"r1": 90.0}, "key4hep/k4geo#1300": {"r1": 85.0},
+    })
+    comments = _comments(report, blame, attributor=attributor)
+
+    assert [[r.slug for r in group] for group in attributor.joint_requests] == [
+        ["key4hep/k4geo#1234", "key4hep/k4geo#1300"],
+    ]
+    assert attributor.requests == []                     # no single review
+    bodies = {comment.number: comment.body for comment in comments}
+    assert "Joint reading number 1234." in bodies[1234]
+    assert "90%" in _table_rows(bodies[1234])[0]
+    assert "85%" in _table_rows(bodies[1300])[0]
+
+
+def test_a_joint_review_that_answers_only_some_pull_requests_comments_on_none():
+    report, blame = _two_in_one_window()
+    attributor = _FakeJointAttributor(
+        {"key4hep/k4geo#1234": {"r1": 90.0}}, scores={"r1": 88.0},
+    )
+    # No independent review for the unanswered one: it would know nothing of
+    # the joint reading and could clear what it blamed.
+    assert _comments(report, blame, attributor=attributor) == []
+    assert attributor.requests == []
+
+
+def test_a_failing_joint_review_comments_on_none_of_its_window():
+    report, blame = _two_in_one_window()
+    attributor = _FakeJointAttributor(
+        joint_raises=RuntimeError("endpoint on fire"), scores={"r1": 88.0},
+    )
+    assert _comments(report, blame, attributor=attributor) == []
+    assert attributor.requests == []
+
+
+def test_a_pull_request_alone_in_its_window_keeps_the_single_review():
+    v = _verdict()
+    attributor = _FakeJointAttributor({}, scores={"r1": 88.0})
+    _comments(_report(v), _blame([v], [_candidate()]), attributor=attributor)
+    assert attributor.joint_requests == []
+    assert [r.slug for r in attributor.requests] == ["key4hep/k4geo#1234"]
+
+
+def test_a_competing_explanation_at_the_threshold_is_said_beside_the_claim():
+    report, blame = _two_in_one_window()
+    attributor = _FakeJointAttributor(
+        {"key4hep/k4geo#1234": {"r1": 90.0}, "key4hep/k4geo#1300": {"r1": 85.0}},
+        alternatives={"key4hep/k4geo#1234": {"r1": (("key4hep/k4geo#1300", 85.0),)}},
+    )
+    bodies = {c.number: c.body for c in _comments(report, blame, attributor=attributor)}
+    assert (
+        f"_The AI reviewer also found key4hep/k4geo#{_ZWSP}1300 (1 regression) "
+        "likely, at 80% or above, for the same configurations, and judged them "
+        "competing explanations of that movement rather than separate causes: "
+        "for those regressions this attribution is contested._"
+    ) in bodies[1234]
+    # Named inert, like every competitor: no cross-reference on its timeline.
+    assert "key4hep/k4geo#1300" not in _visible(bodies[1234])
+
+
+def test_a_competing_explanation_below_the_threshold_is_not_said():
+    report, blame = _two_in_one_window()
+    attributor = _FakeJointAttributor(
+        {"key4hep/k4geo#1234": {"r1": 90.0}, "key4hep/k4geo#1300": {"r1": 85.0}},
+        alternatives={"key4hep/k4geo#1234": {"r1": (("key4hep/k4geo#1300", 40.0),)}},
+    )
+    bodies = {c.number: c.body for c in _comments(report, blame, attributor=attributor)}
+    assert "competing explanations" not in bodies[1234]
+
+
+def _joint_requests(numbers=(1300,), patch=None):
+    v = _verdict()
+    others = [_candidate(number=n, title=f"Change {n}") for n in numbers]
+    plans = _plans(_report(v), _blame([v], [_candidate(), *others]))
+    return [
+        build_mod._attribution_request(
+            plan, patch or (lambda repo, number: f"diff of {repo}#{number}"),
+            lambda r, n: "",
+        )
+        for plan in plans
+    ]
+
+
+def test_the_joint_prompt_shows_the_window_once_and_every_pull_request_under_review():
+    from k4bench.blame.joint_review import _joint_system_prompt, build_joint_prompt
+
+    requests = _joint_requests()
+    prompt = build_joint_prompt(requests)
+    assert "P1 = key4hep/k4geo#1234" in prompt and "P2 = key4hep/k4geo#1300" in prompt
+    assert "  - P1 prior on every row: ranked 91/100" in prompt
+    assert "  - P2 prior on every row: ranked 91/100" in prompt
+    assert "Pull request under review P1 — key4hep/k4geo#1234" in prompt
+    assert "Pull request under review P2 — key4hep/k4geo#1300" in prompt
+    assert "diff of key4hep/k4geo#1234" in prompt and "diff of key4hep/k4geo#1300" in prompt
+    # Neither appears again as the other's competitor.
+    assert "- key4hep/k4geo#1300 —" not in prompt and "- key4hep/k4geo#1234 —" not in prompt
+    assert '"competing": [[' in prompt and "still missing" not in prompt
+    system = _joint_system_prompt(requests)
+    assert system.startswith("You review whether each of several merged pull requests caused")
+    assert "alternative explanations of the same movement" in system
+
+
+def test_the_joint_prompt_never_spends_more_than_the_diff_budget_on_its_subjects():
+    from k4bench.blame.attribute import _MAX_DIFF_CHARS
+    from k4bench.blame.joint_review import build_joint_prompt
+
+    numbers = (1300, 1301, 1302, 1303, 1304, 1305)
+    requests = _joint_requests(numbers, patch=lambda repo, number: "+x\n" * 10_000)
+    assert len(requests) == 7
+    prompt = build_joint_prompt(requests)
+    assert prompt.count("+x\n") * 3 <= _MAX_DIFF_CHARS
+
+
+def test_requests_whose_row_ids_name_different_regressions_are_not_joined():
+    from k4bench.blame.joint_review import joinable
+
+    first, second = _joint_requests()
+    assert joinable([first, second])
+    moved = dataclasses.replace(second, regressions=tuple(
+        dataclasses.replace(fact, metric="vm_peak_mb") for fact in second.regressions
+    ))
+    assert not joinable([first, moved])
+
+
+def _joint_reply(*, competing=(("P1", "P2"),), p2=True, p2_summary=True, extra=()):
+    verdicts = [{"pr": "P1", "mechanism": "m", "supports": "s", "contradicts": "",
+                 "likelihood": 90}]
+    if p2:
+        verdicts.append({"pr": "P2", "mechanism": "m", "supports": "s",
+                         "contradicts": "", "likelihood": 75,
+                         "overrides": [{"id": "r1", "likelihood": 85}]})
+    verdicts += list(extra)
+    summaries = {"P1": "P1 explains it."}
+    if p2_summary:
+        summaries["P2"] = "P2 could too."
+    return {
+        "step_assessment": {"verdict": "real_change", "reason": "A clear step."},
+        "scopes": [{"scope": "S1", "reading": "Wall time up 20%.",
+                    "verdicts": verdicts, "competing": [list(g) for g in competing]}],
+        "summaries": summaries,
+    }
+
+
+def test_the_joint_reply_is_split_per_pull_request_with_its_competitors():
+    from k4bench.blame.joint_review import parse_joint
+
+    requests = _joint_requests()
+    answered = parse_joint(json.dumps(_joint_reply()), requests)
+    first, second = answered["key4hep/k4geo#1234"], answered["key4hep/k4geo#1300"]
+    assert first.likelihoods == {"r1": 90.0} and second.likelihoods == {"r1": 85.0}
+    assert first.summary == "P1 explains it." and second.summary == "P2 could too."
+    assert first.assessment.verdict == "real_change"
+    assert first.alternatives == {"r1": (("key4hep/k4geo#1300", 85.0),)}
+    assert second.alternatives == {"r1": (("key4hep/k4geo#1234", 90.0),)}
+
+    independent = parse_joint(json.dumps(_joint_reply(competing=())), requests)
+    assert independent["key4hep/k4geo#1234"].alternatives == {}
+    # A garbled group is no judgement — never read as "none compete" — so two
+    # likely pull requests are left without their relation.
+    for garbled in ((("P1", "P9"),), (("P1",),), (("P1", "P1"),)):
+        assert parse_joint(json.dumps(_joint_reply(competing=garbled)), requests) == {}
+    malformed = _joint_reply()
+    malformed["scopes"][0]["competing"] = ["P1", "P2"]
+    assert parse_joint(json.dumps(malformed), requests) == {}
+
+    # One pull request without a summary is no joint review at all.
+    assert parse_joint(json.dumps(_joint_reply(p2_summary=False)), requests) == {}
+    # Only-echo holds per pull request: an invented row id is dropped.
+    invented = _joint_reply()
+    invented["scopes"][0]["verdicts"][0]["overrides"] = [{"id": "r99", "likelihood": 5}]
+    assert parse_joint(json.dumps(invented), requests)["key4hep/k4geo#1234"].likelihoods == {
+        "r1": 90.0,
+    }
+
+
+def test_competing_groups_name_only_their_members():
+    from k4bench.blame.joint_review import parse_joint
+
+    requests = _joint_requests((1300, 1400))
+    third = {"pr": "P3", "likelihood": 88}
+    reply = _joint_reply(extra=[third])
+    reply["summaries"]["P3"] = "P3 adds its own share."
+    answered = parse_joint(json.dumps(reply), requests)
+    # P1 and P2 compete; P3 contributed independently and is no one's rival.
+    assert answered["key4hep/k4geo#1234"].alternatives == {
+        "r1": (("key4hep/k4geo#1300", 85.0),),
+    }
+    assert answered["key4hep/k4geo#1400"].alternatives == {}
+
+
+class _ScriptedClient:
+    def __init__(self, *replies, raises=None):
+        self.replies, self.raises = list(replies), raises
+        self.calls: list[tuple[str, str]] = []
+
+    def complete(self, system, user, *, max_output_tokens):
+        self.calls.append((system, user))
+        if self.raises:
+            raise self.raises
+        if not self.replies:
+            return "{}", "stop"
+        return json.dumps(self.replies.pop(0)), "stop"
+
+
+def test_the_openai_adapter_makes_one_joint_call_and_declines_on_failure():
+    from k4bench.blame.attribute import OpenAICompatAttributor
+
+    requests = _joint_requests()
+    client = _ScriptedClient(_joint_reply(competing=()))
+    answered = OpenAICompatAttributor(client=client).attribute_jointly(requests)
+    assert len(client.calls) == 1
+    assert {slug: a.likelihoods for slug, a in answered.items()} == {
+        "key4hep/k4geo#1234": {"r1": 90.0}, "key4hep/k4geo#1300": {"r1": 85.0},
+    }
+    failing = _ScriptedClient(raises=RuntimeError("down"))
+    assert OpenAICompatAttributor(client=failing).attribute_jointly(requests) == {}
+
+
+def test_what_the_joint_reply_left_out_is_re_asked_jointly():
+    from k4bench.blame.attribute import OpenAICompatAttributor
+
+    requests = _joint_requests()
+    follow_up = {
+        "scopes": [{"scope": "S1", "verdicts": [{"pr": "P2", "likelihood": 94}],
+                    "competing": [["P1", "P2"]]}],
+        "summaries": {"P2": "P2 explains it as well."},
+    }
+    # The first reply already names the competing group but scores only P1.
+    client = _ScriptedClient(_joint_reply(p2=False, p2_summary=False), follow_up)
+    answered = OpenAICompatAttributor(client=client).attribute_jointly(requests)
+
+    assert len(client.calls) == 2
+    system, user = client.calls[1]
+    assert system.startswith("You review whether each of several merged pull requests")
+    assert "Pull request under review P1" in user and "Pull request under review P2" in user
+    assert "summary: P1 explains it." in user
+    assert "  - competing in S1: P1 / P2" in user
+    assert "still missing: P2's verdicts in scope(s) S1 for row(s) r1; P2's summary" in user
+
+    second = answered["key4hep/k4geo#1300"]
+    assert second.likelihoods == {"r1": 94.0}
+    assert second.summary == "P2 explains it as well."
+    # Built from the final scores, so the follow-up's 94 is in P1's competitors.
+    assert answered["key4hep/k4geo#1234"].alternatives == {
+        "r1": (("key4hep/k4geo#1300", 94.0),),
+    }
+
+
+def test_a_follow_up_that_adds_nothing_declines_the_joint_review():
+    from k4bench.blame.attribute import OpenAICompatAttributor
+
+    requests = _joint_requests()
+    client = _ScriptedClient(_joint_reply(p2=False, p2_summary=False), {"scopes": []})
+    assert OpenAICompatAttributor(client=client).attribute_jointly(requests) == {}
+    assert len(client.calls) == 2
+
+
+def _two_scopes_one_window(*, second_candidate_on_idea=True):
+    allegro = _verdict()
+    idea = _verdict(detector="IDEA_o1_v03")
+    first, second = _candidate(), _candidate(number=1300, title="Second change")
+    blame = _blame_of(
+        (allegro, [first, second]),
+        (idea, [first, second] if second_candidate_on_idea else [first]),
+    )
+    return _report(allegro, idea), blame
+
+
+def test_a_pull_request_that_is_not_a_candidate_is_never_named_a_competing_explanation():
+    from k4bench.blame.joint_review import parse_joint
+
+    report, blame = _two_scopes_one_window(second_candidate_on_idea=False)
+    requests = [
+        build_mod._attribution_request(plan, lambda r, n: "", lambda r, n: "")
+        for plan in _plans(report, blame)
+    ]
+    excluded = {f.id for f in requests[1].regressions if f.scope_state == "not_candidate"}
+    assert len(excluded) == 1
+    both = {"pr": "P1", "likelihood": 92}, {"pr": "P2", "likelihood": 88}
+    reply = {
+        "step_assessment": {"verdict": "real_change", "reason": "A clear step."},
+        "scopes": [
+            {"scope": sid, "verdicts": list(both), "competing": [["P1", "P2"]]}
+            for sid in ("S1", "S2")
+        ],
+        "summaries": {"P1": "One.", "P2": "Two."},
+    }
+    first = parse_joint(json.dumps(reply), requests)["key4hep/k4geo#1234"]
+    # The complete candidate search outranks the reply's 88 on that row.
+    assert set(first.alternatives) == {f.id for f in requests[0].regressions} - excluded
+    assert all(
+        rivals == (("key4hep/k4geo#1300", 88.0),) for rivals in first.alternatives.values()
+    )
+
+
+def test_a_window_member_whose_request_cannot_be_built_declines_the_whole_window(monkeypatch):
+    report, blame = _two_in_one_window()
+    real = build_mod._attribution_request
+
+    def flaky(plan, *args, **kw):
+        if plan.number == 1300:
+            raise RuntimeError("historical evidence unavailable")
+        return real(plan, *args, **kw)
+
+    monkeypatch.setattr(build_mod, "_attribution_request", flaky)
+    attributor = _FakeJointAttributor(
+        {"key4hep/k4geo#1234": {"r1": 90.0}}, scores={"r1": 88.0},
+    )
+    assert _comments(report, blame, attributor=attributor) == []
+    assert attributor.requests == [] and attributor.joint_requests == []
+
+
+def test_rows_still_unanswered_after_the_follow_ups_decline_the_joint_review():
+    from k4bench.blame.attribute import OpenAICompatAttributor
+
+    report, blame = _two_scopes_one_window()
+    requests = [
+        build_mod._attribution_request(plan, lambda r, n: "", lambda r, n: "")
+        for plan in _plans(report, blame)
+    ]
+    reply = {
+        "step_assessment": {"verdict": "real_change", "reason": "A clear step."},
+        "scopes": [
+            {"scope": "S1", "verdicts": [{"pr": "P1", "likelihood": 90},
+                                         {"pr": "P2", "likelihood": 85}]},
+            {"scope": "S2", "verdicts": [{"pr": "P1", "likelihood": 90}]},
+        ],
+        "summaries": {"P1": "One.", "P2": "Two."},
+    }
+    client = _ScriptedClient(reply, {"scopes": []})
+    # A first-pass score for P2's unanswered scope would be a second reading
+    # beside the joint one, and a later complete review could not replace it.
+    assert OpenAICompatAttributor(client=client).attribute_jointly(requests) == {}
+    assert len(client.calls) == 2
+
+
+def test_a_follow_up_is_shown_the_earlier_row_overrides():
+    from k4bench.blame.joint_review import _gaps, _parse_round, build_joint_prompt
+
+    requests = _joint_requests()
+    reply = _parse_round(json.dumps(_joint_reply(p2_summary=False)), requests)
+    prompt = build_joint_prompt(requests, earlier=reply, missing=_gaps(reply, requests))
+    assert "  - P2 (key4hep/k4geo#1300): S1 75 (r1 85)" in prompt
+    assert "still missing: P2's summary." in prompt
+    assert "  - competing in S1: P1 / P2" in prompt
+
+
+def test_a_scope_with_two_likely_pull_requests_needs_their_relation():
+    from k4bench.blame.attribute import OpenAICompatAttributor
+
+    requests = _joint_requests()
+    silent = _joint_reply()
+    del silent["scopes"][0]["competing"]
+    # Silence is no judgement: it is asked for, and "none compete" answers it.
+    client = _ScriptedClient(silent, {"scopes": [{"scope": "S1", "competing": []}]})
+    answered = OpenAICompatAttributor(client=client).attribute_jointly(requests)
+    assert len(client.calls) == 2
+    assert '"competing" for scope(s) S1, where more than one pull request is likely' in (
+        client.calls[1][1]
+    )
+    assert answered["key4hep/k4geo#1234"].alternatives == {}
+    assert set(answered) == {"key4hep/k4geo#1234", "key4hep/k4geo#1300"}
+
+    # Never answered: no joint review.
+    client = _ScriptedClient(silent, {"scopes": []})
+    assert OpenAICompatAttributor(client=client).attribute_jointly(requests) == {}
+
+
+def test_one_likely_pull_request_needs_no_relation():
+    from k4bench.blame.attribute import OpenAICompatAttributor
+
+    requests = _joint_requests()
+    reply = _joint_reply()
+    del reply["scopes"][0]["competing"]
+    p2 = reply["scopes"][0]["verdicts"][1]
+    p2["likelihood"], p2["overrides"] = 20, []
+    client = _ScriptedClient(reply)
+    answered = OpenAICompatAttributor(client=client).attribute_jointly(requests)
+    assert len(client.calls) == 1 and set(answered) == {
+        "key4hep/k4geo#1234", "key4hep/k4geo#1300",
+    }
+
+
+def test_a_follow_up_replaces_the_competing_groups_of_a_scope_it_answers():
+    from k4bench.blame.attribute import OpenAICompatAttributor
+
+    requests = _joint_requests()
+    follow_up = {
+        "scopes": [{"scope": "S1", "verdicts": [{"pr": "P2", "likelihood": 94}],
+                    "competing": []}],
+        "summaries": {"P2": "P2 added its own share."},
+    }
+    client = _ScriptedClient(_joint_reply(p2=False, p2_summary=False), follow_up)
+    answered = OpenAICompatAttributor(client=client).attribute_jointly(requests)
+    # The first reply's group stood on P2 being unscored; once scored, the
+    # follow-up judged them independent, and that is the answer that holds.
+    assert answered["key4hep/k4geo#1234"].alternatives == {}
+    assert answered["key4hep/k4geo#1300"].likelihoods == {"r1": 94.0}
+
+
+def test_the_joint_prompt_does_not_call_a_subject_the_only_candidate():
+    from k4bench.blame.joint_review import build_joint_prompt
+
+    prompt = build_joint_prompt(_joint_requests())
+    assert "this is the only candidate" not in prompt
+    assert "No other pull request beyond the ones under review was found" in prompt
+
+
+def _joint_drafts():
+    report, blame = _two_in_one_window()
+    attributor = _FakeJointAttributor({
+        "key4hep/k4geo#1234": {"r1": 90.0}, "key4hep/k4geo#1300": {"r1": 85.0},
+    })
+    return {d.number: d for d in _drafts(report, blame, attributor=attributor)}
+
+
+def test_a_comment_records_every_pull_request_it_was_reviewed_together_with():
+    draft = _joint_drafts()[1234]
+    assert draft.reviewed_with == ("key4hep/k4geo#1300",)
+    body = draft.render().body
+    assert state_mod.LineageState.from_bodies([body]).reviewed_with == {"key4hep/k4geo#1300"}
+    # A hidden marker, never a visible (or cross-referencing) mention.
+    assert "key4hep/k4geo#1300" not in body
+
+
+def test_the_co_reviewed_set_edits_a_comment_only_when_it_grows():
+    from k4bench.blame.comment.state import facts_digest_of
+
+    draft = _joint_drafts()[1234]
+    single = replace(draft, reviewed_with=())
+    standing = single.render().body
+
+    # Reviewed together for the first time: a different review, one edit.
+    joined = draft.render([standing]).body
+    assert facts_digest_of(joined) != facts_digest_of(standing)
+    # The other pull request leaves the selection, and returns: no edit.
+    left = single.render([joined]).body
+    assert facts_digest_of(left) == facts_digest_of(joined)
+    assert facts_digest_of(draft.render([left]).body) == facts_digest_of(joined)
+    # A pull request never reviewed with this one before: one edit again.
+    third = replace(draft, reviewed_with=("key4hep/k4geo#1300", "key4hep/k4geo#1400"))
+    assert facts_digest_of(third.render([left]).body) != facts_digest_of(joined)
+
+
+def test_a_damaged_reviewed_with_marker_is_read_as_none():
+    from k4bench.blame.comment.state import _REVIEWED_WITH_PREFIX, _decoded_reviewed_with
+
+    assert _decoded_reviewed_with(f"{_REVIEWED_WITH_PREFIX}!!! -->") == frozenset()
+    not_strings = urlsafe_b64encode(b"[1, 2]").decode().rstrip("=")
+    assert _decoded_reviewed_with(f"{_REVIEWED_WITH_PREFIX}{not_strings} -->") == frozenset()
+
+
+def test_a_relation_judged_before_a_score_arrived_is_asked_again():
+    from k4bench.blame.attribute import OpenAICompatAttributor
+
+    requests = _joint_requests()
+    # "None compete" was said while P2 had no score at all.
+    first = _joint_reply(p2=False, p2_summary=False, competing=())
+    scored = {
+        "scopes": [{"scope": "S1", "verdicts": [{"pr": "P2", "likelihood": 93}]}],
+        "summaries": {"P2": "P2 explains it too."},
+    }
+    related = {"scopes": [{"scope": "S1", "competing": [["P1", "P2"]]}]}
+    client = _ScriptedClient(first, scored, related)
+    answered = OpenAICompatAttributor(client=client).attribute_jointly(requests)
+    assert len(client.calls) == 3
+    assert '"competing" for scope(s) S1' in client.calls[2][1]
+    assert answered["key4hep/k4geo#1234"].alternatives == {
+        "r1": (("key4hep/k4geo#1300", 93.0),),
+    }
+
+    # Never restated: the stale "none compete" does not stand in for it.
+    client = _ScriptedClient(first, scored, {"scopes": []})
+    assert OpenAICompatAttributor(client=client).attribute_jointly(requests) == {}
+
+
+def test_the_relation_floor_follows_a_lower_comment_threshold():
+    from k4bench.blame.attribute import OpenAICompatAttributor
+    from k4bench.blame.joint_review import parse_joint
+
+    requests = _joint_requests()
+    reply = _joint_reply()
+    del reply["scopes"][0]["competing"]
+    p2 = reply["scopes"][0]["verdicts"][1]
+    p2["likelihood"], p2["overrides"] = 35, []
+    assert set(parse_joint(json.dumps(reply), requests)) == {
+        "key4hep/k4geo#1234", "key4hep/k4geo#1300",
+    }
+    # At min_score 30 a 35 is a claim the comment would make, so its relation
+    # to P1 has to be stated.
+    assert parse_joint(json.dumps(reply), requests, relation_floor=30) == {}
+    client = _ScriptedClient(reply)
+    assert OpenAICompatAttributor(client=client).attribute_jointly(
+        requests, min_score=30,
+    ) == {}
+    assert len(client.calls) == 2
+
+
+def test_an_independent_version_is_replaced_when_the_joint_review_returns():
+    from k4bench.blame.comment.state import facts_digest_of
+
+    draft = _joint_drafts()[1234]
+    single = replace(draft, reviewed_with=())
+    joint_body = draft.render().body
+    # Night 2: reviewed alone, and a fact changed — the independent reading is
+    # what gets published, and the body says so.
+    changed = replace(single, facts_payload={**single.facts_payload, "night": 2})
+    alone = changed.render([joint_body]).body
+    assert facts_digest_of(alone) != facts_digest_of(joint_body)
+    assert state_mod.LineageState.from_bodies([alone]).reviewed_with == frozenset()
+    # Night 3: the same facts, reviewed jointly again — the joint reading
+    # replaces the independent one.
+    rejoined = replace(draft, facts_payload=changed.facts_payload).render([alone]).body
+    assert facts_digest_of(rejoined) != facts_digest_of(alone)
+
+
+def test_a_review_context_too_large_to_record_is_treated_as_none():
+    from k4bench.blame.comment.state import _MAX_REVIEWED_WITH, facts_digest_of
+
+    draft = _joint_drafts()[1234]
+    crowd = tuple(f"key4hep/k4geo#{n}" for n in range(2000, 2001 + _MAX_REVIEWED_WITH))
+    huge = replace(draft, reviewed_with=crowd).render().body
+    single = replace(draft, reviewed_with=()).render().body
+    assert "k4bench-blame-reviewed-with" not in huge
+    assert facts_digest_of(huge) == facts_digest_of(single)
+
+
+def test_a_not_candidate_score_never_requires_a_relation():
+    from k4bench.blame.attribute import scope_ids
+    from k4bench.blame.joint_review import parse_joint
+
+    report, blame = _two_scopes_one_window(second_candidate_on_idea=False)
+    requests = [
+        build_mod._attribution_request(plan, lambda r, n: "", lambda r, n: "")
+        for plan in _plans(report, blame)
+    ]
+    ids = scope_ids(requests[1].regressions)
+    excluded = {
+        f.id for f in requests[1].regressions if f.scope_state == "not_candidate"
+    }
+    (excluded_scope,) = {
+        sid for (scope, sid) in ids.items()
+        for f in requests[1].regressions
+        if f.id in excluded and (f.detector, f.platform, f.sample) == scope
+    }
+    other_scope = ({"S1", "S2"} - {excluded_scope}).pop()
+    both = [{"pr": "P1", "likelihood": 92}, {"pr": "P2", "likelihood": 85}]
+    reply = {
+        "step_assessment": {"verdict": "real_change", "reason": "A clear step."},
+        "scopes": [
+            # P2's 85 is on a row it is not a candidate for, and no relation is given.
+            {"scope": excluded_scope, "verdicts": both},
+            {"scope": other_scope, "verdicts": both, "competing": []},
+        ],
+        "summaries": {"P1": "One.", "P2": "Two."},
+    }
+    answered = parse_joint(json.dumps(reply), requests)
+    assert set(answered) == {"key4hep/k4geo#1234", "key4hep/k4geo#1300"}
+
+
+def test_a_follow_up_is_shown_row_scores_given_without_a_scope_verdict():
+    from k4bench.blame.joint_review import _gaps, _parse_round, build_joint_prompt
+
+    requests = _joint_requests()
+    reply = _joint_reply(p2_summary=False)
+    # P1 answers through an override alone: accepted, but no scope judgement.
+    p1 = reply["scopes"][0]["verdicts"][0]
+    del p1["likelihood"]
+    p1["overrides"] = [{"id": "r1", "likelihood": 90}]
+    parsed = _parse_round(json.dumps(reply), requests)
+    assert parsed.answers["key4hep/k4geo#1234"].likelihoods == {"r1": 90.0}
+    assert parsed.answers["key4hep/k4geo#1234"].scopes == []
+    prompt = build_joint_prompt(requests, earlier=parsed, missing=_gaps(parsed, requests))
+    assert "  - P1 (key4hep/k4geo#1234): S1 rows (r1 90)" in prompt

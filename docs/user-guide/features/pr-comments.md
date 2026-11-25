@@ -53,6 +53,62 @@ what the diff changes that the scope loads, and what supports and contradicts
 the pull request — gives each scope one likelihood, overrides it for a row only
 where that row's evidence differs, and writes the narrative the comment quotes.
 
+When **several** pull requests are selected in the same window, they are
+reviewed **together, in one call**, rather than once each. Independent reviews
+of one window can contradict each other — on 2026-11-21 one review explained
+the ILD slowdowns with `AIDASoft/DD4hep#1715` while that pull request's own
+review, the same night, cleared it — and one reading of the evidence cannot
+both blame and clear the same change. The joint review shows the window once,
+every pull request under review with its own first-pass prior, geometry reach,
+description and diff, and the rest of the field as competitors. It scores
+every scope for every pull request under review, each on its own: the scores
+are not shares and need not add up, because several changes can each cause
+part of one regression. Per scope it names the groups of likely pull requests
+that are **competing** explanations of the same movement — only one of a group
+can be its cause, and a group is named only when that holds for every row of
+the scope its members are likely for; a likely pull request in no group is an
+**independent** contribution. When a comment's attributed regressions have a
+competing explanation that also clears `min_score`, the comment says so under
+its assessment, naming the other pull request inertly. A pull request that is
+not a candidate for a regression is never named as its competing explanation,
+whatever the reviewer scored it: the complete candidate search outranks the
+model there, as it does in the table.
+
+The joint review is one unit. Whatever the reply leaves out — a regression's
+verdict, a pull request's summary, or whether the pull requests likely for a
+scope compete — is re-asked **jointly**: the window again, with the earlier
+answers as context. A scope needs that last answer wherever two or more pull
+requests score 41 or more (the band with a plausible mechanism), or
+`min_score` if that is lower. An explicit "none compete" is an answer, while
+silence or a garbled group is not. A follow-up states the competing groups of
+every scope it answers afresh, and its answer replaces the earlier one there.
+A scope that gains a score without that loses its earlier answer, since the
+answer was given before the score existed. The competing explanations are read
+off the final scores.
+
+A joint review that still leaves anything unanswered, or whose call fails, is a
+review that did not answer: no comment in that window is posted or edited that
+night, exactly as for a single review. The same holds when the review request
+of any pull request in the window cannot be assembled. Falling back to
+independent reviews — or to a first-pass score for a regression the joint
+review skipped — would post the very contradiction the joint review exists to
+prevent, and the next night's complete review could not replace it, since it
+rests on the same benchmark facts. Only a window with one selected pull
+request, or whose pull requests were not offered the same rows and sweeps, is
+reviewed one pull request at a time.
+
+Each comment records, in a hidden marker, the pull requests its current
+assessment was reviewed together with. A review that adds a pull request the
+published assessment was not reviewed with edits the comment, so a standing
+reading is replaced by the joint one. A review that adds none — the same
+group, part of it, or a review of this pull request alone — does not edit it
+on its own: selection follows first-pass scores, and a competitor hovering at
+the threshold would otherwise re-notify every time it joined and left. When
+the comment is edited anyway, for a change in its facts, the new version
+records the context it was actually reviewed in, so a later joint review can
+replace an independent one again. Standing comments are also re-rendered once
+into the joint form through the render version.
+
 "Everything" is meant literally, and both halves of it are load-bearing:
 
 - **Every** confirmed regression whose onset falls inside the window is in the
