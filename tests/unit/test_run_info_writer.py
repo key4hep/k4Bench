@@ -16,6 +16,7 @@ GEOMETRY = ROOT / "tests" / "fixtures" / "minimal_geometry" / "minimal.xml"
 
 ENV = {
     "GITHUB_RUN_ID": "123",
+    "GITHUB_RUN_ATTEMPT": "2",
     "GITHUB_SERVER_URL": "https://github.com",
     "GITHUB_REPOSITORY": "key4hep/k4Bench",
     "GITHUB_SHA": "a" * 40,
@@ -64,7 +65,9 @@ def _job(job_type, **record):
 
 
 def _write(run_info, job, tmp_path) -> dict:
-    run_info.write_run_info(tmp_path, job, ENV, date="2026-10-05")
+    run_info.write_run_info(
+        tmp_path, job, ENV, date="2026-10-05", started="2026-10-05T01:02:03+0000",
+    )
     return json.loads((tmp_path / "run_info.json").read_text())
 
 
@@ -107,6 +110,9 @@ def test_record_carries_job_parameters_and_ci_identity(run_info, job_type, tmp_p
     assert info["detector"] == "minimal"
     assert info["sample"] == "single_e-_10GeV"
     assert info["github_run_url"] == "https://github.com/key4hep/k4Bench/actions/runs/123"
+    # Tells this attempt's record from any other's of the same run directory.
+    assert info["github_run_attempt"] == "2"
+    assert info["job_started"] == "2026-10-05T01:02:03+0000"
     assert info["commit_sha"] == ENV["GITHUB_SHA"]
     assert info["n_events"] == 10
     assert info["sweep"] is True

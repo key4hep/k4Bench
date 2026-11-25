@@ -123,6 +123,7 @@ def build_run_info(
     env: dict[str, str],
     *,
     date: str,
+    started: str | None = None,
     configs: list[str],
     labels: list[str] | None,
 ) -> dict:
@@ -134,6 +135,10 @@ def build_run_info(
         "suite":            rec["suite"],
         "tool":             job.tool,
         "date":             date,
+        # With the attempt below, what tells two attempts of one run directory
+        # apart: readers compare run_info.json's bytes before and after reading
+        # a run (k4bench.remote), so each attempt's must differ.
+        "job_started":      started,
         "platform":         env["K4H_PLATFORM"],
         "k4h_release":      f"{RELEASE_PREFIX}{release}",
         "k4h_release_date": release,
@@ -149,6 +154,7 @@ def build_run_info(
         "xml_path":         job.xml_path,
         "configured_xml_path": rec["xml"],
         "github_run_id":    run_id,
+        "github_run_attempt": env.get("GITHUB_RUN_ATTEMPT", ""),
         "github_run_url": (
             f"{env['GITHUB_SERVER_URL']}/{env['GITHUB_REPOSITORY']}/actions/runs/{run_id}"
         ),
@@ -211,12 +217,15 @@ def add_stack_provenance(run_info: dict, stack_setup: str) -> None:
         print(f"WARNING: stack provenance not recorded: {exc}")
 
 
-def write_run_info(output_dir: Path, job: Job, env: dict[str, str], *, date: str) -> Path:
+def write_run_info(
+    output_dir: Path, job: Job, env: dict[str, str], *, date: str, started: str | None = None,
+) -> Path:
     """Write *job*'s run_info.json into *output_dir*, once the benchmark has run."""
     run_info = build_run_info(
         job,
         env,
         date=date,
+        started=started,
         configs=produced_configs(output_dir),
         labels=configured_labels(job),
     )

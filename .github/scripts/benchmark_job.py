@@ -312,6 +312,7 @@ def main(argv: list[str] | None = None) -> int:
     # Once, so run_info.json and the upload path agree even if the benchmark
     # runs across midnight.
     date = time.strftime("%Y-%m-%d")
+    started = time.strftime("%Y-%m-%dT%H:%M:%S%z")
 
     _group("6. Collect machine info (start)")
     machine_info.cmd_start(output_dir)
@@ -320,7 +321,7 @@ def main(argv: list[str] | None = None) -> int:
     _group("8. Write run metadata")
     # run_info.json last: nightly_benchmark.sh uploads only once it exists.
     machine_info.cmd_finalize(output_dir)
-    run_info.write_run_info(output_dir, job, env, date=date)
+    run_info.write_run_info(output_dir, job, env, date=date, started=started)
     print("::endgroup::", flush=True)
     return returncode
 
