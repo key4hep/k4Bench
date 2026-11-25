@@ -88,19 +88,11 @@ def _likelihood(row: RegressionRow, attribution: Attribution | None) -> float | 
     it. Letting a stray high score on such a row into the table would put a
     percentage next to a regression the pipeline knows this change cannot have
     shipped in, and (through the withdrawal gate below) would let it hold up a
-    comment on its own.
-
-    A row a joint review was offered and left unanswered
-    (:attr:`~k4bench.blame.attribute.Attribution.withheld`) carries none either:
-    the other pull requests in the window were judged on it jointly, and the
-    first pass's score here would set a second reading of the same movement
-    beside theirs."""
+    comment on its own."""
     if row.scope_state == "not_candidate":
         return None
     if attribution is None:
         return row.scope_score
-    if row.fact_id in attribution.withheld:
-        return None
     return attribution.likelihoods.get(row.fact_id, row.scope_score)
 
 

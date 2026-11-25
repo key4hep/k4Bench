@@ -385,14 +385,6 @@ class Attribution:
     #: their final likelihoods for that row. Empty from a single review, and
     #: for rows the joint review judged to have several causes.
     alternatives: dict[str, tuple[tuple[str, float], ...]] = field(default_factory=dict)
-    #: Offered rows a joint review left unanswered after its follow-ups. They
-    #: show no likelihood rather than falling back to the first pass's: the
-    #: other pull requests in the window were judged on them jointly, and a
-    #: first-pass score beside those would be two readings of one movement
-    #: (:func:`k4bench.blame.comment.table._likelihood`). Empty from a single
-    #: review, and never the rows past :data:`_MAX_ATTRIBUTED_ROWS`, which no
-    #: review was offered.
-    withheld: frozenset[str] = frozenset()
 
     @property
     def top_score(self) -> float:
@@ -669,7 +661,6 @@ class OpenAICompatAttributor:
             assessment=attribution.assessment,
             scopes=attribution.scopes,
             alternatives=attribution.alternatives,
-            withheld=attribution.withheld,
         )
 
 
@@ -1157,8 +1148,11 @@ def _competitor_lines(
     budgets: list[int],
     by_detector: dict[str, list[ScopeSweep]] | None = None,
     described: dict[tuple[str, str, str], str] | None = None,
+    *,
+    joint: bool = False,
 ) -> list[str]:
-    """The rest of the window, each with the first pass's reading of it.
+    """The rest of the window, each with the first pass's reading of it —
+    worded for several pull requests under review when *joint*.
 
     This block is what turns "is this PR guilty?" into a question with an
     alternative answer. The earlier score and reason ride along because they are
@@ -1168,13 +1162,16 @@ def _competitor_lines(
     if not competitors:
         return [
             "",
+            "No other pull request beyond the ones under review was found in any "
+            "package that changed across this window." if joint else
             "No other pull request was found in any package that changed across "
             "this window — this is the only candidate.",
         ]
     lines = [
         "",
         "Other pull requests that landed in the same window — the alternatives "
-        "this one is being weighed against:",
+        + ("the pull requests under review are" if joint else "this one is")
+        + " being weighed against:",
     ]
     for competitor, budget in zip(competitors, budgets):
         size = f"+{competitor.additions}/-{competitor.deletions}"

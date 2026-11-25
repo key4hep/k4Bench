@@ -20,7 +20,8 @@ pull requests can cause one regression, so neither answer is assumed; the
 likelihoods are not forced to add up.
 
 The joint review is one unit from first call to last. Answers the reply left
-out — a row's verdict, a pull request's summary — are re-asked **jointly**, with
+out — a row's verdict, a pull request's summary, whether the pull requests
+likely for a scope compete — are re-asked **jointly**, with
 the window shown again and the reply's earlier answers as context, never through
 one pull request's own review: an independent reviewer would know nothing of
 the joint reading and could clear what it blamed. The reply is then split back
@@ -28,9 +29,9 @@ into one :class:`~k4bench.blame.attribute.Attribution` per pull request, through
 the same only-echo parsing the single review uses, and each carries the
 competing explanations of its rows
 (:attr:`~k4bench.blame.attribute.Attribution.alternatives`), taken from the
-*final* likelihoods once every round is in. A joint review that cannot answer
-every pull request under review answers none of them, and the window gets no
-comment that night — exactly as a single review that does not answer
+*final* likelihoods once every round is in. A joint review that leaves
+anything unanswered answers nothing, and the window gets no comment that night
+— exactly as a single review that does not answer
 (:func:`k4bench.blame.comment.build_comments`).
 
 Which windows are reviewed jointly is deterministic (:func:`joinable`): one
@@ -259,7 +260,7 @@ def build_joint_prompt(
     requests: Sequence[AttributionRequest],
     *,
     earlier: _JointReply | None = None,
-    missing: dict[str, _Missing] | None = None,
+    missing: _Gaps | None = None,
 ) -> str:
     """The user message for one joint review of *requests* (see
     :func:`joinable`): the window once, every pull request under review with its
@@ -328,7 +329,9 @@ def build_joint_prompt(
         *_history_lines(first),
         *_package_lines(first),
         *subject_lines,
-        *_competitor_lines(competitors, competitor_budgets, by_detector, _described(first)),
+        *_competitor_lines(
+            competitors, competitor_budgets, by_detector, _described(first), joint=True,
+        ),
         *historical_lines(union.historical),
         "",
         "Work in this order, scope by scope. From the evidence summary: what "
@@ -359,7 +362,7 @@ def _earlier_lines(
     requests: Sequence[AttributionRequest],
     names: dict[str, str],
     earlier: _JointReply | None,
-    missing: dict[str, _Missing],
+    missing: _Gaps,
 ) -> list[str]:
     """The reply so far, as context a follow-up round must stand by, and what
     it is asked to add."""
@@ -376,33 +379,45 @@ def _earlier_lines(
         if answer is not None and answer.summary:
             lines.append(f"    summary: {answer.summary}")
     if earlier is not None:
-        for sid, groups in sorted(earlier.competing.items(), key=lambda kv: int(kv[0][1:])):
+        for sid, groups in sorted(earlier.competing.items(), key=lambda kv: _scope_order(kv[0])):
             named = "; ".join(
                 " / ".join(sorted(names[slug] for slug in group)) for group in sorted(groups, key=sorted)
-            )
+            ) or "none — every likely pull request contributed independently"
             lines.append(f"  - competing in {sid}: {named}")
     wanted = []
     for request in requests:
-        gap = missing.get(request.slug)
+        gap = missing.subjects.get(request.slug)
         if gap is None:
             continue
         label = names[request.slug]
         if gap.rows:
             ids = scope_ids(_attributed_facts(request))
             scope_of = {f.id: ids[_fact_scope(f)] for f in _attributed_facts(request)}
-            scopes = sorted({scope_of[i] for i in gap.rows}, key=lambda sid: int(sid[1:]))
+            scopes = sorted({scope_of[i] for i in gap.rows}, key=_scope_order)
             wanted.append(
                 f"{label}'s verdicts in scope(s) {', '.join(scopes)} for row(s) "
                 f"{', '.join(sorted(gap.rows, key=_id_order))}"
             )
         if gap.summary:
             wanted.append(f"{label}'s summary")
+    if missing.relations:
+        wanted.append(
+            f'"competing" for scope(s) {", ".join(missing.relations)}, where more '
+            "than one pull request is likely"
+        )
     lines.append(
         "Re-read all of the above as evidence — the cross-configuration pattern "
         "still decides — and keep to the earlier answers, but answer only what is "
-        f"still missing: {'; '.join(wanted)}."
+        f"still missing: {'; '.join(wanted)}. For every scope you answer, give "
+        '"competing" again in full, with what you now know: it replaces the '
+        "earlier groups for that scope."
     )
     return lines
+
+
+def _scope_order(sid: str) -> tuple:
+    digits = sid[1:]
+    return (0, int(digits)) if digits.isdigit() else (1, sid)
 
 
 def _override_note(
@@ -459,8 +474,8 @@ _JOINT_ALL = (
 _JOINT_ONLY = (
     "Answer only what is listed above as still missing: verdicts only from "
     "those pull requests and in those scopes, summaries only for those whose "
-    'summary is missing, and "competing" for the scopes you answer. Invent '
-    "nothing."
+    'summary is missing, and "competing" for every scope you answer — [] when '
+    "no two are competing. Invent nothing."
 )
 
 
@@ -479,7 +494,8 @@ class _Answer:
 class _JointReply:
     """The joint reply so far, merged across rounds: the shared step
     assessment, each pull request's answer by slug, and per scope id the groups
-    of slugs named as competing explanations of one movement."""
+    of slugs named as competing explanations of one movement — present only for
+    scopes the reply assessed, and empty where it judged none competing."""
 
     assessment: StepAssessment | None
     answers: dict[str, _Answer]
@@ -495,6 +511,34 @@ class _Missing:
     summary: bool
 
 
+@dataclasses.dataclass(frozen=True)
+class _Gaps:
+    """Everything the reply so far lacks: per pull request (:class:`_Missing`),
+    and the scopes whose competing groups were never assessed although more than
+    one pull request is likely there (:func:`_unassessed_relations`)."""
+
+    subjects: dict[str, _Missing]
+    relations: tuple[str, ...] = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.subjects or self.relations)
+
+    def scopes(self, requests: Sequence[AttributionRequest]) -> set[str]:
+        """The scope ids a follow-up is asked about: those of the missing rows
+        and those whose relation is unassessed."""
+        rows_of = _scope_rows(requests[0])
+        wanted = {row for gap in self.subjects.values() for row in gap.rows}
+        return {sid for sid, rows in rows_of.items() if rows & wanted} | set(self.relations)
+
+
+#: The lowest likelihood at which a pull request counts as *likely* for a
+#: scope when deciding whether its relation to the others must be stated: the
+#: score bands' "plausible mechanism" band starts here. A scope where two or
+#: more reach it is where "competing" and "independent" are different claims,
+#: and a reply that says neither has not answered it.
+_RELATION_FLOOR = 41.0
+
+
 def _parse_round(
     content: str,
     requests: Sequence[AttributionRequest],
@@ -505,7 +549,11 @@ def _parse_round(
 
     *wanted* restricts each pull request's verdicts to the rows a follow-up
     asked for (``slug -> row ids``); the first round accepts every offered row.
-    Only-echo holds per pull request exactly as in the single review."""
+    Only-echo holds per pull request exactly as in the single review.
+
+    A scope's ``competing`` is recorded only when the reply gave one — an
+    explicit ``[]`` is a judgement that no two are competing, a missing field
+    is no judgement at all, and the two are kept apart."""
     data = extract_json(content)
     if not isinstance(data, dict):
         return None
@@ -523,7 +571,7 @@ def _parse_round(
         sid = str(scope.get("scope") or "").strip()
         if sid in scope_rows:
             groups = _competing_groups(scope.get("competing"), slugs)
-            if groups:
+            if groups is not None:
                 competing[sid] = groups
         verdicts = scope.get("verdicts")
         if not isinstance(verdicts, list):
@@ -561,11 +609,15 @@ def _parse_round(
     )
 
 
-def _competing_groups(raw: object, slugs: dict[str, str]) -> set[frozenset[str]]:
+def _competing_groups(
+    raw: object, slugs: dict[str, str],
+) -> set[frozenset[str]] | None:
     """A scope's ``competing`` entry as groups of slugs, keeping only groups
-    that still name two or more pull requests under review."""
+    that still name two or more pull requests under review — or ``None`` when
+    the entry is absent or not a list, which is no judgement. An empty list is
+    the judgement that no two are competing."""
     if not isinstance(raw, list):
-        return set()
+        return None
     groups = set()
     for group in raw:
         if not isinstance(group, list):
@@ -579,10 +631,16 @@ def _competing_groups(raw: object, slugs: dict[str, str]) -> set[frozenset[str]]
     return groups
 
 
-def _merge(reply: _JointReply, more: _JointReply) -> int:
-    """Fold a follow-up round into *reply*; how many answers it added (rows
-    and summaries). Earlier answers are never replaced: they were read against
-    the same window, and the follow-up was asked to stand by them."""
+def _merge(reply: _JointReply, more: _JointReply, asked: set[str]) -> int:
+    """Fold a follow-up round into *reply*; how many answers it added (rows,
+    summaries, and scopes whose relation was assessed for the first time).
+
+    Earlier likelihoods and summaries are never replaced: they were read against
+    the same window, and the follow-up was asked to stand by them. A scope's
+    competing groups are the exception, for the scopes the follow-up was asked
+    about (*asked*): the follow-up knows more about them — a likelihood that was
+    missing — and gives them again in full, so its answer replaces the earlier
+    one, including with ``[]``."""
     added = 0
     for slug, answer in more.answers.items():
         kept = reply.answers[slug]
@@ -596,23 +654,46 @@ def _merge(reply: _JointReply, more: _JointReply) -> int:
         judged = {j.scope_id for j in kept.scopes}
         kept.scopes += [j for j in answer.scopes if j.scope_id not in judged]
     for sid, groups in more.competing.items():
-        reply.competing.setdefault(sid, set()).update(groups)
+        if sid not in asked:
+            continue
+        if sid not in reply.competing:
+            added += 1
+        reply.competing[sid] = set(groups)
     return added
 
 
-def _missing(
+def _unassessed_relations(
     reply: _JointReply, requests: Sequence[AttributionRequest],
-) -> dict[str, _Missing]:
-    """``slug -> what its answer lacks``, for every pull request with a gap."""
-    out = {}
+) -> tuple[str, ...]:
+    """The scopes where two or more pull requests reach :data:`_RELATION_FLOOR`
+    on some row and the reply has not said whether they compete."""
+    out = []
+    for sid, rows in _scope_rows(requests[0]).items():
+        if sid in reply.competing:
+            continue
+        likely = sum(
+            1 for request in requests
+            if max(
+                (reply.answers[request.slug].likelihoods.get(row, 0.0) for row in rows),
+                default=0.0,
+            ) >= _RELATION_FLOOR
+        )
+        if likely >= 2:
+            out.append(sid)
+    return tuple(sorted(out, key=_scope_order))
+
+
+def _gaps(reply: _JointReply, requests: Sequence[AttributionRequest]) -> _Gaps:
+    """What the reply so far lacks (:class:`_Gaps`)."""
+    subjects = {}
     for request in requests:
         answer = reply.answers[request.slug]
         rows = tuple(
             f.id for f in _attributed_facts(request) if f.id not in answer.likelihoods
         )
         if rows or not answer.summary:
-            out[request.slug] = _Missing(rows=rows, summary=not answer.summary)
-    return out
+            subjects[request.slug] = _Missing(rows=rows, summary=not answer.summary)
+    return _Gaps(subjects=subjects, relations=_unassessed_relations(reply, requests))
 
 
 def _alternatives(
@@ -658,25 +739,36 @@ def _alternatives(
 def _attributions(
     reply: _JointReply, requests: Sequence[AttributionRequest],
 ) -> dict[str, Attribution]:
-    """Every pull request's :class:`Attribution`, or ``{}`` when any of them
-    has no likelihood or no summary: the joint reading is one unit, and a part
-    of it is not a review of the window."""
-    unanswered = [
-        r.slug for r in requests
-        if not reply.answers[r.slug].likelihoods or not reply.answers[r.slug].summary
-    ]
-    if unanswered:
+    """Every pull request's :class:`Attribution`, or ``{}`` while anything is
+    still missing (:func:`_gaps`): a row without a verdict, a pull request
+    without a summary, a scope whose relation was never assessed.
+
+    The joint reading is one unit, and a part of it is not a review of the
+    window. A row left to its first-pass score would set a second reading
+    beside the joint one, and could not be repaired later either: the next
+    night's complete review rests on the same benchmark facts, so the digest
+    would refuse the edit."""
+    gaps = _gaps(reply, requests)
+    if gaps:
         _log.warning(
-            "attribute (joint): %s — no usable answer for %s after the follow-up "
-            "rounds; no review for this window tonight",
-            ", ".join(r.slug for r in requests), ", ".join(unanswered),
+            "attribute (joint): %s — still unanswered after the follow-up rounds: "
+            "%s; no review for this window tonight",
+            ", ".join(r.slug for r in requests),
+            "; ".join(
+                [
+                    f"{slug}: {len(gap.rows)} row(s)" + (" + summary" if gap.summary else "")
+                    for slug, gap in gaps.subjects.items()
+                ]
+                + ([f"competing in {', '.join(gaps.relations)}"] if gaps.relations else [])
+            ),
         )
         return {}
     names = labels(requests)
-    for sid, groups in sorted(reply.competing.items()):
+    for sid, groups in sorted(reply.competing.items(), key=lambda kv: _scope_order(kv[0])):
         _log.info(
             "attribute (joint): %s competing: %s", sid,
-            "; ".join(" / ".join(sorted(names[s] for s in g)) for g in sorted(groups, key=sorted)),
+            "; ".join(" / ".join(sorted(names[s] for s in g)) for g in sorted(groups, key=sorted))
+            or "none",
         )
     out = {}
     for request in requests:
@@ -694,9 +786,6 @@ def _attributions(
             summary=answer.summary, likelihoods=dict(answer.likelihoods),
             assessment=reply.assessment, scopes=tuple(answer.scopes),
             alternatives=_alternatives(request, reply, requests),
-            withheld=frozenset(
-                f.id for f in _attributed_facts(request) if f.id not in answer.likelihoods
-            ),
         )
     return out
 
@@ -705,7 +794,7 @@ def parse_joint(
     content: str, requests: Sequence[AttributionRequest],
 ) -> dict[str, Attribution]:
     """A single joint reply as one :class:`Attribution` per pull request, keyed
-    by slug — or ``{}`` unless it answered every one of them usably."""
+    by slug — or ``{}`` unless it answered everything (:func:`_attributions`)."""
     reply = _parse_round(content, requests)
     if reply is None or reply.assessment is None:
         return {}
@@ -719,15 +808,12 @@ def review_jointly(
 ) -> dict[str, Attribution]:
     """One joint review of *requests*: the first call, then up to
     :data:`~k4bench.blame.attribute._MAX_COMPLETION_ROUNDS` joint follow-ups
-    for whatever it left out, each required to make progress.
+    for whatever it left out (:func:`_gaps`), each required to make progress.
 
-    Every pull request in *requests* answered, or ``{}``: a call that fails, a
-    reply without a step assessment, and a pull request still without a verdict
-    or a summary after the follow-ups all decline the whole window. Rows still
-    unanswered for a pull request that is otherwise answered are *withheld*
-    (:attr:`~k4bench.blame.attribute.Attribution.withheld`): they show no
-    score at all, rather than a first-pass score that is a different reading
-    of the evidence from the one the other pull requests were judged by."""
+    Every pull request in *requests* fully answered, or ``{}``: a call that
+    fails, a reply without a step assessment, and anything still missing after
+    the follow-ups — a row's verdict, a summary, a relation — all decline the
+    whole window."""
     if not joinable(requests):
         return {}
     group = ", ".join(r.slug for r in requests)
@@ -754,36 +840,37 @@ def review_jointly(
         return {}
 
     for _ in range(_MAX_COMPLETION_ROUNDS):
-        missing = _missing(reply, requests)
-        if not missing:
+        gaps = _gaps(reply, requests)
+        if not gaps:
             break
         _log.info(
             "attribute (joint): %s — re-asking jointly for %s", group,
             "; ".join(
-                f"{slug}: {len(gap.rows)} row(s)" + (" + summary" if gap.summary else "")
-                for slug, gap in missing.items()
+                [
+                    f"{slug}: {len(gap.rows)} row(s)" + (" + summary" if gap.summary else "")
+                    for slug, gap in gaps.subjects.items()
+                ]
+                + ([f"competing in {', '.join(gaps.relations)}"] if gaps.relations else [])
             ),
         )
         try:
             content, _finish = client.complete(
                 system,
-                build_joint_prompt(requests, earlier=reply, missing=missing),
-                max_output_tokens=output_tokens(requests, missing),
+                build_joint_prompt(requests, earlier=reply, missing=gaps),
+                max_output_tokens=output_tokens(requests, gaps),
             )
         except Exception as exc:
             _log.warning(
-                "attribute (joint): %s — follow-up failed (%s); keeping what is "
-                "answered", group, exc,
+                "attribute (joint): %s — follow-up failed (%s)", group, exc,
             )
             break
         more = _parse_round(
             content, requests,
-            wanted={slug: set(gap.rows) for slug, gap in missing.items()},
+            wanted={slug: set(gap.rows) for slug, gap in gaps.subjects.items()},
         )
-        if more is None or not _merge(reply, more):
+        if more is None or not _merge(reply, more, gaps.scopes(requests)):
             _log.warning(
-                "attribute (joint): %s — follow-up answered nothing missing; "
-                "keeping what is answered", group,
+                "attribute (joint): %s — follow-up answered nothing missing", group,
             )
             break
     return _attributions(reply, requests)
@@ -791,16 +878,19 @@ def review_jointly(
 
 def output_tokens(
     requests: Sequence[AttributionRequest],
-    missing: dict[str, _Missing] | None = None,
+    missing: _Gaps | None = None,
 ) -> int:
     """The output allowance for a joint reply: the single review's, per pull
-    request asked — for a follow-up, per pull request and row still missing."""
+    request asked — for a follow-up, per pull request and row still missing,
+    and per scope whose relation is."""
     if missing is None:
         rows = len(_attributed_facts(requests[0]))
         need = _OUTPUT_TOKENS_BASE * len(requests) + _OUTPUT_TOKENS_PER_ROW * rows * len(requests)
     else:
         need = sum(
             _OUTPUT_TOKENS_BASE + _OUTPUT_TOKENS_PER_ROW * len(gap.rows)
-            for gap in missing.values()
+            for gap in missing.subjects.values()
+        ) + _OUTPUT_TOKENS_PER_ROW * len(missing.relations) + (
+            0 if missing.subjects else _OUTPUT_TOKENS_BASE
         )
     return min(MAX_OUTPUT_TOKENS, need)

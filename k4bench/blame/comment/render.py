@@ -60,6 +60,7 @@ from k4bench.blame.comment.state import (
     _retained_identity,
     _retained_marker,
     _retained_sort_key,
+    _reviewed_with_marker,
     _threshold_marker,
 )
 from k4bench.blame.comment.supersede import moved_before, withdrawal_block, withdrawn
@@ -144,6 +145,9 @@ class CommentDraft:
     dashboard_url: str | None = None
     min_score: float = _DEFAULT_MIN_SCORE
     keyed_by_facts: bool = True
+    #: The other pull requests tonight's joint review judged together with
+    #: this one (:mod:`k4bench.blame.joint_review`); empty for a single review.
+    reviewed_with: tuple[str, ...] = ()
 
     @property
     def target(self) -> str:
@@ -188,7 +192,12 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
       render, their frozen facts and their standing in tonight's report are
       deterministic inputs a reader can see — while a retained row's mere
       heartbeat (tonight's date) is not;
-    * the **observation history** carries every material version forward.
+    * the **observation history** carries every material version forward;
+    * the **co-reviewed pull requests** are the union of every version's and
+      tonight's, hashed as a ratchet: a pull request first reviewed together
+      with this one edits the comment, so a standing reading is replaced by the
+      joint one, while one leaving and returning — selection follows nightly
+      first-pass scores — never does.
 
     Archive links pin the report being rendered. Report dates stay outside the
     digest, so they alone never make an unchanged regression re-notify a pull
@@ -252,6 +261,9 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
     cumulative.update(tonight)
     cumulative_marker = _cumulative_marker(cumulative)
     payload = dict(draft.facts_payload)
+    reviewed_with = lineage.reviewed_with | set(draft.reviewed_with)
+    if reviewed_with:
+        payload["reviewed_with"] = sorted(reviewed_with)
     if record:
         payload["withdrawn"] = [list(identity) for identity in sorted(record)]
     if cumulative_marker:
@@ -324,6 +336,7 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
             f"{_FACTS_MARKER_PREFIX}{digest} -->",
             cumulative_marker or None,
             _threshold_marker(draft.min_score),
+            _reviewed_with_marker(reviewed_with) or None,
             *withdrawal_block(record, plan.window, noun=noun),
             "### 📊 Possible performance change traced to this pull request",
             "",

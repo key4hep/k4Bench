@@ -157,7 +157,7 @@ def build_comments(
     )
     comments = []
     for plan in plans:
-        attribution, request = reviews[id(plan)]
+        attribution, request, reviewed_with = reviews[id(plan)]
         if attributor is not None and attribution is None:
             _log.warning(
                 "build_comments: %s — the cross-configuration review produced "
@@ -219,6 +219,7 @@ def build_comments(
             # Nightly Report), so a suite whose page has none gets no links.
             dashboard_url=report_views_url(dashboard_url, plan.suite),
             min_score=min_score,
+            reviewed_with=reviewed_with,
         ))
     return comments
 
@@ -363,21 +364,22 @@ def _reviews(
     patch_for: PatchFor | None,
     body_for: BodyFor | None,
     files_for: FilesFor | None = None,
-) -> dict[int, tuple[Attribution | None, AttributionRequest | None]]:
-    """Every plan's review and request, keyed by ``id(plan)``.
+) -> dict[int, tuple[Attribution | None, AttributionRequest | None, tuple[str, ...]]]:
+    """Every plan's review, request and the pull requests it was reviewed
+    jointly with, keyed by ``id(plan)``.
 
     Plans sharing a suite and window whose requests can be joined
     (:func:`~k4bench.blame.joint_review.joinable`) go to the attributor's
     ``attribute_jointly``, and either every one of them is answered or none
     is; every other plan is reviewed on its own (:func:`_review`)."""
-    out: dict[int, tuple[Attribution | None, AttributionRequest | None]] = {}
+    out: dict[int, tuple[Attribution | None, AttributionRequest | None, tuple[str, ...]]] = {}
     joint = getattr(attributor, "attribute_jointly", None)
     if attributor is None or joint is None:
         return {
-            id(plan): _review(
+            id(plan): (*_review(
                 plan, attributor=attributor, patch_for=patch_for,
                 body_for=body_for, files_for=files_for,
-            )
+            ), ())
             for plan in plans
         }
     from k4bench.blame.joint_review import joinable
@@ -411,10 +413,10 @@ def _reviews(
                 ", ".join(plan.target for plan, _request in group),
             )
             for plan, request in group:
-                out[id(plan)] = (None, request)
+                out[id(plan)] = (None, request, ())
             continue
         if group[0][1] is None:
-            out[id(group[0][0])] = (None, None)
+            out[id(group[0][0])] = (None, None, ())
             continue
         groups.append(group)  # type: ignore[arg-type]
     for group in groups:
@@ -431,17 +433,21 @@ def _reviews(
             if not all(request.slug in answered for request in requests):
                 answered = {}
             for plan, request in group:
-                out[id(plan)] = (answered.get(request.slug), request)
+                out[id(plan)] = (
+                    answered.get(request.slug), request,
+                    tuple(sorted(r.slug for r in requests if r.slug != request.slug))
+                    if answered else (),
+                )
             continue
         for plan, request in group:
             try:
-                out[id(plan)] = (attributor.attribute(request), request)
+                out[id(plan)] = (attributor.attribute(request), request, ())
             except Exception as exc:  # noqa: BLE001 — an adapter that raises is a decline
                 _log.warning(
                     "build_comments: %s — the cross-configuration review failed "
                     "(%s); no review, so no comment tonight", plan.target, exc,
                 )
-                out[id(plan)] = (None, request)
+                out[id(plan)] = (None, request, ())
     return out
 
 

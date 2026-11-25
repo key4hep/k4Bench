@@ -123,12 +123,16 @@ def _facts_payload(
     scored *at all* is a different thing, and is in: it changes the table cell
     and the prompt from a percentage to "not scored".)
 
-    **Out, too: which pull requests were reviewed jointly with this one**
-    (:mod:`k4bench.blame.joint_review`). That is the set *selected* in the same
-    window, and selection is a first-pass score crossing ``min_score`` — re-run
-    every night, so a competitor hovering at the threshold would join and leave
-    the group, and edit this comment each time. The move to joint review itself
-    reaches standing comments through :data:`_RENDER_VERSION`, once.
+    **Which pull requests were reviewed jointly with this one**
+    (:mod:`k4bench.blame.joint_review`) is not in this payload but is added at
+    render time, as a ratchet: the union of every co-reviewed pull request the
+    lineage records and tonight's (:func:`k4bench.blame.comment.render._render`).
+    A pull request reviewed together with this one for the first time is a
+    materially different review — the reading the comment states may now be
+    contested by it — and edits the comment once. Tonight's set alone would be
+    model drift by another door: it is the night's *selection*, a first-pass
+    score crossing ``min_score``, re-run every night, so a competitor hovering
+    at the threshold would edit the comment each time it joined and left.
 
     **Also out, and less obviously so**: ``value``, ``baseline_median`` and
     ``z_score``. They are deterministic and they do reach the review's prompt,
