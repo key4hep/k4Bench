@@ -18,6 +18,7 @@ import math
 import time
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
+from enum import Enum
 from functools import partial
 from pathlib import Path
 from typing import TypeVar
@@ -102,7 +103,7 @@ SAME_BATCH_LAG_DAYS = 1
 MISSING_RUN_GRACE_DAYS = 7
 
 #: Seconds waited before each retry of a read of the report's inputs that the
-#: store did not answer — one retry per entry (see :class:`_ReadRetry`). WebEOS
+#: store did not answer — one retry per entry (see :class:`ReportReads`). WebEOS
 #: answers a cold directory listing slowly, or with a ``504`` after 30 s, and
 #: the same listing is usually fast again a minute or two later;
 #: :mod:`k4bench.remote` retries each request once, which rides out a blip but
@@ -115,14 +116,34 @@ READ_BACKOFF_S = (30.0, 90.0)
 #: than hours, and the report still says which triples it could not read.
 READ_BACKOFF_BUDGET_S = 600.0
 
+#: Wall-clock seconds, from the first read, after which a report starts no new
+#: read of EOS (see :class:`ReportReads`); every triple not yet read is then
+#: reported as not judged without a request. A healthy night reads a suite's
+#: whole window into an empty cache in about 18 minutes, so an hour is over
+#: three times that — room for a slow night of cold listings — while a WebEOS
+#: outage, where every request costs :mod:`k4bench.remote`'s timeouts (10 s to
+#: connect, 35 s to read, one retry: about 70 s) before it fails, cannot hold
+#: the report for hours. The deadline is checked before each read, so a report
+#: overruns it by at most the one read in flight.
+READ_DEADLINE_S = 3600.0
+
+#: Consecutive triples whose reads failed after which a report stops reading
+#: (see :class:`ReportReads`). A sample is a triple and a detector/platform
+#: holds two of them, so a fault confined to one tree — a broken stack
+#: listing, an unreadable predecessor — fails two triples in a row; four is
+#: two such trees in a row, which is the store, not a directory.
+READ_BREAKER_TRIPLES = 4
+
 #: How much of a failure's reason the report keeps; the report is mailed, and
 #: an unanswered read's reason ends in a URL.
 _REASON_CHARS = 300
 
 _T = TypeVar("_T")
 
-#: Waits between attempts (:class:`_ReadRetry`); a seam for tests.
+#: Waits between attempts, and the clock the deadline runs on
+#: (:class:`ReportReads`); seams for tests.
 _sleep = time.sleep
+_clock = time.monotonic
 
 
 def _is_absent(exc: requests.RequestException) -> bool:
@@ -130,24 +151,69 @@ def _is_absent(exc: requests.RequestException) -> bool:
     return exc.response is not None and exc.response.status_code == 404
 
 
-class _ReadRetry:
-    """Retries a read of the report's inputs that the store did not answer.
+class ReadsStopped(requests.RequestException):
+    """A read the report did not make: its reads had already stopped (see
+    :class:`ReportReads`). A :class:`requests.RequestException`, so whatever
+    handles an unanswered read handles this one too."""
 
-    One per report build, so :data:`READ_BACKOFF_BUDGET_S` bounds the whole
-    report rather than each read. Only an unanswered read is retried: a ``404``
-    is an answer, and a local error — the cache disk full — is neither the
-    store's fault nor fixed by asking it again. The last failure is raised.
+
+class ReportReads:
+    """Every read one report makes of EOS: retried, bounded, and stopped.
+
+    A read the store does not answer is asked again after each of
+    :data:`READ_BACKOFF_S`, within :data:`READ_BACKOFF_BUDGET_S` of waiting
+    summed over the report. Only an unanswered read is retried: a ``404`` is an
+    answer, and a local error — the cache disk full — is neither the store's
+    fault nor fixed by asking it again. The last failure is raised.
+
+    Reads stop for good once :data:`READ_DEADLINE_S` has passed since this
+    object was made, or once :data:`READ_BREAKER_TRIPLES` triples in a row
+    have failed (:meth:`triple_read`, :meth:`triple_failed`). After that every
+    read raises :class:`ReadsStopped` without a request, so a sustained outage
+    costs the report a bounded time and the triples it did not reach are still
+    named. One instance spans a report and any rebuild of it (the outage
+    report), so the bound is the job's rather than each build's.
     """
 
     def __init__(self) -> None:
         self.budget_s = READ_BACKOFF_BUDGET_S
+        self.deadline = _clock() + READ_DEADLINE_S
+        self.failed_in_a_row = 0
+        self._stopped = ""
+
+    @property
+    def stopped(self) -> str:
+        """Why reads have stopped, or ``""`` while they have not."""
+        if not self._stopped:
+            if self.failed_in_a_row >= READ_BREAKER_TRIPLES:
+                self._stopped = (
+                    f"{self.failed_in_a_row} triples in a row could not be read"
+                )
+            elif _clock() >= self.deadline:
+                self._stopped = (
+                    f"the report's {READ_DEADLINE_S / 60:.0f}-minute read deadline passed"
+                )
+        return self._stopped
+
+    def triple_read(self) -> None:
+        """A triple's reads all answered."""
+        self.failed_in_a_row = 0
+
+    def triple_failed(self) -> None:
+        """A triple's reads failed after their retries."""
+        self.failed_in_a_row += 1
 
     def __call__(self, read: Callable[[], _T], what: str) -> _T:
         for delay in (*READ_BACKOFF_S, None):
+            if self.stopped:
+                raise ReadsStopped(f"EOS reads stopped: {self.stopped}")
             try:
                 return read()
             except requests.RequestException as exc:
-                if _is_absent(exc) or delay is None or delay > self.budget_s:
+                if (
+                    _is_absent(exc) or delay is None or delay > self.budget_s
+                    or _clock() + delay >= self.deadline
+                ):
                     raise
                 self.budget_s -= delay
                 _log.warning("%s: not answered, retrying in %.0f s — %s", what, delay, exc)
@@ -169,7 +235,9 @@ def _unread_group(
     Dated by :func:`_finalize_report`, once the report night is known. It holds
     no release and no verdict, so nothing downstream can read a regression, an
     all-clear or a clean control into it."""
-    if isinstance(exc, requests.RequestException):
+    if isinstance(exc, ReadsStopped):
+        why = f"its runs were not read — {_reason(exc)}"
+    elif isinstance(exc, requests.RequestException):
         why = f"its runs could not be read from EOS — {_reason(exc)}"
     else:
         why = f"its report could not be built — {type(exc).__name__}: {_reason(exc)}"
@@ -813,17 +881,17 @@ def _fetch_predecessor(
     *,
     fetch_window_runs: int,
     as_of: str | None,
-    retry: _ReadRetry | None = None,
+    reads: ReportReads | None = None,
 ) -> PredecessorRuns | None:
     """The trailing runs of the first predecessor candidate (see
     :func:`~k4bench.regression.lineage.predecessor_series`) that has any,
     downloaded on demand. A candidate whose tree does not exist has none; one
-    the store does not answer for raises, through *retry*, since the series it
+    the store does not answer for raises, through *reads*, since the series it
     continues would otherwise be judged from a shorter history."""
-    retry = retry or _ReadRetry()
+    reads = reads or ReportReads()
     for detector, platform in candidates:
         try:
-            run_dirs = retry(
+            run_dirs = reads(
                 partial(
                     _fetch_run_dirs, data_url, suite, cache_dir, detector, platform, sample,
                     fetch_window_runs=fetch_window_runs, as_of=as_of,
@@ -849,7 +917,7 @@ def build_group_report(
     *,
     fetch_window_runs: int = FETCH_WINDOW_RUNS,
     as_of: str | None = None,
-    retry: _ReadRetry | None = None,
+    reads: ReportReads | None = None,
 ) -> RunGroupReport | None:
     """Build one triple of *suite*'s report from its trailing run window, or
     ``None`` when the triple has no runs at all.
@@ -859,12 +927,12 @@ def build_group_report(
     report that night's runs would have produced — the seam the historical
     backfill drives. ``None`` judges the full history (the nightly CI case).
 
-    Every read goes through *retry* (:class:`_ReadRetry`), and one the store
+    Every read goes through *reads* (:class:`ReportReads`), and one the store
     still does not answer raises: this triple, or the series it continues, is
     then not judged at all rather than judged on part of its history.
     """
-    retry = retry or _ReadRetry()
-    run_dirs = retry(
+    reads = reads or ReportReads()
+    run_dirs = reads(
         partial(
             _fetch_run_dirs, data_url, suite, cache_dir, detector, platform, sample,
             fetch_window_runs=fetch_window_runs, as_of=as_of,
@@ -878,7 +946,7 @@ def build_group_report(
         suite, detector, platform, sample, run_dirs,
         predecessor=partial(
             _fetch_predecessor, data_url, suite, cache_dir, candidates, sample,
-            fetch_window_runs=fetch_window_runs, as_of=as_of, retry=retry,
+            fetch_window_runs=fetch_window_runs, as_of=as_of, reads=reads,
         ) if candidates else None,
     )
 
@@ -1324,6 +1392,7 @@ def build_nightly_report(
     fetch_window_runs: int = FETCH_WINDOW_RUNS,
     as_of: str | None = None,
     night: str | None = None,
+    reads: ReportReads | None = None,
 ) -> NightlyReport:
     """Build *suite*'s cross-detector report for the most recent nightly.
 
@@ -1343,38 +1412,52 @@ def build_nightly_report(
     than every run found, as one missing run per triple (see
     :func:`_finalize_report`) — the outage seam.
 
-    Every read is strict and retried (:class:`_ReadRetry`). Discovery — which
-    triples exist — raises when the store still does not answer, failing the
-    whole report: a triple discovery missed could not even be named as not
-    judged. A triple whose own runs cannot be read, or whose report cannot be
-    built from them, is reported as not judged (:attr:`RunGroupReport.unread`)
-    and the rest of the report stands.
+    Every read goes through *reads* (:class:`ReportReads`; a fresh one when
+    ``None``): strict, retried, and bounded in time for the whole report.
+    Discovery — which triples exist — comes first and raises when the store
+    still does not answer, failing the whole report: a triple discovery missed
+    could not even be named as not judged. A triple whose own runs cannot be
+    read, whose report cannot be built from them, or that was not reached
+    before reads stopped is reported as not judged
+    (:attr:`RunGroupReport.unread`) and the rest of the report stands.
     """
-    retry = _ReadRetry()
-    groups: list[RunGroupReport] = []
-    for detector in retry(partial(list_detectors, data_url, suite), suite):
-        for platform in retry(
+    reads = reads or ReportReads()
+    triples: list[tuple[str, str, str]] = []
+    for detector in reads(partial(list_detectors, data_url, suite), suite):
+        for platform in reads(
             partial(list_platforms, data_url, suite, detector), detector,
         ):
-            stack_samples = retry(
+            stack_samples = reads(
                 partial(scan_stack_samples, data_url, suite, detector, platform, strict=True),
                 f"{detector}/{platform}",
             )
-            samples = sorted({s for ss in stack_samples.values() for s in ss})
-            for sample in samples:
-                try:
-                    group = build_group_report(
-                        data_url, suite, cache_dir, detector, platform, sample,
-                        fetch_window_runs=fetch_window_runs, as_of=as_of, retry=retry,
-                    )
-                except Exception as exc:
-                    _log.exception(
-                        "build_nightly_report: not judging %s/%s/%s",
-                        detector, platform, sample,
-                    )
-                    group = _unread_group(detector, platform, sample, exc)
-                if group is not None:
-                    groups.append(group)
+            triples += [
+                (detector, platform, sample)
+                for sample in sorted({s for ss in stack_samples.values() for s in ss})
+            ]
+
+    groups: list[RunGroupReport] = []
+    for detector, platform, sample in triples:
+        try:
+            group = build_group_report(
+                data_url, suite, cache_dir, detector, platform, sample,
+                fetch_window_runs=fetch_window_runs, as_of=as_of, reads=reads,
+            )
+        except ReadsStopped as exc:
+            _log.warning("build_nightly_report: not reading %s/%s/%s — %s",
+                         detector, platform, sample, exc)
+            group = _unread_group(detector, platform, sample, exc)
+        except Exception as exc:
+            _log.exception(
+                "build_nightly_report: not judging %s/%s/%s", detector, platform, sample,
+            )
+            if isinstance(exc, requests.RequestException):
+                reads.triple_failed()
+            group = _unread_group(detector, platform, sample, exc)
+        else:
+            reads.triple_read()
+        if group is not None:
+            groups.append(group)
 
     return _finalize_report(groups, suite, night=night)
 
@@ -1498,6 +1581,35 @@ def report_covers_run(report: NightlyReport, run_id: str) -> bool:
         return False
     keys = {_batch_key(g.github_run_url) for g in report.groups if g.github_run_url}
     return any(k.rpartition("/actions/runs/")[2] == run_id for k in keys)
+
+
+class Coverage(str, Enum):
+    """What a report says about a benchmark fan-out (:func:`fanout_coverage`).
+
+    ``COVERED`` — the report holds a run the fan-out uploaded.
+    ``ABSENT``  — every triple was read and none came from it: it uploaded
+                  nothing, which is tonight's outage.
+    ``UNKNOWN`` — none of the triples read came from it, but some could not be
+                  read, and tonight's uploads may be exactly those.
+    """
+
+    COVERED = "covered"
+    ABSENT = "absent"
+    UNKNOWN = "unknown"
+
+
+def fanout_coverage(report: NightlyReport, run_id: str) -> Coverage:
+    """Whether *report* covers the fan-out *run_id*, and whether it can tell.
+
+    An unread triple carries no CI run (:attr:`RunGroupReport.unread`), so
+    :func:`report_covers_run` alone would read a fan-out whose every upload
+    sits in an unreadable tree as one that uploaded nothing.
+    """
+    if report_covers_run(report, run_id):
+        return Coverage.COVERED
+    if any(g.unread for g in report.groups):
+        return Coverage.UNKNOWN
+    return Coverage.ABSENT
 
 
 def _finalize_report(

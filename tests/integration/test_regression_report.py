@@ -513,6 +513,81 @@ def test_regression_report_refuses_a_report_that_read_no_run():
     cli.require_a_read(NightlyReport("", []))  # nothing to read is not a failed read
 
 
+def _fanout_cli(tmp_path, monkeypatch, first, outage=None):
+    """``main`` for fan-out 900 over a fake remote build: *first* is what it
+    builds, *outage* what a rebuild for tonight (2026-01-13) builds."""
+    from k4bench.regression import report_builder
+    from k4bench.regression.report_builder import ReportReads
+
+    cli = _load_script(_SCRIPT)
+    monkeypatch.setattr(cli, "tonight", lambda: "2026-01-13")
+    builds = []
+
+    def build(data_url, suite, cache_dir, *, as_of, reads, night):
+        assert isinstance(reads, ReportReads)
+        builds.append((night, reads))
+        return first if night is None else outage
+
+    monkeypatch.setattr(report_builder, "build_nightly_report", build)
+    out = tmp_path / "out"
+
+    def run():
+        return cli.main([
+            "--suite", SIM, "--data-url", "https://eos.invalid",
+            "--output-dir", str(out), "--fanout-run-id", "900",
+        ])
+    return run, builds, out / "report.json"
+
+
+def _ran(run: int, night: str = "2026-01-12", **kwargs) -> object:
+    from k4bench.regression.models import RunGroupReport
+    return RunGroupReport(
+        detector=kwargs.pop("detector", "OTHER"), platform=_PLAT, sample="single_e",
+        k4h_release=_STACK, run_date=night, run_id=night,
+        github_run_url=f"{_RUN}/{run}", **kwargs,
+    )
+
+
+def test_regression_report_publishes_a_report_that_covers_the_fanout(tmp_path, monkeypatch):
+    from k4bench.regression.models import NightlyReport
+
+    first = NightlyReport("", [_ran(900, "2026-01-13"), _unread("DET")])
+    run, builds, written = _fanout_cli(tmp_path, monkeypatch, first)
+    assert run() == 0
+    assert [night for night, _ in builds] == [None]
+    assert _json.loads(written.read_text())["summary"]["report_night"] == "2026-01-13"
+
+
+def test_regression_report_reports_an_outage_when_every_triple_read_and_none_covers(
+    tmp_path, monkeypatch,
+):
+    from k4bench.regression.models import NightlyReport
+
+    first = NightlyReport("", [_ran(800)])
+    outage = NightlyReport("", [_ran(800, job_failures=[
+        "no run uploaded for 2026-01-13 (latest is 2026-01-12)"])], night="2026-01-13")
+    run, builds, written = _fanout_cli(tmp_path, monkeypatch, first, outage)
+    assert run() == 0
+    assert [night for night, _ in builds] == [None, "2026-01-13"]
+    # The rebuild reads within the same bound as the first build.
+    assert builds[0][1] is builds[1][1]
+    assert _json.loads(written.read_text())["night"] == "2026-01-13"
+
+
+def test_regression_report_publishes_nothing_when_unread_triples_leave_coverage_unknown(
+    tmp_path, monkeypatch,
+):
+    from k4bench.regression.models import NightlyReport
+
+    # Last night's run read fine; tonight's uploads may be in the unread tree.
+    first = NightlyReport("", [_ran(800), _unread("DET", "2026-01-12")])
+    run, builds, written = _fanout_cli(tmp_path, monkeypatch, first)
+    with pytest.raises(SystemExit, match="Re-run the report job"):
+        run()
+    assert [night for night, _ in builds] == [None]  # no outage rebuild
+    assert not written.exists()
+
+
 def test_regression_report_annotates_each_triple_it_could_not_read(capsys):
     from k4bench.regression.models import NightlyReport, RunGroupReport
 

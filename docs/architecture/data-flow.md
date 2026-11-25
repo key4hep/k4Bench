@@ -112,10 +112,13 @@ A job that failed before writing any result but uploaded its `run_info.json`
 still names its CI run there, so its triple is reported as that fan-out's
 failed configs, never as an upload that did not happen.
 
-Its EOS reads are strict: a listing or download WebEOS does not answer is
+The report's EOS reads are strict: a listing or download WebEOS does not answer is
 retried with backoff (`READ_BACKOFF_S`, within a per-report
-`READ_BACKOFF_BUDGET_S`), and a triple whose runs still cannot be read is
-reported as *not judged* rather than judged on part of its history (see
+`READ_BACKOFF_BUDGET_S`), all reads stop after `READ_DEADLINE_S` or
+`READ_BREAKER_TRIPLES` failed triples in a row, and a triple whose runs still
+cannot be read is reported as *not judged* rather than judged on part of its
+history. A fan-out that unread triples might hide is not reported as an
+outage: nothing is published (see
 [File formats → Triples a report could not read](../reference/file-formats.md#triples-a-report-could-not-read-reportjson)).
 It reuses the same pure building blocks as the dashboard (`k4bench.remote` for
 discovery/download, `k4bench.analysis.trend` for aggregation,
