@@ -1304,3 +1304,26 @@ def test_windowed_runs_skip_one_still_uploading_and_strict_reads_say_so(
         )
     assert [r["date"] for r in caught.value.partial] == ["2026-05-20"]
     assert "2026-05-21" in str(caught.value)
+
+
+def test_a_run_still_uploading_stops_no_other_download(monkeypatch):
+    # Unlike a server that does not answer, one that says a run is not finished
+    # yet is answering: every other run of the window is still read.
+    import time
+
+    dates = [f"2026-05-{day:02d}" for day in range(1, 31)]
+
+    def ensure_run_cached(base_url, suite, detector, platform, stack, sample, date, cache_root):
+        if date == dates[0]:
+            raise remote.UnfinishedRun(f"{stack}/{date}", "its upload has not finished")
+        time.sleep(0.01)
+        return f"/cache/{stack}/{date}"
+
+    monkeypatch.setattr(remote, "ensure_run_cached", ensure_run_cached)
+    with pytest.raises(remote.IncompleteFetch) as caught:
+        remote.fetch_runs_windowed(
+            BASE, SIM, "DET", "PLAT", "single_e", {"S": dates}, strict=True,
+        )
+    assert sorted(r["date"] for r in caught.value.partial) == dates[1:]
+    [failure] = caught.value.failures
+    assert failure.startswith(f"S/{dates[0]}: ") and "has not finished" in failure

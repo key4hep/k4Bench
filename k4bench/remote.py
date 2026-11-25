@@ -630,8 +630,10 @@ def fetch_runs_windowed(
     With *strict*, no download starts after the first failure that makes the
     result incomplete, and the call raises once those in flight have finished —
     so every run that landed stays in the on-disk cache and a retry fetches
-    only what is missing. A run the server did not answer for, or whose
-    upload had not finished (:class:`UnfinishedRun`), raises
+    only what is missing. A run whose upload had not finished
+    (:class:`UnfinishedRun`) makes it incomplete too, but stops nothing: the
+    server answered, so the other runs are still read. A run the server did not
+    answer for, or that had not finished, raises
     :class:`IncompleteFetch` carrying the runs that landed; a local error — the
     cache directory full or unwritable — raises that ``OSError`` itself, since
     it is neither EOS's fault nor fixed by asking EOS again. A run whose listing
@@ -676,6 +678,9 @@ def fetch_runs_windowed(
                 if _is_absent(exc):
                     continue
                 failures.append(f"{stack}/{date}: {exc}")
+                if isinstance(exc, UnfinishedRun):
+                    # The server answered: the other runs are worth reading.
+                    continue
             except ValueError as exc:
                 _log.warning("fetch_runs_windowed: failed %s/%s — %s", stack, date, exc)
                 continue
