@@ -718,6 +718,30 @@ window it reproduces rather than for a night, so re-publishing the same window
 replaces the same file and a standing comment's link keeps working — see
 [PR comments → Reproducing the measurement](../user-guide/features/pr-comments.md#reproducing-the-measurement).
 
+### Uploading a run
+
+A run directory is named for its detector, platform, release, sample and the
+day its job started, so a re-run of the same job against the same release on
+the same day lands in the same directory. It holds that attempt's files and no earlier one's, and its
+`run_info.json` is the sign that they are all there. The nightly
+(`.github/scripts/nightly_benchmark.sh`, section 9):
+
+1. lists the run directory;
+2. removes `run_info.json`, if an earlier attempt left one;
+3. removes every file this attempt does not upload;
+4. uploads the run's other files;
+5. uploads `run_info.json`.
+
+Each file is copied with `eos.atomic`, so its name appears only once all of it
+is written, and an overwritten file stays readable as it was until then. A copy
+that fails stops the upload before step 5 and fails the job.
+
+Readers therefore take a run whose listing lacks `run_info.json` for one whose
+upload has not finished (`k4bench.remote.upload_finished`): they cache nothing
+of it and read it again later. A run two days past its date is the exception,
+since no job can still be writing it: whatever it holds, with or without
+`run_info.json`, is all it ever will.
+
 ### The night a report covers (`report.json`)
 
 `reports/{suite}/{YYYY-MM-DD}/` is named for the night the report covers, and

@@ -89,13 +89,25 @@ WATCH.
 
 The EOS directory layout is the integration contract between CI and the
 dashboard — see [File formats → EOS layout](../reference/file-formats.md#eos-layout).
-Because historical runs are immutable, the dashboard downloads each file of a
+A run directory holds one attempt's files, and its `run_info.json` says they
+are all there: the upload takes `run_info.json` down before it changes
+anything, removes the files only an earlier attempt of the same job, release
+and day wrote, and uploads `run_info.json` last (see
+[File formats → Uploading a run](../reference/file-formats.md#uploading-a-run)).
+A reader takes a run without it for one still being uploaded and reads it again
+later (`k4bench.remote.upload_finished`), unless the run is two days past its
+date, when no job can still be writing it.
+
+A finished run is taken to be immutable, so the dashboard downloads each file of a
 run at most once, and only when a view reads it (`k4bench.remote.ensure_run_artifacts`):
 each file is published into its on-disk cache atomically, under a per-run lock
 and manifest, so concurrent reruns never see a half-written file and two views
 asking for different files of one run both get theirs. The nightly report and
-the CLI download whole runs (`ensure_run_cached`), published with a single
-atomic rename of the run directory and marked `.complete`.
+the CLI download whole runs (`ensure_run_cached`), `run_info.json` last,
+published with a single atomic rename of the run directory and marked
+`.complete`. A same-day re-run that replaces a run already in a cache is not
+seen there until that cache is cleared; the nightly report starts from an empty
+one every night, and the dashboard's goes with its pod.
 
 The `regression-report` job (`.github/scripts/regression_report.{py,sh}`) runs
 after the benchmark fan-out, so a crashed detector job still surfaces in the

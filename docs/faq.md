@@ -40,7 +40,7 @@ Inside Key4hep, k4bench's dependencies are already provided at stack-pinned vers
 
 ## Where does the dashboard's data come from?
 
-Nightly CI runs a curated benchmark set, uploads results to CERN EOS, and the dashboard reads them over HTTPS, caching each immutable run on disk. The pipeline is in [Architecture → data flow](architecture/data-flow.md#nightly-eos-dashboard).
+Nightly CI runs a curated benchmark set, uploads results to CERN EOS, and the dashboard reads them over HTTPS, caching each finished run on disk. The pipeline is in [Architecture → data flow](architecture/data-flow.md#nightly-eos-dashboard).
 
 ## How do I add a new detector to the nightly?
 
