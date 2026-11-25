@@ -29,7 +29,8 @@ from k4bench.analysis.loader import (
     failed_config_mask,
     judgeable_config_keys,
     judgeable_config_rows,
-    named_run_key,
+    newest_run_key,
+    release_day,
     run_key,
     run_keys,
 )
@@ -106,6 +107,14 @@ def _reliable_column(keys: pd.Series, reliability: dict[str, bool | None]) -> li
     """Per-row tri-state reliability of the runs *keys* name, kept as Python
     objects (no NaN coercion)."""
     return [reliability.get(key) for key in keys]
+
+
+def _measured_release(rows: pd.DataFrame, fallback: str) -> str:
+    """The release the run of *rows* measured (their ``x_date``), as a
+    verdict's ``run_date`` records it; *fallback* where the frame does not say."""
+    if "x_date" not in rows.columns or rows.empty:
+        return fallback
+    return release_day(rows["x_date"].iloc[0]) or fallback
 
 
 def _names_run(verdict: MetricVerdict, key: str) -> bool:
@@ -335,11 +344,11 @@ def unjudged_value_verdicts(
 
     Tonight's run is the one *tonight_key* names, by default the newest
     release filed under *tonight* (see
-    :func:`~k4bench.analysis.loader.named_run_key`).
+    :func:`~k4bench.analysis.loader.newest_run_key`).
     """
     out: list[MetricVerdict] = []
     if tonight_key is None:
-        tonight_key = named_run_key(list(frames.values()), tonight)
+        tonight_key = newest_run_key(list(frames.values()), tonight)
 
     def _emit(df: pd.DataFrame | None, source: MetricSource) -> None:
         if df is None or df.empty:
@@ -366,7 +375,7 @@ def unjudged_value_verdicts(
                         metric=metric,
                         sub_detector=None,
                         run_id=tonight,
-                        run_date=tonight,
+                        run_date=_measured_release(row, tonight),
                         value=float(val),
                         baseline_median=None,
                         baseline_mad=None,
@@ -532,17 +541,19 @@ def _failed_config_verdicts(
     """FAILURE verdicts for configs whose returncode is non-zero, missing, or
     invalid in tonight's run — same rule as the dashboard's ``_failed_labels``.
     Tonight's run is the one *key* names, by default the newest release filed
-    under *run_id* (see :func:`~k4bench.analysis.loader.named_run_key`)."""
+    under *run_id* (see :func:`~k4bench.analysis.loader.newest_run_key`). Each
+    verdict's ``run_date`` is the release the run measured, *run_date* where
+    the frame does not say."""
     if "returncode" not in results_df.columns:
         return []
     if key is None:
-        key = named_run_key([results_df], run_id)
+        key = newest_run_key([results_df], run_id)
     tonight = results_df[run_keys(results_df) == key]
     failed = tonight.loc[failed_config_mask(tonight)]
     verdicts = []
     normalized_rc = pd.to_numeric(failed["returncode"], errors="coerce")
-    for row, raw_rc in zip(
-        failed.itertuples(index=False), normalized_rc, strict=True,
+    for index, row, raw_rc in zip(
+        failed.index, failed.itertuples(index=False), normalized_rc, strict=True,
     ):
         rc = None if pd.isna(raw_rc) else float(raw_rc)
         if rc is None:
@@ -557,7 +568,8 @@ def _failed_config_verdicts(
         verdicts.append(MetricVerdict(
             detector=detector, platform=platform, sample=sample,
             label=str(row.label), metric_family="status", metric="returncode",
-            sub_detector=None, run_id=run_id, run_date=run_date,
+            sub_detector=None, run_id=run_id,
+            run_date=_measured_release(failed.loc[[index]], run_date),
             value=rc, baseline_median=None, baseline_mad=None,
             pct_change=None, z_score=None,
             severity=Severity.FAILURE, direction=Direction.NONE,
@@ -571,7 +583,7 @@ def _seed_map(results_df: pd.DataFrame | None) -> dict[str, int | None]:
     run recorded no seed (it drew a fresh one, or predates seed recording).
     Of two releases benchmarked on one date, the run of the newer one speaks
     for the date, as it does for the report night (see
-    :func:`~k4bench.analysis.loader.named_run_key`)."""
+    :func:`~k4bench.analysis.loader.newest_run_key`)."""
     if results_df is None or results_df.empty or "random_seed" not in results_df.columns:
         return {}
     ordered = (
@@ -688,13 +700,13 @@ def _missing_config_failures(
     alone would miss it.
 
     Tonight's run is the one *key* names, by default the newest release filed
-    under *run_id* (see :func:`~k4bench.analysis.loader.named_run_key`).
+    under *run_id* (see :func:`~k4bench.analysis.loader.newest_run_key`).
     """
     have_results = (
         results_df is not None and {"run_id", "label"} <= set(results_df.columns)
     )
     if key is None:
-        key = named_run_key([results_df] if have_results else [], run_id)
+        key = newest_run_key([results_df] if have_results else [], run_id)
     runs = run_keys(results_df) if have_results else None
     tonight_labels = (
         set(results_df.loc[runs == key, "label"])
@@ -843,7 +855,7 @@ def _group_report_from_frames(
     Tonight's run is the one *tonight_key* names
     (:func:`~k4bench.analysis.loader.run_key`), by default the newest release
     the frames hold under *tonight* (see
-    :func:`~k4bench.analysis.loader.named_run_key`).
+    :func:`~k4bench.analysis.loader.newest_run_key`).
     """
     results_df = frames[RESULTS]
     no_results = results_df is None or results_df.empty
@@ -853,7 +865,7 @@ def _group_report_from_frames(
     if all(df is None or df.empty for df in frames.values()) and not configured_labels:
         return None
     if tonight_key is None:
-        tonight_key = named_run_key(list(frames.values()), tonight)
+        tonight_key = newest_run_key(list(frames.values()), tonight)
 
     k4h_release = ""
     github_run_url = None
@@ -981,10 +993,10 @@ def _failed_display_verdicts(
 
     Tonight's run is the one *tonight_key* names, by default the newest
     release *frames* hold under *tonight* (see
-    :func:`~k4bench.analysis.loader.named_run_key`).
+    :func:`~k4bench.analysis.loader.newest_run_key`).
     """
     if tonight_key is None:
-        tonight_key = named_run_key(list(frames.values()), tonight)
+        tonight_key = newest_run_key(list(frames.values()), tonight)
     failed_configs = failed_config_keys(frames[RESULTS])
     tonight_failed = {key for key in failed_configs if key[0] == tonight_key}
     if not tonight_failed:
@@ -1255,6 +1267,12 @@ def group_report_from_run_dirs(
     # run_info still names the stack that failed.
     if not group.k4h_release:
         group.k4h_release = tonight_meta["k4h_release"] or ""
+    group.history_run_urls = tuple(
+        url
+        for d in run_dirs
+        if Path(d).name == tonight and Path(d) != tonight_dir
+        and (url := parse_run_dir(Path(d))["github_run_url"])
+    )
     return _DECOMPOSITIONS[suite](
         group, run_dirs, judgeable_config_keys(results_df), predecessor=before,
     )
@@ -1429,6 +1447,22 @@ def report_covers_run(report: NightlyReport, run_id: str) -> bool:
     if not run_id:
         return False
     keys = {_batch_key(g.github_run_url) for g in report.groups if g.github_run_url}
+    return any(k.rpartition("/actions/runs/")[2] == run_id for k in keys)
+
+
+def report_holds_run_as_history(report: NightlyReport, run_id: str) -> bool:
+    """Whether *run_id*'s benchmark jobs uploaded runs this report holds only
+    as history: older releases filed under a date that also holds a newer
+    release's run, which is that night's (see
+    :attr:`~k4bench.regression.models.RunGroupReport.history_run_urls`).
+
+    A pinned dispatch of an older release on a night the nightly already
+    benchmarked a newer one ends here. Its runs enter their own release's
+    history, and the night stays the nightly's to report.
+    """
+    if not run_id:
+        return False
+    keys = {_batch_key(url) for g in report.groups for url in g.history_run_urls}
     return any(k.rpartition("/actions/runs/")[2] == run_id for k in keys)
 
 

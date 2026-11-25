@@ -17,13 +17,11 @@ from k4bench.analysis.loader import (
     load_event_timing,
     load_region_timing,
     load_results,
-    named_release,
-    named_run_key,
+    newest_run_key,
     recorded_config_rows,
     run_key,
     run_keys,
     run_suite,
-    split_run_key,
     with_cpu_efficiency,
 )
 
@@ -106,8 +104,6 @@ class TestRunKeys:
         assert run_key("2026-07-21", pd.Timestamp("2026-07-20")) == "2026-07-21@2026-07-20"
         assert run_key("2026-07-21", "2026-07-20") == "2026-07-21@2026-07-20"
         assert run_key("2026-07-21", None) == "2026-07-21"
-        assert split_run_key("2026-07-21@2026-07-20") == ("2026-07-21", "2026-07-20")
-        assert split_run_key("2026-07-21") == ("2026-07-21", "")
 
     def test_rows_are_keyed_by_run_and_release(self):
         assert list(run_keys(self._runs())) == [
@@ -118,20 +114,11 @@ class TestRunKeys:
             "2026-07-20", "2026-07-21", "2026-07-21", "legacy",
         ]
 
-    def test_a_named_run_is_the_release_named_else_the_newest(self):
+    def test_the_newest_release_filed_under_a_date_is_that_nights_run(self):
         runs = self._runs()
-        # A judged verdict names the release it measured.
-        assert named_run_key([runs], "2026-07-21", "2026-07-20") == "2026-07-21@2026-07-20"
-        # Naming no release, or one no run under the date measured (as an
-        # unjudged or failure verdict, which carries its run date there, can),
-        # names the run of the newest release filed under the date.
-        assert named_release([runs], "2026-07-21", None) == "2026-07-21"
-        assert named_release([runs], "2026-07-21", "2026-07-19") == "2026-07-21"
-        # Run keys alone can name the candidates too.
-        assert named_run_key([], "2026-07-21", keys={"2026-07-21@2026-07-20"}) == (
-            "2026-07-21@2026-07-20"
-        )
-        assert named_run_key([runs], "never-ran", "2026-07-20") == "never-ran"
+        assert newest_run_key([runs], "2026-07-21") == "2026-07-21@2026-07-21"
+        assert newest_run_key([None, runs.iloc[[1]]], "2026-07-21") == "2026-07-21@2026-07-20"
+        assert newest_run_key([runs], "never-ran") == "never-ran"
 
 
 class TestFailedConfigMask:

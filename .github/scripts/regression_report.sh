@@ -105,13 +105,22 @@ echo "::endgroup::"
 # K4BENCH_FANOUT_RUN_ID, when set, is read by the script itself: a report
 # holding none of that run's uploads is last night's again, and the script
 # either reports tonight as an outage or exits non-zero with nothing written,
-# so nothing below publishes.
+# so nothing below publishes. A run that uploaded only older releases' runs
+# beside a newer one of the same night (a pinned dispatch) has no report of
+# its own: the script then succeeds with nothing written, and so does this.
 echo "::group::4. Build the report"
+# Whether a report was written is read off the file below, so none may be left over.
+rm -f report/report.json report/report.md
 python .github/scripts/regression_report.py \
     --suite "${K4BENCH_SUITE}" \
     --data-url "${K4BENCH_DATA_URL}" \
     --cache-dir "${RUNNER_TEMP:-/tmp}/k4bench_cache" \
     --output-dir report
+if [[ ! -f report/report.json ]]; then
+    echo "No report to publish for this run."
+    echo "::endgroup::"
+    exit 0
+fi
 NIGHT="$(python -c 'import json; print(json.load(open("report/report.json"))["summary"]["report_night"])')"
 [[ -n "${NIGHT}" ]] || { echo "ERROR: report has no report_night (no data on EOS?)" >&2; exit 1; }
 echo "::endgroup::"

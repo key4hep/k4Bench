@@ -198,6 +198,7 @@ def main(argv: list[str] | None = None) -> int:
         build_nightly_report,
         build_nightly_report_local,
         report_covers_run,
+        report_holds_run_as_history,
     )
 
     if args.data_dir:
@@ -214,6 +215,17 @@ def main(argv: list[str] | None = None) -> int:
 
     report = build(night=args.night)
     if args.fanout_run_id and not report_covers_run(report, args.fanout_run_id):
+        if report_holds_run_as_history(report, args.fanout_run_id):
+            # A pinned older release benchmarked on a night a newer release
+            # already ran: its runs are history of their own release, and the
+            # night is the newer run's fan-out's to report.
+            print(
+                f"run {args.fanout_run_id} benchmarked only releases older than "
+                f"the {report.report_night} run filed beside them: their runs "
+                "are history of those releases, so there is no report to "
+                "publish for it.", file=sys.stderr,
+            )
+            return 0
         report = outage_report(build, report, args.fanout_run_id, tonight())
 
     out = Path(args.output_dir)

@@ -733,9 +733,17 @@ dispatched, or an old nightly re-run, on a night the current release ran too.
 Their runs are filed under the same date in different release directories, so
 they share a run id (`run_id`, the date directory's name). A run is therefore
 named by its run id *and* the release it measured: a verdict's `run_id` with
-its `run_date`, and likewise its `onset_*` and `last_accepted_*` pairs. A
-triple's run on the report night is the one that measured the newest release;
-the other is a measurement of its own release and enters the history there.
+its `run_date`, and likewise its `onset_*` and `last_accepted_*` pairs. Failure
+and unjudged verdicts name the release too; reports written before they did
+carry the run date there, and readers take the group's `k4h_release` instead.
+
+A triple's run on the report night is the one that measured the newest
+release; the other is a measurement of its own release and enters the history
+there. The group lists the CI runs of such runs in `history_run_urls`, a key
+present only when there are any. A pinned dispatch of an older release on a
+night a newer release already ran is therefore never that night's report: its
+report job finds its runs only there, publishes nothing and succeeds, and the
+night stays the one the newer run's fan-out reported.
 
 ### Metric history on confirmed verdicts (`report.json`)
 

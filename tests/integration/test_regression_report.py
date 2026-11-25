@@ -161,6 +161,32 @@ def test_regression_report_cli_publishes_nothing_when_tonight_is_already_reporte
     assert not (tmp_path / "out").exists()
 
 
+def test_a_pinned_older_release_beside_tonights_run_publishes_no_report(tmp_path):
+    # Fan-out 900 benchmarked release 01-12 on 01-12; fan-out 902, a pinned
+    # dispatch of release 01-11, ran the same day. Tonight is release 01-12's
+    # run, so the night is 900's to report: 902's runs are history of 01-11,
+    # and its report job succeeds without writing one.
+    _write_history(tmp_path / "data", [100.0] * 12, date.fromisoformat("2026-01-12"),
+                   run_url=f"{_RUN}/900")
+    stack = "key4hep-2026-01-11"
+    _write_run(tmp_path / "data" / run_path(SIM, "DET") / _PLAT / stack / "single_e"
+               / "2026-01-12", "2026-01-12", 100.0, stack=stack, run_url=f"{_RUN}/902")
+
+    result = _run_cli(tmp_path, "--fanout-run-id", "902")
+    assert result.returncode == 0, result.stderr
+    assert "history of those releases" in result.stderr
+    assert not (tmp_path / "out" / "report.json").exists()
+
+    # The nightly's own report job still reports the night, naming the
+    # pinned run as history rather than as tonight.
+    result = _run_cli(tmp_path, "--fanout-run-id", "900")
+    assert result.returncode == 0, result.stderr
+    group, = json.loads((tmp_path / "out" / "report.json").read_text())["groups"]
+    assert group["k4h_release"] == "key4hep-2026-01-12"
+    assert group["github_run_url"] == f"{_RUN}/900"
+    assert group["history_run_urls"] == [f"{_RUN}/902"]
+
+
 def test_regression_report_cli_rejects_a_malformed_night(tmp_path):
     # Nights are compared as strings, so `2026-1-13` would both sort after
     # `2026-01-12` and name a new EOS directory; only the canonical form passes.

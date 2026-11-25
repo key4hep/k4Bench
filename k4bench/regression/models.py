@@ -583,6 +583,11 @@ class RunGroupReport:
     #: Empty for every run benchmarked before it was recorded, which means
     #: *unknown* — never "this run loads no geometry".
     geometry_path: str = ""
+    #: The CI runs of the other runs filed under tonight's date: older releases
+    #: benchmarked that night (a pinned dispatch, an old nightly re-run), which
+    #: enter the history of their own release and are never tonight's run.
+    #: Written to ``report.json`` only when there are any.
+    history_run_urls: tuple[str, ...] = ()
 
     def _select(self, severity: Severity) -> list[MetricVerdict]:
         return [v for v in self.verdicts if v.severity is severity]

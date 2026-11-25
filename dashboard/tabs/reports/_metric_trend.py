@@ -30,10 +30,9 @@ from data import (
 from k4bench.analysis.loader import (
     config_keys,
     failed_config_keys,
-    named_run_key,
     recorded_config_rows,
+    run_key,
     run_keys,
-    split_run_key,
     with_cpu_efficiency,
 )
 from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
@@ -280,15 +279,12 @@ def source_frame(
     return loaders[name](run_dirs)
 
 
-def _verdict_run(
-    fetched: pd.DataFrame, verdict: MetricVerdict, *config_sets: set[tuple[str, str]],
-) -> str:
-    """The run key of the run *verdict* was issued for, among the *fetched*
-    runs and those *config_sets* (``(run key, label)`` pairs) name: its run id
-    and the release it measured (see
-    :func:`~k4bench.analysis.loader.named_release`)."""
-    keys = {run for configs in config_sets for run, _label in configs}
-    return named_run_key([fetched], verdict.run_id, verdict.run_date, keys=keys)
+def _verdict_run(verdict: MetricVerdict) -> str:
+    """The run key of the run *verdict* was issued for: its run id and the
+    release it measured (see :func:`~k4bench.analysis.loader.run_key`). A run
+    missing from the fetched data stays that run, never another release filed
+    under the same date."""
+    return run_key(verdict.run_id, verdict.run_date)
 
 
 def _missing_run_reason(
@@ -309,10 +305,7 @@ def _missing_run_reason(
     *failed_configs* and *orphan_configs* are ``(run key, label)`` pairs and
     *excluded_runs* run keys (see :func:`~k4bench.analysis.loader.run_key`).
     """
-    run = _verdict_run(
-        fetched, verdict, failed_configs or set(), orphan_configs or set(),
-        {(key, "") for key in excluded_runs},
-    )
+    run = _verdict_run(verdict)
     if (run, str(verdict.label)) in (failed_configs or set()):
         return (
             "came from a config with a non-zero, missing, or invalid returncode, "
@@ -378,7 +371,7 @@ def render_metric_trend(
 
     series_key = _series_key(verdict)
     fetched = df
-    verdict_run = _verdict_run(fetched, verdict, failed_configs, orphan_configs)
+    verdict_run = _verdict_run(verdict)
     failed_mask = pd.Series([
         (run, str(label)) in failed_configs
         for run, label in zip(run_keys(df), df["label"], strict=True)
@@ -450,7 +443,7 @@ def render_metric_trend(
         failed_df if verdict_failed else judgeable_df,
         verdict.run_id,
         verdict.metric,
-        split_run_key(verdict_run)[1] or None,
+        verdict.run_date or None,
     )
     if flagged is not None and not verdict_failed:
         add_severity_markers(

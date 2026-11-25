@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TypeVar
 
@@ -120,29 +120,13 @@ def run_keys(df: pd.DataFrame, release_column: str = "x_date") -> pd.Series:
     return (run_ids + "@" + days).where(days.notna(), run_ids)
 
 
-def split_run_key(key: str) -> tuple[str, str]:
-    """``(run_id, release)`` of a :func:`run_key`, the release ``""`` when the
-    key names none."""
-    run_id, _, release = str(key).partition("@")
-    return run_id, release
+def newest_run_key(frames: Sequence[pd.DataFrame | None], run_id: object) -> str:
+    """The run key of the run filed under *run_id* that measured the newest
+    release among the runs *frames* hold; *run_id* alone when they hold none.
 
-
-def named_release(
-    frames: Sequence[pd.DataFrame | None],
-    run_id: object,
-    release: object = None,
-    *,
-    keys: Iterable[str] = (),
-) -> str:
-    """The release (``YYYY-MM-DD``, ``""`` when unknown) of the run that
-    *run_id* and *release* name, among the runs *frames* hold and the run
-    *keys* (:func:`run_key`) name.
-
-    That is *release* itself when one of those runs under *run_id* measured it.
-    Otherwise — no *release* given, or a run date in its place, as the unjudged
-    and failure verdicts of a report carry — it is the newest release measured
-    under *run_id*: the run a report judges as that night, the other having
-    re-measured a release its series already holds.
+    That is the run a report judges as that night when two releases were
+    benchmarked on one date: the other re-measured a release its series
+    already holds.
     """
     days = {
         day
@@ -152,21 +136,7 @@ def named_release(
             df.loc[df["run_id"].astype(str) == str(run_id), "x_date"], errors="coerce",
         ).dt.strftime("%Y-%m-%d").dropna()
     }
-    days |= {day for key_run, day in map(split_run_key, keys) if key_run == str(run_id) and day}
-    day = release_day(release)
-    return day if day in days else max(days, default="")
-
-
-def named_run_key(
-    frames: Sequence[pd.DataFrame | None],
-    run_id: object,
-    release: object = None,
-    *,
-    keys: Iterable[str] = (),
-) -> str:
-    """The run key of the run *run_id* and *release* name (see
-    :func:`named_release`)."""
-    return run_key(run_id, named_release(frames, run_id, release, keys=keys))
+    return run_key(run_id, max(days, default=""))
 
 
 def config_keys(df: pd.DataFrame | None) -> set[tuple[str, str]]:
