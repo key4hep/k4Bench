@@ -94,20 +94,23 @@ are all there: the upload takes `run_info.json` down before it changes
 anything, removes the files only an earlier attempt of the same job, release
 and day wrote, and uploads `run_info.json` last (see
 [File formats → Uploading a run](../reference/file-formats.md#uploading-a-run)).
-A reader takes a run without it for one still being uploaded and reads it again
-later (`k4bench.remote.upload_finished`), unless the run is two days past its
-date, when no job can still be writing it.
+A reader reads `run_info.json` before a run's other files and again after
+them, and keeps the run only if it was there both times, unchanged: otherwise
+the run is still being uploaded or was replaced meanwhile, and is read again
+later. Runs dated before the protocol shipped are read as they always were.
 
 A finished run is taken to be immutable, so the dashboard downloads each file of a
 run at most once, and only when a view reads it (`k4bench.remote.ensure_run_artifacts`):
 each file is published into its on-disk cache atomically, under a per-run lock
 and manifest, so concurrent reruns never see a half-written file and two views
 asking for different files of one run both get theirs. The nightly report and
-the CLI download whole runs (`ensure_run_cached`), `run_info.json` last,
-published with a single atomic rename of the run directory and marked
-`.complete`. A same-day re-run that replaces a run already in a cache is not
-seen there until that cache is cleared; the nightly report starts from an empty
-one every night, and the dashboard's goes with its pod.
+the CLI download whole runs (`ensure_run_cached`), published with a single
+atomic rename of the run directory and marked `.complete`. A same-day re-run
+that replaces a whole run already in a cache is not seen there until that cache
+is cleared; the nightly report starts from an empty one every night, and the
+dashboard's goes with its pod. A run cached in part keeps the digest of its
+`run_info.json` and is discarded and read again from scratch the next time a
+view asks for a file it lacks and finds another attempt there.
 
 The `regression-report` job (`.github/scripts/regression_report.{py,sh}`) runs
 after the benchmark fan-out, so a crashed detector job still surfaces in the

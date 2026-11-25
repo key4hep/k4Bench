@@ -736,11 +736,26 @@ Each file is copied with `eos.atomic`, so its name appears only once all of it
 is written, and an overwritten file stays readable as it was until then. A copy
 that fails stops the upload before step 5 and fails the job.
 
-Readers therefore take a run whose listing lacks `run_info.json` for one whose
-upload has not finished (`k4bench.remote.upload_finished`): they cache nothing
-of it and read it again later. A run two days past its date is the exception,
-since no job can still be writing it: whatever it holds, with or without
-`run_info.json`, is all it ever will.
+`run_info.json` names its CI run, the run's attempt (`github_run_attempt`) and
+the moment the job started (`job_started`), so no two attempts write the same
+bytes. Readers (`k4bench.remote`) read it before a run's other files and again
+after them, and keep what they read only when it was there both times and did
+not change: otherwise the run is still being uploaded, or was replaced while it
+was read, and they cache nothing of it and read it again later. That holds
+whatever time has passed: an upload that died before step 5 stays unreadable
+until the job is run again. Runs dated before 2026-11-26
+(`k4bench.remote.UPLOAD_PROTOCOL_SINCE`), the day this protocol shipped, are
+read as they always were, with or without `run_info.json`; the store held
+3256 of them, all but one with `run_info.json`.
+
+Two jobs writing one run directory at once — two dispatches of the same
+detector config and sample against the same release on the same day — are not
+prevented. A GitHub `concurrency` group cannot serialize them: the run's date is
+only known once the job starts, so a group would have to hold every run of a
+release, queueing the nights that reuse one; and a group keeps one job pending,
+cancelling any other that queues behind it. Their files can then interleave;
+whichever finishes last leaves its `run_info.json`, beside files of either.
+Don't dispatch a job that a running one duplicates.
 
 ### The night a report covers (`report.json`)
 
