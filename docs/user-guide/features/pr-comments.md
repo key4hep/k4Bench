@@ -63,13 +63,28 @@ every pull request under review with its own first-pass prior, geometry reach,
 description and diff, and the rest of the field as competitors. It scores
 every scope for every pull request under review, each on its own: the scores
 are not shares and need not add up, because several changes can each cause
-part of one regression. Where more than one is likely for a scope, it says
-whether they are **alternative** explanations of the same movement or
-**independent** contributions. When a comment's attributed regressions have an
-alternative explanation that also clears `min_score`, the comment says so under
-its assessment, naming the other pull request inertly. A pull request the joint
-reply does not answer usably, a window with one selected pull request, and any
-failure of the joint call all fall back to the review of one pull request.
+part of one regression. Per scope it names the groups of likely pull requests
+that are **competing** explanations of the same movement — only one of a group
+can be its cause, and a group is named only when that holds for every row of
+the scope its members are likely for; a likely pull request in no group is an
+**independent** contribution. When a comment's attributed regressions have a
+competing explanation that also clears `min_score`, the comment says so under
+its assessment, naming the other pull request inertly.
+
+The joint review is one unit. Verdicts or summaries the reply leaves out are
+re-asked **jointly** — the window again, with the earlier answers as context —
+and the competing explanations are read off the final scores. A joint review
+that still cannot answer every pull request under review, or whose call fails,
+is a review that did not answer: no comment in that window is posted or edited
+that night, exactly as for a single review. Falling back to independent reviews
+would post the very contradiction the joint review exists to prevent. Only a
+window with one selected pull request, or whose pull requests were not offered
+the same rows and sweeps, is reviewed one pull request at a time.
+
+Which pull requests are reviewed together is not part of a comment's facts
+digest: it follows the night's selection, which moves with first-pass scores.
+Standing comments are re-rendered once into the joint form through the render
+version.
 
 "Everything" is meant literally, and both halves of it are load-bearing:
 

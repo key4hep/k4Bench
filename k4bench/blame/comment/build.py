@@ -141,9 +141,12 @@ def build_comments(
     Plans that share a change window are reviewed **together** when the
     attributor can (:mod:`k4bench.blame.joint_review`): one reading of the
     window for every pull request selected in it, so the same movement is never
-    blamed on a change in one review and cleared for it in another. A plan the
-    joint review did not answer is reviewed on its own, exactly as a plan alone
-    in its window is.
+    blamed on a change in one review and cleared for it in another. The joint
+    review is a unit: one that does not answer every plan in the window is a
+    review that did not answer, and none of them is commented tonight. Falling
+    back to independent reviews would post exactly the contradiction the joint
+    review exists to prevent, and — the same digest, the same refusal to edit —
+    it would then stand.
 
     Each draft is rendered when it is written (:meth:`CommentDraft.render`),
     once the publisher has read the comments already posted in its lineage.
@@ -365,8 +368,8 @@ def _reviews(
 
     Plans sharing a suite and window whose requests can be joined
     (:func:`~k4bench.blame.joint_review.joinable`) go to the attributor's
-    ``attribute_jointly`` in one call; whatever it does not answer, and every
-    other plan, is reviewed on its own (:func:`_review`)."""
+    ``attribute_jointly``, and either every one of them is answered or none
+    is; every other plan is reviewed on its own (:func:`_review`)."""
     out: dict[int, tuple[Attribution | None, AttributionRequest | None]] = {}
     joint = getattr(attributor, "attribute_jointly", None)
     if attributor is None or joint is None:
@@ -396,19 +399,21 @@ def _reviews(
         groups.setdefault(key, []).append((plan, request))
     for group in groups.values():
         requests = [request for _plan, request in group]
-        answered: dict[str, Attribution] = {}
         if joinable(requests):
             try:
                 answered = joint(requests) or {}
             except Exception as exc:  # noqa: BLE001 — an adapter that raises is a decline
                 _log.warning(
-                    "build_comments: joint review of %s failed (%s); reviewing "
-                    "each on its own", ", ".join(r.slug for r in requests), exc,
+                    "build_comments: joint review of %s failed (%s)",
+                    ", ".join(r.slug for r in requests), exc,
                 )
+                answered = {}
+            if not all(request.slug in answered for request in requests):
+                answered = {}
+            for plan, request in group:
+                out[id(plan)] = (answered.get(request.slug), request)
+            continue
         for plan, request in group:
-            if request.slug in answered:
-                out[id(plan)] = (answered[request.slug], request)
-                continue
             try:
                 out[id(plan)] = (attributor.attribute(request), request)
             except Exception as exc:  # noqa: BLE001 — an adapter that raises is a decline

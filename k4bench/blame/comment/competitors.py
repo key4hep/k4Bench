@@ -297,12 +297,14 @@ def _candidate_score_cell(candidate: CandidatePR) -> str:
 def _alternatives_note(
     plan: CommentPlan, attribution: Attribution | None, min_score: float,
 ) -> str | None:
-    """Said when a joint review judged another selected pull request an
-    *alternative* explanation of rows attributed to this one — both at or
-    above *min_score*, for the same movement, of which only one can be the
-    cause (:mod:`k4bench.blame.joint_review`). Several causes of one regression
-    are possible and are not flagged; two competing explanations of one
-    movement are, because the claim above stands on one of them being wrong.
+    """Said when a joint review named another selected pull request a
+    *competing* explanation of rows attributed to this one — both at or above
+    *min_score*, in a scope where the review read them as explanations of the
+    same movement rather than separate causes
+    (:mod:`k4bench.blame.joint_review`). Several causes of one regression are
+    possible and are not flagged; competing explanations are, because the claim
+    above is contested by the other. Worded as the reviewer's judgement of
+    those configurations, not as a fact about every row.
 
     The other pull request is named inert, like every competitor
     (:func:`_pr_ref`)."""
@@ -323,9 +325,10 @@ def _alternatives_note(
         for slug, count in sorted(rivals.items())
     )
     return (
-        f"\n_The AI reviewer judged {named} an alternative explanation of the "
-        f"same movement, also at {_pct(min_score)} or above — for those "
-        "regressions only one of them can be the cause._"
+        f"\n_The AI reviewer also found {named} likely, at {_pct(min_score)} or "
+        "above, for the same configurations, and judged them competing "
+        "explanations of that movement rather than separate causes: for those "
+        "regressions this attribution is contested._"
     )
 
 

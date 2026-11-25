@@ -380,10 +380,10 @@ class Attribution:
     assessment: StepAssessment | None = None
     scopes: tuple[ScopeJudgement, ...] = ()
     #: ``RegressionFact.id -> ((owner/repo#n, likelihood), …)`` — the other pull
-    #: requests a joint review (:mod:`k4bench.blame.joint_review`) judged to be
-    #: *alternative* explanations of the same movement, with their likelihoods
-    #: for that row. Empty from a single review, and for rows the joint review
-    #: judged to have several causes.
+    #: requests a joint review (:mod:`k4bench.blame.joint_review`) named as
+    #: *competing* explanations of the same movement in the row's scope, with
+    #: their final likelihoods for that row. Empty from a single review, and
+    #: for rows the joint review judged to have several causes.
     alternatives: dict[str, tuple[tuple[str, float], ...]] = field(default_factory=dict)
 
     @property
@@ -555,43 +555,13 @@ class OpenAICompatAttributor:
         self, requests: Sequence[AttributionRequest],
     ) -> dict[str, Attribution]:
         """Review *requests* — several pull requests selected in one window —
-        in one call (:mod:`k4bench.blame.joint_review`), keyed by slug. A pull
-        request the reply did not answer usably is absent, and every failure is
-        an empty result: the caller then reviews each on its own. Rows a usable
-        answer left out are re-asked through that pull request's own review
-        (:meth:`_complete`)."""
-        from k4bench.blame.joint_review import (
-            _joint_system_prompt,
-            build_joint_prompt,
-            joinable,
-            output_tokens,
-            parse_joint,
-        )
+        together (:func:`k4bench.blame.joint_review.review_jointly`), keyed by
+        slug: every one of them answered, or ``{}``, and the caller then posts
+        nothing for the window tonight. Answers the first reply left out are
+        re-asked jointly, never through one pull request's own review."""
+        from k4bench.blame.joint_review import review_jointly
 
-        if not joinable(requests):
-            return {}
-        try:
-            content, finish_reason = self.client.complete(
-                _joint_system_prompt(requests), build_joint_prompt(requests),
-                max_output_tokens=output_tokens(requests),
-            )
-        except Exception as exc:
-            _log.warning(
-                "attribute (joint): %s — LLM call failed (%s); reviewing each "
-                "on its own", ", ".join(r.slug for r in requests), exc,
-            )
-            return {}
-        answered = parse_joint(content, requests)
-        if not answered:
-            _log.warning(
-                "attribute (joint): %s — unusable reply (finish_reason=%s); "
-                "reviewing each on its own; response prefix=%r",
-                ", ".join(r.slug for r in requests), finish_reason, content[:500],
-            )
-        return {
-            request.slug: self._complete(request, answered[request.slug])
-            for request in requests if request.slug in answered
-        }
+        return review_jointly(self.client, requests)
 
     def _complete(
         self, request: AttributionRequest, attribution: Attribution
