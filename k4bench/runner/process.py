@@ -44,9 +44,12 @@ def timed_shell_command(
     """Return the bash command that runs *argv* under GNU ``time -v``.
 
     *setup_script*, when given, is sourced first, and the bash *after_setup*
-    runs next, in the environment the script left. Every argument is
-    shell-quoted, and one argument goes on each line so the command reads
-    cleanly when it is echoed into a log.
+    runs next, in the environment the script left. A script that ends with a
+    non-zero status stops the command there with that status, before
+    *after_setup* or the program run: otherwise the program would run in
+    whatever environment the caller had, possibly against another stack on
+    ``PATH``. Every argument is shell-quoted, and one argument goes on each
+    line so the command reads cleanly when it is echoed into a log.
     """
     gnu_time = shutil.which("time")
     if gnu_time is None:
@@ -54,12 +57,33 @@ def timed_shell_command(
             "GNU time not found in PATH. Install it (e.g. 'dnf install time' or 'apt install time')."
         )
 
-    source_line = (
-        f"source {shlex.quote(str(setup_script))}\n" if setup_script is not None else ""
-    )
     program, *args = argv
+    source_line = (
+        _sourced(shlex.quote(str(setup_script)), shlex.quote(program))
+        if setup_script is not None else ""
+    )
     joined = " \\\n    ".join(shlex.quote(a) for a in args)
     return f"{source_line}{after_setup}{gnu_time} -v {shlex.quote(program)} \\\n    {joined}"
+
+
+def _sourced(script: str, program: str) -> str:
+    """Bash sourcing the shell-quoted *script* that, if the script fails, says
+    so in the log and exits with its status rather than running *program*.
+
+    The script is sourced as a command of its own, never in an ``||`` or
+    ``if`` test, where bash would ignore a ``set -e`` the script sets. A
+    script failing under its own ``set -e`` therefore ends the shell at once
+    with its status, before the message below can be printed.
+    """
+    return (
+        f"source {script}\n"
+        "k4bench_setup_status=$?\n"
+        "if (( k4bench_setup_status != 0 )); then\n"
+        "    printf 'ERROR: sourcing %s failed (exit %d); %s was not run\\n' \\\n"
+        f"        {script} \"$k4bench_setup_status\" {program} >&2\n"
+        "    exit \"$k4bench_setup_status\"\n"
+        "fi\n"
+    )
 
 
 def run_timed(
