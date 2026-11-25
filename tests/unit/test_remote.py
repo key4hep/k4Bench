@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import gzip
 import json
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -1175,3 +1176,131 @@ def test_windowed_runs_download_only_the_files_asked_for(web, tmp_path):
         BASE, SIM, "DET", "PLAT", "single_e", windowed, cache_root=str(tmp_path),
     )
     assert all((Path(r["run_dir"]) / ".complete").exists() for r in whole)
+
+
+# ---------------------------------------------------------------------------
+# Runs whose upload has not finished
+# ---------------------------------------------------------------------------
+
+#: The night of :data:`_RUN`.
+_NIGHT = date(2026, 5, 21)
+
+
+def _on(monkeypatch, day: date) -> None:
+    monkeypatch.setattr(remote, "_today", lambda: day)
+
+
+def _uploading_web(monkeypatch, *, without=("run_info.json",)) -> _CountingWeb:
+    """:data:`_RUN` part way through its upload: the files *without* names
+    are not there yet."""
+    files = {name: content for name, content in _PART_FILES.items() if name not in without}
+    tree = {_PART_RUN: list(files)}
+    tree.update({f"{_PART_RUN}/{name}": content for name, content in files.items()})
+    fake = _CountingWeb(tree)
+    _use_session(monkeypatch, fake.get)
+    return fake
+
+
+@pytest.mark.parametrize(("listing", "age", "finished"), [
+    (["baseline_results.csv", "run_info.json"], 0, True),
+    (["baseline_results.csv"], 0, False),
+    (["baseline_results.csv"], 1, False),
+    # From the day no job dated the night can still be writing it.
+    (["baseline_results.csv"], 2, True),
+    ([], 30, True),
+])
+def test_an_upload_is_finished_once_run_info_is_there_or_the_run_settled(
+    monkeypatch, listing, age, finished,
+):
+    _on(monkeypatch, _NIGHT + timedelta(days=age))
+    assert remote.upload_finished(listing, _NIGHT.isoformat()) is finished
+
+
+def test_a_run_dated_unreadably_is_finished_only_with_run_info(monkeypatch):
+    _on(monkeypatch, _NIGHT + timedelta(days=30))
+    assert not remote.upload_finished(["baseline_results.csv"], "latest")
+    assert remote.upload_finished(["run_info.json"], "latest")
+
+
+def test_a_run_still_uploading_is_not_cached_until_it_finishes(monkeypatch, tmp_path):
+    _on(monkeypatch, _NIGHT)
+    web = _uploading_web(monkeypatch)
+    with pytest.raises(remote.UnfinishedRun, match="no run_info.json yet"):
+        remote.ensure_run_cached(*_RUN, cache_root=str(tmp_path))
+    # Nothing downloaded, nothing left behind that could pass for the run.
+    assert web.files() == []
+    run_dir = tmp_path / run_path(*_RUN[1:])
+    assert not run_dir.exists()
+    assert list(run_dir.parent.iterdir()) == []
+
+    web = _uploading_web(monkeypatch, without=())
+    remote.ensure_run_cached(*_RUN, cache_root=str(tmp_path))
+    assert (run_dir / ".complete").exists()
+    assert sorted(p.name for p in run_dir.iterdir() if p.name != ".complete") == sorted(_PART_FILES)
+    # run_info.json last: a re-run takes it down first.
+    assert web.files()[-1] == "run_info.json"
+
+
+def test_a_settled_run_without_run_info_is_cached_as_it_is(monkeypatch, tmp_path):
+    _on(monkeypatch, _NIGHT + timedelta(days=remote.SETTLED_AFTER_DAYS))
+    _uploading_web(monkeypatch)
+    run_dir = remote.ensure_run_cached(*_RUN, cache_root=str(tmp_path))
+    assert (run_dir / ".complete").exists()
+    assert not (run_dir / "run_info.json").exists()
+
+
+def test_a_run_replaced_while_it_is_downloaded_is_not_cached(monkeypatch, tmp_path):
+    _on(monkeypatch, _NIGHT)
+    web = _uploading_web(monkeypatch, without=())
+
+    def get(url, timeout=None):
+        # A re-run took run_info.json down after the run was listed.
+        if url.endswith("/run_info.json"):
+            raise _http_error(url, 404)
+        return web.get(url, timeout)
+
+    _use_session(monkeypatch, get)
+    with pytest.raises(remote.UnfinishedRun, match="run_info.json went"):
+        remote.ensure_run_cached(*_RUN, cache_root=str(tmp_path))
+    run_dir = tmp_path / run_path(*_RUN[1:])
+    assert not run_dir.exists()
+    assert list(run_dir.parent.iterdir()) == []
+
+
+def test_part_of_a_run_still_uploading_records_nothing(monkeypatch, tmp_path):
+    _on(monkeypatch, _NIGHT + timedelta(days=1))
+    web = _uploading_web(monkeypatch)
+    with pytest.raises(remote.UnfinishedRun):
+        remote.ensure_run_artifacts(*_RUN, _BASE, cache_root=str(tmp_path))
+    run_dir = tmp_path / remote.SUBSET_TREE / run_path(*_RUN[1:])
+    assert web.files() == []
+    assert not (run_dir / remote.ARTIFACT_MANIFEST).exists()
+
+    # Once it finishes, its listing is read again: what was uploaded since is there.
+    _uploading_web(monkeypatch, without=())
+    remote.ensure_run_artifacts(*_RUN, _BASE, cache_root=str(tmp_path))
+    assert set(_manifest(run_dir)["listing"]) == set(_PART_FILES)
+    assert (run_dir / "run_info.json").read_bytes() == _PART_FILES["run_info.json"]
+
+
+@pytest.mark.parametrize("artifacts", [None, _BASE])
+def test_windowed_runs_skip_one_still_uploading_and_strict_reads_say_so(
+    monkeypatch, tmp_path, artifacts,
+):
+    _on(monkeypatch, _NIGHT)
+    tree = _build_tree()
+    tree[_PART_RUN] = ["baseline_results.csv"]
+    _use_session(monkeypatch, FakeWeb(tree).get)
+    windowed = {"key4hep-2026-05-20": ["2026-05-20", "2026-05-21"]}
+    runs = remote.fetch_runs_windowed(
+        BASE, SIM, "DET", "PLAT", "single_e", windowed, cache_root=str(tmp_path / "lenient"),
+        artifacts=artifacts,
+    )
+    assert [r["date"] for r in runs] == ["2026-05-20"]
+    with pytest.raises(remote.IncompleteFetch) as caught:
+        remote.fetch_runs_windowed(
+            BASE, SIM, "DET", "PLAT", "single_e", windowed, cache_root=str(tmp_path / "strict"),
+            strict=True, artifacts=artifacts,
+        )
+    assert [r["date"] for r in caught.value.partial] == ["2026-05-20"]
+    assert "2026-05-21" in str(caught.value)
