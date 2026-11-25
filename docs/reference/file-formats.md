@@ -726,7 +726,11 @@ report holds. A night whose benchmarking uploaded *nothing* — every job of the
 fan-out failed — has no run to be named after, so its report carries the night
 in a top-level `night` key instead and reports one
 `no run uploaded for {night}` job failure per triple. The key is absent on
-every other night, where the newest run date is the answer.
+every other night, where the newest run date is the answer. A job that failed
+before writing any result CSV but uploaded its `run_info.json` did upload a
+run: its group takes `k4h_release`, `github_run_url` and `geometry_path` from
+that `run_info.json` and lists each configured label as
+`config '{label}' produced no results tonight`.
 
 ### Metric history on confirmed verdicts (`report.json`)
 

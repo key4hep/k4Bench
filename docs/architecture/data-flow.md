@@ -108,6 +108,9 @@ republish the previous night, so `nightly.yml` passes its own Actions run id:
 a report naming none of that run's measurements is reported as tonight's
 outage instead (see
 [File formats → The night a report covers](../reference/file-formats.md#the-night-a-report-covers-reportjson)).
+A job that failed before writing any result but uploaded its `run_info.json`
+still names its CI run there, so its triple is reported as that fan-out's
+failed configs, never as an upload that did not happen.
 It reuses the same pure building blocks as the dashboard (`k4bench.remote` for
 discovery/download, `k4bench.analysis.trend` for aggregation,
 `k4bench.results.reliability_evidence` for the per-run reliability verdict) and

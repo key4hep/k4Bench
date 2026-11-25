@@ -106,6 +106,7 @@ def _write_run(
     platform: str = _PLAT,
     github_run_url: str | None = None,
     configured_labels: tuple[str, ...] | None = None,
+    xml_path: str | None = None,
     event_time_s: float | None = None,
     result_overrides: dict[str, dict] | None = None,
     random_seed: int | None = 4242,
@@ -131,6 +132,8 @@ def _write_run(
     }
     if configured_labels is not None:
         run_info["configured_labels"] = list(configured_labels)
+    if xml_path is not None:
+        run_info["xml_path"] = xml_path
     (run_dir / "run_info.json").write_text(json.dumps(run_info))
     result_overrides = result_overrides or {}
     for label in labels:
@@ -556,6 +559,36 @@ def test_first_ever_night_with_no_results_and_no_roster_is_not_reported(tmp_path
     ) is None
 
 
+def test_night_with_no_results_keeps_its_ci_run_and_geometry(tmp_path):
+    """A night that wrote no CSV still recorded where it came from: its CI run
+    and geometry are tonight's run_info, not an earlier night's or nothing."""
+    tonight_url = "https://ci.example/runs/900"
+    run_dirs = _make_history(
+        tmp_path,
+        [100.0, 100.0, 100.0],
+        {
+            0: {"github_run_url": "https://ci.example/runs/898",
+                "xml_path": "FCCee/DET/compact/old.xml"},
+            1: {"github_run_url": "https://ci.example/runs/899",
+                "xml_path": "FCCee/DET/compact/old.xml"},
+            2: {
+                "labels": (),
+                "configured_labels": ("baseline",),
+                "github_run_url": tonight_url,
+                "xml_path": "FCCee/DET/compact/new.xml",
+            },
+        },
+    )
+    group = group_report_from_run_dirs(
+        SIM, "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+    )
+    assert group is not None
+    assert group.run_date == "2026-01-03"
+    assert group.github_run_url == tonight_url
+    assert group.geometry_path == "FCCee/DET/compact/new.xml"
+    assert group.job_failures == ["config 'baseline' produced no results tonight"]
+
+
 def _local_tree(root: Path, detector: str, sample: str) -> Path:
     return root / run_path(SIM, detector) / _PLAT / _STACK / sample
 
@@ -721,6 +754,43 @@ def test_a_different_ci_batch_past_the_grace_period_is_retired(tmp_path):
     report = build_nightly_report_local(str(tmp_path), SIM)
 
     assert set(report.by_detector()) == {"DET_A"}
+
+
+_FAILED_TONIGHT = {"labels": (), "configured_labels": ("baseline",),
+                   "github_run_url": f"{_RUN}/900"}
+
+
+def test_a_fanout_whose_every_job_wrote_no_results_is_still_covered(tmp_path):
+    # Every job of fan-out 900 failed before writing a result CSV but uploaded
+    # its run_info. The report is that fan-out's: it names the failed configs,
+    # and must not read as a fan-out that uploaded nothing (which would send it
+    # down the outage path, refused because tonight's runs are on EOS).
+    for detector in ("DET_A", "DET_B"):
+        _make_history(_local_tree(tmp_path, detector, "single_e"), [100.0] * 13,
+                      per_night={12: _FAILED_TONIGHT})
+    report = build_nightly_report_local(str(tmp_path), SIM)
+
+    assert report.report_night == "2026-01-13"
+    assert report_covers_run(report, "900")
+    for group in report.groups:
+        assert group.github_run_url == f"{_RUN}/900"
+        assert group.job_failures == ["config 'baseline' produced no results tonight"]
+
+
+def test_a_job_that_wrote_no_results_still_joins_its_batch_across_midnight(tmp_path):
+    # DET_B's job started before midnight and failed before writing a CSV; its
+    # run_info names tonight's CI run, so it is tonight's failure, not a run
+    # that never arrived.
+    _make_history(_local_tree(tmp_path, "DET_A", "single_e"), [100.0] * 13,
+                  per_night={12: {"github_run_url": f"{_RUN}/900"}})
+    _make_history(_local_tree(tmp_path, "DET_B", "single_e"), [100.0] * 12,
+                  per_night={11: _FAILED_TONIGHT})
+    report = build_nightly_report_local(str(tmp_path), SIM)
+
+    late = next(g for g in report.groups if g.detector == "DET_B")
+    assert late.run_date == "2026-01-12"
+    assert late.job_failures == ["config 'baseline' produced no results tonight"]
+    assert any("same CI run" in note for note in late.notes)
 
 
 # ── Outage nights ─────────────────────────────────────────────────────────────
