@@ -752,11 +752,44 @@ job still exits 0. Blame never sees such a group: it has no regression to
 attribute, no release to sweep, and a job failure disqualifies it as a clean
 control.
 
-Discovery — which detectors, platforms and samples exist — is retried the same
-way but stays fatal when it still fails, since a triple discovery missed could
-not even be named. So is a report in which no triple could be read: it holds no
-run to name the night after, and `regression_report.py` exits non-zero without
-writing it.
+The report's reads are bounded in time as a whole, not only per request. They
+stop for good once `READ_DEADLINE_S` (one hour) has passed since the first read,
+or once `READ_BREAKER_TRIPLES` (four) triples in a row have failed. Each
+remaining triple is then reported as not judged — `its runs were not read —
+EOS reads stopped: …` — without a request. The numbers:
+
+- **One hour** is over three times the ~18 minutes a healthy night takes to
+  read a suite's whole window into an empty cache, which leaves room for a slow
+  night of cold listings. In an outage every request costs `k4bench.remote`'s
+  timeouts before it fails (10 s to connect, 35 s to read, one retry: about
+  70 s), and the deadline stops that from holding the report for hours. It is
+  checked before each read, so a report overruns it by at most the one read in
+  flight. The outage rebuild described above reads within the same deadline.
+- **Four triples in a row:** a detector/platform holds two samples, so a fault
+  confined to one tree — a broken stack listing, an unreadable predecessor —
+  fails two triples in a row. Four is two such trees in a row, which points at
+  the store rather than at a directory. A triple that reads resets the count.
+- **`READ_BACKOFF_S` (30 s, then 90 s)** outlasts a listing that stays cold for
+  a minute or two. **`READ_BACKOFF_BUDGET_S` (600 s)** caps the waiting summed
+  over the report, so retries alone cannot reach the deadline.
+
+Discovery — which detectors, platforms and samples exist — runs first. It is
+retried the same way but stays fatal when it still fails, since a triple
+discovery missed could not even be named. So is a report in which no triple
+could be read: it holds no run to name the night after, and
+`regression_report.py` exits non-zero without writing it.
+
+An unread triple also changes what the report can say about the nightly
+fan-out (`Coverage` in `k4bench/regression/report_builder.py`):
+
+- **Covered:** a triple read names the fan-out's CI run, and the report is
+  published.
+- **Absent:** every triple was read and none names it, so the fan-out uploaded
+  nothing. Tonight is reported as an outage, as described above.
+- **Unknown:** none of the triples read names it, but some could not be read,
+  and tonight's uploads may be exactly those. Nothing is published and the
+  job exits non-zero. A re-run of the report job rebuilds the night once EOS
+  answers.
 
 ### Metric history on confirmed verdicts (`report.json`)
 

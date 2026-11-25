@@ -1912,10 +1912,16 @@ class _Store:
     ``("fetch", detector, platform, sample, stack, date)``.
     """
 
-    def __init__(self, root: Path, fail: dict[tuple, int | None] | None = None):
+    def __init__(
+        self, root: Path, fail: dict[tuple, int | None] | None = None,
+        clock: _Clock | None = None, tick: float = 0.0,
+    ):
         self.root = root
         self.fail = dict(fail or {})
         self.runs = list(iter_run_dirs(root, SIM))
+        #: Every read made, by key; each moves *clock* on by *tick* seconds.
+        self.requests: list[tuple] = []
+        self.clock, self.tick = clock, tick
 
     def install(self, monkeypatch) -> _Store:
         for name in (
@@ -1926,6 +1932,9 @@ class _Store:
         return self
 
     def _unanswered(self, key: tuple) -> bool:
+        self.requests.append(key)
+        if self.clock is not None:
+            self.clock.now += self.tick
         left = self.fail.get(key, 0)
         if left is None:
             return True
@@ -1993,16 +2002,39 @@ class _Store:
         return results
 
 
+class _Clock:
+    """The report's monotonic clock, moved by its waits and by the store."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.waits: list[float] = []
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.waits.append(seconds)
+        self.now += seconds
+
+
 @pytest.fixture
-def sleeps(monkeypatch) -> list[float]:
+def clock(monkeypatch) -> _Clock:
+    fake = _Clock()
+    monkeypatch.setattr(report_builder, "_clock", fake)
+    monkeypatch.setattr(report_builder, "_sleep", fake.sleep)
+    return fake
+
+
+@pytest.fixture
+def sleeps(clock) -> list[float]:
     """Every backoff the report waits, without waiting."""
-    waited: list[float] = []
-    monkeypatch.setattr(report_builder, "_sleep", waited.append)
-    return waited
+    return clock.waits
 
 
-def _build(monkeypatch, root: Path, fail: dict | None = None) -> NightlyReport:
-    _Store(root, fail).install(monkeypatch)
+def _build(
+    monkeypatch, root: Path, fail: dict | None = None, store: _Store | None = None,
+) -> NightlyReport:
+    (store or _Store(root, fail)).install(monkeypatch)
     return report_builder.build_nightly_report("https://eos.invalid", SIM)
 
 
@@ -2147,7 +2179,7 @@ def test_discovery_is_retried_and_stays_fatal_when_it_is_never_answered(
 
 
 def test_read_retry_asks_again_only_when_the_store_did_not_answer(sleeps):
-    retry = report_builder._ReadRetry()
+    retry = report_builder.ReportReads()
     absent = requests.Response()
     absent.status_code = 404
 
@@ -2172,6 +2204,90 @@ def test_read_retry_asks_again_only_when_the_store_did_not_answer(sleeps):
 
     assert retry(flaky, "flaky") == "listing"
     assert sleeps == [report_builder.READ_BACKOFF_S[0]]
+
+
+def _five_triples(root: Path) -> list[tuple[str, str, str]]:
+    """Five triples, in the order the report reads them."""
+    for detector in (_CLD, _SID, "ILD_FCCee_v02"):
+        for sample in ("single_e", "zbb")[: 1 if detector == "ILD_FCCee_v02" else 2]:
+            _store_tree(root, detector, sample=sample)
+    return [(r.detector, r.platform, r.sample) for r in iter_run_dirs(root, SIM)
+            if r.date == _TONIGHT]
+
+
+def _tonight_unanswered(triples) -> dict:
+    return {("fetch", d, p, s, f"key4hep-{_TONIGHT}", _TONIGHT): None for d, p, s in triples}
+
+
+def _requested(store: _Store, triple: tuple[str, str, str]) -> bool:
+    return any(key[1:4] == triple for key in store.requests if key[0] in ("dates", "fetch"))
+
+
+def test_reads_stop_at_the_deadline_and_the_rest_are_named_without_a_request(
+    tmp_path, monkeypatch, clock,
+):
+    triples = _five_triples(tmp_path)
+    # Every read takes a minute of a ten-minute deadline: a slow store, never
+    # an unanswered one, so neither retries nor the breaker are involved.
+    monkeypatch.setattr(report_builder, "READ_DEADLINE_S", 600.0)
+    store = _Store(tmp_path, clock=clock, tick=60.0)
+    report = _build(monkeypatch, tmp_path, store=store)
+
+    unread = [g for g in report.groups if g.unread]
+    read = [g for g in report.groups if not g.unread]
+    assert read and unread, "the deadline falls between triples"
+    assert [(g.detector, g.platform, g.sample) for g in read + unread] == triples
+    for g in unread:
+        assert g.job_failures == [
+            f"{UNREAD_FAILURE} its runs were not read — EOS reads stopped: "
+            "the report's 10-minute read deadline passed"
+        ]
+        assert not _requested(store, (g.detector, g.platform, g.sample))
+    # It overran by no more than the one read in flight: a triple's window,
+    # one listing and one download per night.
+    assert clock.now <= 600.0 + 60.0 * 2 * len(_STEP_WALLS)
+
+
+def test_reads_stop_after_consecutive_triples_fail(tmp_path, monkeypatch, clock):
+    triples = _five_triples(tmp_path)
+    store = _Store(tmp_path, _tonight_unanswered(triples))
+    report = _build(monkeypatch, tmp_path, store=store)
+
+    limit = report_builder.READ_BREAKER_TRIPLES
+    assert [(g.detector, g.platform, g.sample) for g in report.groups] == triples
+    assert all(g.unread for g in report.groups)
+    tried, skipped = triples[:limit], triples[limit:]
+    assert all(_requested(store, t) for t in tried)
+    assert skipped and not any(_requested(store, t) for t in skipped)
+    assert report.groups[-1].job_failures == [
+        f"{UNREAD_FAILURE} its runs were not read — EOS reads stopped: "
+        f"{limit} triples in a row could not be read"
+    ]
+
+
+def test_a_triple_that_reads_resets_the_breaker(tmp_path, monkeypatch, clock):
+    triples = _five_triples(tmp_path)
+    # Every triple fails but the third, so no run of failures reaches the limit.
+    failing = [t for i, t in enumerate(triples) if i != 2]
+    report = _build(monkeypatch, tmp_path, _tonight_unanswered(failing))
+    assert [g.unread for g in report.groups] == [True, True, False, True, True]
+    assert all("could not be read from EOS" in g.job_failures[0]
+               for g in report.groups if g.unread)
+
+
+def test_no_retry_is_scheduled_past_the_deadline(monkeypatch, clock):
+    monkeypatch.setattr(report_builder, "READ_DEADLINE_S", report_builder.READ_BACKOFF_S[0])
+    reads = report_builder.ReportReads()
+
+    def unanswered():
+        raise requests.ConnectionError("reset")
+
+    with pytest.raises(requests.ConnectionError):
+        reads(unanswered, "slow")
+    assert clock.waits == []
+    clock.now = report_builder.READ_DEADLINE_S
+    with pytest.raises(report_builder.ReadsStopped, match="deadline passed"):
+        reads(lambda: "never asked", "late")
 
 
 def test_finalize_dates_a_not_judged_triple_on_the_report_night():
