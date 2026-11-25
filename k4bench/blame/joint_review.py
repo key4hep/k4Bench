@@ -371,11 +371,13 @@ def _earlier_lines(
     for request in requests:
         label = names[request.slug]
         answer = earlier.answers.get(request.slug) if earlier is not None else None
-        judged = ", ".join(
+        parts = [
             f"{j.scope_id} {j.likelihood:.0f}" + _override_note(j, rows_of, answer)
             for j in (answer.scopes if answer else ())
+        ] + _loose_rows(rows_of, answer)
+        lines.append(
+            f"  - {label} ({request.slug}): {', '.join(parts) or 'no scope verdicts yet'}"
         )
-        lines.append(f"  - {label} ({request.slug}): {judged or 'no scope verdicts yet'}")
         if answer is not None and answer.summary:
             lines.append(f"    summary: {answer.summary}")
     if earlier is not None:
@@ -418,6 +420,26 @@ def _earlier_lines(
 def _scope_order(sid: str) -> tuple:
     digits = sid[1:]
     return (0, int(digits)) if digits.isdigit() else (1, sid)
+
+
+def _loose_rows(rows_of: dict[str, set[str]], answer: _Answer | None) -> list[str]:
+    """``S2 rows (r3 90, r4 85)``: row likelihoods the reply gave without a
+    usable verdict for their scope — accepted, and kept by every later round,
+    so a follow-up must see them as part of the earlier answer too."""
+    if answer is None:
+        return []
+    judged = {j.scope_id for j in answer.scopes}
+    out = []
+    for sid in sorted(set(rows_of) - judged, key=_scope_order):
+        rows = sorted(
+            ((row, answer.likelihoods[row]) for row in rows_of[sid] if row in answer.likelihoods),
+            key=lambda item: _id_order(item[0]),
+        )
+        if rows:
+            out.append(
+                f"{sid} rows (" + ", ".join(f"{row} {score:.0f}" for row, score in rows) + ")"
+            )
+    return out
 
 
 def _override_note(

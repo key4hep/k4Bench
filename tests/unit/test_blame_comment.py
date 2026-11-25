@@ -5675,3 +5675,19 @@ def test_a_not_candidate_score_never_requires_a_relation():
     }
     answered = parse_joint(json.dumps(reply), requests)
     assert set(answered) == {"key4hep/k4geo#1234", "key4hep/k4geo#1300"}
+
+
+def test_a_follow_up_is_shown_row_scores_given_without_a_scope_verdict():
+    from k4bench.blame.joint_review import _gaps, _parse_round, build_joint_prompt
+
+    requests = _joint_requests()
+    reply = _joint_reply(p2_summary=False)
+    # P1 answers through an override alone: accepted, but no scope judgement.
+    p1 = reply["scopes"][0]["verdicts"][0]
+    del p1["likelihood"]
+    p1["overrides"] = [{"id": "r1", "likelihood": 90}]
+    parsed = _parse_round(json.dumps(reply), requests)
+    assert parsed.answers["key4hep/k4geo#1234"].likelihoods == {"r1": 90.0}
+    assert parsed.answers["key4hep/k4geo#1234"].scopes == []
+    prompt = build_joint_prompt(requests, earlier=parsed, missing=_gaps(parsed, requests))
+    assert "  - P1 (key4hep/k4geo#1234): S1 rows (r1 90)" in prompt
