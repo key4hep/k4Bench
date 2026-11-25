@@ -93,11 +93,12 @@ def test_severity_lookup_scopes_and_keys(monkeypatch):
     lookup = tr._severity_lookup(
         "https://x.invalid", "sim", "CLD", "PLAT", "single_e", ("2026-05-21",)
     )
-    # Keyed on the run that earned the verdict — the unit the reliability
-    # filter drops — not on the nightly tag it shares with its reruns.
+    # Keyed on the run that earned the verdict (its run id and release) — the
+    # unit the reliability filter drops — not on the nightly tag it shares
+    # with its reruns.
     assert lookup == {
-        ("baseline", "2026-05-21", "wall_time_s"): "CONFIRMED",
-        ("baseline", "2026-05-21", "peak_rss_mb"): "WATCH",
+        ("baseline", "2026-05-21@2026-05-21", "wall_time_s"): "CONFIRMED",
+        ("baseline", "2026-05-21@2026-05-21", "peak_rss_mb"): "WATCH",
     }
 
 
@@ -140,6 +141,32 @@ def test_tag_severity_drops_a_flag_whose_run_was_excluded():
     # Only the survivor's unranked OK is left, so the tag carries no marker.
     survivors = _rerun_runs().iloc[1:]
     assert tr._tag_severity(_RERUN_VERDICTS, survivors) == {}
+
+
+def test_a_flag_stays_on_its_release_when_another_is_filed_under_its_date(monkeypatch):
+    # Releases 07-20 and 07-21 were both benchmarked on 07-21: one run id, two
+    # runs. The night's report flagged 07-21's run, the release it measured.
+    runs = pd.DataFrame({
+        "label": ["baseline", "baseline"],
+        "run_id": ["2026-07-21", "2026-07-21"],
+        "x_date": pd.to_datetime(["2026-07-20", "2026-07-21"]),
+        "k4h_release": ["key4hep-2026-07-20", "key4hep-2026-07-21"],
+    })
+    flagged = _verdict(
+        "wall_time_s", Severity.CONFIRMED, run_id="2026-07-21", run_date="2026-07-21",
+    )
+    report = NightlyReport(generated_at="", groups=[_group("2026-07-21", [flagged])])
+    monkeypatch.setattr(tr, "cached_fetch_reports", lambda url, suite, ids: {"2026-07-21": report})
+    per_run = tr._severity_lookup(
+        "https://x.invalid", "sim", "CLD", "PLAT", "single_e", ("2026-07-21",),
+    )
+
+    assert tr._tag_severity(per_run, runs) == {
+        ("baseline", "key4hep-2026-07-21", "wall_time_s"): "CONFIRMED",
+    }
+    # The flagged run excluded as unreliable: the flag goes with it, and does
+    # not land on the 07-20 point that shares its date.
+    assert tr._tag_severity(per_run, runs.iloc[[0]]) == {}
 
 
 def test_tag_severity_without_run_ids():
