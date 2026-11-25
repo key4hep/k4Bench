@@ -5642,3 +5642,36 @@ def test_a_review_context_too_large_to_record_is_treated_as_none():
     single = replace(draft, reviewed_with=()).render().body
     assert "k4bench-blame-reviewed-with" not in huge
     assert facts_digest_of(huge) == facts_digest_of(single)
+
+
+def test_a_not_candidate_score_never_requires_a_relation():
+    from k4bench.blame.attribute import scope_ids
+    from k4bench.blame.joint_review import parse_joint
+
+    report, blame = _two_scopes_one_window(second_candidate_on_idea=False)
+    requests = [
+        build_mod._attribution_request(plan, lambda r, n: "", lambda r, n: "")
+        for plan in _plans(report, blame)
+    ]
+    ids = scope_ids(requests[1].regressions)
+    excluded = {
+        f.id for f in requests[1].regressions if f.scope_state == "not_candidate"
+    }
+    (excluded_scope,) = {
+        sid for (scope, sid) in ids.items()
+        for f in requests[1].regressions
+        if f.id in excluded and (f.detector, f.platform, f.sample) == scope
+    }
+    other_scope = ({"S1", "S2"} - {excluded_scope}).pop()
+    both = [{"pr": "P1", "likelihood": 92}, {"pr": "P2", "likelihood": 85}]
+    reply = {
+        "step_assessment": {"verdict": "real_change", "reason": "A clear step."},
+        "scopes": [
+            # P2's 85 is on a row it is not a candidate for, and no relation is given.
+            {"scope": excluded_scope, "verdicts": both},
+            {"scope": other_scope, "verdicts": both, "competing": []},
+        ],
+        "summaries": {"P1": "One.", "P2": "Two."},
+    }
+    answered = parse_joint(json.dumps(reply), requests)
+    assert set(answered) == {"key4hep/k4geo#1234", "key4hep/k4geo#1300"}

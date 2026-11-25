@@ -681,7 +681,14 @@ def _unassessed_relations(
     floor: float = _RELATION_FLOOR,
 ) -> tuple[str, ...]:
     """The scopes where two or more pull requests reach *floor* on some row
-    and the reply has not said whether they compete."""
+    and the reply has not said whether they compete.
+
+    A row a pull request is *not a candidate* for does not count towards it,
+    whatever the reply scored: that pull request can never be named a
+    competing explanation there (:func:`_alternatives`), so a relation asked
+    for it would answer nothing, and a missing one must not decline the
+    window."""
+    excluded = _not_candidate_rows(requests)
     out = []
     for sid, rows in _scope_rows(requests[0]).items():
         if sid in reply.competing:
@@ -689,7 +696,10 @@ def _unassessed_relations(
         likely = sum(
             1 for request in requests
             if max(
-                (reply.answers[request.slug].likelihoods.get(row, 0.0) for row in rows),
+                (
+                    reply.answers[request.slug].likelihoods.get(row, 0.0)
+                    for row in rows - excluded[request.slug]
+                ),
                 default=0.0,
             ) >= floor
         )
@@ -715,6 +725,15 @@ def _gaps(
     return _Gaps(subjects=subjects, relations=_unassessed_relations(reply, requests, floor))
 
 
+def _not_candidate_rows(requests: Sequence[AttributionRequest]) -> dict[str, set[str]]:
+    """``slug -> offered row ids`` it is *not a candidate* for — rows the
+    complete candidate search put it outside the commit range of."""
+    return {
+        r.slug: {f.id for f in _attributed_facts(r) if f.scope_state == "not_candidate"}
+        for r in requests
+    }
+
+
 def _alternatives(
     request: AttributionRequest,
     reply: _JointReply,
@@ -730,10 +749,7 @@ def _alternatives(
     model's opinion here exactly as it does in the table
     (:func:`k4bench.blame.comment.table._likelihood`). The same holds for
     *request*'s own rows."""
-    excluded = {
-        r.slug: {f.id for f in _attributed_facts(r) if f.scope_state == "not_candidate"}
-        for r in requests
-    }
+    excluded = _not_candidate_rows(requests)
     ids = scope_ids(_attributed_facts(request))
     scope_of = {f.id: ids[_fact_scope(f)] for f in _attributed_facts(request)}
     out: dict[str, tuple[tuple[str, float], ...]] = {}
