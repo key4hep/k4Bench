@@ -445,7 +445,7 @@ still treated as replaced. Versioned steering paths change only when
 the replacement exists in the same nightly's FCC-config. Otherwise the PR
 records that the existing steering file was retained. Review header prose,
 steering compatibility, sweep choices, timeouts, and the baseline transition.
-The PR opens as a draft; CI (including real geometry patching) and PR-Agent run
+The PR opens as a draft; CI (including real geometry patching) runs
 after a maintainer clicks **Ready for review**; a human merges it. There is no
 auto-merge. The action is invoked only for actual bumps, so a no-op run does
 not close existing PRs or clean up merged branches.
@@ -481,11 +481,11 @@ One-time repository setup:
 2. Create the `detector-bump` label if it does not already exist.
 
 Events caused by `GITHUB_TOKEN` start no workflows, so neither the bot's
-opening of the PR nor its push runs CI or PR-Agent. See [GitHub's workflow
+opening of the PR nor its push runs CI. See [GitHub's workflow
 triggering documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow).
 The bot therefore opens a draft, and a maintainer clicking **Ready for review**
-starts both: the Pipeline and AI PR Review workflows trigger on
-`ready_for_review`. Later maintainer pushes trigger them as usual. This is
+starts CI: the Pipeline workflow triggers on `ready_for_review`. Later
+maintainer pushes trigger it as usual. This is
 separate from approving or merging the PR.
 
 Local inspection (no files written unless `--apply --family NAME` is supplied):
