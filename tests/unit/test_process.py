@@ -70,6 +70,22 @@ def test_failed_setup_script_runs_neither_after_setup_nor_the_program(
     assert proc.metrics["wall_time_s"] is None
 
 
+def test_setup_script_failing_under_its_own_errexit_runs_nothing_after_it(tmp_path):
+    setup = tmp_path / "setup.sh"
+    setup.write_text("set -e\nfalse\necho continued\n")
+    ran, after = tmp_path / "program ran", tmp_path / "after setup ran"
+    log = tmp_path / "run.log"
+    proc = run_timed(
+        timed_shell_command(["touch", str(ran)], setup, after_setup=f"touch '{after}'\n"),
+        env=dict(os.environ),
+        log_path=log,
+    )
+    assert proc.returncode == 1
+    assert not ran.exists()
+    assert not after.exists()
+    assert "continued" not in log.read_text()
+
+
 def test_output_reaches_the_log_and_the_time_report_is_parsed(tmp_path):
     log = tmp_path / "logs" / "run.log"
     proc = run_timed(

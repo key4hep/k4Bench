@@ -68,14 +68,21 @@ def timed_shell_command(
 
 def _sourced(script: str, program: str) -> str:
     """Bash sourcing the shell-quoted *script* that, if the script fails, says
-    so in the log and exits with its status rather than running *program*."""
+    so in the log and exits with its status rather than running *program*.
+
+    The script is sourced as a command of its own, never in an ``||`` or
+    ``if`` test, where bash would ignore a ``set -e`` the script sets. A
+    script failing under its own ``set -e`` therefore ends the shell at once
+    with its status, before the message below can be printed.
+    """
     return (
-        f"source {script} || {{\n"
-        "    k4bench_setup_status=$?\n"
+        f"source {script}\n"
+        "k4bench_setup_status=$?\n"
+        "if (( k4bench_setup_status != 0 )); then\n"
         "    printf 'ERROR: sourcing %s failed (exit %d); %s was not run\\n' \\\n"
         f"        {script} \"$k4bench_setup_status\" {program} >&2\n"
         "    exit \"$k4bench_setup_status\"\n"
-        "}\n"
+        "fi\n"
     )
 
 
