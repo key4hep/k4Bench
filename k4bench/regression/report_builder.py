@@ -29,8 +29,11 @@ from k4bench.analysis.loader import (
     failed_config_mask,
     judgeable_config_keys,
     judgeable_config_rows,
+    named_run_key,
+    run_key,
+    run_keys,
 )
-from k4bench.analysis.trend import build_machine_info_trend, parse_run_dir
+from k4bench.analysis.trend import build_machine_info_trend, parse_run_dir, run_dir_identity
 from k4bench.blame.models import rank_group_key
 from k4bench.layout import RECO, SIM, iter_run_dirs
 from k4bench.regression.catalog import (
@@ -99,9 +102,16 @@ SAME_BATCH_LAG_DAYS = 1
 MISSING_RUN_GRACE_DAYS = 7
 
 
-def _reliable_column(run_ids: pd.Series, reliability: dict[str, bool | None]) -> list:
-    """Per-row tri-state reliability, kept as Python objects (no NaN coercion)."""
-    return [reliability.get(rid) for rid in run_ids]
+def _reliable_column(keys: pd.Series, reliability: dict[str, bool | None]) -> list:
+    """Per-row tri-state reliability of the runs *keys* name, kept as Python
+    objects (no NaN coercion)."""
+    return [reliability.get(key) for key in keys]
+
+
+def _names_run(verdict: MetricVerdict, key: str) -> bool:
+    """Whether *verdict* was issued for the run *key* names: its run id and the
+    release it measured (its ``run_date``) are that run's."""
+    return run_key(verdict.run_id, verdict.run_date) == key
 
 
 def _series_history(
@@ -117,14 +127,15 @@ def _series_history(
     nights and, given *machines* (from :func:`cpu_models`), the CPU model each
     night ran on, which the walk re-anchors at when it changes."""
     sub = df.loc[mask, ["run_id", "x_date", metric]]
+    keys = run_keys(sub)
     history = pd.DataFrame({
         "run_id":   sub["run_id"].astype(str).to_numpy(),
         "run_date": sub["x_date"].to_numpy(),
         "value":    sub[metric].to_numpy(),
-        "reliable": _reliable_column(sub["run_id"], reliability),
+        "reliable": _reliable_column(keys, reliability),
     })
     if machines:
-        history["machine"] = [machines.get(str(rid)) for rid in sub["run_id"]]
+        history["machine"] = [machines.get(key) for key in keys]
     return history
 
 
@@ -146,7 +157,7 @@ class PredecessorRuns:
     frames: dict[str, pd.DataFrame | None]
     reliability: dict[str, bool | None]
     hosts: dict[str, HostFact] = dataclasses.field(default_factory=dict)
-    #: ``run_id ->`` CPU model (see :func:`cpu_models`).
+    #: ``run key ->`` CPU model (see :func:`cpu_models`).
     machines: dict[str, str] = dataclasses.field(default_factory=dict)
     #: The run directories the frames were built from, for evidence read per
     #: run rather than from the frames (region timings).
@@ -302,6 +313,7 @@ def unjudged_value_verdicts(
     frames: dict[str, pd.DataFrame | None],
     tonight: str,
     already: set[tuple[str, str, str | None]],
+    tonight_key: str | None = None,
 ) -> list[MetricVerdict]:
     """Raw metric values for *tonight*'s run as unjudged ``UNKNOWN`` verdicts.
 
@@ -320,14 +332,20 @@ def unjudged_value_verdicts(
     the value is preserved for display. A normally-judged run is already
     covered. Only whole-job metrics are recorded: a component's history is read
     from the runs by every view that draws it.
+
+    Tonight's run is the one *tonight_key* names, by default the newest
+    release filed under *tonight* (see
+    :func:`~k4bench.analysis.loader.named_run_key`).
     """
     out: list[MetricVerdict] = []
+    if tonight_key is None:
+        tonight_key = named_run_key(list(frames.values()), tonight)
 
     def _emit(df: pd.DataFrame | None, source: MetricSource) -> None:
         if df is None or df.empty:
             return
         df = source.job_rows(df)
-        tonight_rows = df[df["run_id"] == tonight]
+        tonight_rows = df[run_keys(df) == tonight_key]
         metrics = {**source.judged, **source.reported_only}
         for label in sorted(tonight_rows["label"].dropna().unique()):
             row = tonight_rows[tonight_rows["label"] == label]
@@ -509,12 +527,17 @@ def _failed_config_verdicts(
     results_df: pd.DataFrame,
     run_id: str,
     run_date: str,
+    key: str | None = None,
 ) -> list[MetricVerdict]:
     """FAILURE verdicts for configs whose returncode is non-zero, missing, or
-    invalid in tonight's run — same rule as the dashboard's ``_failed_labels``."""
+    invalid in tonight's run — same rule as the dashboard's ``_failed_labels``.
+    Tonight's run is the one *key* names, by default the newest release filed
+    under *run_id* (see :func:`~k4bench.analysis.loader.named_run_key`)."""
     if "returncode" not in results_df.columns:
         return []
-    tonight = results_df[results_df["run_id"] == run_id]
+    if key is None:
+        key = named_run_key([results_df], run_id)
+    tonight = results_df[run_keys(results_df) == key]
     failed = tonight.loc[failed_config_mask(tonight)]
     verdicts = []
     normalized_rc = pd.to_numeric(failed["returncode"], errors="coerce")
@@ -545,10 +568,17 @@ def _failed_config_verdicts(
 
 def _seed_map(results_df: pd.DataFrame | None) -> dict[str, int | None]:
     """``{run_id: random_seed}`` for every run in the window, ``None`` where a
-    run recorded no seed (it drew a fresh one, or predates seed recording)."""
+    run recorded no seed (it drew a fresh one, or predates seed recording).
+    Of two releases benchmarked on one date, the run of the newer one speaks
+    for the date, as it does for the report night (see
+    :func:`~k4bench.analysis.loader.named_run_key`)."""
     if results_df is None or results_df.empty or "random_seed" not in results_df.columns:
         return {}
-    seen = results_df[["run_id", "random_seed"]].drop_duplicates("run_id")
+    ordered = (
+        results_df.sort_values(["run_id", "x_date"], kind="stable")
+        if "x_date" in results_df.columns else results_df
+    )
+    seen = ordered[["run_id", "random_seed"]].drop_duplicates("run_id", keep="last")
     out: dict[str, int | None] = {}
     for row in seen.itertuples(index=False):
         out[str(row.run_id)] = None if pd.isna(row.random_seed) else int(row.random_seed)
@@ -647,6 +677,7 @@ def _missing_config_failures(
     results_df: pd.DataFrame | None,
     run_id: str,
     configured_labels: list[str] | None = None,
+    key: str | None = None,
 ) -> list[str]:
     """Configured result labels absent from tonight's run.
 
@@ -655,12 +686,18 @@ def _missing_config_failures(
     they retain the historical-majority inference: a config that crashed
     before writing any results leaves no CSV at all, and a returncode check
     alone would miss it.
+
+    Tonight's run is the one *key* names, by default the newest release filed
+    under *run_id* (see :func:`~k4bench.analysis.loader.named_run_key`).
     """
     have_results = (
         results_df is not None and {"run_id", "label"} <= set(results_df.columns)
     )
+    if key is None:
+        key = named_run_key([results_df] if have_results else [], run_id)
+    runs = run_keys(results_df) if have_results else None
     tonight_labels = (
-        set(results_df.loc[results_df["run_id"] == run_id, "label"])
+        set(results_df.loc[runs == key, "label"])
         if have_results else set()
     )
     if configured_labels is not None:
@@ -671,12 +708,12 @@ def _missing_config_failures(
     else:
         if not have_results:
             return []
-        n_runs = results_df["run_id"].nunique()
+        n_runs = runs.nunique()
         if n_runs < 2:
             return []
+        others = runs != key
         counts = (
-            results_df[results_df["run_id"] != run_id]
-            .groupby("label")["run_id"].nunique()
+            runs[others].groupby(results_df.loc[others, "label"]).nunique()
         )
         expected = set(counts[counts > (n_runs - 1) / 2].index)
     return [
@@ -711,7 +748,7 @@ def _fetch_run_dirs(
     runs = fetch_runs_windowed(
         data_url, suite, detector, platform, sample, window, cache_root=cache_dir,
     )
-    return tuple(r["run_dir"] for r in sorted(runs, key=lambda r: r["date"]))
+    return tuple(r["run_dir"] for r in sorted(runs, key=lambda r: (r["date"], r["stack"])))
 
 
 def _fetch_predecessor(
@@ -790,6 +827,7 @@ def _group_report_from_frames(
     configured_labels: list[str] | None = None,
     predecessor: PredecessorRuns | None = None,
     machines: dict[str, str] | None = None,
+    tonight_key: str | None = None,
 ) -> RunGroupReport | None:
     """Build one triple's report for *tonight* from already-parsed trend
     frames of *suite*'s sources, by name (already windowed to whatever trailing
@@ -801,6 +839,11 @@ def _group_report_from_frames(
     independent of the surrounding window (see
     :func:`k4bench.results.reliability_evidence.run_reliability_map`) and the
     trend builders are pure per-run-dir functions.
+
+    Tonight's run is the one *tonight_key* names
+    (:func:`~k4bench.analysis.loader.run_key`), by default the newest release
+    the frames hold under *tonight* (see
+    :func:`~k4bench.analysis.loader.named_run_key`).
     """
     results_df = frames[RESULTS]
     no_results = results_df is None or results_df.empty
@@ -809,12 +852,14 @@ def _group_report_from_frames(
     # produce results, so a night that produced none is a reportable failure.
     if all(df is None or df.empty for df in frames.values()) and not configured_labels:
         return None
+    if tonight_key is None:
+        tonight_key = named_run_key(list(frames.values()), tonight)
 
     k4h_release = ""
     github_run_url = None
     geometry_path = ""
     if not no_results:
-        tonight_rows = results_df[results_df["run_id"] == tonight]
+        tonight_rows = results_df[run_keys(results_df) == tonight_key]
         if not tonight_rows.empty:
             k4h_release = str(tonight_rows["k4h_release"].iloc[0])
             url = tonight_rows["github_run_url"].iloc[0]
@@ -826,7 +871,7 @@ def _group_report_from_frames(
     group = RunGroupReport(
         detector=detector, platform=platform, sample=sample,
         k4h_release=k4h_release, run_date=tonight, run_id=tonight,
-        reliable=reliability.get(tonight), github_run_url=github_run_url,
+        reliable=reliability.get(tonight_key), github_run_url=github_run_url,
         geometry_path=geometry_path,
     )
 
@@ -845,20 +890,20 @@ def _group_report_from_frames(
     )
     # Only verdicts issued *for tonight's run* belong in tonight's report; a
     # series with no verdict for tonight simply was not judged tonight.
-    # Tonight's verdict is selected by run id, not position: the engine orders
+    # Tonight's verdict is selected by its run, not position: the engine orders
     # by release, so a re-benchmark of an *older* release sorts into that
     # release's group, before newer releases' verdicts.
     group.verdicts = [
         v
         for vs in series.values()
-        for v in (next((v for v in reversed(vs) if v.run_id == tonight), None),)
+        for v in (next((v for v in reversed(vs) if _names_run(v, tonight_key)), None),)
         if v is not None
     ]
 
     config_failures = (
         _failed_config_verdicts(
             detector=detector, platform=platform, sample=sample,
-            results_df=results_df, run_id=tonight, run_date=tonight,
+            results_df=results_df, run_id=tonight, run_date=tonight, key=tonight_key,
         )
         if not no_results else []
     )
@@ -868,17 +913,17 @@ def _group_report_from_frames(
         frames=frames, judgeable=judgeable,
         reliability=reliability, tonight=tonight, hosts=hosts,
         predecessor=predecessor, config_failures=config_failures,
-        machines=machines,
+        machines=machines, tonight_key=tonight_key,
     ))
 
     # Record values the normal engine skipped because the host was unreliable.
     already = {(v.label, v.metric, v.sub_detector) for v in group.verdicts}
     group.verdicts.extend(unjudged_value_verdicts(
         suite=suite, detector=detector, platform=platform, sample=sample,
-        frames=judgeable, tonight=tonight, already=already,
+        frames=judgeable, tonight=tonight, already=already, tonight_key=tonight_key,
     ))
 
-    if reliability.get(tonight) is False:
+    if reliability.get(tonight_key) is False:
         group.notes.append(
             "tonight's run failed the host reliability check — "
             "metrics were not judged (see the Machine Info tab)"
@@ -902,7 +947,7 @@ def _group_report_from_frames(
 
     group.verdicts.extend(config_failures)
     group.job_failures.extend(
-        _missing_config_failures(results_df, tonight, configured_labels)
+        _missing_config_failures(results_df, tonight, configured_labels, key=tonight_key)
     )
 
     return group
@@ -922,6 +967,7 @@ def _failed_display_verdicts(
     predecessor: PredecessorRuns | None,
     config_failures: list[MetricVerdict],
     machines: dict[str, str] | None = None,
+    tonight_key: str | None = None,
 ) -> list[MetricVerdict]:
     """Tonight's failed measurements as display-only FAILURE verdicts.
 
@@ -932,9 +978,15 @@ def _failed_display_verdicts(
     geometry as a healthy run but never enters real detector state,
     confirmation, or a later baseline. Only whole-job metrics get one: what a
     failed job's components recorded is a partial run's.
+
+    Tonight's run is the one *tonight_key* names, by default the newest
+    release *frames* hold under *tonight* (see
+    :func:`~k4bench.analysis.loader.named_run_key`).
     """
+    if tonight_key is None:
+        tonight_key = named_run_key(list(frames.values()), tonight)
     failed_configs = failed_config_keys(frames[RESULTS])
-    tonight_failed = {key for key in failed_configs if key[0] == str(tonight)}
+    tonight_failed = {key for key in failed_configs if key[0] == tonight_key}
     if not tonight_failed:
         return []
     display_frames = {}
@@ -944,7 +996,7 @@ def _failed_display_verdicts(
             if part is not None and not part.empty
         ]
         display_frames[name] = pd.concat(parts, ignore_index=True) if parts else None
-    display_reliability = {**reliability, tonight: True}
+    display_reliability = {**reliability, tonight_key: True}
     display_series = evaluate_group_series(
         suite=suite, detector=detector, platform=platform, sample=sample,
         frames=display_frames, reliability=display_reliability, hosts=hosts,
@@ -969,8 +1021,8 @@ def _failed_display_verdicts(
         )
         for verdicts in display_series.values()
         for verdict in verdicts
-        if verdict.run_id == tonight and verdict.sub_detector is None
-        and (str(verdict.run_id), verdict.label) in tonight_failed
+        if _names_run(verdict, tonight_key) and verdict.sub_detector is None
+        and (tonight_key, verdict.label) in tonight_failed
     ]
 
 
@@ -1175,10 +1227,14 @@ def group_report_from_run_dirs(
     """
     if not run_dirs:
         return None
-    tonight = max(Path(d).name for d in run_dirs)
-    tonight_meta = parse_run_dir(
-        next(Path(d) for d in run_dirs if Path(d).name == tonight)
+    # Tonight is the newest date's run, and of two releases benchmarked on that
+    # date the newer: the other re-measured a release the series already holds.
+    newest = max(Path(d).name for d in run_dirs)
+    tonight_dir = max(
+        (Path(d) for d in run_dirs if Path(d).name == newest), key=run_dir_identity,
     )
+    tonight, tonight_release = run_dir_identity(tonight_dir)
+    tonight_meta = parse_run_dir(tonight_dir)
     frames = _frames(suite, run_dirs)
     results_df = frames[RESULTS]
     machine_df = build_machine_info_trend(run_dirs)
@@ -1191,6 +1247,7 @@ def group_report_from_run_dirs(
         configured_labels=tonight_meta["configured_labels"],
         predecessor=before,
         machines=cpu_models(machine_df),
+        tonight_key=run_key(tonight, tonight_release),
     )
     if group is None:
         return None
@@ -1270,8 +1327,9 @@ def build_nightly_report_local(
     groups: list[RunGroupReport] = []
 
     def _window(run_paths: list[Path]) -> tuple[str, ...]:
+        # Ordered by date, then release directory, as the remote window is.
         return tuple(
-            str(p) for p in sorted(run_paths, key=lambda p: p.name)
+            str(p) for p in sorted(run_paths, key=lambda p: (p.name, p.parent.parent.name))
             if as_of is None or p.name <= as_of
         )[-fetch_window_runs:]
 

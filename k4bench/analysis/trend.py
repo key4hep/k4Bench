@@ -24,6 +24,8 @@ from k4bench.analysis.loader import (
     load_event_timing,
     load_region_timing,
     load_results,
+    release_day,
+    run_key,
 )
 from k4bench.analysis.component_detail import component_summary
 from k4bench.analysis.components import event_loop_time
@@ -181,6 +183,24 @@ def parse_run_dir(run_dir: Path) -> dict:
     # temp directories whose parent paths carry no semantic meaning.
     _log.warning("parse_run_dir: run_info.json missing in '%s'", run_dir)
     return _unknown_meta(run_dir)
+
+
+def run_dir_identity(run_dir: Path) -> tuple[str, str]:
+    """``(run_id, release)`` of the run in *run_dir*: the ``run_id`` and the
+    ``x_date`` its rows in the trend frames carry, the release as
+    ``YYYY-MM-DD`` (``""`` when unknown). Tuples order runs by the date they
+    were filed under, then by the release they measured."""
+    meta = parse_run_dir(run_dir)
+    release = meta["k4h_release_date"]
+    if release is None or pd.isna(release):
+        release = meta["run_date"]
+    return run_dir.name, release_day(release)
+
+
+def run_dir_key(run_dir: Path) -> str:
+    """:func:`~k4bench.analysis.loader.run_key` of the run in *run_dir*, the key
+    its rows in the trend frames carry."""
+    return run_key(*run_dir_identity(run_dir))
 
 
 def load_machine_info(run_dir: str) -> dict | None:

@@ -69,7 +69,7 @@ def test_rows_are_put_in_engine_order_before_pairing():
 def test_unreliable_runs_and_missing_values_are_dropped_not_zeroed():
     values = [100.0, np.nan, 100.0, 100.0, 100.0, 100.0, 100.0, 5000.0]
     frame = _frame(values, _TWO_NIGHTS_EACH)
-    reliability = {"2026-02-08": False}
+    reliability = {"2026-02-08@2026-01-04": False}  # the run measuring release 01-04
     table = build_stability_table(frame, {"peak_vmem_mb": "MB"}, reliability)
     # The NaN leaves release 01-01 with one run; the unreliable 5000 is gone, so
     # 01-04 has one too. Two same-release pairs remain: too few.

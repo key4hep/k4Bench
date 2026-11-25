@@ -48,6 +48,33 @@ def test_failed_configs_do_not_affect_run_level_resource_evidence():
     assert run_reliability_map(results, machine) == {"night": True}
 
 
+def test_two_releases_benchmarked_on_one_date_keep_their_own_verdicts():
+    # A re-benchmark of release 07-20 filed under 07-21 on a contended host,
+    # and release 07-21's own run that night on a quiet one: one run id, two
+    # runs, two verdicts.
+    releases = pd.to_datetime(["2026-07-20", "2026-07-21"])
+    results = pd.DataFrame({
+        "run_id": ["2026-07-21", "2026-07-21"],
+        "x_date": releases,
+        "label": ["baseline", "baseline"],
+        "returncode": [0, 0],
+        "user_cpu_s": [98.0, 98.0],
+        "sys_cpu_s": [0.0, 0.0],
+        "wall_time_s": [100.0, 100.0],
+    })
+    machine = pd.DataFrame({
+        "run_id": ["2026-07-21", "2026-07-21"],
+        "x_date": releases,
+        "cpu_physical_cores": [8, 8],
+        "load_avg_1m_start": [64.0, 0.5],
+        "load_avg_1m_end": [64.0, 0.5],
+    })
+    assert run_reliability_map(results, machine) == {
+        "2026-07-21@2026-07-20": False,
+        "2026-07-21@2026-07-21": True,
+    }
+
+
 def test_all_failed_configs_leave_resource_criteria_unknown():
     results = _result_rows().iloc[1:]
 

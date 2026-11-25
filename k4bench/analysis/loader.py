@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import TypeVar
 
@@ -91,37 +91,107 @@ def failed_config_mask(df: pd.DataFrame) -> pd.Series:
     return (recorded & returncodes.ne(0).fillna(True)).astype(bool)
 
 
+def release_day(value: object) -> str:
+    """*value* as a ``YYYY-MM-DD`` day, or ``""`` when it names none."""
+    day = pd.to_datetime(value, errors="coerce")
+    return "" if pd.isna(day) else day.strftime("%Y-%m-%d")
+
+
+def run_key(run_id: object, release: object) -> str:
+    """One run's identity within a run group's window, ``"{run_id}@{release}"``.
+
+    The run id is the run directory's name, the date the run was filed under,
+    and a window spans every release directory of its triple: two releases
+    benchmarked on one date are two runs under one run id. The release the run
+    measured (the trend frames' ``x_date``, a verdict's ``run_date``) tells them
+    apart. A run whose release is unknown is keyed on its run id alone.
+    """
+    day = release_day(release)
+    return f"{run_id}@{day}" if day else str(run_id)
+
+
+def run_keys(df: pd.DataFrame, release_column: str = "x_date") -> pd.Series:
+    """:func:`run_key` of every row of *df*, from its ``run_id`` and
+    *release_column*; the run id alone when *df* has no such column."""
+    run_ids = df["run_id"].astype(str)
+    if release_column not in df.columns:
+        return run_ids
+    days = pd.to_datetime(df[release_column], errors="coerce").dt.strftime("%Y-%m-%d")
+    return (run_ids + "@" + days).where(days.notna(), run_ids)
+
+
+def split_run_key(key: str) -> tuple[str, str]:
+    """``(run_id, release)`` of a :func:`run_key`, the release ``""`` when the
+    key names none."""
+    run_id, _, release = str(key).partition("@")
+    return run_id, release
+
+
+def named_release(
+    frames: Sequence[pd.DataFrame | None],
+    run_id: object,
+    release: object = None,
+    *,
+    keys: Iterable[str] = (),
+) -> str:
+    """The release (``YYYY-MM-DD``, ``""`` when unknown) of the run that
+    *run_id* and *release* name, among the runs *frames* hold and the run
+    *keys* (:func:`run_key`) name.
+
+    That is *release* itself when one of those runs under *run_id* measured it.
+    Otherwise — no *release* given, or a run date in its place, as the unjudged
+    and failure verdicts of a report carry — it is the newest release measured
+    under *run_id*: the run a report judges as that night, the other having
+    re-measured a release its series already holds.
+    """
+    days = {
+        day
+        for df in frames
+        if df is not None and not df.empty and {"run_id", "x_date"} <= set(df.columns)
+        for day in pd.to_datetime(
+            df.loc[df["run_id"].astype(str) == str(run_id), "x_date"], errors="coerce",
+        ).dt.strftime("%Y-%m-%d").dropna()
+    }
+    days |= {day for key_run, day in map(split_run_key, keys) if key_run == str(run_id) and day}
+    day = release_day(release)
+    return day if day in days else max(days, default="")
+
+
+def named_run_key(
+    frames: Sequence[pd.DataFrame | None],
+    run_id: object,
+    release: object = None,
+    *,
+    keys: Iterable[str] = (),
+) -> str:
+    """The run key of the run *run_id* and *release* name (see
+    :func:`named_release`)."""
+    return run_key(run_id, named_release(frames, run_id, release, keys=keys))
+
+
 def config_keys(df: pd.DataFrame | None) -> set[tuple[str, str]]:
-    """Return every ``(run_id, label)`` pair represented by *df*."""
+    """Return every ``(run key, label)`` pair represented by *df* (see
+    :func:`run_keys`)."""
     if (
         df is None
         or df.empty
         or not {"run_id", "label"} <= set(df.columns)
     ):
         return set()
-    return {
-        (str(run_id), str(label))
-        for run_id, label in df[["run_id", "label"]].itertuples(
-            index=False, name=None,
-        )
-    }
+    return set(zip(run_keys(df), df["label"].astype(str), strict=True))
 
 
 def failed_config_keys(
     results_df: pd.DataFrame | None,
 ) -> set[tuple[str, str]]:
-    """Return failed ``(run_id, label)`` pairs from a result-history frame."""
+    """Return failed ``(run key, label)`` pairs from a result-history frame."""
     if (
         results_df is None
         or results_df.empty
         or not {"run_id", "label"} <= set(results_df.columns)
     ):
         return set()
-    failed = results_df.loc[failed_config_mask(results_df), ["run_id", "label"]]
-    return {
-        (str(run_id), str(label))
-        for run_id, label in failed.itertuples(index=False, name=None)
-    }
+    return config_keys(results_df.loc[failed_config_mask(results_df)])
 
 
 def judgeable_config_keys(
@@ -135,7 +205,8 @@ def config_rows_for_keys(
     df: pd.DataFrame | None,
     keys: set[tuple[str, str]],
 ) -> pd.DataFrame | None:
-    """Keep rows whose normalized ``(run_id, label)`` pair is in *keys*.
+    """Keep rows whose ``(run key, label)`` pair (see :func:`config_keys`) is in
+    *keys*.
 
     The helper is the shared join primitive for result-backed derived data.
     Keeping it separate from the policy helpers below lets callers retain
@@ -149,7 +220,7 @@ def config_rows_for_keys(
     ):
         return df
     row_keys = pd.MultiIndex.from_arrays([
-        df["run_id"].astype(str),
+        run_keys(df),
         df["label"].astype(str),
     ])
     keep = (
@@ -174,7 +245,7 @@ def judgeable_config_rows(
     """Keep metric rows backed by a non-failed result config-night.
 
     Derived event and region frames do not carry ``returncode`` themselves, so
-    they inherit validity from the result frame through ``(run_id, label)``.
+    they inherit validity from the result frame through ``(run key, label)``.
     This also rejects orphaned partial files whose config never wrote a result
     row, while retaining healthy sibling configs from the same run.
     """

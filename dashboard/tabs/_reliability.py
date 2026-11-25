@@ -10,6 +10,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from k4bench.analysis.loader import run_keys
 from k4bench.results.reliability_evidence import reliability_verdict as _reliability_verdict
 
 
@@ -138,8 +139,10 @@ def resolve_reliability_filter(
 
     Shared by every tab that plots historical (multi-run) data so the run-scope
     choice behaves identically everywhere. *df* must carry a ``run_id``
-    column; *reliability* is the per-run verdict map from :func:`run_reliability_map`
-    (``{run_id: reliable}``). When no run in *df* is flagged unreliable — including
+    column, and the ``x_date`` that tells apart two releases run on one date;
+    *reliability* is the per-run verdict map from :func:`run_reliability_map`
+    (``{run key: reliable}``, see :func:`~k4bench.analysis.loader.run_key`).
+    When no run in *df* is flagged unreliable — including
     when *reliability* is empty/``None`` (e.g. local mode, or no machine info) — *df*
     is returned unchanged and nothing is drawn.
 
@@ -156,7 +159,8 @@ def resolve_reliability_filter(
     row. It is intentionally passed through to :func:`render_reliability_scope`
     only when a selector is needed, so reliable-only views leave no empty chrome.
 
-    The returned set is empty whenever nothing was dropped — no unreliable run, or
+    The returned set holds the run keys of the runs dropped. It is empty whenever
+    nothing was dropped — no unreliable run, or
     **All runs** selected — so a caller can treat it as "the runs that are no
     longer on the chart" without also reading the widget state. Callers that plot
     a *reduction* over several runs need it: a flag earned by one run must not
@@ -168,17 +172,17 @@ def resolve_reliability_filter(
     # machine info) — nothing to flag or filter.
     if "run_id" not in df.columns or not reliability:
         return df, set()
-    unreliable_ids = {
-        rid for rid in df["run_id"].unique() if reliability.get(rid) is False
-    }
+    runs = run_keys(df)
+    unreliable_ids = {run for run in runs.unique() if reliability.get(run) is False}
     if not unreliable_ids:
         return df, set()
 
     n = len(unreliable_ids)
+    unreliable = runs.isin(unreliable_ids)
     # List the affected dates when the column is present; degrade to count-only
     # for any future caller whose frame lacks it, rather than raising.
     if date_col in df.columns:
-        flagged = df.loc[df["run_id"].isin(unreliable_ids), date_col]
+        flagged = df.loc[unreliable, date_col]
         dates = sorted(
             pd.to_datetime(flagged, errors="coerce")
             .dt.strftime("%Y-%m-%d").fillna("unknown").unique()
@@ -188,7 +192,7 @@ def resolve_reliability_filter(
     exclude = render_reliability_scope(n, dates, key=key, slot=slot)
     if not exclude:
         return df, set()
-    df = df[~df["run_id"].isin(unreliable_ids)]
+    df = df[~unreliable]
     if df.empty:
         st.warning(
             "Every run for the selected configurations was excluded as "

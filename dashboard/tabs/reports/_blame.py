@@ -20,6 +20,7 @@ from enum import Enum
 import pandas as pd
 import plotly.graph_objects as go
 
+from k4bench.analysis.loader import release_day
 from k4bench.regression.models import MetricVerdict, Severity
 from tabs._regression_flags import FLAG_MARKS
 from ui_utils import to_rgba
@@ -111,7 +112,9 @@ def changes_summary(changes: list) -> str:
     return " · ".join(parts)
 
 
-def run_point(df: pd.DataFrame, run_id: str | None, metric: str) -> tuple | None:
+def run_point(
+    df: pd.DataFrame, run_id: str | None, metric: str, release: str | None = None,
+) -> tuple | None:
     """The plotted ``(x_date, value)`` of one *run*, or ``None`` when it has none.
 
     The marker anchor for a **run-level** chart — one where every run of a
@@ -123,6 +126,10 @@ def run_point(df: pd.DataFrame, run_id: str | None, metric: str) -> tuple | None
     filter, outside the fetched window) or measured nothing for *metric*, so the
     caller draws no marker rather than a misplaced or free-floating one.
 
+    Given the *release* the run measured, only the run under *run_id* that
+    measured it matches: two releases benchmarked on one date are two runs
+    under one run id, and the other is a different measurement too.
+
     **Not** the rule for the release-level charts (Run Trends, the Overview's
     trends), which plot one point per Key4hep nightly tag and so have no
     per-run point to anchor to. Those reduce a release's runs the way the engine
@@ -131,9 +138,12 @@ def run_point(df: pd.DataFrame, run_id: str | None, metric: str) -> tuple | None
     if not run_id or metric not in df.columns or "run_id" not in df.columns:
         return None
     hits = df[df["run_id"].astype(str) == str(run_id)]
+    if release is not None:
+        days = pd.to_datetime(hits["x_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        hits = hits[days == release_day(release)]
     if hits.empty:
         return None
-    # A run id names one measurement, so this is normally a single row; sort
+    # A run names one measurement, so this is normally a single row; sort
     # anyway so the result never depends on the caller's row order.
     row = hits.sort_values("x_date").iloc[-1]
     val = row[metric]
@@ -154,7 +164,7 @@ def onset_point(df: pd.DataFrame, verdict: MetricVerdict) -> tuple | None:
     if verdict.metric not in df.columns:
         return None
     if verdict.onset_run_id is not None:
-        return run_point(df, verdict.onset_run_id, verdict.metric)
+        return run_point(df, verdict.onset_run_id, verdict.metric, verdict.onset_run_date)
     if not verdict.onset_run_date:
         return None
     hits = df[pd.to_datetime(df["x_date"]) == pd.to_datetime(verdict.onset_run_date)]

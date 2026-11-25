@@ -137,6 +137,34 @@ def test_points_are_chronological_whatever_order_the_frame_arrives_in():
     assert dates == ["2026-07-01", "2026-07-04", "2026-07-08"]
 
 
+def test_two_releases_benchmarked_on_one_date_stay_two_points():
+    # A re-benchmark of release 07-03 filed under 07-04, the night release
+    # 07-04 ran too: one run id, two runs. Each keeps its own release, value and
+    # host — the 07-03 value must not land on 07-04's point.
+    frame = _frame([
+        ("2026-07-03", "2026-07-03", 12.0, True),
+        ("2026-07-04", "2026-07-03", 12.2, True),
+        ("2026-07-04", "2026-07-04", 15.0, True),
+    ])
+    verdicts = [
+        _verdict("2026-07-03", "2026-07-03", 12.0, Severity.OK),
+        _verdict("2026-07-04", "2026-07-03", 12.2, Severity.OK),
+        _verdict("2026-07-04", "2026-07-04", 15.0, Severity.WATCH, Direction.UP),
+    ]
+    hosts = host_facts(_machines([
+        ("2026-07-03", "2026-07-03", "bench01"),
+        ("2026-07-04", "2026-07-03", "bench01"),
+        ("2026-07-04", "2026-07-04", "bench02"),
+    ]))
+    points = release_points(frame, verdicts, hosts=hosts)
+    assert [(p.run_date, p.value, p.n_runs) for p in points] == [
+        ("2026-07-03", 12.1, 2), ("2026-07-04", 15.0, 1),
+    ]
+    assert points[0].hosts == (HostFact("bench01", 64),)
+    assert points[1].hosts == (HostFact("bench02", 64),)
+    assert points[1].direction is Direction.UP
+
+
 def test_hosts_are_recorded_per_release():
     frame = _frame([
         ("2026-07-01", "2026-07-01", 12.0, True),
@@ -144,6 +172,7 @@ def test_hosts_are_recorded_per_release():
     ])
     machine = pd.DataFrame({
         "run_id": ["2026-07-01", "2026-07-04"],
+        "x_date": pd.to_datetime(["2026-07-01", "2026-07-04"]),
         "hostname": ["bench01", "bench02"],
         "cpu_logical_cores": [64, 128],
     })
@@ -152,12 +181,14 @@ def test_hosts_are_recorded_per_release():
     assert points[1].hosts == (HostFact("bench02", 128),)
 
 
-def _machines(pairs) -> pd.DataFrame:
-    """``(run_id, hostname)`` pairs as a machine-info trend, 64 cores each."""
+def _machines(triples) -> pd.DataFrame:
+    """``(run_id, release, hostname)`` triples as a machine-info trend, 64
+    cores each."""
     return pd.DataFrame({
-        "run_id": [p[0] for p in pairs],
-        "hostname": [p[1] for p in pairs],
-        "cpu_logical_cores": [64] * len(pairs),
+        "run_id": [t[0] for t in triples],
+        "x_date": pd.to_datetime([t[1] for t in triples]),
+        "hostname": [t[2] for t in triples],
+        "cpu_logical_cores": [64] * len(triples),
     })
 
 
@@ -176,9 +207,9 @@ def test_each_host_keeps_its_own_level_in_first_sighting_order():
         _verdict("2026-09-24c", "2026-09-24", 5860.0, Severity.OK),
     ]
     hosts = host_facts(_machines([
-        ("2026-09-24a", "fcc-ironic-03"),
-        ("2026-09-24b", "fcc-ironic-01"),
-        ("2026-09-24c", "fcc-ironic-03"),
+        ("2026-09-24a", "2026-09-24", "fcc-ironic-03"),
+        ("2026-09-24b", "2026-09-24", "fcc-ironic-01"),
+        ("2026-09-24c", "2026-09-24", "fcc-ironic-03"),
     ]))
     point = release_points(frame, verdicts, hosts=hosts)[0]
     assert point.hosts == (HostFact("fcc-ironic-03", 64), HostFact("fcc-ironic-01", 64))
@@ -201,7 +232,8 @@ def test_a_release_split_across_machines_sits_between_their_own_levels():
         _verdict("2026-09-24b", "2026-09-24", 5850.0, Severity.WATCH, Direction.DOWN),
     ]
     hosts = host_facts(_machines([
-        ("2026-09-24a", "fcc-ironic-01"), ("2026-09-24b", "fcc-ironic-03"),
+        ("2026-09-24a", "2026-09-24", "fcc-ironic-01"),
+        ("2026-09-24b", "2026-09-24", "fcc-ironic-03"),
     ]))
     point = release_points(frame, verdicts, hosts=hosts)[0]
     assert point.value == 6234.0
@@ -221,7 +253,9 @@ def test_a_host_whose_nights_were_not_judged_has_no_level_beside_judged_ones():
         ("2026-07-08", "2026-07-07", 19.0, False),
     ])
     verdicts = [_verdict("2026-07-07", "2026-07-07", 12.0, Severity.OK)]
-    hosts = host_facts(_machines([("2026-07-07", "bench01"), ("2026-07-08", "bench02")]))
+    hosts = host_facts(_machines([
+        ("2026-07-07", "2026-07-07", "bench01"), ("2026-07-08", "2026-07-07", "bench02"),
+    ]))
     point = release_points(frame, verdicts, hosts=hosts)[0]
     assert point.hosts == (HostFact("bench01", 64), HostFact("bench02", 64))
     assert point.host_levels == (HostLevel(HostFact("bench01", 64), 12.0),)
@@ -234,7 +268,9 @@ def test_host_levels_fall_back_to_recorded_values_when_nothing_was_judged():
         ("2026-07-09", "2026-07-07", 13.0, False),
     ])
     hosts = host_facts(_machines([
-        ("2026-07-07", "bench01"), ("2026-07-08", "bench02"), ("2026-07-09", "bench01"),
+        ("2026-07-07", "2026-07-07", "bench01"),
+        ("2026-07-08", "2026-07-07", "bench02"),
+        ("2026-07-09", "2026-07-07", "bench01"),
     ]))
     point = release_points(frame, [], hosts=hosts)[0]
     # bench02 recorded no finite value, so it has no level rather than a gap.

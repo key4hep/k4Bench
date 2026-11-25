@@ -26,6 +26,7 @@ from collections.abc import Sequence
 import numpy as np
 import pandas as pd
 
+from k4bench.analysis.loader import run_key, run_keys
 from k4bench.regression.engine import release_key, with_current_machine
 from k4bench.regression.models import (
     Direction,
@@ -69,7 +70,8 @@ def _finite(value) -> float | None:
 
 
 def host_facts(machine_df: pd.DataFrame | None) -> dict[str, HostFact]:
-    """``run_id -> `` the machine that ran it, from the machine-info trend.
+    """``run key -> `` the machine that ran it, from the machine-info trend
+    (see :func:`~k4bench.analysis.loader.run_key`).
 
     Runs with no machine info simply have no entry: a history tail that cannot
     name the host says nothing about it, which is not the same claim as "the
@@ -80,20 +82,22 @@ def host_facts(machine_df: pd.DataFrame | None) -> dict[str, HostFact]:
     has_hostname = "hostname" in machine_df.columns
     has_cores = "cpu_logical_cores" in machine_df.columns
     hosts: dict[str, HostFact] = {}
-    for row in machine_df.itertuples(index=False):
+    keys = run_keys(machine_df)
+    for key, row in zip(keys, machine_df.itertuples(index=False), strict=True):
         raw_name = getattr(row, "hostname", None) if has_hostname else None
         name = "" if pd.isna(raw_name) else str(raw_name)
         cores = _finite(getattr(row, "cpu_logical_cores", None)) if has_cores else None
         if not name and cores is None:
             continue
-        hosts[str(row.run_id)] = HostFact(
+        hosts[key] = HostFact(
             name=name, cpu_cores=int(cores) if cores is not None else None
         )
     return hosts
 
 
 def cpu_models(machine_df: pd.DataFrame | None) -> dict[str, str]:
-    """``run_id -> `` the CPU model the run recorded, from the machine-info trend.
+    """``run key -> `` the CPU model the run recorded, from the machine-info
+    trend (see :func:`~k4bench.analysis.loader.run_key`).
 
     Unlike :func:`host_facts` this does enter the judgement: the engine treats
     a change of CPU model as a change-point (see
@@ -103,8 +107,8 @@ def cpu_models(machine_df: pd.DataFrame | None) -> dict[str, str]:
     if machine_df is None or machine_df.empty or "cpu_model" not in machine_df.columns:
         return {}
     return {
-        str(run_id): model
-        for run_id, model in zip(machine_df["run_id"], machine_df["cpu_model"])
+        key: model
+        for key, model in zip(run_keys(machine_df), machine_df["cpu_model"], strict=True)
         if isinstance(model, str) and model and model != "unknown"
     }
 
@@ -135,7 +139,7 @@ def release_points(
     own in the walk; so do a release's nights on another CPU model (optional
     ``machine`` column), which the walk anchors on rather than judges.
 
-    *hosts* (from :func:`host_facts`) names the machine behind each ``run_id``,
+    *hosts* (from :func:`host_facts`) names the machine behind each run,
     so the tail can show a change of benchmark host next to the change in the
     number, and what each machine measured on its own. Omit it and the points
     simply carry no host.
@@ -152,11 +156,14 @@ def release_points(
     # a release the successor also measured are a point of their own, and so
     # are a release's nights on each CPU model.
     ordered = with_current_machine(history.sort_values(["run_date", "run_id"], kind="stable"))
+    # A run is its run id and the release it measured (the frame's
+    # ``run_date``), as a verdict names it: two releases benchmarked on one
+    # date are two runs.
     keys: dict[str, tuple[str, str | None, str | None]] = {}
     for row in ordered.itertuples(index=False):
         detector = getattr(row, "detector", None)
         machine = getattr(row, "machine", None)
-        keys[str(row.run_id)] = (
+        keys[run_key(row.run_id, row.run_date)] = (
             release_key(row.run_date, row.run_id),
             detector if isinstance(detector, str) and detector else None,
             machine if isinstance(machine, str) and machine else None,
@@ -165,7 +172,7 @@ def release_points(
     judged_by_release: dict[tuple[str, str | None, str | None], list[MetricVerdict]] = {}
     for verdict in verdicts:
         key = keys.get(
-            str(verdict.run_id),
+            run_key(verdict.run_id, verdict.run_date),
             (release_key(verdict.run_date, verdict.run_id), None, None),
         )
         judged_by_release.setdefault(key, []).append(verdict)
@@ -176,7 +183,8 @@ def release_points(
     #: A continued series marks the rows its predecessor measured.
     platforms: dict[tuple, str] = {}
     for row in ordered.itertuples(index=False):
-        key = keys[str(row.run_id)]
+        run = run_key(row.run_id, row.run_date)
+        key = keys[run]
         platform = getattr(row, "platform", None)
         if isinstance(platform, str) and platform:
             platforms.setdefault(key, platform)
@@ -184,7 +192,7 @@ def release_points(
         recorded.setdefault(key, [])
         if value is not None:
             recorded[key].append(value)
-        host = hosts.get(str(row.run_id))
+        host = hosts.get(run)
         if host is not None:
             # A dict keyed by the fact, not a set: several nights of a release
             # normally share one host, and the first sighting's order is what
@@ -209,7 +217,7 @@ def release_points(
             continue
         judged_on: dict[HostFact, list[float]] = {}
         for verdict in release_verdicts:
-            host = hosts.get(str(verdict.run_id))
+            host = hosts.get(run_key(verdict.run_id, verdict.run_date))
             value = _finite(verdict.value)
             if (
                 host is not None and value is not None

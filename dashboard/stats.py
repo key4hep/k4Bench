@@ -5,6 +5,7 @@ import math
 import numpy as np
 import pandas as pd
 
+from k4bench.analysis.loader import run_keys
 from k4bench.metrics import metric_label
 from k4bench.regression.engine import recent_movement, same_release_spread
 
@@ -156,7 +157,7 @@ def build_stability_table(
         return pd.DataFrame()
     reliability = reliability or {}
     ordered = df.sort_values(["x_date", "run_id"], kind="stable")
-    ordered = ordered[[reliability.get(str(r)) is not False for r in ordered["run_id"]]]
+    ordered = ordered[[reliability.get(key) is not False for key in run_keys(ordered)]]
 
     rows = []
     for label in sorted(ordered["label"].dropna().unique()):

@@ -577,6 +577,47 @@ def test_each_suite_reports_its_own_run_tree_alone(tmp_path):
     assert walls == {40.0}
 
 
+def _release_tree(root: Path, release: str) -> Path:
+    return root / run_path(SIM, "DET") / _PLAT / f"key4hep-{release}" / "single_e"
+
+
+def test_tonight_is_the_newest_release_filed_under_the_report_night(tmp_path):
+    # Release 01-11 re-benchmarked on 01-12, the night release 01-12 ran too:
+    # two runs filed under run id 2026-01-12. Tonight is release 01-12's run —
+    # its release, CI run, roster, reliability and values — and the rerun,
+    # which crashed one config on a contended host, is history of 01-11.
+    labels = ("baseline", "extra")
+    for night in _nights(11):
+        _write_run(
+            _release_tree(tmp_path, night) / night, night=night, labels=labels,
+        )
+    tonight = "2026-01-12"
+    _write_run(
+        _release_tree(tmp_path, "2026-01-11") / tonight, night=tonight,
+        release="2026-01-11", labels=labels, contended=True,
+        result_overrides={"baseline": {"returncode": 139}},
+        github_run_url="https://ci.example/runs/rerun", configured_labels=labels,
+    )
+    _write_run(
+        _release_tree(tmp_path, tonight) / tonight, night=tonight,
+        labels=("baseline",), wall_time_s=101.0,
+        github_run_url="https://ci.example/runs/nightly", configured_labels=labels,
+    )
+
+    (group,) = build_nightly_report_local(str(tmp_path), SIM).groups
+
+    assert (group.run_id, group.k4h_release) == (tonight, "key4hep-2026-01-12")
+    assert group.github_run_url == "https://ci.example/runs/nightly"
+    assert group.reliable is True
+    assert group.job_failures == ["config 'extra' produced no results tonight"]
+    assert not any(v.severity is Severity.FAILURE for v in group.verdicts)
+    assert not any(v.label == "extra" for v in group.verdicts)
+    wall = next(
+        v for v in group.verdicts if (v.label, v.metric) == ("baseline", "wall_time_s")
+    )
+    assert (wall.run_id, wall.run_date, wall.value) == (tonight, tonight, 101.0)
+
+
 def test_local_report_flags_missing_run_and_drops_retired(tmp_path):
     # DET_A ran through 2026-01-12 (report night). DET_B stopped 3 days short
     # (missing run → failure); DET_C stopped 3 weeks ago (retired → dropped).

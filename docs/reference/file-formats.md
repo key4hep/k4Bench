@@ -728,6 +728,15 @@ in a top-level `night` key instead and reports one
 `no run uploaded for {night}` job failure per triple. The key is absent on
 every other night, where the newest run date is the answer.
 
+Two releases can be benchmarked on one date: a pinned older release
+dispatched, or an old nightly re-run, on a night the current release ran too.
+Their runs are filed under the same date in different release directories, so
+they share a run id (`run_id`, the date directory's name). A run is therefore
+named by its run id *and* the release it measured: a verdict's `run_id` with
+its `run_date`, and likewise its `onset_*` and `last_accepted_*` pairs. A
+triple's run on the report night is the one that measured the newest release;
+the other is a measurement of its own release and enters the history there.
+
 ### Metric history on confirmed verdicts (`report.json`)
 
 Every **confirmed** verdict in `report.json` carries a bounded `history`: a tail

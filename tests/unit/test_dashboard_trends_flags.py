@@ -475,7 +475,7 @@ def test_excluding_the_flagged_run_takes_its_markers_off_the_chart():
     # The run that earned the CONFIRMED failed the host check and is dropped by
     # the on-by-default filter — so its markers go with it. The flag is evidence
     # about that measurement, and the measurement is no longer plotted.
-    at = _run(_reports_stub(confirmed=True), {"2026-05-21": False})
+    at = _run(_reports_stub(confirmed=True), {"2026-05-21@2026-05-21": False})
     runs = at.segmented_control(key="trends_exclude_unreliable")
     assert runs.label == "Runs · ⚠️ 1 unreliable"
     assert runs.value == "Reliable only"
@@ -498,7 +498,7 @@ def test_data_range_counts_the_tags_on_the_chart():
 def test_data_range_names_a_tag_hidden_as_unreliable():
     # The 05-21 tag's only run failed the host check: the chart ends on 05-20,
     # and so does the range, with the dropped tag counted apart.
-    at = _run(_reports_stub(confirmed=False), {"2026-05-21": False})
+    at = _run(_reports_stub(confirmed=False), {"2026-05-21@2026-05-21": False})
     assert _data_range(at) == (
         "Data range: **2026-05-20** → **2026-05-20** "
         "(1 nightly tag · 1 hidden as unreliable)"
@@ -509,14 +509,14 @@ def test_data_range_names_a_tag_hidden_as_unreliable():
 
 def test_data_range_keeps_a_tag_with_a_reliable_rerun():
     # Dropping one of a tag's runs leaves its point, so nothing is hidden.
-    at = _run(_reports_stub(confirmed=False), {"2026-05-21": False}, same_tag=True)
+    at = _run(_reports_stub(confirmed=False), {"2026-05-21@2026-05-21": False}, same_tag=True)
     assert _data_range(at) == "Data range: **2026-05-21** → **2026-05-21** (1 nightly tag)"
 
 
 def test_data_range_keeps_a_tag_shown_by_its_failure_marker():
     # A failed config is plotted as a marker whatever its host verdict, so its
     # tag is on the chart.
-    at = _run(_reports_stub(confirmed=False), {"2026-05-21": False}, failed=True)
+    at = _run(_reports_stub(confirmed=False), {"2026-05-21@2026-05-21": False}, failed=True)
     assert _data_range(at) == "Data range: **2026-05-20** → **2026-05-21** (2 nightly tags)"
 
 

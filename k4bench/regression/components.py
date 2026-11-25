@@ -34,7 +34,12 @@ from k4bench.analysis.components import (
     without_warm_up,
 )
 from k4bench.analysis.loader import load_component_heap, load_component_timing
-from k4bench.analysis.trend import EXPECTED_LOAD_ERRORS, MIN_TRIM_EVENTS, TRIM_FRACTION
+from k4bench.analysis.trend import (
+    EXPECTED_LOAD_ERRORS,
+    MIN_TRIM_EVENTS,
+    TRIM_FRACTION,
+    run_dir_key,
+)
 from k4bench.artifacts import COMPONENTS_SUFFIX, HEAP_SUFFIX, label_path
 from k4bench.provenance.sources import load_run_packages, package_of
 from k4bench.regression.models import ComponentDelta, MetricVerdict
@@ -222,12 +227,13 @@ def _read_nights(
     judgeable_configs: set[tuple[str, str]] | None,
 ) -> list[_Night]:
     """The readable nights of one window end, oldest first. Config-nights absent
-    from *judgeable_configs* (failed or orphaned) are gaps and are skipped."""
+    from *judgeable_configs* (failed or orphaned; keyed by run, see
+    :func:`~k4bench.analysis.trend.run_dir_key`) are gaps and are skipped."""
     nights = []
     for run_dir in sorted(run_dirs, key=lambda d: d.name):
         if (
             judgeable_configs is not None
-            and (str(run_dir.name), str(label)) not in judgeable_configs
+            and (run_dir_key(run_dir), str(label)) not in judgeable_configs
         ):
             continue
         night = _read_night(run_dir, label, quantity)
