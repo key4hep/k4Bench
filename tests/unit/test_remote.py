@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import gzip
 import json
-from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -1178,119 +1177,198 @@ def test_windowed_runs_download_only_the_files_asked_for(web, tmp_path):
     assert all((Path(r["run_dir"]) / ".complete").exists() for r in whole)
 
 
+
 # ---------------------------------------------------------------------------
-# Runs whose upload has not finished
+# Runs uploaded under the nightly's protocol: unfinished or replaced
 # ---------------------------------------------------------------------------
 
-#: The night of :data:`_RUN`.
-_NIGHT = date(2026, 5, 21)
+#: A re-run's attempt at :data:`_RUN`, replacing :data:`_PART_FILES`: its own
+#: run_info.json, and none of the files only the first attempt wrote.
+_ATTEMPT_B = {
+    "run_info.json": b'{"date": "2026-05-21", "github_run_attempt": "2"}',
+    "machine_info.json": b"{}",
+    "baseline_results.csv": b"label\nbaseline, attempt 2\n",
+    "baseline.log": b"attempt 2",
+}
 
 
-def _on(monkeypatch, day: date) -> None:
-    monkeypatch.setattr(remote, "_today", lambda: day)
-
-
-def _uploading_web(monkeypatch, *, without=("run_info.json",)) -> _CountingWeb:
-    """:data:`_RUN` part way through its upload: the files *without* names
-    are not there yet."""
-    files = {name: content for name, content in _PART_FILES.items() if name not in without}
-    tree = {_PART_RUN: list(files)}
+def _tree(files: dict[str, bytes]) -> dict[str, object]:
+    tree: dict[str, object] = {_PART_RUN: list(files)}
     tree.update({f"{_PART_RUN}/{name}": content for name, content in files.items()})
-    fake = _CountingWeb(tree)
-    _use_session(monkeypatch, fake.get)
-    return fake
+    return tree
 
 
-@pytest.mark.parametrize(("listing", "age", "finished"), [
-    (["baseline_results.csv", "run_info.json"], 0, True),
-    (["baseline_results.csv"], 0, False),
-    (["baseline_results.csv"], 1, False),
-    # From the day no job dated the night can still be writing it.
-    (["baseline_results.csv"], 2, True),
-    ([], 30, True),
+class _ReplacedWeb(_CountingWeb):
+    """:data:`_RUN` as one attempt until the *nth* request for *name*, which
+    finds *then* in its place. A file the run does not hold is a 404."""
+
+    def __init__(self, files, name=None, nth=0, then=None):
+        super().__init__(_tree(files))
+        self.trigger, self.nth, self.then, self.seen = name, nth, then, 0
+
+    def get(self, url, timeout=None):
+        if self.trigger and url.endswith(f"/{self.trigger}"):
+            self.seen += 1
+            if self.seen == self.nth:
+                self.tree = _tree(self.then)
+        if url.rstrip("/") not in self.tree:
+            self.requested.append(url)
+            raise _http_error(url, 404)
+        return super().get(url, timeout)
+
+
+@pytest.fixture
+def protocol(monkeypatch):
+    """Make :data:`_RUN` a run uploaded under the protocol."""
+    monkeypatch.setattr(remote, "UPLOAD_PROTOCOL_SINCE", "2026-05-01")
+
+
+def _serve(monkeypatch, web: _CountingWeb) -> _CountingWeb:
+    _use_session(monkeypatch, web.get)
+    return web
+
+
+@pytest.mark.parametrize(("night", "follows"), [
+    ("2026-11-25", False),
+    ("2026-11-26", True),
+    ("2027-01-01", True),
+    # A run directory never seen dated otherwise is never read without run_info.json.
+    ("latest", True),
 ])
-def test_an_upload_is_finished_once_run_info_is_there_or_the_run_settled(
-    monkeypatch, listing, age, finished,
-):
-    _on(monkeypatch, _NIGHT + timedelta(days=age))
-    assert remote.upload_finished(listing, _NIGHT.isoformat()) is finished
+def test_runs_follow_the_upload_protocol_from_the_day_it_ships(night, follows):
+    assert remote.UPLOAD_PROTOCOL_SINCE == "2026-11-26"
+    assert remote.follows_upload_protocol(night) is follows
 
 
-def test_a_run_dated_unreadably_is_finished_only_with_run_info(monkeypatch):
-    _on(monkeypatch, _NIGHT + timedelta(days=30))
-    assert not remote.upload_finished(["baseline_results.csv"], "latest")
-    assert remote.upload_finished(["run_info.json"], "latest")
-
-
-def test_a_run_still_uploading_is_not_cached_until_it_finishes(monkeypatch, tmp_path):
-    _on(monkeypatch, _NIGHT)
-    web = _uploading_web(monkeypatch)
+def test_a_run_still_uploading_is_not_cached_until_it_finishes(protocol, monkeypatch, tmp_path):
+    uploading = {k: v for k, v in _PART_FILES.items() if k != "run_info.json"}
+    web = _serve(monkeypatch, _ReplacedWeb(uploading))
     with pytest.raises(remote.UnfinishedRun, match="no run_info.json yet"):
         remote.ensure_run_cached(*_RUN, cache_root=str(tmp_path))
     # Nothing downloaded, nothing left behind that could pass for the run.
-    assert web.files() == []
+    assert web.files() == ["run_info.json"]
     run_dir = tmp_path / run_path(*_RUN[1:])
     assert not run_dir.exists()
     assert list(run_dir.parent.iterdir()) == []
 
-    web = _uploading_web(monkeypatch, without=())
+    web = _serve(monkeypatch, _ReplacedWeb(_PART_FILES))
     remote.ensure_run_cached(*_RUN, cache_root=str(tmp_path))
-    assert (run_dir / ".complete").exists()
-    assert sorted(p.name for p in run_dir.iterdir() if p.name != ".complete") == sorted(_PART_FILES)
-    # run_info.json last: a re-run takes it down first.
-    assert web.files()[-1] == "run_info.json"
+    assert {p.name: p.read_bytes() for p in run_dir.iterdir() if p.name != ".complete"} == _PART_FILES
+    # run_info.json read first and again last.
+    files = web.files()
+    assert files[0] == files[-1] == "run_info.json"
+    assert files.count("run_info.json") == 2
 
 
-def test_a_settled_run_without_run_info_is_cached_as_it_is(monkeypatch, tmp_path):
-    _on(monkeypatch, _NIGHT + timedelta(days=remote.SETTLED_AFTER_DAYS))
-    _uploading_web(monkeypatch)
+def test_a_legacy_run_without_run_info_is_cached_as_it_is(monkeypatch, tmp_path):
+    # Dated before the protocol shipped, the way the store's one dead upload is.
+    assert not remote.follows_upload_protocol(_RUN[-1])
+    _serve(monkeypatch, _ReplacedWeb({"baseline.log": b"log"}))
     run_dir = remote.ensure_run_cached(*_RUN, cache_root=str(tmp_path))
     assert (run_dir / ".complete").exists()
-    assert not (run_dir / "run_info.json").exists()
+    assert sorted(p.name for p in run_dir.iterdir()) == [".complete", "baseline.log"]
 
 
-def test_a_run_replaced_while_it_is_downloaded_is_not_cached(monkeypatch, tmp_path):
-    _on(monkeypatch, _NIGHT)
-    web = _uploading_web(monkeypatch, without=())
-
-    def get(url, timeout=None):
-        # A re-run took run_info.json down after the run was listed.
-        if url.endswith("/run_info.json"):
-            raise _http_error(url, 404)
-        return web.get(url, timeout)
-
-    _use_session(monkeypatch, get)
-    with pytest.raises(remote.UnfinishedRun, match="run_info.json went"):
+def test_a_run_replaced_whole_while_downloaded_is_not_cached(protocol, monkeypatch, tmp_path):
+    # Every request succeeds: the data files are the first attempt's and the
+    # last read of run_info.json is the second's. Only comparing it catches that.
+    web = _serve(monkeypatch, _ReplacedWeb(_PART_FILES, "run_info.json", 2, _ATTEMPT_B))
+    with pytest.raises(remote.UnfinishedRun, match="replaced while it was read"):
         remote.ensure_run_cached(*_RUN, cache_root=str(tmp_path))
+    assert web.files()[-1] == "run_info.json"
     run_dir = tmp_path / run_path(*_RUN[1:])
     assert not run_dir.exists()
     assert list(run_dir.parent.iterdir()) == []
 
 
-def test_part_of_a_run_still_uploading_records_nothing(monkeypatch, tmp_path):
-    _on(monkeypatch, _NIGHT + timedelta(days=1))
-    web = _uploading_web(monkeypatch)
+def test_a_run_whose_listed_file_goes_mid_read_is_not_cached(protocol, monkeypatch, tmp_path):
+    # The re-run replaced the run just before this attempt-only file was asked for.
+    _serve(monkeypatch, _ReplacedWeb(_PART_FILES, "variant_results.csv", 1, _ATTEMPT_B))
+    with pytest.raises(remote.UnfinishedRun):
+        remote.ensure_run_cached(*_RUN, cache_root=str(tmp_path))
+    assert not (tmp_path / run_path(*_RUN[1:])).exists()
+
+
+def test_part_of_a_run_still_uploading_records_nothing(protocol, monkeypatch, tmp_path):
+    uploading = {k: v for k, v in _PART_FILES.items() if k != "run_info.json"}
+    web = _serve(monkeypatch, _ReplacedWeb(uploading))
     with pytest.raises(remote.UnfinishedRun):
         remote.ensure_run_artifacts(*_RUN, _BASE, cache_root=str(tmp_path))
     run_dir = tmp_path / remote.SUBSET_TREE / run_path(*_RUN[1:])
-    assert web.files() == []
+    assert web.files() == ["run_info.json"]
     assert not (run_dir / remote.ARTIFACT_MANIFEST).exists()
 
     # Once it finishes, its listing is read again: what was uploaded since is there.
-    _uploading_web(monkeypatch, without=())
+    _serve(monkeypatch, _ReplacedWeb(_PART_FILES))
     remote.ensure_run_artifacts(*_RUN, _BASE, cache_root=str(tmp_path))
     assert set(_manifest(run_dir)["listing"]) == set(_PART_FILES)
     assert (run_dir / "run_info.json").read_bytes() == _PART_FILES["run_info.json"]
 
 
+def test_a_replacement_between_listing_and_fetch_records_no_absence(protocol, monkeypatch, tmp_path):
+    # The first attempt's listing names variant_results.csv; by the time it is
+    # asked for, the second attempt replaced the run and the file 404s. That
+    # 404 is not an answer about the run the listing describes.
+    _serve(monkeypatch, _ReplacedWeb(_PART_FILES, "variant_results.csv", 1, _ATTEMPT_B))
+    with pytest.raises(remote.UnfinishedRun, match="replaced while it was read"):
+        remote.ensure_run_artifacts(*_RUN, _BASE, cache_root=str(tmp_path))
+    run_dir = tmp_path / remote.SUBSET_TREE / run_path(*_RUN[1:])
+    assert sorted(p.name for p in run_dir.iterdir()) == [".lock"]
+
+    # Read again, the run is the second attempt, whole.
+    _serve(monkeypatch, _ReplacedWeb(_ATTEMPT_B))
+    remote.ensure_run_artifacts(*_RUN, _BASE, cache_root=str(tmp_path))
+    assert set(_manifest(run_dir)["listing"]) == set(_ATTEMPT_B)
+    assert (run_dir / "baseline_results.csv").read_bytes() == _ATTEMPT_B["baseline_results.csv"]
+    assert (run_dir / "run_info.json").read_bytes() == _ATTEMPT_B["run_info.json"]
+
+
+def test_a_404_while_run_info_holds_still_is_an_absence(protocol, monkeypatch, tmp_path):
+    web = _ReplacedWeb(_PART_FILES)
+    web.tree.pop(f"{_PART_RUN}/variant_results.csv")  # listed, then gone
+    _serve(monkeypatch, web)
+    run_dir = remote.ensure_run_artifacts(*_RUN, _BASE, cache_root=str(tmp_path))
+    assert _manifest(run_dir)["files"]["variant_results.csv"] == {"state": "absent"}
+
+
+def test_a_part_cached_before_a_rerun_is_discarded_once_more_is_asked_for(
+    protocol, monkeypatch, tmp_path,
+):
+    _serve(monkeypatch, _ReplacedWeb(_PART_FILES))
+    run_dir = remote.ensure_run_artifacts(*_RUN, _BASE, cache_root=str(tmp_path))
+    assert (run_dir / "variant_results.csv").exists()
+    first_digest = _manifest(run_dir)["run_info"]
+
+    # A re-run replaces the run; what is cached is not read again ...
+    web = _serve(monkeypatch, _ReplacedWeb(_ATTEMPT_B))
+    remote.ensure_run_artifacts(*_RUN, _BASE, cache_root=str(tmp_path))
+    assert web.requested == []
+    # ... but asking for more checks run_info.json, finds another attempt, and
+    # starts again from its listing: nothing of the first attempt is left.
+    remote.ensure_run_artifacts(*_RUN, (*_BASE, "*.log"), cache_root=str(tmp_path))
+    assert _manifest(run_dir)["run_info"] != first_digest
+    assert set(_manifest(run_dir)["listing"]) == set(_ATTEMPT_B)
+    assert {p.name: p.read_bytes() for p in run_dir.iterdir() if not p.name.startswith(".")} == {
+        name: _ATTEMPT_B[name]
+        for name in ("run_info.json", "machine_info.json", "baseline_results.csv", "baseline.log")
+    }
+
+
 @pytest.mark.parametrize("artifacts", [None, _BASE])
 def test_windowed_runs_skip_one_still_uploading_and_strict_reads_say_so(
-    monkeypatch, tmp_path, artifacts,
+    protocol, monkeypatch, tmp_path, artifacts,
 ):
-    _on(monkeypatch, _NIGHT)
     tree = _build_tree()
     tree[_PART_RUN] = ["baseline_results.csv"]
-    _use_session(monkeypatch, FakeWeb(tree).get)
+    del tree[f"{_PART_RUN}/run_info.json"]
+    web = FakeWeb(tree)
+
+    def get(url, timeout=None):
+        if url.rstrip("/") not in web.tree:
+            raise _http_error(url, 404)
+        return web.get(url, timeout)
+
+    _use_session(monkeypatch, get)
     windowed = {"key4hep-2026-05-20": ["2026-05-20", "2026-05-21"]}
     runs = remote.fetch_runs_windowed(
         BASE, SIM, "DET", "PLAT", "single_e", windowed, cache_root=str(tmp_path / "lenient"),
@@ -1304,6 +1382,7 @@ def test_windowed_runs_skip_one_still_uploading_and_strict_reads_say_so(
         )
     assert [r["date"] for r in caught.value.partial] == ["2026-05-20"]
     assert "2026-05-21" in str(caught.value)
+
 
 
 def test_a_run_still_uploading_stops_no_other_download(monkeypatch):
