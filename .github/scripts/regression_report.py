@@ -12,6 +12,10 @@ sample, config, metric) series, and writes
 
 Exit code is 0 whenever the report was produced, regardless of its content —
 alert delivery is gated on report.json's ``summary`` block by the workflow.
+That includes a report with triples it could not read from EOS: each is in the
+report, and so in the email, as *not judged*, and is raised as a warning
+annotation on the CI run (:func:`annotate_unread`). A report that read no run
+at all says nothing about the night, so it is refused (:func:`require_a_read`).
 
 ``--as-of`` rebuilds a *past* night instead of the newest one, truncating every
 series to runs on or before it. That is how a report is regenerated after the
@@ -128,6 +132,37 @@ def outage_report(
     return report
 
 
+def require_a_read(report: NightlyReport) -> None:
+    """Refuses a report whose every triple could not be read from EOS.
+
+    Such a report holds no run, so it has no night of its own to file under,
+    and publishing it would replace whatever report EOS holds for the night it
+    guessed. Exits non-zero and publishes nothing; the next run of the report
+    rebuilds the night.
+    """
+    if report.groups and all(g.unread for g in report.groups):
+        raise SystemExit(
+            f"ERROR: none of the {len(report.groups)} triple(s) could be read "
+            "from EOS — publishing nothing"
+        )
+
+
+def annotate_unread(report: NightlyReport) -> None:
+    """One GitHub Actions warning per triple the report could not read.
+
+    The report itself says so and is published, so the job stays green — a red
+    report job would also hold back the dashboard deploy that waits on a
+    successful nightly — but the run's summary page names each triple.
+    """
+    for g in report.groups:
+        if not g.unread:
+            continue
+        # Workflow commands percent-decode their message; a URL in the reason
+        # may carry a literal "%".
+        message = "; ".join(g.job_failures).replace("%", "%25")
+        print(f"::warning title=Not judged::{g.detector}/{g.platform}/{g.sample}: {message}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -213,8 +248,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("either --data-url (or $K4BENCH_DATA_URL) or --data-dir is required")
 
     report = build(night=args.night)
+    require_a_read(report)
     if args.fanout_run_id and not report_covers_run(report, args.fanout_run_id):
         report = outage_report(build, report, args.fanout_run_id, tonight())
+        require_a_read(report)
+    annotate_unread(report)
 
     out = Path(args.output_dir)
     out.mkdir(parents=True, exist_ok=True)

@@ -732,6 +732,32 @@ run: its group takes `k4h_release`, `github_run_url` and `geometry_path` from
 that `run_info.json` and lists each configured label as
 `config '{label}' produced no results tonight`.
 
+### Triples a report could not read (`report.json`)
+
+The report reads each triple's trailing run window from WebEOS strictly: a
+stack listing or a run download the server does not answer — a cold listing
+that times out with a `504`, a dropped connection — is retried with backoff
+(`READ_BACKOFF_S` in `k4bench/regression/report_builder.py`, bounded per report
+by `READ_BACKOFF_BUDGET_S`). One that still fails does not shorten the triple's
+history, since a window short of a night is a different baseline: the triple,
+or the series it continues, is not judged at all. Its group carries no
+release, no verdict and no reliability, is dated on the report night, and
+holds one job failure starting `not judged:` that says why — its runs could not
+be read from EOS, or its report could not be built from them. That is a
+different statement from `no run uploaded for` (the runs may well be there)
+and from a failed config (a statement about the run), and readers tell it
+apart with `RunGroupReport.unread`. The email lists it with the night's
+failures, the CI run carries a warning annotation per triple, and the report
+job still exits 0. Blame never sees such a group: it has no regression to
+attribute, no release to sweep, and a job failure disqualifies it as a clean
+control.
+
+Discovery — which detectors, platforms and samples exist — is retried the same
+way but stays fatal when it still fails, since a triple discovery missed could
+not even be named. So is a report in which no triple could be read: it holds no
+run to name the night after, and `regression_report.py` exits non-zero without
+writing it.
+
 ### Metric history on confirmed verdicts (`report.json`)
 
 Every **confirmed** verdict in `report.json` carries a bounded `history`: a tail

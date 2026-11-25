@@ -23,6 +23,14 @@ from k4bench.layout import SIM
 #: each spelling the sentence out.
 MISSING_RUN_FAILURE = "no run uploaded for"
 
+#: Opening words of the job failure a report records for a triple it could not
+#: judge at all: its runs could not be read from the store, or its report could
+#: not be built from what was read. Distinct from :data:`MISSING_RUN_FAILURE` —
+#: the runs may well be there — and from a benchmark failure, which is a
+#: statement about the run. Part of the report's wire format like that one; the
+#: reader is :attr:`RunGroupReport.unread`.
+UNREAD_FAILURE = "not judged:"
+
 
 class Severity(str, Enum):
     """How much attention a metric verdict deserves.
@@ -553,9 +561,10 @@ class RunGroupReport:
     """All verdicts for one ``(detector, platform, sample)`` triple for the night.
 
     ``job_failures`` carries hard, group-level problems that have no metric
-    series to attach to (e.g. no run uploaded for tonight at all, or a config
-    that produced no results). ``notes`` carries non-alertable context (e.g.
-    tonight's run failed the reliability check, so metrics were not judged).
+    series to attach to (e.g. no run uploaded for tonight at all, a config
+    that produced no results, or runs the report could not read). ``notes``
+    carries non-alertable context (e.g. tonight's run failed the reliability
+    check, so metrics were not judged).
     ``reliable`` is tonight's host-reliability tri-state (the same per-run
     verdict as :func:`k4bench.results.reliability_evidence.run_reliability_map`;
     ``None`` = no evidence), persisted so report consumers — e.g. the
@@ -637,6 +646,20 @@ class RunGroupReport:
         report night.
         """
         return any(f.startswith(MISSING_RUN_FAILURE) for f in self.job_failures)
+
+    @property
+    def unread(self) -> bool:
+        """Whether this group stands in for a triple the report could not read.
+
+        Such a group holds no run: no release, no verdict, no reliability, only
+        the failure saying why (``UNREAD_FAILURE``), dated on the report night it
+        was not judged for (see
+        ``k4bench.regression.report_builder._finalize_report``). Like a
+        :attr:`missing_run` placeholder it describes no measurement, which is
+        what a consumer counting runs has to know; unlike one, it says nothing
+        about whether the triple ran.
+        """
+        return any(f.startswith(UNREAD_FAILURE) for f in self.job_failures)
 
 
 @dataclass

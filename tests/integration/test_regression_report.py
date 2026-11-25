@@ -16,6 +16,8 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
+import pytest
+
 from k4bench.layout import SIM, run_path
 
 _SCRIPTS = Path(__file__).resolve().parents[2] / ".github" / "scripts"
@@ -485,6 +487,46 @@ def _load_script(path):
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _unread(detector: str, night: str = "") -> object:
+    from k4bench.regression.models import UNREAD_FAILURE, RunGroupReport
+    return RunGroupReport(
+        detector=detector, platform=_PLAT, sample="single_e", k4h_release="",
+        run_date=night, run_id=night,
+        job_failures=[f"{UNREAD_FAILURE} its runs could not be read from EOS — "
+                      "504 for url: https://eos.invalid/%2B"],
+    )
+
+
+def test_regression_report_refuses_a_report_that_read_no_run():
+    from k4bench.regression.models import NightlyReport, RunGroupReport
+
+    cli = _load_script(_SCRIPT)
+    with pytest.raises(SystemExit, match="none of the 2 triple"):
+        cli.require_a_read(NightlyReport("", [_unread("DET"), _unread("OTHER")]))
+    ran = RunGroupReport(
+        detector="OTHER", platform=_PLAT, sample="single_e", k4h_release=_STACK,
+        run_date="2026-01-12", run_id="2026-01-12",
+    )
+    cli.require_a_read(NightlyReport("", [_unread("DET", "2026-01-12"), ran]))
+    cli.require_a_read(NightlyReport("", []))  # nothing to read is not a failed read
+
+
+def test_regression_report_annotates_each_triple_it_could_not_read(capsys):
+    from k4bench.regression.models import NightlyReport, RunGroupReport
+
+    cli = _load_script(_SCRIPT)
+    ran = RunGroupReport(
+        detector="OTHER", platform=_PLAT, sample="single_e", k4h_release=_STACK,
+        run_date="2026-01-12", run_id="2026-01-12",
+        job_failures=["config 'baseline' produced no results tonight"],
+    )
+    cli.annotate_unread(NightlyReport("", [_unread("DET", "2026-01-12"), ran]))
+    assert capsys.readouterr().out.splitlines() == [
+        f"::warning title=Not judged::DET/{_PLAT}/single_e: not judged: its runs could "
+        "not be read from EOS — 504 for url: https://eos.invalid/%252B"
+    ]
 
 
 def test_blame_report_refuses_incomplete_configured_ranking(tmp_path, monkeypatch):
