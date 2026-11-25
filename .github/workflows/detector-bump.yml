@@ -91,7 +91,7 @@ jobs:
       - uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8.1.3
         if: steps.bump.outputs.changed == 'true'
         with:
-          # Events from GITHUB_TOKEN start no workflows, so CI and PR-Agent run
+          # Events from GITHUB_TOKEN start no workflows, so CI runs
           # only once a maintainer marks this draft ready for review.
           token: ${{ github.token }}
           draft: true
