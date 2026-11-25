@@ -559,8 +559,9 @@ def _trend_notes(
     actually **ran** in the window, read off the report groups, so a config that
     hard-failed — judged on its return code, carrying no metric verdict — is
     named as failed rather than dropped or called un-benchmarked. *window_rows*
-    is the window's rows **before** the reliability filter, separating a
-    detector the toggle dropped from one that produced nothing. *hist* is what
+    is the window's rows **before** the run-scope filter, separating a
+    detector the toggle dropped (unreliable or failed runs) from one that
+    produced nothing. *hist* is what
     is plotted, and *last_run* names the night each detector really last ran, so
     one that has fallen out of the window is placed rather than merely missed —
     it must come from the unfiltered group history, not from the landscape's
@@ -595,8 +596,8 @@ def _trend_notes(
     notes: list[str] = []
     if dropped:
         notes.append(
-            "Every run in the window excluded as unreliable: "
-            f"{', '.join(dropped)}."
+            "Every run in the window failed or was excluded as unreliable "
+            f"(All runs shows them): {', '.join(dropped)}."
         )
     if no_metric:
         notes.append(
@@ -896,9 +897,11 @@ def _figure_toolbar(
                 show_confirmed, show_watch = render_flag_pills(
                     f"{key_prefix}det_ov_flags", label="Regressions",
                 )
+            # Only the trends draw failure markers; the landscape never does.
             unreliable, exclude_unreliable = render_run_reliability_filter(
                 inputs.rel_hist, key=f"{key_prefix}det_ov_exclude_unreliable",
                 inline=True,
+                failed=_failed_rows(inputs.hist_rows) if trends else None,
             )
     # Make the selected comparison shareable: ?tmetric=...&mmetric=...
     st.query_params["tmetric"] = time_metric
@@ -929,18 +932,17 @@ def _render_trends(
     belongs to the run that earned it, so excluding that run has to take its
     marker with it — and must not take the marker of a reliable rerun of the
     same tag. Failed measurements are kept apart throughout and plotted at their
-    own values. The unfiltered rows stay bound for the caption, which tells a
-    detector the toggle dropped from one that never ran in the window."""
+    own values, under All runs only. The unfiltered rows stay bound for the
+    caption, which tells a detector the toggle dropped from one that never ran
+    in the window."""
     rows = inputs.hist_rows
-    failed_rows = rows[rows["severity"] == Severity.FAILURE.value]
+    failed_rows = _failed_rows(rows)
     kept = rows
     if choice.exclude_unreliable:
-        kept = pd.concat([
-            drop_unreliable_runs(
-                rows[rows["severity"] != Severity.FAILURE.value], choice.unreliable,
-            ),
-            failed_rows,
-        ], ignore_index=True)
+        failed_rows = failed_rows.iloc[0:0]
+        kept = drop_unreliable_runs(
+            rows[rows["severity"] != Severity.FAILURE.value], choice.unreliable,
+        )
     hist = collapse_history(kept)
     plotted = pd.concat([hist, failed_rows], ignore_index=True)
 
@@ -1000,6 +1002,11 @@ def _render_trends(
         if tags else f"Latest night: **{inputs.latest_night}**."
     )
     st.caption(" ".join([span, *notes]))
+
+
+def _failed_rows(rows: pd.DataFrame) -> pd.DataFrame:
+    """The failed measurements among history *rows*, drawn as failure markers."""
+    return rows[rows["severity"] == Severity.FAILURE.value]
 
 
 def _render_landscape(

@@ -325,7 +325,7 @@ def _app(
 
 def _run(
     reports, reliability=None, same_tag=False, failed=False,
-    failed_first=False,
+    failed_first=False, all_runs=False,
 ) -> AppTest:
     at = AppTest.from_function(
         _app, args=(
@@ -336,6 +336,9 @@ def _run(
     )
     at.run()
     assert not at.exception, at.exception
+    if all_runs:
+        at.segmented_control(key="trends_exclude_unreliable").set_value("All runs").run()
+        assert not at.exception, at.exception
     return at
 
 
@@ -366,8 +369,22 @@ def test_render_shows_flag_pills_and_chart():
     assert len(at.get("plotly_chart")) == 1
 
 
-def test_render_shows_failed_value_as_failure_marker():
+def test_reliable_only_hides_a_failed_value():
+    # Reliable only, the default, takes the failed config off the chart; the
+    # selector is drawn for it even though no run is unreliable.
     at = _run({}, failed=True)
+    runs = at.segmented_control(key="trends_exclude_unreliable")
+    assert runs.label == "Runs · ❌ 1 failed"
+    assert runs.value == "Reliable only"
+    assert "markers" not in _marker_modes(at)
+    assert _data_range(at) == (
+        "Data range: **2026-05-20** → **2026-05-20** "
+        "(1 nightly tag · 1 hidden as unreliable or failed)"
+    )
+
+
+def test_render_shows_failed_value_as_failure_marker():
+    at = _run({}, failed=True, all_runs=True)
     specs = [json.loads(chart.proto.spec) for chart in at.get("plotly_chart")]
     curves = [
         trace
@@ -401,7 +418,9 @@ def test_render_shows_failed_value_as_failure_marker():
 def test_same_tag_failure_cannot_replace_or_hide_healthy_rerun(
     failed_first, healthy_wall, failed_wall,
 ):
-    at = _run({}, same_tag=True, failed=True, failed_first=failed_first)
+    at = _run(
+        {}, same_tag=True, failed=True, failed_first=failed_first, all_runs=True,
+    )
     spec = json.loads(at.get("plotly_chart")[0].proto.spec)
     curves = [t for t in spec["data"] if t.get("mode") == "lines+markers"]
     markers = [t for t in spec["data"] if t.get("mode") == "markers"]
@@ -501,7 +520,7 @@ def test_data_range_names_a_tag_hidden_as_unreliable():
     at = _run(_reports_stub(confirmed=False), {"2026-05-21": False})
     assert _data_range(at) == (
         "Data range: **2026-05-20** → **2026-05-20** "
-        "(1 nightly tag · 1 hidden as unreliable)"
+        "(1 nightly tag · 1 hidden as unreliable or failed)"
     )
     at.segmented_control(key="trends_exclude_unreliable").set_value("All runs").run()
     assert _data_range(at) == "Data range: **2026-05-20** → **2026-05-21** (2 nightly tags)"
@@ -514,9 +533,14 @@ def test_data_range_keeps_a_tag_with_a_reliable_rerun():
 
 
 def test_data_range_keeps_a_tag_shown_by_its_failure_marker():
-    # A failed config is plotted as a marker whatever its host verdict, so its
-    # tag is on the chart.
+    # Under All runs a failed config is plotted as a marker whatever its host
+    # verdict, so its tag is on the chart; Reliable only hides it.
     at = _run(_reports_stub(confirmed=False), {"2026-05-21": False}, failed=True)
+    assert _data_range(at) == (
+        "Data range: **2026-05-20** → **2026-05-20** "
+        "(1 nightly tag · 1 hidden as unreliable or failed)"
+    )
+    at.segmented_control(key="trends_exclude_unreliable").set_value("All runs").run()
     assert _data_range(at) == "Data range: **2026-05-20** → **2026-05-21** (2 nightly tags)"
 
 

@@ -360,10 +360,19 @@ def test_relative_mode_explains_failed_measurement_without_a_baseline():
     ).run()
     at.segmented_control(key="det_ov_scale").set_value("Relative %").run()
 
+    # Reliable only, the default, hides the failed measurements and says so.
+    assert not at.exception, at.exception
+    scope = at.segmented_control(key="det_ov_exclude_unreliable")
+    assert scope.value == "Reliable only"
+    assert "❌" in scope.label and "failed" in scope.label
+    captions = "\n".join(str(c.value) for c in at.caption)
+    assert "failed or was excluded as unreliable (All runs shows them): SiD" in captions
+
+    scope.set_value("All runs").run()
     assert not at.exception, at.exception
     captions = "\n".join(str(c.value) for c in at.caption)
     assert "cannot be shown in Relative % without a successful baseline: SiD" in captions
-    assert "excluded as unreliable: SiD" not in captions
+    assert "excluded as unreliable" not in captions
 
 
 def test_narrower_window_still_renders():
