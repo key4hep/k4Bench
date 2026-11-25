@@ -25,9 +25,49 @@ def test_command_times_the_program_with_one_quoted_argument_per_line():
     assert cmd.endswith("    plain")
 
 
-def test_setup_script_is_sourced_before_the_program(tmp_path):
-    cmd = timed_shell_command(["prog"], tmp_path / "setup env.sh")
-    assert cmd.startswith(f"source '{tmp_path / 'setup env.sh'}'\n")
+def test_program_and_after_setup_run_in_the_environment_the_setup_script_left(tmp_path):
+    setup = tmp_path / "setup env.sh"
+    setup.write_text("export K4BENCH_TEST_STACK=from-setup\n")
+    log = tmp_path / "run.log"
+    proc = run_timed(
+        timed_shell_command(
+            ["printenv", "K4BENCH_TEST_STACK"], setup,
+            after_setup='echo "after setup: $K4BENCH_TEST_STACK"\n',
+        ),
+        env=dict(os.environ),
+        log_path=log,
+    )
+    assert proc.returncode == 0
+    lines = log.read_text().splitlines()
+    assert lines[:2] == ["after setup: from-setup", "from-setup"]
+
+
+@pytest.mark.parametrize(
+    ("setup_body", "status"),
+    [(None, 1), ("export K4BENCH_TEST_STACK=half-set\nreturn 3\n", 3)],
+    ids=["missing", "failing"],
+)
+def test_failed_setup_script_runs_neither_after_setup_nor_the_program(
+    tmp_path, setup_body, status,
+):
+    setup = tmp_path / "setup env.sh"
+    if setup_body is not None:
+        setup.write_text(setup_body)
+    ran, after = tmp_path / "program ran", tmp_path / "after setup ran"
+    log = tmp_path / "run.log"
+    proc = run_timed(
+        timed_shell_command(["touch", str(ran)], setup, after_setup=f"touch '{after}'\n"),
+        env=dict(os.environ),
+        log_path=log,
+    )
+    assert proc.returncode == status
+    assert not ran.exists()
+    assert not after.exists()
+    assert (
+        f"ERROR: sourcing {setup} failed (exit {status}); touch was not run"
+        in log.read_text()
+    )
+    assert proc.metrics["wall_time_s"] is None
 
 
 def test_output_reaches_the_log_and_the_time_report_is_parsed(tmp_path):
