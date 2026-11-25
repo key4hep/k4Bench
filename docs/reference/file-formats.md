@@ -821,14 +821,34 @@ could be read: it holds no run to name the night after, and
 An unread triple also changes what the report can say about the nightly
 fan-out (`Coverage` in `k4bench/regression/report_builder.py`):
 
-- **Covered:** a triple read names the fan-out's CI run, and the report is
+- **Covered:** a triple names the fan-out as its nightly run, and the report is
   published.
+- **History only:** every triple was read and the fan-out appears only in the
+  history of older releases filed on the same night. The job succeeds without
+  publishing a report.
 - **Absent:** every triple was read and none names it, so the fan-out uploaded
   nothing. Tonight is reported as an outage, as described above.
-- **Unknown:** none of the triples read names it, but some could not be read,
-  and tonight's uploads may be exactly those. Nothing is published and the
+- **Unknown:** an unread triple could name the fan-out as its nightly run, even
+  if another triple mentions it in history. Nothing is published and the
   job exits non-zero. A re-run of the report job rebuilds the night once EOS
   answers.
+
+Two releases can be benchmarked on one date: a pinned older release
+dispatched, or an old nightly re-run, on a night the current release ran too.
+Their runs are filed under the same date in different release directories, so
+they share a run id (`run_id`, the date directory's name). A run is therefore
+named by its run id *and* the release it measured: a verdict's `run_id` with
+its `run_date`, and likewise its `onset_*` and `last_accepted_*` pairs. Failure
+and unjudged verdicts name the release too; reports written before they did
+carry the run date there, and readers take the group's `k4h_release` instead.
+
+A triple's run on the report night is the one that measured the newest
+release; the other is a measurement of its own release and enters the history
+there. The group lists the CI runs of such runs in `history_run_urls`, a key
+present only when there are any. A pinned dispatch of an older release on a
+night a newer release already ran is therefore never that night's report: its
+report job finds its runs only there, publishes nothing and succeeds, and the
+night stays the one the newer run's fan-out reported.
 
 ### Metric history on confirmed verdicts (`report.json`)
 

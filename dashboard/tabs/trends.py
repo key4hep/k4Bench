@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from k4bench.analysis.loader import failed_config_mask, with_cpu_efficiency
+from k4bench.analysis.loader import failed_config_mask, run_key, run_keys, with_cpu_efficiency
 from k4bench.analysis.plots._theme import _TEMPLATE
 from k4bench.metrics import metric_title
 from remote_cache import cached_fetch_reports
@@ -66,14 +66,16 @@ def _severity_lookup(
     sample: str | None,
     run_ids: tuple[str, ...],
 ) -> dict[tuple[str, str, str], str]:
-    """``{(label, run_id, metric): severity}`` for the selected detector.
+    """``{(label, run key, metric): severity}`` for the selected detector (see
+    :func:`~k4bench.analysis.loader.run_key`).
 
     Reads *suite*'s precomputed nightly reports for *run_ids* (report dates — a run
     dir's name is its report date) and keeps the run-level verdicts scoped to
     this detector/platform/sample. Keyed on the **run** that earned the verdict,
     because that run is what the reliability filter drops: a flag is evidence
     about one measurement, and joining on the nightly tag instead would let it
-    survive on a sibling run of the same tag after its own run was excluded.
+    survive on a sibling run of the same tag after its own run was excluded —
+    or on a run of another release filed under the same date.
     :func:`_tag_severity` reduces this to the plotted point afterwards, over the
     runs still on the chart.
 
@@ -92,7 +94,7 @@ def _severity_lookup(
             for v in g.verdicts:
                 if v.sub_detector is not None:
                     continue
-                key = (v.label, v.run_id, v.metric)
+                key = (v.label, run_key(v.run_id, v.run_date), v.metric)
                 if SEVERITY_RANK.get(v.severity.value, 0) > SEVERITY_RANK.get(lookup.get(key), 0):
                     lookup[key] = v.severity.value
     return lookup
@@ -131,14 +133,14 @@ def _tag_severity(
     if "run_id" not in runs.columns:
         return {}
     tags = {
-        (label, run_id): release
-        for label, run_id, release in zip(
-            runs["label"], runs["run_id"], runs["k4h_release"]
+        (label, run): release
+        for label, run, release in zip(
+            runs["label"], run_keys(runs), runs["k4h_release"], strict=True,
         )
     }
     reduced: dict[tuple[str, str, str], str] = {}
-    for (label, run_id, metric), sev in per_run.items():
-        release = tags.get((label, run_id))
+    for (label, run, metric), sev in per_run.items():
+        release = tags.get((label, run))
         if release is None:
             continue
         key = (label, release, metric)

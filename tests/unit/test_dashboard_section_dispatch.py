@@ -76,7 +76,7 @@ def test_the_history_is_read_only_when_a_view_asks_for_it():
     # The view's own files, then the results that judge them and the hosts.
     assert asked[0] == EVENTS and set(asked[1:]) == {RUN_BASE}
     assert set(trend["label"]) == {"baseline", "variant_truth_tracking"}
-    assert reliability == {"reco_run": True}
+    assert reliability == {"reco_run@2026-10-17": True}
     load()
     assert len(asked) == 4  # the trend again, the results and reliability kept
 

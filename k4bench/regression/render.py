@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from k4bench.labels import pretty_platform, pretty_sample
@@ -342,6 +343,11 @@ def to_json(report: NightlyReport) -> dict:
     re-deriving anything.
     """
     data = _sanitize(dataclasses.asdict(report))
+    for group in data["groups"]:
+        # Present only on a night that filed an older release's run beside
+        # tonight's, the rare case it describes.
+        if not group["history_run_urls"]:
+            del group["history_run_urls"]
     if not report.night:
         # Present only on an outage night, where it *is* the report's date;
         # everywhere else the newest run date is the answer, and an empty key
@@ -584,6 +590,25 @@ def _unjudged(raw: object) -> Unjudged | None:
         return None
 
 
+_RELEASE_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _verdict_run_date(v: dict, g: dict) -> str | None:
+    """A verdict's ``run_date``: the release its run measured.
+
+    Reports written before failure and unjudged verdicts recorded it carry
+    their run date there instead. Every verdict of a group is of tonight's
+    run, whose release the group names, so such a verdict is given that
+    release."""
+    run_date = v.get("run_date")
+    legacy = (
+        Severity(v["severity"]) in (Severity.FAILURE, Severity.UNKNOWN)
+        and run_date == v.get("run_id") == g.get("run_id")
+    )
+    release = _RELEASE_DATE.search(str(g.get("k4h_release") or ""))
+    return release.group(0) if legacy and release else run_date
+
+
 def from_json(data: dict) -> NightlyReport:
     """Rebuild a :class:`NightlyReport` from :func:`to_json` output (used by
     the dashboard when reading ``reports/{suite}/{night}/report.json`` off
@@ -593,6 +618,7 @@ def from_json(data: dict) -> NightlyReport:
         verdicts = [
             MetricVerdict(**{
                 **{k: val for k, val in v.items() if k in _VERDICT_FIELDS},
+                "run_date": _verdict_run_date(v, g),
                 "severity": Severity(v["severity"]),
                 "direction": Direction(v["direction"]),
                 "history": _history(v.get("history")),
@@ -612,6 +638,7 @@ def from_json(data: dict) -> NightlyReport:
             reliable=g.get("reliable"),
             github_run_url=g.get("github_run_url"),
             geometry_path=str(g.get("geometry_path") or ""),
+            history_run_urls=tuple(g.get("history_run_urls") or ()),
         ))
     return NightlyReport(
         generated_at=data.get("generated_at", ""), groups=groups,

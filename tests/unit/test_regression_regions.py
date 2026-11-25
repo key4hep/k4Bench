@@ -102,11 +102,35 @@ def test_failed_rerun_does_not_contaminate_release_region_level(tmp_path):
         base_release="2026-07-14",
         onset_release="2026-07-18",
         judgeable_configs={
-            ("2026-07-14", "baseline"),
-            ("2026-07-18", "baseline"),
+            ("2026-07-14@2026-07-14", "baseline"),
+            ("2026-07-18@2026-07-18", "baseline"),
         },
     )
 
+    assert [(d.base, d.onset, d.delta) for d in deltas] == [(1.0, 4.0, 3.0)]
+
+
+def test_a_failed_rerun_of_an_older_release_leaves_the_same_dated_run_judgeable(tmp_path):
+    # Release 07-14 re-benchmarked on 07-18 failed; release 07-18's run that
+    # night did not. They share the run id 2026-07-18, and only the failed one
+    # is a gap.
+    older = tmp_path / "key4hep-2026-07-14"
+    newer = tmp_path / "key4hep-2026-07-18"
+    dirs = [
+        _write_run(older, "2026-07-14", "2026-07-14", {"HCAL": 1.0}),
+        _write_run(older, "2026-07-18", "2026-07-14", {"HCAL": 101.0}),
+        _write_run(newer, "2026-07-18", "2026-07-18", {"HCAL": 4.0}),
+    ]
+    deltas = region_deltas(
+        dirs,
+        label="baseline",
+        base_release="2026-07-14",
+        onset_release="2026-07-18",
+        judgeable_configs={
+            ("2026-07-14@2026-07-14", "baseline"),
+            ("2026-07-18@2026-07-18", "baseline"),
+        },
+    )
     assert [(d.base, d.onset, d.delta) for d in deltas] == [(1.0, 4.0, 3.0)]
 
 

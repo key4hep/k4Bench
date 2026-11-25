@@ -525,7 +525,9 @@ def _synthetic_history_app(dashboard_dir, event, algorithms) -> None:
 
     # The selected run has no algorithm timing; the window has.
     event_timing.render(
-        None, lambda: (event, {"r0": True, "r1": True, "r2": False}), True,
+        None,
+        lambda: (event, {"r0@2026-10-16": True, "r1@2026-10-16": True, "r2@2026-10-17": False}),
+        True,
         components=None, load_algorithm_trend=lambda: algorithms,
     )
 

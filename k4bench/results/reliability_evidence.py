@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from k4bench.analysis.loader import failed_config_mask, with_cpu_efficiency
+from k4bench.analysis.loader import failed_config_mask, run_key, run_keys, with_cpu_efficiency
 from k4bench.results.reliability import ReliabilityVerdict, evaluate_reliability
 
 #: Minimum number of historical per-config samples before a context-switch
@@ -154,8 +154,10 @@ def run_reliability_map(
     host condition for the whole run, so the same verdict applies to all of that
     run's configs. This joins the per-run machine conditions in
     *trend_machine_df* with the per-config metrics in *trend_results_df* (on
-    ``run_id``) and returns ``{run_id: reliable}``, where ``reliable`` is the
-    :attr:`ReliabilityVerdict.reliable` tri-state (``True``/``False``/``None``).
+    the run key, :func:`~k4bench.analysis.loader.run_key`, so two releases
+    benchmarked on one date stay two runs) and returns ``{run key: reliable}``,
+    where ``reliable`` is the :attr:`ReliabilityVerdict.reliable` tri-state
+    (``True``/``False``/``None``).
 
     The context-switch baseline is left unset here (advisory only, so it never
     changes the pass/fail verdict), keeping this independent of run history.
@@ -166,7 +168,7 @@ def run_reliability_map(
     # a fresh O(n_rows) scan of trend_results_df per run.
     have_results = _is_valid_df(trend_results_df) and "run_id" in trend_results_df.columns
     results_by_run = (
-        {run_id: group for run_id, group in trend_results_df.groupby("run_id")}
+        dict(iter(trend_results_df.groupby(run_keys(trend_results_df))))
         if have_results else {}
     )
     verdicts: dict[str, bool | None] = {}
@@ -174,10 +176,11 @@ def run_reliability_map(
         run_id = mrow.get("run_id")
         if not run_id:
             continue
+        key = run_key(run_id, mrow.get("x_date"))
         # A missing numeric column arrives as NaN; coerce to None so the
         # conservative check treats it as *unknown* rather than a failure.
         machine = {k: (None if pd.isna(v) else v) for k, v in mrow.items()}
-        results = results_by_run.get(run_id)
+        results = results_by_run.get(key)
         verdict = evaluate_reliability(**reliability_evidence(machine, results))
-        verdicts[run_id] = verdict.reliable
+        verdicts[key] = verdict.reliable
     return verdicts

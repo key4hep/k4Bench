@@ -30,7 +30,9 @@ made by the named Actions run, or it is last night's report again and tonight
 is reported as an outage instead (see :func:`outage_report`). That takes every
 triple having been read: when some could not be, tonight's uploads may be among
 them, so nothing is published and the exit code is non-zero
-(:class:`~k4bench.regression.report_builder.Coverage`).
+(:class:`~k4bench.regression.report_builder.Coverage`). If every triple was read
+and only older releases' history names the fan-out, the job succeeds without
+writing a report.
 """
 from __future__ import annotations
 
@@ -216,7 +218,8 @@ def main(argv: list[str] | None = None) -> int:
              "runs is last night's again: tonight is then reported as an "
              "outage, as with --night, or nothing is written and the exit "
              "code is non-zero — as it is when triples that could not be read "
-             "leave that unknown. Omit for a manual rebuild of whatever EOS holds",
+             "leave that unknown. A fan-out found only in older releases' history "
+             "succeeds without a report. Omit for a manual rebuild of whatever EOS holds",
     )
     args = parser.parse_args(argv)
     # Not in the exclusive group above: argparse checks only flags actually
@@ -261,12 +264,20 @@ def main(argv: list[str] | None = None) -> int:
         coverage = fanout_coverage(report, args.fanout_run_id)
         if coverage is Coverage.UNKNOWN:
             raise SystemExit(
-                f"ERROR: no triple read names run {args.fanout_run_id}, but "
+                f"ERROR: no triple read names run {args.fanout_run_id} as its nightly run, but "
                 f"{sum(g.unread for g in report.groups)} triple(s) could not be "
-                "read from EOS, and its uploads may be among them — whether it "
-                "uploaded anything is unknown, so publishing nothing. Re-run the "
+                "read from EOS and may hold a nightly run from this fan-out. "
+                "Publishing nothing. Re-run the "
                 "report job to rebuild the night once EOS answers."
             )
+        if coverage is Coverage.HISTORY_ONLY:
+            print(
+                f"run {args.fanout_run_id} benchmarked only releases older than "
+                f"the {report.report_night} run filed beside them: their runs "
+                "are history of those releases, so there is no report to "
+                "publish for it.", file=sys.stderr,
+            )
+            return 0
         if coverage is Coverage.ABSENT:
             report = outage_report(build, report, args.fanout_run_id, tonight())
             require_a_read(report)

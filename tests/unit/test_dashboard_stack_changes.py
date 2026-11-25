@@ -1029,7 +1029,7 @@ def test_metric_history_keeps_failed_value_and_healthy_sibling(monkeypatch):
     failed_df, _reliability, failed_configs, orphan_configs = _history(_confirmed())
     assert list(failed_df["run_id"]) == ["2026-06-26", "2026-06-27"]
     assert list(failed_df["wall_time_s"]) == [100.0, 5.0]
-    assert failed_configs == {("2026-06-27", "baseline")}
+    assert failed_configs == {("2026-06-27@2026-06-27", "baseline")}
     assert orphan_configs == set()
 
     sibling_df, _reliability, _failed_configs, _orphan_configs = _history(
@@ -1076,7 +1076,7 @@ def test_metric_history_keeps_failed_event_value_for_failure_marker(monkeypatch)
     event_df, _reliability, failed_configs, orphan_configs = history
     assert list(event_df["run_id"]) == ["2026-06-26", "2026-06-27"]
     assert list(event_df["mean_time_s"]) == [1.0, 0.05]
-    assert failed_configs == {("2026-06-27", "baseline")}
+    assert failed_configs == {("2026-06-27@2026-06-27", "baseline")}
     assert orphan_configs == set()
 
 
@@ -1108,7 +1108,7 @@ def test_failure_only_metric_history_keeps_reason_metadata(monkeypatch):
     assert history is not None
     frame, _reliability, failed_configs, orphan_configs = history
     assert list(frame["wall_time_s"]) == [5.0]
-    assert failed_configs == {("2026-06-27", "baseline")}
+    assert failed_configs == {("2026-06-27@2026-06-27", "baseline")}
     assert orphan_configs == set()
 
     warnings = []
@@ -1145,8 +1145,8 @@ def test_failure_only_metric_history_keeps_reason_metadata(monkeypatch):
 def test_drilldown_shows_another_runs_failure_under_all_runs_only(
     monkeypatch, reliable_only, badges,
 ):
-    # The flagged 06-27 run is healthy; 06-26 failed. Reliable only hides that
-    # failure's marker, All runs shows it, and the line is the same either way.
+    # The flagged 06-27 release is healthy. The older 06-26 release failed
+    # on the same filing date. All runs shows its failure marker.
     import pandas as pd
 
     from tabs import _reliability as rel
@@ -1154,14 +1154,16 @@ def test_drilldown_shows_another_runs_failure_under_all_runs_only(
 
     days = ["2026-06-25", "2026-06-26", "2026-06-27"]
     results = pd.DataFrame({
-        "run_id": days, "x_date": pd.to_datetime(days), "label": "baseline",
+        "run_id": [days[0], days[2], days[2]], "x_date": pd.to_datetime(days), "label": "baseline",
         "returncode": [0, 139, 0], "wall_time_s": [5.0, 1.0, 6.0],
     })
     monkeypatch.setattr(trend, "cached_load_trend_results", lambda _dirs: results)
     monkeypatch.setattr(trend, "cached_load_trend_machine_info", lambda _dirs: None)
     history = trend._metric_history(
         _confirmed(), "url", "sim", "cache",
-        list_run_dates=lambda *_args: {f"key4hep-{d}": [d] for d in days},
+        list_run_dates=lambda *_args: {
+            f"key4hep-{day}": [run] for day, run in zip(days, results["run_id"])
+        },
         fetch_runs_windowed=lambda *_args: ("run-dir",),
     )
     scopes = []
@@ -1228,7 +1230,7 @@ def test_orphan_event_history_reports_missing_result_record(monkeypatch):
     assert history is not None
     frame, _reliability, failed_configs, orphan_configs = history
     assert frame.empty and failed_configs == set()
-    assert orphan_configs == {("2026-06-27", "baseline")}
+    assert orphan_configs == {("2026-06-27@2026-06-27", "baseline")}
     reason = trend._missing_run_reason(
         frame,
         set(),
@@ -1321,12 +1323,10 @@ def test_hidden_marker_note_names_the_actual_reason():
     # Four ways a marker goes missing, and the reader can only act on the right
     # one — fix the config, re-enable the run, widen the window, or neither.
     absent = fetched[fetched["run_id"] != "2026-06-27"]
-    failed = _missing_run_reason(
-        absent, {"2026-06-27"}, verdict,
-        {("2026-06-27", "baseline")},
-    )
+    run = "2026-06-27@2026-06-27"  # the run's key: its run id and release
+    failed = _missing_run_reason(absent, {run}, verdict, {(run, "baseline")})
     assert "returncode" in failed and "not judged" in failed
-    assert "excluded" in _missing_run_reason(fetched, {"2026-06-27"}, verdict)
+    assert "excluded" in _missing_run_reason(fetched, {run}, verdict)
     assert "outside" in _missing_run_reason(
         absent, set(), verdict
     )

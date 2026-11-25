@@ -17,7 +17,10 @@ from k4bench.analysis.loader import (
     load_event_timing,
     load_region_timing,
     load_results,
+    newest_run_key,
     recorded_config_rows,
+    run_key,
+    run_keys,
     run_suite,
     with_cpu_efficiency,
 )
@@ -85,6 +88,37 @@ def test_cpu_efficiency_requires_total_cpu_and_preserves_input():
     assert pd.isna(derived.loc["zero-wall", "cpu_efficiency"])
     incomplete = df.drop(columns="sys_cpu_s")
     assert with_cpu_efficiency(incomplete) is incomplete
+
+
+class TestRunKeys:
+    """Two releases benchmarked on one date are two runs under one run id; the
+    release each measured tells them apart."""
+
+    def _runs(self) -> pd.DataFrame:
+        return pd.DataFrame({
+            "run_id": ["2026-07-20", "2026-07-21", "2026-07-21", "legacy"],
+            "x_date": pd.to_datetime(["2026-07-20", "2026-07-20", "2026-07-21", None]),
+        })
+
+    def test_a_run_key_is_its_run_id_and_release(self):
+        assert run_key("2026-07-21", pd.Timestamp("2026-07-20")) == "2026-07-21@2026-07-20"
+        assert run_key("2026-07-21", "2026-07-20") == "2026-07-21@2026-07-20"
+        assert run_key("2026-07-21", None) == "2026-07-21"
+
+    def test_rows_are_keyed_by_run_and_release(self):
+        assert list(run_keys(self._runs())) == [
+            "2026-07-20@2026-07-20", "2026-07-21@2026-07-20", "2026-07-21@2026-07-21",
+            "legacy",
+        ]
+        assert list(run_keys(self._runs().drop(columns="x_date"))) == [
+            "2026-07-20", "2026-07-21", "2026-07-21", "legacy",
+        ]
+
+    def test_the_newest_release_filed_under_a_date_is_that_nights_run(self):
+        runs = self._runs()
+        assert newest_run_key([runs], "2026-07-21") == "2026-07-21@2026-07-21"
+        assert newest_run_key([None, runs.iloc[[1]]], "2026-07-21") == "2026-07-21@2026-07-20"
+        assert newest_run_key([runs], "never-ran") == "never-ran"
 
 
 class TestFailedConfigMask:
@@ -156,6 +190,22 @@ class TestFailedConfigMask:
             ("night-1", "healthy"),
             ("night-2", "failed"),
         ]
+
+    def test_a_failure_in_one_release_leaves_the_same_dated_run_of_another_judgeable(self):
+        # Release 07-20 re-benchmarked on 07-21 crashed; release 07-21's run that
+        # night did not. They share the run id 2026-07-21 and nothing else.
+        releases = pd.to_datetime(["2026-07-20", "2026-07-21"])
+        results = pd.DataFrame({
+            "run_id": ["2026-07-21", "2026-07-21"],
+            "x_date": releases,
+            "label": ["baseline", "baseline"],
+            "returncode": [139, 0],
+        })
+        derived = results.drop(columns="returncode").assign(mean_time_s=[0.1, 10.0])
+
+        assert failed_config_keys(results) == {("2026-07-21@2026-07-20", "baseline")}
+        filtered = judgeable_config_rows(derived, results)
+        assert list(filtered["mean_time_s"]) == [10.0]
 
     def test_recorded_rows_keep_failure_for_diagnostics_but_drop_orphan(self):
         results = pd.DataFrame({

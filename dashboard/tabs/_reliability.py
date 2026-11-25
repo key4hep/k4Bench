@@ -10,6 +10,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from k4bench.analysis.loader import run_keys
 from k4bench.results.reliability_evidence import reliability_verdict as _reliability_verdict
 
 
@@ -159,9 +160,9 @@ def resolve_reliability_filter(
 
     Shared by every tab that plots historical (multi-run) data so the run-scope
     choice behaves identically everywhere. *df* holds the judgeable rows and
-    must carry a ``run_id`` column; *reliability* is the per-run verdict map from
-    :func:`run_reliability_map` (``{run_id: reliable}``). *failed* holds the
-    failed configs' rows the caller marks as failures, kept apart from *df*.
+    carries ``run_id`` and, when available, the release date ``x_date``.
+    *reliability* maps their :func:`~k4bench.analysis.loader.run_key` to a verdict.
+    *failed* holds the failed configs' rows the caller marks as failures.
     When no run in *df* is flagged unreliable — including when *reliability* is
     empty/``None`` (e.g. local mode, or no machine info) — and *failed* is empty
     or ``None``, both frames are returned unchanged and nothing is drawn.
@@ -179,8 +180,8 @@ def resolve_reliability_filter(
     row. It is intentionally passed through to :func:`render_reliability_scope`
     only when a selector is needed, so reliable-only views leave no empty chrome.
 
-    The returned frames are *df* and *failed* as they are to be plotted; the set
-    is empty whenever no unreliable run was dropped — none in *df*, or
+    The returned frames are *df* and *failed* as they are to be plotted; the set of
+    excluded run keys is empty whenever no unreliable run was dropped — none in *df*, or
     **All runs** selected — so a caller can treat it as "the runs that are no
     longer on the chart" without also reading the widget state. Callers that plot
     a *reduction* over several runs need it: a flag earned by one run must not
@@ -190,18 +191,19 @@ def resolve_reliability_filter(
     """
     # Without a run_id to join verdicts on, or a verdict map at all (local mode /
     # no machine info), no run is flagged unreliable.
-    unreliable_ids = (
-        {rid for rid in df["run_id"].unique() if reliability.get(rid) is False}
-        if "run_id" in df.columns and reliability else set()
-    )
+    unreliable = pd.Series(False, index=df.index)
+    unreliable_ids = set()
+    if "run_id" in df.columns and reliability:
+        runs = run_keys(df)
+        unreliable_ids = {run for run in runs.unique() if reliability.get(run) is False}
+        unreliable = runs.isin(unreliable_ids)
     n_failed = failed_count(failed)
     if not unreliable_ids and not n_failed:
         return df, set(), failed
 
     exclude = render_reliability_scope(
         len(unreliable_ids),
-        _tag_dates(df.loc[df["run_id"].isin(unreliable_ids)], date_col)
-        if unreliable_ids else [],
+        _tag_dates(df.loc[unreliable], date_col) if unreliable_ids else [],
         key=key,
         n_failed=n_failed,
         failed_dates=_tag_dates(failed, date_col) if n_failed else [],
@@ -210,7 +212,7 @@ def resolve_reliability_filter(
     if not exclude:
         return df, set(), failed
     if unreliable_ids:
-        df = df[~df["run_id"].isin(unreliable_ids)]
+        df = df[~unreliable]
     if failed is not None:
         failed = failed.iloc[0:0]
     if df.empty:
@@ -226,7 +228,10 @@ def failed_count(failed: pd.DataFrame | None) -> int:
     pairs, or its rows when it does not name them."""
     if failed is None or failed.empty:
         return 0
-    keys = [c for c in ("run_id", "run_night", "detector", "label") if c in failed.columns]
+    keys = [
+        c for c in ("run_id", "x_date", "run_night", "detector", "label")
+        if c in failed.columns
+    ]
     return len(failed[keys].drop_duplicates()) if keys else len(failed)
 
 

@@ -31,6 +31,8 @@ from k4bench.analysis.loader import (
     config_keys,
     failed_config_keys,
     recorded_config_rows,
+    run_key,
+    run_keys,
     with_cpu_efficiency,
 )
 from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
@@ -277,6 +279,14 @@ def source_frame(
     return loaders[name](run_dirs)
 
 
+def _verdict_run(verdict: MetricVerdict) -> str:
+    """The run key of the run *verdict* was issued for: its run id and the
+    release it measured (see :func:`~k4bench.analysis.loader.run_key`). A run
+    missing from the fetched data stays that run, never another release filed
+    under the same date."""
+    return run_key(verdict.run_id, verdict.run_date)
+
+
 def _missing_run_reason(
     fetched: pd.DataFrame,
     excluded_runs: set[str],
@@ -291,30 +301,23 @@ def _missing_run_reason(
     orphaned metric file with no result record, an exclusion they chose and can
     undo, a window they can widen, and a missing metric value. Collapsing them
     into one guess would let a partial download read as a reliability problem.
+
+    *failed_configs* and *orphan_configs* are ``(run key, label)`` pairs and
+    *excluded_runs* run keys (see :func:`~k4bench.analysis.loader.run_key`).
     """
-    failed = {
-        (str(run_id), str(label))
-        for run_id, label in (failed_configs or set())
-    }
-    if (str(verdict.run_id), str(verdict.label)) in failed:
+    run = _verdict_run(verdict)
+    if (run, str(verdict.label)) in (failed_configs or set()):
         return (
             "came from a config with a non-zero, missing, or invalid returncode, "
             "so its metrics were not judged"
         )
-    orphaned = {
-        (str(run_id), str(label))
-        for run_id, label in (orphan_configs or set())
-    }
-    if (str(verdict.run_id), str(verdict.label)) in orphaned:
+    if (run, str(verdict.label)) in (orphan_configs or set()):
         return (
             "had no matching result record, so its metrics were not judged"
         )
-    if str(verdict.run_id) in {str(r) for r in excluded_runs}:
+    if run in excluded_runs:
         return "was excluded by the unreliable-run filter above"
-    present = (
-        "run_id" in fetched.columns
-        and (fetched["run_id"].astype(str) == str(verdict.run_id)).any()
-    )
+    present = "run_id" in fetched.columns and (run_keys(fetched) == run).any()
     if not present:
         return "falls outside the fetched window"
     return f"recorded no {verdict.metric} value"
@@ -368,13 +371,15 @@ def render_metric_trend(
 
     series_key = _series_key(verdict)
     fetched = df
+    verdict_run = _verdict_run(verdict)
+    runs = run_keys(df)
     failed_mask = pd.Series([
-        (str(run_id), str(label)) in failed_configs
-        for run_id, label in zip(df["run_id"], df["label"], strict=True)
+        (run, str(label)) in failed_configs
+        for run, label in zip(runs, df["label"], strict=True)
     ], index=df.index)
     # Reliable only hides failed configs' markers, except the flagged run's
     # own: a failure verdict's chart exists to show that run.
-    flagged_run = df["run_id"].astype(str) == str(verdict.run_id)
+    flagged_run = runs == verdict_run
     judgeable_df, excluded_runs, failed_df = resolve_reliability_filter(
         df.loc[~failed_mask], reliability,
         key=f"{widget_namespace}_drill_excl_{series_key}",
@@ -417,9 +422,7 @@ def render_metric_trend(
                 fillcolor=_BASELINE_FILL, line_width=0,
             )
 
-    verdict_failed = (
-        str(verdict.run_id), str(verdict.label)
-    ) in failed_configs
+    verdict_failed = (verdict_run, str(verdict.label)) in failed_configs
     if verdict.severity is Severity.CONFIRMED and not verdict_failed:
         onset = _blame.onset_point(judgeable_df, verdict)
         if onset is None and verdict.onset_run_id is None:
@@ -444,6 +447,7 @@ def render_metric_trend(
         failed_df if verdict_failed else judgeable_df,
         verdict.run_id,
         verdict.metric,
+        verdict.run_date or None,
     )
     if flagged is not None and not verdict_failed:
         add_severity_markers(

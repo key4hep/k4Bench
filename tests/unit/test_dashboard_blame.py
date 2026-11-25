@@ -145,6 +145,26 @@ def test_run_point_matches_the_exact_run_not_its_release_siblings():
     )
 
 
+def test_run_point_tells_apart_two_releases_filed_under_one_run_id():
+    # Release 06-25 re-benchmarked on 06-27, the night release 06-27 ran: one
+    # run id, two runs. The release the verdict names picks its own, and an
+    # excluded one is not replaced by its namesake.
+    df = pd.DataFrame({
+        "run_id": ["2026-06-27", "2026-06-27"],
+        "x_date": pd.to_datetime(["2026-06-25", "2026-06-27"]),
+        "wall_time_s": [5.0, 6.0],
+    })
+    assert _blame.run_point(df, "2026-06-27", "wall_time_s", "2026-06-25") == (
+        pd.Timestamp("2026-06-25"), 5.0,
+    )
+    assert _blame.run_point(df, "2026-06-27", "wall_time_s", "2026-06-27") == (
+        pd.Timestamp("2026-06-27"), 6.0,
+    )
+    assert _blame.run_point(df.iloc[[1]], "2026-06-27", "wall_time_s", "2026-06-25") is None
+    onset = _verdict(onset_run_id="2026-06-27", onset_run_date="2026-06-25")
+    assert _blame.onset_point(df, onset) == (pd.Timestamp("2026-06-25"), 5.0)
+
+
 def test_run_point_none_when_the_run_is_not_on_the_chart():
     # Excluded as unreliable, or outside the fetched window — either way the
     # caller must draw nothing rather than move the marker to a survivor.

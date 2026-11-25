@@ -16,6 +16,7 @@ import dataclasses
 import pandas as pd
 import pytest
 
+from k4bench.analysis.loader import run_key
 from k4bench.blame.evidence import (
     HistoryPoint,
     HostReading,
@@ -414,7 +415,7 @@ def _nights(nights, *, flagged=(), hosts=True) -> MetricHistory:
         for i, (run_id, (release, _h, value)) in enumerate(zip(run_ids, nights))
     ]
     machines = (
-        {run_id: host for run_id, (_r, host, _v) in zip(run_ids, nights)}
+        {run_key(run_id, release): host for run_id, (release, host, _v) in zip(run_ids, nights)}
         if hosts else None
     )
     return history_from_verdict(_verdict(

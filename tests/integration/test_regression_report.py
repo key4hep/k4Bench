@@ -168,6 +168,32 @@ def test_regression_report_cli_publishes_nothing_when_tonight_is_already_reporte
     assert not (tmp_path / "out").exists()
 
 
+def test_a_pinned_older_release_beside_tonights_run_publishes_no_report(tmp_path):
+    # Fan-out 900 benchmarked release 01-12 on 01-12; fan-out 902, a pinned
+    # dispatch of release 01-11, ran the same day. Tonight is release 01-12's
+    # run, so the night is 900's to report: 902's runs are history of 01-11,
+    # and its report job succeeds without writing one.
+    _write_history(tmp_path / "data", [100.0] * 12, date.fromisoformat("2026-01-12"),
+                   run_url=f"{_RUN}/900")
+    stack = "key4hep-2026-01-11"
+    _write_run(tmp_path / "data" / run_path(SIM, "DET") / _PLAT / stack / "single_e"
+               / "2026-01-12", "2026-01-12", 100.0, stack=stack, run_url=f"{_RUN}/902")
+
+    result = _run_cli(tmp_path, "--fanout-run-id", "902")
+    assert result.returncode == 0, result.stderr
+    assert "history of those releases" in result.stderr
+    assert not (tmp_path / "out" / "report.json").exists()
+
+    # The nightly's own report job still reports the night, naming the
+    # pinned run as history rather than as tonight.
+    result = _run_cli(tmp_path, "--fanout-run-id", "900")
+    assert result.returncode == 0, result.stderr
+    group, = json.loads((tmp_path / "out" / "report.json").read_text())["groups"]
+    assert group["k4h_release"] == "key4hep-2026-01-12"
+    assert group["github_run_url"] == f"{_RUN}/900"
+    assert group["history_run_urls"] == [f"{_RUN}/902"]
+
+
 def test_regression_report_cli_reports_a_fanout_whose_jobs_wrote_no_results(tmp_path):
     # Every job of fan-out 900 failed before writing a result CSV but uploaded
     # its run_info, today. Those runs are the fan-out's: the report is published
@@ -574,13 +600,17 @@ def test_regression_report_reports_an_outage_when_every_triple_read_and_none_cov
     assert _json.loads(written.read_text())["night"] == "2026-01-13"
 
 
+@pytest.mark.parametrize("history_urls", [(), (f"{_RUN}/900",)])
 def test_regression_report_publishes_nothing_when_unread_triples_leave_coverage_unknown(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, history_urls,
 ):
     from k4bench.regression.models import NightlyReport
 
-    # Last night's run read fine; tonight's uploads may be in the unread tree.
-    first = NightlyReport("", [_ran(800), _unread("DET", "2026-01-12")])
+    # An unread triple may hold a nightly run even when the fan-out also
+    # appears in another triple's history.
+    first = NightlyReport("", [
+        _ran(800, history_run_urls=history_urls), _unread("DET", "2026-01-12"),
+    ])
     run, builds, written = _fanout_cli(tmp_path, monkeypatch, first)
     with pytest.raises(SystemExit, match="Re-run the report job"):
         run()

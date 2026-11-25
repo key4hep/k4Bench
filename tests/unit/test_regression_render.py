@@ -182,6 +182,29 @@ def test_json_roundtrip_and_sanitization():
     assert rebuilt.has_alertable
 
 
+def test_a_legacy_failure_or_unjudged_verdict_reads_as_the_release_it_measured():
+    # Reports written before failure and unjudged verdicts recorded the release
+    # carry their run date there. Every verdict of a group is of tonight's run,
+    # whose release the group names, so that is what they read back as; a
+    # judged verdict, which always named its release, is left as written.
+    failed = _verdict(metric="returncode", metric_family="status", value=139.0,
+                      severity=Severity.FAILURE, direction=Direction.NONE)
+    unjudged = _verdict(metric="user_cpu_s", severity=Severity.UNKNOWN,
+                        direction=Direction.NONE, unjudged=Unjudged.REPORTED_ONLY)
+    judged = _verdict(run_date="2026-01-12")
+    group = RunGroupReport(
+        detector="DET", platform="PLAT", sample="single_e",
+        k4h_release="key4hep-2026-01-11", run_date="2026-01-12", run_id="2026-01-12",
+        verdicts=[failed, unjudged, judged],
+    )
+    data = to_json(NightlyReport(generated_at="", groups=[group]))
+    assert "history_run_urls" not in data["groups"][0]
+
+    restored = from_json(data).groups[0]
+    assert [v.run_date for v in restored.verdicts] == ["2026-01-11", "2026-01-11", "2026-01-12"]
+    assert restored.history_run_urls == ()
+
+
 def test_every_run_group_field_survives_the_json_roundtrip():
     # Keep this constructor exhaustive on purpose. If RunGroupReport gains a
     # field, the test must choose a non-default value for it; otherwise a writer
@@ -200,6 +223,7 @@ def test_every_run_group_field_survives_the_json_roundtrip():
         "reliable": False,
         "github_run_url": "https://github.example/actions/runs/12",
         "geometry_path": "FCCee/DET/compact/d.xml",
+        "history_run_urls": ("https://github.example/actions/runs/11",),
     }
     assert set(values) == {f.name for f in dataclasses.fields(RunGroupReport)}
     group = RunGroupReport(**values)
