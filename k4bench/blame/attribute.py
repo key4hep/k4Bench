@@ -552,16 +552,19 @@ class OpenAICompatAttributor:
         return self._complete(request, attribution)
 
     def attribute_jointly(
-        self, requests: Sequence[AttributionRequest],
+        self, requests: Sequence[AttributionRequest], *, min_score: float | None = None,
     ) -> dict[str, Attribution]:
         """Review *requests* — several pull requests selected in one window —
         together (:func:`k4bench.blame.joint_review.review_jointly`), keyed by
         slug: every one of them answered, or ``{}``, and the caller then posts
         nothing for the window tonight. Answers the first reply left out are
-        re-asked jointly, never through one pull request's own review."""
-        from k4bench.blame.joint_review import review_jointly
+        re-asked jointly, never through one pull request's own review.
+        *min_score*, the comment threshold, lowers the likelihood at which a
+        relation must be stated when it is below the score bands' default."""
+        from k4bench.blame.joint_review import _RELATION_FLOOR, review_jointly
 
-        return review_jointly(self.client, requests)
+        floor = _RELATION_FLOOR if min_score is None else min(_RELATION_FLOOR, min_score)
+        return review_jointly(self.client, requests, relation_floor=floor)
 
     def _complete(
         self, request: AttributionRequest, attribution: Attribution

@@ -171,6 +171,47 @@ class CommentDraft:
         return _render(self, LineageState.from_bodies(previous_bodies))
 
 
+def _review_context(
+    draft: CommentDraft,
+    lineage: LineageState,
+    payload: dict[str, Any],
+    retained: list[dict[str, Any]],
+) -> tuple[frozenset[str], str]:
+    """The review context this body records, and its facts digest.
+
+    The context is the set of pull requests the assessment was reviewed jointly
+    with. A tonight that adds one the published comment's assessment was not
+    reviewed with is a materially different review — its reading can contest
+    the one standing — and edits the comment. One that adds none (the same
+    group, part of it, or an independent review) does not edit on its own:
+    selection follows first-pass scores that are re-run nightly, so a
+    competitor hovering at ``min_score`` would otherwise edit the comment every
+    time it joined and left. The published context is then kept in the hash —
+    unless the comment is edited anyway, for a change in its facts, in which
+    case the new body says tonight's context, the one its assessment was
+    actually reviewed in, so a later joint review can replace it again.
+
+    A context too large for its marker (:func:`_reviewed_with_marker`) is
+    treated as none, in the hash and the body alike, so a marker that cannot be
+    written can never make every later night look like a new context."""
+    def bounded(slugs: frozenset[str]) -> frozenset[str]:
+        return slugs if _reviewed_with_marker(slugs) else frozenset()
+
+    def digest(context: frozenset[str]) -> str:
+        data = dict(payload)
+        if context:
+            data["reviewed_with"] = sorted(context)
+        return _digest_from(data, retained)
+
+    tonight = bounded(frozenset(draft.reviewed_with))
+    standing = bounded(lineage.reviewed_with)
+    if lineage.published_digest and tonight <= standing:
+        kept = digest(standing)
+        if kept == lineage.published_digest:
+            return standing, kept
+    return tonight, digest(tonight)
+
+
 def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
     """One draft as a GitHub-flavoured Markdown comment, given its lineage.
 
@@ -193,11 +234,9 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
       deterministic inputs a reader can see — while a retained row's mere
       heartbeat (tonight's date) is not;
     * the **observation history** carries every material version forward;
-    * the **co-reviewed pull requests** are the union of every version's and
-      tonight's, hashed as a ratchet: a pull request first reviewed together
-      with this one edits the comment, so a standing reading is replaced by the
-      joint one, while one leaving and returning — selection follows nightly
-      first-pass scores — never does.
+    * the **review context** — which pull requests the assessment was reviewed
+      jointly with — is hashed as :func:`_review_context` settles it against
+      the published comment's.
 
     Archive links pin the report being rendered. Report dates stay outside the
     digest, so they alone never make an unchanged regression re-notify a pull
@@ -261,9 +300,6 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
     cumulative.update(tonight)
     cumulative_marker = _cumulative_marker(cumulative)
     payload = dict(draft.facts_payload)
-    reviewed_with = lineage.reviewed_with | set(draft.reviewed_with)
-    if reviewed_with:
-        payload["reviewed_with"] = sorted(reviewed_with)
     if record:
         payload["withdrawn"] = [list(identity) for identity in sorted(record)]
     if cumulative_marker:
@@ -315,7 +351,9 @@ def _render(draft: CommentDraft, lineage: LineageState) -> PRComment:
         reproduce=draft.reproduce, observations=observations,
         min_score=draft.min_score, noun=noun,
     )
-    digest = _digest_from(payload, [_retained_fact(row) for row in shown_past])
+    reviewed_with, digest = _review_context(
+        draft, lineage, payload, [_retained_fact(row) for row in shown_past],
+    )
 
     history = None
     if draft.observation is not None:

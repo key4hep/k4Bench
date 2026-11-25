@@ -612,26 +612,29 @@ def _parse_round(
 def _competing_groups(
     raw: object, slugs: dict[str, str],
 ) -> set[frozenset[str]] | None:
-    """A scope's ``competing`` entry as groups of slugs, keeping only groups
-    that still name two or more pull requests under review — or ``None`` when
-    the entry is absent or not a list, which is no judgement. An empty list is
-    the judgement that no two are competing."""
+    """A scope's ``competing`` entry as groups of slugs — or ``None`` when it
+    is no judgement: absent, not a list, or holding any group that is not a
+    list of two or more pull requests under review. Only a well-formed entry
+    is read as one, so a garbled group is re-asked rather than taken for the
+    judgement that nothing competes, which only an empty list is."""
     if not isinstance(raw, list):
         return None
     groups = set()
     for group in raw:
         if not isinstance(group, list):
-            continue
-        members = frozenset(
-            slugs[label] for item in group
-            if (label := str(item or "").strip().upper()) in slugs
-        )
-        if len(members) >= 2:
-            groups.add(members)
+            return None
+        labels_given = [str(item or "").strip().upper() for item in group]
+        members = frozenset(slugs[label] for label in labels_given if label in slugs)
+        if len(members) < 2 or len(members) != len(set(labels_given)):
+            return None
+        groups.add(members)
     return groups
 
 
-def _merge(reply: _JointReply, more: _JointReply, asked: set[str]) -> int:
+def _merge(
+    reply: _JointReply, more: _JointReply, asked: set[str],
+    scope_rows: dict[str, set[str]],
+) -> int:
     """Fold a follow-up round into *reply*; how many answers it added (rows,
     summaries, and scopes whose relation was assessed for the first time).
 
@@ -640,19 +643,30 @@ def _merge(reply: _JointReply, more: _JointReply, asked: set[str]) -> int:
     competing groups are the exception, for the scopes the follow-up was asked
     about (*asked*): the follow-up knows more about them — a likelihood that was
     missing — and gives them again in full, so its answer replaces the earlier
-    one, including with ``[]``."""
+    one, including with ``[]``.
+
+    A scope that gained a likelihood without the follow-up restating its groups
+    loses its earlier assessment: that was made before the new score existed,
+    and standing on it would let two likely pull requests through without their
+    relation ever having been judged. :func:`_gaps` then asks for it again, or
+    the review declines."""
     added = 0
+    rescored: set[str] = set()
     for slug, answer in more.answers.items():
         kept = reply.answers[slug]
         for row_id, score in answer.likelihoods.items():
             if row_id not in kept.likelihoods:
                 kept.likelihoods[row_id] = score
+                rescored.add(row_id)
                 added += 1
         if not kept.summary and answer.summary:
             kept.summary = answer.summary
             added += 1
         judged = {j.scope_id for j in kept.scopes}
         kept.scopes += [j for j in answer.scopes if j.scope_id not in judged]
+    for sid, rows in scope_rows.items():
+        if rows & rescored and sid not in more.competing:
+            reply.competing.pop(sid, None)
     for sid, groups in more.competing.items():
         if sid not in asked:
             continue
@@ -664,9 +678,10 @@ def _merge(reply: _JointReply, more: _JointReply, asked: set[str]) -> int:
 
 def _unassessed_relations(
     reply: _JointReply, requests: Sequence[AttributionRequest],
+    floor: float = _RELATION_FLOOR,
 ) -> tuple[str, ...]:
-    """The scopes where two or more pull requests reach :data:`_RELATION_FLOOR`
-    on some row and the reply has not said whether they compete."""
+    """The scopes where two or more pull requests reach *floor* on some row
+    and the reply has not said whether they compete."""
     out = []
     for sid, rows in _scope_rows(requests[0]).items():
         if sid in reply.competing:
@@ -676,15 +691,19 @@ def _unassessed_relations(
             if max(
                 (reply.answers[request.slug].likelihoods.get(row, 0.0) for row in rows),
                 default=0.0,
-            ) >= _RELATION_FLOOR
+            ) >= floor
         )
         if likely >= 2:
             out.append(sid)
     return tuple(sorted(out, key=_scope_order))
 
 
-def _gaps(reply: _JointReply, requests: Sequence[AttributionRequest]) -> _Gaps:
-    """What the reply so far lacks (:class:`_Gaps`)."""
+def _gaps(
+    reply: _JointReply, requests: Sequence[AttributionRequest],
+    floor: float = _RELATION_FLOOR,
+) -> _Gaps:
+    """What the reply so far lacks (:class:`_Gaps`), with relations required
+    where two or more pull requests reach *floor*."""
     subjects = {}
     for request in requests:
         answer = reply.answers[request.slug]
@@ -693,7 +712,7 @@ def _gaps(reply: _JointReply, requests: Sequence[AttributionRequest]) -> _Gaps:
         )
         if rows or not answer.summary:
             subjects[request.slug] = _Missing(rows=rows, summary=not answer.summary)
-    return _Gaps(subjects=subjects, relations=_unassessed_relations(reply, requests))
+    return _Gaps(subjects=subjects, relations=_unassessed_relations(reply, requests, floor))
 
 
 def _alternatives(
@@ -738,6 +757,7 @@ def _alternatives(
 
 def _attributions(
     reply: _JointReply, requests: Sequence[AttributionRequest],
+    floor: float = _RELATION_FLOOR,
 ) -> dict[str, Attribution]:
     """Every pull request's :class:`Attribution`, or ``{}`` while anything is
     still missing (:func:`_gaps`): a row without a verdict, a pull request
@@ -748,7 +768,7 @@ def _attributions(
     beside the joint one, and could not be repaired later either: the next
     night's complete review rests on the same benchmark facts, so the digest
     would refuse the edit."""
-    gaps = _gaps(reply, requests)
+    gaps = _gaps(reply, requests, floor)
     if gaps:
         _log.warning(
             "attribute (joint): %s — still unanswered after the follow-up rounds: "
@@ -792,19 +812,21 @@ def _attributions(
 
 def parse_joint(
     content: str, requests: Sequence[AttributionRequest],
+    *, relation_floor: float = _RELATION_FLOOR,
 ) -> dict[str, Attribution]:
     """A single joint reply as one :class:`Attribution` per pull request, keyed
     by slug — or ``{}`` unless it answered everything (:func:`_attributions`)."""
     reply = _parse_round(content, requests)
     if reply is None or reply.assessment is None:
         return {}
-    return _attributions(reply, requests)
+    return _attributions(reply, requests, relation_floor)
 
 
 # ── Review ────────────────────────────────────────────────────────────────────
 
 def review_jointly(
     client: ChatClient, requests: Sequence[AttributionRequest],
+    *, relation_floor: float = _RELATION_FLOOR,
 ) -> dict[str, Attribution]:
     """One joint review of *requests*: the first call, then up to
     :data:`~k4bench.blame.attribute._MAX_COMPLETION_ROUNDS` joint follow-ups
@@ -813,7 +835,12 @@ def review_jointly(
     Every pull request in *requests* fully answered, or ``{}``: a call that
     fails, a reply without a step assessment, and anything still missing after
     the follow-ups — a row's verdict, a summary, a relation — all decline the
-    whole window."""
+    whole window.
+
+    *relation_floor* is where a pull request counts as likely for a scope when
+    deciding whether its relation to the others must be stated — never above
+    the comment threshold, or a competing explanation the comment would name
+    could go unasked."""
     if not joinable(requests):
         return {}
     group = ", ".join(r.slug for r in requests)
@@ -840,7 +867,7 @@ def review_jointly(
         return {}
 
     for _ in range(_MAX_COMPLETION_ROUNDS):
-        gaps = _gaps(reply, requests)
+        gaps = _gaps(reply, requests, relation_floor)
         if not gaps:
             break
         _log.info(
@@ -868,12 +895,14 @@ def review_jointly(
             content, requests,
             wanted={slug: set(gap.rows) for slug, gap in gaps.subjects.items()},
         )
-        if more is None or not _merge(reply, more, gaps.scopes(requests)):
+        if more is None or not _merge(
+            reply, more, gaps.scopes(requests), _scope_rows(requests[0]),
+        ):
             _log.warning(
                 "attribute (joint): %s — follow-up answered nothing missing", group,
             )
             break
-    return _attributions(reply, requests)
+    return _attributions(reply, requests, relation_floor)
 
 
 def output_tokens(

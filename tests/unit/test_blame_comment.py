@@ -5095,7 +5095,7 @@ class _FakeJointAttributor(_FakeAttributor):
         self.joint_raises = joint_raises
         self.joint_requests: list = []
 
-    def attribute_jointly(self, requests):
+    def attribute_jointly(self, requests, *, min_score=None):
         self.joint_requests.append(list(requests))
         if self.joint_raises is not None:
             raise self.joint_raises
@@ -5274,9 +5274,13 @@ def test_the_joint_reply_is_split_per_pull_request_with_its_competitors():
 
     independent = parse_joint(json.dumps(_joint_reply(competing=())), requests)
     assert independent["key4hep/k4geo#1234"].alternatives == {}
-    # A group naming one pull request under review, or an unknown label, is no group.
-    lone = parse_joint(json.dumps(_joint_reply(competing=(("P1", "P9"),))), requests)
-    assert lone["key4hep/k4geo#1234"].alternatives == {}
+    # A garbled group is no judgement — never read as "none compete" — so two
+    # likely pull requests are left without their relation.
+    for garbled in ((("P1", "P9"),), (("P1",),), (("P1", "P1"),)):
+        assert parse_joint(json.dumps(_joint_reply(competing=garbled)), requests) == {}
+    malformed = _joint_reply()
+    malformed["scopes"][0]["competing"] = ["P1", "P2"]
+    assert parse_joint(json.dumps(malformed), requests) == {}
 
     # One pull request without a summary is no joint review at all.
     assert parse_joint(json.dumps(_joint_reply(p2_summary=False)), requests) == {}
@@ -5563,3 +5567,78 @@ def test_a_damaged_reviewed_with_marker_is_read_as_none():
     assert _decoded_reviewed_with(f"{_REVIEWED_WITH_PREFIX}!!! -->") == frozenset()
     not_strings = urlsafe_b64encode(b"[1, 2]").decode().rstrip("=")
     assert _decoded_reviewed_with(f"{_REVIEWED_WITH_PREFIX}{not_strings} -->") == frozenset()
+
+
+def test_a_relation_judged_before_a_score_arrived_is_asked_again():
+    from k4bench.blame.attribute import OpenAICompatAttributor
+
+    requests = _joint_requests()
+    # "None compete" was said while P2 had no score at all.
+    first = _joint_reply(p2=False, p2_summary=False, competing=())
+    scored = {
+        "scopes": [{"scope": "S1", "verdicts": [{"pr": "P2", "likelihood": 93}]}],
+        "summaries": {"P2": "P2 explains it too."},
+    }
+    related = {"scopes": [{"scope": "S1", "competing": [["P1", "P2"]]}]}
+    client = _ScriptedClient(first, scored, related)
+    answered = OpenAICompatAttributor(client=client).attribute_jointly(requests)
+    assert len(client.calls) == 3
+    assert '"competing" for scope(s) S1' in client.calls[2][1]
+    assert answered["key4hep/k4geo#1234"].alternatives == {
+        "r1": (("key4hep/k4geo#1300", 93.0),),
+    }
+
+    # Never restated: the stale "none compete" does not stand in for it.
+    client = _ScriptedClient(first, scored, {"scopes": []})
+    assert OpenAICompatAttributor(client=client).attribute_jointly(requests) == {}
+
+
+def test_the_relation_floor_follows_a_lower_comment_threshold():
+    from k4bench.blame.attribute import OpenAICompatAttributor
+    from k4bench.blame.joint_review import parse_joint
+
+    requests = _joint_requests()
+    reply = _joint_reply()
+    del reply["scopes"][0]["competing"]
+    p2 = reply["scopes"][0]["verdicts"][1]
+    p2["likelihood"], p2["overrides"] = 35, []
+    assert set(parse_joint(json.dumps(reply), requests)) == {
+        "key4hep/k4geo#1234", "key4hep/k4geo#1300",
+    }
+    # At min_score 30 a 35 is a claim the comment would make, so its relation
+    # to P1 has to be stated.
+    assert parse_joint(json.dumps(reply), requests, relation_floor=30) == {}
+    client = _ScriptedClient(reply)
+    assert OpenAICompatAttributor(client=client).attribute_jointly(
+        requests, min_score=30,
+    ) == {}
+    assert len(client.calls) == 2
+
+
+def test_an_independent_version_is_replaced_when_the_joint_review_returns():
+    from k4bench.blame.comment.state import facts_digest_of
+
+    draft = _joint_drafts()[1234]
+    single = replace(draft, reviewed_with=())
+    joint_body = draft.render().body
+    # Night 2: reviewed alone, and a fact changed — the independent reading is
+    # what gets published, and the body says so.
+    changed = replace(single, facts_payload={**single.facts_payload, "night": 2})
+    alone = changed.render([joint_body]).body
+    assert facts_digest_of(alone) != facts_digest_of(joint_body)
+    assert state_mod.LineageState.from_bodies([alone]).reviewed_with == frozenset()
+    # Night 3: the same facts, reviewed jointly again — the joint reading
+    # replaces the independent one.
+    rejoined = replace(draft, facts_payload=changed.facts_payload).render([alone]).body
+    assert facts_digest_of(rejoined) != facts_digest_of(alone)
+
+
+def test_a_review_context_too_large_to_record_is_treated_as_none():
+    from k4bench.blame.comment.state import _MAX_REVIEWED_WITH, facts_digest_of
+
+    draft = _joint_drafts()[1234]
+    crowd = tuple(f"key4hep/k4geo#{n}" for n in range(2000, 2001 + _MAX_REVIEWED_WITH))
+    huge = replace(draft, reviewed_with=crowd).render().body
+    single = replace(draft, reviewed_with=()).render().body
+    assert "k4bench-blame-reviewed-with" not in huge
+    assert facts_digest_of(huge) == facts_digest_of(single)

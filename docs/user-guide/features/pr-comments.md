@@ -78,11 +78,13 @@ The joint review is one unit. Whatever the reply leaves out — a regression's
 verdict, a pull request's summary, or whether the pull requests likely for a
 scope compete — is re-asked **jointly**: the window again, with the earlier
 answers as context. A scope needs that last answer wherever two or more pull
-requests score 41 or more (the band with a plausible mechanism), and an
-explicit "none compete" is an answer while silence is not. A follow-up states
-the competing groups of every scope it answers afresh, and its answer replaces
-the earlier one there. The competing explanations are read off the final
-scores.
+requests score 41 or more (the band with a plausible mechanism), or
+`min_score` if that is lower. An explicit "none compete" is an answer, while
+silence or a garbled group is not. A follow-up states the competing groups of
+every scope it answers afresh, and its answer replaces the earlier one there.
+A scope that gains a score without that loses its earlier answer, since the
+answer was given before the score existed. The competing explanations are read
+off the final scores.
 
 A joint review that still leaves anything unanswered, or whose call fails, is a
 review that did not answer: no comment in that window is posted or edited that
@@ -95,14 +97,17 @@ rests on the same benchmark facts. Only a window with one selected pull
 request, or whose pull requests were not offered the same rows and sweeps, is
 reviewed one pull request at a time.
 
-Each comment records, in a hidden marker, every pull request it was ever
-reviewed together with, and its facts digest covers that set. The set only
-grows: a pull request reviewed together with this one for the first time edits
-the comment once, so a standing reading is replaced by the joint one, while a
-pull request that leaves the selection and returns never edits it. The set is
-not tonight's selection alone, because selection follows first-pass scores and
-would re-notify on every threshold crossing. Standing comments are also
-re-rendered once into the joint form through the render version.
+Each comment records, in a hidden marker, the pull requests its current
+assessment was reviewed together with. A review that adds a pull request the
+published assessment was not reviewed with edits the comment, so a standing
+reading is replaced by the joint one. A review that adds none — the same
+group, part of it, or a review of this pull request alone — does not edit it
+on its own: selection follows first-pass scores, and a competitor hovering at
+the threshold would otherwise re-notify every time it joined and left. When
+the comment is edited anyway, for a change in its facts, the new version
+records the context it was actually reviewed in, so a later joint review can
+replace an independent one again. Standing comments are also re-rendered once
+into the joint form through the render version.
 
 "Everything" is meant literally, and both halves of it are load-bearing:
 

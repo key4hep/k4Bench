@@ -125,14 +125,14 @@ def _facts_payload(
 
     **Which pull requests were reviewed jointly with this one**
     (:mod:`k4bench.blame.joint_review`) is not in this payload but is added at
-    render time, as a ratchet: the union of every co-reviewed pull request the
-    lineage records and tonight's (:func:`k4bench.blame.comment.render._render`).
-    A pull request reviewed together with this one for the first time is a
-    materially different review — the reading the comment states may now be
-    contested by it — and edits the comment once. Tonight's set alone would be
-    model drift by another door: it is the night's *selection*, a first-pass
-    score crossing ``min_score``, re-run every night, so a competitor hovering
-    at the threshold would edit the comment each time it joined and left.
+    render time (:func:`k4bench.blame.comment.render._review_context`), against
+    the context the published comment records: a review that adds a pull
+    request the published assessment was not reviewed with edits the comment;
+    one that adds none keeps the published context in the hash. Tonight's set
+    alone would be model drift by another door — it is the night's *selection*,
+    a first-pass score crossing ``min_score``, re-run every night — and a
+    competitor hovering at the threshold would edit the comment each time it
+    joined and left.
 
     **Also out, and less obviously so**: ``value``, ``baseline_median`` and
     ``z_score``. They are deterministic and they do reach the review's prompt,

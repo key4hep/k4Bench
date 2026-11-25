@@ -153,7 +153,7 @@ def build_comments(
     """
     reviews = _reviews(
         plans, attributor=attributor, patch_for=patch_for, body_for=body_for,
-        files_for=files_for,
+        files_for=files_for, min_score=min_score,
     )
     comments = []
     for plan in plans:
@@ -364,6 +364,7 @@ def _reviews(
     patch_for: PatchFor | None,
     body_for: BodyFor | None,
     files_for: FilesFor | None = None,
+    min_score: float = _DEFAULT_MIN_SCORE,
 ) -> dict[int, tuple[Attribution | None, AttributionRequest | None, tuple[str, ...]]]:
     """Every plan's review, request and the pull requests it was reviewed
     jointly with, keyed by ``id(plan)``.
@@ -423,7 +424,7 @@ def _reviews(
         requests = [request for _plan, request in group]
         if joinable(requests):
             try:
-                answered = joint(requests) or {}
+                answered = joint(requests, min_score=min_score) or {}
             except Exception as exc:  # noqa: BLE001 — an adapter that raises is a decline
                 _log.warning(
                     "build_comments: joint review of %s failed (%s)",

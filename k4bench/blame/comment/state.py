@@ -70,11 +70,11 @@ _WITHDRAWN_PREFIX = "<!-- k4bench-blame-withdrawn:v1 "
 #: must not redefine for a claim already made.
 _THRESHOLD_PREFIX = "<!-- k4bench-blame-threshold:v1 "
 
-#: Every pull request this lineage's subject was ever reviewed jointly with
-#: (:mod:`k4bench.blame.joint_review`), as ``owner/repo#n``. Kept for the life
-#: of the lineage and only ever grown, so the facts digest can name it as a
-#: ratchet: a pull request joining the review for the first time edits the
-#: comment once, and one leaving and returning never does.
+#: The pull requests the published assessment was reviewed jointly with
+#: (:mod:`k4bench.blame.joint_review`), as ``owner/repo#n`` — the review context
+#: of *this* body, not of every version before it. Absent for an independent
+#: review. See :func:`k4bench.blame.comment.render._review_context` for how it
+#: decides an edit.
 _REVIEWED_WITH_PREFIX = "<!-- k4bench-blame-reviewed-with:v1 "
 
 #: How many co-reviewed pull requests, and how long a slug, the marker carries —
@@ -219,8 +219,9 @@ class LineageState:
       earliest night any body records for it;
     * ``threshold`` — the lowest attribution threshold any body was rendered
       under, or ``None`` when none records one;
-    * ``reviewed_with`` — every pull request any body records the subject was
-      reviewed jointly with.
+    * ``reviewed_with`` — the pull requests the published comment's assessment
+      was reviewed jointly with, read from the comment being edited (the first
+      body) alone, and ``published_digest`` — that comment's facts digest.
     """
 
     cumulative: dict[tuple, CumulativeEntry] = field(default_factory=dict)
@@ -232,6 +233,7 @@ class LineageState:
     withdrawn: dict[tuple, str] = field(default_factory=dict)
     threshold: float | None = None
     reviewed_with: frozenset[str] = frozenset()
+    published_digest: str = ""
 
     @classmethod
     def from_bodies(cls, bodies: Sequence[str]) -> LineageState:
@@ -274,7 +276,8 @@ class LineageState:
                 (t for body in bodies if (t := _published_threshold(body)) is not None),
                 default=None,
             ),
-            reviewed_with=frozenset().union(*(_decoded_reviewed_with(b) for b in bodies)),
+            reviewed_with=_decoded_reviewed_with(bodies[0]) if bodies else frozenset(),
+            published_digest=(facts_digest_of(bodies[0]) or "") if bodies else "",
         )
 
 
