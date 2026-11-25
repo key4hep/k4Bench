@@ -164,7 +164,7 @@ command -v xrdcp >/dev/null || { echo "ERROR: xrdcp not found" >&2; exit 1; }
 xrdfs "root://${EOS_FQDN}" mkdir -p "${EOS_RUN}"
 
 # A run directory holds one attempt's files, and run_info.json tells readers
-# they are all there (k4bench.remote.upload_finished). A re-run of the same job,
+# they are all there (k4bench.remote.UPLOAD_PROTOCOL_SINCE). A re-run of the same job,
 # release and day lands in the same directory, so run_info.json is taken down
 # before anything else changes and uploaded last, and the files only an earlier
 # attempt wrote are removed: a reader never takes a directory mid-upload, or two
