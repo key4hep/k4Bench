@@ -229,6 +229,19 @@ def test_reliability_history_scopes_and_drops_missing_runs():
     assert list(zip(flagged["night"], flagged["detector"])) == [("2026-01-12", "CLD")]
 
 
+def test_reliability_history_drops_a_triple_the_report_could_not_read():
+    # Dated on the report night but holding no run: no release, no flag. Kept,
+    # it would read as a run of tonight's with no reliability evidence.
+    rf = data.report_reliability_frame(NightlyReport(generated_at="", groups=[
+        _group("CLD", [], run_date="2026-01-13", reliable=True),
+        _group("IDEA", [], run_date="2026-01-13", k4h_release="", reliable=None,
+               job_failures=["not judged: its runs could not be read from EOS — 504"]),
+    ]))
+    assert rf.set_index("detector")["missing_run"].to_dict() == {"CLD": False, "IDEA": True}
+    hist = data.reliability_history([("2026-01-13", rf)], "PLAT", "single_e")
+    assert list(hist["detector"]) == ["CLD"]
+
+
 def test_reliability_history_keeps_a_cross_midnight_run_under_its_own_date():
     # CLD's job started before midnight, so it is dated 01-12 inside the 01-13
     # report and keeps its verdicts and its reliability. Dropping it for the

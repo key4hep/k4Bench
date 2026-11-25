@@ -543,7 +543,10 @@ step-change detector (`k4bench/regression/`):
   good or bad — a regression is simply any confirmed step beyond the baseline in
   either direction.
 - **Failures.** A config exiting non-zero, or a whole run missing, is a
-  **❌ Failure** and skips the confirmation step (it alerts immediately).
+  **❌ Failure** and skips the confirmation step (it alerts immediately). A
+  triple whose runs the report could not read from EOS is listed the same way,
+  as *not judged*, with the reason; it has no verdicts that night rather than
+  verdicts judged on part of its history.
 - **Region timing** (sub-detector) is *not* flagged — it is the noisiest series
   in the system, dominated by timer-granularity wobble at microsecond scale, so
   the regression report judges only top-level run and per-event metrics.

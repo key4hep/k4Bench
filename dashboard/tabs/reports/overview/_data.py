@@ -152,9 +152,12 @@ def report_reliability_frame(report: NightlyReport) -> pd.DataFrame:
     ``run_date`` is the night the job actually ran — a group dated before the
     report night is normal for a batch that crossed midnight, and its
     reliability describes that run. ``missing_run`` is what separates those from
-    the carried-forward placeholders for a run that never arrived (see
-    :attr:`~k4bench.regression.models.RunGroupReport.missing_run`), which
-    callers drop so the warning counts real runs.
+    the placeholders that describe no run — one carried forward for a run that
+    never arrived (see
+    :attr:`~k4bench.regression.models.RunGroupReport.missing_run`), or one for a
+    triple the report could not read
+    (:attr:`~k4bench.regression.models.RunGroupReport.unread`) — which callers
+    drop so the warning counts real runs.
     """
     rows = [
         {
@@ -163,7 +166,7 @@ def report_reliability_frame(report: NightlyReport) -> pd.DataFrame:
             "sample":      g.sample,
             "run_date":    g.run_date,
             "k4h_release": g.k4h_release,
-            "missing_run": g.missing_run,
+            "missing_run": g.missing_run or g.unread,
             "reliable":    g.reliable,
         }
         for g in report.groups

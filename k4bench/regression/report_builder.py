@@ -15,10 +15,12 @@ from __future__ import annotations
 import dataclasses
 import logging
 import math
+import time
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
+from typing import TypeVar
 
 import pandas as pd
 import requests
@@ -50,6 +52,7 @@ from k4bench.regression.lineage import predecessor_series, successor_series
 from k4bench.regression.models import (
     MISSING_RUN_FAILURE,
     REPORTED_ONLY_REASON,
+    UNREAD_FAILURE,
     UNRELIABLE_HOST_REASON,
     Direction,
     HostFact,
@@ -97,6 +100,84 @@ SAME_BATCH_LAG_DAYS = 1
 #: flagged as a missing run every night forever — e.g. a detector removed from
 #: the benchmark matrix.
 MISSING_RUN_GRACE_DAYS = 7
+
+#: Seconds waited before each retry of a read of the report's inputs that the
+#: store did not answer — one retry per entry (see :class:`_ReadRetry`). WebEOS
+#: answers a cold directory listing slowly, or with a ``504`` after 30 s, and
+#: the same listing is usually fast again a minute or two later;
+#: :mod:`k4bench.remote` retries each request once, which rides out a blip but
+#: not a listing that stays cold for that long.
+READ_BACKOFF_S = (30.0, 90.0)
+
+#: The most one report waits between attempts, summed over all of its reads.
+#: A store that has used it up is down rather than slow: every read after that
+#: is final on its first failure, so an outage costs the report minutes rather
+#: than hours, and the report still says which triples it could not read.
+READ_BACKOFF_BUDGET_S = 600.0
+
+#: How much of a failure's reason the report keeps; the report is mailed, and
+#: an unanswered read's reason ends in a URL.
+_REASON_CHARS = 300
+
+_T = TypeVar("_T")
+
+#: Waits between attempts (:class:`_ReadRetry`); a seam for tests.
+_sleep = time.sleep
+
+
+def _is_absent(exc: requests.RequestException) -> bool:
+    """True for a ``404``: the path does not exist, which is an answer."""
+    return exc.response is not None and exc.response.status_code == 404
+
+
+class _ReadRetry:
+    """Retries a read of the report's inputs that the store did not answer.
+
+    One per report build, so :data:`READ_BACKOFF_BUDGET_S` bounds the whole
+    report rather than each read. Only an unanswered read is retried: a ``404``
+    is an answer, and a local error — the cache disk full — is neither the
+    store's fault nor fixed by asking it again. The last failure is raised.
+    """
+
+    def __init__(self) -> None:
+        self.budget_s = READ_BACKOFF_BUDGET_S
+
+    def __call__(self, read: Callable[[], _T], what: str) -> _T:
+        for delay in (*READ_BACKOFF_S, None):
+            try:
+                return read()
+            except requests.RequestException as exc:
+                if _is_absent(exc) or delay is None or delay > self.budget_s:
+                    raise
+                self.budget_s -= delay
+                _log.warning("%s: not answered, retrying in %.0f s — %s", what, delay, exc)
+                _sleep(delay)
+        raise AssertionError("unreachable: the last attempt returns or raises")
+
+
+def _reason(exc: BaseException) -> str:
+    """*exc* on one line, cut to :data:`_REASON_CHARS`."""
+    text = " ".join(str(exc).split()) or type(exc).__name__
+    return text if len(text) <= _REASON_CHARS else text[: _REASON_CHARS - 1] + "…"
+
+
+def _unread_group(
+    detector: str, platform: str, sample: str, exc: Exception,
+) -> RunGroupReport:
+    """The report's entry for a triple it could not judge, saying why.
+
+    Dated by :func:`_finalize_report`, once the report night is known. It holds
+    no release and no verdict, so nothing downstream can read a regression, an
+    all-clear or a clean control into it."""
+    if isinstance(exc, requests.RequestException):
+        why = f"its runs could not be read from EOS — {_reason(exc)}"
+    else:
+        why = f"its report could not be built — {type(exc).__name__}: {_reason(exc)}"
+    return RunGroupReport(
+        detector=detector, platform=platform, sample=sample,
+        k4h_release="", run_date="", run_id="",
+        job_failures=[f"{UNREAD_FAILURE} {why}"],
+    )
 
 
 def _reliable_column(run_ids: pd.Series, reliability: dict[str, bool | None]) -> list:
@@ -697,8 +778,16 @@ def _fetch_run_dirs(
     as_of: str | None,
 ) -> tuple[str, ...]:
     """One triple's trailing run window, cached locally, oldest → newest.
-    Empty when it has no runs, or none could be downloaded."""
-    stacks_dates = list_run_dates_all_stacks(data_url, suite, detector, platform, sample)
+    Empty when it has no runs.
+
+    Read strictly: a stack listing or a run download the store does not answer
+    raises (:class:`~k4bench.remote.IncompleteFetch`) rather than leaving that
+    stack's nights out, since a window short of a night is a different
+    baseline, judged as if it were the whole history. Runs that landed stay in
+    the cache, so asking again fetches only the rest."""
+    stacks_dates = list_run_dates_all_stacks(
+        data_url, suite, detector, platform, sample, strict=True,
+    )
     pairs = sorted(
         (date, stack) for stack, dates in stacks_dates.items() for date in dates
         if as_of is None or date <= as_of
@@ -710,6 +799,7 @@ def _fetch_run_dirs(
         window.setdefault(stack, []).append(date)
     runs = fetch_runs_windowed(
         data_url, suite, detector, platform, sample, window, cache_root=cache_dir,
+        strict=True,
     )
     return tuple(r["run_dir"] for r in sorted(runs, key=lambda r: r["date"]))
 
@@ -723,18 +813,25 @@ def _fetch_predecessor(
     *,
     fetch_window_runs: int,
     as_of: str | None,
+    retry: _ReadRetry | None = None,
 ) -> PredecessorRuns | None:
     """The trailing runs of the first predecessor candidate (see
     :func:`~k4bench.regression.lineage.predecessor_series`) that has any,
-    downloaded on demand. A candidate whose tree does not exist has none."""
+    downloaded on demand. A candidate whose tree does not exist has none; one
+    the store does not answer for raises, through *retry*, since the series it
+    continues would otherwise be judged from a shorter history."""
+    retry = retry or _ReadRetry()
     for detector, platform in candidates:
         try:
-            run_dirs = _fetch_run_dirs(
-                data_url, suite, cache_dir, detector, platform, sample,
-                fetch_window_runs=fetch_window_runs, as_of=as_of,
+            run_dirs = retry(
+                partial(
+                    _fetch_run_dirs, data_url, suite, cache_dir, detector, platform, sample,
+                    fetch_window_runs=fetch_window_runs, as_of=as_of,
+                ),
+                f"{detector}/{platform}/{sample}",
             )
         except requests.HTTPError as exc:
-            if exc.response is None or exc.response.status_code != 404:
+            if not _is_absent(exc):
                 raise
             continue
         if (runs := predecessor_runs(suite, detector, platform, run_dirs)) is not None:
@@ -752,18 +849,27 @@ def build_group_report(
     *,
     fetch_window_runs: int = FETCH_WINDOW_RUNS,
     as_of: str | None = None,
+    retry: _ReadRetry | None = None,
 ) -> RunGroupReport | None:
     """Build one triple of *suite*'s report from its trailing run window, or
-    ``None`` when the triple has no fetchable runs at all.
+    ``None`` when the triple has no runs at all.
 
     *as_of* (a ``YYYY-MM-DD`` night) truncates the run history to runs on or
     before that night before the trailing window is taken, reproducing the
     report that night's runs would have produced — the seam the historical
     backfill drives. ``None`` judges the full history (the nightly CI case).
+
+    Every read goes through *retry* (:class:`_ReadRetry`), and one the store
+    still does not answer raises: this triple, or the series it continues, is
+    then not judged at all rather than judged on part of its history.
     """
-    run_dirs = _fetch_run_dirs(
-        data_url, suite, cache_dir, detector, platform, sample,
-        fetch_window_runs=fetch_window_runs, as_of=as_of,
+    retry = retry or _ReadRetry()
+    run_dirs = retry(
+        partial(
+            _fetch_run_dirs, data_url, suite, cache_dir, detector, platform, sample,
+            fetch_window_runs=fetch_window_runs, as_of=as_of,
+        ),
+        f"{detector}/{platform}/{sample}",
     )
     if not run_dirs:
         return None
@@ -772,7 +878,7 @@ def build_group_report(
         suite, detector, platform, sample, run_dirs,
         predecessor=partial(
             _fetch_predecessor, data_url, suite, cache_dir, candidates, sample,
-            fetch_window_runs=fetch_window_runs, as_of=as_of,
+            fetch_window_runs=fetch_window_runs, as_of=as_of, retry=retry,
         ) if candidates else None,
     )
 
@@ -1236,24 +1342,37 @@ def build_nightly_report(
     ≤ *as_of* — the historical-backfill seam. *night* reports a night newer
     than every run found, as one missing run per triple (see
     :func:`_finalize_report`) — the outage seam.
+
+    Every read is strict and retried (:class:`_ReadRetry`). Discovery — which
+    triples exist — raises when the store still does not answer, failing the
+    whole report: a triple discovery missed could not even be named as not
+    judged. A triple whose own runs cannot be read, or whose report cannot be
+    built from them, is reported as not judged (:attr:`RunGroupReport.unread`)
+    and the rest of the report stands.
     """
+    retry = _ReadRetry()
     groups: list[RunGroupReport] = []
-    for detector in list_detectors(data_url, suite):
-        for platform in list_platforms(data_url, suite, detector):
-            stack_samples = scan_stack_samples(data_url, suite, detector, platform)
+    for detector in retry(partial(list_detectors, data_url, suite), suite):
+        for platform in retry(
+            partial(list_platforms, data_url, suite, detector), detector,
+        ):
+            stack_samples = retry(
+                partial(scan_stack_samples, data_url, suite, detector, platform, strict=True),
+                f"{detector}/{platform}",
+            )
             samples = sorted({s for ss in stack_samples.values() for s in ss})
             for sample in samples:
                 try:
                     group = build_group_report(
                         data_url, suite, cache_dir, detector, platform, sample,
-                        fetch_window_runs=fetch_window_runs, as_of=as_of,
+                        fetch_window_runs=fetch_window_runs, as_of=as_of, retry=retry,
                     )
-                except Exception:
+                except Exception as exc:
                     _log.exception(
-                        "build_nightly_report: failed for %s/%s/%s",
+                        "build_nightly_report: not judging %s/%s/%s",
                         detector, platform, sample,
                     )
-                    continue
+                    group = _unread_group(detector, platform, sample, exc)
                 if group is not None:
                     groups.append(group)
 
@@ -1397,17 +1516,35 @@ def _finalize_report(
     :func:`_same_batch` is off: with no run of its own the night names no CI
     run, and adopting last night's runs into a batch that produced nothing
     would report their verdicts a second time under tonight's date. A *night*
-    that is not newer is ignored; a report covers the runs it holds."""
+    that is not newer is ignored; a report covers the runs it holds.
+
+    A triple the report could not read (:attr:`RunGroupReport.unread`) holds
+    no run, so it takes no part in choosing the night and is never stale: it
+    is dated on the report night it was not judged for, and dropped only when
+    it is replaced. With no run read at all and no *night*, that date is
+    empty, as the report's is. A successor counts as having run once the store
+    lists it, read or not, so an old series whose tree cannot be read is not
+    reported as not judged in place of being retired."""
+    reported = {(g.detector, g.platform, g.sample) for g in groups}
+
+    def replaced(g: RunGroupReport) -> bool:
+        return any(
+            (detector, platform, g.sample) in reported
+            for detector, platform in successor_series(g.detector, g.platform, suite)
+        )
+
+    unread = [g for g in groups if g.unread and not replaced(g)]
+    runs = [g for g in groups if not g.unread]
     forced = False
-    if groups:
-        newest = max(g.run_date for g in groups)
+    report_night = ""
+    if runs:
+        newest = max(g.run_date for g in runs)
         forced = night is not None and night > newest
         report_night = night if forced else newest
         night_ts = pd.Timestamp(report_night)
-        batch = _batch_keys(groups, report_night)
-        reported = {(g.detector, g.platform, g.sample) for g in groups}
+        batch = _batch_keys(runs, report_night)
         kept: list[RunGroupReport] = []
-        for g in groups:
+        for g in runs:
             if g.run_date == report_night:
                 kept.append(g)
                 continue
@@ -1430,10 +1567,7 @@ def _finalize_report(
                 )
                 kept.append(g)
                 continue
-            if any(
-                (detector, platform, g.sample) in reported
-                for detector, platform in successor_series(g.detector, g.platform, suite)
-            ):
+            if replaced(g):
                 # Its successor has run, so nothing expects this series to.
                 # Before that night a backfill still reports a night it missed.
                 _log.info(
@@ -1458,7 +1592,13 @@ def _finalize_report(
                 f"{MISSING_RUN_FAILURE} {report_night} (latest is {g.run_date})"
             ]
             kept.append(g)
-        groups = kept
+        runs = kept
+    elif unread and night is not None:
+        forced, report_night = True, night
+    for g in unread:
+        g.run_date = g.run_id = report_night
+    kept_ids = {id(g) for g in (*runs, *unread)}
+    groups = [g for g in groups if id(g) in kept_ids]
 
     return NightlyReport(
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
