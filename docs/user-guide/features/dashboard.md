@@ -1224,9 +1224,11 @@ one chosen while the nightly is still uploading it says so and is read again on
 the next interaction, and one in a trend window is left out of it until then.
 A finished run is taken to be **immutable**, so each file is downloaded at most once
 into `K4BENCH_CACHE_DIR`, below `subsets/` in the store's own layout, and
-reused by every later view and session; a same-day re-run that replaces a run
-already downloaded is not seen until the dashboard restarts with an empty
-cache. Each file is published with an atomic
+reused by every later view and session. A same-day re-run that replaces a run
+already downloaded is seen once a view asks for a file of it not yet
+downloaded: every download checks the run's `run_info.json`, and finding
+another attempt's discards what was downloaded of the run and starts again.
+Each file is published with an atomic
 `rename`, so a reader never sees half of one. Each run's `.artifacts.json`
 keeps the run's listing and, for every file asked for, whether it was
 fetched, is absent from the run, or failed; a failed file is downloaded again
