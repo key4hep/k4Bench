@@ -1141,6 +1141,56 @@ def test_failure_only_metric_history_keeps_reason_metadata(monkeypatch):
     assert any(shape.type == "line" for shape in figures[0].layout.shapes)
 
 
+@pytest.mark.parametrize(("reliable_only", "badges"), [(True, 0), (False, 1)])
+def test_drilldown_shows_another_runs_failure_under_all_runs_only(
+    monkeypatch, reliable_only, badges,
+):
+    # The flagged 06-27 run is healthy; 06-26 failed. Reliable only hides that
+    # failure's marker, All runs shows it, and the line is the same either way.
+    import pandas as pd
+
+    from tabs import _reliability as rel
+    from tabs.reports import _metric_trend as trend
+
+    days = ["2026-06-25", "2026-06-26", "2026-06-27"]
+    results = pd.DataFrame({
+        "run_id": days, "x_date": pd.to_datetime(days), "label": "baseline",
+        "returncode": [0, 139, 0], "wall_time_s": [5.0, 1.0, 6.0],
+    })
+    monkeypatch.setattr(trend, "cached_load_trend_results", lambda _dirs: results)
+    monkeypatch.setattr(trend, "cached_load_trend_machine_info", lambda _dirs: None)
+    history = trend._metric_history(
+        _confirmed(), "url", "sim", "cache",
+        list_run_dates=lambda *_args: {f"key4hep-{d}": [d] for d in days},
+        fetch_runs_windowed=lambda *_args: ("run-dir",),
+    )
+    scopes = []
+
+    def _scope(n_unreliable, dates, **kw):
+        scopes.append(kw["n_failed"])
+        return reliable_only
+
+    monkeypatch.setattr(rel, "render_reliability_scope", _scope)
+    figures = []
+    monkeypatch.setattr(trend.st, "plotly_chart", lambda fig, **_kw: figures.append(fig))
+    monkeypatch.setattr(trend.st, "caption", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(trend, "_metric_history", lambda *_args, **_kwargs: history)
+    trend.render_metric_trend(
+        _confirmed(), "url", "sim", "cache",
+        list_run_dates=lambda *_args: {}, fetch_runs_windowed=lambda *_args: (),
+        widget_namespace="test",
+    )
+    assert scopes == [1]
+    line = next(tr for tr in figures[0].data if tr.mode == "lines+markers")
+    assert list(line.y) == ([5.0, 6.0] if reliable_only else [5.0, 1.0, 6.0])
+    failure_badges = [
+        tr for tr in figures[0].data
+        if tr.mode == "markers" and tr.hoverinfo != "skip"
+        and "Failed run" in (tr.hovertemplate or "")
+    ]
+    assert len(failure_badges) == badges
+
+
 def test_orphan_event_history_reports_missing_result_record(monkeypatch):
     import pandas as pd
 

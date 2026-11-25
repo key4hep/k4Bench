@@ -418,8 +418,13 @@ def test_dropping_the_reliable_rerun_leaves_the_flagged_run_standing():
     assert hist["severity"].tolist() == ["CONFIRMED"]
 
 
-def _flag_trend_series(monkeypatch, *, exclude: bool) -> pd.DataFrame:
-    """The series the Regression Status trend preview would plot."""
+def _flag_trend_series(
+    monkeypatch, *, exclude: bool, failed: bool = False,
+    captured: dict | None = None,
+) -> pd.DataFrame:
+    """The series the Regression Status trend preview would plot. With
+    *failed*, a third night's config failed; *captured* receives the failure
+    markers the preview would draw, under ``"failures"``."""
     n1 = data.report_metrics_frame(NightlyReport(generated_at="", groups=[
         _group("CLD", [_verdict(value=100.0, severity=Severity.CONFIRMED)],
                run_date="2026-07-01", k4h_release="key4hep-2026-07-01"),
@@ -428,12 +433,23 @@ def _flag_trend_series(monkeypatch, *, exclude: bool) -> pd.DataFrame:
         _group("CLD", [_verdict(value=200.0, severity=Severity.OK)],
                run_date="2026-07-02", k4h_release="key4hep-2026-07-01"),
     ]))
+    nights = [("2026-07-01", n1), ("2026-07-02", n2)]
+    if failed:
+        nights.append(("2026-07-03", data.report_metrics_frame(NightlyReport(
+            generated_at="", groups=[_group("CLD", [
+                _verdict(value=5.0),
+                _verdict(
+                    metric="returncode", metric_family="status", value=139.0,
+                    severity=Severity.FAILURE,
+                ),
+            ], run_date="2026-07-03", k4h_release="key4hep-2026-07-03")],
+        ))))
     flagged = _verdict(value=100.0, severity=Severity.CONFIRMED)
     groups = [_group("CLD", [flagged], run_date="2026-07-02")]
 
     monkeypatch.setattr(
         status, "render_run_reliability_filter",
-        lambda rel_hist, *, key, slot=None: ({("2026-07-01", "CLD")}, exclude),
+        lambda rel_hist, *, key, slot=None, failed=None: ({("2026-07-01", "CLD")}, exclude),
     )
     monkeypatch.setattr(status, "reset_widget_on_scope", lambda *a, **kw: None)
     # The picker's own behaviour is the Regressions tab's to test; here it just
@@ -441,11 +457,12 @@ def _flag_trend_series(monkeypatch, *, exclude: bool) -> pd.DataFrame:
     monkeypatch.setattr(
         status, "render_metric_picker", lambda choices, **kw: choices[0],
     )
-    captured = {}
-    monkeypatch.setattr(
-        status, "_flag_trend_figure",
-        lambda series, v, failures=None: captured.setdefault("series", series),
-    )
+    captured = {} if captured is None else captured
+
+    def _figure(series, v, failures=None):
+        captured.update(series=series, failures=failures)
+
+    monkeypatch.setattr(status, "_flag_trend_figure", _figure)
 
     class _Container:
         def __enter__(self):
@@ -464,10 +481,7 @@ def _flag_trend_series(monkeypatch, *, exclude: bool) -> pd.DataFrame:
         container = staticmethod(lambda *a, **kw: _Container())
 
     monkeypatch.setattr(status, "st", _St)
-    status._render_flag_trend(
-        groups, [("2026-07-01", n1), ("2026-07-02", n2)],
-        "PLAT", "single_e", pd.DataFrame(),
-    )
+    status._render_flag_trend(groups, nights, "PLAT", "single_e", pd.DataFrame())
     return captured["series"]
 
 
@@ -485,6 +499,42 @@ def test_status_trend_preview_keeps_every_run_when_exclusion_is_off(monkeypatch)
     series = _flag_trend_series(monkeypatch, exclude=False)
     assert series["value"].tolist() == [200.0]
     assert series["severity"].tolist() == ["CONFIRMED"]
+
+
+@pytest.mark.parametrize(("exclude", "shown"), [(True, []), (False, [5.0])])
+def test_status_trend_preview_shows_failures_under_all_runs_only(
+    monkeypatch, exclude, shown,
+):
+    captured: dict = {}
+    _flag_trend_series(monkeypatch, exclude=exclude, failed=True, captured=captured)
+    assert captured["failures"]["value"].tolist() == shown
+
+
+def test_run_scope_counts_failed_runs_and_offers_the_choice_for_them_alone(monkeypatch):
+    # No unreliable run, one failed config: the selector is still drawn, so the
+    # failure Reliable only hides can be brought back.
+    from tabs import _reliability as rel
+
+    seen = {}
+
+    def _scope(n_unreliable, dates, **kw):
+        seen.update(n_unreliable=n_unreliable, **kw)
+        return True
+
+    monkeypatch.setattr(rel, "render_reliability_scope", _scope)
+    failed = pd.DataFrame({
+        "night": ["2026-07-03", "2026-07-03"], "run_night": ["2026-07-03"] * 2,
+        "detector": ["CLD", "CLD"], "metric": ["mean_time_s", "peak_rss_mb"],
+    })
+    rel_hist = pd.DataFrame(columns=["night", "run_night", "detector", "reliable"])
+    pairs, exclude = rel.render_run_reliability_filter(
+        rel_hist, key="k", failed=failed,
+    )
+    assert (pairs, exclude) == (set(), True)
+    assert seen["n_unreliable"] == 0
+    assert seen["n_failed"] == 1
+    assert seen["failed_dates"] == ["2026-07-03"]
+    assert rel.render_run_reliability_filter(rel_hist, key="k") == (set(), False)
 
 
 def test_drop_unreliable_runs_is_a_no_op_without_pairs():
@@ -1042,7 +1092,7 @@ def test_trend_notes_separates_why_each_detector_is_absent():
         {"ALLEGRO": "2026-01-02"},
     )
     joined = " ".join(notes)
-    assert "excluded as unreliable: SiD." in joined
+    assert "failed or was excluded as unreliable (All runs shows them): SiD." in joined
     assert "No value for the selected metrics: IDEA." in joined
     assert "No run in the trend window: ALLEGRO (last ran 2026-01-02)." in joined
     assert "Not benchmarked with this sample/platform: SiD_o2." in joined
@@ -1079,7 +1129,10 @@ def test_trend_notes_prefers_the_unreliable_reason_over_the_failure_one():
         _hist([]), _hist([("SiD", "wall_time_s", 3.0)]),
         "wall_time_s", "peak_rss_mb", ["SiD"], ["SiD"], [], {},
     )
-    assert notes == ["Every run in the window excluded as unreliable: SiD."]
+    assert notes == [
+        "Every run in the window failed or was excluded as unreliable "
+        "(All runs shows them): SiD."
+    ]
 
 
 # ── Shared contracts ───────────────────────────────────────────────────────────
