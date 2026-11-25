@@ -379,11 +379,14 @@ means exactly what it means there. Flags appear on the metrics the engine judges
 verdict since throughput is exactly `n_events / wall_time_s` (the same
 regression, inverted); user CPU, peak RSS, CPU efficiency and context switches
 are recorded only and carry none. Runs that
-failed the host-reliability check are excluded by default with the same
-**Runs · ⚠ N unreliable** selector as every other historical view: **Reliable
-only** (the default) or **All runs**. The **Data range** caption above the
-chart spans the nightly tags actually plotted; a tag whose every run was
-excluded is counted apart (`9 nightly tags · 1 hidden as unreliable`), so the
+failed the host-reliability check, and failed configs, are excluded by default
+with the same **Runs · ⚠️ N unreliable · ❌ N failed** selector as every other
+historical view: **Reliable only** (the default) or **All runs**, which plots
+the unreliable runs on the line and each failed config as a ❌ marker at its
+partial value. The selector appears whenever the window holds either kind and
+counts only the kinds present. The **Data range** caption above the chart
+spans the nightly tags actually plotted; a tag whose every run was hidden is
+counted apart (`9 nightly tags · 1 hidden as unreliable or failed`), so the
 caption and the chart never disagree. Palette, style cycling, opacity
 and line smoothing sit in this tab's [Display options](#display-options)
 popover, alongside the pills on the same row.
@@ -543,7 +546,10 @@ step-change detector (`k4bench/regression/`):
   good or bad — a regression is simply any confirmed step beyond the baseline in
   either direction.
 - **Failures.** A config exiting non-zero, or a whole run missing, is a
-  **❌ Failure** and skips the confirmation step (it alerts immediately).
+  **❌ Failure** and skips the confirmation step (it alerts immediately). A
+  triple whose runs the report could not read from EOS is listed the same way,
+  as *not judged*, with the reason; it has no verdicts that night rather than
+  verdicts judged on part of its history.
 - **Region timing** (sub-detector) is *not* flagged — it is the noisiest series
   in the system, dominated by timer-granularity wobble at microsecond scale, so
   the regression report judges only top-level run and per-event metrics.
@@ -599,6 +605,9 @@ flagged metric worst first, each option carrying its own severity badge and
 Δ-vs-baseline — so scanning the list alone shows the size of every flag,
 without a separate ledger table. The preview opens on the most severe flag
 automatically; switch it to any other flagged metric, or to "—" to hide it.
+Its run-scope selector hides other runs' failed configs under **Reliable only**
+as everywhere else, but never the flagged run's own: a failure's drill-down
+always shows the run it is about.
 Confirmed regressions and failures — and only those — are also emailed to the
 team's e-group by the same CI job, with per-group links landing directly on
 this scoped view, pinned (via `stack=` and `report=`) to the exact report
@@ -744,10 +753,11 @@ Like every tab-local view selector in the dashboard, the Overview switcher uses
 simple horizontal radio buttons under a bold **View** label. It is visually
 separate from a single bordered comparison toolbar. **Time**, **Memory**,
 **Event size** (Performance Trends only) and **Scale** form its left-hand group; **Regressions** and the explicit
-**Runs · ⚠ N unreliable** choice form its right-hand group on the same row.
-When unreliable runs are present, that choice offers:
-**Reliable only** (the default) or **All runs**; affected dates and the Machine
-Info pointer live in the control's help instead of a separate banner. The rows
+**Runs · ⚠️ N unreliable · ❌ N failed** choice form its right-hand group on the same row.
+When unreliable runs or (in Performance Trends) failed measurements are present,
+that choice offers **Reliable only** (the default), which hides both, or
+**All runs**; affected dates and the Machine Info and Logs pointers live in the
+control's help instead of a separate banner. The rows
 wrap naturally on narrow screens, with no CSS override. Each detector family
 has its own vertical legend below the figure: the family is the heading and its
 versions sit directly beneath it, while every version remains individually
@@ -845,7 +855,10 @@ comparisons read at a glance. Runs that failed the host-reliability check are
 excluded by default with the same **Reliable only / All runs** selector as every historical
 view (the nightly report carries each night's per-detector verdict); their raw
 values are still recorded — as unjudged points, never flagged — so choosing
-**All runs** plots them like Run Trends does. One selector covers all three views,
+**All runs** plots them like Run Trends does. Failed measurements are hidden
+under **Reliable only** too and drawn as ❌ markers under **All runs**; a
+detector whose every run in the window was hidden is named in the caption below
+the chart. One selector covers all three views,
 the Regression Status trend preview included, and it reaches
 every report in view — including nights outside the trend window, which the
 landscape and the night picker both read, and any the landscape reaches back to
@@ -1218,9 +1231,17 @@ The trend window is found from directory listings alone, so moving it
 downloads nothing; a history view downloads the files it draws of the
 window's runs when it opens.
 
-Historical runs are **immutable**, so each file is downloaded at most once
+A run is read only once its upload has finished, which its `run_info.json`
+shows ([File formats → Uploading a run](../../reference/file-formats.md#uploading-a-run)):
+one chosen while the nightly is still uploading it says so and is read again on
+the next interaction, and one in a trend window is left out of it until then.
+A finished run is taken to be **immutable**, so each file is downloaded at most once
 into `K4BENCH_CACHE_DIR`, below `subsets/` in the store's own layout, and
-reused by every later view and session. Each file is published with an atomic
+reused by every later view and session. A same-day re-run that replaces a run
+already downloaded is seen once a view asks for a file of it not yet
+downloaded: every download checks the run's `run_info.json`, and finding
+another attempt's discards what was downloaded of the run and starts again.
+Each file is published with an atomic
 `rename`, so a reader never sees half of one. Each run's `.artifacts.json`
 keeps the run's listing and, for every file asked for, whether it was
 fetched, is absent from the run, or failed; a failed file is downloaded again

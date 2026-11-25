@@ -12,6 +12,10 @@ sample, config, metric) series, and writes
 
 Exit code is 0 whenever the report was produced, regardless of its content —
 alert delivery is gated on report.json's ``summary`` block by the workflow.
+That includes a report with triples it could not read from EOS: each is in the
+report, and so in the email, as *not judged*, and is raised as a warning
+annotation on the CI run (:func:`annotate_unread`). A report that read no run
+at all says nothing about the night, so it is refused (:func:`require_a_read`).
 
 ``--as-of`` rebuilds a *past* night instead of the newest one, truncating every
 series to runs on or before it. That is how a report is regenerated after the
@@ -23,7 +27,12 @@ it the report would carry the previous night's date and verdicts again.
 
 ``--fanout-run-id`` is the nightly CI case of that: the report must hold a run
 made by the named Actions run, or it is last night's report again and tonight
-is reported as an outage instead (see :func:`outage_report`).
+is reported as an outage instead (see :func:`outage_report`). That takes every
+triple having been read: when some could not be, tonight's uploads may be among
+them, so nothing is published and the exit code is non-zero
+(:class:`~k4bench.regression.report_builder.Coverage`). If every triple was read
+and only older releases' history names the fan-out, the job succeeds without
+writing a report.
 """
 from __future__ import annotations
 
@@ -128,6 +137,37 @@ def outage_report(
     return report
 
 
+def require_a_read(report: NightlyReport) -> None:
+    """Refuses a report whose every triple could not be read from EOS.
+
+    Such a report holds no run, so it has no night of its own to file under,
+    and publishing it would replace whatever report EOS holds for the night it
+    guessed. Exits non-zero and publishes nothing; the next run of the report
+    rebuilds the night.
+    """
+    if report.groups and all(g.unread for g in report.groups):
+        raise SystemExit(
+            f"ERROR: none of the {len(report.groups)} triple(s) could be read "
+            "from EOS — publishing nothing"
+        )
+
+
+def annotate_unread(report: NightlyReport) -> None:
+    """One GitHub Actions warning per triple the report could not read.
+
+    The report itself says so and is published, so the job stays green — a red
+    report job would also hold back the dashboard deploy that waits on a
+    successful nightly — but the run's summary page names each triple.
+    """
+    for g in report.groups:
+        if not g.unread:
+            continue
+        # Workflow commands percent-decode their message; a URL in the reason
+        # may carry a literal "%".
+        message = "; ".join(g.job_failures).replace("%", "%25")
+        print(f"::warning title=Not judged::{g.detector}/{g.platform}/{g.sample}: {message}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -177,7 +217,9 @@ def main(argv: list[str] | None = None) -> int:
              "(default: $K4BENCH_FANOUT_RUN_ID). A report holding none of its "
              "runs is last night's again: tonight is then reported as an "
              "outage, as with --night, or nothing is written and the exit "
-             "code is non-zero. Omit for a manual rebuild of whatever EOS holds",
+             "code is non-zero — as it is when triples that could not be read "
+             "leave that unknown. A fan-out found only in older releases' history "
+             "succeeds without a report. Omit for a manual rebuild of whatever EOS holds",
     )
     args = parser.parse_args(argv)
     # Not in the exclusive group above: argparse checks only flags actually
@@ -195,10 +237,11 @@ def main(argv: list[str] | None = None) -> int:
     from k4bench.regression.email import to_markdown
     from k4bench.regression.render import to_json
     from k4bench.regression.report_builder import (
+        Coverage,
+        ReportReads,
         build_nightly_report,
         build_nightly_report_local,
-        report_covers_run,
-        report_holds_run_as_history,
+        fanout_coverage,
     )
 
     if args.data_dir:
@@ -206,19 +249,28 @@ def main(argv: list[str] | None = None) -> int:
             build_nightly_report_local, args.data_dir, args.suite, as_of=args.as_of,
         )
     elif args.data_url:
+        # One bound on EOS reads for the job: the outage rebuild below reads
+        # again, within what the first build left.
         build = partial(
             build_nightly_report, args.data_url, args.suite, args.cache_dir,
-            as_of=args.as_of,
+            as_of=args.as_of, reads=ReportReads(),
         )
     else:
         parser.error("either --data-url (or $K4BENCH_DATA_URL) or --data-dir is required")
 
     report = build(night=args.night)
-    if args.fanout_run_id and not report_covers_run(report, args.fanout_run_id):
-        if report_holds_run_as_history(report, args.fanout_run_id):
-            # A pinned older release benchmarked on a night a newer release
-            # already ran: its runs are history of their own release, and the
-            # night is the newer run's fan-out's to report.
+    require_a_read(report)
+    if args.fanout_run_id:
+        coverage = fanout_coverage(report, args.fanout_run_id)
+        if coverage is Coverage.UNKNOWN:
+            raise SystemExit(
+                f"ERROR: no triple read names run {args.fanout_run_id} as its nightly run, but "
+                f"{sum(g.unread for g in report.groups)} triple(s) could not be "
+                "read from EOS and may hold a nightly run from this fan-out. "
+                "Publishing nothing. Re-run the "
+                "report job to rebuild the night once EOS answers."
+            )
+        if coverage is Coverage.HISTORY_ONLY:
             print(
                 f"run {args.fanout_run_id} benchmarked only releases older than "
                 f"the {report.report_night} run filed beside them: their runs "
@@ -226,7 +278,10 @@ def main(argv: list[str] | None = None) -> int:
                 "publish for it.", file=sys.stderr,
             )
             return 0
-        report = outage_report(build, report, args.fanout_run_id, tonight())
+        if coverage is Coverage.ABSENT:
+            report = outage_report(build, report, args.fanout_run_id, tonight())
+            require_a_read(report)
+    annotate_unread(report)
 
     out = Path(args.output_dir)
     out.mkdir(parents=True, exist_ok=True)

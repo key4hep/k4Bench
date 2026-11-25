@@ -280,13 +280,18 @@ def _render_flag_trend(
     reliability_slot = actions.empty()
     if v is None:
         return
+    rows = history_rows(status_frames, platform, sample, v.label)
+    failed_rows = rows[rows["severity"] == Severity.FAILURE.value]
     unreliable_pairs, exclude_unreliable = render_run_reliability_filter(
         status_rel_hist, key=f"{key_prefix}det_ov_exclude_unreliable",
         slot=reliability_slot,
+        failed=failed_rows[
+            (failed_rows["detector"] == v.detector)
+            & (failed_rows["metric"] == v.metric)
+        ],
     )
-    rows = history_rows(status_frames, platform, sample, v.label)
-    failed_rows = rows[rows["severity"] == Severity.FAILURE.value]
     if exclude_unreliable:
+        failed_rows = failed_rows.iloc[0:0]
         rows = drop_unreliable_runs(
             rows[rows["severity"] != Severity.FAILURE.value],
             unreliable_pairs,

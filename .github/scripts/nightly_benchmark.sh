@@ -163,11 +163,48 @@ command -v xrdcp >/dev/null || { echo "ERROR: xrdcp not found" >&2; exit 1; }
 
 xrdfs "root://${EOS_FQDN}" mkdir -p "${EOS_RUN}"
 
+# A run directory holds one attempt's files, and run_info.json tells readers
+# they are all there (k4bench.remote.UPLOAD_PROTOCOL_SINCE). A re-run of the same job,
+# release and day lands in the same directory, so run_info.json is taken down
+# before anything else changes and uploaded last, and the files only an earlier
+# attempt wrote are removed: a reader never takes a directory mid-upload, or two
+# attempts' files, for one finished run. eos.atomic makes each file's name
+# appear only once all of it is written, and keeps an overwritten one readable
+# until then.
+remove() {
+    echo "  ✗ $1 ($2)"
+    xrdfs "root://${EOS_FQDN}" rm "${EOS_RUN}/$1" \
+        || { echo "ERROR: Failed to remove ${EOS_RUN}/$1" >&2; exit 1; }
+}
+upload() {
+    echo "  → $(basename "$1")"
+    xrdcp --force "$1" "${EOS_URL}/$(basename "$1")?eos.atomic=1" \
+        || { echo "ERROR: Failed to upload $1" >&2; exit 1; }
+}
+
+REMOTE_LISTING="$(xrdfs "root://${EOS_FQDN}" ls "${EOS_RUN}")" \
+    || { echo "ERROR: Failed to list ${EOS_URL}" >&2; exit 1; }
+REMOTE_NAMES=()
+while IFS= read -r remote; do
+    if [[ -n "${remote}" ]]; then REMOTE_NAMES+=("$(basename "${remote}")"); fi
+done <<< "${REMOTE_LISTING}"
+declare -A UPLOADING=()
 for f in "${OUTPUT_DIR}"/*; do
-    echo "  → $(basename "${f}")"
-    xrdcp --force "${f}" "${EOS_URL}/$(basename "${f}")" \
-        || { echo "ERROR: Failed to upload ${f}" >&2; exit 1; }
+    UPLOADING["$(basename "${f}")"]=1
 done
+
+if [[ " ${REMOTE_NAMES[*]} " == *" run_info.json "* ]]; then
+    remove run_info.json "replaced last"
+fi
+for name in "${REMOTE_NAMES[@]}"; do
+    if [[ "${name}" != run_info.json && -z "${UPLOADING[${name}]:-}" ]]; then
+        remove "${name}" "an earlier attempt's"
+    fi
+done
+for f in "${OUTPUT_DIR}"/*; do
+    if [[ "$(basename "${f}")" != run_info.json ]]; then upload "${f}"; fi
+done
+upload "${OUTPUT_DIR}/run_info.json"
 echo "Uploaded to: ${EOS_URL}"
 echo "::endgroup::"
 

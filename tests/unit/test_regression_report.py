@@ -13,10 +13,12 @@ import requests
 
 import pandas as pd
 
-from k4bench.layout import RECO, SIM, run_path
+from k4bench.layout import RECO, SIM, iter_run_dirs, run_path
+from k4bench.regression import report_builder
 from k4bench.regression.engine import BASELINE_WINDOW_RUNS
 from k4bench.regression.lineage import DETECTOR_SUCCESSORS, PLATFORM_SUCCESSORS
 from k4bench.regression.models import (
+    UNREAD_FAILURE,
     Direction,
     MetricVerdict,
     NightlyReport,
@@ -24,6 +26,8 @@ from k4bench.regression.models import (
     Severity,
     Unjudged,
 )
+from k4bench.regression.render import from_json, to_json
+from k4bench.remote import IncompleteFetch
 from k4bench.regression.catalog import (
     EVENT_METRICS,
     EVENT_REPORTED_ONLY_METRICS,
@@ -106,6 +110,7 @@ def _write_run(
     platform: str = _PLAT,
     github_run_url: str | None = None,
     configured_labels: tuple[str, ...] | None = None,
+    xml_path: str | None = None,
     event_time_s: float | None = None,
     result_overrides: dict[str, dict] | None = None,
     random_seed: int | None = 4242,
@@ -131,6 +136,8 @@ def _write_run(
     }
     if configured_labels is not None:
         run_info["configured_labels"] = list(configured_labels)
+    if xml_path is not None:
+        run_info["xml_path"] = xml_path
     (run_dir / "run_info.json").write_text(json.dumps(run_info))
     result_overrides = result_overrides or {}
     for label in labels:
@@ -556,6 +563,36 @@ def test_first_ever_night_with_no_results_and_no_roster_is_not_reported(tmp_path
     ) is None
 
 
+def test_night_with_no_results_keeps_its_ci_run_and_geometry(tmp_path):
+    """A night that wrote no CSV still recorded where it came from: its CI run
+    and geometry are tonight's run_info, not an earlier night's or nothing."""
+    tonight_url = "https://ci.example/runs/900"
+    run_dirs = _make_history(
+        tmp_path,
+        [100.0, 100.0, 100.0],
+        {
+            0: {"github_run_url": "https://ci.example/runs/898",
+                "xml_path": "FCCee/DET/compact/old.xml"},
+            1: {"github_run_url": "https://ci.example/runs/899",
+                "xml_path": "FCCee/DET/compact/old.xml"},
+            2: {
+                "labels": (),
+                "configured_labels": ("baseline",),
+                "github_run_url": tonight_url,
+                "xml_path": "FCCee/DET/compact/new.xml",
+            },
+        },
+    )
+    group = group_report_from_run_dirs(
+        SIM, "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+    )
+    assert group is not None
+    assert group.run_date == "2026-01-03"
+    assert group.github_run_url == tonight_url
+    assert group.geometry_path == "FCCee/DET/compact/new.xml"
+    assert group.job_failures == ["config 'baseline' produced no results tonight"]
+
+
 def _local_tree(root: Path, detector: str, sample: str) -> Path:
     return root / run_path(SIM, detector) / _PLAT / _STACK / sample
 
@@ -784,6 +821,43 @@ def test_a_different_ci_batch_past_the_grace_period_is_retired(tmp_path):
     report = build_nightly_report_local(str(tmp_path), SIM)
 
     assert set(report.by_detector()) == {"DET_A"}
+
+
+_FAILED_TONIGHT = {"labels": (), "configured_labels": ("baseline",),
+                   "github_run_url": f"{_RUN}/900"}
+
+
+def test_a_fanout_whose_every_job_wrote_no_results_is_still_covered(tmp_path):
+    # Every job of fan-out 900 failed before writing a result CSV but uploaded
+    # its run_info. The report is that fan-out's: it names the failed configs,
+    # and must not read as a fan-out that uploaded nothing (which would send it
+    # down the outage path, refused because tonight's runs are on EOS).
+    for detector in ("DET_A", "DET_B"):
+        _make_history(_local_tree(tmp_path, detector, "single_e"), [100.0] * 13,
+                      per_night={12: _FAILED_TONIGHT})
+    report = build_nightly_report_local(str(tmp_path), SIM)
+
+    assert report.report_night == "2026-01-13"
+    assert report_covers_run(report, "900")
+    for group in report.groups:
+        assert group.github_run_url == f"{_RUN}/900"
+        assert group.job_failures == ["config 'baseline' produced no results tonight"]
+
+
+def test_a_job_that_wrote_no_results_still_joins_its_batch_across_midnight(tmp_path):
+    # DET_B's job started before midnight and failed before writing a CSV; its
+    # run_info names tonight's CI run, so it is tonight's failure, not a run
+    # that never arrived.
+    _make_history(_local_tree(tmp_path, "DET_A", "single_e"), [100.0] * 13,
+                  per_night={12: {"github_run_url": f"{_RUN}/900"}})
+    _make_history(_local_tree(tmp_path, "DET_B", "single_e"), [100.0] * 12,
+                  per_night={11: _FAILED_TONIGHT})
+    report = build_nightly_report_local(str(tmp_path), SIM)
+
+    late = next(g for g in report.groups if g.detector == "DET_B")
+    assert late.run_date == "2026-01-12"
+    assert late.job_failures == ["config 'baseline' produced no results tonight"]
+    assert any("same CI run" in note for note in late.notes)
 
 
 # ── Outage nights ─────────────────────────────────────────────────────────────
@@ -1865,3 +1939,458 @@ def test_stability_is_never_serialized():
     fields = {f.name for f in dataclasses.fields(RunResult)}
     fields |= {f.name for f in dataclasses.fields(MetricVerdict)}
     assert not {name for name in fields if "spread" in name or "stabil" in name}
+
+
+# ── EOS reads: strict, retried, and a triple that stays unread is reported ────
+
+_STEP_WALLS = [100.0, 100.4, 99.6, 100.2, 99.8, 100.3, 99.7, 100.1, 99.9, 100.0,
+               120.0, 120.5]
+_SID, _CLD = "SiD_o2_v03", "CLD_o3_v01"
+_GCC16 = "x86_64-el9-gcc16-opt"  # continues _PLAT's series (PLATFORM_SUCCESSORS)
+_TONIGHT = _nights(len(_STEP_WALLS))[-1]
+
+
+def _store_tree(
+    root: Path, detector: str, *, platform: str = _PLAT, sample: str = "single_e",
+    walls: list[float] = _STEP_WALLS, start: str = "2026-01-01",
+) -> None:
+    """One release per night, filed under the store's layout as the nightly does."""
+    for night, wall in zip(_nights(len(walls), start), walls):
+        _write_run(
+            root / run_path(SIM, detector) / platform / f"key4hep-{night}" / sample / night,
+            night=night, wall_time_s=wall, sample=sample, platform=platform,
+        )
+
+
+class _Store:
+    """The WebEOS reads :func:`build_nightly_report` makes, served from a local
+    tree with the store's layout and honouring ``strict`` as
+    :mod:`k4bench.remote` does: lenient, a read that is not answered is left
+    out; strict, it raises :class:`IncompleteFetch`.
+
+    ``fail[key]`` is how many times the read *key* goes unanswered before it
+    answers, ``None`` for never. Keys: ``("detectors",)``,
+    ``("scan", detector, platform)``,
+    ``("dates", detector, platform, sample, stack)`` and
+    ``("fetch", detector, platform, sample, stack, date)``.
+    """
+
+    def __init__(
+        self, root: Path, fail: dict[tuple, int | None] | None = None,
+        clock: _Clock | None = None, tick: float = 0.0,
+    ):
+        self.root = root
+        self.fail = dict(fail or {})
+        self.runs = list(iter_run_dirs(root, SIM))
+        #: Every read made, by key; each moves *clock* on by *tick* seconds.
+        self.requests: list[tuple] = []
+        self.clock, self.tick = clock, tick
+
+    def install(self, monkeypatch) -> _Store:
+        for name in (
+            "list_detectors", "list_platforms", "scan_stack_samples",
+            "list_run_dates_all_stacks", "fetch_runs_windowed",
+        ):
+            monkeypatch.setattr(report_builder, name, getattr(self, name))
+        return self
+
+    def _unanswered(self, key: tuple) -> bool:
+        self.requests.append(key)
+        if self.clock is not None:
+            self.clock.now += self.tick
+        left = self.fail.get(key, 0)
+        if left is None:
+            return True
+        if left:
+            self.fail[key] = left - 1
+        return bool(left)
+
+    @staticmethod
+    def _timeout(where: str) -> str:
+        return f"{where}: 504 Server Error: Gateway Time-out for url: https://eos.invalid/%2Bx"
+
+    def list_detectors(self, data_url, suite):
+        if self._unanswered(("detectors",)):
+            raise IncompleteFetch([], [self._timeout("SiD")])
+        return sorted({r.detector for r in self.runs})
+
+    def list_platforms(self, data_url, suite, detector):
+        return sorted({r.platform for r in self.runs if r.detector == detector})
+
+    def scan_stack_samples(self, data_url, suite, detector, platform, *, strict=False):
+        out: dict[str, set[str]] = {}
+        for r in self.runs:
+            if (r.detector, r.platform) == (detector, platform):
+                out.setdefault(r.stack, set()).add(r.sample)
+        if self._unanswered(("scan", detector, platform)):
+            if strict:
+                raise IncompleteFetch({}, [self._timeout(max(out))])
+            del out[max(out)]
+        return {stack: sorted(samples) for stack, samples in out.items()}
+
+    def list_run_dates_all_stacks(self, data_url, suite, detector, platform, sample, *,
+                                  strict=False):
+        if not any((r.detector, r.platform) == (detector, platform) for r in self.runs):
+            absent = requests.Response()
+            absent.status_code = 404
+            raise requests.HTTPError(response=absent)
+        mine = [r for r in self.runs if (r.detector, r.platform, r.sample)
+                == (detector, platform, sample)]
+        out: dict[str, list[str]] = {}
+        failures: list[str] = []
+        for stack in sorted({r.stack for r in mine}):
+            if self._unanswered(("dates", detector, platform, sample, stack)):
+                failures.append(self._timeout(stack))
+                if strict:
+                    break
+                continue
+            out[stack] = sorted(r.date for r in mine if r.stack == stack)
+        if strict and failures:
+            raise IncompleteFetch(out, failures)
+        return out
+
+    def fetch_runs_windowed(self, data_url, suite, detector, platform, sample, stacks_dates,
+                            cache_root=None, *, strict=False):
+        results: list[dict] = []
+        failures: list[str] = []
+        for stack, dates in stacks_dates.items():
+            for night in dates:
+                if self._unanswered(("fetch", detector, platform, sample, stack, night)):
+                    failures.append(self._timeout(f"{stack}/{night}"))
+                    continue
+                path = self.root / run_path(SIM, detector, platform, stack, sample, night)
+                results.append({"stack": stack, "date": night, "run_dir": str(path)})
+        if strict and failures:
+            raise IncompleteFetch(results, failures)
+        return results
+
+
+class _Clock:
+    """The report's monotonic clock, moved by its waits and by the store."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.waits: list[float] = []
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.waits.append(seconds)
+        self.now += seconds
+
+
+@pytest.fixture
+def clock(monkeypatch) -> _Clock:
+    fake = _Clock()
+    monkeypatch.setattr(report_builder, "_clock", fake)
+    monkeypatch.setattr(report_builder, "_sleep", fake.sleep)
+    return fake
+
+
+@pytest.fixture
+def sleeps(clock) -> list[float]:
+    """Every backoff the report waits, without waiting."""
+    return clock.waits
+
+
+def _build(
+    monkeypatch, root: Path, fail: dict | None = None, store: _Store | None = None,
+) -> NightlyReport:
+    (store or _Store(root, fail)).install(monkeypatch)
+    return report_builder.build_nightly_report("https://eos.invalid", SIM)
+
+
+def _content(report: NightlyReport) -> dict:
+    data = to_json(report)
+    del data["generated_at"]
+    return data
+
+
+def test_a_listing_that_is_not_answered_at_first_is_retried_into_the_same_report(
+    tmp_path, monkeypatch, sleeps,
+):
+    _store_tree(tmp_path, _SID)
+    healthy = _build(monkeypatch, tmp_path)
+    assert healthy.regressions, "the history steps, so a confirmed verdict is at stake"
+    assert sleeps == []
+
+    # One stack's listing times out once. Read leniently, that release's night
+    # would silently leave the history; read strictly, it is asked again.
+    flaky = _build(monkeypatch, tmp_path, {
+        ("dates", _SID, _PLAT, "single_e", f"key4hep-{_nights(1)[0]}"): 1,
+    })
+    assert _content(flaky) == _content(healthy)
+    assert sleeps == [report_builder.READ_BACKOFF_S[0]]
+
+
+def test_a_download_that_is_never_answered_leaves_its_triple_not_judged(
+    tmp_path, monkeypatch, sleeps,
+):
+    _store_tree(tmp_path, _SID)
+    _store_tree(tmp_path, _CLD)
+    healthy = _build(monkeypatch, tmp_path)
+
+    report = _build(monkeypatch, tmp_path, {
+        ("fetch", _SID, _PLAT, "single_e", f"key4hep-{_TONIGHT}", _TONIGHT): None,
+    })
+    by_det = {g.detector: g for g in report.groups}
+    assert set(by_det) == {_SID, _CLD}
+
+    sid = by_det[_SID]
+    assert sid.unread and not sid.missing_run
+    assert sid.verdicts == [] and sid.reliable is None and sid.k4h_release == ""
+    assert sid.run_date == sid.run_id == report.report_night == _TONIGHT
+    [failure] = sid.job_failures
+    assert failure.startswith(f"{UNREAD_FAILURE} its runs could not be read from EOS — ")
+    assert f"key4hep-{_TONIGHT}/{_TONIGHT}" in failure
+    assert len(failure) <= len(UNREAD_FAILURE) + 50 + report_builder._REASON_CHARS
+    # It alerts as a failure; it is not a regression, and nothing else moves.
+    from k4bench.regression.email import to_markdown
+    assert report.has_alertable
+    assert (sid, failure) in report.job_failures
+    assert failure in to_markdown(report)
+    assert all(v.detector == _CLD for v in report.regressions)
+    healthy_cld = next(g for g in healthy.groups if g.detector == _CLD)
+    assert to_json(NightlyReport("", [by_det[_CLD]])) == to_json(NightlyReport("", [healthy_cld]))
+    # Every retry was spent on the one triple, then it gave up.
+    assert sleeps == list(report_builder.READ_BACKOFF_S)
+
+
+def test_a_not_judged_triple_survives_the_report_json_round_trip(tmp_path, monkeypatch, sleeps):
+    _store_tree(tmp_path, _SID)
+    _store_tree(tmp_path, _CLD)
+    report = _build(monkeypatch, tmp_path, {
+        ("dates", _CLD, _PLAT, "single_e", f"key4hep-{_TONIGHT}"): None,
+    })
+    back = from_json(json.loads(json.dumps(to_json(report))))
+    [cld] = [g for g in back.groups if g.detector == _CLD]
+    assert cld.unread and cld.run_date == _TONIGHT
+    assert back.report_night == _TONIGHT
+
+
+def test_a_triple_whose_report_cannot_be_built_is_reported_not_dropped(
+    tmp_path, monkeypatch, sleeps,
+):
+    _store_tree(tmp_path, _SID)
+    _store_tree(tmp_path, _CLD)
+    real = report_builder.group_report_from_run_dirs
+
+    def build(suite, detector, *args, **kwargs):
+        if detector == _CLD:
+            raise ValueError("cannot reindex on an axis with duplicate labels")
+        return real(suite, detector, *args, **kwargs)
+
+    monkeypatch.setattr(report_builder, "group_report_from_run_dirs", build)
+    report = _build(monkeypatch, tmp_path)
+    [cld] = [g for g in report.groups if g.detector == _CLD]
+    assert cld.unread and cld.run_date == _TONIGHT
+    assert cld.job_failures == [
+        f"{UNREAD_FAILURE} its report could not be built — "
+        "ValueError: cannot reindex on an axis with duplicate labels"
+    ]
+    assert sleeps == []  # a bug is not asked again
+    assert any(g.detector == _SID and g.regressions for g in report.groups)
+
+
+def test_a_predecessor_that_cannot_be_read_leaves_the_series_not_judged(
+    tmp_path, monkeypatch, sleeps,
+):
+    # SiD on gcc16 continues its gcc14 series; judged without those nights it
+    # would be judged on a different baseline, so it is not judged at all.
+    _store_tree(tmp_path, _SID, walls=_STEP_WALLS[:8])
+    _store_tree(tmp_path, _SID, platform=_GCC16, walls=_STEP_WALLS[8:], start="2026-01-09")
+    healthy = _build(monkeypatch, tmp_path)
+    assert {g.platform for g in healthy.groups} == {_GCC16}  # gcc14 is replaced
+
+    report = _build(monkeypatch, tmp_path, {
+        ("dates", _SID, _PLAT, "single_e", "key4hep-2026-01-03"): None,
+    })
+    # The gcc14 triple cannot be read either, but it is replaced: it is retired
+    # as it would be when readable, not reported as not judged.
+    [group] = report.groups
+    assert group.platform == _GCC16 and group.unread
+    assert "could not be read from EOS" in group.job_failures[0]
+
+
+def test_retries_stop_once_the_report_has_spent_its_backoff_budget(
+    tmp_path, monkeypatch, sleeps,
+):
+    _store_tree(tmp_path, _SID)
+    _store_tree(tmp_path, _CLD)
+    monkeypatch.setattr(report_builder, "READ_BACKOFF_BUDGET_S", report_builder.READ_BACKOFF_S[0])
+    report = _build(monkeypatch, tmp_path, {
+        ("fetch", det, _PLAT, "single_e", f"key4hep-{_TONIGHT}", _TONIGHT): None
+        for det in (_SID, _CLD)
+    })
+    assert all(g.unread for g in report.groups)
+    # The first triple's first retry spends the budget; nothing waits after it.
+    assert sleeps == [report_builder.READ_BACKOFF_S[0]]
+
+
+def test_discovery_is_retried_and_stays_fatal_when_it_is_never_answered(
+    tmp_path, monkeypatch, sleeps,
+):
+    _store_tree(tmp_path, _SID)
+    once = _build(monkeypatch, tmp_path, {("scan", _SID, _PLAT): 1})
+    assert [g.detector for g in once.groups] == [_SID] and not once.groups[0].unread
+
+    with pytest.raises(IncompleteFetch):
+        _build(monkeypatch, tmp_path, {("scan", _SID, _PLAT): None})
+    with pytest.raises(IncompleteFetch):
+        _build(monkeypatch, tmp_path, {("detectors",): None})
+
+
+def test_read_retry_asks_again_only_when_the_store_did_not_answer(sleeps):
+    retry = report_builder.ReportReads()
+    absent = requests.Response()
+    absent.status_code = 404
+
+    def raises(exc):
+        def read():
+            raise exc
+        return read
+
+    with pytest.raises(requests.HTTPError):
+        retry(raises(requests.HTTPError(response=absent)), "gone")
+    with pytest.raises(PermissionError):  # a local error, not the store's
+        retry(raises(PermissionError("cache not writable")), "local")
+    assert sleeps == []
+
+    answers = iter([requests.ConnectionError("reset"), "listing"])
+
+    def flaky():
+        answer = next(answers)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    assert retry(flaky, "flaky") == "listing"
+    assert sleeps == [report_builder.READ_BACKOFF_S[0]]
+
+
+def _five_triples(root: Path) -> list[tuple[str, str, str]]:
+    """Five triples, in the order the report reads them."""
+    for detector in (_CLD, _SID, "ILD_FCCee_v02"):
+        for sample in ("single_e", "zbb")[: 1 if detector == "ILD_FCCee_v02" else 2]:
+            _store_tree(root, detector, sample=sample)
+    return [(r.detector, r.platform, r.sample) for r in iter_run_dirs(root, SIM)
+            if r.date == _TONIGHT]
+
+
+def _tonight_unanswered(triples) -> dict:
+    return {("fetch", d, p, s, f"key4hep-{_TONIGHT}", _TONIGHT): None for d, p, s in triples}
+
+
+def _requested(store: _Store, triple: tuple[str, str, str]) -> bool:
+    return any(key[1:4] == triple for key in store.requests if key[0] in ("dates", "fetch"))
+
+
+def test_reads_stop_at_the_deadline_and_the_rest_are_named_without_a_request(
+    tmp_path, monkeypatch, clock,
+):
+    triples = _five_triples(tmp_path)
+    # Every read takes a minute of a ten-minute deadline: a slow store, never
+    # an unanswered one, so neither retries nor the breaker are involved.
+    monkeypatch.setattr(report_builder, "READ_DEADLINE_S", 600.0)
+    store = _Store(tmp_path, clock=clock, tick=60.0)
+    report = _build(monkeypatch, tmp_path, store=store)
+
+    unread = [g for g in report.groups if g.unread]
+    read = [g for g in report.groups if not g.unread]
+    assert read and unread, "the deadline falls between triples"
+    assert [(g.detector, g.platform, g.sample) for g in read + unread] == triples
+    for g in unread:
+        assert g.job_failures == [
+            f"{UNREAD_FAILURE} its runs were not read — EOS reads stopped: "
+            "the report's 10-minute read deadline passed"
+        ]
+        assert not _requested(store, (g.detector, g.platform, g.sample))
+    # It overran by no more than the one read in flight: a triple's window,
+    # one listing and one download per night.
+    assert clock.now <= 600.0 + 60.0 * 2 * len(_STEP_WALLS)
+
+
+def test_reads_stop_after_consecutive_triples_fail(tmp_path, monkeypatch, clock):
+    triples = _five_triples(tmp_path)
+    store = _Store(tmp_path, _tonight_unanswered(triples))
+    report = _build(monkeypatch, tmp_path, store=store)
+
+    limit = report_builder.READ_BREAKER_TRIPLES
+    assert [(g.detector, g.platform, g.sample) for g in report.groups] == triples
+    assert all(g.unread for g in report.groups)
+    tried, skipped = triples[:limit], triples[limit:]
+    assert all(_requested(store, t) for t in tried)
+    assert skipped and not any(_requested(store, t) for t in skipped)
+    assert report.groups[-1].job_failures == [
+        f"{UNREAD_FAILURE} its runs were not read — EOS reads stopped: "
+        f"{limit} triples in a row could not be read"
+    ]
+
+
+def test_a_triple_that_reads_resets_the_breaker(tmp_path, monkeypatch, clock):
+    triples = _five_triples(tmp_path)
+    # Every triple fails but the third, so no run of failures reaches the limit.
+    failing = [t for i, t in enumerate(triples) if i != 2]
+    report = _build(monkeypatch, tmp_path, _tonight_unanswered(failing))
+    assert [g.unread for g in report.groups] == [True, True, False, True, True]
+    assert all("could not be read from EOS" in g.job_failures[0]
+               for g in report.groups if g.unread)
+
+
+def test_no_retry_is_scheduled_past_the_deadline(monkeypatch, clock):
+    monkeypatch.setattr(report_builder, "READ_DEADLINE_S", report_builder.READ_BACKOFF_S[0])
+    reads = report_builder.ReportReads()
+
+    def unanswered():
+        raise requests.ConnectionError("reset")
+
+    with pytest.raises(requests.ConnectionError):
+        reads(unanswered, "slow")
+    assert clock.waits == []
+    clock.now = report_builder.READ_DEADLINE_S
+    with pytest.raises(report_builder.ReadsStopped, match="deadline passed"):
+        reads(lambda: "never asked", "late")
+
+
+def test_finalize_dates_a_not_judged_triple_on_the_report_night():
+    def unread(detector):
+        return report_builder._unread_group(
+            detector, _PLAT, "single_e", requests.ConnectionError("reset"),
+        )
+
+    ran = RunGroupReport(
+        detector=_SID, platform=_PLAT, sample="single_e",
+        k4h_release="key4hep-2026-01-12", run_date="2026-01-12", run_id="2026-01-12",
+    )
+    first = unread(_CLD)
+    report = report_builder._finalize_report([first, ran], SIM)
+    # Order kept; the unread triple takes no part in choosing the night.
+    assert [g.detector for g in report.groups] == [_CLD, _SID]
+    assert first.run_date == first.run_id == "2026-01-12" == report.report_night
+
+    # Nothing read at all: no night to name, unless one is given.
+    alone = report_builder._finalize_report([unread(_CLD)], SIM)
+    assert alone.report_night == "" and alone.night == ""
+    outage = report_builder._finalize_report([unread(_CLD)], SIM, night="2026-01-13")
+    assert outage.report_night == outage.night == "2026-01-13"
+    assert outage.groups[0].run_date == "2026-01-13"
+
+
+def test_blame_never_reads_a_not_judged_triple(tmp_path, monkeypatch, sleeps):
+    from k4bench.blame.evidence import outcomes_for_window
+    from k4bench.blame.sweep import window_sweeps
+
+    _store_tree(tmp_path, _SID)
+    _store_tree(tmp_path, _CLD, walls=[100.0] * len(_STEP_WALLS))
+    report = _build(monkeypatch, tmp_path, {
+        ("fetch", _CLD, _PLAT, "single_e", f"key4hep-{_TONIGHT}", _TONIGHT): None,
+    })
+    window = dict(
+        base_release=f"key4hep-{_nights(10)[-1]}", onset_release=f"key4hep-{_nights(11)[-1]}",
+        stacks={f"key4hep-{_TONIGHT}"},
+    )
+    assert {v.detector for v in report.regressions} == {_SID}
+    assert {s.detector for s in window_sweeps(report, **window)} == {_SID}
+    controls = outcomes_for_window(report, regressed_scopes={(_SID, _PLAT, "single_e")}, **window)
+    assert _CLD not in {o.detector for o in controls}

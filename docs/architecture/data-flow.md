@@ -89,13 +89,28 @@ WATCH.
 
 The EOS directory layout is the integration contract between CI and the
 dashboard — see [File formats → EOS layout](../reference/file-formats.md#eos-layout).
-Because historical runs are immutable, the dashboard downloads each file of a
+A run directory holds one attempt's files, and its `run_info.json` says they
+are all there: the upload takes `run_info.json` down before it changes
+anything, removes the files only an earlier attempt of the same job, release
+and day wrote, and uploads `run_info.json` last (see
+[File formats → Uploading a run](../reference/file-formats.md#uploading-a-run)).
+A reader reads `run_info.json` before a run's other files and again after
+them, and keeps the run only if it was there both times, unchanged: otherwise
+the run is still being uploaded or was replaced meanwhile, and is read again
+later. Runs dated before the protocol shipped are read as they always were.
+
+A finished run is taken to be immutable, so the dashboard downloads each file of a
 run at most once, and only when a view reads it (`k4bench.remote.ensure_run_artifacts`):
 each file is published into its on-disk cache atomically, under a per-run lock
 and manifest, so concurrent reruns never see a half-written file and two views
 asking for different files of one run both get theirs. The nightly report and
 the CLI download whole runs (`ensure_run_cached`), published with a single
-atomic rename of the run directory and marked `.complete`.
+atomic rename of the run directory and marked `.complete`. A same-day re-run
+that replaces a whole run already in a cache is not seen there until that cache
+is cleared; the nightly report starts from an empty one every night, and the
+dashboard's goes with its pod. A run cached in part keeps the digest of its
+`run_info.json` and is discarded and read again from scratch the next time a
+view asks for a file it lacks and finds another attempt there.
 
 The `regression-report` job (`.github/scripts/regression_report.{py,sh}`) runs
 after the benchmark fan-out, so a crashed detector job still surfaces in the
@@ -108,6 +123,18 @@ republish the previous night, so `nightly.yml` passes its own Actions run id:
 a report naming none of that run's measurements is reported as tonight's
 outage instead (see
 [File formats → The night a report covers](../reference/file-formats.md#the-night-a-report-covers-reportjson)).
+A job that failed before writing any result but uploaded its `run_info.json`
+still names its CI run there, so its triple is reported as that fan-out's
+failed configs, never as an upload that did not happen.
+
+The report's EOS reads are strict: a listing or download WebEOS does not answer is
+retried with backoff (`READ_BACKOFF_S`, within a per-report
+`READ_BACKOFF_BUDGET_S`), all reads stop after `READ_DEADLINE_S` or
+`READ_BREAKER_TRIPLES` failed triples in a row, and a triple whose runs still
+cannot be read is reported as *not judged* rather than judged on part of its
+history. A fan-out that unread triples might hide is not reported as an
+outage: nothing is published (see
+[File formats → Triples a report could not read](../reference/file-formats.md#triples-a-report-could-not-read-reportjson)).
 It reuses the same pure building blocks as the dashboard (`k4bench.remote` for
 discovery/download, `k4bench.analysis.trend` for aggregation,
 `k4bench.results.reliability_evidence` for the per-run reliability verdict) and

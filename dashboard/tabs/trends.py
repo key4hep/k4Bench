@@ -423,11 +423,12 @@ def _trends_body(
     # Applied *before* the same-tag dedup below, so excluding a run means the run
     # is gone rather than the tag: a tag whose newest run is unreliable falls back
     # to its newest reliable one instead of dropping off the chart entirely.
-    failed_runs = df[df["_config_failed"]]
+    # Reliable only hides the failed configs' markers too.
     judgeable_runs = df[~df["_config_failed"]]
-    healthy_runs, _excluded = resolve_reliability_filter(
+    healthy_runs, _excluded, failed_runs = resolve_reliability_filter(
         judgeable_runs, reliability,
         key="trends_exclude_unreliable", slot=reliability_slot,
+        failed=df[df["_config_failed"]],
     )
 
     # ── Data range ──────────────────────────────────────────────────────────────
@@ -442,7 +443,7 @@ def _trends_body(
             f"Data range: **{shown_tags.min():%Y-%m-%d}** → "
             f"**{shown_tags.max():%Y-%m-%d}** "
             f"({n_shown} nightly tag{'s' if n_shown != 1 else ''}"
-            + (f" · {hidden} hidden as unreliable" if hidden else "") + ")"
+            + (f" · {hidden} hidden as unreliable or failed" if hidden else "") + ")"
         )
     if healthy_runs.empty and failed_runs.empty:
         return

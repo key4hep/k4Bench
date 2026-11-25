@@ -445,7 +445,7 @@ still treated as replaced. Versioned steering paths change only when
 the replacement exists in the same nightly's FCC-config. Otherwise the PR
 records that the existing steering file was retained. Review header prose,
 steering compatibility, sweep choices, timeouts, and the baseline transition.
-The PR opens as a draft; CI (including real geometry patching) and PR-Agent run
+The PR opens as a draft; CI (including real geometry patching) runs
 after a maintainer clicks **Ready for review**; a human merges it. There is no
 auto-merge. The action is invoked only for actual bumps, so a no-op run does
 not close existing PRs or clean up merged branches.
@@ -481,11 +481,11 @@ One-time repository setup:
 2. Create the `detector-bump` label if it does not already exist.
 
 Events caused by `GITHUB_TOKEN` start no workflows, so neither the bot's
-opening of the PR nor its push runs CI or PR-Agent. See [GitHub's workflow
+opening of the PR nor its push runs CI. See [GitHub's workflow
 triggering documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow).
 The bot therefore opens a draft, and a maintainer clicking **Ready for review**
-starts both: the Pipeline and AI PR Review workflows trigger on
-`ready_for_review`. Later maintainer pushes trigger them as usual. This is
+starts CI: the Pipeline workflow triggers on `ready_for_review`. Later
+maintainer pushes trigger it as usual. This is
 separate from approving or merging the PR.
 
 Local inspection (no files written unless `--apply --family NAME` is supplied):
@@ -718,6 +718,45 @@ window it reproduces rather than for a night, so re-publishing the same window
 replaces the same file and a standing comment's link keeps working — see
 [PR comments → Reproducing the measurement](../user-guide/features/pr-comments.md#reproducing-the-measurement).
 
+### Uploading a run
+
+A run directory is named for its detector, platform, release, sample and the
+day its job started, so a re-run of the same job against the same release on
+the same day lands in the same directory. It holds that attempt's files and no earlier one's, and its
+`run_info.json` is the sign that they are all there. The nightly
+(`.github/scripts/nightly_benchmark.sh`, section 9):
+
+1. lists the run directory;
+2. removes `run_info.json`, if an earlier attempt left one;
+3. removes every file this attempt does not upload;
+4. uploads the run's other files;
+5. uploads `run_info.json`.
+
+Each file is copied with `eos.atomic`, so its name appears only once all of it
+is written, and an overwritten file stays readable as it was until then. A copy
+that fails stops the upload before step 5 and fails the job.
+
+`run_info.json` names its CI run, the run's attempt (`github_run_attempt`) and
+the moment the job started (`job_started`), so no two attempts write the same
+bytes. Readers (`k4bench.remote`) read it before a run's other files and again
+after them, and keep what they read only when it was there both times and did
+not change: otherwise the run is still being uploaded, or was replaced while it
+was read, and they cache nothing of it and read it again later. That holds
+whatever time has passed: an upload that died before step 5 stays unreadable
+until the job is run again. Runs dated before 2026-11-26
+(`k4bench.remote.UPLOAD_PROTOCOL_SINCE`), the day this protocol shipped, are
+read as they always were, with or without `run_info.json`; the store held
+3256 of them, all but one with `run_info.json`.
+
+Two jobs writing one run directory at once — two dispatches of the same
+detector config and sample against the same release on the same day — are not
+prevented. A GitHub `concurrency` group cannot serialize them: the run's date is
+only known once the job starts, so a group would have to hold every run of a
+release, queueing the nights that reuse one; and a group keeps one job pending,
+cancelling any other that queues behind it. Their files can then interleave;
+whichever finishes last leaves its `run_info.json`, beside files of either.
+Don't dispatch a job that a running one duplicates.
+
 ### The night a report covers (`report.json`)
 
 `reports/{suite}/{YYYY-MM-DD}/` is named for the night the report covers, and
@@ -726,7 +765,73 @@ report holds. A night whose benchmarking uploaded *nothing* — every job of the
 fan-out failed — has no run to be named after, so its report carries the night
 in a top-level `night` key instead and reports one
 `no run uploaded for {night}` job failure per triple. The key is absent on
-every other night, where the newest run date is the answer.
+every other night, where the newest run date is the answer. A job that failed
+before writing any result CSV but uploaded its `run_info.json` did upload a
+run: its group takes `k4h_release`, `github_run_url` and `geometry_path` from
+that `run_info.json` and lists each configured label as
+`config '{label}' produced no results tonight`.
+
+### Triples a report could not read (`report.json`)
+
+The report reads each triple's trailing run window from WebEOS strictly: a
+stack listing or a run download the server does not answer — a cold listing
+that times out with a `504`, a dropped connection — is retried with backoff
+(`READ_BACKOFF_S` in `k4bench/regression/report_builder.py`, bounded per report
+by `READ_BACKOFF_BUDGET_S`). One that still fails does not shorten the triple's
+history, since a window short of a night is a different baseline: the triple,
+or the series it continues, is not judged at all. Its group carries no
+release, no verdict and no reliability, is dated on the report night, and
+holds one job failure starting `not judged:` that says why — its runs could not
+be read from EOS, or its report could not be built from them. That is a
+different statement from `no run uploaded for` (the runs may well be there)
+and from a failed config (a statement about the run), and readers tell it
+apart with `RunGroupReport.unread`. The email lists it with the night's
+failures, the CI run carries a warning annotation per triple, and the report
+job still exits 0. Blame never sees such a group: it has no regression to
+attribute, no release to sweep, and a job failure disqualifies it as a clean
+control.
+
+The report's reads are bounded in time as a whole, not only per request. They
+stop for good once `READ_DEADLINE_S` (one hour) has passed since the first read,
+or once `READ_BREAKER_TRIPLES` (four) triples in a row have failed. Each
+remaining triple is then reported as not judged — `its runs were not read —
+EOS reads stopped: …` — without a request. The numbers:
+
+- **One hour** is over three times the ~18 minutes a healthy night takes to
+  read a suite's whole window into an empty cache, which leaves room for a slow
+  night of cold listings. In an outage every request costs `k4bench.remote`'s
+  timeouts before it fails (10 s to connect, 35 s to read, one retry: about
+  70 s), and the deadline stops that from holding the report for hours. It is
+  checked before each read, so a report overruns it by at most the one read in
+  flight. The outage rebuild described above reads within the same deadline.
+- **Four triples in a row:** a detector/platform holds two samples, so a fault
+  confined to one tree — a broken stack listing, an unreadable predecessor —
+  fails two triples in a row. Four is two such trees in a row, which points at
+  the store rather than at a directory. A triple that reads resets the count.
+- **`READ_BACKOFF_S` (30 s, then 90 s)** outlasts a listing that stays cold for
+  a minute or two. **`READ_BACKOFF_BUDGET_S` (600 s)** caps the waiting summed
+  over the report, so retries alone cannot reach the deadline.
+
+Discovery — which detectors, platforms and samples exist — runs first. It is
+retried the same way but stays fatal when it still fails, since a triple
+discovery missed could not even be named. So is a report in which no triple
+could be read: it holds no run to name the night after, and
+`regression_report.py` exits non-zero without writing it.
+
+An unread triple also changes what the report can say about the nightly
+fan-out (`Coverage` in `k4bench/regression/report_builder.py`):
+
+- **Covered:** a triple names the fan-out as its nightly run, and the report is
+  published.
+- **History only:** every triple was read and the fan-out appears only in the
+  history of older releases filed on the same night. The job succeeds without
+  publishing a report.
+- **Absent:** every triple was read and none names it, so the fan-out uploaded
+  nothing. Tonight is reported as an outage, as described above.
+- **Unknown:** an unread triple could name the fan-out as its nightly run, even
+  if another triple mentions it in history. Nothing is published and the
+  job exits non-zero. A re-run of the report job rebuilds the night once EOS
+  answers.
 
 Two releases can be benchmarked on one date: a pinned older release
 dispatched, or an old nightly re-run, on a night the current release ran too.

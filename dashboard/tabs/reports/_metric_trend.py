@@ -372,18 +372,22 @@ def render_metric_trend(
     series_key = _series_key(verdict)
     fetched = df
     verdict_run = _verdict_run(verdict)
+    runs = run_keys(df)
     failed_mask = pd.Series([
         (run, str(label)) in failed_configs
-        for run, label in zip(run_keys(df), df["label"], strict=True)
+        for run, label in zip(runs, df["label"], strict=True)
     ], index=df.index)
-    failed_df = df.loc[failed_mask]
-    judgeable_df = df.loc[~failed_mask]
-    judgeable_df, excluded_runs = resolve_reliability_filter(
-        judgeable_df, reliability,
+    # Reliable only hides failed configs' markers, except the flagged run's
+    # own: a failure verdict's chart exists to show that run.
+    flagged_run = runs == verdict_run
+    judgeable_df, excluded_runs, failed_df = resolve_reliability_filter(
+        df.loc[~failed_mask], reliability,
         key=f"{widget_namespace}_drill_excl_{series_key}",
         date_col="x_date",
         slot=reliability_slot,
+        failed=df.loc[failed_mask & ~flagged_run],
     )
+    failed_df = pd.concat([failed_df, df.loc[failed_mask & flagged_run]])
     if judgeable_df.empty and failed_df.empty:
         return
     df = pd.concat([judgeable_df, failed_df]).sort_values("x_date")

@@ -127,7 +127,10 @@ suppressed. Use it to watch a long run or debug a failing configuration.
 Two `BenchmarkConfig` fields have no CLI flag:
 
 - **`setup_script`** — a shell script sourced before each `ddsim` invocation.
-  Available only when driving k4Bench as a library.
+  Available only when driving k4Bench as a library. The script must end with
+  status 0: if sourcing it fails, the program is not run, and the configuration
+  is recorded as failed with the script's exit status, so it can never be
+  timed against whatever stack the calling shell already had.
 
 !!! note "`setup_script` is not exposed on the CLI"
     As of this writing there is no `--setup-script` flag; the field exists in

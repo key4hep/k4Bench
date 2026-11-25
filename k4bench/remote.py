@@ -28,6 +28,7 @@ or file by file, only the files a reader asks for (:func:`ensure_run_artifacts`)
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -38,6 +39,7 @@ import threading
 from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -137,6 +139,21 @@ class IncompleteFetch(requests.RequestException):
         super().__init__(f"{len(failures)} read(s) failed: {shown}{more}")
         self.partial = partial
         self.failures = failures
+
+
+class UnfinishedRun(IncompleteFetch):
+    """A run read before its upload finished, or while it was replaced (see
+    :data:`UPLOAD_PROTOCOL_SINCE`).
+
+    Raised by the run downloads whether or not their caller is strict, since
+    they never return part of a run: what the run directory held is not all
+    the run will hold, so nothing of it is cached and the next call reads it
+    again. A strict caller sees it as the incomplete read it is, and a lenient
+    one skips the run like any other that could not be read.
+    """
+
+    def __init__(self, url: str, reason: str):
+        super().__init__(None, [f"{url}: {reason}"])
 
 
 def _is_absent(exc: requests.RequestException) -> bool:
@@ -309,6 +326,56 @@ def list_run_dates_all_stacks(
 
 # ── Download (persistent immutable cache) ──────────────────────────────────────
 
+#: The first run date uploaded under the nightly's upload protocol
+#: (``.github/scripts/nightly_benchmark.sh``, section 9): ``run_info.json``
+#: taken down before anything in the run directory changes and uploaded last.
+#: Such a run is read only with its ``run_info.json``, unchanged from before
+#: the read to after it. A run dated earlier is read as it always was, with or
+#: without one: no job of the protocol is dated before the day it starts.
+UPLOAD_PROTOCOL_SINCE = "2026-11-26"
+
+
+def follows_upload_protocol(date: str) -> bool:
+    """Whether the run dated *date* was uploaded under the protocol
+    :data:`UPLOAD_PROTOCOL_SINCE` names; a date that does not parse counts as
+    one that was, so it is never read without ``run_info.json``."""
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        return True
+    return date >= UPLOAD_PROTOCOL_SINCE
+
+
+def _run_info(session: requests.Session, url: str) -> bytes | None:
+    """The run at *url*'s ``run_info.json`` as it is now, or ``None`` when it
+    is not there."""
+    try:
+        resp = session.get(f"{url}/{RUN_INFO}", timeout=_TIMEOUT)
+        resp.raise_for_status()
+    except requests.HTTPError as exc:
+        if _is_absent(exc):
+            return None
+        raise
+    return resp.content
+
+
+def _first_run_info(session: requests.Session, url: str) -> bytes:
+    """A protocol run's ``run_info.json`` before it is read; raises
+    :class:`UnfinishedRun` while it is not there."""
+    content = _run_info(session, url)
+    if content is None:
+        raise UnfinishedRun(url, f"its upload has not finished (no {RUN_INFO} yet)")
+    return content
+
+
+def _check_unchanged(session: requests.Session, url: str, first: bytes) -> None:
+    """Raise :class:`UnfinishedRun` unless the run's ``run_info.json`` is still
+    *first*: each attempt's names its own CI attempt and start, so the files
+    read in between were all one attempt's."""
+    if _run_info(session, url) != first:
+        raise UnfinishedRun(url, f"it was replaced while it was read ({RUN_INFO} changed)")
+
+
 def _default_cache_root() -> Path:
     return Path(
         os.environ.get(
@@ -330,8 +397,18 @@ def ensure_run_cached(
     """Download one run into a stable cache path and return it.
 
     The cache mirrors the store layout (:mod:`k4bench.layout`) below *cache_root*.
-    Historical runs are immutable, so a run whose ``.complete`` sentinel exists is
-    returned without any HTTP. To stay correct across concurrent reruns and
+    A run uploaded under the nightly's protocol (:data:`UPLOAD_PROTOCOL_SINCE`)
+    is cached only as one attempt's files, all of them: its ``run_info.json``
+    is read first and again last, and must be there and unchanged. Otherwise —
+    a run still uploading, or replaced while it was read, which also shows as a
+    listed file found gone — raises :class:`UnfinishedRun` and leaves nothing
+    behind. A run dated earlier is downloaded as listed.
+
+    A cached run is taken to be immutable, so a run whose ``.complete``
+    sentinel exists is returned without any HTTP: a same-day re-run that replaces
+    a run already cached here is not seen until the cache is cleared.
+
+    To stay correct across concurrent reruns and
     processes, files are downloaded into a private temp dir and the finished run
     is published with a single atomic ``rename``: a reader therefore never sees a
     half-written ``run_dir``, and an interrupted download leaves no partial run
@@ -349,11 +426,30 @@ def ensure_run_cached(
     tmp_dir = Path(tempfile.mkdtemp(prefix=f".{date}.tmp-", dir=run_dir.parent))
     session = _get_session()
     try:
-        for fname in _list_files(url):
-            decoded = _safe_name(fname)
-            resp = session.get(f"{url}/{fname}", timeout=_TIMEOUT)
-            resp.raise_for_status()
-            (tmp_dir / decoded).write_bytes(resp.content)
+        if not follows_upload_protocol(date):
+            for fname in _list_files(url):
+                decoded = _safe_name(fname)
+                resp = session.get(f"{url}/{fname}", timeout=_TIMEOUT)
+                resp.raise_for_status()
+                (tmp_dir / decoded).write_bytes(resp.content)
+        else:
+            first = _first_run_info(session, url)
+            listing = {_safe_name(fname): fname for fname in _list_files(url)}
+            if RUN_INFO not in listing:
+                raise UnfinishedRun(url, f"{RUN_INFO} went while the run was read")
+            for decoded, fname in listing.items():
+                if decoded == RUN_INFO:
+                    continue
+                try:
+                    resp = session.get(f"{url}/{fname}", timeout=_TIMEOUT)
+                    resp.raise_for_status()
+                except requests.HTTPError as exc:
+                    if _is_absent(exc):
+                        raise UnfinishedRun(url, f"{decoded} went while the run was read") from exc
+                    raise
+                (tmp_dir / decoded).write_bytes(resp.content)
+            _check_unchanged(session, url, first)
+            (tmp_dir / RUN_INFO).write_bytes(first)
         (tmp_dir / ".complete").write_text("")
         _publish_run_dir(tmp_dir, run_dir, sentinel)
     except BaseException:
@@ -450,6 +546,18 @@ def ensure_run_artifacts(
     it; the next call asks for it again. A 404 is an answer: the file is
     absent. An unsafe name in the listing raises ``ValueError`` and records
     nothing, as in :func:`ensure_run_cached`.
+
+    A run uploaded under the nightly's protocol (:data:`UPLOAD_PROTOCOL_SINCE`)
+    is read in rounds bracketed by its ``run_info.json``: read before a round
+    and again after it, it must be there and unchanged. The manifest keeps the
+    digest of the ``run_info.json`` its listing belongs to, and a round that
+    finds another one discards the manifest and every file with it and starts
+    from a new listing, so a re-run that replaced the run is seen as soon as
+    anything more of it is asked for (asking only for what is there costs no
+    request, and so cannot see it). A round whose ``run_info.json`` is missing
+    or changes raises :class:`UnfinishedRun` and records nothing of what it
+    read: no file, and no 404 taken for an absent file, which may only have
+    been replaced. Only what failed is recorded either way.
     """
     root = Path(cache_root) if cache_root else _default_cache_root()
     rel = run_path(suite, detector, platform, stack, sample, date)
@@ -466,13 +574,32 @@ def ensure_run_artifacts(
     with _locked(run_dir):
         # Re-read under the lock: another caller may have fetched them meanwhile.
         manifest = _read_manifest(run_dir)
+        if _pending(run_dir, manifest, artifacts) == []:
+            return run_dir
+        session = _get_session()
+        checked = follows_upload_protocol(date)
+        first = _first_run_info(session, url) if checked else None
+        digest = hashlib.sha256(first).hexdigest() if checked else None
+        if checked and manifest is not None and manifest.get("run_info") != digest:
+            _discard(run_dir)
+            manifest = None
         if manifest is None:
             listing = {_safe_name(name): name for name in _list_files(url)}
-            manifest = {"version": _MANIFEST_VERSION, "listing": listing, "files": {}}
+            if checked and RUN_INFO not in listing:
+                raise UnfinishedRun(url, f"{RUN_INFO} went while the run was read")
+            manifest = {
+                "version": _MANIFEST_VERSION, "listing": listing, "files": {}, "run_info": digest,
+            }
         files = manifest["files"]
-        session = _get_session()
+        # What became of each file this round, recorded once the round is known
+        # to have read one attempt throughout.
+        outcome: dict[str, dict] = {}
         try:
             for name in _pending(run_dir, manifest, artifacts):
+                if checked and name == RUN_INFO:
+                    _publish_file(run_dir, name, first)
+                    outcome[name] = {"state": FETCHED, "bytes": len(first)}
+                    continue
                 try:
                     resp = session.get(f"{url}/{manifest['listing'][name]}", timeout=_TIMEOUT)
                     resp.raise_for_status()
@@ -480,13 +607,31 @@ def ensure_run_artifacts(
                     if not _is_absent(exc):
                         files[name] = {"state": FAILED, "error": str(exc)}
                         raise
-                    files[name] = {"state": ABSENT}
+                    outcome[name] = {"state": ABSENT}
                     continue
                 _publish_file(run_dir, name, resp.content)
-                files[name] = {"state": FETCHED, "bytes": len(resp.content)}
-        finally:
+                outcome[name] = {"state": FETCHED, "bytes": len(resp.content)}
+            if checked:
+                _check_unchanged(session, url, first)
+        except UnfinishedRun:
+            _discard(run_dir)
+            raise
+        except BaseException:
+            if not checked:
+                files.update(outcome)
             _publish_file(run_dir, ARTIFACT_MANIFEST, json.dumps(manifest).encode())
+            raise
+        files.update(outcome)
+        _publish_file(run_dir, ARTIFACT_MANIFEST, json.dumps(manifest).encode())
     return run_dir
+
+
+def _discard(run_dir: Path) -> None:
+    """Remove all a subset directory holds of its run, its manifest with it,
+    leaving the lock its callers hold."""
+    for entry in run_dir.iterdir():
+        if entry.name != ".lock":
+            entry.unlink()
 
 
 def _pending(run_dir: Path, manifest: dict | None, artifacts: tuple[str, ...]) -> list[str] | None:
@@ -561,7 +706,10 @@ def fetch_runs_windowed(
     With *strict*, no download starts after the first failure that makes the
     result incomplete, and the call raises once those in flight have finished —
     so every run that landed stays in the on-disk cache and a retry fetches
-    only what is missing. A run the server did not answer for raises
+    only what is missing. A run whose upload had not finished
+    (:class:`UnfinishedRun`) makes it incomplete too, but stops nothing: the
+    server answered, so the other runs are still read. A run the server did not
+    answer for, or that had not finished, raises
     :class:`IncompleteFetch` carrying the runs that landed; a local error — the
     cache directory full or unwritable — raises that ``OSError`` itself, since
     it is neither EOS's fault nor fixed by asking EOS again. A run whose listing
@@ -606,6 +754,9 @@ def fetch_runs_windowed(
                 if _is_absent(exc):
                     continue
                 failures.append(f"{stack}/{date}: {exc}")
+                if isinstance(exc, UnfinishedRun):
+                    # The server answered: the other runs are worth reading.
+                    continue
             except ValueError as exc:
                 _log.warning("fetch_runs_windowed: failed %s/%s — %s", stack, date, exc)
                 continue

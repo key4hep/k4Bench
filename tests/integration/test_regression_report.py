@@ -16,6 +16,8 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
+import pytest
+
 from k4bench.layout import SIM, run_path
 
 _SCRIPTS = Path(__file__).resolve().parents[2] / ".github" / "scripts"
@@ -33,16 +35,21 @@ _RUN = "https://github.com/key4hep/k4Bench/actions/runs"
 def _write_run(
     run_dir: Path, night: str, wall_time_s: float, stack: str = _STACK,
     run_url: str | None = None, platform: str = _PLAT,
+    results: bool = True, run_info: dict | None = None,
 ) -> None:
+    """One run dir; without *results* it is a job that failed before writing
+    a result CSV, and *run_info* adds fields to its ``run_info.json``."""
     run_dir.mkdir(parents=True)
     (run_dir / "run_info.json").write_text(json.dumps({
         "date": night, "platform": platform, "k4h_release": stack, "sample": "single_e",
         **({"github_run_url": run_url} if run_url else {}),
+        **(run_info or {}),
     }))
-    (run_dir / "baseline_results.csv").write_text(
-        "label,returncode,n_events,wall_time_s,peak_rss_mb,user_cpu_s,events_per_sec\n"
-        f"baseline,0,10,{wall_time_s},1024.0,{wall_time_s * 0.98},{10.0 / wall_time_s}\n"
-    )
+    if results:
+        (run_dir / "baseline_results.csv").write_text(
+            "label,returncode,n_events,wall_time_s,peak_rss_mb,user_cpu_s,events_per_sec\n"
+            f"baseline,0,10,{wall_time_s},1024.0,{wall_time_s * 0.98},{10.0 / wall_time_s}\n"
+        )
     (run_dir / "machine_info.json").write_text(json.dumps({
         "hostname": "host-a", "cpu_physical_cores": 8, "cpu_logical_cores": 16,
         "load_avg_1m_start": 0.5, "load_avg_1m_end": 0.5,
@@ -185,6 +192,35 @@ def test_a_pinned_older_release_beside_tonights_run_publishes_no_report(tmp_path
     assert group["k4h_release"] == "key4hep-2026-01-12"
     assert group["github_run_url"] == f"{_RUN}/900"
     assert group["history_run_urls"] == [f"{_RUN}/902"]
+
+
+def test_regression_report_cli_reports_a_fanout_whose_jobs_wrote_no_results(tmp_path):
+    # Every job of fan-out 900 failed before writing a result CSV but uploaded
+    # its run_info, today. Those runs are the fan-out's: the report is published
+    # for today and names the failed config, rather than taken for a fan-out
+    # that uploaded nothing — whose outage report is refused while today's runs
+    # are on EOS, leaving no report at all.
+    today = date.today()
+    _write_history(tmp_path / "data", [100.0] * 11, today - timedelta(days=1),
+                   run_url=f"{_RUN}/899")
+    night = today.isoformat()
+    stack = f"key4hep-{night}"
+    _write_run(
+        tmp_path / "data" / run_path(SIM, "DET") / _PLAT / stack / "single_e" / night,
+        night, 0.0, stack=stack, run_url=f"{_RUN}/900", results=False,
+        run_info={"configured_labels": ["baseline"], "status": "failed",
+                  "xml_path": _GEOMETRY},
+    )
+    result = _run_cli(tmp_path, "--fanout-run-id", "900")
+    assert result.returncode == 0, result.stderr
+    assert "uploaded no run" not in result.stderr
+
+    data = json.loads((tmp_path / "out" / "report.json").read_text())
+    assert data["summary"]["report_night"] == night
+    group, = data["groups"]
+    assert group["github_run_url"] == f"{_RUN}/900"
+    assert group["geometry_path"] == _GEOMETRY
+    assert group["job_failures"] == ["config 'baseline' produced no results tonight"]
 
 
 def test_regression_report_cli_rejects_a_malformed_night(tmp_path):
@@ -477,6 +513,125 @@ def _load_script(path):
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _unread(detector: str, night: str = "") -> object:
+    from k4bench.regression.models import UNREAD_FAILURE, RunGroupReport
+    return RunGroupReport(
+        detector=detector, platform=_PLAT, sample="single_e", k4h_release="",
+        run_date=night, run_id=night,
+        job_failures=[f"{UNREAD_FAILURE} its runs could not be read from EOS — "
+                      "504 for url: https://eos.invalid/%2B"],
+    )
+
+
+def test_regression_report_refuses_a_report_that_read_no_run():
+    from k4bench.regression.models import NightlyReport, RunGroupReport
+
+    cli = _load_script(_SCRIPT)
+    with pytest.raises(SystemExit, match="none of the 2 triple"):
+        cli.require_a_read(NightlyReport("", [_unread("DET"), _unread("OTHER")]))
+    ran = RunGroupReport(
+        detector="OTHER", platform=_PLAT, sample="single_e", k4h_release=_STACK,
+        run_date="2026-01-12", run_id="2026-01-12",
+    )
+    cli.require_a_read(NightlyReport("", [_unread("DET", "2026-01-12"), ran]))
+    cli.require_a_read(NightlyReport("", []))  # nothing to read is not a failed read
+
+
+def _fanout_cli(tmp_path, monkeypatch, first, outage=None):
+    """``main`` for fan-out 900 over a fake remote build: *first* is what it
+    builds, *outage* what a rebuild for tonight (2026-01-13) builds."""
+    from k4bench.regression import report_builder
+    from k4bench.regression.report_builder import ReportReads
+
+    cli = _load_script(_SCRIPT)
+    monkeypatch.setattr(cli, "tonight", lambda: "2026-01-13")
+    builds = []
+
+    def build(data_url, suite, cache_dir, *, as_of, reads, night):
+        assert isinstance(reads, ReportReads)
+        builds.append((night, reads))
+        return first if night is None else outage
+
+    monkeypatch.setattr(report_builder, "build_nightly_report", build)
+    out = tmp_path / "out"
+
+    def run():
+        return cli.main([
+            "--suite", SIM, "--data-url", "https://eos.invalid",
+            "--output-dir", str(out), "--fanout-run-id", "900",
+        ])
+    return run, builds, out / "report.json"
+
+
+def _ran(run: int, night: str = "2026-01-12", **kwargs) -> object:
+    from k4bench.regression.models import RunGroupReport
+    return RunGroupReport(
+        detector=kwargs.pop("detector", "OTHER"), platform=_PLAT, sample="single_e",
+        k4h_release=_STACK, run_date=night, run_id=night,
+        github_run_url=f"{_RUN}/{run}", **kwargs,
+    )
+
+
+def test_regression_report_publishes_a_report_that_covers_the_fanout(tmp_path, monkeypatch):
+    from k4bench.regression.models import NightlyReport
+
+    first = NightlyReport("", [_ran(900, "2026-01-13"), _unread("DET")])
+    run, builds, written = _fanout_cli(tmp_path, monkeypatch, first)
+    assert run() == 0
+    assert [night for night, _ in builds] == [None]
+    assert _json.loads(written.read_text())["summary"]["report_night"] == "2026-01-13"
+
+
+def test_regression_report_reports_an_outage_when_every_triple_read_and_none_covers(
+    tmp_path, monkeypatch,
+):
+    from k4bench.regression.models import NightlyReport
+
+    first = NightlyReport("", [_ran(800)])
+    outage = NightlyReport("", [_ran(800, job_failures=[
+        "no run uploaded for 2026-01-13 (latest is 2026-01-12)"])], night="2026-01-13")
+    run, builds, written = _fanout_cli(tmp_path, monkeypatch, first, outage)
+    assert run() == 0
+    assert [night for night, _ in builds] == [None, "2026-01-13"]
+    # The rebuild reads within the same bound as the first build.
+    assert builds[0][1] is builds[1][1]
+    assert _json.loads(written.read_text())["night"] == "2026-01-13"
+
+
+@pytest.mark.parametrize("history_urls", [(), (f"{_RUN}/900",)])
+def test_regression_report_publishes_nothing_when_unread_triples_leave_coverage_unknown(
+    tmp_path, monkeypatch, history_urls,
+):
+    from k4bench.regression.models import NightlyReport
+
+    # An unread triple may hold a nightly run even when the fan-out also
+    # appears in another triple's history.
+    first = NightlyReport("", [
+        _ran(800, history_run_urls=history_urls), _unread("DET", "2026-01-12"),
+    ])
+    run, builds, written = _fanout_cli(tmp_path, monkeypatch, first)
+    with pytest.raises(SystemExit, match="Re-run the report job"):
+        run()
+    assert [night for night, _ in builds] == [None]  # no outage rebuild
+    assert not written.exists()
+
+
+def test_regression_report_annotates_each_triple_it_could_not_read(capsys):
+    from k4bench.regression.models import NightlyReport, RunGroupReport
+
+    cli = _load_script(_SCRIPT)
+    ran = RunGroupReport(
+        detector="OTHER", platform=_PLAT, sample="single_e", k4h_release=_STACK,
+        run_date="2026-01-12", run_id="2026-01-12",
+        job_failures=["config 'baseline' produced no results tonight"],
+    )
+    cli.annotate_unread(NightlyReport("", [_unread("DET", "2026-01-12"), ran]))
+    assert capsys.readouterr().out.splitlines() == [
+        f"::warning title=Not judged::DET/{_PLAT}/single_e: not judged: its runs could "
+        "not be read from EOS — 504 for url: https://eos.invalid/%252B"
+    ]
 
 
 def test_blame_report_refuses_incomplete_configured_ranking(tmp_path, monkeypatch):
